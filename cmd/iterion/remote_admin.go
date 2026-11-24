@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -95,8 +96,11 @@ var remoteAdminOrgsCmd = &cobra.Command{
 // with it, or the one whose id equals it.
 var remoteAdminUserQuery string
 
+// remoteAdminEraseYes confirms `admin users erase`: the act cannot be undone.
+var remoteAdminEraseYes bool
+
 var remoteAdminUsersCmd = &cobra.Command{
-	Use:   "users [get <user-id>|update <user-id>|reset-password <user-id>]",
+	Use:   "users [get <user-id>|update <user-id>|reset-password <user-id>|erase <user-id>]",
 	Short: "List platform users (--q to search), or act on one",
 	Long: "`get` returns one account's FILE: status, last sign-in, whether a\n" +
 		"password sign-in is possible at all, its SSO links, and the orgs and\n" +
@@ -109,7 +113,15 @@ var remoteAdminUsersCmd = &cobra.Command{
 		"no outbound email; hand the password over out-of-band. The instance\n" +
 		"refuses it (403) on YOUR OWN account when the CLI presents a personal\n" +
 		"access token — which is what a login stores: change your own password\n" +
-		"from the studio (Account → Profile → Change password).",
+		"from the studio (Account → Profile → Change password).\n\n" +
+		"`erase` erases an account by anonymization (GDPR art. 17): the row keeps\n" +
+		"its id as a pseudonym under an erased-<id>@erased.invalid marker; name,\n" +
+		"password, SSO links, memberships, invitations, sessions, personal access\n" +
+		"tokens and push subscriptions go, and the audit rows naming the account\n" +
+		"lose their IP, user agent and address. It cannot be undone and cannot be\n" +
+		"run on your own account; the last owner of a shared organization is\n" +
+		"refused (409) until ownership is transferred. It asks for --yes: an id\n" +
+		"pasted wrong would erase another person. Running it twice is safe.",
 	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
@@ -120,12 +132,15 @@ var remoteAdminUsersCmd = &cobra.Command{
 			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 		}
 		if len(args) != 2 {
-			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>]")
+			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>|erase <user-id>]")
 		}
 		// --q is read only by the list form above; accepting it silently on an
 		// action would answer a question the operator did not ask.
 		if strings.TrimSpace(remoteAdminUserQuery) != "" {
 			return fmt.Errorf("--q applies to the list form only (`admin users --q <prefix>`), not to %q", args[0])
+		}
+		if remoteAdminEraseYes && args[0] != "erase" {
+			return fmt.Errorf("--yes confirms `admin users erase` only, not %q", args[0])
 		}
 		// PathEscape: an id reaching a URL path unescaped lets `../` retarget
 		// the request through ServeMux's 307 redirect — the CLI would report
@@ -138,30 +153,48 @@ var remoteAdminUsersCmd = &cobra.Command{
 			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base, remoteAdminData, "patch JSON")
 		case "reset-password":
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/reset-password", nil)
+		case "erase":
+			if !remoteAdminEraseYes {
+				return fmt.Errorf("refusing to erase account %s without --yes", args[1])
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/erase", nil)
 		default:
-			return fmt.Errorf("unknown users action %q (get|update|reset-password)", args[0])
+			return fmt.Errorf("unknown users action %q (get|update|reset-password|erase)", args[0])
 		}
 	}),
 }
+
+var remoteAdminDLQPool string
 
 var remoteAdminDLQCmd = &cobra.Command{
 	Use:   "dlq [show|replay|delete <seq>]",
 	Short: "Queue dead-letter entries: list (default) or act on one",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		query := ""
+		if cmd.Flags().Changed("pool") {
+			if remoteAdminDLQPool == "" {
+				return fmt.Errorf("--pool requires a pool name")
+			}
+			query = "?pool=" + url.QueryEscape(remoteAdminDLQPool)
+		}
 		if len(args) == 0 {
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq")
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq"+query)
 		}
 		if len(args) != 2 {
 			return fmt.Errorf("usage: admin dlq [show|replay|delete <seq>]")
 		}
+		seq, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil || seq == 0 {
+			return fmt.Errorf("DLQ sequence must be a positive uint64")
+		}
 		switch args[0] {
 		case "show":
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq/"+args[1])
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq/"+args[1]+query)
 		case "replay":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/dlq/"+args[1]+"/replay", nil)
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/dlq/"+args[1]+"/replay"+query, nil)
 		case "delete":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/dlq/"+args[1], nil)
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/dlq/"+args[1]+query, nil)
 		default:
 			return fmt.Errorf("unknown dlq action %q (want show|replay|delete)", args[0])
 		}
@@ -379,9 +412,10 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 // --- platform bot overrides (DB-backed catalog) ---
 
 var (
-	remoteAdminBotSlug  string
-	remoteAdminBotOut   string
-	remoteAdminBotForce bool
+	remoteAdminBotSlug      string
+	remoteAdminBotOut       string
+	remoteAdminBotForce     bool
+	remoteAdminBotAllowFold bool
 )
 
 var remoteAdminBotsCmd = &cobra.Command{
@@ -420,7 +454,7 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug, remoteAdminBotForce)
+			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug, remoteAdminBotForce, remoteAdminBotAllowFold)
 		case "show":
 			slug, err := needArg("slug")
 			if err != nil {
@@ -559,12 +593,13 @@ var remoteAdminVarsCmd = &cobra.Command{
 	Use:   "vars [set NAME VALUE | rm NAME]",
 	Short: "Bot-var overrides: resolve ${ITERION_X:-default} from the DB before the pod env — re-tune a bot without a rollout",
 	Long: `Platform bot vars — DB-backed overrides for the ` + "`${ITERION_X:-default}`" + ` .bot
-expansions (model pins, reasoning effort, tunables). Precedence:
-setting > pod env var > the .bot's own default.
+expansions (tunables: a bound, a threshold, a flag). Precedence:
+setting > pod env var > the .bot's own default. A route (model, backend,
+provider, reasoning effort) is an llmroute override cell instead (ADR-169).
 
   iterion remote admin vars                                  # stored + origin
-  iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
-  iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE   # back to env/default
+  iterion remote admin vars set ITERION_RGAA_MAX_DURATION 4h
+  iterion remote admin vars rm  ITERION_RGAA_MAX_DURATION    # back to env/default
 
 A bot var tunes how runs behave. The names the platform keeps for itself are
 refused at write time — those that lift or weaken a guard (security, spend
@@ -953,6 +988,7 @@ func init() {
 	remoteAdminOrgsCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminUserQuery, "q", "", "Match an email prefix, or an exact user id")
+	remoteAdminUsersCmd.Flags().BoolVar(&remoteAdminEraseYes, "yes", false, "Confirm erase, which cannot be undone")
 
 	for _, c := range []*cobra.Command{remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd} {
 		c.Flags().StringVar(&remoteLLMFromEnv, "from-env", "", "Read the secret value from this environment variable")
@@ -976,6 +1012,7 @@ func init() {
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotSlug, "slug", "", "Override slug (push; default: bundle dir basename)")
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotOut, "out", "", "Output directory (pull; default: ./<slug>)")
 	remoteAdminBotsCmd.Flags().BoolVar(&remoteAdminBotForce, "force", false, "Push even when the deployment's engine is below the bundle's requires.iterion (the push then carries the warning)")
+	remoteAdminBotsCmd.Flags().BoolVar(&remoteAdminBotAllowFold, "allow-fold", false, "Push even when the bundle folds a stored multi-line value onto one line (#1612); each fold comes back as a warning")
 
 	for _, role := range []string{"reviewer", "revi_converse", "brancher", "implementer"} {
 		flag := strings.ReplaceAll(role, "_", "-")
@@ -995,6 +1032,8 @@ func init() {
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredRefused, "routing-refused-pinned-key", "", "forfait|park — what a launch does with a shared key refused/capped whose family another credential holds (default forfait; park = the pre-policy restore)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredStrict, "routing-strict", "", "true|false — treat backend pins as requirements (false only lifts it where no level set true) (\"\" unsets)")
 	remoteAdminPlatformCredsCmd.Flags().BoolVar(&remotePlatformCredRoutingClear, "routing-clear", false, "Remove the stored routing block (back to the env dials)")
+
+	remoteAdminDLQCmd.Flags().StringVar(&remoteAdminDLQPool, "pool", "", "Dedicated runner pool (omitted selects shared DLQ)")
 
 	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd, remoteAdminPlatformCredsCmd)
 

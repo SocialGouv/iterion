@@ -327,6 +327,13 @@ const (
 	DiscoveryErrorBundle DiscoveryErrorKind = "bundle"
 	// DiscoveryErrorFile is a loose .bot file that failed to read.
 	DiscoveryErrorFile DiscoveryErrorKind = "file"
+	// DiscoveryErrorUnopenable is a directory the bundle package claims
+	// (an iterion manifest, either spelling, or a skills/ dir) that
+	// carries no main.bot: a bundle that exists but does not open. Its
+	// subtree stays private — skipped, never descended (ADR-140); the
+	// diagnostic is the loud part, non-blocking for the catalogue by the
+	// ADR's own classification.
+	DiscoveryErrorUnopenable DiscoveryErrorKind = "unopenable"
 	// DiscoveryErrorWalk is a path the filesystem walk itself could not
 	// read (e.g. a permission-denied directory). It may or may not hold a
 	// bot source — the contents are unknown.
@@ -549,6 +556,28 @@ func DefaultPaths(workDir string) []string {
 	}
 }
 
+// AnyRootPresent reports whether discovery has anything to look at: at
+// least one of the roots is on disk, or fails to stat for a reason
+// discovery itself refuses loudly. It is the exact complement of
+// discoverBots' silent skip (os.IsNotExist → continue), so false means a
+// walk over these roots CANNOT read an entry — it is not the same fact as
+// a root that is there and holds no bundle, and a caller whose verdict is
+// "what serves below" must report unknown rather than empty for it.
+// TestAnEmptyWalkAndAnAbsentRootAreDifferentFacts holds the two to one
+// shape.
+//
+// Optimistic default paths stay free (DefaultPaths returns three roots a
+// workspace rarely all has): this answers "not one of them", never "one of
+// them is missing".
+func AnyRootPresent(paths []string) bool {
+	for _, root := range paths {
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			return true
+		}
+	}
+	return false
+}
+
 // isScaffoldStagingDir reports whether a directory NAME is one of
 // botscaffold's staging directories ("."+slug+".scaffold-"+random), whose
 // leftover beside the roots is no bot. The spelling lives here because
@@ -671,23 +700,31 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 					fragmentDirs = append(fragmentDirs, path)
 					return nil
 				}
-				manifest := filepath.Join(path, bundle.ManifestFile)
-				mainBot := filepath.Join(path, bundle.MainBotFile)
-				if fileExists(manifest) && fileExists(mainBot) {
-					e, identity, err := parseBundle(path)
-					if err != nil {
-						recordDiag(path, DiscoveryErrorBundle, err)
-						// SkipDir either way: a malformed bundle must not
-						// leak its main.bot back in as a loose bot file.
-						return filepath.SkipDir
-					}
-					if identity != nil {
-						recordDiag(path, DiscoveryErrorIdentity, identity)
-					}
-					addEntry(e)
+				claimed, openable, _ := bundle.DirClaim(path)
+				if !claimed {
+					return nil
+				}
+				if !openable {
+					// A claimed directory without its entrypoint is a LOUD
+					// skipped source, never a descent (ADR-140): the
+					// subtree is private to a bundle that exists but does
+					// not open, and walking it is what leaked localized
+					// copies into the routing namespace.
+					recordDiag(path, DiscoveryErrorUnopenable, fmt.Errorf("the directory is claimed as a bundle and carries no %s", bundle.MainBotFile))
 					return filepath.SkipDir
 				}
-				return nil
+				e, identity, err := parseBundle(path)
+				if err != nil {
+					recordDiag(path, DiscoveryErrorBundle, err)
+					// SkipDir either way: a malformed bundle must not
+					// leak its main.bot back in as a loose bot file.
+					return filepath.SkipDir
+				}
+				if identity != nil {
+					recordDiag(path, DiscoveryErrorIdentity, identity)
+				}
+				addEntry(e)
+				return filepath.SkipDir
 			}
 			name := d.Name()
 			if !workflowfile.IsWorkflowFile(name) || underAny(path, fragmentDirs) {
@@ -716,7 +753,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 // capabilities — when the reader did not read it: the entry is the
 // manifest's alone, and the caller says so (DiscoveryErrorIdentity).
 func parseBundle(dir string) (e *Entry, identity, err error) {
-	m, err := bundle.LoadManifest(filepath.Join(dir, bundle.ManifestFile))
+	m, err := bundle.LoadManifestForDir(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bots: %w", err)
 	}
@@ -726,7 +763,7 @@ func parseBundle(dir string) (e *Entry, identity, err error) {
 	if m.Name == "" {
 		m.Name = filepath.Base(dir)
 	}
-	fm, identity := bundle.ReadFrontmatter(filepath.Join(dir, "main.bot"))
+	fm, _, _, _, identity := cachedFrontmatterParse(filepath.Join(dir, "main.bot"))
 	if identity != nil {
 		identity = fmt.Errorf("listed with its manifest's triggers and capabilities, which the frontmatter of its main.bot overrides — %w", identity)
 	}
@@ -772,11 +809,12 @@ func parseBundle(dir string) (e *Entry, identity, err error) {
 // the reader did not read it: the entry carries the file's name and no
 // declared identity, and the caller says so (DiscoveryErrorIdentity).
 func parseBotFile(path string) (e *Entry, identity, err error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("bots: read %s: %w", path, err)
+	fm, _, raw, _, perr := cachedFrontmatterParse(path)
+	var readErr *os.PathError
+	if errors.As(perr, &readErr) {
+		return nil, nil, fmt.Errorf("bots: read %s: %w", path, perr)
 	}
-	fm, identity := bundle.ParseFrontmatter(path, raw)
+	identity = perr
 	if identity != nil {
 		identity = fmt.Errorf("listed under its file name, with no declared description, triggers or capabilities — %w", identity)
 	}
@@ -865,11 +903,6 @@ func isDecorationLine(body string) bool {
 		}
 	}
 	return true
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // underAny reports whether path lies below one of dirs.

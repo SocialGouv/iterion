@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { LegalLinks } from "@/views/Legal/LegalLinks";
 import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
@@ -42,6 +43,14 @@ function ssoErrorNotice(
       return {
         tone: "danger",
         text: "That SSO provider is no longer available. Try signing in with your email and password.",
+      };
+    // A provider the server could not READ is not one that is gone: telling
+    // the user to stop waiting for an SSO that is merely down sends them to
+    // a password they may not have (pkg/server oidc.ErrProviderUnavailable).
+    case "provider_unavailable":
+      return {
+        tone: "danger",
+        text: `${provider} sign-in is temporarily unavailable — we couldn't read its configuration. Please try again in a moment; if it persists, contact your administrator.`,
       };
     case "password_change_required":
       return {
@@ -493,6 +502,10 @@ export function SignInCard() {
             </Button>
           )}
         </div>
+        {/* The legal links a visitor is owed BEFORE signing in (ADR-160);
+            inside the card so the plain Login page and the product home's
+            card both carry them. */}
+        <LegalLinks className="mt-6" />
       </div>
   );
 }

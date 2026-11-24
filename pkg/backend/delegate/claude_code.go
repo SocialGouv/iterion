@@ -18,10 +18,13 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/backend/effortlevel"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/apikit"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -69,6 +72,9 @@ const defaultClaudeCodeModel = "claude-opus-5-5"
 // recommends starting at "xhigh" (platform.claude.com/docs/en/build-with-claude/effort).
 // Workflows can always override via `reasoning_effort:`.
 const defaultClaudeCodeEffort = "xhigh"
+
+// claudeEffortLevelEnv is the variable the claude CLI reads its effort from.
+const claudeEffortLevelEnv = "CLAUDE_CODE_EFFORT_LEVEL"
 
 // claudeNativeTools is the built-in Claude Code surface which remains present
 // unless explicitly removed with --disallowedTools. The DSL's tools: list is
@@ -118,6 +124,23 @@ func claudeNativeToolsForAllowed(allowed []string, diagnosticShell bool) map[str
 // native roster has a tool for. `edit` is one-to-many on purpose — no
 // declaration grants MultiEdit on its own, so an edit-capable node that lost
 // it could not apply a multi-hunk change.
+// Three rows are one-to-many because the roster spells one CAPABILITY under
+// several tool names, and a declaration grants the capability:
+//
+//   - `edit` keeps Edit+MultiEdit — no declaration grants MultiEdit on its
+//     own, so an edit-capable node that lost it could not apply a multi-hunk
+//     change.
+//   - `agent` keeps Task+Agent — `Agent` is the spelling the current CLI uses
+//     for the subagent tool `Task` names on older ones (claude_code_stream.go
+//     matches `case "Agent", "Task":`). A node that declared the subagent and
+//     got only the dead spelling declared nothing.
+//
+// `BashOutput` and `KillShell` are NOT companions of `bash`: a row may only
+// grant natives that canonicalise onto it (the projection would otherwise
+// hand out a tool no declaration names), and both only read or stop the
+// BACKGROUND shells that backgroundTasksOffEnv already keeps a headless run
+// from starting. They are withheld from every spawn instead, with the rest of
+// headlessWithheldTools.
 var claudeNativeForCanonical = map[string][]string{
 	"bash":         {"Bash"},
 	"read":         {"Read"},
@@ -126,7 +149,7 @@ var claudeNativeForCanonical = map[string][]string{
 	"write":        {"Write"},
 	"edit":         {"Edit", "MultiEdit"},
 	"notebookedit": {"NotebookEdit"},
-	"agent":        {"Task"},
+	"agent":        {"Task", "Agent"},
 	"webfetch":     {"WebFetch"},
 	"websearch":    {"WebSearch"},
 	"toolsearch":   {"ToolSearch"},
@@ -136,8 +159,8 @@ var claudeNativeForCanonical = map[string][]string{
 
 // claudeWorktreeMovingTools are the two tools that MOVE the worktree the
 // session acts in. They are read from the live CLI's own `system/init` roster
-// (2.1.220), the one source gatedFormattingWithheld enumerates too, so the
-// two lists cannot name a different pair.
+// (2.1.220) rather than guessed: nothing in claudeNativeForCanonical names
+// them, so no `tools:` list would have revealed the spelling.
 //
 // They sit outside claudeNativeForCanonical, so no `tools:` list grants or
 // withholds them, and `readonly:` removes them whatever the declaration says
@@ -198,12 +221,11 @@ func claudeReadonlyWithheld() []string {
 // session under the same always-on bypassPermissions, and a bound carried on
 // one spawn and not the other is no bound at all.
 //
-// The bounds that travel on ARGV follow the task this way. The HOOK-borne
-// ones cannot: claudesdk.Prompt has no hook channel and drops them, which is
-// why the permission gate is answered on the spawn that cannot carry it
-// (formatOutput) by withholding the native surface there, and never on the
-// one that can — joining the gate to the declaration would delete a gated
-// node's own tools. Capabilities that are not bounds
+// The bounds that travel on ARGV follow the task this way. A HOOK-borne one
+// follows the CALL SITE instead, so it holds only where it is registered —
+// which is why the permission gate has ONE constructor (claudePermissionGate)
+// that both spawns call, rather than living inline in the wiring of the spawn
+// that happens to need it first (#1672). Capabilities that are not bounds
 // (secrets materialisation, the rtk rewriter, inbox drain, edit-miss
 // resilience, ask_user) are absent from the second spawn on purpose: their
 // absence narrows it.
@@ -220,13 +242,18 @@ func claudeReadonlyWithheld() []string {
 //     TaskOutput/Monitor) stays by default: that adaptivity is the point of
 //     the backend, and backgroundTasksOffEnv makes it run in the foreground.
 //     It goes with the opt-in knob for a deployment whose served model family
-//     hallucinates task ids and deadlocks on TaskOutput. An ultracode node
-//     keeps it on the spawn that can be gated. The structured-output spawn of
-//     a GATED node keeps none of it, because nothing there can run the policy
+//     hallucinates task ids and deadlocks on TaskOutput. Both spawns of a
+//     GATED node read the same answer, because both run the policy
 //     (see formatOutput).
 func claudeSpawnBounds(task Task) []claudesdk.Option {
 	var opts []claudesdk.Option
-	if strictMCPFromEnv() {
+	// Strict on an untrusted workspace whatever the environment says: without
+	// it the CLI — whose cwd IS that checkout — merges the operator's personal
+	// servers and the servers its own scopes find there. The escape hatch is
+	// the trusted operator's, like the setting sources' floor — and it does
+	// not reach a node that opted out of the ambient set, whose declared set
+	// is its whole MCP surface.
+	if strictMCPFromEnv() || !task.WorkspaceTrust.Trusted() || task.MCPInheritDisabled {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
 	opts = append(opts, claudesdk.WithDisallowedTools(claudeSpawnBoundWithheld(task)...))
@@ -502,18 +529,17 @@ func claudeCodeSystemPrompt(task Task) string {
 // claudeToolOptions turns a node's `tools:` declaration into the two CLI
 // flags that carry it, for ONE spawn. It is a pure function so the decision
 // can be executed rather than reasoned about, and so that every spawn of a
-// task can take the same one: Execute's main pass and formatOutput's
-// structured-output pass both call it, and a boundary appended to one and not
-// the other is no boundary at all. The one exception is a GATED task, whose
-// formatting spawn withholds the whole native surface instead of carrying the
-// declaration — the two lists stay disjoint there (see formatOutput).
+// task takes the same one: Execute's main pass and formatOutput's
+// structured-output pass both call it, with no exception, and a boundary
+// appended to one and not the other is no boundary at all. A GATED task is
+// not an exception — `tools:` bounds what EXISTS and the policy bounds what
+// RUNS, so the declaration reaches both spawns and the gate rides beside it
+// on both (#1672.2). Joining the two would delete a gated node's own tools.
 //
 // It is not the node's whole tool surface: the bounds that do not come from
 // the declaration live in claudeSpawnBounds (headlessWithheldTools, the
-// orchestration knob, --strict-mcp-config, --max-turns); the gated-task
-// withholding is NOT one of them — it belongs to formatOutput alone, the
-// spawn that cannot carry the hook, and putting it in the shared helper
-// deleted a gated node's own declared tools. `extraAllowedTools` is accumulated by the ask_user /
+// orchestration knob, --strict-mcp-config, --max-turns), and the gate in
+// claudePermissionGate. `extraAllowedTools` is accumulated by the ask_user /
 // board / runs / user-MCP wiring before it arrives here. What this owns is
 // the declaration.
 //
@@ -636,80 +662,6 @@ func claudeNativeDisallowedTools(allowed []string, declared, diagnosticShell boo
 	return disallowed
 }
 
-// gatedFormattingWithheld is everything the structured-output spawn of a
-// GATED task withholds: the whole native roster and the whole orchestration
-// surface this package enumerates.
-//
-// The roster half is the declaration's stand-in — a declaration has no role on
-// a spawn where nothing may run, and emitting it would name a tool on
-// --allowedTools and on --disallowedTools at once. The orchestration half is
-// the part the roster misses: `claudeNativeTools` happens to carry `Task`, so
-// `Task` was withheld by accident while `Agent` — the spelling the current CLI
-// uses — `TaskOutput` and `Monitor` were not. claudeSpawnBounds removes those
-// only under an opt-in knob that is off by default and never for an ultracode
-// node; neither condition has anything to do with the gate, and this spawn has
-// no gate at all.
-//
-// It is NOT in claudeSpawnBounds: that helper runs on both spawns, and a
-// withholding that belongs to one of them deleted a gated node's own declared
-// tools when it was put there.
-//
-// What this costs, named rather than assumed: a node whose first pass was cut
-// off mid-orchestration (the `--max-turns` case this pass exists for) cannot
-// dispatch a subagent here to finish that work. `bots/whats-next` is the
-// shipped example — ultracode, `permission: deny`, an output schema. The
-// exchange is deliberate: finishing it meant running tools the operator asked
-// to approve, on the one spawn where no approval can be asked.
-//
-// This withholding is the ENFORCED half, and it is incomplete: it names a
-// roster this project does not own, so the tools outside all three lists
-// survive it — #1651 tracks the roster itself. The sentence the gated pass
-// also carries ("call no tool other than StructuredOutput") covers those names
-// whatever they are spelled, but only while the model cooperates, and the
-// threat here is data in the resumed transcript. It is defence in depth beside
-// the flag, never in place of it.
-func gatedFormattingWithheld() []string {
-	withheld := claudeNativeDisallowedTools(nil, true, false)
-	withheld = append(withheld, orchestrationTools...)
-	withheld = append(withheld, headlessWithheldTools...)
-	// What the live CLI STILL registered once the lists above were withheld,
-	// read from its own `system/init` roster on 2.1.220 rather than guessed:
-	// EnterWorktree, ExitWorktree, ReportFindings, SendMessage,
-	// StructuredOutput, TaskStop. All but StructuredOutput reach another
-	// session or MOVE THE WORKTREE the session acts in — which is the very
-	// thing the engine's parallel-branch guard protects. StructuredOutput is
-	// the one tool this pass needs and is deliberately kept.
-	//
-	// BashOutput and KillShell are withheld too: they register in other
-	// configurations of the same CLI, and withholding a name this pass has no
-	// use for costs nothing.
-	//
-	// The worktree-moving pair is what `readonly:` withholds too, so it lives
-	// in claudeWorktreeMovingTools and the two arms cannot enumerate a
-	// different pair; the rest is listed in this arm alone, so neither
-	// `orchestrationTools` nor the env knob that reads it changes meaning. And
-	// the list remains an enumeration of a roster this project does not own
-	// (#1651) — it is read from one CLI version and will go stale; the pass's
-	// own instruction is what covers whatever the next version adds.
-	withheld = append(withheld, claudeWorktreeMovingTools...)
-	withheld = append(withheld,
-		"SendMessage", "ReportFindings",
-		"BashOutput", "KillShell", "TaskStop")
-	// `Task` is on the native roster AND in orchestrationTools, so the union
-	// repeats it. The argv join dedupes for every caller, but a list that
-	// names a tool twice is a poor witness for the tests that read it.
-	seen := make(map[string]bool, len(withheld))
-	out := withheld[:0]
-	for _, name := range withheld {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	return out
-}
-
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
 // via the Claude Agent SDK.
 type ClaudeCodeBackend struct {
@@ -821,6 +773,9 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	amb := claudeAmbient(task)
 	reportLegacySources(b.Logger, amb)
 	opts = append(opts, amb.settingSourcesOption())
+	if dir, ok := skillChannelAddDir(task); ok {
+		opts = append(opts, claudesdk.WithAddDirs(dir))
+	}
 	// Setting sources are inherited (above); MCP servers are NOT. The node's
 	// resolved MCP set — .bot `mcp_server:`/`mcp:` blocks, the repo's
 	// .mcp.json via autoload_project, iterion's ask_user/board servers —
@@ -891,6 +846,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	// application when a builder is set.
 	if task.Sandbox != nil {
 		run := task.Sandbox
+		opts = append(opts, claudesdk.WithPreservedCommandCancellation(sandbox.OwnsCommandCancellation(run)))
 		// Record the in-container PID so the session end can actually
 		// terminate claude: killing the host-side `docker exec` client
 		// leaks the in-container process (native:221edac8 — leaked
@@ -898,9 +854,9 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 		// wrapper writes its PID to a pidfile then exec's claude (same
 		// PID, same fds); the end kills it, then sweeps the mark.
 		mark := sandboxDelegateMark(task)
-		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSettingsFile(mark))
+		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = claudeContextWindowEnv(claudeModelDefaultEnv(env), task)
 			// Surface the resolved CLI invocation so failures like
 			// "session ended without result" can be traced back to a
 			// concrete `docker exec` command. Without this every silent
@@ -908,9 +864,10 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			// methods are nil-safe — no guard needed.)
 			b.Logger.Info("claude-code: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
-			// The routing pin is computed inside the container, from the
-			// environment the CLI runs with (claudeSandboxArgv).
-			argv, err := claudeSandboxArgv(mark, path, args, flagSettings)
+			// The MCP catalog is moved into a private in-container file and
+			// the routing pin is computed inside the container, from the
+			// environment the CLI runs with (claudeSandboxSpawnArgv).
+			argv, err := claudeSandboxSpawnArgv(ctx, run, mark, path, args, flagSettings)
 			if err != nil {
 				return claudeFailedCmd(ctx, path, err)
 			}
@@ -942,17 +899,15 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, se.sinceStart())
 		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
+			env = claudeContextWindowEnv(withNodeSessionEnv(claudeModelDefaultEnv(env), token), task)
 			keys := make([]string, 0, len(env))
 			for k := range env {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
 			cmd := exec.CommandContext(ctx, path, args...)
-			if cwd != "" {
-				cmd.Dir = cwd
-			}
 			cmd.Env = hostSpawnEnv(env)
+			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
 			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
 				redactedArgvPreview(path, cmd.Args[1:]), cwd, openStdin, keys)
@@ -1005,11 +960,22 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			return Result{}, err
 		}
 	}
+	// The run's workspace trust rides the delegate's ctx (ADR-162 decision
+	// 7): under it the crossing hands keys as Layer 2 placeholders and the
+	// channels the egress proxy cannot hold are refused (crossingRefusal,
+	// the probes). The task carries the trust the engine stamped
+	// (stampWorkspace), never re-derived from the workspace.
+	ctx = credroute.WithRunTrust(ctx, task.WorkspaceTrust)
 	// cliTurnCompleted records that the CLI carried this call to its own
 	// ResultMessage. It is the discriminator turnFinished needs and the
 	// defer below cannot read: `rm` is declared further down, so the
 	// closure registered here cannot close over it.
 	var cliTurnCompleted bool
+	// The effort the CLI's requests of this call carried, on every exit
+	// (reportClaudeCodeEffort): the node's record names that level, not only
+	// the one the executor handed this backend — and nothing when the call
+	// never reached the model.
+	defer func() { reportClaudeCodeEffort(&result, task, cliTurnCompleted || result.Tokens > 0) }()
 	// Fire OnTurnFinished once on the way out, when the runtime wired
 	// the hook and the delegate produced a SessionID. Wrapped in a
 	// defer so every return path that HAS a turn (Pass 1, recovery,
@@ -1148,9 +1114,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// and ask_user extend extraAllowedTools; the single registration below
 	// emits one WithAllowedTools call.
 	opts = installMaterializeSecretsHook(task, opts)
-	opts = installRewriteHook(task, opts)
+	opts = b.installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
 	opts = b.wireRunsMCP(task, opts, &extraAllowedTools)
+	opts = b.wireConnectorMCP(task, opts, &extraAllowedTools)
 	opts = b.wireUserMCP(task, opts, &extraAllowedTools)
 
 	// Watch capabilities (watch.subscribe / watch.unsubscribe) are wired for
@@ -1387,7 +1354,7 @@ func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.R
 		detail := strings.TrimSpace(*rm.Result)
 		b.Logger.Error("[%s#%d/claude-code %s] model %q unavailable to the CLI — failing fast: %.160s",
 			task.NodeID, task.Iteration, pass, task.Model, detail)
-		return fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
+		return &ErrModelUnavailable{Provider: BackendClaudeCode, Model: task.Model, Detail: detail}
 	}
 
 	// Overload/5xx guard. The claude CLI sometimes completes the stream
@@ -1802,8 +1769,26 @@ func settleLedger(l SessionLedger, sessionID string, told, terminated []string) 
 // a message naming neither the provider the operator pinned nor the credential
 // that was missing, and only after paying for the spawn.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, credSpawn, error) {
-	credEnv, selected := anthropicCredRouteForTask(ctx, task)
-	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+	credEnv, selected, inheritAmbient := anthropicCredRouteForTask(ctx, task)
+	if err := facadeHintRefusal(ctx, task.ProviderHint, credEnv); err != nil {
+		return opts, "", credSpawn{}, err
+	}
+	// The hintless half of the same stamp doctrine: inheriting the pod's
+	// ambient credential is a spend the stamp refuses, whether the node
+	// runs in-process or crosses the sandbox.
+	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
+		return opts, "", credSpawn{}, err
+	}
+	// The untrusted crossing (ADR-162 decision 7): a channel the egress
+	// proxy cannot hold — a forfait — is refused here, not crossed.
+	if err := crossingRefusal(ctx, task, credEnv); err != nil {
+		return opts, "", credSpawn{}, err
+	}
+	// The model half of the same refusal: a funded facade route whose id the
+	// facade does not serve is not "served" — it is substituted under the
+	// requested label. Refused before the spawn, typed `unavailable`, so the
+	// node's declared fallback fires instead of the mislabel (#2772).
+	if err := facadeSubstitutionRefusal(task, credEnv); err != nil {
 		return opts, "", credSpawn{}, err
 	}
 	// A facade route clears ANTHROPIC_CUSTOM_HEADERS (the ambient header
@@ -1914,12 +1899,7 @@ func hostSpawnEnv(extra map[string]string) []string {
 // settings layer through the one `--settings` object. ExtraEnv never carries a
 // pinned key (claudeExtraEnvEntries), so no provisioning layer can move one.
 func perTaskSpawnOpts(task Task) []claudesdk.Option {
-	effort := task.ReasoningEffort
-	if effort == "" {
-		effort = defaultClaudeCodeEffort
-	}
-	effort = claudeCodeEffort(effort)
-	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort)}
+	var opts []claudesdk.Option
 	env, settings := claudeSpawnPins(task)
 	opts = append(opts, claudesdk.WithSettingsJSON(settings))
 	opts = append(opts, taskExtraEnvOpts(task)...)
@@ -1930,6 +1910,75 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 		opts = append(opts, claudesdk.WithEnv(key, env[key]))
 	}
 	return opts
+}
+
+// claudeCodeSpawnEffort is the effort every spawn of task hands the CLI
+// (CLAUDE_CODE_EFFORT_LEVEL): the task's level, or defaultClaudeCodeEffort
+// when it names none, through claudeCodeEffort.
+func claudeCodeSpawnEffort(task Task) string {
+	effort := task.ReasoningEffort
+	if effort == "" {
+		effort = defaultClaudeCodeEffort
+	}
+	return claudeCodeEffort(effort)
+}
+
+// reportClaudeCodeEffort states on result the effort the CLI's requests of
+// the call carried (Result.WireReasoningEffort): one level for both passes,
+// which share the spawn options, as the CLI sends it for the task's model
+// (claudeCodeWireEffort); none when the call never reached the model.
+func reportClaudeCodeEffort(result *Result, task Task, reachedModel bool) {
+	effort := ""
+	if reachedModel {
+		effort = claudeCodeWireEffort(task.Model, claudeCodeSpawnEffort(task))
+	}
+	result.WireReasoningEffort, result.WireReasoningEffortLast, result.WireReasoningEffortReported = effort, effort, true
+}
+
+// claudeCodeNoEffortModels are the Claude ids the claude CLI is measured
+// serving with NO effort on the wire, whatever handed (claude CLI 2.1.282,
+// recorded requests): sonnet-4-5, haiku-4-5, and the 20241022 snapshots of
+// claude-3-5-haiku and claude-3-5-sonnet. Matched on the id after the
+// spawn's prefix strip, exact alias resolution and date stripping —
+// claude-haiku-4-5-20251001 lands here as claude-haiku-4-5.
+var claudeCodeNoEffortModels = map[string]bool{
+	"claude-sonnet-4-5": true,
+	"claude-haiku-4-5":  true,
+	"claude-3-5-sonnet": true,
+	"claude-3-5-haiku":  true,
+}
+
+// claudeCodeWireEffort is the effort the claude CLI puts on its requests for
+// model when CLAUDE_CODE_EFFORT_LEVEL says level, as measured on claude CLI
+// 2.1.282 against a recording Anthropic endpoint. The id read is the one the
+// spawn hands the CLI (claudeCodeModelID strips the slot prefixes), normalized
+// by resolving an exact alias and then stripping a dated snapshot suffix
+// (apikit.NormalizeModelName). Bare dated aliases remain bare after stripping
+// and are reported as handed; this is not a canonical registry lookup.
+// A Claude model sends the level its accepted set takes: none for the measured
+// no-effort ids (claudeCodeNoEffortModels), the highest accepted level at or below the one
+// handed otherwise (sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards
+// every level) — the matrix and the rule the claw backend sends by
+// (apikit.EffortCapabilities, effortlevel.Coerce). Any other id (a GLM id on
+// a facade) is sent as handed. A Claude id with no accepted set and no
+// measurement is reported as handed: what the CLI would send for it is not
+// known, and a claim of none would be a guess.
+func claudeCodeWireEffort(model, level string) string {
+	if level == "" {
+		return ""
+	}
+	id := apikit.NormalizeModelName(strings.TrimSpace(claudeCodeModelID(model)))
+	if !strings.HasPrefix(strings.ToLower(id), "claude-") {
+		return level
+	}
+	if claudeCodeNoEffortModels[strings.ToLower(id)] {
+		return ""
+	}
+	supported, def := apikit.EffortCapabilities(id)
+	if len(supported) == 0 {
+		return level
+	}
+	return effortlevel.Coerce(level, supported, def)
 }
 
 // claudeCodeEffort coerces an iterion effort level to one Claude Code
@@ -2008,6 +2057,12 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 		}
 		pins[k] = v
 	}
+	// The effort the node runs at: a task's ExtraEnv entry (a desktop or
+	// studio project env), a user or project settings `env` block would
+	// otherwise move it under the level the node's record states — the
+	// `--settings` env this pin rides outranks both (measured on claude CLI
+	// 2.1.282).
+	pin(claudeEffortLevelEnv, claudeCodeSpawnEffort(task))
 	pin(backgroundTasksOffEnv, background)
 	pin(autoMemoryDisableEnv, disable)
 	pin(bashDefaultTimeoutEnv, strconv.FormatInt(defaultMs, 10))
@@ -2019,7 +2074,9 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 	// cannot MOVE it, `0` ("wait indefinitely") included, not to shorten a
 	// deadline that kills. It arms only where the CLI's stdin is closed,
 	// which is the formatting pass: the one spawn with no lifecycle to catch
-	// what a kill loses.
+	// what a kill loses. A formatting pass that ever carries hooks keeps its
+	// stdin OPEN for the turn (hook callbacks are answered on it, see
+	// claudesdk.Prompt), so wiring the gate there moves this invariant too.
 	pin(printBgWaitCeilingEnv, strconv.FormatInt(defaultPrintBgWaitCeiling.Milliseconds(), 10))
 	cfg := resolveBackgroundLifecycleConfig()
 	if cfg.enabled {
@@ -2038,32 +2095,57 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 // here, once. `autoMemoryDirectory` is one key the CLI refuses to read from a
 // checked-in `.claude/settings.json` at all, so the target repository cannot
 // redirect where the memory is written.
+//
+// The same object carries iterion's own plugin-contributed hook groups
+// (task.InjectedHooks) whenever the spawn does not load the `project` source —
+// the file those groups are merged into on a trusted run. Keyed on the
+// RESOLVED sources, not on the trust: an untrusted run (whose checkout scopes
+// claudeAmbient strips) and an operator's own `none` alike get them inline,
+// and a run that loads `project` does not configure them twice. Measured on
+// claude-code 2.1.220: a Stop hook passed through `--settings` with
+// `--setting-sources user` FIRES, and the same hook left only in the project
+// file does not.
 func claudeSpawnPins(task Task) (env map[string]string, settings []byte) {
 	env = claudeEnvPins(task)
 	_, memory := autoMemorySpawn(task)
-	excludes := claudeAmbient(task).excludes
-	settings, err := claudeFlagSettings(env, memory, excludes)
+	amb := claudeAmbient(task)
+	var hooks map[string][]any
+	if len(task.InjectedHooks) > 0 && !loadsProjectSource(amb.sources) {
+		hooks = task.InjectedHooks
+	}
+	settings, err := claudeFlagSettings(env, memory, amb.excludes, hooks)
 	if err != nil {
 		// Strings and a bool cannot fail to marshal. If they somehow did,
 		// enabling auto-memory without pinning the directory would send the
 		// agent's notes to the operator's personal memory instead of the
 		// run's space: stay off rather than write to the wrong place.
 		env[autoMemoryDisableEnv] = "1"
-		settings, _ = claudeFlagSettings(env, nil, excludes)
+		settings, _ = claudeFlagSettings(env, nil, amb.excludes, hooks)
 	}
 	return env, settings
 }
 
+// loadsProjectSource reports whether a resolved source list loads the
+// workspace's project settings — the file iterion's own hooks are merged
+// into on a trusted run.
+func loadsProjectSource(srcs []claudesdk.SettingSource) bool {
+	return slices.Contains(srcs, claudesdk.SettingSourceProject)
+}
+
 // claudeFlagSettings is the `--settings` object: the pinned environment as an
-// `env` block, the memory keys when there are any, and the memory files the
-// node's ambient-context policy keeps out (`claudeMdExcludes`).
-func claudeFlagSettings(env map[string]string, memory map[string]any, excludes []string) ([]byte, error) {
+// `env` block, the memory keys when there are any, the memory files the
+// node's ambient-context policy keeps out (`claudeMdExcludes`), and iterion's
+// own hook groups when the spawn loads no project source (claudeSpawnPins).
+func claudeFlagSettings(env map[string]string, memory map[string]any, excludes []string, hooks map[string][]any) ([]byte, error) {
 	settings := map[string]any{"env": env}
 	for key, value := range memory {
 		settings[key] = value
 	}
 	if len(excludes) > 0 {
 		settings["claudeMdExcludes"] = excludes
+	}
+	if len(hooks) > 0 {
+		settings["hooks"] = hooks
 	}
 	return json.Marshal(settings)
 }
@@ -2176,13 +2258,14 @@ func claudeExtraEnvEntries(task Task) (entries [][2]string, overridden []string)
 // conforming to the schema. The model already has full context from the
 // session, so only a short formatting instruction is needed.
 //
-// It is a full CLI spawn, not a tool-less one: it carries every bound this
-// task has that can travel on argv — claudeSpawnBounds always, and
-// claudeToolOptions unless the task is GATED, where the native surface is
-// withheld instead of the declaration being restated.
-// The hook-borne ones cannot travel — Prompt has no hook channel — so a gated
-// task has its native surface withheld here instead. The sentence that used
-// to sit here — "(no tools)" — is what kept that gap invisible for five
+// It is a full CLI spawn, not a tool-less one, and it derives its bounds from
+// the same statements Execute does: the node's `tools:` declaration
+// (claudeToolOptions), the bounds that hold whatever the spawn is
+// (claudeSpawnBounds), the permission gate (claudePermissionGate, through
+// wireFormattingPermissionHook), and the secret hooks
+// (installMaterializeSecretsHook) — a gated tool call this pass runs reads
+// and writes placeholders exactly as the work pass does. The sentence that
+// used to sit here — "(no tools)" — is what kept the gap invisible for five
 // rounds; what it names is the instruction, not the toolset.
 func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, credSpawn, []string, error) {
 	// Use the parent context directly — the runtime already enforces budget
@@ -2214,31 +2297,39 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// the resumed transcript can arm — comes back. No MCP extras:
 	// this pass passes no --mcp-config and reformats text the first pass
 	// already produced.
-	// The permission gate cannot travel to THIS spawn: it is a PreToolUse
-	// hook, and hooks exist only on the Session path — claudesdk.Prompt has
-	// no hook channel and drops them silently (#1672). Execute's spawn
-	// carries the hook and therefore keeps everything the node DECLARED —
-	// `tools:` bounds what exists, the policy bounds what runs, and joining
-	// them would delete a gated node's own tools. Here, with no gate to run,
-	// the native surface is withheld instead, and the DECLARATION is not
-	// emitted at all: naming a tool on `--allowedTools` and on
-	// `--disallowedTools` in one argv would make the withholding rest on the
-	// CLI resolving deny over allow — stated in WithDisallowedTools' godoc,
-	// never executed here. Disjoint lists hold whatever that precedence is.
-	// Nothing is lost: a declaration has no role on a spawn where nothing may
-	// run, and its own disallow half is a subset of the whole roster.
-	// StructuredOutput, the only tool this pass needs, is not on the roster.
-	// Permission.Enabled() is the predicate on purpose, and it is the same
-	// expression wirePermissionHook gates on: spawn #1 carries the hook
-	// exactly when this arm withholds, so the two cannot disagree about which
-	// nodes are gated. A narrower neighbour (CanAsk) would leave a
-	// `permission: deny` node here and a mode-only one would leave `ask`.
-	if task.Permission.Enabled() {
-		opts = append(opts, claudesdk.WithDisallowedTools(gatedFormattingWithheld()...))
-	} else {
-		opts = append(opts, claudeToolOptions(task, nil)...)
-	}
+	opts = append(opts, claudeToolOptions(task, nil)...)
 	opts = append(opts, claudeSpawnBounds(task)...)
+	// The gate TRAVELS here now, and it replaces the withholding that stood in
+	// for it (#1672.2). claudesdk.Prompt carries the same `initialize` control
+	// request as the Session path (claudesdk/hookchannel.go), and the CLI was
+	// read answering it and firing PreToolUse on this very path — the live
+	// proof ARB-20 asked for, pinned by
+	// TestCLILiveOneShotHookChannelIsNotRefused and, without the CLI, by
+	// TestTheGatedFormattingSpawnCarriesTheGateOnItsStdin.
+	//
+	// Replaces rather than joins, for two measured reasons. The withholding
+	// was an enumeration of a roster this project does not own (#1651), so
+	// every tool outside its three lists survived it; the gate reads the name
+	// the CLI actually offers, whatever it is. And the withholding removed a
+	// gated node's own declared tools from this pass, which is why
+	// `bots/whats-next` — ultracode, `permission: deny`, an output schema —
+	// could not finish a first pass cut off mid-work. With the gate here the
+	// two halves mean on this spawn exactly what they mean on Execute's:
+	// `tools:` bounds what EXISTS, the policy bounds what RUNS, and a scoped
+	// rule (`deny: ["Bash(rm -rf:*)"]`) is expressible for the first time.
+	//
+	// It is a bound that FAILS LOUDLY: a CLI that refuses the registration
+	// aborts the spawn with a typed error rather than running it ungated
+	// (claudesdk.Prompt, initializeRefusal).
+	opts = wireFormattingPermissionHook(task, opts)
+
+	// The secret hooks travel too (#2782): since the gate replaced the
+	// withholding, this pass can run a tool the policy allows, and a call
+	// carrying a __ITERION_SECRET_<name>__ placeholder must be materialised
+	// here exactly as on the work pass — and a tool output quoting a known
+	// value turned back into placeholders. Both hooks are no-ops when the
+	// task carries no secrets.
+	opts = installMaterializeSecretsHook(task, opts)
 
 	// Cwd / CLI path handling mirrors Execute(): on the host, pass workdir
 	// through; in the sandbox, leave cwd unset (the docker driver picks the
@@ -2268,31 +2359,41 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		opts = append(opts, claudesdk.WithCLIPath(cliPath))
 	}
 
-	// Capture every spawned subprocess so promptWithTimeout can SIGKILL
-	// them if the SDK's read loop gets stuck and ctx cancellation alone
-	// fails to wake it. The CommandBuilder we install wraps either the
-	// sandbox-routing path or the default exec.CommandContext path; both
-	// arms collect the returned cmd into killables.
+	// Publish only successfully started commands to the watchdog: Cmd.Process
+	// is written by Start. Remember a timeout that precedes publication so a
+	// slow builder cannot launch a survivor after formatOutput has returned.
 	var killMu sync.Mutex
 	var killables []*exec.Cmd
-	captureCmd := func(cmd *exec.Cmd) {
-		if cmd == nil {
-			return
-		}
-		killMu.Lock()
-		killables = append(killables, cmd)
-		killMu.Unlock()
-	}
-	killAll := func() {
-		killMu.Lock()
-		defer killMu.Unlock()
-		for _, cmd := range killables {
-			if cmd == nil || cmd.Process == nil {
-				continue
-			}
+	killRequested := false
+	terminate := func(cmd *exec.Cmd) {
+		if sandbox.OwnsCommandCancellation(task.Sandbox) && cmd.Cancel != nil {
+			_ = cmd.Cancel()
+		} else {
 			_ = cmd.Process.Kill()
 		}
 	}
+	captureStarted := func(cmd *exec.Cmd) {
+		killMu.Lock()
+		cancelNow := killRequested
+		if !cancelNow {
+			killables = append(killables, cmd)
+		}
+		killMu.Unlock()
+		if cancelNow {
+			terminate(cmd)
+		}
+	}
+	killAll := func() {
+		killMu.Lock()
+		killRequested = true
+		commands := killables
+		killables = nil
+		killMu.Unlock()
+		for _, cmd := range commands {
+			terminate(cmd)
+		}
+	}
+	opts = append(opts, claudesdk.WithProcessStarted(captureStarted))
 
 	// The flag settings object perTaskSpawnOpts hands the spawn below. The
 	// builder finds it on argv and moves it, routing pin added, into a file.
@@ -2305,18 +2406,20 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		// it resumes the session inside the container (where the session file
 		// lives) rather than spawning a host claude that can't see it.
 		run := task.Sandbox
+		opts = append(opts, claudesdk.WithPreservedCommandCancellation(sandbox.OwnsCommandCancellation(run)))
 		// One exec ends the pass: it removes the settings file this spawn
 		// writes in the container, terminates the recorded CLI and stops what
 		// the pass left behind.
 		mark := sandboxDelegateMark(task) + "-fmt"
-		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSettingsFile(mark))
+		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = claudeContextWindowEnv(claudeModelDefaultEnv(env), task)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
-			// The routing pin is computed inside the container, from the
-			// environment the CLI runs with (claudeSandboxArgv).
-			argv, err := claudeSandboxArgv(mark, path, args, flagSettings)
+			// The MCP catalog is moved into a private in-container file and
+			// the routing pin is computed inside the container, from the
+			// environment the CLI runs with (claudeSandboxSpawnArgv).
+			argv, err := claudeSandboxSpawnArgv(ctx, run, mark, path, args, flagSettings)
 			if err != nil {
 				return claudeFailedCmd(ctx, path, err)
 			}
@@ -2326,7 +2429,6 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 				Env:           env,
 				KeepStdinOpen: openStdin,
 			})
-			captureCmd(cmd)
 			return cmd
 		}))
 	} else {
@@ -2344,9 +2446,8 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, fe.sinceStart())
 		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
+			env = claudeContextWindowEnv(withNodeSessionEnv(claudeModelDefaultEnv(env), token), task)
 			cmd := exec.CommandContext(ctx, path, args...)
-			cmd.Dir = cwd
 			// Seed os.Environ() before the per-task entries — matching the
 			// SDK's default host spawn (claudesdk/process.go) and Pass 1 — so
 			// the format pass inherits PATH/HOME and any ambient credential
@@ -2355,8 +2456,8 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			// inherited env (CLAUDE_CODE_EFFORT_LEVEL is always present, so the
 			// strip always fired). Per-task entries stay last so they still win.
 			cmd.Env = hostSpawnEnv(env)
+			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
-			captureCmd(cmd)
 			fe.started()
 			return cmd
 		}))
@@ -2371,8 +2472,23 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// The structured-output pass loads the same scopes as the session: an
 	// omitted --setting-sources would load every scope, `local` included.
 	opts = append(opts, claudeAmbient(task).settingSourcesOption())
-	credEnv, selected := anthropicCredRouteForTask(ctx, task)
-	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+	credEnv, selected, inheritAmbient := anthropicCredRouteForTask(ctx, task)
+	if err := facadeHintRefusal(ctx, task.ProviderHint, credEnv); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The hintless half of the same stamp doctrine (Pass 2 resumes the
+	// same session on the same route, so it holds the same line).
+	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The untrusted crossing (ADR-162 decision 7), Pass 2 holding Pass 1's
+	// line: a channel the egress proxy cannot hold is refused, not crossed.
+	if err := crossingRefusal(ctx, task, credEnv); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The substitution refusal of Pass 1 (setupCredsAndSession): this pass
+	// resumes the same session on the same route, so it holds the same line.
+	if err := facadeSubstitutionRefusal(task, credEnv); err != nil {
 		return nil, credSpawn{}, nil, err
 	}
 	// Read HERE, not beside the result: the record describes the env this
@@ -2382,19 +2498,15 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	spawn := credSpawnOf(ctx, credEnv, selected, taskSandboxed(task))
 	opts = append(opts, credEnvToOpts(credEnv)...)
 
-	// A GATED node gets one extra sentence — advisory defence in depth beside
-	// the withholding, for the names the roster misses. It is scoped to the
-	// gated arm because an UNGATED structured-output pass legitimately does
-	// tool work: it is the `--max-turns` fallback for a first pass cut off
-	// mid-run, and 54 of the catalog's 57 two-pass nodes are ungated. And it
-	// exempts StructuredOutput by name: that tool is how the agent RETURNS
-	// its result (the permission gate exempts it for the same reason), so a
-	// blanket "call no tools" would push every gated schema'd node onto the
-	// text-parsing fallback.
+	// One prompt for both, gated or not. The sentence a gated node used to get
+	// here — "do not call any tool other than StructuredOutput" — was the
+	// advisory half of the withholding, for the names the roster missed; the
+	// gate reads every name the CLI offers, so there are no missed names left
+	// for it to cover. Keeping it would also be false: a gated node whose
+	// policy allows `Read(**)` may read on this pass now, and this pass is the
+	// `--max-turns` fallback for a first pass cut off mid-work — telling the
+	// model to call nothing is exactly how that work stays unfinished.
 	prompt := "Format your complete findings as JSON matching the required output schema."
-	if task.Permission.Enabled() {
-		prompt += " Do not call any tool other than StructuredOutput; just return the JSON."
-	}
 
 	// This pass resumes pass 1's transcript in a process of its own, with the
 	// node's tools: it is told what pass 1 lost like any other resume, and
@@ -2435,9 +2547,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 // ctx.Done() in its internal ReadLine() loop — a stuck stream that
 // stops emitting bytes will block the goroutine indefinitely, leaking
 // the subprocess and pinning the host slot. The killCmd callback,
-// when non-nil, is invoked on ctx cancellation to SIGKILL whatever
-// subprocesses the SDK spawned via the caller's CommandBuilder. See
-// formatOutput for an example of how to wire the cmd capture.
+// when non-nil, is invoked on ctx cancellation to stop the published
+// subprocesses through their declared cancellation policy. See formatOutput
+// for post-Start publication and cancellation of a late successful start.
 func promptWithTimeout(ctx context.Context, prompt string, killCmd func(), opts ...claudesdk.Option) (*claudesdk.ResultMessage, error) {
 	type result struct {
 		rm  *claudesdk.ResultMessage
@@ -2461,4 +2573,30 @@ func promptWithTimeout(ctx context.Context, prompt string, killCmd func(), opts 
 		go func() { <-ch }()
 		return nil, fmt.Errorf("claude prompt cancelled: %w", ctx.Err())
 	}
+}
+
+// skillChannelAddDir decides whether this spawn carries the run's pinned
+// skill channel root as --add-dir (iterion#1719): the engine re-carried the
+// skills it OWNS into a root it alone writes, in the .claude/skills layout,
+// and --add-dir is the CLI's documented discovery for skills outside the
+// working tree. The floor that keeps the checkout's own .claude/skills out
+// (withholding the project setting source) is #1730's untrusted-lane work;
+// this restores the bot's OWN skills once it stands.
+//
+// Host runs (and the noop driver's host passthrough, which shares the
+// filesystem) get the absolute path. A container driver's workspace is not
+// this process's filesystem, and the run-owned bind mount that would carry
+// an out-of-workspace root is the admission half's design (#1730) — there
+// the channel is not armed and the node runs without the skills.
+func skillChannelAddDir(task Task) (string, bool) {
+	if task.SkillChannelRoot == "" {
+		return "", false
+	}
+	// Hostless() is the ONE reading of "this spawn shares the launcher's
+	// filesystem" (no sandbox, or the noop passthrough) — two hand-rolled
+	// spellings of it already disagreed once (delegate.go, Task.Hostless).
+	if task.Hostless() {
+		return task.SkillChannelRoot, true
+	}
+	return "", false
 }

@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // ValueMatchesPattern reports whether value satisfies the RE2 pattern a var
@@ -135,8 +136,8 @@ func endsAnchored(re *syntax.Regexp) bool {
 // this and C126/C161. A bad default poisons every run; a bad preset value
 // is read only by a run that selects that preset, and usually that run is
 // refused, precisely, by the launch gate. Only usually: an engine-resolved
-// var (reviewtopology's `review_mode`, `mono_family`, `plan_review`,
-// `llm_families`) is overwritten between the preset merge and the gate, so
+// var (reviewtopology's `review_mode`, `plan_review`, `llm_families`) is
+// overwritten between the preset merge and the gate, so
 // the value never reaches it — which is the second reason not to state the
 // refusal as a fact in the diagnostic's own text. Made an
 // error, this blocks a run that selects another preset or none at all, and
@@ -176,7 +177,7 @@ func (c *compiler) checkPresetConstraint(preset string, pv *ast.PresetValue, v *
 	if len(v.EnumValues) > 0 && !slices.Contains(v.EnumValues, s) {
 		c.warnfAtSpan(DiagPresetViolatesConstraint, pv.Span,
 			"preset %q sets var %q to %q, which is not one of the enum values (%s)",
-			preset, pv.Key, s, quoteList(v.EnumValues))
+			expr.Excerpt(preset), expr.Excerpt(pv.Key), expr.Excerpt(s), enumList(v.EnumValues))
 	}
 	if v.Matching == "" {
 		return
@@ -189,11 +190,11 @@ func (c *compiler) checkPresetConstraint(preset string, pv *ast.PresetValue, v *
 		// reason the launch gate states: a pattern that does not compile
 		// must never read as "the value passed".
 		c.errorfAtSpan(DiagVarMatchingUncompilable, pv.Span,
-			"var %q: declared pattern %q does not compile: %v", pv.Key, v.Matching, err)
+			"var %q: declared pattern %q does not compile: %v", expr.Excerpt(pv.Key), expr.Excerpt(v.Matching), err)
 	case !matched:
 		c.warnfAtSpan(DiagPresetViolatesConstraint, pv.Span,
 			"preset %q sets var %q to %q, which does not match its pattern %q",
-			preset, pv.Key, s, v.Matching)
+			expr.Excerpt(preset), expr.Excerpt(pv.Key), expr.Excerpt(s), expr.Excerpt(v.Matching))
 	}
 }
 

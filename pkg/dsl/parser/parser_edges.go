@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -272,7 +273,17 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 		} else if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 			lc.MaxIterations = n
 		} else if _, err := expr.Parse(s); err != nil {
-			p.addError(DiagExpectedToken, nt, fmt.Sprintf("loop %q cap %q: invalid expression: %v", lc.Name, s, err))
+			var past *expr.BudgetError
+			if errors.As(err, &past) {
+				// A cap past the read budget is the compiler's to refuse
+				// (C320, on the bot's budget, at the edge): the text is kept
+				// and nothing is said here, where the budget is the cap's
+				// own — a refusal here would drop the cap and draw a false
+				// "no cap" on the loop.
+				lc.MaxIterationsExpr = s
+			} else {
+				p.addError(DiagExpectedToken, nt, fmt.Sprintf("loop %q cap %q: invalid expression: %v", lc.Name, expr.Excerpt(s), err))
+			}
 		} else {
 			lc.MaxIterationsExpr = s
 		}
@@ -290,7 +301,46 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 		p.next()
 	}
 	p.expect(TokenRParen)
-	return lc
+	// Loop-clause suffixes, in either order:
+	//   guard: off            — the loop's own word on the budget guard,
+	//                           the most specific layer of its precedence
+	//                           chain (the launch override aside). The
+	//                           value's domain (on|off) is the compiler's
+	//                           to check — C178, positioned on the edge.
+	//   sized_by "outputs…"   — the loop's declared work signal (#2677):
+	//                           the guard prices a crossing at the previous
+	//                           one's cost scaled by size_now /
+	//                           size_at_previous_crossing. A quoted
+	//                           expression; its parse and references are
+	//                           the compiler's to check (C326).
+	for {
+		switch tokenAsIdent(p.peek()) {
+		case "guard":
+			p.next() // consume "guard"
+			p.expect(TokenColon)
+			g := p.next()
+			if lc.Guard != "" {
+				p.addError(DiagExpectedToken, g, "duplicate 'guard:' in the loop clause")
+			}
+			lc.Guard = tokenAsIdent(g)
+			if lc.Guard == "" {
+				p.addError(DiagExpectedToken, g, "expected on or off after 'guard:' in the loop clause")
+			}
+		case "sized_by":
+			p.next() // consume "sized_by"
+			if lc.SizedBy != "" {
+				p.addError(DiagExpectedToken, p.peek(), "duplicate 'sized_by' in the loop clause")
+			}
+			if p.peek().Type != TokenString {
+				p.addError(DiagExpectedToken, p.peek(), "expected a quoted expression after 'sized_by' in the loop clause")
+				p.next() // consume the offending token so the parser keeps advancing
+				continue
+			}
+			lc.SizedBy = p.expectString()
+		default:
+			return lc
+		}
+	}
 }
 
 func (p *parser) parseWithBlock() []*ast.WithEntry {

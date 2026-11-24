@@ -26,6 +26,7 @@ e2e/
 examples/
 charts/
 scripts/
+!scripts/build-execenv-capsule.sh
 # The pinned ultra11y engine lockfile: Dockerfile.runner-devbox installs the
 # rgaa-audit bot's engine from it (npm ci), so it is the one scripts/ entry
 # the runner image needs.
@@ -36,6 +37,8 @@ tooling/
 docs/
 .devcontainer/
 sandbox/
+!sandbox/finalize/
+!sandbox/finalize/execenv-smoke.sh
 
 # --- Test files + caches (the binary never compiles them) ---
 **/*_test.go

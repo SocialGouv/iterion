@@ -25,8 +25,8 @@ type queueOutageTestPublisher struct {
 	err error
 }
 
-func (p *queueOutageTestPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (int, error) {
-	return 0, p.err
+func (p *queueOutageTestPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (runview.LaunchSubmission, error) {
+	return runview.LaunchSubmission{}, p.err
 }
 
 func (*queueOutageTestPublisher) CancelRun(context.Context, string) error { return nil }
@@ -239,7 +239,7 @@ func TestQueueUnavailableLaunchAndResumeReturnRetryableServiceUnavailable(t *tes
 		installQueueOutageTestPublisher(t, srv, fmt.Errorf("cloudpublisher: republish: %w", queueErr))
 
 		logicalPath := filepath.Join(srv.cfg.WorkDir, "queue_outage.bot")
-		_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source)
+		_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source, "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("compile workflow: %v", err)
 		}
@@ -325,7 +325,7 @@ workflow resume_hash:
 	if err := os.WriteFile(botPath, []byte(modifiedSource), 0o644); err != nil {
 		t.Fatalf("write modified workflow: %v", err)
 	}
-	_, originalHash, err := runview.CompileWorkflowFromSource(botPath, originalSource)
+	_, originalHash, err := runview.CompileWorkflowFromSource(botPath, originalSource, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("compile original workflow: %v", err)
 	}
@@ -427,7 +427,7 @@ workflow dispatcher_child:
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	_, workflowHash, err := runview.CompileWorkflowFromSource(outsidePath, source)
+	_, workflowHash, err := runview.CompileWorkflowFromSource(outsidePath, source, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
@@ -509,6 +509,9 @@ func TestWriteResumeError_ScratchLossNamesItsConsent(t *testing.T) {
 // — for a plain resume and for a forced one alike; accept_scratch_loss
 // resumes it, and the run's timeline says it went on without the scratch.
 func TestResumeRun_theScratchsLossNeedsItsOwnConsent(t *testing.T) {
+	// This proves consent and its timeline event, with no bank to restore.
+	// Keep the workflow unsandboxed: auto would pull an image on Docker hosts
+	// before reaching the same event and make this HTTP fixture host-dependent.
 	t.Setenv("ITERION_RUNS_DETACHED", "0")
 	srv, httpServer := newTestServer(t)
 	const source = `
@@ -524,6 +527,7 @@ human gate:
   interaction: human
 
 workflow scratch_consent:
+  sandbox: none
   entry: gate
   gate -> done when approved
   gate -> fail when not approved
@@ -532,7 +536,7 @@ workflow scratch_consent:
 	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := runview.CompileWorkflowFromSource(botPath, source)
+	_, hash, err := runview.CompileWorkflowFromSource(botPath, source, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatal(err)
 	}

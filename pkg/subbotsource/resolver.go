@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botlock"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Kind identifies how a resolved subbot source is supplied.
@@ -59,17 +60,24 @@ type ResolverOptions struct {
 	// directory. When empty, bot:// resolution searches parent directories
 	// from the requesting workflow for bots.lock.
 	WorkDir string
+	// Trust says who wrote WorkDir. `bot://` resolves a workflow out of that
+	// directory and verifies it against a lock file in the SAME directory, so
+	// on a workspace the tenant did not write the checkout owns both sides of
+	// the sha256 comparison — the integrity check compares the fork's bundle
+	// against the fork's lock and agrees. The zero value is trusted.
+	Trust store.RunTrust
 }
 
 // Resolver resolves subbot source references for one launch surface.
 type Resolver struct {
 	parentlessBaseDir string
 	workDir           string
+	trust             store.RunTrust
 }
 
 // NewResolver constructs a shared subbot source resolver.
 func NewResolver(opts ResolverOptions) *Resolver {
-	return &Resolver{parentlessBaseDir: opts.ParentlessBaseDir, workDir: opts.WorkDir}
+	return &Resolver{parentlessBaseDir: opts.ParentlessBaseDir, workDir: opts.WorkDir, trust: opts.Trust}
 }
 
 // Resolve locates the file a subbot names. A relative reference is joined the
@@ -127,6 +135,17 @@ func (r *Resolver) resolveBot(parentSource, requestedSource string) (ResolvedSou
 	}
 	if !declared {
 		return ResolvedSource{}, fmt.Errorf("bot source %q is not declared in the consumer manifest dependencies.workflows", requestedSource)
+	}
+
+	// REFUSED for a workspace the tenant did not write, before any of it is
+	// read. Everything below resolves out of that directory and checks it
+	// against a lock file in the same directory: a fork holds both sides of
+	// the sha256 comparison, so the integrity check agrees with itself and a
+	// `subbot:` node executes an arbitrary workflow from the checkout. Typed,
+	// not silent — an author who needs a dependency bot on a fork lane must
+	// see why it is refused rather than watch a node fail to resolve.
+	if !r.trust.Trusted() {
+		return ResolvedSource{}, fmt.Errorf("bot source %q: refused on an untrusted workspace — %s and .botz/ both come from the checkout, so its integrity check would compare the workspace against itself", requestedSource, botlock.FileName)
 	}
 
 	workDir, err := r.projectRoot(parentSource)

@@ -5,7 +5,7 @@
 // un-applied edit, and (2) leaving edit mode destroyed the typed text with no
 // prompt and no undo — measured on the documented way out of a salvage, where
 // the watcher's reload discovers the bot is in several files.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -31,13 +31,14 @@ vi.mock("@/lib/iterLanguage", () => ({
 vi.mock("@/lib/iterMonacoCompletion", () => ({ registerIterCompletionProvider: vi.fn() }));
 
 import { createEmptyDocument } from "@/lib/defaults";
+import { applyOpenedFile } from "@/lib/openedFile";
 import {
   DocumentStoreProvider,
   createDocumentStore,
   getOrCreateDocumentStore,
 } from "@/store/document";
 
-import SourceView from "./SourceView";
+import SourceView, { MERGED } from "./SourceView";
 import { useDropEditorTab } from "@/hooks/useDropEditorTab";
 import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
 import { useDocumentSaveAs } from "@/components/DocumentSaveAs/useDocumentSaveAs";
@@ -737,5 +738,246 @@ describe("a salvage appearing under an open per-file edit", () => {
     expect(store.getState().isSourceDirty()).toBe(true);
     expect(store.getState().hasUnsavedWork()).toBe(true);
     expect(store.getState().sourceBuffer?.text).toBe("a repair the author typed");
+  });
+});
+
+// The ticket's measured case, in its cheapest form: a bot in ONE file,
+// reopened on the SAME path by the watcher's reload or the assistant's
+// reload-after-write. `setCurrentFilePath` clears the unit, the selection
+// and the buffer even for an identical path, so `bufferKey` is
+// `<path>\0!whole` before AND after — the FILE axis never flips, there is
+// no transient to wait out, and Edit is offered over the text the previous
+// document produced. Jo's decision (D45) keeps that window open and LABELS
+// it; the Apply refusal it announces is #1227's and is unchanged.
+describe("the stale-content window after a reload on the same file", () => {
+  const RELOADED = "workflow w:\n  entry: a\n  a -> done\n";
+  // The sentences as the operator hears them, spelled out rather than
+  // imported from the view: this pins the COPY, and a test reading the
+  // constant would pass any rewording of it.
+  const STALE_HINT =
+    "The document changed after this text was rendered from it, so applying this text is refused. An open editor keeps it until you apply or cancel; otherwise a fresh render replaces it.";
+  const HELD_TEXT_HINT = "Answer the held text above first — Restore or Discard";
+
+  function reload(store: ReturnType<typeof openStore>) {
+    act(() => {
+      applyOpenedFile(
+        {
+          source: RELOADED,
+          document: { ...createEmptyDocument(), comments: [{ text: "a colleague's edit" }] },
+          diagnostics: [],
+          path: "bots/demo/main.bot",
+        },
+        store.getState(),
+      );
+    });
+    // The key did not move: this is the content axis alone.
+    expect(store.getState().currentFilePath).toBe("bots/demo/main.bot");
+    expect(store.getState().unit).toBeNull();
+    return store.getState().document;
+  }
+
+  it("labels it, keeps Edit offered, and still refuses the Apply", async () => {
+    const store = openStore();
+    api.parseSource.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+    });
+    mount(store);
+    // The render landed, so the text on screen IS the document's: nothing to
+    // label yet. Asserting this first is what keeps the badge from being a
+    // permanent decoration the next assertion would also pass with.
+    await screen.findByRole("button", { name: "Edit" });
+    expect(screen.queryByTestId("source-view-stale-badge")).toBeNull();
+
+    const reloaded = reload(store);
+
+    // Synchronous from here: the re-render that would close the window is
+    // 500 ms away on a timer, and no assertion below yields to it.
+    const badge = screen.getByTestId("source-view-stale-badge");
+    expect(badge.textContent).toBe("Text may be stale");
+    // jsdom has no layout engine and the browser harness is an advisory
+    // cron, so the class is the assertion: a Badge is `whitespace-nowrap`,
+    // and a nowrap child that yields narrows its box without narrowing its
+    // text, which then paints under the picker's `relative` wrapper.
+    expect(badge.className.split(/\s+/)).toContain("shrink-0");
+    // Option B, not A: the window is named, not closed — Edit is still
+    // offered, which putting the document into `bufferKey` would have taken
+    // away on every canvas keystroke too.
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+    // And the HINT — the sentence, not the three-word label — reaches
+    // assistive tech without touching the NAME, which seven e2e sites assert
+    // is exactly "Edit": it arrives as the button's accessible DESCRIPTION.
+    // Both are the real algorithms here — dom-accessibility-api computes
+    // them, they are not read off attributes. `title` carries the same
+    // sentence for the pointer, and nothing else: it is unreachable by
+    // keyboard and by touch, so it cannot be the only channel.
+    expect(
+      screen.getByRole("button", { name: "Edit", description: STALE_HINT }),
+    ).toBeTruthy();
+
+    // The badge IS that refusal, read from the same `appliedFrom`: entering
+    // the mode freezes this text (the render effect returns early), and the
+    // Apply the badge warns about is the one `moved()` stops.
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(
+      screen.getByRole("button", { name: "Apply", description: STALE_HINT }),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: "typed over stale text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    // The forbidden alternative, named: a badge announcing a refusal that
+    // does not fire — the text written back over the reloaded document.
+    expect(await screen.findByText(/Nothing was applied/)).toBeTruthy();
+    expect(store.getState().document).toBe(reloaded);
+    // Still labelled while the refusal stands.
+    expect(screen.getByTestId("source-view-stale-badge")).toBeTruthy();
+  });
+
+  it("drops the label when the fresh render lands, so it is a window and not a verdict", async () => {
+    const store = openStore();
+    mount(store);
+    await screen.findByRole("button", { name: "Edit" });
+
+    api.unparse.mockResolvedValue({ source: RELOADED });
+    reload(store);
+    expect(screen.getByTestId("source-view-stale-badge")).toBeTruthy();
+
+    // The re-render carries the reloaded document, so the text and its
+    // provenance agree again. Asserting the TEXT too: the badge going away
+    // because the window closed, not because the view stopped rendering.
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(RELOADED),
+    );
+    expect(screen.queryByTestId("source-view-stale-badge")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Edit" }).getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
+
+  // Two reasons on one control. `aria-describedby` REPLACES `title` in the
+  // description algorithm, so a reference that carried the window alone
+  // would take the held-text reason — the reason the button is DISABLED —
+  // off the only channel assistive tech has for it.
+  it("says both reasons when the held text and this window overlap", async () => {
+    const store = openStore();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().setSourceBuffer({
+      path: "bots/demo/main.bot",
+      rel: "lib/nodes.bot",
+      text: "typed for the fragment",
+      base: "the fragment as rendered",
+      doc: null,
+      session: 1,
+    });
+    // The fragment leaves the bot: its text is held, no picker can reach it,
+    // and Edit stands down until the banner is answered (#1735).
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r2",
+      files: [{ rel: "main.bot" }],
+    });
+    mount(store);
+
+    const edit = await screen.findByRole("button", { name: "Edit" }, { timeout: 2000 });
+    expect((edit as HTMLButtonElement).disabled).toBe(true);
+    // The per-file render has to have LANDED, or there is no provenance to
+    // move and `appliedFrom` falls back to the document as it is.
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).not.toBe(""),
+    );
+    expect(
+      screen.getByRole("button", { name: "Edit", description: HELD_TEXT_HINT }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("source-view-stale-badge")).toBeNull();
+
+    // Now the canvas moves under that text: the window opens over a button
+    // that is already disabled for another reason.
+    act(() => {
+      store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "canvas" }] });
+    });
+
+    expect(screen.getByTestId("source-view-stale-badge")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(true);
+    // Both sentences, the disabled reason first — the accname algorithm
+    // concatenates the referenced nodes in the order of the idrefs.
+    expect(
+      screen.getByRole("button", {
+        name: "Edit",
+        description: `${HELD_TEXT_HINT} ${STALE_HINT}`,
+      }),
+    ).toBeTruthy();
+    // The sighted hover says the same sentences in the same order.
+    expect(screen.getByRole("button", { name: "Edit" }).getAttribute("title")).toBe(
+      `${HELD_TEXT_HINT} — ${STALE_HINT}`,
+    );
+  });
+
+  // The badge's two gates, each on its own. Both prevent a label over a
+  // header that offers no control the label is about — the Apply refusal it
+  // announces cannot even be reached there.
+  it("stays silent on the merged program, which offers no Edit to warn about", async () => {
+    const store = openStore();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    // The read-only entry: an explicit choice the selection effect keeps.
+    store.getState().setSourceFile(MERGED);
+    mount(store);
+
+    // The merged render landed, and the group holds the note instead of the
+    // controls — `editable` is false here.
+    await screen.findByTestId("source-view-unit-note");
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(RENDERED),
+    );
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
+
+    // The canvas moves under the merged text: the provenance moved, so the
+    // document term of the predicate holds.
+    act(() => {
+      store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "canvas" }] });
+    });
+
+    // Synchronous: the re-render is 500 ms away, so this reads the instant
+    // the label would be wrong.
+    expect(screen.queryByTestId("source-view-stale-badge")).toBeNull();
+  });
+
+  it("stays silent while the render is for another file, where there is no Edit either", async () => {
+    const store = openStore();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    mount(store);
+    await screen.findByRole("button", { name: "Edit" });
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).not.toBe(""),
+    );
+
+    // One act: the canvas moves AND the picker moves to the other file. The
+    // text on screen is now the PREVIOUS file's, which is the FILE axis —
+    // `stale` — and it has its own answer, no Edit and no Apply.
+    act(() => {
+      store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "canvas" }] });
+      store.getState().setSourceFile("lib/nodes.bot");
+    });
+
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
+    expect(screen.queryByTestId("source-view-stale-badge")).toBeNull();
   });
 });

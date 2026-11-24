@@ -77,7 +77,11 @@ func TestTheWorkspaceOverlayIsHeldToTheReadBudget(t *testing.T) {
 	work := t.TempDir()
 	bots := filepath.Join(work, "bots")
 	writeFile(t, filepath.Join(bots, "a.bot"), "agent a:\n  model: \"m\"\n")
-	overlay := "bots: {" + strings.Repeat("a,", 300) + "a}\n"
+	keys := make([]string, 301)
+	for i := range keys {
+		keys[i] = "k" + strconv.Itoa(i)
+	}
+	overlay := "bots: {" + strings.Join(keys, ",") + "}\n"
 	path := filepath.Join(work, ".iterion", "bot-overrides.yaml")
 	writeFile(t, path, overlay)
 	t.Setenv(parser.ReadBudgetEnv, strconv.Itoa(200))

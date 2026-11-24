@@ -32,14 +32,18 @@ package secretguard
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -57,6 +61,27 @@ import (
 // (__ITERION_SECRET_<name>__), so a model that writes one would otherwise
 // fetch the value; only a secret the workflow declares for its agents to
 // use is materialisable.
+//
+// EnvOnly carves ONE exception into RedactOnly, for a credential the server
+// minted for this run (store.ServerMintedSecretVars): its placeholder
+// resolves in text the workflow's AUTHOR wrote, and only as an environment
+// variable handed to the child process
+// (MaterializeAuthoredShellEnv) — never inlined into a command line, never
+// in a script body, never in agent tool input, never at egress, and never
+// for text a MODEL proposed. Honoured only together with RedactOnly: it is a
+// narrowing of that class, not a way to widen a declared secret.
+//
+// Sinks names the materialization sinks the secret is granted to
+// (pkg/dsl/secretsink, the `sinks:` of its declaration); nil grants every
+// sink. The guard honours the two grants the compiler cannot see: `agent`
+// gates the placeholder a MODEL emits in its own tool input (Materialize,
+// MaterializeShellEnv), `egress` gates the substitution on the wire
+// (MaterializeForHostWithin); `command` and `params` gate the authored
+// bodies the executor materialises (MaterializeShell,
+// MaterializeAuthoredShellEnv, MaterializeFor), each called on the text of
+// ONE reference the author wrote, never on a rendered body. A placeholder of
+// a secret that does not grant the sink is left as written — never resolved
+// there.
 type Secret struct {
 	Name        string
 	Value       string
@@ -64,7 +89,16 @@ type Secret struct {
 	FilePath    string
 	Env         string
 	Hosts       []string
+	Sinks       []string
 	RedactOnly  bool
+	EnvOnly     bool
+	// Ambient marks a value registered on the NAME of a host environment
+	// variable (TOKEN, KEY, AUTH… in it), not on a declaration: scrubbed
+	// from the sinks like any known value, but left alone by the model
+	// boundary — the name heuristic matches GIT_AUTHOR_EMAIL and KEYCLOAK_URL
+	// too, and a placeholder in a prompt there breaks the commit the agent
+	// was asked for, where a marker in a log costs nothing.
+	Ambient bool
 }
 
 type FileSecretHint struct {
@@ -125,37 +159,52 @@ func DefaultConfig() Config {
 // {{secrets.NAME}} to the exact token the guard registers.
 func PlaceholderForName(name string) string { return defaultPlaceholder(name) }
 
-// Guard is an immutable, concurrency-safe scrubber built once per run.
-// The one documented mutation seam is MaterializeHostFiles, which rewrites
-// filePathByName / fileHints exactly once per run under a caller-provided
-// sync.Once so the rewrite happens strictly before any concurrent Execute
-// consults ResolveSecretRef.
+// Guard is a concurrency-safe scrubber built once per run, whose matcher
+// state is immutable per generation: every read path (Redact, Materialize,
+// the ~35 hot-path readers) Load()s the current state once, and Register —
+// the mid-run rotation seam (#2756) — builds a NEW state from the
+// registrations so far and swaps it in atomically (copy-on-write), so a
+// reader never observes a half-built matcher and a writer never waits on a
+// reader (Redact → heuristicRedact → recurseDecode re-enter, which is what
+// rules out a mutating Add under an RWMutex).
 type Guard struct {
+	state atomic.Pointer[guardState]
+	det   *detector.Detector
+	cfg   Config
+}
+
+// guardState is one immutable generation of the guard's matcher state.
+// Nothing in it is mutated after construction: Register builds the next
+// generation from inputs, and MaterializeHostFiles — the one rewrite seam,
+// fired once per run before any concurrent Execute consults it — swaps a
+// copy with the host file paths filled in.
+type guardState struct {
+	// inputs are the registrations this state was built from, in
+	// registration order and BEFORE the build's filtering/defaulting —
+	// Register's rebuild base. secrets below is the filtered,
+	// placeholder-adjusted view Secrets() reports.
+	inputs             []Secret
 	secrets            []Secret
-	literalPlaceholder map[string]string // every encoding → its placeholder
-	matcher            *literalMatcher   // every known encoding, longest first
-	placeholderValue   map[string]string // placeholder → raw value (Materialize)
-	placeholderByName  map[string]string // exact declared name → placeholder
-	filePathByName     map[string]string // secret name → mounted file path
+	literalPlaceholder map[string]string   // every encoding → its placeholder
+	matcher            *literalMatcher     // every known encoding, longest first
+	placeholderValue   map[string]string   // placeholder → raw value (Materialize)
+	placeholderSinks   map[string][]string // placeholder → granted sinks (absent = every sink)
+	ambientPlaceholder map[string]bool     // placeholders of the ambient name-heuristic class
+	placeholderByName  map[string]string   // exact declared name → placeholder
+	envOnlyValue       map[string]string   // placeholder → raw value (MaterializeAuthoredShellEnv only)
+	envOnlyByName      map[string]string   // env-only secret name → its placeholder
+	filePathByName     map[string]string   // secret name → mounted file path
 	fileHints          []FileSecretHint
 	fileValueByName    map[string]string // secret name → file plaintext (host materialisation)
 	encodings          [][]string        // per entry of secrets: its value encodings (egress DLP)
 	longestLiteral     int               // the longest registered encoding, in bytes
-	det                *detector.Detector
-	cfg                Config
 }
 
-var sanitizeName = regexp.MustCompile(`[^A-Za-z0-9_]+`)
-
 // defaultPlaceholder derives a distinctive, low-entropy, reversible
-// token from a secret name.
+// token from a secret name — the leaf's derivation, which the compiler
+// reads too (secretsink.PlaceholderFor).
 func defaultPlaceholder(name string) string {
-	clean := sanitizeName.ReplaceAllString(name, "_")
-	clean = strings.Trim(clean, "_")
-	if clean == "" {
-		clean = "value"
-	}
-	return "__ITERION_SECRET_" + clean + "__"
+	return secretsink.PlaceholderFor(name)
 }
 
 // placeholderOf is a secret's placeholder before collision handling: the one
@@ -170,9 +219,11 @@ func placeholderOf(s Secret) string {
 // redactOnlyPlaceholder distinguishes the placeholder of a value that
 // resolves nowhere from the identically-named one that resolves. It keeps the
 // __ITERION_SECRET_…__ shape every downstream scrubber already recognises
-// (pkg/errtrack, pkg/knowledge).
+// (pkg/errtrack, pkg/knowledge). No resolvable placeholder is spelled so: a
+// secret whose own placeholder would be is registered redact-only
+// (buildGuardState), and the compiler refuses its name (C341).
 func redactOnlyPlaceholder(ph string) string {
-	return strings.TrimSuffix(ph, "__") + "_redacted__"
+	return secretsink.RedactedFormOf(ph)
 }
 
 // New builds a Guard for the given secrets. Secrets whose value is
@@ -190,15 +241,24 @@ func New(secrets []Secret, cfg Config) *Guard {
 		cfg.DecodeDepth = DefaultConfig().DecodeDepth
 	}
 
-	g := &Guard{
+	g := &Guard{cfg: cfg}
+	if cfg.Heuristic {
+		g.det = detector.New()
+	}
+	g.state.Store(buildGuardState(secrets, cfg))
+	return g
+}
+
+// buildGuardState compiles one immutable state generation from the given
+// registrations. cfg must already be normalised (New's defaults applied).
+// It never mutates its input slice.
+func buildGuardState(secrets []Secret, cfg Config) *guardState {
+	g := &guardState{
+		inputs:             append([]Secret(nil), secrets...),
 		literalPlaceholder: make(map[string]string),
 		placeholderValue:   make(map[string]string),
 		placeholderByName:  make(map[string]string),
 		filePathByName:     make(map[string]string),
-		cfg:                cfg,
-	}
-	if cfg.Heuristic {
-		g.det = detector.New()
 	}
 
 	// A workflow is free to DECLARE a secret under a name a RedactOnly value
@@ -212,6 +272,19 @@ func New(secrets []Secret, cfg Config) *Guard {
 	// after every whole value so they never take another secret's.
 	type literal struct{ enc, ph string }
 	var trimmed []literal
+	// A placeholder spelled as another's redact-only form is reserved: were
+	// it resolvable, the defuse that writes that form in the other's place
+	// would hand out this secret's value instead of a token that resolves
+	// nowhere. The compiler refuses such a name (C341); a registration that
+	// still carries one is scrubbed and never resolves.
+	reserved := make([]Secret, len(secrets))
+	for i, s := range secrets {
+		if !s.RedactOnly && secretsink.IsRedactedForm(placeholderOf(s)) {
+			s.RedactOnly, s.EnvOnly = true, false
+		}
+		reserved[i] = s
+	}
+	secrets = reserved
 	for _, s := range secrets {
 		if !s.RedactOnly && len([]rune(s.Value)) >= cfg.MinLen {
 			resolvable[placeholderOf(s)] = true
@@ -223,6 +296,12 @@ func New(secrets []Secret, cfg Config) *Guard {
 			ph = redactOnlyPlaceholder(ph)
 		}
 		s.Placeholder = ph
+		if s.Ambient && s.RedactOnly {
+			if g.ambientPlaceholder == nil {
+				g.ambientPlaceholder = make(map[string]bool, 1)
+			}
+			g.ambientPlaceholder[ph] = true
+		}
 		if s.FilePath != "" && !s.RedactOnly {
 			g.filePathByName[s.Name] = s.FilePath
 			g.fileHints = append(g.fileHints, FileSecretHint{Name: s.Name, Path: s.FilePath, Env: s.Env})
@@ -244,6 +323,28 @@ func New(secrets []Secret, cfg Config) *Guard {
 		if !s.RedactOnly {
 			g.placeholderValue[ph] = s.Value
 			g.placeholderByName[s.Name] = ph
+			if len(s.Sinks) > 0 {
+				if g.placeholderSinks == nil {
+					g.placeholderSinks = make(map[string][]string, 1)
+				}
+				g.placeholderSinks[ph] = append([]string(nil), s.Sinks...)
+			}
+		}
+		// The env-only class, kept in its own map: the Materialize* family
+		// reads placeholderValue, so a value registered here resolves for
+		// the authored-shell path alone. First registration wins — a
+		// lineage's records may carry several grants under one name (a
+		// fork's source, an ancestor's), and the one the RUN holds is the
+		// one its commands must present.
+		if s.RedactOnly && s.EnvOnly {
+			if _, taken := g.envOnlyValue[ph]; !taken {
+				if g.envOnlyValue == nil {
+					g.envOnlyValue = make(map[string]string, 1)
+					g.envOnlyByName = make(map[string]string, 1)
+				}
+				g.envOnlyValue[ph] = s.Value
+				g.envOnlyByName[s.Name] = ph
+			}
 		}
 		encs := encodingsOf(s.Value)
 
@@ -288,7 +389,7 @@ func New(secrets []Secret, cfg Config) *Guard {
 // buildMatcher compiles a single RE2 alternation over every known
 // encoding, ordered longest-first so a longer encoding is preferred
 // over a shorter substring at the same position.
-func (g *Guard) buildMatcher() {
+func (g *guardState) buildMatcher() {
 	if len(g.literalPlaceholder) == 0 {
 		return
 	}
@@ -507,45 +608,231 @@ func (m *literalMatcher) ReplaceAllStringFunc(s string, f func(string) string) s
 	return b.String()
 }
 
+// load returns the current matcher-state generation, or nil on a nil
+// Guard. Every reader Load()s ONCE and works from that snapshot, so a
+// concurrent Register swap can never hand it a half-built matcher.
+func (g *Guard) load() *guardState {
+	if g == nil {
+		return nil
+	}
+	return g.state.Load()
+}
+
 // LongestLiteral is the length in bytes of the longest text Unmaterialize
 // (and Redact) recognises as one known value: a caller that redacts a window
 // of a longer text must read at least that far past what it keeps. 0 on a nil
 // Guard or one with no known value.
 func (g *Guard) LongestLiteral() int {
-	if g == nil {
-		return 0
+	if st := g.load(); st != nil {
+		return st.longestLiteral
 	}
-	return g.longestLiteral
+	return 0
 }
 
 // HasKnownSecrets reports whether any known value is registered.
 func (g *Guard) HasKnownSecrets() bool {
-	return g != nil && g.matcher != nil
+	st := g.load()
+	return st != nil && st.matcher != nil
 }
 
 // Materializes reports whether any registered placeholder resolves to a value
-// — a secret that is not RedactOnly.
+// — a secret that is not RedactOnly — at SOME sink. It ignores the grants: a
+// caller deciding whether to materialise at a given sink asks
+// MaterializesFor, never this.
 func (g *Guard) Materializes() bool {
-	return g != nil && len(g.placeholderValue) > 0
+	st := g.load()
+	return st != nil && len(st.placeholderValue) > 0
+}
+
+// MaterializesFor reports whether any registered placeholder resolves at
+// sink: the caller that would otherwise install a materialiser for nothing
+// (a tool-input hook) asks here. Only a materialising sink (agent, command,
+// params) ever resolves one.
+func (g *Guard) MaterializesFor(sink string) bool {
+	st := g.load()
+	if st == nil || !secretsink.Materialising(sink) {
+		return false
+	}
+	for ph := range st.placeholderValue {
+		if st.resolvesAt(ph, sink) {
+			return true
+		}
+	}
+	return false
+}
+
+// DefuseUngranted rewrites, in s, the placeholder of every secret that does
+// not grant sink into its redact-only form (`__ITERION_SECRET_<name>_redacted__`),
+// which resolves nowhere while keeping the shape every scrubber recognises.
+// It is the guard's answer to a placeholder that arrives through DATA — a
+// model's output a prompt or an edge carried into a tool body — rather than
+// through the author's own `{{secrets.X}}`: the text is model-authored, so
+// it is the agent sink's beyond the body (a body's own materialiser never
+// resolves it: it resolves only the author's references), and the egress
+// proxy would substitute it in whatever the body sends. Nil-safe.
+func (g *Guard) DefuseUngranted(sink, s string) string {
+	st := g.load()
+	if st == nil || s == "" || len(st.placeholderSinks) == 0 {
+		return s
+	}
+	var phs []string
+	for ph := range st.placeholderValue {
+		if !st.resolvesAt(ph, sink) {
+			phs = append(phs, ph)
+		}
+	}
+	return defuse(s, phs)
+}
+
+// defuse rewrites, in s, every occurrence of the placeholders phs into its
+// redact-only form, all placeholders at once in each pass, so the answer
+// does not depend on the order they are visited in; the longer placeholder
+// wins where two start at one position.
+//
+// One pass is not enough. A pass reads left to right without overlap, and
+// a redact-only form ends in the same `__` the next placeholder may start
+// with: in `__ITERION_SECRET_x__ITERION_SECRET_y__` the pass rewrites x
+// and skips y, which shared x's closing `__`, and y stands whole again
+// after x's form. So the pass repeats until the text no longer changes.
+// It ends: a pass that changes the text closes at least one `__` with
+// `_redacted__`, which no live placeholder ends with (the spelling is
+// reserved), and a rewrite adds no `__` — so there are at most as many
+// changing passes as the text holds `__`.
+func defuse(s string, phs []string) string {
+	if len(phs) == 0 || s == "" {
+		return s
+	}
+	slices.SortFunc(phs, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(phs))
+	for _, ph := range phs {
+		pairs = append(pairs, ph, redactOnlyPlaceholder(ph))
+	}
+	r := strings.NewReplacer(pairs...)
+	for range strings.Count(s, "__") + 1 {
+		next := r.Replace(s)
+		if next == s {
+			break
+		}
+		s = next
+	}
+	return s
+}
+
+// DefuseAll rewrites, in s, the placeholder of every secret that resolves
+// anywhere — a declared value secret's, an env-only credential's — into its
+// redact-only form, whatever the grants. It is the answer for text a MODEL
+// will read and may hand back to a materialiser: the failed body a recovery
+// rung shows its model, the node input its recovery agent receives. Every
+// placeholder in such text arrived through data or was typed by the author
+// as text — the author's own references are marked, not placeholders, until
+// they are shown — and none is a reference: echoed back by the model, it
+// must resolve nowhere. Nil-safe.
+func (g *Guard) DefuseAll(s string) string {
+	st := g.load()
+	if st == nil || s == "" {
+		return s
+	}
+	phs := make([]string, 0, len(st.placeholderValue)+len(st.envOnlyValue))
+	for ph := range st.placeholderValue {
+		phs = append(phs, ph)
+	}
+	for ph := range st.envOnlyValue {
+		if _, dup := st.placeholderValue[ph]; !dup {
+			phs = append(phs, ph)
+		}
+	}
+	return defuse(s, phs)
+}
+
+// DefuseAllValue is DefuseAll over every string of v — leaves and map keys
+// alike, since a key is sent to a model as written — in a deep copy of the
+// shapes structured payloads use (RedactValue's); v itself is never mutated.
+// Keys are read in sorted order, so where two keys defuse to one (a live
+// placeholder beside its own redact-only form) the one that sorts last
+// holds the value, whatever the map's iteration order. Nil-safe.
+func (g *Guard) DefuseAllValue(v any) any {
+	if g == nil {
+		return v
+	}
+	switch t := v.(type) {
+	case string:
+		return g.DefuseAll(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for _, k := range slices.Sorted(maps.Keys(t)) {
+			out[g.DefuseAll(k)] = g.DefuseAllValue(t[k])
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = g.DefuseAllValue(vv)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
+		for i, vv := range t {
+			out[i], _ = g.DefuseAllValue(vv).(map[string]any)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, vv := range t {
+			out[i] = g.DefuseAll(vv)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// resolvesAt reports whether the secret behind ph is granted sink: every
+// sink when its declaration named none (the ALL default of ADR-146), the
+// named ones otherwise.
+func (st *guardState) resolvesAt(ph, sink string) bool {
+	return secretsink.Grants(st.placeholderSinks[ph], sink)
+}
+
+// NamesMaterializableSecret reports whether s carries the placeholder of a
+// secret that resolves at ANY sink — the question a caller asks before
+// handing a text to something that would run it with the value (a command
+// compressor), whichever sink the text feeds.
+func (g *Guard) NamesMaterializableSecret(s string) bool {
+	st := g.load()
+	if st == nil || s == "" {
+		return false
+	}
+	for ph := range st.placeholderValue {
+		if strings.Contains(s, ph) {
+			return true
+		}
+	}
+	return false
 }
 
 // Secrets returns the registered secrets (with defaulted placeholders).
 func (g *Guard) Secrets() []Secret {
-	if g == nil {
-		return nil
+	if st := g.load(); st != nil {
+		return st.secrets
 	}
-	return g.secrets
+	return nil
 }
 
 // Redact scrubs s for persistence: known secret values (any encoding)
 // become their placeholder, and heuristic token-shaped unknowns become
 // the marker. Safe on a nil Guard (returns s unchanged).
 func (g *Guard) Redact(s string) string {
-	if g == nil || s == "" {
+	st := g.load()
+	if st == nil || s == "" {
 		return s
 	}
 	if g.cfg.RedactKnown {
-		s = g.Unmaterialize(s)
+		s = st.Unmaterialize(s)
 	}
 	if g.cfg.Heuristic && g.det != nil {
 		s = g.heuristicRedact(s)
@@ -563,15 +850,84 @@ func (g *Guard) Redact(s string) string {
 // ITERION_SECRETS_REDACT kill switch leaves it on, the agent only ever sees
 // placeholders. Safe on a nil Guard.
 func (g *Guard) Unmaterialize(s string) string {
-	if g == nil || s == "" || g.matcher == nil {
+	return g.load().Unmaterialize(s)
+}
+
+// UnmaterializeEach is Unmaterialize with each known value written as what
+// to answers for its placeholder, instead of the placeholder itself: a
+// caller that must tell the placeholders it put back from the ones the text
+// already spelled — the self-repair prompt, which defuses the latter — maps
+// the values to marks of its own first. Safe on a nil Guard.
+func (g *Guard) UnmaterializeEach(s string, to func(ph string) string) string {
+	st := g.load()
+	if st == nil || s == "" || st.matcher == nil {
 		return s
 	}
-	return g.matcher.ReplaceAllStringFunc(s, func(m string) string {
-		if ph, ok := g.literalPlaceholder[m]; ok {
+	return st.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		if ph, ok := st.literalPlaceholder[m]; ok {
+			return to(ph)
+		}
+		return m
+	})
+}
+
+// Unmaterialize is the state-level twin of Guard.Unmaterialize — nil-safe,
+// so a nil *guardState answers "nothing to unmaterialize".
+func (st *guardState) Unmaterialize(s string) string {
+	if st == nil || s == "" || st.matcher == nil {
+		return s
+	}
+	return st.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		if ph, ok := st.literalPlaceholder[m]; ok {
 			return ph
 		}
 		return m
 	})
+}
+
+// Holds reports whether the declared secret name resolved to something this
+// run carries — a value, or a mounted file — whatever its grants. The launch
+// gate reads it to tell an optional secret that is absent (never refused for
+// the sinks it would have reached) from one that resolved.
+func (g *Guard) Holds(name string) bool {
+	st := g.load()
+	if st == nil {
+		return false
+	}
+	if _, ok := st.placeholderByName[name]; ok {
+		return true
+	}
+	return st.secretFilePath(name) != ""
+}
+
+// RedactForModel is the model boundary's pass (ADR-146, axis 1a): every
+// known value in text a MODEL is about to read goes back to its
+// placeholder, and nothing else — the executor applies it to the rendered
+// prompts at the one seam a task crosses into a backend, so a value an
+// upstream node produced (`{{outputs.A.x}}`, an input an edge mapped) never
+// reaches a model's context in clear while the live output map keeps it for
+// the nodes downstream. It follows the Layer 1 switch: with placeholders
+// off (ITERION_SECRETS_PLACEHOLDERS=off) a prompt renders values by the
+// operator's explicit choice, and the boundary renders them too. Safe on a
+// nil Guard.
+//
+// A secret whose `sinks:` keep it off prompts maps to its redact-only form
+// instead of the resolvable placeholder: a model that reads the placeholder
+// of a `[command, egress]` secret could still have the proxy spend it on the
+// wire — the token it reads here resolves nowhere.
+func (g *Guard) RedactForModel(s string) string {
+	st := g.load()
+	if st == nil || s == "" || !g.cfg.Placeholders || st.matcher == nil {
+		return s
+	}
+	out := st.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		ph, ok := st.literalPlaceholder[m]
+		if !ok || st.ambientPlaceholder[ph] {
+			return m
+		}
+		return ph
+	})
+	return g.DefuseUngranted(secretsink.Prompt, out)
 }
 
 // RedactBytes is a convenience wrapper for []byte sinks.
@@ -703,26 +1059,59 @@ func (g *Guard) recurseDecode(s string, depth int) string {
 // never fires on heuristics, so blocking is decided only on values we
 // are certain about.
 func (g *Guard) ContainsSecret(s string) bool {
-	if g == nil || g.matcher == nil || s == "" {
+	st := g.load()
+	if st == nil || st.matcher == nil || s == "" {
 		return false
 	}
-	return g.matcher.MatchString(s)
+	return st.matcher.MatchString(s)
 }
 
 // Materialize replaces every placeholder with its real secret value.
 // Used at tool/shell exec (Layer 1) and at the egress proxy (Layer 2).
 // Safe on a nil Guard (returns s unchanged).
 func (g *Guard) Materialize(s string) string {
-	if g == nil || s == "" || len(g.placeholderValue) == 0 {
+	return g.MaterializeFor(secretsink.Agent, s)
+}
+
+// MaterializeFor is Materialize at a named sink: the placeholders of the
+// secrets granted that sink are swapped for their raw values, the others
+// are left as written. The executor names the sink of each authored body
+// it materialises (an action's params); the agent path takes Materialize.
+// A sink that never materialises (prompt, file, egress) leaves the text as
+// written: the proxy substitutes through MaterializeForHostWithin, a prompt
+// renders through ResolveSecretRefAt, a file through MaterializeHostFiles.
+func (g *Guard) MaterializeFor(sink, s string) string {
+	st := g.load()
+	if st == nil || s == "" || len(st.placeholderValue) == 0 || !secretsink.Materialising(sink) {
 		return s
 	}
-	// Placeholders all carry the __ITERION_SECRET_<name>__ shape, so none
-	// is a substring of another — iteration order is irrelevant, and
-	// ReplaceAll already no-ops when the token is absent.
-	for ph, val := range g.placeholderValue {
-		s = strings.ReplaceAll(s, ph, val)
+	return st.placeholderReplacer(sink, func(val string) string { return val }).Replace(s)
+}
+
+// placeholderReplacer swaps, in one pass, each placeholder of a secret that
+// resolves at sink for write(its value). One pass, longest placeholder
+// first where two start at one position: a placeholder can extend another
+// — `a__b`'s `__ITERION_SECRET_a__b__` begins with `a`'s — so swapping them
+// one by one answered by map order, and a value spelling a placeholder was
+// read again by the next swap.
+func (st *guardState) placeholderReplacer(sink string, write func(val string) string) *strings.Replacer {
+	phs := make([]string, 0, len(st.placeholderValue))
+	for ph := range st.placeholderValue {
+		if st.resolvesAt(ph, sink) {
+			phs = append(phs, ph)
+		}
 	}
-	return s
+	slices.SortFunc(phs, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(phs))
+	for _, ph := range phs {
+		pairs = append(pairs, ph, write(st.placeholderValue[ph]))
+	}
+	return strings.NewReplacer(pairs...)
 }
 
 // MaterializeShell is Materialize for a POSIX single-quoted shell context. The
@@ -734,16 +1123,19 @@ func (g *Guard) Materialize(s string) string {
 // Escape each value for inside-single-quote use (each single quote becomes
 // close-quote + backslash-quote + reopen-quote) so the surrounding quotes stay
 // balanced and the value can never be interpreted as shell syntax.
-// Use this at every shell/tool-node exec site; the (raw) Materialize is for
-// non-shell materialization (e.g. the egress proxy).
+// Use this on the text of ONE reference the author wrote in a body (a tool
+// node's script: the `command` sink) — the executor resolves each authored
+// reference through it, never the rendered body, where data spells
+// placeholders as well as the author does; the (raw) Materialize is for a
+// model's own tool input (the `agent` sink).
 func (g *Guard) MaterializeShell(s string) string {
-	if g == nil || s == "" || len(g.placeholderValue) == 0 {
+	st := g.load()
+	if st == nil || s == "" || len(st.placeholderValue) == 0 {
 		return s
 	}
-	for ph, val := range g.placeholderValue {
-		s = strings.ReplaceAll(s, ph, strings.ReplaceAll(val, "'", `'\''`))
-	}
-	return s
+	return st.placeholderReplacer(secretsink.Command, func(val string) string {
+		return strings.ReplaceAll(val, "'", `'\''`)
+	}).Replace(s)
 }
 
 // MaterializeShellEnv is MaterializeShell's env-indirected counterpart: for
@@ -778,25 +1170,43 @@ func (g *Guard) MaterializeShell(s string) string {
 // just-inserted "$PLACEHOLDER" token, since the placeholder name is a
 // substring of it — so that placeholder is left entirely to the inline
 // path instead.
+//
+// This is the `agent` sink: the command a MODEL proposed (the self-repair
+// rung). An authored command takes MaterializeAuthoredShellEnv, the
+// `command` sink.
 func (g *Guard) MaterializeShellEnv(s string) (string, map[string]string) {
-	if g == nil || s == "" || len(g.placeholderValue) == 0 {
+	return g.materializeShellEnvAt(secretsink.Agent, s)
+}
+
+// materializeShellEnvAt is MaterializeShellEnv at a named sink: only the
+// placeholders of the secrets granted that sink resolve, by environment
+// where they stand single-quoted and inline otherwise.
+func (g *Guard) materializeShellEnvAt(sink, s string) (string, map[string]string) {
+	st := g.load()
+	if st == nil || s == "" || len(st.placeholderValue) == 0 {
 		return s, nil
 	}
 	var env map[string]string
-	for ph, val := range g.placeholderValue {
+	for ph, val := range st.placeholderValue {
+		if !st.resolvesAt(ph, sink) {
+			continue
+		}
 		quoted := "'" + ph + "'"
 		quotedCount := strings.Count(s, quoted)
 		if quotedCount == 0 || strings.Count(s, ph) > quotedCount {
 			continue
 		}
 		if env == nil {
-			env = make(map[string]string, len(g.placeholderValue))
+			env = make(map[string]string, len(st.placeholderValue))
 		}
 		env[ph] = val
 		s = strings.ReplaceAll(s, quoted, `"$`+ph+`"`)
 	}
-	for ph, val := range g.placeholderValue {
+	for ph, val := range st.placeholderValue {
 		if _, converted := env[ph]; converted {
+			continue
+		}
+		if !st.resolvesAt(ph, sink) {
 			continue
 		}
 		if strings.Contains(s, ph) {
@@ -806,46 +1216,189 @@ func (g *Guard) MaterializeShellEnv(s string) (string, map[string]string) {
 	return s, env
 }
 
+// MaterializeAuthoredShellEnv is MaterializeShellEnv for a reference the
+// workflow's AUTHOR wrote — in a tool node's own `command:`, its
+// postcondition. It resolves everything MaterializeShellEnv resolves, at the
+// `command` sink, plus the env-only class: a credential the server minted for
+// this run, which reaches the command through the child process's environment
+// and nowhere else.
+//
+// The distinction is PROVENANCE, not sink. A command a MODEL proposed (the
+// self-repair rung) goes through plain MaterializeShellEnv, where an env-only
+// placeholder resolves to nothing — so a model that writes one, or copies one
+// out of the failed command it was shown, gets the placeholder and not the
+// grant. The plain method is the safe default every new call site inherits;
+// this one is chosen explicitly, for text no model can author — which a
+// rendered body is NOT: data an edge or a launch var carries into it spells
+// placeholders as well as the author does. So s is the text of ONE authored
+// reference, in the form it stands in the body (the placeholder, quoted or
+// bare); the executor marks each such reference in its rendering and resolves
+// the marks through here, one at a time (pkg/backend/model, bodySecrets).
+//
+// An env-only placeholder is converted ONLY in its single-quoted form, with
+// no inline fallback: the whole point is that its value never enters an argv.
+// A bare occurrence (the author's own {{!vars.x}} raw form, which opts out of
+// quoting) is left as written rather than inlined.
+func (g *Guard) MaterializeAuthoredShellEnv(s string) (string, map[string]string) {
+	out, env := g.materializeShellEnvAt(secretsink.Command, s)
+	st := g.load()
+	if st == nil || out == "" || len(st.envOnlyValue) == 0 {
+		return out, env
+	}
+	for ph, val := range st.envOnlyValue {
+		quoted := "'" + ph + "'"
+		if !strings.Contains(out, quoted) {
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string, len(st.envOnlyValue))
+		}
+		env[ph] = val
+		out = strings.ReplaceAll(out, quoted, `"$`+ph+`"`)
+	}
+	return out, env
+}
+
+// AuthoredEnvForBody returns the env-only values a body iterion does NOT
+// rewrite must read from its own environment: placeholder → value, for every
+// env-only secret whose placeholder the body names.
+//
+// It is the script counterpart of MaterializeAuthoredShellEnv. A `script:`
+// body is a program in its own language, so iterion cannot turn a reference
+// into a variable read for it — the AUTHOR names the variable, and the
+// placeholder is that name (it is a valid POSIX environment-variable name by
+// construction, which is what MaterializeShellEnv already relies on). Only a
+// body that names one receives it, so the value reaches the one node that
+// asked and not every tool process of the run. s is the author's text as
+// written, before any value is rendered into it: a placeholder data carries
+// names no variable. Nil-safe.
+func (g *Guard) AuthoredEnvForBody(s string) map[string]string {
+	st := g.load()
+	if st == nil || s == "" || len(st.envOnlyValue) == 0 {
+		return nil
+	}
+	var env map[string]string
+	for ph, val := range st.envOnlyValue {
+		if !strings.Contains(s, ph) {
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string, len(st.envOnlyValue))
+		}
+		env[ph] = val
+	}
+	return env
+}
+
+// AuthoredEnvPlaceholder returns the placeholder that stands for the env-only
+// secret registered under name, or "" when this guard holds none. The
+// template layer ASKS rather than deriving the placeholder from the name:
+// only a placeholder this guard will materialise may take a value's place, or
+// the command would run with a reference that resolves to nothing. Nil-safe.
+func (g *Guard) AuthoredEnvPlaceholder(name string) string {
+	st := g.load()
+	if st == nil || name == "" {
+		return ""
+	}
+	return st.envOnlyByName[name]
+}
+
+// NamesEnvOnlySecret reports whether s references an env-only secret's
+// placeholder. A caller that hands authored text to another TOOL asks first:
+// the compression rewriter runs the command it rewrites, and the value is
+// materialised into whatever child starts it. Nil-safe.
+func (g *Guard) NamesEnvOnlySecret(s string) bool {
+	st := g.load()
+	if st == nil || s == "" {
+		return false
+	}
+	for ph := range st.envOnlyValue {
+		if strings.Contains(s, ph) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveSecretRef renders a {{secrets.NAME}} reference. With
 // placeholders enabled (default) it returns the opaque placeholder —
 // the agent never sees the real value, which Materialize swaps in at
 // exec. With the kill-switch off it returns the real value directly.
 // Returns "" on a nil guard or an unknown/unregistered name.
 func (g *Guard) ResolveSecretRef(name string) string {
-	if g == nil {
+	st := g.load()
+	if st == nil {
 		return ""
 	}
-	if path := g.SecretFilePath(name); path != "" {
+	if path := st.secretFilePath(name); path != "" {
 		return path
 	}
+	return st.resolveSecretRef(name, g.cfg.Placeholders)
+}
+
+// ResolveSecretRefAt is ResolveSecretRef for a text rendered at a named
+// sink: a value secret whose grants exclude the sink resolves to nothing —
+// the reference stays as written, the way an undeclared one does — so a
+// prompt-like surface the compiler never walked (a bundle preset's prompt,
+// an `images:` path) cannot hand a model a placeholder, or with placeholders
+// off a value, that the declaration keeps off prompts. A file secret
+// renders its mounted path whatever the sink: the `file` grant on the
+// declaration governs the mount.
+func (g *Guard) ResolveSecretRefAt(sink, name string) string {
+	st := g.load()
+	if st == nil {
+		return ""
+	}
+	if path := st.secretFilePath(name); path != "" {
+		return path
+	}
+	ph, declared := st.placeholderByName[name]
+	if !declared || !st.resolvesAt(ph, sink) {
+		return ""
+	}
+	return st.resolveSecretRef(name, g.cfg.Placeholders)
+}
+
+// resolveSecretRef renders a declared value secret's reference: its
+// placeholder, or its value under the placeholder kill switch.
+func (st *guardState) resolveSecretRef(name string, placeholders bool) string {
 	// A generated placeholder is not a declaration: sanitizing an unknown
 	// name can even alias a declared one. Resolve the exact registered name,
 	// including its custom placeholder, and never offer RedactOnly values.
-	ph, declared := g.placeholderByName[name]
+	ph, declared := st.placeholderByName[name]
 	if !declared {
 		return ""
 	}
-	if g.cfg.Placeholders {
+	if placeholders {
 		return ph
 	}
-	return g.placeholderValue[ph]
+	return st.placeholderValue[ph]
+}
+
+// secretFilePath is SecretFilePath on an ALREADY LOADED generation: the
+// resolvers read the placeholder and file-path maps from the SAME
+// generation, so a Register swap landing between two loads cannot mix two
+// generations' answers in one resolution.
+func (st *guardState) secretFilePath(name string) string {
+	if st == nil || name == "" {
+		return ""
+	}
+	return st.filePathByName[name]
 }
 
 // SecretFilePath returns the mounted path for a file secret, or "" for
 // value secrets / unknown names.
 func (g *Guard) SecretFilePath(name string) string {
-	if g == nil || name == "" {
-		return ""
-	}
-	return g.filePathByName[name]
+	return g.load().secretFilePath(name)
 }
 
 func (g *Guard) SecretFileHints() []FileSecretHint {
-	if g == nil || len(g.fileHints) == 0 {
+	st := g.load()
+	if st == nil || len(st.fileHints) == 0 {
 		return nil
 	}
-	out := make([]FileSecretHint, len(g.fileHints))
-	copy(out, g.fileHints)
+	out := make([]FileSecretHint, len(st.fileHints))
+	copy(out, st.fileHints)
 	return out
 }
 
@@ -862,14 +1415,18 @@ func (g *Guard) SecretFileHints() []FileSecretHint {
 // same "no such file" it would in a sandbox, mirroring
 // pkg/runtime/sandbox_secret_files.go's skip.
 //
-// Concurrency: the caller MUST serialise this method against any concurrent
-// ResolveSecretRef / SecretFileHints reader (the executor guards it with a
-// sync.Once fired before dispatching any node). The returned cleanup removes
-// each written file; callers typically wrap it to also remove `dir`. Nil-safe.
+// Concurrency: the rewrite is a copy-on-write state swap, exchanged with a
+// CompareAndSwap on the generation it was built from, so a concurrent
+// Register cannot be dropped by the store (and the swap cannot overwrite a
+// registration that landed mid-rewrite — the build restarts from the fresh
+// generation, whose fileValueByName a same-name rotation may have already
+// refreshed). Readers (ResolveSecretRef / SecretFileHints) are race-safe
+// against it by construction. Two CONCURRENT MaterializeHostFiles calls
+// remain a logic race — the caller fires it once per run (the executor
+// guards it with a sync.Once before dispatching any node). The returned
+// cleanup removes each written file; callers typically wrap it to also
+// remove `dir`. Nil-safe.
 func (g *Guard) MaterializeHostFiles(dir string) (func(), error) {
-	if g == nil || len(g.fileHints) == 0 {
-		return func() {}, nil
-	}
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("secretguard: host materialisation dir is empty")
 	}
@@ -879,36 +1436,53 @@ func (g *Guard) MaterializeHostFiles(dir string) (func(), error) {
 			_ = os.Remove(p)
 		}
 	}
-	for i, h := range g.fileHints {
-		val, ok := g.fileValueByName[h.Name]
-		if !ok || val == "" {
-			continue
+	for {
+		st := g.load()
+		if st == nil || len(st.fileHints) == 0 {
+			return func() {}, nil
 		}
-		// A file already present at the DECLARED mount path is the cloud
-		// runner's own materialisation (materializeFileSecretsNoSandbox),
-		// which the runner's mid-run refresh loop keeps LIVE as the store
-		// record rotates. Keep the hint pointing there instead of taking a
-		// per-run tempdir snapshot: the snapshot freezes the launch-time
-		// value, so an agent reading the hinted path after the token's
-		// lifetime (a GitHub App installation token lives ~1h; the forge
-		// review post is the run's LAST action) would 401 — the live prod
-		// failure this closes. Local host runs have nothing at the mount
-		// path (creating /run/iterion/secrets needs root) and keep the
-		// tempdir path below.
-		if h.Path != "" {
-			if _, err := os.Stat(h.Path); err == nil {
-				g.filePathByName[h.Name] = h.Path
+		next := &guardState{}
+		*next = *st
+		next.filePathByName = make(map[string]string, len(st.filePathByName))
+		for k, v := range st.filePathByName {
+			next.filePathByName[k] = v
+		}
+		next.fileHints = append([]FileSecretHint(nil), st.fileHints...)
+		for i, h := range st.fileHints {
+			val, ok := st.fileValueByName[h.Name]
+			if !ok || val == "" {
 				continue
 			}
+			// A file already present at the DECLARED mount path is the cloud
+			// runner's own materialisation (materializeFileSecretsNoSandbox),
+			// which the runner's mid-run refresh loop keeps LIVE as the store
+			// record rotates. Keep the hint pointing there instead of taking a
+			// per-run tempdir snapshot: the snapshot freezes the launch-time
+			// value, so an agent reading the hinted path after the token's
+			// lifetime (a GitHub App installation token lives ~1h; the forge
+			// review post is the run's LAST action) would 401 — the live prod
+			// failure this closes. Local host runs have nothing at the mount
+			// path (creating /run/iterion/secrets needs root) and keep the
+			// tempdir path below.
+			if h.Path != "" {
+				if _, err := os.Stat(h.Path); err == nil {
+					next.filePathByName[h.Name] = h.Path
+					continue
+				}
+			}
+			hostPath := filepath.Join(dir, secrets.SanitizeFileName(h.Name))
+			if err := os.WriteFile(hostPath, []byte(val), 0o600); err != nil {
+				cleanup()
+				return nil, fmt.Errorf("secretguard: write host secret file %q: %w", h.Name, err)
+			}
+			written = append(written, hostPath)
+			next.fileHints[i].Path = hostPath
+			next.filePathByName[h.Name] = hostPath
 		}
-		hostPath := filepath.Join(dir, secrets.SanitizeFileName(h.Name))
-		if err := os.WriteFile(hostPath, []byte(val), 0o600); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("secretguard: write host secret file %q: %w", h.Name, err)
+		if g.state.CompareAndSwap(st, next) {
+			return cleanup, nil
 		}
-		written = append(written, hostPath)
-		g.fileHints[i].Path = hostPath
-		g.filePathByName[h.Name] = hostPath
+		// A Register landed inside the window: rebuild from the generation it
+		// produced and retry — the same host paths, the fresh values.
 	}
-	return cleanup, nil
 }

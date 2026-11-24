@@ -1,4 +1,4 @@
-import { guard404, request } from "./client";
+import { ApiError, guard404, request } from "./client";
 import type { components } from "./schema";
 import { apiGet, apiPost } from "./typed";
 
@@ -12,10 +12,10 @@ import { apiGet, apiPost } from "./typed";
 // rename breaks the build — while these three fields stay narrowed.
 export type ForgeProvider = "gitlab" | "github" | "forgejo";
 export type ForgeKind = "oauth_app" | "github_app" | "pat";
-export type ForgeConnectionStatus = "active" | "needs_reauth" | "revoked";
+export type ForgeConnectionStatus = "active" | "needs_reauth" | "revoked" | "degraded";
 
 export type ForgeConnection = Omit<
-  components["schemas"]["Connection"],
+  components["schemas"]["ForgeConnection"],
   "provider" | "kind" | "status"
 > & {
   provider: ForgeProvider;
@@ -52,6 +52,11 @@ export interface ForgeIntegration {
    *  alike. Hand-typed: the repo-bots routes carry no request/response
    *  schema in openapi.json, so this field regenerates nothing. */
   routing?: Record<string, unknown> | null;
+  /** The repo's issue-label filter (pkg/forge.RepoIntegration.LabelAllowlist):
+   *  only these freshly applied issue labels dispatch the repo's bots. Absent
+   *  when the repo narrows nothing — the server omits an empty list. Read it
+   *  through lib/labelFilter. Hand-typed for the same reason as `routing`. */
+  label_allowlist?: string[];
   /** The per-repository bot iterion minted for this repo (a GitLab project
    *  access token) on a connection that posts as project bots: its login,
    *  its token's expiry and the last rotation refusal. Absent otherwise. */
@@ -71,7 +76,7 @@ export interface ForgeIntegration {
 // RepoIntegration joined with its connection server-side.
 export interface ForgeTeamRepo {
   connection_id: string;
-  connection_status?: ForgeConnectionStatus | "degraded";
+  connection_status?: ForgeConnectionStatus;
   provider: ForgeProvider;
   repo_full_name: string;
   clone_url?: string;
@@ -307,6 +312,41 @@ export async function setForgeConnectionWebhookBase(
   });
 }
 
+// replaceForgeConnectionToken swaps a PAT connection's token IN PLACE
+// (#2488) — the renewal path for a GitLab project/group access token, which
+// must expire: Rotate on the forge, then paste the new value here. The server
+// WhoAmIs it first and refuses one that belongs to another account, so the
+// connection's hooks, enabled repos and managed secret survive the swap.
+// Sent ALONE, like every field of this PATCH (the server refuses a combined
+// body). The value is a write-only secret: it is never read back.
+export async function replaceForgeConnectionToken(
+  teamID: string,
+  connID: string,
+  pat: string,
+): Promise<ForgeConnection> {
+  return request(`/teams/${teamID}/forge/connections/${connID}`, {
+    method: "PATCH",
+    body: JSON.stringify({ pat }),
+  });
+}
+
+// reauthorizeForgeConnection starts the OAuth re-authorisation of an EXISTING
+// connection (#2698) — the repair for a needs_reauth (or degraded) oauth_app
+// connection, which re-running the connect wizard would otherwise strand: a
+// second connection next to the dead one that still owns every integration.
+// The caller redirects the window to the returned authorize_url; the callback
+// seals the fresh token pair into the same row and returns to `next`.
+export async function reauthorizeForgeConnection(
+  teamID: string,
+  connID: string,
+  next?: string,
+): Promise<{ authorize_url: string }> {
+  return request(`/teams/${teamID}/forge/connections/${connID}/reauthorize`, {
+    method: "POST",
+    body: JSON.stringify({ next }),
+  });
+}
+
 export async function deleteForgeConnection(teamID: string, connID: string): Promise<void> {
   await request<void>(`/teams/${teamID}/forge/connections/${connID}`, { method: "DELETE" });
 }
@@ -352,6 +392,13 @@ export async function previewForgeEnable(
 // already pins, so a caller only passes one for a repo it is integrating for
 // the first time; an already-integrated repo changes its pins through
 // updateForgeRepoBots, over its whole launch_vars map.
+//
+// labelAllowlist, when passed, states the repo's issue-label filter
+// (pkg/server forgeEnableReq.LabelAllowlist): a non-empty list narrows the
+// issue-labeled lane to those labels, and an EMPTY list clears a stored
+// filter — every freshly applied label dispatches again. UNDEFINED omits
+// `label_allowlist`, which keeps the stored list: a caller passes one only
+// for a list the operator changed (lib/labelFilter.labelFilterChange).
 export async function enableForgeRepoBots(
   teamID: string,
   connID: string,
@@ -359,6 +406,7 @@ export async function enableForgeRepoBots(
   botIDs: string[],
   scheduleCrons?: Record<string, string>,
   launchVars?: Record<string, string>,
+  labelAllowlist?: string[],
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots`, {
     method: "POST",
@@ -369,6 +417,9 @@ export async function enableForgeRepoBots(
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
       launch_vars: launchVars,
+      // JSON.stringify drops an undefined key and keeps an empty array —
+      // the server's "keep" and "clear", in that order.
+      label_allowlist: labelAllowlist,
     }),
   });
 }
@@ -386,6 +437,10 @@ export async function enableForgeRepoBots(
 // server-side (forge.RepoIntegration.LaunchVars is not merged on PATCH) —
 // callers that want to change one key must spread the integration's
 // current launch_vars first (see RepoDetail's review tier and merge gate).
+// A map that would drop a pin the repo already holds is REFUSED 400
+// (launch_vars_drop) naming those pins, unless launchVarsReplace states the
+// whole-map replacement explicitly: read the refusal with
+// launchVarsRefusalOf and offer the gesture it names.
 //
 // routing, when passed, is the repo's routing policy (ADR-129): an object
 // REPLACES the stored block wholesale, null CLEARS it, UNDEFINED omits the
@@ -399,6 +454,7 @@ export async function updateForgeRepoBots(
   scheduleCrons?: Record<string, string>,
   launchVars?: Record<string, string>,
   routing?: Record<string, unknown> | null,
+  launchVarsReplace?: boolean,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
     method: "PATCH",
@@ -410,6 +466,10 @@ export async function updateForgeRepoBots(
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
       launch_vars: launchVars,
       routing,
+      // Only ever sent as `true`: the flag is a one-shot operator gesture
+      // ("replace the whole map, I know which pins go"), so a `false` on
+      // every ordinary write would read as a posture the operator never took.
+      launch_vars_replace: launchVarsReplace ? true : undefined,
     }),
   });
 }
@@ -585,4 +645,48 @@ export async function startGitHubManifest(
     params: { id: teamID },
     body: { provider: "github", ...input },
   })) as GitHubManifestStart;
+}
+
+// The three stable codes pkg/server answers for a launch_vars refusal of the
+// repo-bots routes (forge_provisioning_routes.go). A surface branches on
+// these, never on the message.
+export const LAUNCH_VARS_DROP_CODE = "launch_vars_drop";
+export const PROVISION_DIVERGED_CODE = "provision_diverged";
+export const PROVISION_DIVERGED_RETRY_CODE = "provision_diverged_retry";
+
+export type LaunchVarsRefusalKind = "drop" | "diverged" | "retry";
+
+// LaunchVarsRefusal is a provisioning refusal whose remedy is a gesture the
+// operator can make: echo the named pins, replace the whole map, or simply
+// re-send the same request.
+export interface LaunchVarsRefusal {
+  kind: LaunchVarsRefusalKind;
+  // keys are the pins the refusal named. EMPTY on a `diverged`/`retry`
+  // refusal: a 500's payload is floored to its code (internal/httpx), so the
+  // server's list does not travel — the surface names the pins it holds
+  // itself rather than claiming the server said nothing was at stake.
+  keys: string[];
+  // message is the server's own words, "" when the floor dropped them.
+  message: string;
+}
+
+// launchVarsRefusalOf reads a launch_vars refusal off a thrown error, or null
+// when the failure is any other kind. The kind comes from the stable
+// error_code and the keys from the envelope's `launch_vars_keys` — the typed
+// cause the server put there — so a reworded message never changes which
+// gesture is offered.
+export function launchVarsRefusalOf(err: unknown): LaunchVarsRefusal | null {
+  if (!(err instanceof ApiError)) return null;
+  const kind: LaunchVarsRefusalKind | null =
+    err.errorCode === LAUNCH_VARS_DROP_CODE
+      ? "drop"
+      : err.errorCode === PROVISION_DIVERGED_CODE
+        ? "diverged"
+        : err.errorCode === PROVISION_DIVERGED_RETRY_CODE
+          ? "retry"
+          : null;
+  if (!kind) return null;
+  const raw = err.body?.launch_vars_keys;
+  const keys = Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : [];
+  return { kind, keys, message: err.detail ?? "" };
 }

@@ -93,7 +93,20 @@ export async function captureActiveEditorDocument(
   const readRefusal = state.salvaged ? state.readRefusal : null;
   // Unparse the AST snapshot, not currentSource: currentSource is a cache of
   // the last open/save/source-edit operation and can lag canvas mutations.
-  const source = readRefusal ? "" : (await api.unparse(state.document)).source;
+  // A bot in several files renders only FLATTENED for this (#1647): the
+  // server refuses its document as one file, since a save of that text
+  // would fold every file into the main — so the model reads the merged
+  // program, and its proposal is ONE file's text, named by editor_file.
+  const source = readRefusal
+    ? ""
+    : state.unit
+      ? (
+          await api.unparse(state.document, {
+            flatten: true,
+            path: state.currentFilePath,
+          })
+        ).source
+      : (await api.unparse(state.document)).source;
   const complete = !readRefusal && source.length <= activeEditorSourceLimit();
   const sessionId = tokenForTab(tabId);
   let authoring: AssistantAuthoringSnapshot | undefined;
@@ -133,6 +146,16 @@ export async function captureActiveEditorDocument(
     dirty: state.hasUnsavedWork(),
     ...(complete ? { source } : {}),
     ...(readRefusal ? { readRefusal } : {}),
+    // A bot in several files tells the model its files so the proposal can
+    // name ONE of them: `source` above is the merged program, for reading.
+    ...(state.unit
+      ? {
+          unit: {
+            main: state.unit.main,
+            files: state.unit.files.map((f) => f.rel),
+          },
+        }
+      : {}),
     ...(authoring ? { authoring } : {}),
     ...(sharedBundle ? { sharedBundle } : {}),
   };

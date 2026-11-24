@@ -48,6 +48,7 @@ func TestSyncDebounce_ARefusalIsAVerdictNotAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored.ForkLane = true
+	stored.ForkLanePool = "forks"
 	if err := s.webhookConfigs.Update(context.Background(), stored); err != nil {
 		t.Fatal(err)
 	}

@@ -41,6 +41,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/clock"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,10 @@ import (
 // Pool is one org's mutualised credential pool. A deployment normally runs
 // exactly one (id == the owning org id); the type carries an explicit ID so
 // a deployment can run several without a schema change.
+//
+// Since the named key pools (ADR-164) a pool also carries an owner and a
+// visibility. The zero values keep every legacy row meaning what it always
+// meant: an org-owned pool open to its audience.
 type Pool struct {
 	ID    string `bson:"_id" json:"id"`
 	OrgID string `bson:"org_id" json:"org_id"`
@@ -60,6 +65,116 @@ type Pool struct {
 	Audience  Audience  `bson:"audience" json:"audience"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	// OwnerType says what kind of principal owns the pool: "" (org, the
+	// legacy reading — every pre-ADR-164 row), "org", "user" or "platform".
+	// OwnerID names it: the org id, the user id, or empty for the platform
+	// (the deployment itself). The owner decides who manages the pool and
+	// who its private entries serve — not who may DRAW on it (that is
+	// Audience, or an attachment).
+	OwnerType PoolOwnerType `bson:"owner_type,omitempty" json:"owner_type,omitempty"`
+	OwnerID   string        `bson:"owner_id,omitempty" json:"owner_id,omitempty"`
+	// Visibility sorts pools into the two draw surfaces. "audience" ("" on
+	// legacy rows) answers the legacy walk: the whole-bundle tier and the
+	// fallback door reach it through ListEnabled + Audience. "private"
+	// answers NOTHING without an explicit pool attachment — no audience
+	// walk, no door probe; the attachment IS the consent. A private pool is
+	// the BYO default: one user's forfaits serving their own launches (or
+	// whatever scope they explicitly attached) and nobody else's.
+	Visibility PoolVisibility `bson:"visibility,omitempty" json:"visibility,omitempty"`
+}
+
+// PoolOwnerType is the kind of principal that owns a pool.
+type PoolOwnerType string
+
+const (
+	// PoolOwnerOrg — an organisation. "" reads as this (legacy rows).
+	PoolOwnerOrg PoolOwnerType = "org"
+	// PoolOwnerUser — a single user (BYO).
+	PoolOwnerUser PoolOwnerType = "user"
+	// PoolOwnerPlatform — the deployment itself (the instance default pool).
+	PoolOwnerPlatform PoolOwnerType = "platform"
+)
+
+// PoolVisibility decides which draw surface may reach a pool.
+type PoolVisibility string
+
+const (
+	// PoolVisibilityAudience — reachable through the legacy walk
+	// (ListEnabled + Audience). "" reads as this (legacy rows).
+	PoolVisibilityAudience PoolVisibility = "audience"
+	// PoolVisibilityPrivate — reachable ONLY through an explicit pool
+	// attachment.
+	PoolVisibilityPrivate PoolVisibility = "private"
+)
+
+// EffectiveOwnerType resolves the legacy zero value.
+func (p Pool) EffectiveOwnerType() PoolOwnerType {
+	if p.OwnerType == "" {
+		return PoolOwnerOrg
+	}
+	return p.OwnerType
+}
+
+// EffectiveVisibility resolves the legacy zero value.
+func (p Pool) EffectiveVisibility() PoolVisibility {
+	if p.Visibility == "" {
+		return PoolVisibilityAudience
+	}
+	return p.Visibility
+}
+
+// OwnedBy reports whether principal (ownerType, ownerID) manages this pool.
+// The zero ownerType names the caller's own org row shape: an org id matches
+// the pool's org.
+func (p Pool) OwnedBy(ownerType PoolOwnerType, ownerID string) bool {
+	switch p.EffectiveOwnerType() {
+	case PoolOwnerPlatform:
+		return ownerType == PoolOwnerPlatform
+	case PoolOwnerUser:
+		return ownerType == PoolOwnerUser && ownerID != "" && p.OwnerID == ownerID
+	default:
+		if ownerType == PoolOwnerOrg || ownerType == "" {
+			return ownerID != "" && p.OrgID == ownerID
+		}
+		return false
+	}
+}
+
+// Validate checks a pool before it is stored. It keeps the owner trio and
+// the visibility honest: a user pool carries no OrgID (the Audience
+// org-implicit rule must never silently open a private pool), and private
+// is a user-only shape (an org or platform pool that wants to serve by
+// attachment only sets a zero Audience instead — the zero narrows).
+func (p Pool) Validate() error {
+	switch p.OwnerType {
+	case "", PoolOwnerOrg:
+		if p.OwnerType == PoolOwnerOrg && p.OwnerID != "" && p.OwnerID != p.OrgID {
+			return fmt.Errorf("credpool: an org pool's owner must be its org (owner %q != org %q)", p.OwnerID, p.OrgID)
+		}
+	case PoolOwnerUser:
+		if p.OwnerID == "" {
+			return fmt.Errorf("credpool: a user pool must name its owner")
+		}
+		if p.OrgID != "" {
+			return fmt.Errorf("credpool: a user pool must not carry an OrgID — the audience org-implicit rule would open it to the org's teams")
+		}
+	case PoolOwnerPlatform:
+		if p.OrgID != "" {
+			return fmt.Errorf("credpool: a platform pool belongs to the deployment, not to org %q", p.OrgID)
+		}
+	default:
+		return fmt.Errorf("credpool: unknown pool owner type %q", p.OwnerType)
+	}
+	switch p.Visibility {
+	case "", PoolVisibilityAudience:
+	case PoolVisibilityPrivate:
+		if p.EffectiveOwnerType() != PoolOwnerUser {
+			return fmt.Errorf("credpool: only a user pool can be private — an org or platform pool narrows with a zero Audience instead")
+		}
+	default:
+		return fmt.Errorf("credpool: unknown pool visibility %q", p.Visibility)
+	}
+	return nil
 }
 
 // Audience decides who may draw on a pool. The four predicates are
@@ -318,8 +433,9 @@ func (c Credential) String() string {
 }
 
 // Pledge is one donor's standing offer of one credential they hold.
-// Keyed by (UserID, Source, Ref), so a pledge can never point at a
-// credential that is not the donor's own.
+// Keyed by (UserID, Source, Ref, KeyID) — see PledgeID — so a pledge can
+// never point at a credential that is not the donor's own, and two keys of
+// one provider are two offers.
 type Pledge struct {
 	ID     string `bson:"_id" json:"id"`
 	PoolID string `bson:"pool_id" json:"pool_id"`
@@ -336,16 +452,50 @@ type Pledge struct {
 	// Bots optionally restricts which bot ids this credential may run.
 	// Empty means any bot the pool serves.
 	Bots []string `bson:"bots,omitempty" json:"bots,omitempty"`
+	// Backend is the harness this entry serves (an llmroute harness name),
+	// and Model the verbatim model id (ADR-122). Both empty — the default —
+	// means the entry funds whatever pair its slot would natively carry: a
+	// subscription runs its own CLI, a vendor key serves its provider's
+	// default. Model set names the entry-level override above the
+	// credential's default-model seat (#2906 will land that seat on the
+	// ApiKey row; until then the entry override IS the only name). A
+	// GATEWAY entry (api_key lent as openai_compatible) must set Model:
+	// the verbatim gateway id is what the run's fallback rung needs to
+	// compose, and a gateway credential with no model id is a seal that
+	// answers nothing.
+	Backend string `bson:"backend,omitempty" json:"backend,omitempty"`
+	Model   string `bson:"model,omitempty" json:"model,omitempty"`
+	// Priority orders the entry inside a `priority` strategy (ADR-164):
+	// lower first, equal priorities keep the pool's fairness ranking. Zero
+	// is a valid priority (the natural "first" for a single pool) — only a
+	// negative value is refused.
+	Priority int `bson:"priority,omitempty" json:"priority,omitempty"`
+	// LendScope names the reserved secrets scope the lent credential lives
+	// under, for operator-pushed entries: "" is a personal lender (the
+	// ordinary GetOwned read), secrets.OrgTierTenantID(orgID) or
+	// secrets.PlatformTenantID() an operator-pushed one (read by
+	// owner-scope, never re-scoped cross-tenant — a borrower can never
+	// repoint somebody else's credential).
+	LendScope string `bson:"lend_scope,omitempty" json:"lend_scope,omitempty"`
 	// FallbackUse consents this credential to serve a FALLBACK rung of a
 	// run that holds its own credential — the routing policy's ladder
 	// needing a kind the run lacks (ADR-121 § The per-family pool
 	// fallback door). Off (the default) keeps the pledge in the
 	// whole-bundle tier only; the mark ADDS a lane and removes none. An
 	// armed door holds a runs/day unit and a concurrency slot until the
-	// run publishes even when the fallback never fires, and the ATTEMPT'S
-	// WHOLE SPEND books against your ledger's ceilings (the spend report
-	// is per attempt, not per credential) — zero spend is not zero cost,
-	// and the consent UI says so.
+	// run publishes even when the fallback never fires. The spend that
+	// books against your ledger's ceilings is the slice that ran on YOUR
+	// credential: the run's report carries a per-credential table (#2288)
+	// and the lease books only its own fingerprint's share — a rung the
+	// fallback never fired on books nothing. That slicing holds only while
+	// every call the attempt paid for is placed on a credential: a walk
+	// the publisher could not read (a template it cannot resolve, a
+	// provider outside its vocabulary) stamps no plan, and a call the
+	// runner cannot place on a planned credential at run time (a claw
+	// sub-agent's loop, a model chosen mid-run) sends no table — either
+	// way the whole attempt books, the coarse whole-attempt booking. A
+	// whole-bundle grant is sliced the same way: spend on a credential
+	// another tier sealed beside it stays off your ledger.
 	FallbackUse bool `bson:"fallback_use,omitempty" json:"fallback_use,omitempty"`
 	// CooldownUntil holds the pledge out of the pool until the provider's
 	// quota window resets. Set from ErrRateLimited.ResetAt.
@@ -364,8 +514,35 @@ type Pledge struct {
 
 // PledgeID is the deterministic id for one donor's offer of one
 // credential.
-func PledgeID(userID string, src CredentialSource, ref string) string {
+//
+// An api_key pledge is identified by the KEY it lends: a donor may hold
+// several keys of one provider and lend two of them, and (lender, source,
+// ref) alone would put both offers on one _id — the second write would
+// silently replace the first, losing half the donation and leaving the
+// broker nothing to fail over to.
+//
+// Every other shape keeps the historical three segments, byte for byte: an
+// oauth pledge is one per connection kind, so its id needs no migration.
+//
+// The arity is fixed on purpose: a variadic keyID would let an api_key call
+// site keep compiling into the old, colliding id.
+func PledgeID(userID string, src CredentialSource, ref, keyID string) string {
+	if src == SourceAPIKey && keyID != "" {
+		return userID + "|" + string(src) + "|" + ref + "|" + keyID
+	}
 	return userID + "|" + string(src) + "|" + ref
+}
+
+// OAuthPledgeID is PledgeID for a subscription — the three-segment identity
+// an oauth pledge has always had.
+func OAuthPledgeID(userID, ref string) string {
+	return PledgeID(userID, SourceOAuth, ref, "")
+}
+
+// APIKeyPledgeID is PledgeID for a metered key: the key's own id is part of
+// the identity.
+func APIKeyPledgeID(userID, ref, keyID string) string {
+	return PledgeID(userID, SourceAPIKey, ref, keyID)
 }
 
 // Validate checks a donor-supplied pledge before it is stored.
@@ -384,6 +561,32 @@ func (p Pledge) Validate() error {
 	if p.Source == SourceAPIKey && strings.TrimSpace(p.KeyID) == "" {
 		return fmt.Errorf("credpool: an api_key pledge must name the key it lends")
 	}
+	// A gateway entry must name the verbatim model id it serves (ADR-122):
+	// it is what the run's fallback rung composes, and a gateway credential
+	// without one is a seal that answers nothing.
+	if p.Source == SourceAPIKey && string(secrets.ProviderOpenAICompatible) == p.Ref && strings.TrimSpace(p.Model) == "" {
+		return fmt.Errorf("credpool: a gateway (openai_compatible) entry must name the verbatim model id it serves")
+	}
+	if strings.TrimSpace(p.Backend) != p.Backend || strings.ContainsAny(p.Backend, " \t/:") {
+		return fmt.Errorf("credpool: backend %q is not a harness name", p.Backend)
+	}
+	if strings.ContainsAny(p.Model, " \t") {
+		return fmt.Errorf("credpool: model %q carries whitespace — model ids are verbatim (ADR-122)", p.Model)
+	}
+	if p.Priority < 0 {
+		return fmt.Errorf("credpool: priority cannot be negative")
+	}
+	switch p.LendScope {
+	case "":
+	case secrets.PlatformTenantID:
+	default:
+		// OrgTierTenantID("") is the bare "orgtier:" prefix; a scope names
+		// an org only when something follows it.
+		rest, ok := strings.CutPrefix(p.LendScope, secrets.OrgTierTenantID(""))
+		if !ok || rest == "" {
+			return fmt.Errorf("credpool: lend_scope %q is neither personal, the platform scope, nor an orgtier:<org> scope", p.LendScope)
+		}
+	}
 	if err := p.Limits.Validate(); err != nil {
 		return err
 	}
@@ -400,11 +603,8 @@ func (p Pledge) Cooling(now time.Time) bool {
 // token, surfaced to the donor and in the acquisition trace so "why did
 // nobody serve this run" is answerable.
 func (p Pledge) Available(now time.Time, botID string) (bool, Status) {
-	if !p.Enabled {
-		return false, StatusPaused
-	}
-	if p.Health != HealthOK && p.Health != "" {
-		return false, StatusUnhealthy
+	if parked := p.parked(); parked != "" {
+		return false, parked
 	}
 	if p.Cooling(now) {
 		return false, StatusCooling
@@ -431,10 +631,39 @@ func (p Pledge) AvailableForLaunch(now time.Time, botID string) (bool, Status) {
 	if ok, status := p.Available(now, botID); !ok {
 		return false, status
 	}
-	if len(p.Bots) > 0 && !p.servesBot(botID) {
-		return false, StatusBotFiltered
+	if refused := p.launchRefusal(botID); refused != "" {
+		return false, refused
 	}
 	return true, StatusActive
+}
+
+// parked is the pledge's own state that holds it out of every selection:
+// paused by its donor, or unhealthy. "" when neither.
+func (p Pledge) parked() Status {
+	if !p.Enabled {
+		return StatusPaused
+	}
+	if p.Health != HealthOK && p.Health != "" {
+		return StatusUnhealthy
+	}
+	return ""
+}
+
+// launchRefusal is the part of AvailableForLaunch no clock clears: the pledge
+// parked (paused, unhealthy), or its bot allow-list refusing the launch —
+// fail closed on an empty bot id, as AvailableForLaunch. "" when the pledge
+// serves the launch once its cooldown ends, its sharing hours open and its
+// ledger admits. Available reports the cooldown and the sharing hours before
+// the allow-list, so its status alone cannot tell an entry that will serve
+// this launch from one that never will.
+func (p Pledge) launchRefusal(botID string) Status {
+	if parked := p.parked(); parked != "" {
+		return parked
+	}
+	if len(p.Bots) > 0 && !p.servesBot(botID) {
+		return StatusBotFiltered
+	}
+	return ""
 }
 
 func (p Pledge) servesBot(botID string) bool {
@@ -510,9 +739,33 @@ type Lease struct {
 	// takeover's own, and stays silent on this lease.
 	SupersededByPublishedAt *time.Time `bson:"superseded_by_published_at,omitempty" json:"superseded_by_published_at,omitempty"`
 	// ExpiresAt bounds an abandoned lease. A pod killed mid-run never
-	// reports, so without this the donor would lose a concurrency slot
-	// permanently; the sweeper closes anything past this instant.
-	ExpiresAt time.Time `bson:"expires_at" json:"expires_at"`
+	// reports, so without this the donor would lose a concurrency dial
+	// (MaxConcurrentRuns) permanently; the sweeper closes anything past
+	// this instant. AttachmentID stamps the DRAW cap row (att:) the
+	// admission reserved against — empty for a legacy (unattached) grant,
+	// so a legacy lease reads as no attachment everywhere.
+	ExpiresAt    time.Time `bson:"expires_at" json:"expires_at"`
+	AttachmentID string    `bson:"attachment_id,omitempty" json:"attachment_id,omitempty"`
+	// AttConsumedRunUnit records whether THIS lease's att: admission was a
+	// Reserve (a fresh draw unit the release must refund) versus a Renew —
+	// it is NOT the donor flag's echo: a resume onto a different pledge of
+	// the same attachment consumes a donor unit while the att: row renews,
+	// and gating the att: refund on ConsumedRunUnit would under-count the
+	// borrower's draw cap (the round-2 review's R95acf7 shape). Empty
+	// AttachmentID leaves it meaningless.
+	AttConsumedRunUnit bool `bson:"att_consumed_run_unit,omitempty" json:"att_consumed_run_unit,omitempty"`
+	// Held marks the entry the strategy SWITCHED to under reset_hold
+	// (ADR-164): a better-ranked entry of the same kind was skipped
+	// (margin, cooldown, exhaustion, health) or the run already held this
+	// entry. A resume prefers the run's newest held entry of the kind over
+	// re-ranking, until the entry reset route clears the mark.
+	Held bool `bson:"held,omitempty" json:"held,omitempty"`
+	// AttemptID names the credential resolution that opened the lease —
+	// the leases ONE attempt seals side by side (the attached tier's
+	// forfait and gateway slots) share it. The attempt's report settles
+	// exactly these siblings, whatever their state, and never a lease of
+	// another attempt of the same run. Empty on single-lease acquisitions.
+	AttemptID string `bson:"attempt_id,omitempty" json:"attempt_id,omitempty"`
 }
 
 // Lease outcomes. Free-form for display, but these three are load-bearing:
@@ -525,8 +778,9 @@ const (
 	// OutcomeSuperseded — a later attempt of the same run took over.
 	OutcomeSuperseded = "superseded"
 	// OutcomeSupersededReported — a superseded lease its own attempt later
-	// reported against: the supersede charged nothing, the stamp's CAS let
-	// exactly one report charge, and the lease no longer reads as a plain
+	// settled: the supersede charged nothing, the stamp's CAS let exactly
+	// one FINAL report charge (interim reports charged it as they came,
+	// without the stamp), and the lease no longer reads as a plain
 	// supersede (Reopen's CAS misses it). HasServedAttempt reads it as
 	// SERVED — the attempt did run and pay — so a later acquisition of the
 	// run RENEWS the donor's allowance instead of reserving a unit, which
@@ -537,7 +791,10 @@ const (
 	// over, and the takeover holds no lease of its own, so a report of the
 	// takeover must never charge this lease (ReportAttempt stays silent).
 	OutcomeSupersededGrantless = "superseded_grantless"
-	// OutcomeNotLaunched — the grant was returned; the run never started.
+	// OutcomeNotLaunched — the grant was returned: the run never started on
+	// it, or its attempt was parked before settling (a captured release —
+	// an earlier delivery's interim spend stays booked, its run unit is
+	// given back all the same, #3151).
 	OutcomeNotLaunched = "not_launched"
 )
 
@@ -549,9 +806,9 @@ const (
 //   - not_launched: Release already gave its run unit back, so treating it
 //     as an admission would let the next attempt renew against a unit that
 //     no longer exists — and slip past the donor's daily ceiling.
-//   - superseded: the attempt it belonged to was still open when the next
-//     one asked, i.e. it died without reporting. Same reasoning as
-//     abandoned, minus the wait for the sweeper.
+//   - superseded: the attempt it belonged to had not settled (no final
+//     report) when the next one asked — at most interim reports charged
+//     it. Same reasoning as abandoned, minus the wait for the sweeper.
 var nonAdmissionOutcomes = []string{OutcomeAbandoned, OutcomeNotLaunched, OutcomeSuperseded}
 
 func isNonAdmission(outcome string) bool {

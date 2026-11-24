@@ -118,7 +118,7 @@ var dslMigrateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dslMigrateOpts.Paths = args
 		dslMigrateOpts.Printer = newPrinter()
-		_, err := cli.MigrateDSL(dslMigrateOpts)
+		_, err := cli.MigrateDSL(cmd.Context(), dslMigrateOpts)
 		return err
 	},
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -60,6 +63,15 @@ type createScheduleReq struct {
 	// STRICTLY through the RawMessage (a camelCase typo must 400, not
 	// silently store a no-op block audited as set).
 	Routing json.RawMessage `json:"routing,omitempty"`
+	// Pool block (ADR-164; validated on create) — the binding-level pool
+	// opt-in, decoded STRICTLY through decodePoolBlock like the routing
+	// block beside it. On create, `null` and absent both mean no block.
+	Pool json.RawMessage `json:"pool,omitempty"`
+	// KeyOverrides pins a BYOK api key per LLM provider (provider → api key
+	// id) for this schedule's runs, over the bound integration's own pins.
+	// Validated like a webhook's or a trigger subscription's pin
+	// (validateKeyOverrides), against the identity the tick launches under.
+	KeyOverrides map[string]string `json:"key_overrides,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -88,13 +100,53 @@ type updateScheduleReq struct {
 	// what it does not know about), `null` clears it, an object replaces it
 	// wholesale. The same mechanic the platform record's PUT uses.
 	Routing json.RawMessage `json:"routing,omitempty"`
+	// Pool block (ADR-164): the binding-level opt-in — {pool_id, enabled,
+	// strategy{mode, margin_pct, triggers, reset_hold}}. ABSENT leaves the
+	// stored block untouched, `null` clears it (the schedule inherits
+	// again), an object replaces it wholesale. Validated at record-write
+	// time (validatePoolBindingWrite): an ENABLED block needs the pool to
+	// exist, be enabled and CONSENT (an org pool of this team's org, a user
+	// pool whose audience admits the team); an opt-out block (enabled
+	// false) grants nothing and needs only a valid shape. An enabled block
+	// is the machine lane's grant: the schedule's launches draw the named
+	// pool because an admin of this team wrote it.
+	Pool json.RawMessage `json:"pool,omitempty"`
+	// KeyOverrides (provider → api key id): ABSENT leaves the stored pins
+	// untouched, `null` or `{}` clears them (the schedule inherits its
+	// integration's pins again), an object replaces them wholesale —
+	// validated before it lands, like the create lane.
+	KeyOverrides json.RawMessage `json:"key_overrides,omitempty"`
+}
+
+// decodeScheduleKeyPins reads a PATCH's key_overrides block: spoke is false
+// when the request left the field out, pins is nil when it cleared them.
+func decodeScheduleKeyPins(raw json.RawMessage) (map[string]string, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var pins map[string]string
+	if err := json.Unmarshal(raw, &pins); err != nil {
+		return nil, false, fmt.Errorf("key_overrides: want an object of provider → api key id: %w", err)
+	}
+	if len(pins) == 0 {
+		return nil, true, nil
+	}
+	return pins, true, nil
+}
+
+// validateScheduleKeyPins judges a schedule's key pins for the write: the
+// rule every machine lane's pin passes (validateKeyOverrides), against the
+// identity the schedule's tick resolves credentials under — the tick holds
+// the stored pins to that same rule again when it spends them.
+func (s *Server) validateScheduleKeyPins(ctx context.Context, teamID, botID string, pins map[string]string) error {
+	return s.validateKeyOverrides(teamTenantCtx(ctx, teamID), teamID, scheduledLaunchOwner(botID), pins)
 }
 
 // decodeScheduleRouting decodes a schedule request's routing block through
 // the ONE routing decoder (routing_decode.go) under the binding surface's
 // lock posture: the binding level does not hold the lock primitive
-// (ADR-121 — the author's manifest and the platform record do; a schedule
-// lock would launder unset past the author).
+// (ADR-121 — routingLockHolders do; a schedule lock would launder unset
+// past the author).
 func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, bool, *routingRequestError) {
 	return decodeRoutingBlock(raw, routingLocksRefused)
 }
@@ -207,6 +259,22 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, routeErr.status, "%s", routeErr.err.Error())
 		return
 	}
+	createPool, _, poolErr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if poolErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
+		return
+	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, createPool) {
+		return
+	}
+	if err := s.validateScheduleKeyPins(r.Context(), teamID, botID, req.KeyOverrides); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	var keyPins map[string]string
+	if len(req.KeyOverrides) > 0 {
+		keyPins = req.KeyOverrides
+	}
 	now := s.scheduleNow()
 	sb := cloudsched.ScheduledBot{
 		ID:              uuid.NewString(),
@@ -233,6 +301,8 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		RetryMaxWait:      req.RetryMaxWait,
 		RetryJitter:       req.RetryJitter,
 		Routing:           routing,
+		Pool:              createPool,
+		KeyOverrides:      keyPins,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -249,7 +319,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.created", "schedule", sb.ID, map[string]any{
 		"bot_id": botID, "cron": cronExpr, "repo_url": sb.RepoURL != "", "disabled": sb.Disabled,
-		"routing_set": sb.Routing != nil,
+		"routing_set": sb.Routing != nil, "key_overrides_set": len(sb.KeyOverrides) > 0,
 	})
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, sb)
@@ -261,8 +331,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 // URL-bound, which the ticker handles identically — the integration id
 // only improves grouping and lifecycle (DeleteByIntegration).
 func (s *Server) resolveRepoIntegrationID(ctx context.Context, teamID, repoURL string) string {
-	target := normalizeRepoURL(repoURL)
-	if target == "" || s.forgeIntegrations == nil || s.forgeConnections == nil {
+	if normalizeRepoURL(repoURL) == "" || s.forgeIntegrations == nil || s.forgeConnections == nil {
 		return ""
 	}
 	integrations, err := s.forgeIntegrations.ListByTenant(ctx, teamID)
@@ -270,28 +339,64 @@ func (s *Server) resolveRepoIntegrationID(ctx context.Context, teamID, repoURL s
 		return ""
 	}
 	for _, ri := range integrations {
-		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
+		conn, cerr := s.forgeConnections.Get(ctx, teamID, ri.ConnectionID)
 		// A watch-only connection's row is not a lifecycle anchor: the
 		// schedule would be deleted with the vulnerability watch.
 		if cerr != nil || conn.IsSecurityReadOnly() {
 			continue
 		}
-		if normalizeRepoURL(forge.CloneURLFor(conn.BaseURL(), ri.RepoFullName)) == target {
+		if repoURLNamesRepo(repoURL, conn.BaseURL(), ri.RepoFullName) {
 			return ri.ID
 		}
 	}
 	return ""
 }
 
+// repoURLNamesRepo reports whether a schedule's repo_url names the
+// repository fullName of the forge served at baseURL, read through
+// normalizeRepoURL. It is the one predicate the create route binds a
+// schedule to an integration by (resolveRepoIntegrationID) and the tick
+// names the integration's repository by (scheduledProjectPath), so a URL
+// bound to an integration is stamped with that integration's repository
+// whatever its spelling.
+func repoURLNamesRepo(repoURL, baseURL, fullName string) bool {
+	target := normalizeRepoURL(repoURL)
+	return target != "" && normalizeRepoURL(forge.CloneURLFor(baseURL, fullName)) == target
+}
+
+// repoOnForgeBase reads a repo_url against a forge base through the same
+// normalizeRepoURL: ok is false when the URL is not hosted under that base —
+// another host, a userinfo other than the git@ of an ssh URL, a port the
+// base does not carry — and slug is the URL's repository path under the
+// base, case-folded by the normalisation, when it is. Every URL
+// repoURLNamesRepo matches for that base is on it: such a URL normalises to
+// the base's own normalisation followed by the repository.
+func repoOnForgeBase(repoURL, baseURL string) (slug string, ok bool) {
+	base, target := normalizeRepoURL(baseURL), normalizeRepoURL(repoURL)
+	if base == "" || !strings.HasPrefix(target, base+"/") {
+		return "", false
+	}
+	return forge.CanonicalRepoSlug(strings.TrimPrefix(target, base+"/")), true
+}
+
 // normalizeRepoURL canonicalizes a repo URL for equality: lowercase,
-// scheme-less, no trailing ".git" or "/".
+// scheme-less, no trailing ".git" or "/". The scp-like form's colon is its
+// path separator (git@host:owner/repo → host/owner/repo); a scheme URL's
+// colon is its port and stays in the host (https://host:8443/owner/repo →
+// host:8443/owner/repo), so a URL on another port of the host never reads as
+// the host's own.
 func normalizeRepoURL(u string) string {
 	u = strings.ToLower(strings.TrimSpace(u))
+	scheme := false
 	for _, p := range []string{"https://", "http://", "ssh://"} {
-		u = strings.TrimPrefix(u, p)
+		if strings.HasPrefix(u, p) {
+			u, scheme = u[len(p):], true
+		}
 	}
 	u = strings.TrimPrefix(u, "git@")
-	u = strings.Replace(u, ":", "/", 1) // git@host:owner/repo → host/owner/repo
+	if !scheme {
+		u = strings.Replace(u, ":", "/", 1)
+	}
 	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
 	return u
 }
@@ -377,6 +482,49 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearRouting := patchRouting == nil && routingSpoke
+	// The pool block (ADR-164): absent leaves the stored block, null
+	// clears (the schedule inherits again), an object replaces — validated
+	// at write time like the create lane (shape, the pool's existence and
+	// consent).
+	patchPool, poolSpoke, poolErr := decodePoolBlock(req.Pool)
+	if poolErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
+		return
+	}
+	// An edit dialog sends the whole record back: echoing the stored block
+	// unchanged is no pool write at all — the row keeps its block AND its
+	// provenance (a projected block stays the integration's), and the
+	// write validation and the review gate judge only a CHANGE (a stored
+	// block whose pool was disabled since must not refuse a pause).
+	if patchPool.Equal(cur.Pool) {
+		patchPool, poolSpoke = nil, false
+	}
+	if err := s.validatePoolBindingWrite(r.Context(), teamID, patchPool); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, patchPool) {
+		return
+	}
+	clearPool := patchPool == nil && poolSpoke
+	// Key pins: absent leaves the stored pins, null or {} clears, an object
+	// replaces wholesale. An edit dialog echoing the stored pins back writes
+	// nothing and is not judged — a pin whose key was deleted since must not
+	// refuse a pause; the tick refuses it by name (judgeScheduleKeyPins).
+	patchKeyPins, keyPinsSpoke, keyPinsErr := decodeScheduleKeyPins(req.KeyOverrides)
+	if keyPinsErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", keyPinsErr.Error())
+		return
+	}
+	if keyPinsSpoke && maps.Equal(patchKeyPins, cur.KeyOverrides) {
+		patchKeyPins, keyPinsSpoke = nil, false
+	}
+	if keyPinsSpoke {
+		if err := s.validateScheduleKeyPins(r.Context(), teamID, cur.BotID, patchKeyPins); err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
+	}
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
 	mergedRetry := cur.RetryPolicy()
@@ -410,6 +558,11 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	patch.RetryJitter = req.RetryJitter
 	patch.Routing = patchRouting
 	patch.ClearRouting = clearRouting
+	patch.Pool = patchPool
+	patch.ClearPool = clearPool
+	if keyPinsSpoke {
+		patch.KeyOverrides = &patchKeyPins
+	}
 	// cron and interval_seconds are mutually exclusive cadences; whichever
 	// the request provides recomputes NextFireAt and clears the other. The
 	// exclusive switch (not two independent ifs) makes each patch field set
@@ -472,6 +625,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	s.auditTenant(r, teamID, "schedule.updated", "schedule", updated.ID, map[string]any{
 		"bot_id": updated.BotID, "cron_changed": req.Cron != nil, "disabled_changed": req.Disabled != nil,
 		"routing_set": updated.Routing != nil, "routing_changed": len(req.Routing) > 0,
+		"key_overrides_set": len(updated.KeyOverrides) > 0, "key_overrides_changed": keyPinsSpoke,
 	})
 	writeJSON(w, updated)
 }
@@ -498,4 +652,29 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.deleted", "schedule", sb.ID, map[string]any{"bot_id": sb.BotID})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// schedulePoolBindingAdmitted gates a schedule write that binds a LIVE pool
+// behind the org's provisioning review, as the repo-bots API does: a
+// recurring unattended run drawing a shared pool is exactly what an org
+// requiring approval reviews. A schedule has no parking lane, so an org
+// that would review the binding refuses it here (409) — an org admin binds
+// it, or the binding rides an integration through the repo-bots API. An
+// opt-out block binds nothing and needs no review. Writes the refusal and
+// returns false when the write must not proceed.
+func (s *Server) schedulePoolBindingAdmitted(w http.ResponseWriter, r *http.Request, id auth.Identity, teamID string, pool *credpool.Binding) bool {
+	if pool == nil || !pool.Enabled {
+		return true
+	}
+	gateOrg, err := s.provisionOrgRequiringApproval(r.Context(), id, teamID, true)
+	if err != nil {
+		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", err)
+		return false
+	}
+	if gateOrg != "" {
+		httpError(w, http.StatusConflict,
+			"this org reviews shared-pool bindings: an org admin binds pool %q on this schedule, or bind it through the repo-bots API (/api/teams/{id}/forge/repo-bots), which queues it for an org admin", pool.PoolID)
+		return false
+	}
+	return true
 }

@@ -1,4 +1,6 @@
-// Package testfs removes only scratch paths inside a test-owned root.
+// Package testfs holds the filesystem gestures tests share: removing only
+// scratch paths inside a test-owned root, and writing an executable no
+// concurrent fork can hold open.
 package testfs
 
 import (

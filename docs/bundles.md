@@ -47,6 +47,197 @@ pin; it does not discover a newer revision or rewrite the lock. `bots update`
 does both. Local Git sources must be clean unless the operator explicitly uses
 `--allow-dirty`, whose resulting lock is not reproducible by another checkout.
 
+## Shared fragment dependencies
+
+The same two-sided key shares a `.bot` FRAGMENT — the files an
+`import "lib/x.bot"` reaches — so two bots stop carrying the same
+declarations ([ADR-145](adr/145-shared-fragments-are-bundle-dependencies.md)):
+
+```yaml
+# producer bundle
+exports:
+  fragments:
+    - id: forge-auth
+      path: lib/forge-auth.bot
+# consumer bundle
+dependencies:
+  fragments:
+    - name: forge-auth     # the name this bundle's `import "lib/<name>.bot"` reaches
+      from: app-dev        # the exact manifest name of the exporting bundle
+      id: forge-auth       # the exported id; defaults to name
+```
+
+Resolution is a **materialization at install**, by copy, into the consumer's
+own `lib/`: the parser, the unit loader, `E045` and the `lib/` confinement
+learn nothing, and every surface that reads the unit keeps reading what it
+reads now. What that costs is written down rather than hidden:
+
+- **`bots sync` resolves, a lone install refuses.** The lockfile is walked
+  alphabetically, so a consumer `a-bot` is installed before `.botz/z-lib`
+  exists; `bots sync` therefore materializes every pinned bundle FIRST and
+  resolves fragments in a second pass. `iterion bots install` of a single
+  bundle that declares `dependencies.fragments` is refused, naming
+  `iterion bots sync` — resolving there would make the verdict depend on an
+  accident of sorting.
+- **A dependency may not shadow.** A name that collides with a fragment the
+  bundle itself ships is refused, never overwritten: a silent overwrite would
+  make `import "lib/x.bot"` mean one thing in the source bundle and another
+  after an install.
+- **A miss is named where the dependency exists** — at the install, with the
+  bundle, the fragment and every directory looked in. No new parse-time
+  diagnostic: at parse time the file is simply there or absent.
+- **The cloud authoring surface RESOLVES a declared fragment, it does not
+  merely tolerate the miss** ([#2865](https://github.com/SocialGouv/iterion/issues/2865),
+  the authoring half of
+  [#2853](https://github.com/SocialGouv/iterion/issues/2853)). A bundle
+  edited in the studio never carries what an install materialized, so the
+  cloud editor's open, its per-file apply, its write-back, the bot-source
+  write gate and the studio assistant's own gate resolve declared
+  `dependencies.fragments` entries through the same team-scoped tiers and
+  the same producer rules the launch freeze uses. Four properties make it
+  safe to rely on:
+  - **Lazy, then whole.** The load or the compile runs FIRST, and a tier is
+    read only once it has actually missed a declared path: a bundle with
+    nothing missing — including one pushed from a synced working tree, whose
+    fragment and record travel with it — costs nothing. Once a miss does
+    trigger it, EVERY declared entry is resolved, the freeze's own shape, or
+    a shared fragment that imports a second shared fragment would be
+    launchable and refused by the editor.
+  - **Team-scoped.** The team is the bot's own editor path
+    (`botsource://<team>/<slug>/<rel>`), and the caller must hold it, with
+    the right the bot-source routes require of a reader of a team's bots.
+    A caller that does not gets no resolution and no byte of the producer.
+  - **Read, never written.** A resolved fragment is marked as the producer
+    bundle's, rendered read-only in the Source view, and refused by name by
+    every save: persisting it would make the consumer SHIP the
+    `lib/<name>.bot` it declares a dependency on, which is the shadow the
+    launch refuses.
+  - **Both planes read the launch's no-shadow verdict; only a write refuses
+    on it.** It runs over every declared entry, missing or not — a declared
+    entry the bundle also ships is exactly the one a miss cannot report — so
+    no WRITE gate stores a bundle the launch refuses. A READ opens anyway, and
+    leaves that entry UNRESOLVED: the document is built on the author's own
+    file, which stays editable, so a bundle already in that state reaches the
+    screen where the manifest is fixed instead of being answered as another
+    bundle's content.
+
+  A declared dependency the tiers cannot serve is still refused, and the
+  refusal names the manifest entry, the producer bundle and what the
+  resolution of THAT entry found — the tiers searched when the producer is
+  nowhere, what the producer answered when it resolved and cannot serve the
+  id, and that this request read no tier at all when the caller holds no
+  authoring right on the team. Never `iterion bots sync`, which is no way
+  forward for a server with no working tree; never "publish the producer"
+  about a producer nothing looked for; and never the server's own filesystem
+  path. A tier that did
+  not ANSWER is answered as itself (503, retry), never as "the bundle does
+  not compile": one bad store minute must not retire a bundle that resolves.
+  A miss that is NOT a declared dependency's keeps the generic refusal and
+  its remedy: that import is the author's to fix.
+- **The cloud plane resolves at the launch freeze, before the parse.** A
+  bundle that reaches the server never carries what an install materialized,
+  so the launch resolves every declared fragment while it freezes the bot's
+  collection — through the same team-scoped tiers (team → platform → baked
+  catalog) a child workflow's authority comes from, injected at the same
+  `lib/<name>.bot`, the moment a bundle joins the collection. That moment is
+  the point: the freeze PARSES each workflow, so a fragment that arrived after
+  the walk would arrive after the `E046` that blames the consumer's own file.
+  Every bundle of the collection is resolved, a child's declarations included.
+  Nothing durable is added: the fragment travels inside the run's snapshot,
+  whose digest answers "which version of the shared logic did this run
+  execute" at a tier that has no `bots.lock`, and `workflow_sources` records
+  its bytes as it records the rest of the unit. A producer that resolves in no
+  tier stops the launch, naming the consumer, the fragment, the producer and
+  the tiers searched — not `iterion bots sync`, which is the install's remedy
+  and needs a working tree; a tier that errors is transient and the resume
+  retries it. There is no fragment store on the server: the tree stays the only
+  place a shared fragment's bytes come from.
+- **The pin keeps its meaning.** A materialized fragment is recorded in the
+  consumer's `.iterion-materialized-fragments` note and left out of the
+  bundle's content hash, which is what `bots.lock` pins: resolving a declared
+  dependency is not drift, and a second `bots sync` is a no-op. The note is
+  honoured only for a `lib/*.bot` path whose bytes still match the recorded
+  digest — a fragment edited after the install is hashed back in, because the
+  bundle on disk is then no longer what any producer published.
+- **The note is the bundle's local-state record**, and it holds the other file
+  an install changes: the generated bot catalogue
+  (`skills/iterion-bot-catalog.md`) that a catalogue owner vendored under
+  `.botz/` has rewritten with the consumer workspace's routing table. That
+  path IS one the producer ships, so leaving it out would not keep the pin
+  true: the bytes it replaced are kept under `.iterion/kept/` — a directory no
+  walker of a bundle's content counts — and the content hash is computed from
+  them. A kept copy is honoured only while its own bytes match the recorded
+  digest, so kept bytes that are not the producer's can make the hash move
+  (drift a `bots sync` repairs), never make a modified install read as
+  pristine.
+
+## Shared skill dependencies
+
+The same two-sided key shares a SKILL document — what a node's
+`skills: [...]` list names — so a bot stops carrying a copy of a playbook
+another bundle already publishes
+([ADR-144](adr/144-shared-skills-are-bundle-dependencies.md)):
+
+```yaml
+# producer bundle
+exports:
+  skills:
+    - id: verify-build
+      path: skills/verify-build.md
+# consumer bundle
+dependencies:
+  skills:
+    - name: verify-build   # the name this bundle's `skills:` lists reference
+      from: app-dev        # the exact manifest name of the exporting bundle
+      id: verify-build     # the exported id; defaults to name
+```
+
+Resolution is the fragment path with one directory changed: `bots sync`
+materializes every pinned bundle first and resolves in a second pass, a lone
+`iterion bots install` of a consumer is refused and names `bots sync`, a miss
+is reported at the install with the bundle, the skill and every directory
+looked in, and the copy lands at `skills/<name>.md` — where a shipped one
+would have been, so the run-start mirror, the install's skill count and
+`validate`'s `C231`–`C234` lints read it without learning that a skill can be
+a dependency. The materialized document is recorded in the bundle's local
+state and left out of the content hash, like a materialized fragment. What is
+specific to skills:
+
+- **A dependency may not shadow a shipped skill, nor an operator-attached
+  name.** The first is refused at the install, as it is for a fragment. The
+  second is a catalogue rule (`bots/catalog_skill_refs_test.go`): a bot that
+  deliberately references a skill the OPERATOR supplies — a platform playbook
+  a repo-agnostic bot must not pin — may not turn that choice into a
+  dependency, and the gate reddens on a declaration that does.
+- **A shared document keeps its name.** A skill is addressed by the `name:`
+  in its frontmatter as much as by its file name, so resolving an export
+  under a name the document contradicts is refused, naming both sides:
+  rewriting anything INSIDE the document is the per-bundle token
+  substitution ADR-144 leaves undecided.
+- **`skills/iterion-bot-catalog.md` cannot be a dependency.** That path is
+  the generated catalogue's, owned by `iterion bots regen-catalog` with the
+  producer's bytes kept aside; two writers reconciling one line would erase
+  each other, so the name is refused in the manifest.
+- **The declaration shrinks the inventory, nothing else does.**
+  `internal/skillshare` keeps declaring every copy the tree still carries,
+  and a family loses a member only when a consumer adopts the dependency and
+  deletes its copy — one reviewed change per bundle.
+- **The cloud plane resolves at the launch freeze, and the snapshot is the
+  pin.** A bundle that reaches the server never carries what an install
+  materialized — `PackDir` leaves the local-state record and its members out
+  of a `.botz`, and a bundle authored in the studio never had them — so the
+  launch resolves every declared skill while it freezes the bot's collection,
+  through the same team-scoped tiers (team → platform → baked catalog) a child
+  workflow's authority comes from, and injects the document at the same
+  `skills/<name>.md`. Every bundle of the collection is resolved, a child's
+  declarations included. Nothing durable is added: the document travels inside
+  the run's snapshot, whose digest answers "which version of the shared logic
+  did this run execute" at a tier that has no `bots.lock`. A producer that
+  resolves in no tier stops the launch, naming both sides — never a silently
+  short skills directory; a tier that errors is transient and the resume
+  retries it. There is no skill store on the server: the tree stays the only
+  place a shared skill's bytes come from.
+
 ## Quick start
 
 ```bash
@@ -95,6 +286,12 @@ my-bot/
 | `lib/`            | Fragments of a bot in several files: `.bot` files `main.bot` imports (`import "lib/x.bot"`, [dsl.md](dsl.md#import--a-bot-in-several-files)), merged with it into one program. Never a bot of their own; a bundle that imports declares `requires.iterion` at or above v3.145.0 (C252, 409). |
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
 | `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
+
+A `main.bot` beside a `skills/` or `presets/` directory is a bundle even
+without a manifest. Discovery and opening `path/main.bot` use the same
+marker verdict: a presets-only bundle exposes its sous-bots in the launch
+form, and `run` and `validate` resolve `--preset` from its files. A regular
+file named `skills` or `presets` is not a directory marker.
 
 ## Manifest schema
 

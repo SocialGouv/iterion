@@ -17,6 +17,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // PiRPCBackend drives `pi --mode rpc` — a long-lived process iterion talks to
@@ -61,7 +63,8 @@ var (
 )
 
 func envDuration(key string, def time.Duration) time.Duration {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+	// The liveness family reads planted-as-unset: see envDurationOr.
+	if v := strings.TrimSpace(envtrust.Inherited(key)); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
@@ -129,15 +132,25 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var mark string
 	if task.Sandbox != nil {
 		mark = sandboxDelegateMark(task)
-		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, ownerOf(b.Logger, task, BackendPi))
+		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, ownerOf(b.Logger, task, BackendPi), piSandboxSpawnFiles(mark)...)
 	}
 	if sandboxCleanup != nil {
 		defer sandboxCleanup()
 	}
+	// The MCP catalog parks in a file only the extension reads — on the host
+	// and inside the container alike — and the env carries its PATH. The JSON
+	// holds the run token, and an env value rides the host's `docker exec`
+	// argv for the whole session (pi_mcp_config.go); a write that fails
+	// refuses the node.
+	mcpFile, cleanupMCP, err := pinMCPServers(ctx, task, mark, b.Logger)
+	if err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
+	defer cleanupMCP()
 	// On the host, what pi starts carries the node session token and ends
 	// with this run (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
 	// Deferred before the client, so the client's Close runs first.
-	env := piRPCEnv(ctx, task, b.Logger)
+	env := piRPCEnv(ctx, task, b.Logger, mcpFile)
 	if task.Sandbox == nil {
 		token, since := proc.NewNodeSessionToken(), NodeSessionSince()
 		env = append(env, proc.NodeSessionEntry(token))
@@ -156,10 +169,11 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		// pi's session_start, which is where MCP bridging runs (10s per server
 		// by default), so container boot plus a few servers genuinely exceeds
 		// 30s.
-		RequestTimeout: piColdTimeout,
-		Env:            env,
-		Spawn:          b.spawner(task, binary, mark),
-		OnEvent:        collector.onEvent,
+		RequestTimeout:              piColdTimeout,
+		Env:                         env,
+		Spawn:                       b.spawner(task, binary, mark, mcpFile),
+		PreserveCommandCancellation: sandbox.OwnsCommandCancellation(task.Sandbox),
+		OnEvent:                     collector.onEvent,
 		OnStderr: func(line string) {
 			if b.Logger != nil {
 				b.Logger.Info("[%s#%d/%s:err] %s", task.NodeID, task.Iteration, BackendPi, line)
@@ -328,7 +342,7 @@ func (b *PiRPCBackend) warnOnModelDrift(task Task, effective string) {
 // forever by design (its mode returns a never-resolving promise), so a leaked
 // in-container process would hold a model session indefinitely. Killing the
 // host-side `docker exec` client has no signal path to the exec'd process.
-func (b *PiRPCBackend) spawner(task Task, binary, mark string) pisdk.Spawner {
+func (b *PiRPCBackend) spawner(task Task, binary, mark, mcpServersFile string) pisdk.Spawner {
 	if task.Sandbox == nil {
 		return nil
 	}
@@ -344,7 +358,7 @@ func (b *PiRPCBackend) spawner(task Task, binary, mark string) pisdk.Spawner {
 		// and the extension-install guard both refuse to allow. Sandboxing is
 		// the default, so this is the default path.
 		env := piSandboxEnv(ctx, task)
-		for k, v := range piExtensionEnv(task, b.Logger) {
+		for k, v := range piExtensionEnv(task, b.Logger, mcpServersFile) {
 			env[k] = v
 		}
 		return task.Sandbox.Command(ctx, wrapSandboxDelegateArgv(mark, full), sandbox.ExecOpts{
@@ -475,9 +489,17 @@ func (b *PiRPCBackend) drainInbox(ctx context.Context, client *pisdk.Client, tas
 			return
 		}
 		if b.Logger != nil {
-			b.Logger.Info("[%s#%d/%s] steered: %s", task.NodeID, task.Iteration, BackendPi, truncate(msg, 200))
+			b.Logger.Info("[%s#%d/%s] steered: %s", task.NodeID, task.Iteration, BackendPi, b.steerLogLine(msg))
 		}
 	}
+}
+
+// steerLogLine renders the log line for a steer the run forwarded. The
+// run's pass crosses the text BEFORE the 200-byte cut: a cut that lands
+// inside a declared value leaves a head no matcher recognises, which is
+// the trap Logger.Redact exists for (iterion#2822).
+func (b *PiRPCBackend) steerLogLine(msg string) string {
+	return truncate(b.Logger.Redact(msg), 200)
 }
 
 // piRPCArgs builds the argv for RPC mode: the shared per-task flags, minus the
@@ -502,13 +524,14 @@ func piRPCArgs(task Task, promptFile string, logger *iterlog.Logger) []string {
 
 // piRPCEnv assembles the child environment: the host's, plus the shared
 // credential overrides, plus run-level provisioning (devbox PATH) last so it
-// wins on a duplicate key.
-func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger) []string {
+// wins on a duplicate key. mcpServersFile is the catalog's PATH (empty when
+// the node has no servers) — the catalog itself never rides the env.
+func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger, mcpServersFile string) []string {
 	env := os.Environ()
 	for k, v := range piResolveEnv(ctx) {
 		env = append(env, k+"="+v)
 	}
-	for k, v := range piExtensionEnv(task, logger) {
+	for k, v := range piExtensionEnv(task, logger, mcpServersFile) {
 		env = append(env, k+"="+v)
 	}
 	return append(env, task.ExtraEnv...)
@@ -519,8 +542,10 @@ func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger) []string {
 // Every variable is optional by contract: absent means the capability is off
 // and the extension degrades to a no-op, so a run never fails because iterion
 // passed one fewer variable than the extension build expected. Secret VALUES
-// never appear here.
-func piExtensionEnv(task Task, logger *iterlog.Logger) map[string]string {
+// never appear here — the MCP catalog's env entry is its PATH (empty when the
+// node has no servers), the document itself sits in the private file
+// pinMCPServers wrote (pi_mcp_config.go).
+func piExtensionEnv(task Task, logger *iterlog.Logger, mcpServersFile string) map[string]string {
 	env := map[string]string{
 		"ITERION_PI_CONTRACT":  piext.ContractVersion,
 		"ITERION_PI_CTRL":      "rpc",
@@ -548,10 +573,12 @@ func piExtensionEnv(task Task, logger *iterlog.Logger) map[string]string {
 		}
 		env["ITERION_PI_INTERACTION"] = mode
 	}
-	if servers := piMCPServers(task, logger); len(servers) > 0 {
-		if raw, err := json.Marshal(servers); err == nil {
-			env["ITERION_PI_MCP_SERVERS"] = string(raw)
-		}
+	// The catalog's PATH, never its content: the JSON carries the run token,
+	// and an env value is world-readable through the container runtime's own
+	// argv for the whole session (pi_mcp_config.go). Empty means the node has
+	// no servers, and the extension bridges nothing.
+	if mcpServersFile != "" {
+		env[piMCPServersFileEnv] = mcpServersFile
 	}
 	return env
 }
@@ -579,9 +606,11 @@ type piMCPServerSpec struct {
 // the model burns turns discovering they do not work. The same reasoning gates
 // the board on the run actually holding capabilities AND a wired endpoint.
 //
-// This is also the ONLY place a token appears in the extension's configuration
-// — inside a server's headers, never as a standalone variable — so a generic
-// environment dump cannot log it.
+// The list is written to the private catalog file (pinMCPServers), and the
+// ONLY place a token appears in it is inside a server's headers — never as a
+// standalone variable — so no environment dump can log it, and on the host
+// the file is 0600 in a 0700 directory while inside a sandbox it was written
+// over the writer's stdin.
 //
 // Sandboxed stdio servers inherit the claude_code caveat: the command is
 // resolved inside the container, so a host-only binary is unreachable there.
@@ -613,23 +642,34 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 				warn("[%s#%d/%s] board capabilities granted but the iterion CLI binary could not be resolved; board disabled for this node",
 					task.NodeID, task.Iteration, BackendPi)
 			} else {
-				env := map[string]string{"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ",")}
-				if task.StoreDir != "" {
-					env["ITERION_STORE_DIR"] = task.StoreDir
-				}
-				if task.SourceIssueID != "" {
-					env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
-				}
 				out = append(out, piMCPServerSpec{
 					Name:      boardMCPServerName,
 					Transport: "stdio",
 					Command:   selfPath,
 					Args:      []string{boardMCPSubcommand},
-					Env:       env,
+					Env:       BoardServerEnv(task),
 				})
 			}
 		default:
 			warn("[%s#%d/%s] board capabilities granted but the run is sandboxed and BoardHTTPEndpoint/BoardRunToken are not configured; board disabled for this node",
+				task.NodeID, task.Iteration, BackendPi)
+		}
+	}
+	// Connector facade (#2758), mirroring the board block: HTTP ONLY — the
+	// credential is resolved and spent at the server, so there is no stdio
+	// transport to fall back to (one would run where the agent runs, which
+	// is exactly what Q4 forbids).
+	if HasConnectorsCapability(task.Capabilities) {
+		switch {
+		case task.ConnectorHTTPEndpoint != "" && task.BoardRunToken != "":
+			out = append(out, piMCPServerSpec{
+				Name:      connectorMCPServerName,
+				Transport: "http",
+				URL:       task.ConnectorHTTPEndpoint,
+				Headers:   map[string]string{"X-Iterion-Run": task.BoardRunToken},
+			})
+		default:
+			warn("[%s#%d/%s] connectors capability granted but no connector facade endpoint is configured (the run needs a server-wired sandbox); connector tools disabled for this node",
 				task.NodeID, task.Iteration, BackendPi)
 		}
 	}
@@ -717,8 +757,11 @@ func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pi
 	env, ok := piParseCtrl(req)
 	if !ok {
 		if b.Logger != nil {
+			// The prompt is third-party text quoted into the run's log, and
+			// the quote is cut: the pass runs first, or a value straddling
+			// the cut publishes its head (iterion#2822).
 			b.Logger.Warn("[%s#%d/%s] declining an unrecognised extension UI request (%s: %q)",
-				task.NodeID, task.Iteration, BackendPi, req.Method, truncate(req.Prompt(), 120))
+				task.NodeID, task.Iteration, BackendPi, req.Method, truncate(b.Logger.Redact(req.Prompt()), 120))
 		}
 		return nil
 	}
@@ -751,8 +794,10 @@ func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pi
 		}
 		collector.setPause(pause)
 		if b.Logger != nil {
+			// Same discipline as the steer line: the pass before the cut
+			// (iterion#2822).
 			b.Logger.Info("[%s#%d/%s] ask_user: %s", task.NodeID, task.Iteration, BackendPi,
-				truncate(pause.question, 200))
+				truncate(b.Logger.Redact(pause.question), 200))
 		}
 		return piCtrlAnswer(req.ID, map[string]any{"escalated": true})
 

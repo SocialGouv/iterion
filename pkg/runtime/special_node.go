@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -59,13 +60,15 @@ func (e *Engine) execSpecialNode(
 	}
 
 	output, err := body()
+	// The body's span was work whatever it answered (budget.markWorked).
+	rs.budget.markWorked()
 	if err != nil {
 		return "", err
 	}
 
 	rs.outputs[nodeID] = output
 
-	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
+	if err := e.validateNodeOutput(rs, nodeID, node, output); err != nil {
 		return "", err
 	}
 	if postValidate != nil {
@@ -87,7 +90,7 @@ func (e *Engine) execSpecialNode(
 	if err != nil {
 		return "", err
 	}
-	delete(rs.nodeAttempts, nodeID)
+	rs.nodeRecovered(nodeID)
 	return nextNodeID, nil
 }
 
@@ -101,13 +104,15 @@ func (e *Engine) execSpecialNode(
 // stores, and validates the output. emit carries no schema, so (matching the
 // main loop) it is not validated.
 func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, branchID, nodeID string, node ir.Node, sc resolveScope, result *branchResult, slot *branchSlot) (output map[string]any, done, handled bool) {
+	// The body's span was work whatever it answered (budget.markWorked).
+	defer rs.budget.markWorked()
 	// store records a successful body output on the branch and validates it,
 	// returning the (output,done) the caller propagates. validate=false skips
 	// the schema check (emit has no output schema).
 	store := func(out map[string]any, validate bool) (map[string]any, bool, bool) {
 		result.outputs[nodeID] = out
 		if validate {
-			if err := e.validateNodeOutput(nodeID, node, out); err != nil {
+			if err := e.validateNodeOutput(rs, nodeID, node, out); err != nil {
 				result.err = fmt.Errorf("node %q in branch %s: %w", nodeID, branchID, err)
 				return nil, true, true
 			}
@@ -149,7 +154,7 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 		}
 		return store(out, true)
 	case *ir.ComputeNode:
-		out, err := e.computeOutput(rs, nodeID, n, sc)
+		out, err := e.computeOutput(ctx, rs, nodeID, n, sc)
 		if err != nil {
 			return fail(err)
 		}
@@ -169,12 +174,14 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 // same evaluation runs on the main loop (trunk scope) and inside a fan-out
 // branch (merged parent+branch scope). No LLM, no shell, no side effects —
 // artifact persistence is the caller's concern (compute's postValidate hook).
-func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]any, error) {
+// The ctx reaches the expression evaluator: a cancelled run interrupts an
+// evaluation instead of waiting it out (#2775).
+func (e *Engine) computeOutput(ctx context.Context, rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]any, error) {
 	nodeInput := e.buildNodeInputRS(nodeID, sc)
 	output := make(map[string]any, len(cn.Exprs))
 	exprCtx := e.exprContextScoped(rs, sc, nodeInput)
 	for _, ce := range cn.Exprs {
-		v, err := evalComputeExpr(ce.AST, exprCtx)
+		v, err := evalComputeExpr(ctx, ce.AST, exprCtx)
 		if err != nil {
 			// A simulation may know the failure rests on a value it made
 			// up: the field takes the stand-in and the node goes on, so
@@ -194,23 +201,21 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 			// that does not move, so re-executing it reaches the same
 			// verdict. That is what keeps an automatic resume from
 			// re-burning a pod per attempt on it (pkg/retrypolicy).
+			// The expression is quoted by excerpt, as the compiler's
+			// diagnostics quote it: at the read budget's edge the text is
+			// a megabyte and the failure message must not be (#2775).
 			return nil, &RuntimeError{
 				Code:    ErrCodeExpressionFailed,
-				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, ce.Raw, err),
+				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, expr.Excerpt(ce.Raw), err),
 				NodeID:  nodeID,
 				Hint:    "check the compute node's expressions for type mismatches or unknown references",
 			}
 		}
 		output[ce.Key] = v
 	}
-	// The output is typed by the declared schema HERE, on the body the
-	// trunk and the fan-out branch share — not behind WithOutputValidation,
-	// which no product entry point enables. An expression's value is
-	// Go-shaped (an integer division yields an int64, a float one a
-	// float64), so the representation is normalised to the declared type
-	// and a value that cannot be — a fractional float under `int`, a
-	// string under `bool` — fails the node instead of travelling on under
-	// the wrong label.
+	// Normalize Go numeric/array representations for the declared schema.
+	// COMPUTE conformance is mandatory (#792), independently of advisory
+	// validation for nodes whose outputs have no prior mandatory check.
 	if schema := e.workflow.Schemas[cn.OutputSchema]; schema != nil {
 		if err := model.ConformComputeOutput(output, schema); err != nil {
 			return nil, &RuntimeError{
@@ -260,7 +265,12 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		vars["_lease_"+res] = id
 	}
 
-	output, err := e.subbotRunner(ctx, SubbotRequest{
+	key := e.subbotReattachKey(nodeID, rs.loopCounters, branchID)
+	childCtx, err := e.subbotCorrectionContext(ctx, rs, nodeID, key)
+	if err != nil {
+		return nil, err
+	}
+	output, err := e.subbotRunner(childCtx, SubbotRequest{
 		OnChildAttached: func(childRunID string) error {
 			return e.emitBranch(ctx, rs.runID, branchID, store.EventSubbotAttached, nodeID, map[string]any{"child_run_id": childRunID})
 		},
@@ -268,18 +278,29 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		Vars:        vars,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
-		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
+		ReattachKey: key,
 		WorkDir:     e.workDir,
 		// The author's assertion that the child writes no shared workspace:
 		// the runner hands it to the child engine, which then keeps its own
 		// worktree rather than working in this run's tree.
 		Isolated: sn.Isolated,
+		// The child's landing intent: the host arms the child engine's own
+		// finalization with it, and the child's run doc records it for the
+		// instance-side landing (cloud plane) and the resume replay.
+		AutoMerge:     sn.AutoMerge,
+		MergeInto:     sn.MergeInto,
+		MergeStrategy: sn.MergeStrategy,
 		// The child executes where THIS run executes.
 		ParentSandbox: e.activeShare,
 	})
 	if err != nil {
+		hint := ""
+		if nodeFailureCode(err) == ErrCodeBudgetExceeded {
+			hint = fmt.Sprintf("increase the CHILD bot %q budget, then resume; raising the parent budget does not change the child cap", sn.Source)
+		}
 		return nil, &RuntimeError{
-			Code:    ErrCodeExecutionFailed,
+			Hint:    hint,
+			Code:    nodeFailureCode(err),
 			Message: fmt.Sprintf("subbot %q (source %q): %v", nodeID, sn.Source, err),
 			NodeID:  nodeID,
 			Cause:   err,

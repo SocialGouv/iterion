@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -262,13 +263,17 @@ func TestCIPublishesTheSameCensusEvenAfterFailure(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &workflow); err != nil {
 		t.Fatal(err)
 	}
+	// always(), so an earlier failure cannot suppress the evidence; on the
+	// sharded job, always() on ONE shard, since one artifact name can be
+	// uploaded once per run. Nothing else may narrow it.
+	alwaysOnOneShard := regexp.MustCompile(`^always\(\)( && matrix\.shard == \d+)?$`)
 	generated, published := false, false
 	for _, step := range workflow.Jobs["test-unit"].Steps {
 		if step.Name == "Test capability census" {
-			generated = strings.Contains(step.Run, "go run -mod=vendor ./scripts/ci/testcaps -observe") && strings.Contains(step.Run, "GITHUB_STEP_SUMMARY") && step.If == "always()"
+			generated = strings.Contains(step.Run, "go run -mod=vendor ./scripts/ci/testcaps -observe") && strings.Contains(step.Run, "GITHUB_STEP_SUMMARY") && alwaysOnOneShard.MatchString(step.If)
 		}
 		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && step.With["name"] == "test-capabilities-unit" {
-			published = step.If == "always()" && step.With["path"] == ".iterion/test-capabilities/" && step.With["if-no-files-found"] == "error" && step.With["include-hidden-files"] == "true"
+			published = alwaysOnOneShard.MatchString(step.If) && step.With["path"] == ".iterion/test-capabilities/" && step.With["if-no-files-found"] == "error" && step.With["include-hidden-files"] == "true"
 		}
 	}
 	if !generated || !published {

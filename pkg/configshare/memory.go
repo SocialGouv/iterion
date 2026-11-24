@@ -2,6 +2,7 @@ package configshare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -110,4 +111,21 @@ func (m *MemoryStore) ListDeliveries(_ context.Context, shareID string, limit in
 		}
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) ScrubActor(_ context.Context, actor string) (int64, error) {
+	if actor == "" {
+		return 0, errors.New("configshare: scrub actor: no actor")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for _, d := range m.deliveries {
+		if d.Actor != actor || (d.SourceIP == "" && d.UserAgent == "") {
+			continue
+		}
+		d.SourceIP, d.UserAgent = "", ""
+		n++
+	}
+	return n, nil
 }

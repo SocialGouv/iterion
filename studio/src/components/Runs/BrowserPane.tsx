@@ -2,6 +2,10 @@ import { errorMessage } from "@/lib/errorHints";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Tooltip } from "@/components/ui";
+import { attachmentURL, runBrowserAttachURL, runPreviewURL } from "@/api/runs";
+import { useRunBirthsVersion } from "@/hooks/useRunBirthsVersion";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
+import { runFetch } from "@/lib/lostRuns";
 import { useRunStore, type BrowserScreenshot } from "@/store/run";
 import BrowserLivePane from "./BrowserLivePane";
 
@@ -63,6 +67,11 @@ export default function BrowserPane({
   const browser = useRunStore((s) => s.browser);
   const setManualPreviewUrl = useRunStore((s) => s.setManualPreviewUrl);
   const setLiveSession = useRunStore((s) => s.setLiveSession);
+  // The screenshot and preview URLs carry the run's expected birth (the
+  // builders read it at call time; this rebuilds them once it is learned),
+  // and a lost run loads neither.
+  const birthsVersion = useRunBirthsVersion();
+  const lost = useRunStore((s) => s.wsState === "lost");
 
   const [draftUrl, setDraftUrl] = useState<string>(browser.currentUrl ?? "");
   const [attachBusy, setAttachBusy] = useState<boolean>(false);
@@ -73,6 +82,10 @@ export default function BrowserPane({
   // as user typing would clobber the keystroke (prev === new is true
   // even though the user actually changed prev mid-render).
   const lastStoreUrlRef = useRef<string | undefined>(browser.currentUrl);
+  // The live attach POSTs /browser/attach — a member action on the run
+  // ladder (ADR-103). A viewer's affordance is simply absent instead of
+  // error-on-click, the same rule the file editor's gate follows.
+  const canAttach = useRunCanAct();
   // Cancel in-flight attach + skip stale setState on unmount.
   const attachAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -88,10 +101,11 @@ export default function BrowserPane({
     setAttachBusy(true);
     setAttachError(null);
     try {
-      const res = await fetch(
-        `/api/runs/${encodeURIComponent(runId)}/browser/attach`,
-        { method: "POST", credentials: "include", signal: controller.signal },
-      );
+      const res = await runFetch(runBrowserAttachURL(runId), {
+        method: "POST",
+        credentials: "include",
+        signal: controller.signal,
+      });
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`HTTP ${res.status}: ${text}`);
@@ -162,14 +176,19 @@ export default function BrowserPane({
   );
 
   const iframeSrc = useMemo(() => {
-    if (!browser.currentUrl) return null;
+    if (!browser.currentUrl || lost) return null;
     if (browser.scope === "internal") {
-      return `/api/runs/${encodeURIComponent(runId)}/preview?target=${encodeURIComponent(
-        browser.currentUrl,
-      )}`;
+      return runPreviewURL(runId, browser.currentUrl);
     }
     return browser.currentUrl;
-  }, [browser.currentUrl, browser.scope, runId]);
+    // birthsVersion: rebuild once the run's birth is learned.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browser.currentUrl, browser.scope, runId, lost, birthsVersion]);
+  const screenshotSrc = useMemo(
+    () => (scrubbedShot && !lost ? attachmentURL(runId, scrubbedShot.attachmentName) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scrubbedShot, runId, lost, birthsVersion],
+  );
 
   const sourceLabel = useMemo(() => {
     switch (browser.source) {
@@ -205,6 +224,7 @@ export default function BrowserPane({
               href={browser.currentUrl}
               target="_blank"
               rel="noopener noreferrer"
+              aria-label={`Open ${browser.currentUrl} in a new tab`}
               className="text-xs text-fg-muted underline hover:text-fg-default"
             >
               open ↗
@@ -234,16 +254,18 @@ export default function BrowserPane({
             </button>
           </Tooltip>
         ) : (
-          <Tooltip content="Spawn a host Chromium and stream it here (requires chromium installed on PATH)">
-            <button
-              type="button"
-              onClick={handleAttach}
-              disabled={attachBusy}
-              className="text-xs text-success hover:text-success-fg disabled:opacity-50"
-            >
-              {attachBusy ? "attaching…" : "attach live"}
-            </button>
-          </Tooltip>
+          canAttach && (
+            <Tooltip content="Spawn a host Chromium and stream it here (requires chromium installed on PATH)">
+              <button
+                type="button"
+                onClick={handleAttach}
+                disabled={attachBusy}
+                className="text-xs text-success hover:text-success-fg disabled:opacity-50"
+              >
+                {attachBusy ? "attaching…" : "attach live"}
+              </button>
+            </Tooltip>
+          )
         )}
         {onDockChange ? (
           <Tooltip
@@ -272,10 +294,10 @@ export default function BrowserPane({
         {showLive && browser.liveSession ? (
           <BrowserLivePane runId={runId} sessionId={browser.liveSession.sessionId} />
         ) : isScrubbing ? (
-          scrubbedShot ? (
+          scrubbedShot && screenshotSrc ? (
             <img
               key={scrubbedShot.attachmentName}
-              src={`/api/runs/${encodeURIComponent(runId)}/attachments/${encodeURIComponent(scrubbedShot.attachmentName)}`}
+              src={screenshotSrc}
               alt={`Screenshot at seq ${scrubbedShot.seq}`}
               className="h-full w-full object-contain"
             />

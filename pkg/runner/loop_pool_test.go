@@ -67,6 +67,27 @@ func TestPoolAdmissionCallSitesArePinned(t *testing.T) {
 	if !strings.Contains(string(loop), "if !r.verifyTenantOrTerm(pre, msg, delivery, logger) {") {
 		t.Fatal("processOne no longer calls verifyTenantOrTerm — pin dropped")
 	}
+	// The supervisor spend sink lives in meterSupervisorSpecs (loop_metrics.go)
+	// and the spawn must still wire it onto the surviving specs.
+	if !strings.Contains(string(loop), "meterSupervisorSpecs(ctx, specs, usage)") {
+		t.Fatal("the spawn no longer wires the supervisor usage sink onto the surviving specs")
+	}
+	meterSrc, err := os.ReadFile("loop_metrics.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The sink books on the route the evaluation will actually resolve
+	// (pin, env default, the ctx-funded detector family) — not a private
+	// re-derivation of it (the sink F4 of rva r1).
+	if !strings.Contains(string(meterSrc), "supervise.ResolveModel(ctx, specs[i].Model, specs[i].ProviderHint)") {
+		t.Fatal("the supervisor usage sink no longer books on the resolved route")
+	}
+	// The sink's site calls the LOCKED entry: the unlocked addRouteLocked
+	// is the coordinator x event-stream race (rva r2 C1) — a witness that
+	// only tests the wrapper would stay green while the site races.
+	if strings.Contains(string(meterSrc), "usage.addRouteLocked(") || !strings.Contains(string(meterSrc), "usage.addRoute(") {
+		t.Fatal("the OnUsage closure no longer calls the locked addRoute")
+	}
 	cfg, err := os.ReadFile("../../cmd/iterion/server.go")
 	if err != nil {
 		t.Fatal(err)

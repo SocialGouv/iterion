@@ -196,7 +196,13 @@ presented to them (`auth.Service.CheckDerivation`):
   deleting the instance-wide (`global`) memory space, and revoking another
   account's personal access token;
 - the desktop SSO exchange, which hands out no session revoked since the
-  IdP callback.
+  IdP callback;
+- the mint of a team-scoped token that outlives the credential it is
+  minted from and is bound to nothing of it: a webhook token (the create
+  and the rotate), a config share-link token (the create and the rotate),
+  and a team invitation token (the team-scoped and the org-scoped mint).
+  None of them authenticates as the account, but each opens a door that
+  stays open after the minter's session is gone, so the mint is gated.
 
 The super-admin claim itself is re-derived where every request's identity
 is established, before any route runs: a token that claims the flag keeps
@@ -216,22 +222,42 @@ changed, disabled or pending a password change, and an access token that
 names no session asking for an SSO link; it refuses a personal access token
 revoked, expired or gone, and any personal access token asking for a
 credential of its own account — a switch, another token, an SSO link, a
-temporary password (`403`: a token is pinned to its team and its own
-expiry); and what a route mints for the same use never outlives the
+temporary password — or for a team token that would outlive it — a webhook,
+share-link or invitation token (`403`: a token is pinned to its team and
+its own expiry); and what a route mints for the same use never outlives the
 presented credential — a switched access token expires when the presented
 one does, and a WebSocket ticket opens no WebSocket past it.
 Everything else the access token of a revoked session does in its
 remaining minutes is done and persists: it reads what its account may
 read, launches, steers and cancels runs, edits bots and configurations, and
-creates team and org state — a webhook and its token, a share link, an
-invitation, a membership or a role, a team secret, an API key, a forge or
-OAuth connection — that outlives it, listed and revocable in the team's,
-the org's or the account's settings. A WebSocket opened before the
+creates team and org state — a membership or a role, a team secret, an API
+key, a forge or OAuth connection, a webhook's non-token settings — that
+outlives it, listed and revocable in the team's, the org's or the
+account's settings. What it no longer mints is the tokens of that state:
+the webhook and share-link tokens and the invitation are gated above, and
+so is the webhook token a repo-bot provisioning mints through the
+orchestrator. The mint travels with the chokepoint's verdict in the
+request's context: the gate stamps it once its ask grants, and the three
+mint primitives (a webhook token, a share-link token, an invitation)
+refuse a mint whose context carries none — so the class is closed at the
+primitive, whatever calls it. The provisioning's webhook token asks at the
+mint rather than at the route: the orchestrator asks the chokepoint on the
+line that reserves a NEW hook identity and mints under the verdict it
+grants, so a repo's first enable (and the re-reservation a retired
+integration makes) answers the refusal while a reconcile, a settings-only
+update and the approval of such an update reuse the sealed secret, mint
+nothing and are not refused. The class is every caller of the three mint
+primitives, not a list of route names, and the guards read the demand in
+each primitive's own body plus every caller of one
+(`TestEveryTeamTokenMintPrimitiveDemandsTheVerdict`,
+`TestEveryMintPrimitiveCallerLivesInTheGuardsGraph`). The door that
+outlives the session is opened by a standing session only. A WebSocket opened before the
 revocation is asked again: every envelope that changes a run (cancel,
 pause, answer, queue a message or cancel a queued one, bump a loop, raise a
 budget) checks the standing of the credential the socket was opened with —
-its account, its session, a personal access token's row, its expiry left
-out — AND re-derives the scope the upgrade resolved once: the run's team,
+its account, its session, a personal access token's row (whose expiry and
+revocation both close the socket at the next tick), the access token's own
+expiry left out — AND re-derives the scope the upgrade resolved once: the run's team,
 the caller's standing there, the super-admin reach — read from the account
 as it stands now. A refused credential answers an error and closes the
 socket (close code `1008`, a reason starting `credential_refused`); a
@@ -270,25 +296,24 @@ did before.
 
 `sessions` stores no refresh token: the successor is re-derived from the
 presented token under a key derived from `ITERION_JWT_SECRET`, so rotating
-that secret also ends the window for the tokens rotated just before. A
-plaintext refresh token does rest in `desktop_sso_tickets`: a desktop SSO
-ticket carries the whole minted login, its refresh token in plaintext,
-until the desktop redeems it or two minutes pass; an unredeemed ticket
-then stays in the collection until Mongo's TTL monitor reaps it (a pass
-every 60 seconds, later under load), its insert rests in the oplog for
-the oplog's retention window, and every backup taken while it exists
-holds it too — the whole-database `mongodump --oplog` archives of
-[cloud-backup.md](cloud-backup.md), kept 7 days, 35 days and 13 months
-under its recommended retention.
-The ticket's expiry does not end the session it carries: a refresh token
-read from any of those copies stays usable until it is rotated — the
-desktop's first refresh of a redeemed ticket's session retires it, and the
-copy presented after that is reuse, which ends the session — or its
-session is signed out, or `ITERION_REFRESH_TTL` passes; an unredeemed
-ticket's session is never rotated, so its copy is usable for the whole TTL
-unless its account is signed out everywhere — treat those archives as
-credential stores. Ending the session with its ticket is tracked in
-[#2635](https://github.com/SocialGouv/iterion/issues/2635).
+that secret also ends the window for the tokens rotated just before. The
+desktop SSO ticket store (`desktop_sso_tickets`) rests no credential either
+([#2635](https://github.com/SocialGouv/iterion/issues/2635)): the IdP
+callback DEFERS a desktop login — the ticket stores the account, the lineage
+the session will be born under and the landing team, keyed by the ticket's
+SHA-256, never the ticket — and the session, its refresh token included, is
+minted when the desktop redeems the ticket. No refresh token exists while a
+ticket waits, so none rests in the collection, in the oplog, or in a backup
+([cloud-backup.md](cloud-backup.md)), and an unredeemed ticket leaves no
+live session behind — there is none to revoke at its expiry. A REFUSED
+desktop sign-in (an account pending a password change, an IdP error) never
+leaves the desktop waiting out its timeout either: the callback redirects
+the refusal's `sso_error` code to the desktop's own loopback listener
+(validated at the flow's start, `safeDesktopRedirect`), so the app reports
+the reason at once. A document
+written before this shape (the ticket in plaintext as `_id`, a whole login
+with its refresh token as `result`) answers no redemption — its `_id` is no
+hash a redemption computes — and the TTL index reaps it.
 
 Upgrading from a release without session lineages (before #1668) is a
 rollout constraint: pods of both releases serve the same `sessions` while
@@ -457,6 +482,70 @@ surface down. ingress-nginx satisfies this by default (it preserves the client
 `nginx.ingress.kubernetes.io/upstream-vhost`, or an equivalent rewrite, does
 not. Verify on the deployment, not on the class of proxy.
 
+### Legal pages (`config.legal.*`)
+
+A public deployment owes its visitors a legal notice, a privacy policy,
+terms of use and an accessibility statement. Their content is
+**deployment configuration**, never part of the image or the database
+([ADR-160](adr/160-legal-content-is-deployment-configuration.md)): the same
+bundle serves every operator, so the publisher, the DPO and the hosting
+provider are yours to declare, through the same GitOps commit as
+`config.auth.publicUrl` or `config.smtp.from`.
+
+```yaml
+config:
+  legal:
+    contactEmail: contact@example.org          # mailto: on every page
+    accessibilityStatus: non_compliant         # non_compliant | partially_compliant | compliant
+    accessibilityDate: "2026-11-03"            # optional, YYYY-MM-DD
+    accessibilityRate: ""                      # percent from a full audit; must match the status
+    documents:                                 # markdown, keyed by slug
+      mentions-legales: |
+        # Éditeur
+        …
+      confidentialite: |
+        …
+      accessibilite: |
+        …
+      cgu: ""                                  # empty = not published, no link
+```
+
+The chart renders the non-empty documents into a `<release>-legal`
+ConfigMap mounted read-only at `/etc/iterion/legal` and sets
+`ITERION_LEGAL_DOCUMENTS_DIR`; a text change rolls the server pod
+(`checksum/legal`). `config.legal.existingConfigMap` mounts a ConfigMap you
+manage elsewhere instead (keys `<slug>.md`; setting inline `documents` beside
+it is refused at render). The chart cannot see that ConfigMap's content, so
+a change to it reaches the server only through a rollout you trigger — a
+checksum of your own in `server.podAnnotations`, or `kubectl rollout
+restart`; until then a pod that restarts serves the new text beside pods
+that serve the old. The server reads the directory once at startup and
+refuses to start on a file that names no document (`mentions_legales.md`)
+or an empty one, rather than publish half a surface; a cloud server that
+publishes no document at all starts with a WARN in its log.
+
+The contact is a bare address (`contact@example.org`, not
+`Iterion <contact@example.org>`): it is published as a `mailto:` link. The
+accessibility rate must match the status as the RGAA statement model reads
+it — `compliant` = 100, `partially_compliant` = 50 to under 100 (and then
+required), `non_compliant` = under 50 or no full audit; the server refuses
+a contradiction at startup.
+
+What the deployment serves: `GET /api/legal/{slug}` (public, rate-limited
+per IP in its own bucket)
+for `mentions-legales`, `confidentialite`, `cgu`, `accessibilite`; the
+studio page `/legal/<slug>` (`lang="fr"`, markdown rendered, raw HTML
+escaped); links to the **configured** documents only — product home footer
+with the « Accessibilité : <état> » mention, sign-in card, sidebar (or the
+foot of the `config_editor` and restricted shells), public catalogue, plan
+du site — and a `mailto:` contact. A document you did not
+configure is a 404 and no link, never an empty page.
+
+Templates to fill with your DPO (the fields of the official models, and
+the recourse to the Défenseur des droits for the accessibility statement):
+[docs/legal-templates/](legal-templates/README.md). Publish the statement
+as `non_compliant` until a full RGAA audit gives a rate.
+
 ## 5. SSO providers
 
 | Provider | Required values | Notes |
@@ -539,11 +628,15 @@ storage tracks:
 1. **API keys** (BYOK): per-team or per-user, optionally flagged
    `is_default`. Resolution order at run launch: per-run override →
    user-default → user-other → team-default → team-other → env.
-2. **OAuth-forfait**: per-user only, one record per kind (Claude Code,
-   Codex). The blob is the verbatim `credentials.json` / `auth.json`
-   the official CLI writes locally; iterion never reads its plaintext
-   except to refresh and to materialise it just-in-time in a per-run
-   `tmpfs` mount on the runner.
+2. **OAuth-forfait**: one record per kind (Claude Code, Codex) and per
+   owner — a user, a team, the org tier or the platform tier
+   ([secrets-reference.md](secrets-reference.md)). The blob is the
+   verbatim `credentials.json` / `auth.json` the official CLI writes
+   locally; iterion never reads its plaintext except to refresh and to
+   materialise it just-in-time in a per-run `tmpfs` mount on the runner.
+   A forfait is a **consumer subscription — an individual licence**; see
+   [oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not) before
+   lending one to a shared deployment.
 
 **Subscription-OAuth billing guard.** A Claude Pro/Max OAuth subscription
 *works* on API-direct backends when the token reaches them, but Anthropic bills
@@ -565,12 +658,48 @@ draws on the plan normally. Pinned by
 `pkg/secrets/subscription_oauth_test.go`; rationale in
 [ADR-085](adr/085-pi-as-execution-backend.md).
 
-If you want to disable OAuth-forfait entirely (e.g. you're operating
-in a jurisdiction where the legal team prefers the strict BYOK path),
-leave `oauthForfait.{anthropic,codex}.enabled=false` in your values
-file and don't set `ITERION_OAUTH_FORFAIT_*_CLIENT_ID`. The
-`/api/me/oauth/*` endpoints stay reachable but token refresh
-fails with `not configured` — users will re-paste blobs on expiry.
+**There is no global "disable OAuth-forfait" switch.** The chart has no
+`oauthForfait.*.enabled` key: `config.auth.oauthForfait.{anthropicClientId,codexClientId}`
+only set the client ids the server uses to *refresh* uploaded blobs and, for
+Anthropic, to run the browser connect flow; the Anthropic one is defaulted to
+the public Claude Code client when unset, so connect and refresh work whether
+or not you set it ([oauth-forfait.md](oauth-forfait.md#configuration)).
+Leaving the Codex id empty changes nothing either, as long as the Anthropic
+id is not cleared too: the refresh worker derives the client id from the
+uploaded `auth.json` itself (`pkg/secrets/oauth_refresh.go`), so an explicit
+`codexClientId` is only an operator override. (An explicit empty
+`anthropic_client_id` in a server config YAML clears the default; with both
+ids empty the periodic refresh sweep does not start, for either kind —
+`oauthRefreshWorker` in `pkg/server/server_lifecycle.go`. That refuses no
+forfait: blobs stay usable until they expire.) The `/api/me/oauth/*`, team, org and admin OAuth routes
+always stay reachable.
+
+What an operator who wants the strict BYOK path actually controls, lever by
+lever — each one covers a different delivery channel, and none of them
+reaches every backend:
+
+| Lever | Where | What it closes | What it leaves open |
+|---|---|---|---|
+| `secrets.forfait.enabled: false` (chart default) | `values.yaml` → runner `envFrom` | The **pod-level** forfait delivered through the `iterion-forfait` Secret: that `envFrom` is not rendered | A `CLAUDE_CODE_OAUTH_TOKEN` (or subscription `ANTHROPIC_AUTH_TOKEN`) key placed in the `iterion-llm` Secret — the runner mounts that Secret whenever `secrets.llm` names one, independently of the forfait flag — reaches the same ambient env (`charts/iterion/templates/runner-deployment.yaml`); and forfait blobs sealed in the DB (user, team, org, platform tier) are still resolved per run |
+| No platform-tier forfait blob | `iterion remote admin llm oauth` (list / `delete <kind>`), studio *Admin → LLM credentials* | The **deployment-wide** forfait every tenant with nothing of its own would inherit | Users and teams can still connect their own |
+| `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` | runner env (`config.extraEnv`) | Spending a **Claude** subscription token on **`claw` and `pi`** — the per-run credential path (`secrets.GuardSubscriptionOAuth`) and the env path (`pkg/backend/model/registry.go`) — and the **ChatGPT** forfait on pi's `openai-codex` bridge; forwarded into the sandbox | **`claude_code` and `codex` are never affected**: they spawn the vendor's own CLI, which draws on the plan normally (`pkg/secrets/credentials.go`, `pkg/backend/detect`). A forfait that reaches a `claude_code` node is spent. `claw`'s ChatGPT forfait is not guarded by this flag — the next row governs it |
+| `ITERION_OPENAI_USE_OAUTH=0` or any `OPENAI_BASE_URL` | runner env (`config.extraEnv`), crosses into the sandbox | `claw`'s ChatGPT-forfait path (host `~/.codex` and the run's uploaded Codex blob). Never set `1` to close it: `ITERION_OPENAI_USE_OAUTH=1` is the opposite switch, it forces the forfait over an `OPENAI_API_KEY` | The `codex` backend, which reads its own `CODEX_HOME` seeded from the run's blob; pi's `openai-codex/*` provider |
+| Credential pool off, or kept to its default audience | per org: `iterion remote pool policy --enabled=false` (or the audience flags), studio *Team → Credential pool*; per donor: `iterion remote pool pause` / `withdraw` | Runs of **other people** drawing on a member's lent Claude or ChatGPT subscription — the pool tier and its fallback door ([credential-pool.md](credential-pool.md)). A pool ships disabled | An enabled pool serves any run in its audience that holds no credential of its own; `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` does not disable it — a lent Claude forfait still runs on `claude_code` |
+
+So "no consumer subscription spends on this instance" is not one flag: it
+is the first two rows (no pod secret, no platform blob), a check that the
+`iterion-llm` Secret carries no subscription token, the credential pool
+off (or a policy for what it lends — a lent forfait is still its donor's
+individual licence, spent on someone else's run), plus a policy for the
+user-, team- and org-connected forfaits. The studio's team and platform
+OAuth pages carry a standing warning banner (plus a persistent toast at
+connect time), and the credential-pool tab carries its own; the org tier
+has no studio surface — it is connected from the CLI (`iterion remote orgs
+oauth set <kind>`) and carries no warning — and nothing refuses any of
+them. Rationale for the
+claw/pi guard in [ADR-085](adr/085-pi-as-execution-backend.md); the matrix
+of which backend consumes which credential is in
+[cloud-llm-credentials.md](cloud-llm-credentials.md).
 
 ## 8. Rotating the master key
 
@@ -589,23 +718,83 @@ update; until then, the step-by-step above is the operator path.
 
 ## 9. Audit log
 
-OAuth-forfait usage is logged at `INFO` on the publisher side:
+The audit log is a persistent, queryable collection
+([pkg/audit](../pkg/audit/audit.go), `audit_events`, Mongo TTL 400 days):
+every control-plane mutation (orgs, teams, members, invitations, secrets,
+bindings, webhooks, tokens, DLQ) and every **sign-in** — accepted or
+refused, every provider — as one row with actor, action, target, IP (the
+immediate peer's address and port: no deployment setting trusts a
+forwarded header yet, #2673 — behind an ingress, the ingress pod's),
+user-agent and a small `meta`. Two scopes: tenant rows
+(`GET /api/teams/{id}/audit` the team-keyed ones, team admins;
+`GET /api/orgs/{id}/audit` the org-keyed ones, sign-ins included, org
+admins) and platform rows
+(`GET /api/admin/audit`, super-admin), filterable by `action`, `actor`,
+`from`, `to`. The action tokens and the sign-in rules — an accepted sign-in
+is an org row of the account, a refused one a platform row carrying the
+attempted address only as a peppered digest, a refresh writes nothing — are
+in the [admin guide §1.5](cloud-admin-guide.md#15-audit-log) and
+[ADR-157](adr/157-authentication-events-join-the-audit-log.md).
+
+Every run launch writes one `run.launched` row on the run's team — the
+user, webhook principal or daemon that launched it, the run id, the bot,
+the trigger (delivery or schedule id when one caused it), IP and
+user-agent when a request served it; a fork writes `run.forked` naming
+its parent ([ADR-158](adr/158-run-launches-join-the-audit-log.md)).
+
+Beside it, every run that seals credentials gets ONE `INFO` line on the
+publisher side naming each funded slot with its tier and fingerprint —
+never plaintext (`logGrantedCredentials` in
+`pkg/server/cloudpublisher/publisher.go`):
 
 ```
-"cloudpublisher: oauth-forfait used run=<id> user=<id> kind=claude_code"
+cloudpublisher: credentials GRANTED for run=<id> — <tier>(oauth:<claude_code|codex> fp=<fp>), <tier>(api_key:<provider> fp=<fp>), …
 ```
 
-Plumb it into your log aggregator (Loki, ELK, Datadog) and add a
-dashboard panel — useful both for cost attribution and as your
-defence-in-depth for the CGU guard discussed in §7.
+`<tier>` is the run's `credential_tiers` vocabulary: `oauth-forfait` (a
+user or team connect), `org`, `pool` (a contributor's lent subscription,
+including the pool's fallback door), `platform`, or `byok` for a tenant API
+key. A forfait slot is the one written `(oauth:<kind> …)`, whatever tier
+filled it — including a forfait restored after its usage window was skipped.
+The grep that catches every forfait-funded run, one line per run:
+
+```
+grep -E 'credentials GRANTED for run=.*\(oauth:(claude_code|codex) '
+```
+
+The per-tier lines stay as detail on *how* the walk chose: `oauth-forfait(<user|team>)
+used run=… owner=… kind=… fp=…`, `org credential used … slot=<kind>`,
+`platform credential used … slot=<kind>` (the last two shared with API
+keys), `run <id> runs on a pooled contributor credential (donor=…)`, and
+`window-closed forfait RESTORED for run=… kind=… fp=…`. None of them alone
+covers every tier; the `GRANTED` line does.
+
+One channel never reaches this log: a subscription token placed in the
+runner's own env (the `iterion-forfait` Secret, or a `CLAUDE_CODE_OAUTH_TOKEN`
+key in `iterion-llm`). The publisher does not see it; at most it warns
+`no credential resolved for run=… the runner falls back to its env` when it
+sealed nothing. That channel is proved closed by the Secrets' key names
+(§7), not by the log.
+
+Plumb the `GRANTED` line into your log aggregator (Loki, ELK, Datadog) and
+add a dashboard panel — useful for cost attribution, and it is the audit
+evidence of which runs a subscription actually paid for: since no lever in
+§7 refuses a forfait on `claude_code`, these lines (with the run's
+`credential_tiers`) are how an operator proves "no consumer subscription
+served production" rather than asserting it. The grep is pinned against
+the line the publisher writes by
+`pkg/server/cloudpublisher/forfait_audit_grep_test.go`.
 
 ## 10. Backup & restore
 
 The data plane's durable state lives in Mongo (runs, events,
 identity, sealed secrets) + the blob bucket (artifact bodies). The
 backup + restore drill — including the
-"Mongo and blob snapshot must overlap in time" invariant — lives in
-[docs/cloud-backup.md](cloud-backup.md). Run the restore drill
+"the bucket copy starts after the Mongo dump ends" invariant — lives in
+[docs/cloud-backup.md](cloud-backup.md). The published objectives are
+RPO 24 h / RTO 8 h, and the drill log in that page is their witness
+([§ Recovery objectives](cloud-backup.md#recovery-objectives),
+[§ Drill log](cloud-backup.md#drill-log)). Run the restore drill
 quarterly against a sacrificial namespace; an unverified backup is no
 backup.
 

@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -39,18 +42,34 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 		}
 	})
 
-	t.Run("a tenant's BYOK key overrides the platform's", func(t *testing.T) {
+	// The node-aware crossing: a run's key rides only the nodes its
+	// provider serves. An anthropic node never sees the run's openai key —
+	// the ambient platform value still speaks there, because the pod's own
+	// provisioning is not the run's money and the node cannot spend the
+	// run's key on a wire its model does not name.
+	t.Run("a run's key crosses only the nodes its provider serves", func(t *testing.T) {
 		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			APIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: "tenant-key"},
 		})
 		env := envFor(t, ctx)
-		if env["OPENAI_API_KEY"] != "tenant-key" {
-			t.Errorf("OPENAI_API_KEY = %q, want the tenant's own key — a sandboxed node billed the platform instead", env["OPENAI_API_KEY"])
+		if env["OPENAI_API_KEY"] != "platform-key" {
+			t.Errorf("OPENAI_API_KEY = %q, want the ambient value — the run's openai key must not cross an anthropic node", env["OPENAI_API_KEY"])
 		}
-		// Providers the run resolved nothing for keep the ambient value:
-		// the run is not asserting anything about them.
 		if env["ANTHROPIC_API_KEY"] != "platform-anthropic" {
 			t.Errorf("ANTHROPIC_API_KEY = %q, want the ambient value untouched", env["ANTHROPIC_API_KEY"])
+		}
+	})
+
+	// The override itself is provider-scoped, not lost: on the node the
+	// key's provider serves, the run's instrument still outranks the
+	// platform's.
+	t.Run("the override survives, scoped to its provider's nodes", func(t *testing.T) {
+		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+		})
+		env := envFor(t, ctx)
+		if env["ANTHROPIC_API_KEY"] != "tenant-anthropic" {
+			t.Errorf("ANTHROPIC_API_KEY = %q, want the tenant's own key on the node its provider serves", env["ANTHROPIC_API_KEY"])
 		}
 	})
 
@@ -135,7 +154,7 @@ func TestForwardableProviderEnv_ForfaitOnlyTenantDoesNotInheritPlatformKey(t *te
 		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q", got, secrets.ClaudeCodeSandboxConfigDir)
 	}
 	for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
-		if v, present := env[shadow]; present {
+		if v := env[shadow]; v != "" {
 			t.Errorf("%s=%q still forwarded — the platform credential would win over the run's forfait", shadow, v)
 		}
 	}
@@ -192,7 +211,7 @@ func forfaitDirForTest(t *testing.T) string {
 // fails the test on error.
 func envFor(t *testing.T, ctx context.Context) map[string]string {
 	t.Helper()
-	env, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	env, _, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -213,7 +232,7 @@ func TestForwardableProviderEnv_GLMNodeKeepsItsZAIKey(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
-	env, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2")
+	env, _, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -241,7 +260,7 @@ func TestForwardableProviderEnv_OtherProviderIgnoresTheForfait(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
 	})
-	env, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5")
+	env, _, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5", "")
 	if err != nil {
 		t.Fatalf("an openrouter node failed on the run's expired Claude forfait: %v", err)
 	}
@@ -268,7 +287,7 @@ func TestForwardableProviderEnv_ExpiredForfaitRefusesInsteadOfBlinding(t *testin
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
 	})
-	_, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	_, _, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5", "")
 	if !errors.Is(err, secrets.ErrAnthropicForfaitExpired) {
 		t.Fatalf("expected a named expiry refusal, got %v", err)
 	}
@@ -290,7 +309,7 @@ func TestForwardableProviderEnv_CarriesTheMoonshotRoute(t *testing.T) {
 	t.Setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/anthropic")
 	hostBase := moonshotBaseURL()
 
-	env, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2")
+	env, _, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -314,7 +333,7 @@ func TestForwardableProviderEnv_CarriesTheStreamUsageKnob(t *testing.T) {
 	t.Setenv("OPENAI_BASE_URL", "https://gateway.operator.example/v1")
 	t.Setenv("ITERION_OPENAI_STREAM_USAGE", "1")
 
-	env, err := forwardableProviderEnv(context.Background(), "openai/gpt-5")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -337,7 +356,7 @@ func TestForwardableProviderEnv_CarriesTheXAIRoute(t *testing.T) {
 	t.Setenv("XAI_BASE_URL", "https://xai-proxy.operator.example/v1")
 	hostBase := xaiBaseURL()
 
-	env, err := forwardableProviderEnv(context.Background(), "xai/grok-4")
+	env, _, err := forwardableProviderEnv(context.Background(), "xai/grok-4", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -369,6 +388,140 @@ func TestForwardableProviderEnv_CarriesTheStreamWatchdog(t *testing.T) {
 	}
 	if got := resolveClawStreamIdleTimeout(); got != hostIdle {
 		t.Errorf("in-container idle timeout = %s, host = %s — a tier the operator turned off is back on when sandboxed", got, hostIdle)
+	}
+}
+
+// The workspace-agent ceiling is read where the delegation runs, so the
+// sandboxed twin must resolve the SAME ceiling. The name crosses always
+// (crossedByItsOwnBranch): the operator's value when one is set, an explicit
+// empty when the host leaves it unset — an ABSENT name is one the runner's
+// workspace .env auto-load fills, handing the repository under review the
+// ceiling its own agent files are read under — and an explicit empty when
+// the host's value was itself planted, which neither side obeys
+// (workspaceAgentMaxBytes). Red when the crossing goes back to skipping
+// empty entries: host-unset then crosses absent, and the .env road is open.
+func TestForwardableProviderEnv_CarriesTheWorkspaceAgentCeiling(t *testing.T) {
+	operatorEnv(t)
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "")
+
+	env := envFor(t, context.Background())
+	v, ok := env[WorkspaceAgentMaxBytesEnv]
+	if !ok {
+		t.Fatalf("host-unset %s crossed ABSENT — the runner's workspace .env auto-load fills it and picks the ceiling its own agent files are read under", WorkspaceAgentMaxBytesEnv)
+	}
+	if v != "" {
+		t.Errorf("host-unset %s crossed as %q, want the explicit empty", WorkspaceAgentMaxBytesEnv, v)
+	}
+
+	// The operator's own override crosses with its value, and the container
+	// resolves the same ceiling as the host: rebuild the in-container view
+	// from what crossed alone and ask the resolver itself.
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "4096")
+	hostCeiling := workspaceAgentMaxBytes(context.Background())
+	env = envFor(t, context.Background())
+	t.Setenv(WorkspaceAgentMaxBytesEnv, env[WorkspaceAgentMaxBytesEnv])
+	if got := workspaceAgentMaxBytes(context.Background()); got != hostCeiling {
+		t.Errorf("in-container ceiling = %d, host = %d — the same file is bounded two ways", got, hostCeiling)
+	}
+
+	// A planted value crosses as the explicit empty: it never spoke for the
+	// operator, and forwarding it raw would launder it past the container's
+	// own planted check (the name arrived present, so the runner's applyDotEnv
+	// marked nothing).
+	envtrust.ResetForTest()
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "1")
+	envtrust.MarkPlanted(WorkspaceAgentMaxBytesEnv)
+	env = envFor(t, context.Background())
+	if got := env[WorkspaceAgentMaxBytesEnv]; got != "" {
+		t.Errorf("a planted %s=%q crossed as %q — the repository under review set the ceiling its agent files are read under", WorkspaceAgentMaxBytesEnv, "1", got)
+	}
+}
+
+// TestAPlantedWorkspaceAgentCeilingSpeaksForNobody: the byte ceiling is a
+// security switch, so a value a project `.env` planted (cmd/iterion
+// applyDotEnv auto-loads it, out of a repository under review included)
+// carries no authority — "0" would unbound a read that becomes a billed
+// system prompt, "1" would refuse every agent file. The operator's own
+// export still governs; the planted one resolves the default, on the host
+// and (through the runner's own auto-load marking) in the container.
+func TestAPlantedWorkspaceAgentCeilingSpeaksForNobody(t *testing.T) {
+	operatorEnv(t)
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "4096")
+	if got := workspaceAgentMaxBytes(context.Background()); got != 4096 {
+		t.Fatalf("the operator's own override resolved to %d, want 4096", got)
+	}
+
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "1")
+	envtrust.MarkPlanted(WorkspaceAgentMaxBytesEnv)
+	if got := workspaceAgentMaxBytes(context.Background()); got != defaultWorkspaceAgentMaxBytes {
+		t.Fatalf("a planted =1 resolved to %d — the repository under review moved the ceiling its agent files are read under", got)
+	}
+	// Through the resolver: the planted refusal-by-ceiling does not bite.
+	dir := t.TempDir()
+	writeWorkspaceAgent(t, dir, "auditor", "a body well past one byte\n")
+	if _, found, err := LookupWorkspaceAgent(dir, "auditor", workspaceAgentMaxBytes(context.Background())); err != nil || !found {
+		t.Errorf("under a planted =1 the file must still resolve: found=%t err=%v", found, err)
+	}
+}
+
+// #2813: a value a workspace `.env` planted on the host is the repository
+// under review answering for the operator — cmd/iterion's applyDotEnv fills
+// the names the launcher had UNSET, and envtrust records which. The crossing
+// must not copy such a value (the repository would pick the node's client
+// identity, its routing, the account its requests are billed to), and must
+// not drop the name either (the runner's own workspace .env auto-load fills
+// an ABSENT name inside the container): it crosses as the explicit empty,
+// and the refusal names the variable so the operator is told. Red when the
+// forwarding loop goes back to copying os.Getenv unread: the planted key
+// then crosses with its value, and the planted cases below fail on their
+// own assertions.
+func TestForwardableProviderEnv_RefusesAPlantedValue(t *testing.T) {
+	operatorEnv(t)
+
+	// The operator's own values cross as before — a key and a routing name.
+	t.Setenv("ZAI_API_KEY", "zai-operator-key")
+	t.Setenv("MOONSHOT_BASE_URL", "https://moonshot.operator.example")
+
+	// The repository's .env plants what the operator left unset: a key, an
+	// endpoint, a client identity, a header block.
+	t.Setenv("OPENAI_API_KEY", "sk-planted")
+	t.Setenv("OPENAI_BASE_URL", "https://openai.repo.example")
+	t.Setenv("CLAW_USER_AGENT", "repo-spoofed-ua")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: planted\nX-Client: repo")
+	envtrust.MarkPlanted("OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAW_USER_AGENT", "ANTHROPIC_CUSTOM_HEADERS")
+
+	env, refused, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5", "")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+
+	if got := env["ZAI_API_KEY"]; got != "zai-operator-key" {
+		t.Errorf("the operator's ZAI_API_KEY crossed as %q — the operator's own value must still cross", got)
+	}
+	if got := env["MOONSHOT_BASE_URL"]; got != "https://moonshot.operator.example" {
+		t.Errorf("the operator's MOONSHOT_BASE_URL crossed as %q", got)
+	}
+
+	// Each planted name crosses as the explicit EMPTY, never absent (the
+	// runner's workspace .env auto-load would fill it) and never with its
+	// value. The header block's identity lines do not save it: a planted
+	// block is the repository's voice whole.
+	for _, name := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAW_USER_AGENT", "ANTHROPIC_CUSTOM_HEADERS"} {
+		v, ok := env[name]
+		if !ok {
+			t.Errorf("planted %s crossed ABSENT — the runner's workspace .env auto-load fills it inside the container", name)
+			continue
+		}
+		if v != "" {
+			t.Errorf("planted %s crossed as %q — the repository under review decided what a sandboxed node's requests carry", name, v)
+		}
+		if !slices.Contains(refused.planted, name) {
+			t.Errorf("refused.planted = %v — it must name %s, or the drop reads as the variable never having been written", refused.planted, name)
+		}
+	}
+	// The operator's own names are not misread as planted.
+	if slices.Contains(refused.planted, "ZAI_API_KEY") || slices.Contains(refused.planted, "MOONSHOT_BASE_URL") {
+		t.Errorf("refused.planted = %v names an operator-set variable", refused.planted)
 	}
 }
 
@@ -480,7 +633,7 @@ func TestForwardableProviderEnv_MoonshotBYOKBeatsTheAmbientKey(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant-key"},
 	})
-	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	env, _, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -510,7 +663,7 @@ func TestForwardableProviderEnv_MoonshotKeyDoesNotKeepTheForfaitOut(t *testing.T
 	if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q — the tenant's Moonshot key kept its forfait out", got, secrets.ClaudeCodeSandboxConfigDir)
 	}
-	if v, present := env["ANTHROPIC_API_KEY"]; present {
+	if v := env["ANTHROPIC_API_KEY"]; v != "" {
 		t.Errorf("ANTHROPIC_API_KEY=%q forwarded — the platform key would serve the tenant's anthropic node", v)
 	}
 }
@@ -530,7 +683,7 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsAMoonshotNodesKey(t *testing
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
-	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	env, _, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -558,7 +711,7 @@ func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *te
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "platform-moonshot"},
 	})
 
-	pinnedNode, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	pinnedNode, _, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -572,7 +725,7 @@ func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *te
 	}
 	t.Setenv("MOONSHOT_API_KEY", "")
 
-	other, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	other, _, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -589,7 +742,7 @@ func TestHeldAnthropicWireAPIKey_IgnoresAPinnedKey(t *testing.T) {
 	creds := secrets.Credentials{
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "platform-zai"},
 	}
-	if heldAnthropicWireAPIKey(creds) {
+	if heldAnthropicWireAPIKey(creds, "") {
 		t.Error("heldAnthropicWireAPIKey counted a pinned key — the run's forfait would stay out of its own anthropic nodes")
 	}
 }
@@ -617,5 +770,131 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsThisNodesPinnedAnthropicKey(
 	}
 	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
 		t.Error("CLAUDE_CONFIG_DIR set although this node holds its own pinned key — the sandbox would spend the forfait while the in-process path spends the pin")
+	}
+}
+
+// The workspace-command ceiling crosses with the task (#1716). `command` is
+// PlacementSandbox, so the registration that EXECUTES in a sandboxed run is
+// the container's, and the container's environment carries no dial: read
+// only on the host, an operator who tightens the bound for a checkout under
+// review would keep 256 KiB on every sandboxed run — philosophy #1's
+// "never silently replace an operator's explicit choice".
+//
+// Mutants: drop the assignment from runnerIOTask → the forwarding readings
+// redden; have WithSlashCommandCeiling read the dial instead of its
+// argument → the last reading reddens, which is the devcontainer case.
+func TestExecuteViaSandboxRunner_SendsTheWorkspaceCommandCeiling(t *testing.T) {
+	work := t.TempDir()
+
+	// The host's reading of the dial, in the registration's vocabulary.
+	for _, tc := range []struct {
+		dial string
+		want int
+	}{
+		// A tightened bound, as set.
+		{"4096", 4096},
+		// The dial's documented "0" REMOVES the ceiling, which the
+		// registration spells negative: a 0 on the wire would mean "the
+		// built-in default" to the runner — the operator's choice replaced.
+		{"0", -1},
+		// No dial: the host's built-in default, NAMED on the wire rather
+		// than left to whatever the container's own build defaults to.
+		{"", defaultSlashCommandMaxBytes},
+	} {
+		t.Setenv(SlashCommandMaxBytesEnv, tc.dial)
+		if got := SlashCommandMaxBytesForRegistry(); got != tc.want {
+			t.Errorf("dial %q resolves to %d for a registration, want %d", tc.dial, got, tc.want)
+		}
+	}
+
+	// The crossing carries the ceiling the backend was BUILT with, never one
+	// read where the crossing is dispatched: an in-container runner relaying
+	// a nested crossing reads its own environment — a repository's
+	// devcontainer — which must not widen the operator's bound.
+	t.Setenv(SlashCommandMaxBytesEnv, "999999")
+	built := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}, WithSlashCommandCeiling(4096))
+	if got := dispatchCapturingTheTask(t, built, work).SlashCommandMaxBytes; got != 4096 {
+		t.Errorf("the ceiling on the wire = %d, the one the backend was built with = 4096 (this process's env says 999999)", got)
+	}
+	// A launcher that names none sends 0: the runner keeps the built-in
+	// default, as it did before the field existed.
+	bare := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	if got := dispatchCapturingTheTask(t, bare, work).SlashCommandMaxBytes; got != 0 {
+		t.Errorf("the ceiling on the wire = %d with no ceiling configured, want 0 — the runner's built-in default", got)
+	}
+}
+
+// The widened provider hint is a bare-id node's routing knowledge
+// (dispatchWithProviderFallback sets it per chain element, RouteProviderHint
+// widens GLM-on-anthropic to zai): the run's keys narrow to it too. No hint,
+// no narrowing — a bare id with nothing to read would otherwise starve.
+func TestForwardableProviderEnv_BareIDNarrowsToTheHint(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "platform-openai")
+	t.Setenv("ZAI_API_KEY", "platform-zai")
+
+	runKeys := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderOpenAI: "tenant-openai",
+			secrets.ProviderZAI:    "tenant-zai",
+		},
+	})
+
+	env, _, err := forwardableProviderEnv(runKeys, "glm-5.2", "zai")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["ZAI_API_KEY"] != "tenant-zai" {
+		t.Errorf("ZAI_API_KEY = %q, want the run's key — the hint's provider is the node's own", env["ZAI_API_KEY"])
+	}
+	if env["OPENAI_API_KEY"] != "platform-openai" {
+		t.Errorf("OPENAI_API_KEY = %q, want the ambient value — the run's openai key must not cross a zai-narrowed node", env["OPENAI_API_KEY"])
+	}
+
+	env, _, err = forwardableProviderEnv(runKeys, "glm-5.2", "")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["OPENAI_API_KEY"] != "tenant-openai" || env["ZAI_API_KEY"] != "tenant-zai" {
+		t.Fatalf("hintless bare id = %v, want every run key (no narrowing without a provider to narrow to)", env)
+	}
+}
+
+// A gateway-primary node's wire is the gateway: no run-held vendor key may
+// ride its env — the ambient platform provisioning still crosses, but the
+// run's money stays on the wire the node names.
+func TestForwardableProviderEnv_GatewayNodeCarriesNoVendorRunKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "platform-anthropic")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
+	compatgw.ResetCatalogCaches()
+
+	runVendor := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+	})
+	env, _, err := forwardableProviderEnv(runVendor, "openai_compatible/m", "")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["ANTHROPIC_API_KEY"] != "platform-anthropic" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want the ambient value — the run's vendor key must not cross a gateway node", env["ANTHROPIC_API_KEY"])
+	}
+	if env["OPENAI_COMPATIBLE_API_KEY"] != "gw-secret" {
+		t.Errorf("gateway key = %q, want the operator's env gateway (the run holds no pair)", env["OPENAI_COMPATIBLE_API_KEY"])
+	}
+}
+
+// The host's ChatGPT forfait is the POD's instrument, not the run's: a
+// stamped run without an openai instrument of its own is refused the
+// delivery, namedly — it never crosses into the container.
+func TestHostCodexForfait_AStampedRunIsRefusedTheHostLogin(t *testing.T) {
+	hostCodexHome(t, `{"auth_mode":"chatgpt","tokens":{"id_token":"idt","access_token":"sk-host-chatgpt","refresh_token":"rt","account_id":"acct"},"last_refresh":"2026-10-11T09:00:00Z"}`)
+	t.Setenv("ITERION_OPENAI_USE_OAUTH", "1")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	payload, refused := hostCodexForfait(ctx, "openai/gpt-5.5")
+	if payload != nil {
+		t.Fatal("the host's ChatGPT login was delivered into a stamped run's sandbox")
+	}
+	if refused == "" {
+		t.Fatal("the refusal is silent — the operator must learn why nothing crossed")
 	}
 }

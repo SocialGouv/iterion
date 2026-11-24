@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -733,9 +734,10 @@ func TestContextCancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
+	defer cancel()
 
 	exec := newStubExecutor()
+	exec.on("slow", func(map[string]any) (map[string]any, error) { cancel(); return nil, ctx.Err() })
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
@@ -2431,6 +2433,81 @@ func TestInteractionCustomAnswerRelayedToExecutorPrompt(t *testing.T) {
 // the opaque blob in the checkpoint and re-injects it into nodeInput on
 // resume so the executor can route the Task into the backend's resume
 // path. This avoids losing the LLM's mid-loop state across pauses.
+func TestClawPermissionPausePersistsExactInput(t *testing.T) {
+	ctx := context.Background()
+	wf := interactionWorkflow(ir.InteractionHuman)
+	exec := newStubExecutor()
+	const input = `{"weight":9007199254740993}`
+	exec.on("worker", func(map[string]any) (map[string]any, error) {
+		return nil, &model.ErrNeedsInteraction{
+			NodeID: "worker", Backend: delegate.BackendClaw,
+			Questions:        map[string]any{delegate.AskUserQuestionKey: "Approve the label?", "_permission": map[string]any{"tool": "choose_label"}},
+			PermissionInput:  json.RawMessage(input),
+			Conversation:     json.RawMessage(`[{"role":"assistant","content":[{"type":"tool_use","id":"choose-label","name":"choose_label","input":` + input + `}]}]`),
+			PendingToolUseID: "choose-label",
+		}
+	})
+	s := tmpStore(t)
+	const id = "run-exact-permission-pause"
+	if err := New(wf, s, exec).Run(ctx, id, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: got %v, want ErrRunPaused", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("checkpoint missing after permission pause")
+	}
+	var args struct {
+		Weight json.Number `json:"weight"`
+	}
+	if err := json.Unmarshal(r.Checkpoint.BackendPermissionInput, &args); err != nil || args.Weight != "9007199254740993" {
+		t.Fatalf("checkpoint permission input = %s, decode error = %v", r.Checkpoint.BackendPermissionInput, err)
+	}
+	firstID := r.Checkpoint.InteractionID
+	if err := New(wf, s, exec).Resume(ctx, id, map[string]any{delegate.AskUserQuestionKey: "deny"}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Resume: got %v, want a second permission pause", err)
+	}
+	r, err = s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.InteractionID == "" || r.Checkpoint.InteractionID == firstID {
+		t.Fatal("the second permission pause did not get its own interaction")
+	}
+}
+
+// A claw permission pause checkpointed before exact approvals carries no
+// captured input: a plain "allow" cannot authorize the exact call anymore,
+// and must be refused with the workable answers instead of reaching the
+// model as a denial.
+func TestClawLegacyPermissionPauseRefusesBareAllow(t *testing.T) {
+	ctx := context.Background()
+	wf := interactionWorkflow(ir.InteractionHuman)
+	exec := newStubExecutor()
+	calls := 0
+	exec.on("worker", func(map[string]any) (map[string]any, error) {
+		calls++
+		return nil, &model.ErrNeedsInteraction{
+			NodeID: "worker", Backend: delegate.BackendClaw,
+			Questions: map[string]any{
+				delegate.AskUserQuestionKey:     "Approve the label?",
+				permission.InteractionMarkerKey: permission.Marker("choose_label", map[string]any{"label": "cyan"}, ""),
+			},
+		}
+	})
+	s := tmpStore(t)
+	const id = "run-legacy-claw-pause"
+	if err := New(wf, s, exec).Run(ctx, id, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: got %v, want ErrRunPaused", err)
+	}
+	err := New(wf, s, exec).Resume(ctx, id, map[string]any{delegate.AskUserQuestionKey: "allow"})
+	if err == nil || !strings.Contains(err.Error(), "allow always") || calls != 1 {
+		t.Fatalf("bare allow = %v (node calls %d), want a refusal naming 'allow always' without re-running the node", err, calls)
+	}
+}
+
 func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	wf := interactionWorkflow(ir.InteractionHuman)
 
@@ -2498,6 +2575,67 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	}
 }
 
+// TestInteractionAskUserPersistsSessionStranding pins the #2461 carriage at
+// the runtime's own seam: a pause whose conversation is a stranded crossing's
+// own turns checkpoints the fact beside it, and the resume hands it back to
+// the executor so the resumed crossing keeps its captures out of the session
+// store.
+func TestInteractionAskUserPersistsSessionStranding(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+
+	persistedConv := json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_42","name":"ask_user","input":{"question":"Which env?"}}]}]`)
+
+	exec := newStubExecutor()
+	calls := 0
+	var secondCallInput map[string]any
+	exec.on("worker", func(input map[string]any) (map[string]any, error) {
+		calls++
+		if calls == 1 {
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:           "worker",
+				Questions:        map[string]any{delegate.AskUserQuestionKey: "Which env?"},
+				Backend:          "claw",
+				Conversation:     persistedConv,
+				PendingToolUseID: "toolu_42",
+				SessionStranded:  true,
+			}
+		}
+		secondCallInput = input
+		return map[string]any{"text": "ok", "_tokens": 10}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	if err := eng.Run(context.Background(), "run-ask-user-stranded", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused on first call, got: %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-ask-user-stranded")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("checkpoint is nil after pause")
+	}
+	if !r.Checkpoint.BackendSessionStranded {
+		t.Error("checkpoint dropped the stranding fact the pause carried — the resume cannot know the conversation is a stranded crossing's own")
+	}
+
+	if err := eng.Resume(context.Background(), "run-ask-user-stranded", map[string]any{
+		delegate.AskUserQuestionKey: "staging",
+	}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if got := secondCallInput[delegate.ResumeSessionStrandedKey]; got != true {
+		t.Errorf("resumed node input[%q] = %v, want true — the stranded crossing's captures would rejoin the session", delegate.ResumeSessionStrandedKey, got)
+	}
+	if _, ok := secondCallInput[delegate.ResumeConversationKey].(json.RawMessage); !ok {
+		t.Errorf("input[%q] missing or wrong type: %T", delegate.ResumeConversationKey, secondCallInput[delegate.ResumeConversationKey])
+	}
+}
+
 // TestInteractionDepthGuardFailsRunaway verifies the maxInteractionDepth
 // guard: a run whose initial dispatch already exceeds the cap is failed
 // with a structured checkpoint rather than recursing further. The guard
@@ -2516,6 +2654,7 @@ func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	rs := eng.newRunState("run-depth-guard", nil)
+	rs.ctx = context.Background()
 	rs.vars = map[string]any{}
 
 	node := wf.Nodes["worker"]

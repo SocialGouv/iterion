@@ -229,7 +229,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	// it was the answered branch and it exited before its successor cursor.
 	finishBranch := func(result *branchResult) {
 		if result != nil && result.err != nil {
-			if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(cancelOnFirstFailure) {
+			if errors.Is(result.err, errCorrectionOwnershipLost) || errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(cancelOnFirstFailure) {
 				cancelBranches()
 			}
 		}
@@ -331,26 +331,10 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Determine convergence (prefer branch-reported join; mirror execFanOut).
-	convergenceNodeID := ""
 	isBestEffort := !cancelOnFirstFailure
-	for _, r := range results {
-		if r.joinNodeID == "" {
-			continue
-		}
-		if convergenceNodeID == "" {
-			convergenceNodeID = r.joinNodeID
-			continue
-		}
-		if convergenceNodeID != r.joinNodeID {
-			if isBestEffort {
-				if e.logger != nil {
-					e.logger.Warn("fan_out_each from %s: branches converge to different nodes (%s vs %s in branch %s) — best_effort, keeping first",
-						routerNodeID, convergenceNodeID, r.joinNodeID, r.branchID)
-				}
-				continue
-			}
-			return "", fmt.Errorf("branches converge to different nodes: %s vs %s", convergenceNodeID, r.joinNodeID)
-		}
+	convergenceNodeID, err := e.reportedJoin("fan_out_each", routerNodeID, results, isBestEffort)
+	if err != nil {
+		return "", err
 	}
 	if convergenceNodeID == "" {
 		if allTerminatedAtDone(results) && (isBestEffort || convergence == "") {

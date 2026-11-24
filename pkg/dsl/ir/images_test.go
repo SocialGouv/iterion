@@ -46,3 +46,43 @@ func TestCompileAgentImages(t *testing.T) {
 		t.Errorf("kf.Images = %v, want [{{input.x}} seed.png] (templates kept verbatim)", kf.Images)
 	}
 }
+
+// A group's `{{params.X}}` is substituted before the node compile passes run,
+// so the images walk and the template check it feeds never meet the params
+// namespace — which ParseRefs does not know. The bound path reaches the
+// instance verbatim.
+const groupImagesSrc = `
+schema out_s:
+  y: bool
+
+prompt usr:
+  User.
+
+group g(shot):
+  agent work:
+    model: "test-model"
+    user: usr
+    output: out_s
+    images: ["{{params.shot}}.png"]
+use g as r1 with {shot: "hero"}
+
+workflow wf:
+  entry: r1.work
+  r1.work -> done
+`
+
+func TestAGroupsImagePathIsBoundBeforeTheWalkReadsIt(t *testing.T) {
+	got := compileText(t, groupImagesSrc)
+	for _, d := range got.Diagnostics {
+		if d.Code == DiagBadTemplateRef {
+			t.Fatalf("C004 fires on a group's bound image path: %s", d.Error())
+		}
+	}
+	work, ok := got.Workflow.Nodes["r1.work"].(*AgentNode)
+	if !ok {
+		t.Fatalf("r1.work is not an AgentNode (nodes: %v)", got.Workflow.Nodes)
+	}
+	if len(work.Images) != 1 || work.Images[0] != "hero.png" {
+		t.Errorf("r1.work images = %v, want [hero.png]", work.Images)
+	}
+}

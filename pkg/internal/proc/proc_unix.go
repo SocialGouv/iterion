@@ -22,6 +22,36 @@ func DetachProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
+// KillProcessGroup sends SIGKILL to the process group cmd leads — the group
+// whose id is the child's own pid, recorded at spawn by [DetachProcessGroup]
+// or [TerminateGroupOnCancel] — and reports whether a live group took the
+// signal. Three shapes return (false, nil): a command never started, a command
+// that was NOT made its group's leader (there is no recorded group id to
+// address, and guessing one could land on a group the OS built over the
+// recycled pid), and a group already gone (ESRCH — the command finished on
+// its own and nothing it led is left).
+//
+// Call it INSIDE the command's teardown window — when the wait on the command
+// has just ended — never later. The pgid is ours exactly while a member of
+// the group lives: a group with a live member pins the id, and one with none
+// left answers ESRCH. A kill stored and delivered later could land on a group
+// the OS built over the recycled id.
+//
+// A descendant that escaped the group on purpose (its own setsid) is out of
+// reach here, exactly as it is for [TerminateGroupOnCancel].
+func KillProcessGroup(cmd *exec.Cmd) (bool, error) {
+	if cmd == nil || cmd.Process == nil || cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		return false, nil
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // TerminateGroupOnCancel makes context cancellation actually terminate the
 // subprocess AND everything it spawned. Two gaps in the default
 // exec.CommandContext behaviour it closes:

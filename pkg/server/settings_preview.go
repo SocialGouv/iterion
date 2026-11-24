@@ -3,11 +3,15 @@ package server
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -16,17 +20,34 @@ import (
 // duplicating a backend catalog here: a newly detected backend is therefore
 // fail-closed by the same IR predicate without requiring a UI capability
 // table update.
+//
+// The second return is the ROUTE screen (#3259): per LLM node, why the
+// backend this node's run will actually take — `currentBackend`, resolved
+// exactly as resolveBackendName resolves it — is refused by a DECLARED
+// capability. The per-candidate loop screens the choices the operator could
+// pick; without the route screen, the operator touching no per-node dropdown
+// launches a run the first node kills, blessed by a preview that promised it
+// "cannot drift from runtime admission".
 func buildBackendOverrideOptions(
 	wf *ir.Workflow,
 	runPermission string,
 	runBackend string,
+	runAmbient string,
+	runCodemode string,
 	backendNames []string,
-) map[string]map[string]previewBackendOption {
+) (map[string]map[string]previewBackendOption, map[string]string) {
 	if wf == nil || len(backendNames) == 0 {
-		return nil
+		return nil, nil
 	}
 
+	// An invalid launch spelling fails CLOSED here, exactly like the invalid
+	// permission mode below: the dispatch would decide the typo as an off
+	// (ResolveCodemode reads any non-"on" rung value as not-on), the launch
+	// itself 400s, and a silent green screen would be the drift the picker's
+	// contract forbids.
+	badCodemode := runCodemode != "" && !ir.ValidCodemode(runCodemode)
 	result := make(map[string]map[string]previewBackendOption)
+	routeRefusals := make(map[string]string)
 	for _, node := range wf.Nodes {
 		llm, ok := node.(ir.LLMNode)
 		if !ok {
@@ -36,7 +57,7 @@ func buildBackendOverrideOptions(
 			runPermission,
 			llm.GetPermission(),
 			wf.Permission,
-			os.Getenv("ITERION_PERMISSION"),
+			envOperator("ITERION_PERMISSION"),
 		)
 		if err != nil {
 			// Validation remains authoritative for malformed modes, but the
@@ -57,12 +78,40 @@ func buildBackendOverrideOptions(
 			}
 			continue
 		}
+		if badCodemode {
+			choices := make(map[string]previewBackendOption, len(backendNames))
+			for _, backend := range backendNames {
+				backend = strings.TrimSpace(backend)
+				if backend == "" {
+					continue
+				}
+				choices[backend] = previewBackendOption{UnavailableReason: fmt.Sprintf(
+					"cannot assess codemode admission until the launch's codemode value is valid (on|off): %q — the launch will refuse it",
+					runCodemode,
+				)}
+			}
+			if len(choices) > 0 {
+				result[llm.NodeID()] = choices
+			}
+			continue
+		}
 		currentBackend := effectivePreviewBackend(
 			llm.GetLLMFields().Backend,
 			runBackend,
 			wf.DefaultBackend,
-			os.Getenv("ITERION_DEFAULT_BACKEND"),
+			envOperator("ITERION_DEFAULT_BACKEND"),
 		)
+		// The declared ambient policy, resolved ONCE per node with the same
+		// precedence the dispatch reads (executor_ambient): run override,
+		// node, workflow, env. Only a DECLARED policy is screened — the
+		// default is applied as far as the backend can, never refused.
+		policy, ambientSource := ambient.ResolveSourced(
+			runAmbient,
+			llm.GetAmbientContext(),
+			wf.AmbientContext,
+			normalizedAmbientContextEnv(),
+		)
+		ambientDeclared := ambient.Declared(ambientSource)
 		choices := make(map[string]previewBackendOption, len(backendNames))
 		for _, backend := range backendNames {
 			backend = strings.TrimSpace(backend)
@@ -76,22 +125,116 @@ func buildBackendOverrideOptions(
 				ir.EffectiveAskRules(llm, wf),
 			)
 			if choice.UnavailableReason == "" {
+				// A declared `codemode: on` the chosen backend cannot serve.
+				// The override wins over the source, so C339 never saw this
+				// route: this screen is the only one between the operator
+				// and a dispatch that refuses.
+				choice.UnavailableReason = ir.CodemodeOverrideRefusalReason(backend, runCodemode, llm, wf)
+			}
+			if choice.UnavailableReason == "" && ambientDeclared {
+				choice.UnavailableReason = ambientOverrideRefusalReason(backend, policy, ambientSource)
+			}
+			if choice.UnavailableReason == "" {
 				choice.Warning = ir.ToolRestrictionLossReason(
 					currentBackend,
 					backend,
 					llm.GetTools(),
 				)
 			}
+			if backend == backendcaps.ClaudeCode {
+				// The roster drift a claude_code choice carries whatever the
+				// node's list says (iterion#2815) — the same projection the
+				// delegate spawns from, never a second list.
+				if drift := claudeCodeRosterDriftNotice(llm); drift != "" {
+					if choice.Warning != "" {
+						choice.Warning += " "
+					}
+					choice.Warning += drift
+				}
+			}
 			choices[backend] = choice
+		}
+		// The ROUTE screen (#3259): the same declared-capability questions,
+		// asked of the backend this run actually takes. A refused route
+		// appears in the map under its own name — the drop guard on the
+		// studio side clears an override the screen refuses — and surfaces
+		// on the run-level answer, because the "inherit" choice is the
+		// node's declaration and cannot be deselected.
+		if currentBackend != "" {
+			if reason := ir.CodemodeOverrideRefusalReason(currentBackend, runCodemode, llm, wf); reason != "" {
+				choices[currentBackend] = previewBackendOption{UnavailableReason: reason}
+				routeRefusals[llm.NodeID()] = reason
+			} else if ambientDeclared {
+				if reason := ambientOverrideRefusalReason(currentBackend, policy, ambientSource); reason != "" {
+					choices[currentBackend] = previewBackendOption{UnavailableReason: reason}
+					routeRefusals[llm.NodeID()] = reason
+				}
+			}
 		}
 		if len(choices) > 0 {
 			result[llm.NodeID()] = choices
 		}
 	}
 	if len(result) == 0 {
-		return nil
+		return nil, nil
 	}
-	return result
+	return result, routeRefusals
+}
+
+// ambientOverrideRefusalReason is the picker's half of the ambient refusal
+// (ADR-119): what executor_ambient refuses at dispatch — a DECLARED policy
+// the backend Refuses, with its Capability and Remedy vocabulary — said here,
+// before the launch. Unmeasured is NOT a refusal: the dispatch proceeds with
+// a warning, so the picker must not bar a choice the run would accept.
+func ambientOverrideRefusalReason(backend string, p ambient.Policy, source string) string {
+	support, reason := ambient.SupportOf(backend, p)
+	if support != ambient.Refused {
+		return ""
+	}
+	return fmt.Sprintf("cannot serve %s: %s", ambient.Capability(p, source), ambient.Remedy(backend, p, reason))
+}
+
+// claudeCodeRosterDriftNotice is the launch picker's half of the
+// capability-drift disclosure (iterion#2815): what a claude_code choice
+// withholds from THIS node whatever its tools: list says, and the subagent
+// pair a list without `agent` lets go. Read off the delegate's own
+// projection (delegate.ClaudeCodeToolSurface) — the roster is the CLI's,
+// not iterion's, and a second enumeration here is how #1651 happened. The
+// reason per name is `iterion validate --explain`'s surface; the picker
+// carries the one sentence.
+func claudeCodeRosterDriftNotice(llm ir.LLMNode) string {
+	tools := llm.GetTools()
+	surface := delegate.ClaudeCodeToolSurface(delegate.Task{
+		AllowedTools:    tools,
+		ToolsDeclared:   toolcatalog.ToolsDeclared(tools),
+		Readonly:        llm.GetLLMFields().Readonly,
+		DiagnosticShell: slices.Contains(tools, "diagnostic_shell"),
+	})
+	var always []string
+	subagentLeaves := false
+	for _, w := range surface.Withheld {
+		switch {
+		case w.Always && w.OnRoster:
+			always = append(always, w.Name)
+		case !w.Always && (w.Name == "Agent" || w.Name == "Task"):
+			subagentLeaves = true
+		}
+	}
+	if len(always) == 0 && !subagentLeaves {
+		return ""
+	}
+	var b strings.Builder
+	if len(always) > 0 {
+		fmt.Fprintf(&b, "claude_code withholds %s from every node whatever its tools: list says — a headless session has nobody to ask, no background shell and no later turn", strings.Join(always, ", "))
+	}
+	if subagentLeaves {
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString("the subagent tools Agent/Task also leave: the tools: list does not declare `agent`")
+	}
+	b.WriteString(" (per name and reason: iterion validate --explain)")
+	return b.String()
 }
 
 // effectivePreviewBackend mirrors the backend tail that is knowable before
@@ -126,11 +269,13 @@ func buildEffectiveSettings(wf *ir.Workflow) *previewEffectiveSettings {
 		return nil
 	}
 	eff := &previewEffectiveSettings{
+		// ITERION_COMPRESS stays a raw read: not operator-grade — a workflow
+		// knob a bot's stored record may carry.
 		Compress:       resolveKnob(wf.Compress, os.Getenv("ITERION_COMPRESS"), "auto"),
 		AutoMemory:     resolveKnob(wf.AutoMemory, normalizedAutoMemoryEnv(), "off"),
 		AmbientContext: resolveKnob(wf.AmbientContext, normalizedAmbientContextEnv(), ambient.Workspace.String()),
-		Permission:     resolveKnob(wf.Permission, os.Getenv("ITERION_PERMISSION"), "off"),
-		Backend:        resolveKnob(wf.DefaultBackend, os.Getenv("ITERION_DEFAULT_BACKEND"), "auto"),
+		Permission:     resolveKnob(wf.Permission, envOperator("ITERION_PERMISSION"), "off"),
+		Backend:        resolveKnob(wf.DefaultBackend, envOperator("ITERION_DEFAULT_BACKEND"), "auto"),
 	}
 	for _, node := range wf.Nodes {
 		switch n := node.(type) {
@@ -179,7 +324,7 @@ func resolveKnob(workflow, env, def string) previewEffectiveKnob {
 // environment said off", and collapsing the two would attribute the default to
 // a source that never spoke.
 func normalizedAutoMemoryEnv() string {
-	raw := strings.TrimSpace(os.Getenv(automemory.ModeEnv))
+	raw := strings.TrimSpace(envOperator(automemory.ModeEnv))
 	if raw == "" {
 		return ""
 	}
@@ -192,7 +337,7 @@ func normalizedAutoMemoryEnv() string {
 // falls back to the default, and the preview attributes it to the default
 // rather than captioning a value no run would ever use.
 func normalizedAmbientContextEnv() string {
-	p, ok := ambient.Parse(os.Getenv(ambient.PolicyEnv))
+	p, ok := ambient.Parse(envOperator(ambient.PolicyEnv))
 	if !ok {
 		return ""
 	}

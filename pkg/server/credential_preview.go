@@ -8,7 +8,10 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -48,13 +51,69 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	// a legal launch and an intended "deny" would bless one the launch
 	// refuses.
 	spec.Launch.Permission = strings.TrimSpace(req.Permission)
+	// The launch itself 400s an invalid codemode spelling; the preview —
+	// the surface that answers for that launch — refuses the same input
+	// instead of judging a value the launch will never accept.
+	if !ir.ValidCodemode(req.Codemode) {
+		httpError(w, http.StatusBadRequest, "codemode: %q is not a codemode value (on|off, empty inherits the DSL)", req.Codemode)
+		return
+	}
+	// The codemode launch choice rides to the preview's warnings, the same
+	// way the permission knob rides to its screen: the preview answers for
+	// the launch the caller is about to shape, whose request carries the
+	// same field. An unparsable duration refuses the preview with a 400,
+	// naming the field — the same contract as the launch's own parse.
+	codemodeBounds, err := req.CodemodeBounds.ToBounds()
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	spec.Launch.Codemode = req.Codemode
+	spec.Launch.CodemodeBounds = codemodeBounds
+	// The review-mode knob rides the same way: `paired` puts the second
+	// reviewer on the run's topology, so a preview without it would walk a
+	// plan the launch never takes. It resolves through the SAME injection
+	// the launch applies (the retired spellings map there), and the concrete
+	// mode is written into the vars the walk reads — the topology lives on
+	// the vars, not on a field beside them.
+	spec.Launch.ReviewMode = strings.TrimSpace(req.ReviewMode)
+	if spec.Launch.Vars == nil {
+		spec.Launch.Vars = map[string]string{}
+	}
+	if spec.Launch.ReviewMode != "" {
+		spec.Launch.Vars["review_mode"] = reviewtopology.Resolve(spec.Launch.ReviewMode)
+	}
 	disabled := false
 	previewRepo := ""
+	var previewPoolLayers []credpool.BindingLayer
+	// The routing layers the launch folds above the stored scopes: the
+	// caller's run level on the personal lane, the config's routing block
+	// on the webhook lane.
+	var routeLayers []llmroute.Layer
 	switch req.Source.Kind {
 	case "personal":
 		if req.Source.ID != "" {
 			httpError(w, http.StatusBadRequest, "personal source does not accept an id")
 			return
+		}
+		// The caller's vars ride as the personal lane's own --var-style
+		// values: the operator owns them (ADR-129 §4 rule 2 trusts the
+		// CLI's --var names), so the preview reads the routing fields the
+		// way the launch it mirrors would. The webhook kind resolves its
+		// vars from the config layers and the delivery payload — caller
+		// values are not part of that launch shape and are refused, never
+		// silently dropped.
+		spec.Launch.Vars = req.Vars
+		spec.Launch.TrustedVarNames = trustedVarNames(req.Vars)
+		// The caller's run level meets the write gate the launch it
+		// mirrors applies to the same field: a block the launch refuses
+		// previews as refused, never as a whitelist.
+		if err := validateRequestRouting("llm_routing", req.LLMRouting); err != nil {
+			httpError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if req.LLMRouting != nil {
+			routeLayers = append(routeLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
 		}
 	case "webhook":
 		if req.Source.ID == "" {
@@ -65,8 +124,13 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusNotFound, "webhook not found")
 			return
 		}
-		cfg, err := s.webhookConfigs.Get(r.Context(), req.Source.ID)
-		if errors.Is(err, webhooks.ErrNotFound) || err == nil && cfg.TenantID != teamID {
+		// The id rides the REQUEST BODY here rather than the path, and the
+		// clause is the by-id CRUD's own (readWebhookForTenant): an absent
+		// and a foreign config answer the same 404. A read that failed is
+		// NOT a refusal — it answers 503, which is why this lane reads the
+		// error rather than the CRUD's collapsed form.
+		cfg, err := s.readWebhookForTenant(r.Context(), teamID, req.Source.ID)
+		if errors.Is(err, webhooks.ErrNotFound) {
 			httpError(w, http.StatusNotFound, "webhook not found")
 			return
 		}
@@ -85,8 +149,18 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusBadRequest, "bot_id is not allowed by this webhook")
 			return
 		}
-		spec.OwnerID = "webhook:" + cfg.ID
+		spec.OwnerID = webhookActor(cfg.ID)
 		spec.Launch.KeyOverrides = cfg.KeyOverrides
+		// The webhook's routing and pool blocks fold as the launch's
+		// (launchWebhookBot): the routing block as the webhook layer, the
+		// pool block as the binding layer. A caller's run-level routing is
+		// no part of that launch, refused like its vars.
+		if req.LLMRouting != nil {
+			httpError(w, http.StatusBadRequest, "webhook source routes by the config's routing block; a caller-supplied llm_routing is not part of that launch")
+			return
+		}
+		routeLayers = append(routeLayers, llmroute.Layer{Source: llmroute.SourceWebhook, Policy: cfg.RoutingPolicy()})
+		previewPoolLayers = poolLayersOf(&cfg)
 		// The repository the webhook serves rides the preview's context as
 		// it rides the launch's: a key restricted to repositories previews
 		// as withheld for any other, and as withheld when the webhook
@@ -102,12 +176,35 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 				previewRepo = entry
 			}
 		}
-		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg)
+		if len(req.Vars) > 0 {
+			httpError(w, http.StatusBadRequest, "webhook source resolves its vars from the config layers and the delivery payload; a caller-supplied vars map is not part of that launch")
+			return
+		}
+		if strings.TrimSpace(req.ReviewMode) != "" {
+			httpError(w, http.StatusBadRequest, "webhook source takes its review topology from the integration's own vars; a caller-supplied review_mode is not part of that launch")
+			return
+		}
+		// A fork-lane config launches untrusted targets only (the gesture),
+		// so its preview answers for THAT launch: compiled under the fork's
+		// trust, no var layer and no trusted name (decision 4), stamped on
+		// the lane's pool — the funding verdict the launch gate refuses on
+		// before metering (fork_run_unfunded) is the one printed here.
+		trust := store.RunTrustDefault
+		if cfg.ForkLane {
+			trust = store.RunTrustFork
+		}
+		spec.Launch.Trust = trust
+		spec.Launch.ForkLanePool = forkLanePoolFor(cfg, trust)
+		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg, trust)
 		// The launch trusts the config's OPERATOR layer for the routing
 		// pre-flights (webhooks_gitlab.go's webhook lane); the preview
 		// answers for the same launch, so it trusts the same names — a
 		// var-derived cell the launch narrows must not preview as undecided.
-		spec.Launch.TrustedVarNames = trustedVarNames(cfg.OperatorLaunchVars)
+		spec.Launch.TrustedVarNames = trustedVarNamesFor(trust, cfg.OperatorLaunchVars)
+		// The webhook lanes launch warn-and-proceed on an undeclared input
+		// (AllowUnknownInputs); the preview mirrors its lane, the personal
+		// one mirrors the CLI's default refusal.
+		spec.Launch.AllowUnknownInputs = true
 		disabled = !cfg.Enabled
 	default:
 		httpError(w, http.StatusBadRequest, "source.kind must be personal or webhook")
@@ -136,6 +233,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	defer lb.Cleanup()
 	spec.Context.BotID = lb.BotID
 	spec.Launch.BotID = lb.BotID
+	spec.Launch.BotManifestName = lb.manifestName()
 	spec.Launch.FilePath = lb.Path
 	spec.Launch.Source = lb.Source
 	spec.Launch.BundleDir = lb.BundleDir
@@ -146,20 +244,26 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		spec.Launch.Source = ""
 	}
 	// The preview's whitelist must answer what the LAUNCH will seal: the
-	// policy resolved exactly as the launch site resolves it — the run
-	// level the caller sent folded as the HEAD Launcher layer, the bot's
-	// manifest layer and the team beneath (a ("","") resolution would
-	// drop them and preview a policy the launch never folds).
-	var runLayers []llmroute.Layer
-	if req.LLMRouting != nil {
-		runLayers = append(runLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
-	}
-	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, spec.Context.TeamID, spec.Context.BotID, runLayers...)
+	// policy resolved exactly as the launch site resolves it — the lane's
+	// own layer (the caller's run level as the HEAD Launcher layer, or the
+	// webhook's routing block), the bot's manifest layer and the team
+	// beneath (a ("","") resolution would drop them and preview a policy
+	// the launch never folds).
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, spec.Context.TeamID, spec.Context.BotID, routeLayers...)
 	if routeErr != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", routeErr)
 		return
 	}
 	spec.LLMRoutePolicy = routePolicy
+	// The pool attachment resolves exactly as the launch site does (ADR-164
+	// preview parity): the preview's pool answers what the launch will
+	// draw, refusals included.
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, spec.Context.TeamID, spec.Context.BotID, previewPoolLayers...)
+	if poolErr != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", poolErr)
+		return
+	}
+	spec.PoolAttachment = poolAttachment
 	out, err := s.runs.PreviewCredentials(ctx, spec)
 	if errors.Is(err, runview.ErrCredentialPreviewUnavailable) {
 		httpError(w, http.StatusServiceUnavailable, "credential preview is unavailable")

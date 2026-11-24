@@ -4,9 +4,10 @@ package server
 
 import (
 	"os/exec"
-	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 func configureAuthoringPythonCommand(cmd *exec.Cmd) {
-	cmd.WaitDelay = 500 * time.Millisecond
+	proc.SetWaitDelay(cmd, authoringPythonDrainBound)
 }

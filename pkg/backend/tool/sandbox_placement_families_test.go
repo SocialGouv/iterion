@@ -23,9 +23,26 @@ import (
 // itself, and therefore one this helper must wire too.
 func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 	exempt := map[string]string{
-		// A thin wrapper over RegisterClawBuiltinsWithEnv, which
-		// RegisterClawAll calls: the same tools, no extra names.
-		"RegisterClawBuiltins": "wrapper over RegisterClawBuiltinsWithEnv",
+		// Thin wrappers over the scope variant RegisterClawAll calls: the
+		// same tools, no extra names — the scope only carries the extra
+		// read roots a host attaches after registration (#2650).
+		"RegisterClawBuiltins":             "wrapper over RegisterClawBuiltinsWithScope",
+		"RegisterClawBuiltinsWithEnv":      "wrapper over RegisterClawBuiltinsWithScope",
+		"RegisterClawWorkspaceDiagnostics": "wrapper over RegisterClawWorkspaceDiagnosticsWithScope",
+
+		// Thin wrappers over the provider variants RegisterClawAll calls:
+		// the same tools over a workspace string captured once, for hosts
+		// whose workspace never moves after registration (#2870).
+		"RegisterClawCommand": "wrapper over RegisterClawCommandWithProvider",
+		// The provenance-aware variant RegisterClawAll calls directly
+		// (ADR-162 U3); this is the same registration without the trust
+		// closure, for hosts with no notion of workspace provenance.
+		"RegisterClawCommandWithProvider": "wrapper over RegisterClawCommandWithTrust, the provenance-aware variant RegisterClawAll calls",
+		"RegisterClawSkill":               "wrapper over RegisterClawSkillWithProvider",
+		// The walk-only form, kept for hosts with no allowlist to pin
+		// (the sandboxed runner registers the pinned variant directly):
+		// RegisterClawAll calls the full form with the host's provider.
+		"RegisterClawSkillWithProvider": "wrapper over RegisterClawSkillWithSources, the pinned-allowlist variant RegisterClawAll calls (#1719)",
 
 		// Registers ONE tool the caller supplies. There is no fixed name for
 		// a placement table to classify, and the classification of whatever

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // #2710: a long tool loop's structured recovery on a gateway model can come
@@ -28,6 +28,7 @@ func recoveryRetryOpts() GenerationOptions {
 }
 
 func TestClawBackend_RecoveryRetriesAtALoweredEffort(t *testing.T) {
+	t.Parallel()
 	var wireEfforts []string
 	client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
 		wireEfforts = append(wireEfforts, req.ReasoningEffort)
@@ -64,6 +65,7 @@ func TestClawBackend_RecoveryRetriesAtALoweredEffort(t *testing.T) {
 }
 
 func TestClawBackend_TheRetryIsBilledIntoTheFailure(t *testing.T) {
+	t.Parallel()
 	client := &funcClient{fn: func(n int, _ api.CreateMessageRequest) ([]api.StreamEvent, error) {
 		return textEvents("", 100, 1), nil // every turn comes back empty
 	}}

@@ -21,11 +21,15 @@ type IssueCommentEvent struct {
 	Action     string     `json:"action"` // "created" | "edited" | "deleted"
 	Repository Repository `json:"repository"`
 	Issue      struct {
-		Number      int64  `json:"number"`
-		Title       string `json:"title"`
-		Body        string `json:"body"`
-		HTMLURL     string `json:"html_url"`
-		State       string `json:"state"` // "open" | "closed"
+		Number  int64  `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		HTMLURL string `json:"html_url"`
+		State   string `json:"state"` // "open" | "closed"
+		// Labels on the issue/PR at event time — the hold-label veto's
+		// input. GitHub (and Forgejo, same shape) names each as
+		// {"name": "hold"}.
+		Labels      []Label `json:"labels"`
 		PullRequest *struct {
 			HTMLURL string `json:"html_url"`
 		} `json:"pull_request"` // non-null ⇒ the issue is a pull request
@@ -57,6 +61,10 @@ type ParsedNote struct {
 	CommentURL    string
 	AuthorLogin   string
 	Action        string // comment action ("created" | …)
+	// Labels are the issue/PR's labels at event time — the hold-label
+	// veto's input on the lanes that read one (the fork review gesture,
+	// ADR-162 Q2: the base's configuration can stop a fork run).
+	Labels []string
 }
 
 // ParseIssueComment decodes an issue_comment webhook body from GitHub or
@@ -80,6 +88,7 @@ func ParseIssueComment(body []byte) (ParsedNote, error) {
 		CommentURL:  e.Comment.HTMLURL,
 		AuthorLogin: e.Sender.Login,
 		Action:      e.Action,
+		Labels:      labelNames(e.Issue.Labels),
 	}
 	if e.Issue.PullRequest != nil {
 		p.IsPullRequest = true

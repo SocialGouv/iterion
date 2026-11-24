@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 
+	"github.com/SocialGouv/iterion/pkg/backend/llmtypes"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
@@ -16,30 +17,38 @@ import (
 // resolver — ResolveCapabilities calls capabilitiesForModel() and asks the same
 // registry whether the aggregator contributed.
 
-// CapabilitySource records where a resolved capability value came from.
-type CapabilitySource string
+// CapabilitySource records where a resolved capability record came from
+// (llmtypes.CapabilitySource): the curated table, the aggregator merged
+// over it, or one of the gateway catalog's tables.
+type CapabilitySource = llmtypes.CapabilitySource
 
 const (
 	// SourceAggregator means the online model-spec aggregator (models.dev,
 	// cached under ~/.iterion) had an entry for the model and was merged over
 	// the curated fallback.
-	SourceAggregator CapabilitySource = "aggregator"
+	SourceAggregator = llmtypes.SourceAggregator
 	// SourceCurated means the curated static table in capabilities.go was the
 	// sole source — the aggregator lacked the model, was disabled, or offline.
-	SourceCurated CapabilitySource = "curated"
+	SourceCurated = llmtypes.SourceCurated
+	// SourceUnknown means no table answered — a gateway id the catalog does
+	// not carry: every flag nil, every number zero.
+	SourceUnknown = llmtypes.SourceUnknown
 )
 
 // ResolvedCapabilities is the CLI-facing resolution result: the same
 // ModelCapabilities the runtime would compute, plus the resolution source.
 type ResolvedCapabilities struct {
-	Provider      string           `json:"provider"`
-	Model         string           `json:"model"`
-	Spec          string           `json:"spec"`
-	Source        CapabilitySource `json:"source"`
-	Reasoning     bool             `json:"reasoning"`
-	ToolCall      bool             `json:"tool_call"`
-	Temperature   bool             `json:"temperature"`
-	ContextWindow int              `json:"context_window"`
+	Provider string           `json:"provider"`
+	Model    string           `json:"model"`
+	Spec     string           `json:"spec"`
+	Source   CapabilitySource `json:"source"`
+	// Reasoning, ToolCall and Temperature are nil when the source answered
+	// none — a gateway id whose catalog record carries no flags — and a
+	// reader says "unknown", never "no" (ModelCapabilities).
+	Reasoning     *bool `json:"reasoning,omitempty"`
+	ToolCall      *bool `json:"tool_call,omitempty"`
+	Temperature   *bool `json:"temperature,omitempty"`
+	ContextWindow int   `json:"context_window"`
 	// MaxOutputTokens is the aggregator's published completion cap. Zero
 	// means the aggregator had no figure — never "uncapped".
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
@@ -51,20 +60,16 @@ type ResolvedCapabilities struct {
 }
 
 // ResolveCapabilities resolves capabilities for an explicit provider + model ID,
-// exactly as the runtime does via capabilitiesForModel(), and additionally
-// reports whether the dynamic aggregator contributed (Source). It performs no
+// exactly as the runtime does via capabilitiesForModel(), and reports which
+// table answered (Source, carried by the record itself). It performs no
 // blocking network fetch — call RefreshModelSpecs first to force one.
 func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 	caps := capabilitiesForModel(provider, modelID)
-	src := SourceCurated
-	if _, ok := modelspecs.Default().Lookup(provider, modelID); ok {
-		src = SourceAggregator
-	}
 	return ResolvedCapabilities{
 		Provider:        provider,
 		Model:           modelID,
 		Spec:            provider + "/" + modelID,
-		Source:          src,
+		Source:          caps.Source,
 		Reasoning:       caps.Reasoning,
 		ToolCall:        caps.ToolCall,
 		Temperature:     caps.Temperature,

@@ -43,6 +43,9 @@ const PROVIDER_EVENT_DEFAULTS: Record<WebhookProvider, string[]> = {
   github: ["pull_request", "issue_comment", "issues"],
   forgejo: ["pull_request", "issue_comment"],
   generic: [],
+  // Not offered by this wizard: a connector ingress is created against a
+  // connection, and its package declares the events it reads.
+  connector: [],
 };
 
 const STEP_IDS = ["provider", "bots", "filters", "review"] as const;

@@ -127,14 +127,15 @@ func TestPipelineBoard_EntryInputNeverCarriesThePublishGrant(t *testing.T) {
 	env.seedRun(t, "run-live", "review", store.RunStatusRunning, grantInputs("live"))
 
 	// A card written before its write paths dropped the grant, launched into
-	// a run that holds no inputs of its own.
+	// a run that holds no inputs of its own. Planted behind the write
+	// boundary, which drops those vars now (plantLegacyCardBotArgs).
 	legacy, err := env.board.Create(native.Issue{
 		Title: "Legacy card", State: native.StateInProgress, Bot: "review",
-		BotArgs: map[string]string{"scope": "legacy", store.ForgePublishTokenVar: publishGrantSentinel},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	plantLegacyCardBotArgs(t, env.board, legacy.ID, map[string]string{"scope": "legacy", store.ForgePublishTokenVar: publishGrantSentinel})
 	env.seedRun(t, "run-from-card", "review", store.RunStatusRunning, nil)
 	if err := env.board.SetLastRun(legacy.ID, "run-from-card", ""); err != nil {
 		t.Fatal(err)
@@ -144,11 +145,11 @@ func TestPipelineBoard_EntryInputNeverCarriesThePublishGrant(t *testing.T) {
 	// entry_input is its own bot args.
 	waiting, err := env.board.Create(native.Issue{
 		Title: "Waiting card", State: native.StateReady, Bot: "review",
-		BotArgs: map[string]string{"scope": "waiting", store.ForgePublishTokenVar: publishGrantSentinel},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	plantLegacyCardBotArgs(t, env.board, waiting.ID, map[string]string{"scope": "waiting", store.ForgePublishTokenVar: publishGrantSentinel})
 
 	// A ticket restaged for a retry after its run failed, carrying no bot args.
 	restaged, err := env.board.Create(native.Issue{Title: "Retry me", State: native.StateReady, Bot: "review"})

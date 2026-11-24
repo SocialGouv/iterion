@@ -78,6 +78,9 @@ export default function CostPreviewChip({ filePath, source }: Props) {
   return (
     <Tooltip content={tooltip} side="top">
       <span
+        // The chip reads as one labelled value: aria-label on a roleless
+        // span is prohibited (axe aria-prohibited-attr).
+        role="img"
         className="inline-flex items-center text-caption px-1.5 py-0.5 rounded border bg-surface-2 text-fg-muted border-border-default tabular-nums cursor-help"
         aria-label={`Estimated cost ${range} for approximately ${tokens} tokens`}
       >

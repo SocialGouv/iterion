@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -76,24 +76,20 @@ func TestClawPinnedProviderForGLMIsZAI(t *testing.T) {
 // not even consulted.
 func TestClawInProcessGLMSpendsTheZAIKey(t *testing.T) {
 	forfaitConsulted := false
-	SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
 		return func(provider string) string {
 			if provider == string(secrets.ProviderZAI) {
 				return "sk-zai-run"
 			}
 			return ""
 		}, true
-	})
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	}))
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string {
 			forfaitConsulted = true
 			return "/nonexistent/forfait"
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	}))
 
 	client, err := NewRegistry().ResolveWithContext(context.Background(), "anthropic/glm-5.3")
 	if err != nil {
@@ -139,6 +135,34 @@ func TestClawEnvFactoryServesGLMThroughZAI(t *testing.T) {
 		if cc.APIKey != tc.key || cc.BaseURL != tc.base {
 			t.Errorf("%s: client = {key %q, base %q}, want {%q, %q}", tc.spec, cc.APIKey, cc.BaseURL, tc.key, tc.base)
 		}
+	}
+}
+
+// A bearer beside a z.ai key: a claude id spends the bearer — against
+// api.anthropic.com, or against the operator's own gateway when one is set —
+// and never the z.ai key, which is GLM's alone. claw's own resolver used to
+// pin "an Anthropic credential beats z.ai"; this is that rule on iterion's
+// path, for the bearer half of it.
+func TestClawEnvFactoryKeepsTheBearerForAClaudeIDBesideAZAIKey(t *testing.T) {
+	for _, base := range []string{"", "https://gw.example.internal/anthropic"} {
+		t.Run("base="+base, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_API_KEY", "")
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-bearer")
+			t.Setenv("ANTHROPIC_BASE_URL", base)
+			t.Setenv("ZAI_API_KEY", "zai-key")
+			t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+			client, err := NewRegistry().Resolve("anthropic/claude-sonnet-4")
+			if err != nil {
+				t.Fatalf("Resolve: %v — a claude id with a bearer must not be refused for the z.ai key beside it", err)
+			}
+			cc, ok := client.(*api.Client)
+			if !ok {
+				t.Fatalf("client is %T", client)
+			}
+			if cc.OAuthToken != "tok-bearer" || cc.APIKey == "zai-key" {
+				t.Errorf("client = {bearer %q, key is the z.ai key: %v}, want the bearer and never the z.ai key", cc.OAuthToken, cc.APIKey == "zai-key")
+			}
+		})
 	}
 }
 
@@ -220,15 +244,14 @@ func TestGLMHonoursTheOperatorsBaseURL(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("ZAI_API_KEY", "sk-zai-fixture")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
-	SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
 		return func(p string) string {
 			if p == string(secrets.ProviderZAI) {
 				return "sk-zai-run"
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() { SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 
 	for _, tc := range []struct{ base, want string }{
 		{"https://zai.internal.example/api/anthropic", "https://zai.internal.example/api/anthropic"},

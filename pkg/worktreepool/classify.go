@@ -1049,7 +1049,7 @@ func gitOutContextRaw(parent context.Context, dir string, args ...string) (strin
 				strings.Join(args, " "), dir, gitTimeout)
 		}
 		msg := strings.TrimSpace(stderr.String())
-		if strings.Contains(msg, "not a git repository") || strings.Contains(msg, "not a working tree") {
+		if gitlib.IsNotRepositoryDiagnostic(msg) || msg == "fatal: not a working tree" || strings.HasPrefix(msg, "fatal: not a working tree:") {
 			return "", fmt.Errorf("git %s in %s: %w", strings.Join(args, " "), dir, errNotARepo)
 		}
 		return "", fmt.Errorf("git %s in %s: %w (stderr: %s)",

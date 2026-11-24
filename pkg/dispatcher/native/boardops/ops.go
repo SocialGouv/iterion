@@ -2,7 +2,9 @@
 // __mcp-board MCP server and the /api/v1/mcp/board HTTP handler share.
 // Each operation takes a native.BoardStore (the filesystem *native.Store or a
 // cloud Mongo-backed store), a granted capability set, and a JSON args blob,
-// and returns either the JSON-encoded result or an error.
+// and returns either the JSON-encoded result or an error. A store write's
+// error comes back typed UndecidedWriteError: the write may have committed
+// (write_outcome.go).
 //
 // The stdio and HTTP transports are thin wrappers around these operations:
 // they handle JSON-RPC framing or HTTP request decoding, then call into
@@ -13,22 +15,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 )
 
 // Capability names. Use these constants instead of string literals so a
 // typo at any call site becomes a compile error and the registry below
 // (KnownCapabilities in pkg/dsl/ir) tracks the single source of truth.
+// The names THEMSELVES live in pkg/boardcaps, a leaf: the DSL compiler
+// validates against them there, and reading them must not link this
+// package — the dispatcher, the store, the forge and the mailer behind it —
+// into every binary that compiles a .bot (iterion#2857). These re-exports
+// keep the implementation's own call sites on the same constants.
 const (
-	CapBoardRead    = "board.read"
-	CapBoardCreate  = "board.create"
-	CapBoardMove    = "board.move"
-	CapBoardAssign  = "board.assign"
-	CapBoardLabel   = "board.label"
-	CapBoardClose   = "board.close"
-	CapBoardComment = "board.comment"
+	CapBoardRead    = boardcaps.BoardRead
+	CapBoardCreate  = boardcaps.BoardCreate
+	CapBoardMove    = boardcaps.BoardMove
+	CapBoardAssign  = boardcaps.BoardAssign
+	CapBoardLabel   = boardcaps.BoardLabel
+	CapBoardClose   = boardcaps.BoardClose
+	CapBoardComment = boardcaps.BoardComment
 )
 
 // Capabilities is a granted-cap set. Use NewCapabilities to parse a
@@ -70,6 +80,30 @@ func AllCapabilities() []string {
 
 // ErrCapabilityDenied is returned when a granted-cap check fails.
 var ErrCapabilityDenied = errors.New("capability denied")
+
+// CapabilityDeniedError is the TYPED form of the refusal, so the engine's
+// recovery classifier can read it by shape (runtime.CapabilityDenied, the
+// interface this implements structurally — boardops must not import the
+// runtime) instead of matching the message: a refused grant is
+// deterministic — the same IR meets the same `capabilities:` on every
+// attempt — and classifying it is what keeps a re-run from buying the same
+// no (ADR-151). errors.Is still reaches ErrCapabilityDenied through Unwrap,
+// so every existing check (the stdio/HTTP transports' method-not-allowed
+// mapping) holds unchanged.
+type CapabilityDeniedError struct {
+	Tool       string
+	Capability string
+}
+
+func (e *CapabilityDeniedError) Error() string {
+	return fmt.Sprintf("%s: tool %q needs capability %q", ErrCapabilityDenied, e.Tool, e.Capability)
+}
+
+// Unwrap keeps errors.Is(err, ErrCapabilityDenied) true for the typed form.
+func (e *CapabilityDeniedError) Unwrap() error { return ErrCapabilityDenied }
+
+// CapabilityDenied marks the refusal for runtime.CapabilityDenial.
+func (e *CapabilityDeniedError) CapabilityDenied() bool { return true }
 
 // Tool describes one MCP-style tool exposed by the board. Description
 // and InputSchema are JSON-encodable so the same struct serves both
@@ -158,7 +192,7 @@ var allTools = []Tool{
             "parent_id":{"type":"string","description":"Planner ticket that spawned this one (provenance). Auto-filled from the creating run's source issue when omitted."},
             "fields":{"type":"object","description":"Custom board fields (validated against board schema)."},
             "bot":{"type":"string","description":"CANONICAL bot that runs this issue when the dispatcher picks it up (e.g. feature-dev). The dispatcher routes by bot first, else assignee."},
-            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id)."}
+            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id). The reserved __iterion_* launch-context keys (repo URL/ref, project path, credential overrides, integration id) are the server's stamp: a call carrying one is refused, typed, whichever board tool it names."}
           },
           "required":["title"]
         }`),
@@ -274,7 +308,7 @@ var toolByName = func() map[string]*Tool {
 
 // dispatchByName maps a tool name to its handler. Populated once at init
 // so Call can dispatch in O(1).
-var dispatchByName = map[string]func(native.BoardStore, json.RawMessage) (json.RawMessage, error){
+var dispatchByName = map[string]func(boardOps, json.RawMessage) (json.RawMessage, error){
 	"comment_issue": doComment,
 	// create_issue is dispatched via doCreate in CallWithEnv (needs CallEnv).
 	"transition_issue": doTransition,
@@ -324,19 +358,29 @@ func CallWithEnv(store native.BoardStore, caps Capabilities, name string, rawArg
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
 	if !caps.Has(t.Capability) {
-		return nil, fmt.Errorf("%w: tool %q needs capability %q", ErrCapabilityDenied, name, t.Capability)
+		return nil, &CapabilityDeniedError{Tool: name, Capability: t.Capability}
 	}
+	// The reserved launch context is refused at the DOOR, before any
+	// operation sees the arguments (refuseReservedBotArgs): every transport
+	// of this funnel is a client, and whatever the operation, a caller
+	// holding the capability must not write the server's own stamp.
+	if err := refuseReservedBotArgs(name, rawArgs); err != nil {
+		return nil, err
+	}
+	// Every operation runs against the classified store: a write's failure
+	// leaves typed undecided, whichever transport called (write_outcome.go).
+	ops := undecidedWrites{store: store}
 	if name == "create_issue" {
-		return doCreate(store, rawArgs, env)
+		return doCreate(ops, rawArgs, env)
 	}
-	return dispatchByName[name](store, rawArgs)
+	return dispatchByName[name](ops, rawArgs)
 }
 
 // ---------------------------------------------------------------------------
 // Operation implementations
 // ---------------------------------------------------------------------------
 
-func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.RawMessage, error) {
+func doCreate(store boardOps, raw json.RawMessage, env CallEnv) (json.RawMessage, error) {
 	var args struct {
 		Title    string            `json:"title"`
 		Body     string            `json:"body"`
@@ -367,6 +411,16 @@ func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.R
 		}
 		botArgs = cp
 	}
+	// A tool-created card never carries the reserved launch context: what the
+	// run clones, which credential it resolves and which repository meters,
+	// bounds and debits it is the server's stamp (card_launch_args.go), never
+	// the caller's. The DOOR refuses that class typed before this function
+	// runs (refuseReservedBotArgs, ADR-162 U4); this drop is the depth below
+	// it, so a future internal caller of doCreate that bypasses the door
+	// still cannot plant the class. The publish grant is dropped store-side
+	// at Create (BotArgsForWrite); this class is dropped HERE, because the
+	// server's own stamp writes through the same store.Create.
+	botArgs = native.DropServerMintedLaunchVars(botArgs)
 	parentID := strings.TrimSpace(args.ParentID)
 	if parentID == "" {
 		parentID = strings.TrimSpace(botArgs[native.BotArgSpawnedFrom])
@@ -397,10 +451,77 @@ func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.R
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
-func doComment(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+// ReservedBotArgPrefix marks the bot_args keys iterion's server writes for
+// itself: the launch context a webhook-born card carries (the repo to clone
+// and its ref, the webhook's BYOK key and secret overrides), lifted off the
+// card when the dispatcher launches it. They are a server-side channel — the
+// server writes them through the store, never through a board tool — so the
+// PREFIX is the class, not native.ReservedLaunchArgs' exact list: a key under
+// it this build does not know yet is refused with the rest, until someone
+// decides a tool may write it. Case-insensitive, because the decoder folds
+// field names and a spelling an operation would honour is one the door
+// refuses.
+const ReservedBotArgPrefix = "__iterion_"
+
+// ErrReservedBotArg is the refusal of a board tool call whose bot_args carry
+// a key under ReservedBotArgPrefix. Typed so a caller can tell the reserved
+// channel from an ordinary argument error, and trust-independent: every
+// caller of a board tool is a client, trusted runs included (ADR-162 U4's
+// board door — one of the three sanctioned trusted-path changes).
+var ErrReservedBotArg = errors.New("boardops: reserved bot_args key")
+
+// refuseReservedBotArgs reads bot_args off ANY operation's arguments, at the
+// door every board transport crosses (CallWithEnv — claw's in-process
+// registry, `iterion __mcp-board` for claude_code and pi, the HTTP MCP
+// handler, the operator MCP), so an operation that learns to carry bot_args
+// later is covered without having to remember it. It decodes the way the
+// operations do (encoding/json: case-insensitive field names, duplicate
+// objects merged), so it sees exactly the keys an operation would write.
+// Arguments that do not decode are left to the operation, which reports
+// them; nothing is written from them.
+func refuseReservedBotArgs(tool string, raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var probe struct {
+		BotArgs map[string]json.RawMessage `json:"bot_args"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil
+	}
+	var reserved []string
+	for k := range probe.BotArgs {
+		if strings.HasPrefix(strings.ToLower(k), ReservedBotArgPrefix) {
+			reserved = append(reserved, strconv.Quote(k))
+		}
+	}
+	if len(reserved) == 0 {
+		return nil
+	}
+	sort.Strings(reserved)
+	return fmt.Errorf("%w: %s refuses bot_args %s — keys under %q carry iterion's own launch context and are written by its server, never through a board tool",
+		ErrReservedBotArg, tool, strings.Join(reserved, ", "), ReservedBotArgPrefix)
+}
+
+// withoutReservedBotArgs returns args minus every key under
+// ReservedBotArgPrefix, and whether any was there.
+func withoutReservedBotArgs(args map[string]string) (map[string]string, bool) {
+	kept := make(map[string]string, len(args))
+	dropped := false
+	for k, v := range args {
+		if strings.HasPrefix(strings.ToLower(k), ReservedBotArgPrefix) {
+			dropped = true
+			continue
+		}
+		kept[k] = v
+	}
+	return kept, dropped
+}
+
+func doComment(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID     string `json:"id"`
 		Body   string `json:"body"`
@@ -424,10 +545,10 @@ func doComment(store native.BoardStore, raw json.RawMessage) (json.RawMessage, e
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
-func doTransition(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doTransition(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
 		To string `json:"to"`
@@ -446,10 +567,10 @@ func doTransition(store native.BoardStore, raw json.RawMessage) (json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
-func doAssign(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doAssign(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID       string `json:"id"`
 		Assignee string `json:"assignee"`
@@ -468,14 +589,14 @@ func doAssign(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 // doSetBot sets the issue's explicit bot — the canonical dispatcher
 // workflow selector. Mirrors doAssign but targets the Bot field so a
 // triage agent can express "run bot X" without conflating it with the
 // human/ownership assignee.
-func doSetBot(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doSetBot(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID  string `json:"id"`
 		Bot string `json:"bot"`
@@ -490,14 +611,39 @@ func doSetBot(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	iss, err := store.Update(resolved, native.Patch{Bot: &args.Bot})
+	// The reserved launch context (the repo to clone, the webhook's key and
+	// secret overrides) was minted for the card's CURRENT bot. Re-pointing
+	// the card through a tool must not hand it to another one: it is dropped
+	// with the change, and the new bot launches with what its own routing
+	// gives it.
+	//
+	// A card that cannot be read is not re-pointed: nothing would say what
+	// its context was minted for. On a bot change the args are REPLACED with
+	// the card's own non-reserved ones even when this read found nothing
+	// reserved: a reserved key written between the read and the write would
+	// otherwise ride the change to the new bot. A concurrent edit of the
+	// card's args in that window is overwritten — the price of the store
+	// having no atomic re-point. The publish grant the card may still hold
+	// survives the rewrite: the store keeps the minted class across a
+	// wholesale args write (native.KeepStoredMintedVars), one seam for every
+	// writer.
+	patch := native.Patch{Bot: &args.Bot}
+	cur, err := store.Get(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read issue %s before re-pointing its bot: %w", resolved, err)
+	}
+	if cur.Bot != args.Bot {
+		kept, _ := withoutReservedBotArgs(cur.BotArgs)
+		patch.BotArgs = &kept
+	}
+	iss, err := store.Update(resolved, patch)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
-func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doSetLabels(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID     string   `json:"id"`
 		Labels []string `json:"labels"`
@@ -519,22 +665,22 @@ func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 // doAddLabels / doRemoveLabels are the RELATIVE label writes: the delta
 // goes to the store's atomic AdjustLabels and is applied to the card as
 // it is — never composed from a read the agent took earlier, which is how
 // set_labels re-armed a consumed one-shot (issue #666).
-func doAddLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doAddLabels(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	return adjustLabels(store, raw, true)
 }
 
-func doRemoveLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doRemoveLabels(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	return adjustLabels(store, raw, false)
 }
 
-func adjustLabels(store native.BoardStore, raw json.RawMessage, add bool) (json.RawMessage, error) {
+func adjustLabels(store boardOps, raw json.RawMessage, add bool) (json.RawMessage, error) {
 	var args struct {
 		ID     string   `json:"id"`
 		Labels []string `json:"labels"`
@@ -562,10 +708,10 @@ func adjustLabels(store native.BoardStore, raw json.RawMessage, add bool) (json.
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
-func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doClose(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
 		To string `json:"to"`
@@ -604,7 +750,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 				if refreshed, gerr := store.Get(resolved); gerr == nil {
 					cur = refreshed
 				}
-				return json.Marshal(cur)
+				return marshalIssue(cur)
 			}
 		}
 		// Find the first terminal state on the board.
@@ -648,10 +794,10 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	if refreshed, getErr := store.Get(resolved); getErr == nil {
 		iss = refreshed
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
-func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doList(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		State    string `json:"state"`
 		Label    string `json:"label"`
@@ -673,10 +819,10 @@ func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, erro
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(issues)
+	return marshalIssues(issues)
 }
 
-func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, error) {
+func doListLabels(store boardOps, _ json.RawMessage) (json.RawMessage, error) {
 	labels, err := store.AggregateLabels()
 	if err != nil {
 		return nil, err
@@ -684,7 +830,7 @@ func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, 
 	return json.Marshal(labels)
 }
 
-func doGet(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doGet(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
 	}
@@ -702,7 +848,20 @@ func doGet(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
+}
+
+// marshalIssue is a card as a tool RESULT — the path that reaches an LLM, an
+// agent's in-process board tool and the operator MCP. The publish grant a card
+// still carries is masked here (native.IssueForRead), so no board tool hands a
+// live bearer to a model. Every operation returning a card goes through it.
+func marshalIssue(iss *native.Issue) (json.RawMessage, error) {
+	return json.Marshal(native.IssueForRead(iss))
+}
+
+// marshalIssues is marshalIssue for the list result.
+func marshalIssues(issues []*native.Issue) (json.RawMessage, error) {
+	return json.Marshal(native.IssuesForRead(issues))
 }
 
 func unmarshalArgs(raw json.RawMessage, dest any) error {

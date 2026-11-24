@@ -219,16 +219,23 @@ func TestCredentialChange_ACommittedPasswordWhoseSessionFailedSaysSo(t *testing.
 				}
 			}
 			sessions.armed = true
+			var res LoginResult
 			switch flow {
 			case "password change":
-				_, err = svc.ChangePassword(ctx, reg.User.ID, changeOldPassword, changeNewPassword, "ua", "ip")
+				res, err = svc.ChangePassword(ctx, reg.User.ID, changeOldPassword, changeNewPassword, "ua", "ip")
 			case "reset confirm":
-				_, err = svc.ConfirmPasswordReset(ctx, link, changeNewPassword, "ua", "ip")
+				res, err = svc.ConfirmPasswordReset(ctx, link, changeNewPassword, "ua", "ip")
 			case "forced rotation":
-				_, err = svc.ChangePasswordPending(ctx, "changer@example.org", changeOldPassword, changeNewPassword, "ua", "ip")
+				res, err = svc.ChangePasswordPending(ctx, "changer@example.org", changeOldPassword, changeNewPassword, "ua", "ip")
 			}
 			if !errors.Is(err, ErrPasswordChangedSignIn) {
 				t.Fatalf("the %s whose session write failed after the commit: got %v, want ErrPasswordChangedSignIn", flow, err)
+			}
+			// The answer names the account whose password changed, and no
+			// credential.
+			if res.User.ID != reg.User.ID || res.AccessToken != "" || res.RefreshToken != "" {
+				t.Fatalf("the %s answered user=%q access=%t refresh=%t, want the account %q and no token",
+					flow, res.User.ID, res.AccessToken != "", res.RefreshToken != "", reg.User.ID)
 			}
 			if !errors.Is(err, errStoreUnreachable) {
 				t.Fatalf("the answer lost its cause: %v", err)
@@ -290,6 +297,13 @@ func TestCredentialChange_TwoSubmissionsAnswerNoDeadSession(t *testing.T) {
 			<-done
 			if !errors.Is(secondErr, ErrInvalidCredentials) {
 				t.Fatalf("the second submission: got %v (a session: %t), want ErrInvalidCredentials", secondErr, second.RefreshToken != "")
+			}
+			want := ReasonCredentialReplaced
+			if flow == "reset confirm" {
+				want = ReasonResetTokenInvalid
+			}
+			if got, _ := ReasonOf(secondErr); got != want {
+				t.Fatalf("the second submission's refusal reason = %q, want %q", got, want)
 			}
 			if _, err := f.svc.Refresh(ctx, first.RefreshToken, "victim-laptop", "ip"); err != nil {
 				t.Fatalf("the session the first submission answered with is dead: %v", err)

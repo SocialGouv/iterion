@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/legal"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // clearITERION removes any inherited ITERION_* env vars so a Load() call
@@ -929,5 +932,332 @@ func TestLoad_RefreshReuseGrace(t *testing.T) {
 	t.Setenv("ITERION_REFRESH_REUSE_GRACE", "59m")
 	if _, err := Load(LoadOptions{}); err != nil {
 		t.Fatalf("ITERION_REFRESH_REUSE_GRACE=59m on a 1h ITERION_REFRESH_TTL: %v", err)
+	}
+}
+
+// The Anthropic forfait client id is defaulted, so an operator who sets
+// nothing keeps the connect flow and the claude_code refresh; an empty env
+// var leaves the default, and only an explicit empty YAML value clears it.
+func TestLoad_OAuthForfaitAnthropicClientIDDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		env  string
+		want string
+	}{
+		{"nothing set", "", "", secrets.DefaultAnthropicOAuthClientID},
+		{"empty env var", "", "set-empty", secrets.DefaultAnthropicOAuthClientID},
+		{"YAML section without the key", "auth:\n  oauth_forfait:\n    codex_client_id: codex-x\n", "", secrets.DefaultAnthropicOAuthClientID},
+		{"explicit empty YAML value", "auth:\n  oauth_forfait:\n    anthropic_client_id: \"\"\n", "", ""},
+		{"explicit YAML override", "auth:\n  oauth_forfait:\n    anthropic_client_id: custom-id\n", "", "custom-id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearITERION(t)
+			if tc.env == "set-empty" {
+				t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID", "")
+			}
+			opts := LoadOptions{}
+			if tc.yaml != "" {
+				opts.YAMLPath = filepath.Join(t.TempDir(), "c.yaml")
+				if err := os.WriteFile(opts.YAMLPath, []byte(tc.yaml), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := Load(opts)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.Auth.OAuthForfait.AnthropicClientID; got != tc.want {
+				t.Fatalf("AnthropicClientID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_LegalEnv(t *testing.T) {
+	clearITERION(t)
+	t.Setenv("ITERION_LEGAL_DOCUMENTS_DIR", "/etc/iterion/legal")
+	t.Setenv("ITERION_LEGAL_CONTACT_EMAIL", "contact@example.org")
+	t.Setenv("ITERION_LEGAL_ACCESSIBILITY_STATUS", "partially_compliant")
+	t.Setenv("ITERION_LEGAL_ACCESSIBILITY_DATE", "2026-11-03")
+	t.Setenv("ITERION_LEGAL_ACCESSIBILITY_RATE", "72.5")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Legal.DocumentsDir != "/etc/iterion/legal" {
+		t.Errorf("DocumentsDir = %q", cfg.Legal.DocumentsDir)
+	}
+	if cfg.Legal.ContactEmail != "contact@example.org" {
+		t.Errorf("ContactEmail = %q", cfg.Legal.ContactEmail)
+	}
+	a := cfg.Legal.Accessibility()
+	if a.Status != legal.StatusPartiallyCompliant || a.Date != "2026-11-03" || a.Rate != "72.5" {
+		t.Errorf("Accessibility = %+v", a)
+	}
+}
+
+func TestLoad_LegalYAML(t *testing.T) {
+	clearITERION(t)
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	body := "legal:\n  documents_dir: /srv/legal\n  contact_email: dpo@example.org\n  accessibility_status: non_compliant\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{YAMLPath: path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Legal.DocumentsDir != "/srv/legal" || cfg.Legal.ContactEmail != "dpo@example.org" || cfg.Legal.AccessibilityStatus != "non_compliant" {
+		t.Errorf("Legal = %+v", cfg.Legal)
+	}
+}
+
+// The legal surface is validated in every mode: an unknown status, a rate
+// with no status, or a contact that is not an address is refused at
+// startup rather than published as a half-declaration.
+func TestLoad_LegalValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"unknown status", map[string]string{"ITERION_LEGAL_ACCESSIBILITY_STATUS": "conforme"}, "ITERION_LEGAL_ACCESSIBILITY_*: accessibility status \"conforme\" invalid"},
+		{"rate without status", map[string]string{"ITERION_LEGAL_ACCESSIBILITY_RATE": "42"}, "without an accessibility status"},
+		{"bad contact", map[string]string{"ITERION_LEGAL_CONTACT_EMAIL": "not an address"}, "ITERION_LEGAL_CONTACT_EMAIL \"not an address\" invalid"},
+		{"display-name contact", map[string]string{"ITERION_LEGAL_CONTACT_EMAIL": "Iterion <contact@iterion.cloud>"}, "without a display name"},
+		{"rate contradicts status", map[string]string{"ITERION_LEGAL_ACCESSIBILITY_STATUS": "compliant", "ITERION_LEGAL_ACCESSIBILITY_RATE": "42"}, "contradicts status compliant"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearITERION(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			_, err := Load(LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load = %v, want %q", err, c.want)
+			}
+		})
+	}
+}
+
+// The trusted proxy ranges decide whose forwarded header may name the
+// client of a request — the audit IP and the auth rate-limit key both
+// come from it (#2673). The variable carries them as CSV, and a range
+// that parses nowhere is refused where the operator reads the name
+// rather than skipped per request, where nothing says so.
+func TestLoad_TrustedProxyCIDRs(t *testing.T) {
+	t.Run("the CSV reaches the config, trimmed", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_CIDRS", " 10.42.0.0/16 , 2001:db8::/32 ")
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := strings.Join(cfg.Auth.TrustedProxyCIDRs, "|"); got != "10.42.0.0/16|2001:db8::/32" {
+			t.Errorf("TrustedProxyCIDRs = %q", got)
+		}
+	})
+
+	t.Run("unset trusts nothing", func(t *testing.T) {
+		clearITERION(t)
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(cfg.Auth.TrustedProxyCIDRs) != 0 {
+			t.Errorf("TrustedProxyCIDRs = %v, want empty: no forwarded header is trusted until the operator names a range", cfg.Auth.TrustedProxyCIDRs)
+		}
+	})
+
+	// A bare address is the mistake to expect: it looks like a configured
+	// proxy and matches nothing.
+	t.Run("a bare address is refused, by name", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_CIDRS", "10.42.0.7")
+		_, err := Load(LoadOptions{})
+		if err == nil {
+			t.Fatalf("a bare address must be refused: it would be skipped per request and trust nothing")
+		}
+		for _, want := range []string{"ITERION_AUTH_TRUSTED_PROXY_CIDRS", "10.42.0.7", "/32"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not carry %q", err, want)
+			}
+		}
+	})
+
+	// ParseCIDR accepts host bits and hands back the masked network, so
+	// this typo would trust a whole subnet in silence — the "never wider"
+	// outcome, from the very form the refusal message above invites.
+	t.Run("a range with host bits set is refused, with both ways out", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_CIDRS", "10.42.0.7/16")
+		_, err := Load(LoadOptions{})
+		if err == nil {
+			t.Fatalf("10.42.0.7/16 must be refused: it silently trusts all of 10.42.0.0/16")
+		}
+		for _, want := range []string{"host bits set", "10.42.0.0/16", "10.42.0.7/32"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not carry %q", err, want)
+			}
+		}
+	})
+
+	// The ranges matter in every mode a proxy can sit in front of, so the
+	// refusal is not behind the cloud branch.
+	t.Run("a garbled entry is refused in local mode too", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_MODE", "local")
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_CIDRS", "not-a-cidr")
+		if _, err := Load(LoadOptions{}); err == nil {
+			t.Fatalf("a garbled range must be refused in local mode as well")
+		}
+	})
+}
+
+// The hop count is what tells a proxy's entry in the forwarded chain
+// from a client's: the chain is read right to left and stops there. With
+// the chart trusting all of private space, an in-range client writes
+// entries of its own, so a walk bounded by TRUST instead of by COUNT
+// walks into them (#2673).
+func TestLoad_TrustedProxyHops(t *testing.T) {
+	t.Run("the count reaches the config", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_HOPS", "2")
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.TrustedProxyHops != 2 {
+			t.Errorf("TrustedProxyHops = %d, want 2", cfg.Auth.TrustedProxyHops)
+		}
+	})
+
+	t.Run("unset leaves the server its one-appending-proxy default", func(t *testing.T) {
+		clearITERION(t)
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.TrustedProxyHops != 0 {
+			t.Errorf("TrustedProxyHops = %d, want 0 — the server reads it as one", cfg.Auth.TrustedProxyHops)
+		}
+	})
+
+	// A negative count is no walk at all: every request would answer with
+	// the proxy's own address and the auth limiter would hold one bucket
+	// for the whole instance, which is the outcome the ranges exist to
+	// prevent.
+	t.Run("a negative count is refused, by name", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_HOPS", "-1")
+		_, err := Load(LoadOptions{})
+		if err == nil {
+			t.Fatalf("-1 must be refused: it reads no hop of the chain and says nothing")
+		}
+		if !strings.Contains(err.Error(), "ITERION_AUTH_TRUSTED_PROXY_HOPS") {
+			t.Errorf("error %q does not name the variable", err)
+		}
+	})
+
+	t.Run("a value that is not a number is refused", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_TRUSTED_PROXY_HOPS", "two")
+		if _, err := Load(LoadOptions{}); err == nil {
+			t.Fatalf("a non-numeric count must be refused")
+		}
+	})
+}
+
+// The declared forwarded header is what keeps the CHOICE of mechanism
+// away from the client: a server reading whichever of X-Forwarded-For,
+// Forwarded or X-Real-IP a request happened to carry would let a client's
+// own header beat the one its proxy wrote (#2673). Any field name is
+// accepted — a CDN names the client in its own — and a value that is not
+// one field name is refused at boot, since a lookup for it would match no
+// request and read no client address at all.
+func TestLoad_ForwardedHeader(t *testing.T) {
+	t.Run("the name reaches the config, trimmed", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_FORWARDED_HEADER", "  X-Real-IP  ")
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.ForwardedHeader != "X-Real-IP" {
+			t.Errorf("ForwardedHeader = %q, want X-Real-IP", cfg.Auth.ForwardedHeader)
+		}
+	})
+
+	t.Run("unset leaves the server its X-Forwarded-For default", func(t *testing.T) {
+		clearITERION(t)
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.ForwardedHeader != "" {
+			t.Errorf("ForwardedHeader = %q, want empty", cfg.Auth.ForwardedHeader)
+		}
+	})
+
+	t.Run("a CDN's own header is accepted", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_FORWARDED_HEADER", "CF-Connecting-IP")
+		if _, err := Load(LoadOptions{}); err != nil {
+			t.Fatalf("a CDN header must be accepted; refusing one would be a bound with no override: %v", err)
+		}
+	})
+
+	// Surrounding space is an operator's typo the loader forgives, like
+	// every other name it reads.
+	t.Run("the name is trimmed, not refused, for space around it", func(t *testing.T) {
+		clearITERION(t)
+		t.Setenv("ITERION_AUTH_FORWARDED_HEADER", "\tx-real-ip\n")
+		cfg, err := Load(LoadOptions{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.ForwardedHeader != "x-real-ip" {
+			t.Errorf("ForwardedHeader = %q, want x-real-ip", cfg.Auth.ForwardedHeader)
+		}
+	})
+
+	// A credential-bearing header carries no address, so declaring one
+	// reads no client — and the server's diagnosis for that case QUOTES
+	// the value it could not parse, which would put a bearer token or a
+	// session cookie in the log. Refused at boot, where the operator sees
+	// the name they typed.
+	for _, bad := range []string{"Authorization", "authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"} {
+		t.Run("refused as credential-bearing: "+bad, func(t *testing.T) {
+			clearITERION(t)
+			t.Setenv("ITERION_AUTH_FORWARDED_HEADER", bad)
+			_, err := Load(LoadOptions{})
+			if err == nil {
+				t.Fatalf("%q must be refused: it names no address, and the server would log the credential it could not parse", bad)
+			}
+			for _, want := range []string{"ITERION_AUTH_FORWARDED_HEADER", "credential"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not carry %q", err, want)
+				}
+			}
+		})
+	}
+
+	// The forms that would read nothing: a list (the declaration is ONE
+	// mechanism), a header line, a name with a space inside it.
+	for _, bad := range []string{"x-real-ip,x-forwarded-for", "X-Real-IP: 1.2.3.4", "X Real IP"} {
+		t.Run("refused: "+bad, func(t *testing.T) {
+			clearITERION(t)
+			t.Setenv("ITERION_AUTH_FORWARDED_HEADER", bad)
+			_, err := Load(LoadOptions{})
+			if err == nil {
+				t.Fatalf("%q must be refused: a lookup for it matches no request, so no client address is read and nothing says so", bad)
+			}
+			if !strings.Contains(err.Error(), "ITERION_AUTH_FORWARDED_HEADER") {
+				t.Errorf("error %q does not name the variable", err)
+			}
+		})
 	}
 }

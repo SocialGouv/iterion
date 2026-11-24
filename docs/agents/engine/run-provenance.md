@@ -64,6 +64,27 @@ Loaded events are retained for historical folds; there is no lossy 5,000-event
 head truncation. Large run histories therefore consume browser memory in
 proportion to the loaded stream.
 
+## Who launched it — the `run.launched` audit line
+
+Every launch surface of `pkg/server` — `POST /api/runs`, a pipeline card's
+"launch now", the webhook intake (live or replayed), the cloud schedule
+tick, the board dispatcher, the trigger spine, the pipeline-admission loop —
+launches through `Server.launchRun` / `launchRunWith`
+(`runs_launch_audit.go`), which writes one tenant `run.launched` row per run
+([ADR-158](../../adr/158-run-launches-join-the-audit-log.md)). Actor: the
+launch context's principal, else the serving request's, else the daemon's
+name. `meta`: bot, workflow, repo, trigger, delivery or schedule id — never
+the vars. IP and user-agent: the serving request's (a webhook's: the
+address the intake resolved). A launch error is audited by
+`runview.RunMayHaveStarted`: a persisted run, or a publish that may have
+landed, writes the row with `meta.outcome: may_have_started`, keyed by
+`RunPersistedError.RunID` (the cloud path wraps a queue failure with the id
+it minted); a refusal writes none. A fork writes `run.forked`
+(`meta.parent_run_id`); a resume writes nothing.
+`TestLaunchAuditSweep_NoRawRunServiceLaunch` refuses any other `.Launch(`
+call in `pkg/server`; each lane's witness, driven through its public entry,
+is in `pkg/server/launch_audit_test.go`.
+
 Witnesses and mutation instructions live beside the tests:
 `pkg/runview/workflow_provenance_test.go`,
 `pkg/server/run_workflow_provenance_test.go`,

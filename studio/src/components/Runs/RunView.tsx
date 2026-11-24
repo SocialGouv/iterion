@@ -12,8 +12,9 @@ import { useRunAttempt } from "@/hooks/useRunAttempt";
 import { AttemptPicker } from "./runView/AttemptPicker";
 import { useUIStore } from "@/store/ui";
 import { useInlineSubbotData } from "@/hooks/useInlineSubbotData";
-import { useRunChildren } from "@/hooks/useRunChildren";
+import { useViewedRunChildren } from "@/hooks/useRunChildren";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
+import { runCanAct } from "@/hooks/useRunCanAct";
 import { groupChildrenByNode, isSettledRunStatus } from "@/lib/subRuns";
 import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
 import { useRunToasts } from "@/hooks/useRunToasts";
@@ -39,6 +40,7 @@ import NodeDetailPanel from "./NodeDetailPanel";
 import QueuedBanner from "./QueuedBanner";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
+import RunOriginLostBanner from "./runHeader/RunOriginLostBanner";
 import { RunTeamNotice } from "./RunTeamNotice";
 import { BottomTabPanel } from "./runView/BottomTabPanel";
 import { ExpandStrip, ResizeSeparator } from "./runView/PanelChrome";
@@ -291,7 +293,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   });
   const parentWf = parentWfQuery.data ?? null;
   const runStatusForPoll = snapshot?.run.status;
-  const { data: childRuns } = useRunChildren(runId, true, {
+  // Not polled for a lost run, nor before the page knows the run's birth
+  // (useViewedRunChildren).
+  const { data: childRuns } = useViewedRunChildren(runId, { snapshotLoaded: !!snapshot, lost: wsState === "lost" }, {
     refetchIntervalMs: SUBRUN_POLL_MS,
     parentActive:
       runStatusForPoll !== undefined && !isSettledRunStatus(runStatusForPoll),
@@ -429,6 +433,16 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     );
   }
   if (!snapshot) {
+    // Lost before any snapshot landed: no request by this ID will be
+    // answered on this page (the transport refuses them), so the lost
+    // state replaces the skeleton instead of waiting forever.
+    if (wsState === "lost") {
+      return (
+        <div className="h-full w-full flex flex-col">
+          <RunOriginLostBanner state={wsState} />
+        </div>
+      );
+    }
     if (loadFailed) {
       return (
         <RunViewLoadError
@@ -449,7 +463,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // down). Gate every editor entry point on the server-computed flag so an
   // Edit affordance is simply absent rather than error-on-click. When
   // unavailable the file rows still open the read-only diff dialog.
-  const canEditFiles = snapshot.run.worktree_available === true;
+  const canEditFiles =
+    snapshot.run.worktree_available === true &&
+    runCanAct(snapshot.viewer, wsState);
   const onEditFile = canEditFiles ? handleEditFile : undefined;
   // Drive the EventLog filter from the canvas/detail selection so a
   // click on a node implicitly narrows the event stream.
@@ -469,7 +485,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     snapshot.run.status === "cancelled";
   // The chat input is hidden when the run reached a terminal status,
   // but the transcript stays readable in the floating / docked panel.
-  const chatInputDisabled = isQueued || isTerminal;
+  const canAct = runCanAct(snapshot.viewer, wsState);
+  const chatInputDisabled =
+    !canAct || isQueued || isTerminal;
 
   // The center column: the canvas + node-detail top split over the bottom
   // drawer, with the optional right-hand Side dock. Extracted to a const to
@@ -628,6 +646,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             run={snapshot.run}
             active={active}
             wsState={wsState}
+            viewer={snapshot.viewer}
             onResetLayout={onResetLayout}
             bare
           />

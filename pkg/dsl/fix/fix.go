@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -143,7 +144,7 @@ func PlanFor(name string, src []byte, file *ast.File, diags []ir.Diagnostic) (ed
 			// postcondition's diagnostic is never placed on the command's
 			// literal, whichever hugs the reference.
 			for _, ref := range ir.QuotedCommandRefs(toks[ti].Value) {
-				if !strings.Contains(d.Message, prop+": "+ref+" is raw") && !strings.Contains(d.Message, prop+": "+ref+" sits inside quotes") {
+				if !strings.Contains(d.Message, prop+": "+expr.Excerpt(ref)+" is raw") && !strings.Contains(d.Message, prop+": "+expr.Excerpt(ref)+" sits inside quotes") {
 					continue
 				}
 				// A raw `{{!ref}}` is not escaped by the runtime: the author's
@@ -370,7 +371,7 @@ func Bytes(name string, src []byte) (*Result, error) {
 			// one diagnostic.
 			for _, ref := range e.Refs {
 				for i, d := range mine {
-					if want[i] != "" && d.Code == e.Code && d.NodeID == e.Node && strings.Contains(d.Message, e.Property+": "+ref+" sits inside quotes") {
+					if want[i] != "" && d.Code == e.Code && d.NodeID == e.Node && strings.Contains(d.Message, e.Property+": "+expr.Excerpt(ref)+" sits inside quotes") {
 						want[i] = ""
 						break
 					}
@@ -383,7 +384,7 @@ func Bytes(name string, src []byte) (*Result, error) {
 		for _, ref := range e.Refs {
 			for _, node := range e.Nodes {
 				for i, d := range mine {
-					if want[i] != "" && d.Code == e.Code && d.NodeID == node && strings.Contains(d.Message, e.Property+": "+ref+" sits inside quotes") {
+					if want[i] != "" && d.Code == e.Code && d.NodeID == node && strings.Contains(d.Message, e.Property+": "+expr.Excerpt(ref)+" sits inside quotes") {
 						want[i] = ""
 						break
 					}

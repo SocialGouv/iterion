@@ -50,6 +50,29 @@ func Parse(spec string) Route {
 // Gateway reports whether an OpenAI-compatible gateway serves the route.
 func (r Route) Gateway() bool { return r.Provider == OpenAICompatible }
 
+// chatCompletionsProviders are the routing prefixes whose claw provider
+// speaks the OpenAI Chat Completions wire — the wire where prompt_tokens
+// INCLUDES the cached share. claw-code-go's providers directory is the
+// authority: openai and xai go through the shared openai provider and
+// foundry is built on openaiwire. moonshot and zai mirror the anthropic
+// wire (cache reads exclusive of input), so they stay off this set.
+var chatCompletionsProviders = map[string]bool{
+	"openai":  true,
+	"xai":     true,
+	"foundry": true,
+}
+
+// ChatCompletionsUsage reports whether the route speaks the OpenAI Chat
+// Completions usage shape, where prompt_tokens INCLUDES the cached share
+// (prompt_tokens_details.cached_tokens is a subset of prompt_tokens). The
+// gateway and the direct chat-completions routes speak it; the
+// anthropic-shaped routes (anthropic, bedrock, vertex, moonshot, zai)
+// report cache reads and writes exclusive of input_tokens, and a reader
+// must not add them on top.
+func (r Route) ChatCompletionsUsage() bool {
+	return r.Gateway() || chatCompletionsProviders[r.Provider]
+}
+
 // CapabilityID is the id capability tables are keyed on: the wire id of a
 // vendor route — claw's model registry, the effort matrices, the
 // adaptive-thinking profiles all know vendor ids — and "" for a gateway

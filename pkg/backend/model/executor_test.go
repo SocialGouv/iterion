@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -250,10 +250,10 @@ func TestRegistryCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !caps.ToolCall {
+	if !yes(caps.ToolCall) {
 		t.Error("expected ToolCall capability")
 	}
-	if !caps.Temperature {
+	if !yes(caps.Temperature) {
 		t.Error("expected Temperature capability")
 	}
 }
@@ -268,17 +268,17 @@ func TestCapabilitiesForModel(t *testing.T) {
 		modelID  string
 		wantCaps ModelCapabilities
 	}{
-		{"anthropic", "claude-sonnet-4-20250514", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: true}},
-		{"anthropic", "claude-3-haiku", ModelCapabilities{Reasoning: false, ToolCall: true, Temperature: true}},
-		{"openai", "gpt-4o", ModelCapabilities{Reasoning: false, ToolCall: true, Temperature: true}},
-		{"openai", "o1-preview", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false}},
-		{"openai", "o3-mini", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false}},
-		{"unknown", "any-model", ModelCapabilities{Reasoning: false, ToolCall: true, Temperature: true}},
+		{"anthropic", "claude-sonnet-4-20250514", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true)}},
+		{"anthropic", "claude-3-haiku", ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(true)}},
+		{"openai", "gpt-4o", ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(true)}},
+		{"openai", "o1-preview", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(false)}},
+		{"openai", "o3-mini", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(false)}},
+		{"unknown", "any-model", ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(true)}},
 		// GLM family (served via z.ai's Anthropic-compatible endpoint).
-		{"anthropic", "glm-5.2", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: true, ContextWindow: 1_000_000}},
-		{"anthropic", "glm-5.1", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: true, ContextWindow: 200_000}},
-		{"anthropic", "glm-4.6", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: true, ContextWindow: 200_000}},
-		{"anthropic", "glm-9.9-unknown", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: true, ContextWindow: 200_000}},
+		{"anthropic", "glm-5.2", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true), ContextWindow: 1_000_000}},
+		{"anthropic", "glm-5.1", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true), ContextWindow: 200_000}},
+		{"anthropic", "glm-4.6", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true), ContextWindow: 200_000}},
+		{"anthropic", "glm-9.9-unknown", ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true), ContextWindow: 200_000}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider+"/"+tt.modelID, func(t *testing.T) {
@@ -286,15 +286,16 @@ func TestCapabilitiesForModel(t *testing.T) {
 			// under test. capabilitiesForModel layers the dynamic aggregator
 			// over this (covered by modelspecs_test.go); with no fetched specs
 			// in scope the two are identical.
-			caps := curatedCapabilities(tt.provider, tt.modelID)
-			if caps != tt.wantCaps {
-				t.Errorf("curatedCapabilities(%q, %q) = %+v, want %+v", tt.provider, tt.modelID, caps, tt.wantCaps)
+			want := tt.wantCaps
+			want.Source = SourceCurated
+			if caps := curatedCapabilities(tt.provider, tt.modelID); !sameCapabilities(caps, want) {
+				t.Errorf("curatedCapabilities(%q, %q) = %s, want %s", tt.provider, tt.modelID, capabilitiesWords(caps), capabilitiesWords(want))
 			}
 			// Integration smoke: with the package-global registry holding no
 			// fetched specs (TestMain disables auto-fetch), capabilitiesForModel
 			// must equal the curated fallback.
-			if got := capabilitiesForModel(tt.provider, tt.modelID); got != tt.wantCaps {
-				t.Errorf("capabilitiesForModel(%q, %q) = %+v, want %+v (curated fallback)", tt.provider, tt.modelID, got, tt.wantCaps)
+			if got := capabilitiesForModel(tt.provider, tt.modelID); !sameCapabilities(got, want) {
+				t.Errorf("capabilitiesForModel(%q, %q) = %s, want %s (curated fallback)", tt.provider, tt.modelID, capabilitiesWords(got), capabilitiesWords(want))
 			}
 		})
 	}
@@ -1470,12 +1471,9 @@ func missingFieldStream() <-chan api.StreamEvent {
 
 func TestStructuredOutputMissingField(t *testing.T) {
 	reg := NewRegistry()
-	// Provide TWO streams: the first attempt returns missing-required-field
-	// JSON, the engine retries once (validateAndRetry now treats missing
-	// fields as retry-eligible), the retry also returns missing-field JSON,
-	// the executor surfaces "structured output invalid after retry".
+	// Initial answer and both corrections remain schema-invalid.
 	mock := &execMockClient{streams: []<-chan api.StreamEvent{
-		missingFieldStream(), missingFieldStream(),
+		missingFieldStream(), missingFieldStream(), missingFieldStream(),
 	}}
 	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
@@ -1511,9 +1509,9 @@ func TestStructuredOutputMissingField(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing required field") {
 		t.Errorf("expected missing-field error, got: %v", err)
 	}
-	// Two calls = first attempt + one retry — confirms the engine retried.
+	// An unchanged invalid answer ends correction even when allowance remains.
 	if mock.calls != 2 {
-		t.Errorf("expected 2 calls (1 attempt + 1 retry), got %d", mock.calls)
+		t.Errorf("unchanged output: expected 2 calls, got %d", mock.calls)
 	}
 	t.Logf("got expected error: %v", err)
 }
@@ -1592,6 +1590,7 @@ func TestStructuredOutputMissingFieldRecoversOnRetry(t *testing.T) {
 }
 
 func TestStructuredOutputWrongType(t *testing.T) {
+	t.Setenv(EnvOutputCorrectionBudget, "0")
 	reg := NewRegistry()
 	ch := make(chan api.StreamEvent, 10)
 	go func() {
@@ -1653,6 +1652,7 @@ func TestStructuredOutputWrongType(t *testing.T) {
 }
 
 func TestStructuredOutputInvalidEnum(t *testing.T) {
+	t.Setenv(EnvOutputCorrectionBudget, "0")
 	reg := NewRegistry()
 	ch := make(chan api.StreamEvent, 10)
 	go func() {

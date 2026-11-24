@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
@@ -510,5 +511,219 @@ func TestEngineRunner_SubbotChildNeverAdoptsParentWorktree(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("no child run linked to the parent — the subbot node did not spawn one")
+	}
+}
+
+// landingParentBot arms the landing intent on the subbot node: the daemon
+// must carry it into the child engine, whose run doc a resume replay re-arms
+// from and whose own worktree finalization performs the landing.
+const landingParentBot = `
+schema seed_out:
+  ok: bool
+
+schema child_out:
+  validated: bool
+  echoed: string
+
+compute seed:
+  output: seed_out
+  expr:
+    ok: "true"
+
+subbot run_child:
+  source: "child.bot"
+  isolated: true
+  auto_merge: true
+  merge_into: "main"
+  merge_strategy: merge
+  output: child_out
+
+workflow subbot_dispatch_demo:
+  entry: seed
+  seed      -> run_child
+  run_child -> done when validated
+  run_child -> fail
+`
+
+// TestEngineRunner_DispatchCarriesTheSubbotLandingIntent pins the intent's
+// path through the dispatcher's direct engine path: `auto_merge:` compiles
+// clean on an isolated child, so a runner that stops at the request records
+// a child doc whose auto_merge stays false — the landing never fires and no
+// diagnostic says why. The child doc is the artifact: it must carry the
+// intent verbatim (the same block a resume replay reads back).
+func TestEngineRunner_DispatchCarriesTheSubbotLandingIntent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	botDir := t.TempDir()
+	parentPath := filepath.Join(botDir, "parent.bot")
+	if err := os.WriteFile(parentPath, []byte(landingParentBot), 0o644); err != nil {
+		t.Fatalf("write parent bot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "child.bot"), []byte(subbotChildBot), 0o644); err != nil {
+		t.Fatalf("write child bot: %v", err)
+	}
+
+	// The workspace is a git repo with a HEAD, so the child's `worktree:
+	// auto` has something to anchor on — the only shape the intent can act
+	// on. The marker is committed: the child reads it from the worktree the
+	// engine builds, not from the borrowed workspace.
+	workspace := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "T"},
+	} {
+		gittest.Run(t, workspace, args...)
+	}
+	marker := `{"validated":true,"echoed":"from-workspace"}`
+	if err := os.WriteFile(filepath.Join(workspace, "marker.json"), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	gittest.Run(t, workspace, "add", "marker.json")
+	gittest.Run(t, workspace, "commit", "-q", "-m", "seed marker")
+
+	storeDir := t.TempDir()
+	runner, err := NewEngineRunner(parentPath, iterlog.Nop())
+	if err != nil {
+		t.Fatalf("NewEngineRunner: %v", err)
+	}
+	defer func() { _ = runner.Close() }()
+	runID, err := store.GenerateRunID()
+	if err != nil {
+		t.Fatalf("GenerateRunID: %v", err)
+	}
+	if derr := runner.Dispatch(context.Background(), DispatchSpec{
+		RunID:         runID,
+		WorkspacePath: workspace,
+		StoreDir:      storeDir,
+		Issue:         &IssueRef{ID: "native:" + runID, Identifier: runID, Title: "subbot landing under dispatch"},
+	}); derr != nil {
+		t.Fatalf("Dispatch: %v", derr)
+	}
+
+	s, err := store.New(storeDir, store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ids, err := s.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	child := (*store.Run)(nil)
+	for _, id := range ids {
+		if id == runID {
+			continue
+		}
+		candidate, lerr := s.LoadRun(context.Background(), id)
+		if lerr != nil {
+			t.Fatalf("LoadRun(%s): %v", id, lerr)
+		}
+		if candidate.ParentRunID == runID {
+			child = candidate
+			break
+		}
+	}
+	if child == nil {
+		t.Fatalf("no child run linked to parent %s — the subbot node did not spawn one", runID)
+	}
+	if child.Status != store.RunStatusFinished {
+		t.Fatalf("child status = %q, want finished (error: %s)", child.Status, child.Error)
+	}
+	if !child.AutoMerge {
+		t.Fatal("child doc carries no auto_merge intent — the dispatched run would never land this child")
+	}
+	if child.MergeInto != "main" || child.MergeStrategy != "merge" {
+		t.Fatalf("child doc landing = (%q, %q), want (main, merge)", child.MergeInto, child.MergeStrategy)
+	}
+}
+
+// worktreeNoneLandingChildBot is the dead shape on the intent carrier: the
+// child renounces its own worktree, so the armed landing can never fire.
+const worktreeNoneLandingChildBot = `
+schema child_out:
+  validated: bool
+  echoed: string
+
+tool work:
+  command: "cat marker.json"
+  output: child_out
+
+workflow subbot_child:
+  worktree: none
+  entry: work
+  work -> done
+`
+
+// TestEngineRunner_DispatchRefusesUnlandableSubbotLanding pins the refusal,
+// not just the wiring: a child that declares `worktree: none` owns no
+// finalization, and no bank ever writes a subbot child's branch — the armed
+// intent would sit on the child run doc unfired forever, declined in
+// silence on every router sweep. The daemon refuses the launch BEFORE any
+// child run is recorded: the parent run absorbs the refusal through its
+// fail branch and the store holds NO child doc — the dead intent is never
+// on the record.
+func TestEngineRunner_DispatchRefusesUnlandableSubbotLanding(t *testing.T) {
+	botDir := t.TempDir()
+	parentPath := filepath.Join(botDir, "parent.bot")
+	if err := os.WriteFile(parentPath, []byte(landingParentBot), 0o644); err != nil {
+		t.Fatalf("write parent bot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "child.bot"), []byte(worktreeNoneLandingChildBot), 0o644); err != nil {
+		t.Fatalf("write child bot: %v", err)
+	}
+
+	workspace := t.TempDir()
+	marker := `{"validated":true,"echoed":"from-workspace"}`
+	if err := os.WriteFile(filepath.Join(workspace, "marker.json"), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	storeDir := t.TempDir()
+	runner, err := NewEngineRunner(parentPath, iterlog.Nop())
+	if err != nil {
+		t.Fatalf("NewEngineRunner: %v", err)
+	}
+	defer func() { _ = runner.Close() }()
+	runID, err := store.GenerateRunID()
+	if err != nil {
+		t.Fatalf("GenerateRunID: %v", err)
+	}
+	// The refusal fails the subbot node and surfaces as the dispatch error,
+	// naming the declaration that disarms the intent; the effect to witness
+	// below is the MISSING child run — the dead intent is never on the
+	// record.
+	derr := runner.Dispatch(context.Background(), DispatchSpec{
+		RunID:         runID,
+		WorkspacePath: workspace,
+		StoreDir:      storeDir,
+		Issue:         &IssueRef{ID: "native:" + runID, Identifier: runID, Title: "subbot landing refusal under dispatch"},
+	})
+	if derr == nil {
+		t.Fatal("Dispatch = nil error, want the unlandable-landing refusal: a worktree:none child cannot land the armed intent")
+	}
+	if !strings.Contains(derr.Error(), "worktree: none") {
+		t.Fatalf("refusal %q does not name the declaration that disarms the intent", derr)
+	}
+
+	s, err := store.New(storeDir, store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ids, err := s.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	for _, id := range ids {
+		if id == runID {
+			continue
+		}
+		candidate, lerr := s.LoadRun(context.Background(), id)
+		if lerr != nil {
+			t.Fatalf("LoadRun(%s): %v", id, lerr)
+		}
+		if candidate.ParentRunID == runID {
+			t.Fatalf("the refused launch recorded a child run (%s) — the dead intent is on the record", id)
+		}
 	}
 }

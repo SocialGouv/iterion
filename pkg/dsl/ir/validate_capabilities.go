@@ -2,8 +2,11 @@ package ir
 
 import (
 	"regexp"
+	"sort"
+	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/boardcaps"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/runops"
 )
 
@@ -33,20 +36,38 @@ const (
 // Capability naming convention: lowercase `domain` or `domain.action`,
 // e.g. `board.create`, `board.read`. Enforced by C081.
 var KnownCapabilities = map[string]bool{
-	boardops.CapBoardRead:    true,
-	boardops.CapBoardCreate:  true,
-	boardops.CapBoardMove:    true,
-	boardops.CapBoardAssign:  true,
-	boardops.CapBoardLabel:   true,
-	boardops.CapBoardClose:   true,
-	boardops.CapBoardComment: true,
-	CapWatchSubscribe:        true,
-	CapWatchUnsubscribe:      true,
-	runops.CapRunsRead:       true,
+	boardcaps.BoardRead:    true,
+	boardcaps.BoardCreate:  true,
+	boardcaps.BoardMove:    true,
+	boardcaps.BoardAssign:  true,
+	boardcaps.BoardLabel:   true,
+	boardcaps.BoardClose:   true,
+	boardcaps.BoardComment: true,
+	CapWatchSubscribe:      true,
+	CapWatchUnsubscribe:    true,
+	runops.CapRunsRead:     true,
+	// The connector MCP facade (ADR-098 §2, #2758): an agent node declaring
+	// `capabilities: [connectors]` is wired to the host's facade endpoint,
+	// through which it reaches the tenant's `agent`-capable connections.
+	connection.CapConnectors: true,
 }
 
 // capShapeRe enforces the lowercase `domain` or `domain.action` shape.
 var capShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`)
+
+// NativeConnectorIDs is the set of connector ids a NATIVE action transport
+// owns (ADR-151, iterion#2834): an in-process, credential-free connector the
+// engine executes itself rather than reaching over HTTP. Membership decides
+// one compile-time question — `connection:` is optional for these (C261 does
+// not fire) — and nothing else; the transport registry that executes them
+// lives in pkg/backend/model. A new native connector adds its id to the
+// vocabulary leaf as part of its seam registration (G110: registration IS
+// the seam — the compiler's half of it), never an `if` at a call site.
+//
+// The set itself lives in pkg/boardcaps: the compiler AND the connector
+// validator read it, and reading it must not link the dispatcher into a
+// binary that compiles a .bot (iterion#2857).
+var NativeConnectorIDs = boardcaps.NativeConnectorIDs
 
 // validateCapabilities walks every agent/judge node in the workflow and
 // validates the shape and known-ness of each capability. Workflow-level
@@ -59,10 +80,13 @@ var capShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`)
 // In addition, a warning (C082) is emitted when board.* capabilities are
 // granted to nodes running under a sandbox: the host stdio MCP server
 // can't reach the sandboxed process, so the runtime falls back to an
-// HTTP MCP transport. That fallback needs the iterion server's
-// BoardHTTPEndpoint+BoardRunToken plumbing — without it the cap silently
-// no-ops in the sandbox. The warning is intentional rather than blocking
-// because non-sandboxed runs of the same workflow are perfectly fine.
+// HTTP MCP transport. That fallback needs the BoardHTTPEndpoint+
+// BoardRunToken plumbing from the host the sandbox answers to — the
+// studio/server for an in-process run, the runner pod for a cloud run
+// (#2632); without it (a bare CLI run) the delegate disables the node's
+// board tools with a loud warning. The warning is intentional rather than
+// blocking because non-sandboxed runs of the same workflow are perfectly
+// fine.
 func (c *compiler) validateCapabilities(w *Workflow) {
 	// Workflow-level: emit one diagnostic per malformed entry, attributed
 	// to no specific node.
@@ -71,6 +95,81 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 	}
 	sandboxActive := workflowSandboxRequiresHTTPBoard(w)
 	for _, n := range w.Nodes {
+		// A tool node declares `capabilities:` too (ADR-151, #78=A) and gets
+		// the SAME shape/known checks — one authorization surface, never a
+		// second regime. What it does NOT get is C082: the sandbox warning
+		// exists because an LLM node's board tools reach the host through an
+		// MCP transport the sandbox may not have, while a tool node's board
+		// action runs IN the engine — the transport question is exactly what
+		// the native seam removes (#2632's second half). What it gets
+		// instead is C332: where no consumer reads the list, an inert grant
+		// reads as configured.
+		if tn, ok := n.(*ToolNode); ok {
+			for _, cap := range tn.Capabilities {
+				c.validateOneCapability(cap, tn.ID, "tool")
+			}
+			// The grant has two readers, both the runtime's
+			// model.nodeCapabilities: the action recipe's NATIVE transport,
+			// and a registry recipe naming one of iterion's host tools (its
+			// dispatch is held to the grant like an agent's tools:). A shell
+			// recipe has none — and neither does an HTTP action, whose
+			// authorization is the connection's credential, nor a registry
+			// recipe naming any other tool: the warning's own sentence is
+			// the condition.
+			nativeAction := tn.Action != "" && NativeConnectorIDs[actionConnectorOf(tn.Action)]
+			if len(tn.Capabilities) > 0 && !nativeAction && !toolRecipeNamesHostTool(tn) {
+				c.warnfAt(DiagToolCapabilitiesInert, tn.ID, "",
+					"tool %q declares `capabilities:` but %s — only a native action (board.*) or a registry recipe naming an iterion host tool reads the grant (ADR-151), so this list opens nothing",
+					tn.ID, toolGrantReaderAbsent(tn))
+			}
+			// A native board action whose grant is declared NOWHERE is
+			// refused CAPABILITY_DENIED at run time; the compiler can say it
+			// earlier and name the capability (the C328 posture: a warning
+			// with the remedy, never a refusal — a hand-built catalog of one
+			// node is none of this check's business).
+			if nativeAction {
+				want, known := boardcaps.ActionCapability[tn.Action]
+				if !known {
+					// The native verb set is the binary's own, so the
+					// compiler knows what admission will refuse on every
+					// launch. A warning, not a refusal: admission keeps its
+					// escape hatch for a node on a branch the launch never
+					// takes, and the compile must not take it away.
+					c.warnfAt(DiagNativeVerbNotExposed, tn.ID, "",
+						"tool %q: `action: %s` names a verb the native %q facade does not expose (it serves: %s) — every launch is refused at admission. A board act the facade does not serve goes through an agent or judge node's board tools",
+						tn.ID, tn.Action, actionConnectorOf(tn.Action), strings.Join(exposedNativeVerbs(actionConnectorOf(tn.Action)), ", "))
+				}
+				if known {
+					nodeDeclared := tn.Capabilities != nil
+					eff := tn.Capabilities
+					if !nodeDeclared {
+						eff = w.Capabilities
+					}
+					if !capSet(eff)[want] {
+						// The message must name the case the author is IN:
+						// when the workflow grants and the node's declared
+						// list overrode it, "declared nowhere" is a lie and
+						// the remedy is to drop the override, not to add a
+						// grant the workflow already holds.
+						switch {
+						case nodeDeclared && capSet(w.Capabilities)[want]:
+							c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+								"tool %q: `action: %s` needs the %q capability — the node's declared capabilities: list REPLACES the workflow's (#1801) and does not hold it, so at run time the native transport refuses the call (CAPABILITY_DENIED). Drop the node's line to inherit, or add %q to it",
+								tn.ID, tn.Action, want, want)
+						case nodeDeclared:
+							c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+								"tool %q: `action: %s` needs the %q capability, which the node's declared capabilities: list does not hold (and the workflow's does not grant either — the node's list replaces it, #1801) — at run time the native transport refuses the call (CAPABILITY_DENIED). Add %q to the node's list",
+								tn.ID, tn.Action, want, want)
+						default:
+							c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+								"tool %q: `action: %s` needs the %q capability, declared neither on the node nor on the workflow — at run time the native transport refuses it (CAPABILITY_DENIED). Declare %q in the node's (or the workflow's) capabilities: list",
+								tn.ID, tn.Action, want, want)
+						}
+					}
+				}
+			}
+			continue
+		}
 		ln, ok := n.(LLMNode)
 		if !ok {
 			continue
@@ -81,7 +180,7 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 			c.validateOneCapability(cap, n.NodeID(), kind)
 			if sandboxActive && isBoardCapability(cap) {
 				c.warnfAt(DiagBoardCapInSandbox, n.NodeID(), "",
-					"%s capability %q runs under a sandbox: the runtime needs the HTTP board MCP transport (server-side BoardHTTPEndpoint+BoardRunToken). Without it the capability silently no-ops inside the container.",
+					"%s capability %q runs under a sandbox: the runtime needs the HTTP board MCP transport (BoardHTTPEndpoint+BoardRunToken) from the host the sandbox answers to — the studio/server locally, the runner pod on iterion.cloud. Without it the node's board tools are disabled with a delegate warning.",
 					kind, cap)
 			}
 		}
@@ -109,6 +208,50 @@ func workflowSandboxRequiresHTTPBoard(w *Workflow) bool {
 // kanban capability (board.read, board.create, board.move, …).
 func isBoardCapability(cap string) bool {
 	return cap == "board" || (len(cap) > len("board.") && cap[:len("board.")] == "board.")
+}
+
+// exposedNativeVerbs lists, sorted, the action ids the native facade of
+// connector serves — boardcaps.ActionCapability, which the facade's matrix
+// test holds to the facade's own bindings.
+func exposedNativeVerbs(connector string) []string {
+	var out []string
+	for action := range boardcaps.ActionCapability {
+		if actionConnectorOf(action) == connector {
+			out = append(out, action)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// actionConnectorOf splits the connector id off an action id.
+func actionConnectorOf(action string) string {
+	connector, _, _ := strings.Cut(action, ".")
+	return connector
+}
+
+// toolRecipeNamesHostTool reports whether a tool node's registry recipe
+// names one of iterion's host tools (board, watch, runs), in any accepted
+// spelling: the runtime holds that dispatch to the node's grant, so the
+// list has a reader.
+func toolRecipeNamesHostTool(tn *ToolNode) bool {
+	if ToolRecipeKindOf(tn) != ToolRecipeRegistry {
+		return false
+	}
+	_, ok := HostToolCapability(strings.TrimSpace(tn.Command))
+	return ok
+}
+
+// toolGrantReaderAbsent words WHY a tool node's grant has no reader, for
+// C332: the recipe decides, not the list.
+func toolGrantReaderAbsent(tn *ToolNode) string {
+	switch {
+	case tn.Action != "":
+		return "its action: is served over HTTP, whose authorization is the connection's credential"
+	case ToolRecipeKindOf(tn) == ToolRecipeRegistry:
+		return "its registry recipe names no iterion host tool"
+	}
+	return "its recipe is command:/script:"
 }
 
 func (c *compiler) validateOneCapability(cap, nodeID, scope string) {

@@ -24,6 +24,7 @@ var (
 // environment of host tool-node commands (both shell and script modes),
 // appended after the inherited environment so they win on duplicate keys.
 func TestRunExtraEnvReachesHostToolCommands(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{}
 	e.SetRunExtraEnv([]string{"PATH=/devbox/profile/bin:/usr/bin"})
 
@@ -32,13 +33,14 @@ func TestRunExtraEnvReachesHostToolCommands(t *testing.T) {
 		t.Errorf("toolNodeCommand env misses the run-level PATH entry: %v", cmd.Env)
 	}
 
-	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh").cmd
+	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh", nil).cmd
 	if !slices.Contains(script.Env, "PATH=/devbox/profile/bin:/usr/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the run-level PATH entry: %v", script.Env)
 	}
 }
 
 func TestSetRunExtraEnvMergesAndLetsTheNewestValueWin(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{}
 	e.SetRunExtraEnv([]string{"PROJECT_ONLY=one", "PATH=/project/bin"})
 	e.SetRunExtraEnv([]string{"PATH=/devbox/bin", "DEVBOX_ONLY=two"})
@@ -71,6 +73,7 @@ func TestSetRunExtraEnvMergesAndLetsTheNewestValueWin(t *testing.T) {
 // processExtraEnv merging the layers in the other order (a later launch
 // push clobbers the engine's PATH).
 func TestEngineExtraEnvComposesOnTheLaunchLayerAndNeverFeedsBackIntoIt(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{}
 	e.SetRunExtraEnv([]string{"PATH=/project/bin", "PROJECT_ONLY=one"})
 
@@ -99,7 +102,7 @@ func TestEngineExtraEnvComposesOnTheLaunchLayerAndNeverFeedsBackIntoIt(t *testin
 			t.Errorf("the first composition survived the second: %q", entry)
 		}
 	}
-	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh").cmd
+	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh", nil).cmd
 	if !slices.Contains(script.Env, "PATH=/shim-second:/project/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the engine's composed PATH: %v", script.Env)
 	}

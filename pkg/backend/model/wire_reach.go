@@ -1,11 +1,10 @@
 package model
 
 import (
-	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -43,8 +42,12 @@ func anthropicWireHints() map[string]bool {
 //   - claw or pi with a provider it cannot resolve (claw substitutes the
 //     first available provider, which may be anthropic);
 //   - any resolved hint that is anthropic or zai, on any backend;
-//   - a model-calling node that exposes no LLMFields (human answering
-//     with a model, subbot, agent-rung recovery), a nil workflow.
+//   - a model-calling node that exposes no LLMFields (a subbot), a nil
+//     workflow; a human node's LLM half is read on its model's prefix — on
+//     the wire when the prefix is, armed when the prefix cannot be read; a
+//     Verified Action's recovery rungs are read the way dispatch spends them:
+//     rung 3 as the direct generation it is, rung 4 as the synthetic agent
+//     dispatch it is (CallSites, the one enumeration of the run's sites).
 //
 // A `{{vars.*}}` span resolves against the view's vars (RouteView.field) —
 // the run's own reading — and a late name stays as written, undecided,
@@ -68,99 +71,135 @@ func AnthropicWireReachable(v RouteView) bool {
 }
 
 // WireRoute is one PRIMARY route of a run that can execute against the
-// Anthropic wire: the node's backend under the launch's overrides and the
-// FIRST element of its provider chain — what the executor spends before any
-// rescue step.
+// Anthropic wire: one call site of the run (CallSites) — the node's backend
+// under the launch's overrides and the chain its dispatch walks (Legs), or a
+// direct generation's model — what the execution spends before any rescue.
 type WireRoute struct {
-	// NodeID is the node the route belongs to; "" for the single route of a
-	// nil workflow.
+	// NodeID is the route's site (CallSite.ID): the node's id for its own
+	// dispatch, `<tool>#self_repair` / `<tool>#agent_recovery` for a
+	// Verified Action's rungs; "" for the single route of a nil workflow.
 	NodeID string
 	// Backend is the resolved backend, lower-cased; "" when it resolves at
-	// dispatch (unset, auto, a `{{vars.…}}` reference).
+	// dispatch (unset, auto, a `{{vars.…}}` reference). A direct generation
+	// runs on claw.
 	Backend string
-	// Hint is the first chain element's provider hint; "" for none or auto.
-	Hint string
-	// Model is the first element's own model, else the node's effective one.
+	// Legs is the chain the dispatch walks (model.Legs — the override
+	// collapse, the expansion, the allowlist's drop), in its order; empty
+	// where the allowlist dropped every leg, which the dispatch refuses. A
+	// direct generation is one hint-free leg, as the call it makes.
+	Legs []credroute.Leg
+	// Model is the spec a leg that pins none sends: the node's effective
+	// model (Baseline), a direct generation's own.
 	Model string
 	// Readable is false when the walk cannot say which credential the route
-	// spends: a backend or hint resolved at dispatch, a model it cannot read,
-	// a model-calling node that exposes no LLM fields. As far as a caller can
-	// tell, such a route draws on the run's DEFAULT credential.
+	// spends: a backend or first leg resolved at dispatch, a model it cannot
+	// read, a model-calling node that exposes no LLM fields. As far as a
+	// caller can tell, such a route draws on the run's DEFAULT credential.
 	Readable bool
+	// Role and Host are how the site calls (CallSite): a zero Role is the
+	// node's own dispatch, Host a call this process makes on the host
+	// whatever the run's sandbox — a direct generation.
+	Role credroute.Role
+	Host bool
+}
+
+// Spec is the spec leg i sends: its own, else the route's model.
+func (r WireRoute) Spec(i int) string {
+	return legSpec(r.Legs, i, r.Model)
+}
+
+// LegSpec is the spec leg i sends: its own, else base (Base).
+func (r WireRoute) LegSpec(i int, base string) string {
+	return legSpec(r.Legs, i, base)
+}
+
+// Base is the spec a leg of the route that pins none sends, as dispatch
+// builds it (CallSite.Base): the route's model, the detector's pick for a
+// claw dispatch naming none — its allowlist refusal the whole route's.
+func (r WireRoute) Base(detected func(nodeID string) (string, error)) (string, error) {
+	return siteBase(r.Model, r.Backend, r.Host, r.NodeID, detected)
+}
+
+// Call is leg i's question to the resolver for spec, placed where the
+// route's call is made (CallSite.Call).
+func (r WireRoute) Call(i int, spec string, placement credroute.Sandbox) credroute.Call {
+	return siteCall(r.Backend, r.Legs, r.Role, r.Host, i, spec, placement)
 }
 
 // AnthropicWireRoutes lists the routes that make AnthropicWireReachable answer
-// true — one per node, in node-id order, with what the walk can read of each.
-// A nil workflow yields one unreadable route: the conservative reading.
+// true — one per primary call site of the run (CallSites), in site-id order,
+// with what the walk can read of each. A nil workflow yields one unreadable
+// route: the conservative reading.
 //
-// The fields are read through the view (RouteView.field): a `{{vars.*}}`
-// span resolves against the run's vars the way dispatch resolves it, and a
-// late name stays as written — undecided, which is the direction this
-// guard answers in.
+// The sites are the enumeration the launch's admission judges, never a second
+// walk over the node kinds: each route's chain is the dispatch's own (Legs over
+// the view), a leg reader keys the legs the dispatch walks in the order it
+// walks them, and a `{{vars.*}}` span resolves against the run's vars the way
+// dispatch resolves it — a late name stays as written, undecided, which is the
+// direction this guard answers in. A rescue site (a `fallbacks:` route, an
+// interaction generation, the review companion) is no primary route, and a
+// supervisor is the pre-flight's own walk over the same enumeration.
 func AnthropicWireRoutes(v RouteView) []WireRoute {
-	wf := v.Workflow
-	if wf == nil {
+	if v.Workflow == nil {
 		return []WireRoute{{}}
 	}
 	var out []WireRoute
-	for _, n := range wf.Nodes {
-		fields, ok := llmFieldsOf(n)
-		if !ok {
-			if ir.NodeUsesLLM(n) {
-				out = append(out, WireRoute{NodeID: n.NodeID()})
-			}
+	for _, s := range CallSites(v, nil) {
+		if s.Rescue {
 			continue
 		}
-		ov := v.Overrides.ForNode(n.NodeID(), n.NodeKind())
-		backend := routeBackend(v.field(ov.Backend), v.field(fields.Backend), v.field(wf.DefaultBackend))
-		mdl := firstNonEmpty(ov.Model, fields.Model)
-		ovProv := v.field(ov.Provider)
-		chainProv := v.field(fields.Provider)
-		mdlText := v.field(mdl)
-		if routeOnAnthropicWire(backend, ovProv, chainProv, mdlText) {
-			out = append(out, primaryWireRoute(n.NodeID(), backend, ovProv, chainProv, mdlText))
+		if r := s.wireRoute(); r.onAnthropicWire() {
+			out = append(out, r)
 		}
 	}
-	slices.SortFunc(out, func(a, b WireRoute) int { return strings.Compare(a.NodeID, b.NodeID) })
 	return out
 }
 
-// primaryWireRoute reads a route's first chain element the way the executor
-// builds it (ClawExecutor.resolveProviderChain): a launch-time provider
-// override is the whole chain; else the DSL chain, env-expanded and split on
-// commas, whose first `provider[:model]` token leads; "auto" is no hint.
-func primaryWireRoute(id, backend, overrideProvider, chain, mdl string) WireRoute {
-	r := WireRoute{NodeID: id, Backend: backend, Model: strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))}
-	if strings.TrimSpace(overrideProvider) != "" {
-		r.Hint = strings.TrimSpace(overrideProvider)
-	} else {
-		for _, part := range strings.Split(ir.ExpandEnvWithDefault(chain), ",") {
-			token := strings.TrimSpace(part)
-			if token == "" {
-				continue
-			}
-			hint, model, _ := ir.SplitProviderStep(token)
-			r.Hint = strings.TrimSpace(hint)
-			if m := strings.TrimSpace(model); m != "" {
-				r.Model = m
-			}
-			break
+// wireRoute is s as the pre-flight reads it. Readable while the backend, the
+// first leg and the model are decided — a direct generation's while its
+// model's prefix is; a later leg the walk reaches unreadable is the reader's
+// to refuse, as the dispatch does.
+func (s CallSite) wireRoute() WireRoute {
+	r := WireRoute{NodeID: s.ID, Backend: s.Backend, Legs: s.Legs, Model: s.Model, Role: s.Role, Host: s.Host}
+	if r.Role == credroute.RoleNode {
+		r.Role = "" // the zero Role is the node's own dispatch
+	}
+	switch {
+	case s.Kind == SiteUnread:
+		r.Backend, r.Legs, r.Role = "", nil, ""
+	case s.Host:
+		r.Readable = providerFromModelPrefix(s.Model) != ""
+	default:
+		r.Readable = s.Backend != "" && !strings.Contains(s.Model, "{{")
+		if len(s.Legs) > 0 {
+			r.Readable = r.Readable && !strings.Contains(s.Legs[0].Provider, "{{") && !strings.Contains(s.Legs[0].Model, "{{")
 		}
 	}
-	if strings.EqualFold(r.Hint, "auto") {
-		r.Hint = ""
-	}
-	r.Readable = backend != "" && !strings.Contains(r.Hint, "{{") && !strings.Contains(r.Model, "{{")
 	return r
 }
 
-// routeOnAnthropicWire decides for one route, in the executor's
-// precedence: a provider override collapses the chain; else the DSL chain
-// decides when it names a hint (the hint IS the route — on pi the hint
-// overrides the model's prefix, on claude_code the prefix is stripped);
-// only a route with no hint at all routes on its model's `provider/`
-// prefix.
-func routeOnAnthropicWire(backend, overrideProvider, chain, mdl string) bool {
+// onAnthropicWire reports whether the route may execute against the
+// anthropic wire: an unreadable route keeps the guard armed, a direct
+// generation is on the wire its model's prefix names, a dispatch where its
+// legs put it (legsOnAnthropicWire).
+func (r WireRoute) onAnthropicWire() bool {
+	if !r.Readable && (r.Host || len(r.Legs) == 0 && r.Backend == "") {
+		return true
+	}
+	return legsOnAnthropicWire(r.Backend, r.Legs, r.Model)
+}
+
+// legsOnAnthropicWire decides for one route whether it may execute against
+// the anthropic wire, over the legs its dispatch walks: a backend that picks
+// the wire itself, or resolves at dispatch, does; else a leg whose hint names
+// a wire provider does (the hint IS the route — on pi it overrides the
+// model's prefix, on claude_code the prefix is stripped); only a chain that
+// names no hint at all routes on each leg's model `provider/` prefix. A leg
+// that defers to the process (no hint, "auto") or reads a `{{vars.*}}` value
+// leaves the chain unresolved, which keeps a backend that picks its provider
+// from what the process holds on the wire. A chain the allowlist emptied is
+// on no wire: the dispatch refuses the node.
+func legsOnAnthropicWire(backend string, legs []credroute.Leg, base string) bool {
 	backend = strings.ToLower(backend)
 	switch backend {
 	case "", "auto", delegate.BackendClaudeCode:
@@ -172,22 +211,29 @@ func routeOnAnthropicWire(backend, overrideProvider, chain, mdl string) bool {
 	if strings.Contains(backend, "{{") {
 		return true
 	}
-	var hints []string
-	unresolved := false
-	switch {
-	case strings.TrimSpace(overrideProvider) != "":
-		hints, unresolved = chainHints(overrideProvider)
-	default:
-		hints, unresolved = chainHints(chain)
-		if len(hints) == 0 {
-			if p := providerFromModelPrefix(mdl); p != "" {
-				hints, unresolved = []string{p}, false
-			}
+	named, unresolved := false, false
+	for _, leg := range legs {
+		hint := strings.ToLower(strings.TrimSpace(leg.Provider))
+		switch {
+		case hint == "":
+			unresolved = true
+		case anthropicWireProviders[hint]:
+			return true
+		case strings.Contains(hint, "{{"):
+			named, unresolved = true, true
+		default:
+			named = true
 		}
 	}
-	for _, h := range hints {
-		if anthropicWireProviders[h] {
-			return true
+	if !named {
+		unresolved = false
+		for _, leg := range legs {
+			switch p := providerFromModelPrefix(firstNonEmpty(leg.Model, base)); {
+			case p == "":
+				unresolved = true
+			case anthropicWireProviders[p]:
+				return true
+			}
 		}
 	}
 	if !unresolved {

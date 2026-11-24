@@ -82,6 +82,7 @@ const (
 	TokenCapabilities
 	TokenSkills
 	TokenArtifactLabels
+	TokenDeliverables
 	TokenToolMaxSteps
 	TokenReasoningEffort
 	TokenMode
@@ -176,6 +177,8 @@ const (
 	TokenAutoMemory
 	// AmbientContext the ambient context a node inherits: none|workspace|operator|all
 	TokenAmbientContext
+	// Codemode the codemode tool loop switch: on|off
+	TokenCodemode
 	// LoopBudgetGuard back-edge affordability guard switch: on|off
 	TokenLoopBudgetGuard
 	// RepoDevbox target-repo devbox.json provisioning switch: on|off
@@ -276,6 +279,7 @@ var tokenNames = map[TokenType]string{
 	TokenCapabilities:       "capabilities",
 	TokenSkills:             "skills",
 	TokenArtifactLabels:     "artifact_labels",
+	TokenDeliverables:       "deliverables",
 	TokenToolMaxSteps:       "tool_max_steps",
 	TokenReasoningEffort:    "reasoning_effort",
 	TokenMode:               "mode",
@@ -355,10 +359,12 @@ var tokenNames = map[TokenType]string{
 	TokenCompress:            "compress",
 	TokenAutoMemory:          "auto_memory",
 	TokenAmbientContext:      "ambient_context",
+	TokenCodemode:            "codemode",
 	TokenLoopBudgetGuard:     "loop_budget_guard",
 	TokenRepoDevbox:          "repo_devbox",
 	TokenWorkspaceCheckpoint: "workspace_checkpoint",
 	TokenPermission:          "permission",
+	TokenAuth:                "auth",
 	TokenAllow:               "allow",
 	TokenAsk:                 "ask",
 	TokenDeny:                "deny",
@@ -428,6 +434,7 @@ var keywords = map[string]TokenType{
 	"capabilities":          TokenCapabilities,
 	"skills":                TokenSkills,
 	"artifact_labels":       TokenArtifactLabels,
+	"deliverables":          TokenDeliverables,
 	"tool_max_steps":        TokenToolMaxSteps,
 	"reasoning_effort":      TokenReasoningEffort,
 	"mode":                  TokenMode,
@@ -505,6 +512,7 @@ var keywords = map[string]TokenType{
 	"compress":              TokenCompress,
 	"auto_memory":           TokenAutoMemory,
 	"ambient_context":       TokenAmbientContext,
+	"codemode":              TokenCodemode,
 	"loop_budget_guard":     TokenLoopBudgetGuard,
 	"repo_devbox":           TokenRepoDevbox,
 	"workspace_checkpoint":  TokenWorkspaceCheckpoint,

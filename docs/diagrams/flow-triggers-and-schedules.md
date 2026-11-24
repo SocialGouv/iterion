@@ -4,7 +4,7 @@ A stored binding becomes a run when an event matches it or its clock comes due, 
 
 > Drawn from the code at commit `f564846d3`; how this page is kept true: [README](README.md).
 
-Two objects carry a binding and they are not interchangeable. A `trigger.Subscription` (`trigger_subscriptions`, or an in-memory store seeded from bot manifests locally) binds a `Matcher` to a bot launch and is fired by events — plus, for its schedule and keepalive kinds, by the resident `trigger.Scheduler`. A `cloudsched.ScheduledBot` (`scheduled_bots`) is the cloud cron and keepalive row, fired by `cloudsched.Ticker` alone. Three facts readers get wrong: cloud board events never touch the event bus, a schedule-kind **subscription** has nothing to fire it in cloud (the scheduler is built only beside a native board store, and scopes itself to tenant `""`), and a skipped tick is a normal audited outcome rather than a failure.
+Two objects carry a binding and they are not interchangeable. A `trigger.Subscription` (`trigger_subscriptions`, or locally a file journal reconciled with the bot manifests at each start) binds a `Matcher` to a bot launch and is fired by events — plus, for its schedule and keepalive kinds, by the resident `trigger.Scheduler`. A `cloudsched.ScheduledBot` (`scheduled_bots`) is the cloud cron and keepalive row, fired by `cloudsched.Ticker` alone. Three facts readers get wrong: cloud board events never touch the event bus, a schedule-kind **subscription** has nothing to fire it in cloud (the scheduler is built only beside a native board store, and scopes itself to tenant `""`), and a skipped tick is a normal audited outcome rather than a failure.
 
 ## From an event to an effect
 

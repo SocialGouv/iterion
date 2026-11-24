@@ -20,6 +20,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 )
@@ -117,6 +118,18 @@ type Run interface {
 	// For container drivers, Command rewrites the invocation to a
 	// `docker exec` / `kubectl exec` form and forwards Cwd/Env via
 	// the runtime-native flags so the inner process sees them.
+	//
+	// ExecOpts.Env is the environment of the process INSIDE the sandbox.
+	// The returned Cmd.Env belongs to the HOST transport process. A driver
+	// may already populate it with inherited client settings and private
+	// transport data. Callers must preserve that environment: pass workload
+	// values through ExecOpts.Env, and append any host-only additions to
+	// cmd.Environ() (or to an already populated cmd.Env). Replacing Cmd.Env
+	// with os.Environ(), a new slice or the workload environment drops the
+	// driver's transport data even when the resulting process still starts.
+	// Command itself starts no process. Callers may attach StdinPipe after
+	// requesting KeepStdinOpen; drivers must not consume that input stream
+	// to prepare another part of the transport.
 	Command(ctx context.Context, cmd []string, opts ExecOpts) *exec.Cmd
 
 	// Exec is a convenience wrapper around [Run.Command] +
@@ -159,7 +172,11 @@ type SecretFileRefresher interface {
 }
 
 // WorkspaceExporter is an optional interface a [Run] may implement to
-// copy the sandbox workspace BACK to the host at end of run.
+// copy the sandbox workspace BACK to the host at end of run, and to drain
+// the declared read-back paths with it (ADR-143). One capability, two
+// halves: a driver whose container holds content the host must recover
+// after teardown implements THIS seam, never a second export interface
+// beside it — the next content kind would otherwise need a new engine `if`.
 //
 // It exists for drivers whose workspace is a COPY of the host workspace
 // (kubernetes: tar-streamed into the pod's emptyDir): without a reverse
@@ -171,13 +188,25 @@ type SecretFileRefresher interface {
 // passthrough share the host filesystem and intentionally do NOT
 // implement this — callers gate on the type assertion.
 //
-// The engine calls it once, at sandbox teardown, BEFORE the sandbox is
-// destroyed. A failure must be surfaced by the caller (log + event) —
-// it means the run's un-pushed work is about to be lost with the pod.
+// The engine calls each half once, at sandbox teardown, BEFORE the
+// sandbox is destroyed. A failure must be surfaced by the caller (log +
+// event) — it means the run's un-pushed work is about to be lost with
+// the pod.
 type WorkspaceExporter interface {
 	// ExportWorkspace copies the sandbox workspace back onto the host
 	// workspace it was populated from. No-op for workspace-less runs.
 	ExportWorkspace(ctx context.Context) error
+
+	// ExportRunFiles drains every declared read-back dir
+	// ([RunInfo.ReadBackDirs]) from the container into the host directory
+	// each entry names, so the run file store receives what the container
+	// wrote (ADR-143 §3: the drain is the clause that makes naming the
+	// path legal). No-op when nothing was declared. A drain that loses
+	// files — it fails, or its set lands short of members the host
+	// declined — returns a typed loss (ReadBackLoss: its reason, the
+	// declined members, the stale mark), and the caller surfaces it as an
+	// event on the run: never an empty set, never a partial one in silence.
+	ExportRunFiles(ctx context.Context) error
 }
 
 // WorkspaceHeadCapturer is an optional interface a [Run] implements
@@ -221,6 +250,14 @@ type WorkspaceFileRefresher interface {
 	RefreshWorkspaceFile(ctx context.Context, relPath string, value []byte) error
 }
 
+// SeedDir is a host directory a driver copies into the container at Start
+// ([RunInfo.SeedDirs]).
+type SeedDir struct {
+	HostDir       string // the directory on the host the driver reads
+	ContainerPath string // where its contents land in the container (absolute)
+	ReadOnly      bool   // make the copied files read-only once landed
+}
+
 // Capabilities advertises a driver's supported feature set.
 //
 // The engine compares a [Spec] against capabilities at Prepare time:
@@ -248,6 +285,28 @@ type Capabilities struct {
 	// the worktree .git — on this; where it's false those binaries are
 	// instead baked into the sandbox image.
 	SupportsHostBindMounts bool
+
+	// SupportsHostDirCopy means the driver can seed a container directory
+	// from a host directory by COPYING it at Start ([RunInfo.SeedDirs]) —
+	// the way kubernetes streams the workspace into its pod. Where a
+	// driver has no host filesystem to bind, the runtime hands it the
+	// directories it would have bound (the run's attachments) as seeds
+	// instead; a driver with neither capability is refused those runs.
+	SupportsHostDirCopy bool
+
+	// SupportsReadBackDrain means the driver serves a declared read-back
+	// path ([Spec.ReadBackPaths], ADR-143) with storage it keeps — an
+	// emptyDir on kubernetes — and drains that storage into the host at
+	// teardown: its [Run] implements [WorkspaceExporter], whose
+	// ExportRunFiles reads [RunInfo.ReadBackDirs]. The way out, as
+	// SupportsHostDirCopy is the way in. The runtime lays that storage
+	// and names the path only on a driver that says so: a driver with
+	// neither this nor a host bind to serve the path with leaves it
+	// unserved — no storage, no variable, no declaration — rather than
+	// promise a directory nothing collects (#815's defect, on the next
+	// driver). True on kubernetes; docker and podman serve the path with
+	// a host bind instead; false on noop, whose commands run on the host.
+	SupportsReadBackDrain bool
 
 	// SupportsNetworkPolicy means the driver enforces
 	// [Spec.Network] rules. False on noop and on cloud V1 (where
@@ -327,6 +386,123 @@ type Builder interface {
 	Build(ctx context.Context, prepared PreparedSpec, info RunInfo) (PreparedSpec, error)
 }
 
+// ImageEnvScreener is an optional interface a [Driver] may implement so the
+// runtime can screen the `ENV` an image bakes into every process started
+// from it, and neutralise the names it must not contribute (#2317).
+//
+// It exists because a repository-authored `devcontainer.json` always names
+// an image or a build, and that image's `ENV` reaches every process iterion
+// runs in the container through a channel no env screen sees: the drivers
+// pass `--env` for [Spec.Env] only, so a `ENV CLAUDE_CODE_USE_BEDROCK=1`
+// plus the planter's cloud keys redirects every prompt of the run with ZERO
+// `containerEnv` entries.
+//
+// The engine probes for it by type assertion between [Driver.Prepare] (and
+// [Builder.Build], where there is one) and [Driver.Start] — AFTER the image
+// is pulled or built, which is the only point an inspection can be honest,
+// and before anything is started, so the neutralisation still reaches the
+// container's own environment and not just the commands run in it.
+//
+// A driver that does not implement it is NOT screened, and the runtime says
+// so rather than implying a guard it does not have: the kubernetes driver
+// (whose images are resolved by the kubelet, not by a local client) and the
+// noop passthrough (no container at all) deliberately stay out.
+type ImageEnvScreener interface {
+	// ImageConfigEnv returns the `KEY=value` entries the prepared spec's
+	// image sets for every process started from it, in the image's own
+	// order. A nil slice with a nil error means the image sets none.
+	//
+	// The error is the honest answer for "could not be read" — an image
+	// absent from the local store, a daemon that refused — and the caller
+	// reports it as not screened. It must never be swallowed into an empty
+	// list, which would read as a clean image.
+	ImageConfigEnv(ctx context.Context, prepared PreparedSpec) ([]string, error)
+
+	// NeutralizeImageEnv returns a [PreparedSpec] whose sandbox starts with
+	// each named variable overridden by an EMPTY value, consumed by
+	// [Driver.Start] in place of the original, AND the names it actually
+	// overrode.
+	//
+	// Names already carried by the spec's own env — the workflow's
+	// `sandbox.env:`, the operator's overlay — are left alone, and are
+	// absent from that list: the operator's reviewed channel outranks the
+	// screen, so the container starts with the operator's value rather
+	// than an empty one. The implementation is the only party that knows
+	// which names it skipped, so the fact travels back with the result
+	// instead of being reconstructed by the caller — which would be a
+	// second copy of this rule, and the audit record the caller publishes
+	// says "set and EMPTY" of every name it lists.
+	//
+	// Names the driver's OWN Start will set — [StartEnvNames] — are left
+	// alone and absent from that list for the same reason: the pair the
+	// driver appends after the spec's wins, so the container starts with
+	// the DRIVER's value. The RunInfo is passed because that set depends
+	// on it.
+	//
+	// The returned names are a subset of `names`, in any order; the caller
+	// keys its partition on what it ASKED, so a name it never asked about
+	// cannot enter a disposition.
+	//
+	// Implementations must not mutate the PreparedSpec they are handed.
+	NeutralizeImageEnv(prepared PreparedSpec, info RunInfo, names []string) (PreparedSpec, []string, error)
+
+	// StartEnvNames returns the names [Driver.Start] gives a value of its
+	// OWN for this RunInfo — the `--env` pairs it appends AFTER the
+	// prepared spec's, which no caller can see from the spec: the egress
+	// proxy's variables, the per-run CA bundles, a truststore.
+	//
+	// It is an ATTRIBUTION, not the audit record: what the container
+	// holds is read from the container ([StartedEnvReader]), and this
+	// answers the next question — the value that is neither the image's
+	// nor the run's own came from the driver, and an operator finds such
+	// a name in no `.bot` of theirs. Read where those pairs are BUILT, so
+	// the declaration and the argv cannot drift; a screener with no pairs
+	// of its own returns nil.
+	//
+	// It is part of this interface rather than an optional sibling
+	// because a screener that cannot answer it can name no source for a
+	// value the container carries.
+	StartEnvNames(info RunInfo) []string
+}
+
+// StartedEnvReader is an optional interface a [Driver] may implement so the
+// runtime can DEDUCE what an image's baked-in `ENV` did to the container
+// that actually started, instead of predicting it from the spec (#2317).
+//
+// It exists because a prediction was wrong twice. The screen knows what it
+// asked for — `--env NAME=` for the credential sub-class — and what else
+// gives those names a value in principle (the run's own env, the driver's
+// own pairs, the host allow knob); reassembling the container's state from
+// those rules published `HTTP_PROXY` as "set and EMPTY", then
+// `NODE_EXTRA_CA_CERTS` as "let through untouched", of a container
+// `docker inspect` showed carrying iterion's own value. Each time the rule
+// was right and the ORDER it was applied in was not, which is a defect no
+// amount of care in the predicting caller removes.
+//
+// So the audit record is read off the container: the image's `ENV`
+// ([ImageEnvScreener.ImageConfigEnv]) compared, name by name, to what the
+// container was created with. A disposition is then a MEASUREMENT of the
+// pair — emptied, kept, replaced — and cannot contradict `docker inspect`
+// by construction. A driver that does not implement this says it does not
+// know, and the run's record says so: nothing is ever filed under a
+// disposition the container did not witness.
+type StartedEnvReader interface {
+	// StartedContainerEnv returns the `KEY=value` entries the container of
+	// this Run was CREATED with — the image's own `ENV` with every `--env`
+	// pair applied on top, in the resolution order a process in it reads
+	// (the LAST entry for a name wins).
+	//
+	// The Run is the one this driver's own Start returned: a driver that
+	// is handed another's answers with an error rather than guessing.
+	//
+	// The error is the honest answer for "could not be read" — a daemon
+	// that refused, a container already gone — and the caller reports the
+	// dispositions as NOT deduced, with the reason. It must never be
+	// swallowed into an empty list, which would read as a container with
+	// no environment at all.
+	StartedContainerEnv(ctx context.Context, run Run) ([]string, error)
+}
+
 // SchedulingPolicyReporter is implemented by drivers that stamp a
 // deployment-level scheduling policy (resource requests, placement) on the
 // sandboxes they create. The runtime records the summary on the
@@ -383,6 +559,27 @@ type RunInfo struct {
 	// declare it explicitly.
 	WorkspacePath string
 
+	// SeedDirs are host directories the driver copies into the container
+	// at Start, after the workspace, each at its ContainerPath. The
+	// runtime fills it only for a driver that cannot bind-mount
+	// ([Capabilities.SupportsHostBindMounts] false) and can copy
+	// ([Capabilities.SupportsHostDirCopy] true); a driver that binds never
+	// receives a seed. A ReadOnly seed's files are made read-only once
+	// copied — the directory itself stays whatever the driver's volume is.
+	SeedDirs []SeedDir
+
+	// ReadBackDirs is the drain manifest for the run's declared read-back
+	// paths ([Spec.ReadBackPaths], ADR-143): each entry pairs the
+	// container path whose content the run must recover with the host
+	// directory that receives it at teardown. The runtime appends the
+	// entry whenever it arranges the declared path's storage, on every
+	// driver — a bind-mount one too. Nothing there consumes it: the path
+	// already lives on the host through the bind, and only a
+	// [WorkspaceExporter]'s drain reads this manifest, so the entry stays
+	// inert until a driver implements the seam (the kubernetes Run). A
+	// run that declared nothing carries no entry and drains nothing.
+	ReadBackDirs []ReadBackDir
+
 	// ProxyEndpoint, if non-empty, is the URL of the iterion network
 	// proxy (HTTPS_PROXY value) injected into the sandbox by drivers
 	// that support [Capabilities.SupportsNetworkPolicy]. Phase 3
@@ -417,6 +614,53 @@ type RunInfo struct {
 	// at it (and ideally append it to the system store). Empty when
 	// inspection is off — the proxy is then a transparent tunnel.
 	ProxyCACert []byte
+
+	// UntrustedRun, when true, marks a run whose workspace code the
+	// engine does not trust (the fork lane, ADR-162 decision 7). Its
+	// container holds no credential value and its only route out is the
+	// proxy, so a driver that writes a per-run network policy must hold
+	// that floor: no cluster DNS (the proxy resolves runner-side; the
+	// container reaches it by IP), and the runner pod reachable on
+	// EXACTLY RunnerEgressPorts — never on another run's listener.
+	UntrustedRun bool
+
+	// RunnerEgressPorts are the ports on the runner pod this run's own
+	// listeners serve — the proxy's port first, then the run's ask-user
+	// listener's when an interactive workflow bound one. Set only for an
+	// untrusted run, whose policy names them exactly; a trusted run keeps
+	// the driver's default (every port on the runner pod).
+	RunnerEgressPorts []int
+
+	// EgressAllowlistHosts is the fork lane's whole proxy allowlist (the
+	// credential's own hosts). Set only for an untrusted run, whose start
+	// probe dials each of them DIRECTLY — every dial the per-run policy
+	// did not name must fail, or the floor is unproven (ADR-162 decision 7).
+	EgressAllowlistHosts []string
+}
+
+// NetworkFloorProbeError is the typed refusal the start probe returns
+// when the network floor it must witness is NOT holding: a dial the
+// per-run policy refuses still connected (a non-enforcing CNI — kind's
+// kindnetd — applies the policy as a no-op, and only the probe sees it),
+// or the probe could not run at all (Unproven — an image with no way to
+// dial proves nothing, and the fork lane is refused, fail closed).
+type NetworkFloorProbeError struct {
+	// Target is the host:port the probe REACHED — the road the policy
+	// should have closed. Empty when Unproven holds.
+	Target string
+	// Unproven marks a probe that could not run (no dial-capable tool in
+	// the image, or the exec itself failed): the floor is unwitnessed,
+	// which for an untrusted run is the same verdict as broken.
+	Unproven bool
+	// Detail carries the why for an operator reading the run log.
+	Detail string
+}
+
+func (e *NetworkFloorProbeError) Error() string {
+	if e.Unproven {
+		return fmt.Sprintf("sandbox: the network floor is unproven: %s", e.Detail)
+	}
+	return fmt.Sprintf("sandbox: the network floor is broken: a direct dial to %s connected — the per-run policy should have refused it", e.Target)
 }
 
 // ExecOpts controls a single [Run.Exec] invocation.

@@ -230,6 +230,18 @@ func (s *Store) setLastRunLocked(iss *Issue, runID, workdir string) error {
 		return nil
 	}
 	now := time.Now().UTC()
+	if iss.LastRunID != runID {
+		// The outcome tuple describes the run the pointer is LEAVING. The
+		// card reports its CURRENT run (SetRunOutcome's match key says so),
+		// so carrying the previous run's verdict forward would make every
+		// surface — `iterion issue show`, the board grid, the REST payload —
+		// report a dead run's failure against a run that has not finished.
+		// Same reason LaunchRefusal is dropped below.
+		iss.LastRunStatus = ""
+		iss.LastRunError = ""
+		iss.LastRunErrorCode = ""
+		iss.LastRunAt = nil
+	}
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
 	iss.Runs = AppendRunRef(iss.Runs, runID, workdir, now)
@@ -243,6 +255,48 @@ func (s *Store) setLastRunLocked(iss *Issue, runID, workdir string) error {
 		Type:    EvtIssueLastRun,
 		IssueID: iss.ID,
 		Payload: map[string]any{"run_id": runID, "workdir": workdir},
+	})
+}
+
+// SetRunOutcome stamps the terminal outcome of the card's run onto its
+// record — the result half of SetLastRun, which only ever recorded the
+// dispatch (see BoardStore.SetRunOutcome and Issue.LastRunStatus).
+func (s *Store) SetRunOutcome(id, runID, status, errMsg, errCode string, at time.Time) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetRunOutcome", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	return s.setRunOutcomeLocked(iss, runID, status, errMsg, errCode, at)
+}
+
+func (s *Store) setRunOutcomeLocked(iss *Issue, runID, status, errMsg, errCode string, at time.Time) error {
+	// The card's own run pointer is the match key — the twin of the
+	// schedule/subscription records' monotonicity guard, and stricter: here
+	// the LAUNCHER writes LastRunID, so "which run does this card report"
+	// is a recorded fact rather than something inferred from timestamps.
+	if iss.LastRunID == "" || iss.LastRunID != runID {
+		return nil
+	}
+	if iss.LastRunStatus == status && iss.LastRunError == errMsg && iss.LastRunErrorCode == errCode {
+		return nil
+	}
+	stamped := at.UTC()
+	iss.LastRunStatus = status
+	iss.LastRunError = errMsg
+	iss.LastRunErrorCode = errCode
+	iss.LastRunAt = &stamped
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueUpdated,
+		IssueID: iss.ID,
+		Payload: map[string]any{"run_id": runID, "last_run_status": status},
 	})
 }
 

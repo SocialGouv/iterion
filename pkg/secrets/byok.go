@@ -146,8 +146,8 @@ const (
 	// (a LiteLLM endpoint in front of a regional model host, a vLLM
 	// server …): the record carries the gateway's base URL beside the key,
 	// and the model id after the `openai_compatible/` prefix is sent to it
-	// verbatim. Until the walk vocabulary learns it (#2005 PR-C'), such a
-	// key is storable but never sealed into a run.
+	// verbatim. The credential walk seals such a key with its URL for a
+	// run that may ride a gateway route (ADR-131 §5).
 	ProviderOpenAICompatible Provider = "openai_compatible"
 )
 
@@ -156,11 +156,84 @@ const (
 // registry agree without re-deriving the URL.
 const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 
+// ZAIChinaBaseURL is the mainland endpoint of the z.ai family's
+// Anthropic-compatible surface — Zhipu's open.bigmodel.cn, the GLM Coding
+// Plan's own path. The tree already classifies the host into the z.ai
+// family wherever it reads a base URL (BaseURLNamesZAI: backend/detect,
+// the claw registry's billing split, executor funding), so it is the
+// vendor's own published endpoint, not an operator destination:
+// FacadeVendorEndpoints holds it beside the default for exactly that.
+const ZAIChinaBaseURL = "https://open.bigmodel.cn/api/anthropic"
+
 // MoonshotDefaultBaseURL is the Anthropic-compatible endpoint Moonshot
-// publishes for the Kimi family. The api.moonshot.cn gateway answers on the
-// same wire; MOONSHOT_BASE_URL overrides. Centralised here so the delegate
-// and the model registry agree without re-deriving the URL.
+// publishes for the Kimi family. MOONSHOT_BASE_URL overrides. Centralised
+// here so the delegate and the model registry agree without re-deriving
+// the URL.
 const MoonshotDefaultBaseURL = "https://api.moonshot.ai/anthropic"
+
+// MoonshotChinaBaseURL is Moonshot's mainland gateway, the api.moonshot.cn
+// host answering the same Anthropic-compatible wire as the default (the
+// netproxy facade allowlist carries it for exactly that reason;
+// MOONSHOT_BASE_URL reaches it). The vendor's own published endpoint, held
+// beside the default by FacadeVendorEndpoints.
+const MoonshotChinaBaseURL = "https://api.moonshot.cn/anthropic"
+
+// facadeVendorEndpoints is the published-endpoint table of the
+// Anthropic-wire facades: the default each resolver stamps, beside the
+// second hosts of the same wire. A facade joining the wire adds its row
+// HERE, once — FacadeVendorEndpoints answers the substitution verdicts from
+// it and FacadeProviders enumerates it, so a blessed endpoint is judged and
+// carried by the sandbox egress allowlist alike
+// (netproxy.iterionDefaultRules, netproxy.modelHosts: a node on a blessed
+// route whose host no rule allows dies at the CONNECT proxy, on an empty
+// payload rather than on a credential error).
+var facadeVendorEndpoints = []struct {
+	provider  Provider
+	endpoints []string
+}{
+	{ProviderZAI, []string{ZAIDefaultBaseURL, ZAIChinaBaseURL}},
+	{ProviderMoonshot, []string{MoonshotDefaultBaseURL, MoonshotChinaBaseURL}},
+}
+
+// FacadeVendorEndpoints returns every endpoint the named facade's vendor
+// publishes for the Anthropic wire — the default its resolver stamps and
+// the second hosts of the same wire. All of them wire the call to the
+// vendor exactly as the absence of a choice would, so none of them is an
+// operator's claim: the substitution verdicts judge the ENSEMBLE through
+// delegate.OperatorEndpointClaim, never one spelling of the vendor. A
+// provider that names no Anthropic-wire facade publishes nothing here.
+func FacadeVendorEndpoints(p Provider) []string {
+	for _, facade := range facadeVendorEndpoints {
+		if facade.provider == p {
+			return append([]string(nil), facade.endpoints...)
+		}
+	}
+	return nil
+}
+
+// FacadeProviders returns every provider that publishes an Anthropic-wire
+// facade, in table order. It is how a caller enumerates the blessed set
+// without naming its members: a guard that spells the vendors out drifts the
+// day a third one lands, which is the drift it was written to catch.
+func FacadeProviders() []Provider {
+	out := make([]Provider, 0, len(facadeVendorEndpoints))
+	for _, facade := range facadeVendorEndpoints {
+		out = append(out, facade.provider)
+	}
+	return out
+}
+
+// BaseURLNamesZAI reports that an ANTHROPIC_BASE_URL value names the z.ai
+// family's own hosts (api.z.ai, Zhipu's open.bigmodel.cn) — the one
+// destination where an ANTHROPIC_AUTH_TOKEN is a vendor BYOK credential and
+// not the Claude subscription bearer. One predicate for every reader of that
+// env pair — the claw registry's env walk, the executor funding probe,
+// provider detection — so none of them can drift from the others on a
+// hostname spelling.
+func BaseURLNamesZAI(baseURL string) bool {
+	low := strings.ToLower(baseURL)
+	return strings.Contains(low, "z.ai") || strings.Contains(low, "bigmodel")
+}
 
 // XAIDefaultBaseURL is the host claw's OpenAI-compatible client targets
 // for xAI Grok. The openai provider appends `/v1/chat/completions`, so
@@ -169,13 +242,31 @@ const MoonshotDefaultBaseURL = "https://api.moonshot.ai/anthropic"
 // with `XAI_BASE_URL` when pointing at a proxy or regional endpoint.
 const XAIDefaultBaseURL = "https://api.x.ai"
 
+// knownProviders is the one list of accepted providers: Valid reads it, and
+// the CLI help and ParseProvider's refusal print it, so a provider added here
+// is accepted and advertised in the same change. The order is the display
+// order.
+var knownProviders = []Provider{
+	ProviderAnthropic, ProviderOpenAI, ProviderXAI, ProviderZAI,
+	ProviderMoonshot, ProviderOpenRouter, ProviderBedrock, ProviderVertex,
+	ProviderAzure, ProviderOpenAICompatible,
+}
+
+// ProviderIDs returns the wire id of every known provider, in display order.
+func ProviderIDs() []string {
+	ids := make([]string, len(knownProviders))
+	for i, p := range knownProviders {
+		ids[i] = string(p)
+	}
+	return ids
+}
+
 // Valid reports whether p is one of the known providers.
 func (p Provider) Valid() bool {
-	switch p {
-	case ProviderAnthropic, ProviderOpenAI, ProviderBedrock,
-		ProviderVertex, ProviderAzure, ProviderOpenRouter, ProviderXAI,
-		ProviderZAI, ProviderMoonshot, ProviderOpenAICompatible:
-		return true
+	for _, k := range knownProviders {
+		if p == k {
+			return true
+		}
 	}
 	return false
 }
@@ -226,10 +317,13 @@ type ApiKey struct {
 	// fair-usage frequency limits publish NO numeric bound to adapt to —
 	// the operator sets one here, and the resolver's usable-predicate
 	// walks past a key at its ceiling exactly like a refused one, so the
-	// next key or tier serves instead of tripping the provider. A SOFT
-	// cap by design: the refused-key restore still hands the key out when
-	// no other tier could serve its wire — progress beats the ceiling
-	// when the alternative is a run with no credential at all.
+	// next key or tier serves instead of tripping the provider. That skip
+	// is the CHOOSER, not the enforcer: a key_overrides pin bypasses it and
+	// the refused-key restore undoes it on purpose (a parked run with a
+	// durable retry beats one with no credential at all). Enforcement is
+	// the publisher's admission step after the key is chosen — an atomic
+	// per-fingerprint reservation (store.CredSlotStore) that PARKS the run
+	// on a full key instead of refusing it (store.FailureCredSlotWait).
 	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
 	// BaseURL is the gateway root of an openai_compatible key (no trailing
 	// slash, no `/v1`; https). Required for that provider, refused on every
@@ -349,6 +443,14 @@ type ApiKeyStore interface {
 	// user-scoped to ownerUserID, which is strictly narrower than an id
 	// lookup, and is the only thing the pool ever lends.
 	GetOwned(ctx context.Context, id, ownerUserID string) (ApiKey, error)
+	// GetForLend reads a key a POOL pledge lends, by the reserved scope the
+	// pledge names (ADR-164: "orgtier:<org>" or the platform sentinel) —
+	// the operator-pushed rows the org/platform tiers store under sentinel
+	// tenants, which carry no personal owner. The read enforces the row's
+	// tenancy: a pledge names the scope AND the key, and the key must LIVE
+	// in that scope — a pledge can never re-scope somebody else's
+	// credential, and a borrower's context never widens the read.
+	GetForLend(ctx context.Context, id, tenantScope string) (ApiKey, error)
 	// Patch writes ONLY the fields the patch names and returns the row as
 	// stored afterwards. There is deliberately no whole-document writer:
 	// a replace carries back whatever a stale read holds (an is_default a
@@ -363,9 +465,23 @@ type ApiKeyStore interface {
 	// requestingUserID filter MUST be applied; passing "" returns
 	// only team-wide keys (admin path).
 	ListByTeam(ctx context.Context, teamID, requestingUserID string) ([]ApiKey, error)
+	// CountByTeam counts EVERY key of a team, user-scoped rows included.
+	// It is the whole-tenant read a lifecycle gate needs (the team
+	// emptiness probe, pkg/server teamResidue): ListByTeam's contract
+	// reads "" as "team-wide rows only", so a team holding ONLY personal
+	// credentials would count empty through it and be deleted with sealed
+	// keys left behind in a tenant nothing can reach (#1687). It takes no
+	// requesting user because it is not one user's view.
+	CountByTeam(ctx context.Context, teamID string) (int, error)
 	// ListByUser returns the requesting user's user-scoped keys
 	// inside a given team.
 	ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error)
+	// DeleteByScopeUser removes every key scoped to userID (ScopeUserID),
+	// in every team and tenant whatever the context, and answers how many
+	// it removed — an account's erasure ends the person's own credentials.
+	// Team-wide keys are never touched: an empty userID, which would name
+	// them, is refused.
+	DeleteByScopeUser(ctx context.Context, userID string) (int64, error)
 	// MarkUsed updates last_used_at without altering anything else.
 	MarkUsed(ctx context.Context, id string, at time.Time) error
 	// MarkFingerprintUsed bumps last_used_at on every key whose stable
@@ -393,6 +509,10 @@ var (
 	ErrApiKeyNotFound = errors.New("secrets: api key not found")
 )
 
+// errScopeUserRequired refuses a DeleteByScopeUser naming no user: the
+// empty scope is every team-wide credential's.
+var errScopeUserRequired = errors.New("secrets: delete by scope user: user id required")
+
 // Resolution describes a single resolved key the publisher needs to
 // inject for one provider on a given run.
 type Resolution struct {
@@ -413,6 +533,11 @@ type Resolution struct {
 	// its row carries. It rides with the plaintext into the bundle
 	// (RunBundle.APIBaseURLs): the key is one credential with its URL.
 	BaseURL string
+	// MaxConcurrentRuns and Name carry the chosen key's cap and label out
+	// of the walk: the publisher's admission step reserves a slot of the
+	// cap after the key is chosen, and names the key when it parks a run.
+	MaxConcurrentRuns int
+	Name              string
 }
 
 // Resolve returns at most one ApiKey for each requested provider,
@@ -530,7 +655,14 @@ func OrderedAPIKeyCandidates(visible []ApiKey, userID string, providers []Provid
 		if a != b {
 			return a < b
 		}
-		return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+		if !keys[i].CreatedAt.Equal(keys[j].CreatedAt) {
+			return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+		}
+		// An exact tie breaks on the id, a stable key: the store's listing
+		// order (map order in memory, unspecified within a tie in Mongo)
+		// would pick the winner — frozen into a run's stamp and content
+		// boundary — by chance.
+		return keys[i].ID < keys[j].ID
 	})
 	wanted := make(map[Provider]bool, len(providers))
 	out := make([]APIKeyCandidate, 0, len(keys)+len(overrides))
@@ -570,6 +702,26 @@ func keyRank(k ApiKey, currentUserID string) int {
 	return 99
 }
 
+// SpendableBy answers, for one key, the question the resolution walk asks
+// before that key may fund a launch for (teamID, userID): the store's
+// team+scope visibility (ListByTeam filters scope_team and drops a foreign
+// scope_user) and the rank the walk gives what remains (keyRank == 99 is
+// "never applies"). It reads the SAME fields through the SAME keyRank, so a
+// caller that must decide early — a config write pinning a key id — gets the
+// resolver's answer rather than a second opinion free to drift from it.
+//
+// Load-bearing for the machine lanes: a webhook fires under "webhook:<id>"
+// and the trigger spine under "trigger-spine", identities no key is ever
+// scoped to, so a user-scoped pin is unspendable there. Resolve does not and
+// must not report that: an invisible key never becomes a candidate, so it
+// never reaches onWithheld — hence the pin is refused where it is WRITTEN.
+func SpendableBy(k ApiKey, teamID, userID string) bool {
+	if teamID == "" || k.ScopeTeamID != teamID {
+		return false
+	}
+	return keyRank(k, userID) != 99
+}
+
 // buildResolution decrypts (when sealer != nil) and packages the key
 // for the publisher. AAD binds the sealed blob to its api_key id so
 // a sealed payload moved between records cannot be opened.
@@ -579,11 +731,13 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 		scope = "user"
 	}
 	r := Resolution{
-		Provider:    k.Provider,
-		KeyID:       k.ID,
-		SealedBlob:  k.SealedSecret,
-		SourceScope: scope,
-		Fingerprint: k.Fingerprint,
+		Provider:          k.Provider,
+		KeyID:             k.ID,
+		SealedBlob:        k.SealedSecret,
+		SourceScope:       scope,
+		Fingerprint:       k.Fingerprint,
+		MaxConcurrentRuns: k.MaxConcurrentRuns,
+		Name:              k.Name,
 	}
 	// Only a gateway key's URL travels: a vendor row's base_url column
 	// (refused by the routes, writable by hand in the store) is bound by
@@ -652,12 +806,9 @@ func checkApiKeyAADID(id string) error {
 // stamps what the server stamped: the server's fingerprint travels in the
 // bundle beside a gateway key (RunBundle.APIKeyFingerprints), and a key
 // met without one is recomputed here from the URL the bundle pairs it
-// with (pkg/runner loop_credentials.go). The pool and fallback-door
-// fallbacks still hash the plaintext alone (cloudpublisher) and move onto
-// this helper with #2005 PR-C' — harmless until then: they refuse a
-// gateway key by name instead of sealing one — the vocabulary is pinned by
-// cloudpublisher's provider-coverage test, the pool lane's refusal by
-// TestPoolGatewayRefusal_Drift.
+// with (pkg/runner loop_credentials.go). The pool tiers and the fallback
+// door identify a lent key whose donor record carries no stamp the same way
+// (cloudpublisher).
 func APIKeyFingerprint(p Provider, secret, baseURL string) string {
 	if p == ProviderOpenAICompatible {
 		return FingerprintSHA256(string(p) + "\x00" + baseURL + "\x00" + secret)
@@ -724,6 +875,19 @@ func (m *MemoryApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) 
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
 	if !ok || !visibleToTenant(ctx, k.TenantID) {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	return k, nil
+}
+
+func (m *MemoryApiKeyStore) GetForLend(_ context.Context, id, tenantScope string) (ApiKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.keys[id]
+	// The lend term mirrors GetOwned's ownership term: the key must LIVE
+	// in the scope the pledge names. A memory store that waved tenancy
+	// through would let a pledge aim a foreign tenant's key.
+	if !ok || tenantScope == "" || k.TenantID != tenantScope {
 		return ApiKey{}, ErrApiKeyNotFound
 	}
 	return k, nil
@@ -929,6 +1093,22 @@ func (m *MemoryApiKeyStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *MemoryApiKeyStore) DeleteByScopeUser(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, k := range m.keys {
+		if k.ScopeUserID == userID {
+			delete(m.keys, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MemoryApiKeyStore) ListByTeam(_ context.Context, teamID, userID string) ([]ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -943,6 +1123,21 @@ func (m *MemoryApiKeyStore) ListByTeam(_ context.Context, teamID, userID string)
 		out = append(out, k)
 	}
 	return out, nil
+}
+
+// CountByTeam counts every key of the team, user-scoped rows included (see
+// the interface contract): ListByTeam with no requesting user skips them,
+// which is exactly the blind spot the team emptiness gate must not have.
+func (m *MemoryApiKeyStore) CountByTeam(_ context.Context, teamID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, k := range m.keys {
+		if k.ScopeTeamID == teamID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *MemoryApiKeyStore) ListByUser(_ context.Context, teamID, userID string) ([]ApiKey, error) {
@@ -1085,6 +1280,18 @@ func (s *MongoApiKeyStore) GetOwned(ctx context.Context, id, ownerUserID string)
 		ErrApiKeyNotFound, "secrets: get owned api key")
 }
 
+func (s *MongoApiKeyStore) GetForLend(ctx context.Context, id, tenantScope string) (ApiKey, error) {
+	if tenantScope == "" {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	// The tenant term IS the lend boundary: the row must live in the scope
+	// the pledge names. No scope_user term — reserved-scope rows carry
+	// none.
+	return mongoutil.FindOne[ApiKey](ctx, s.coll,
+		bson.M{"_id": id, "tenant_id": tenantScope},
+		ErrApiKeyNotFound, "secrets: get lendable api key")
+}
+
 // Patch is one $set of the named fields, matched by both _id AND
 // tenant_id so a tenant can never rewrite another tenant's row by
 // guessing an id. Never a replace: the row may carry fields this build
@@ -1155,6 +1362,19 @@ func (s *MongoApiKeyStore) Delete(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: delete api key")
 }
 
+// DeleteByScopeUser filters on scope_user alone: the erasure crosses every
+// tenant the person held a key in.
+func (s *MongoApiKeyStore) DeleteByScopeUser(ctx context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	res, err := s.coll.DeleteMany(ctx, bson.M{"scope_user": userID})
+	if err != nil {
+		return 0, fmt.Errorf("secrets: delete the api keys of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
+}
+
 func (s *MongoApiKeyStore) ListByTeam(ctx context.Context, teamID, userID string) ([]ApiKey, error) {
 	filter, err := withApiKeyTenantFilter(ctx, bson.M{
 		"scope_team": teamID,
@@ -1177,6 +1397,21 @@ func (s *MongoApiKeyStore) ListByTeam(ctx context.Context, teamID, userID string
 		return nil, fmt.Errorf("secrets: decode api keys: %w", err)
 	}
 	return out, nil
+}
+
+// CountByTeam counts every key of the team, user-scoped rows included (see
+// the interface contract). It reads no row body: a count is all a lifecycle
+// gate needs, and the scope_team index serves it.
+func (s *MongoApiKeyStore) CountByTeam(ctx context.Context, teamID string) (int, error) {
+	filter, err := withApiKeyTenantFilter(ctx, bson.M{"scope_team": teamID})
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.coll.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("secrets: count api keys: %w", err)
+	}
+	return int(n), nil
 }
 
 func (s *MongoApiKeyStore) ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error) {
@@ -1271,7 +1506,7 @@ func NewApiKeyID() string {
 func ParseProvider(s string) (Provider, error) {
 	p := Provider(strings.ToLower(strings.TrimSpace(s)))
 	if !p.Valid() {
-		return "", fmt.Errorf("unknown provider %q", s)
+		return "", fmt.Errorf("unknown provider %q (known: %s)", s, strings.Join(ProviderIDs(), ", "))
 	}
 	return p, nil
 }

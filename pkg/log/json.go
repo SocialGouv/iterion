@@ -29,6 +29,11 @@ func (l *Logger) writeJSON(level Level, msg string) {
 	if len(l.fields) > 0 {
 		rec.Fields = make(map[string]any, len(l.fields))
 		for k, v := range l.fields {
+			// String field values cross the logger's redactor like the
+			// message: a JSON shipper is a sink of the same class.
+			if s, ok := v.(string); ok {
+				v = l.redactString(s)
+			}
 			rec.Fields[k] = v
 		}
 	}

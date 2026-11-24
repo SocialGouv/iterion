@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"slices"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -112,6 +116,26 @@ func (s Sandbox) Validate() error {
 	return nil
 }
 
+// digestImageRef is the shape of an image reference pinned by content:
+// a repository, then `@sha256:` and 64 hex characters — the same shape the
+// chart's `image.requireDigest` guard admits, so the two surfaces agree on
+// what "pinned" means.
+var digestImageRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
+
+// DigestWarning names the hazard of an override that is not a digest
+// reference: the setting bypasses the chart's render guard (it reaches the
+// publisher from the DB, no helm in the path), so a moving tag here re-routes
+// every `sandbox: auto` run of the platform on whatever the tag means at
+// pull time. The override is accepted either way — warn, never refuse an
+// operator's explicit choice. "" when unset or digest-pinned.
+func (s *Sandbox) DigestWarning() string {
+	ref := s.EffectiveImage()
+	if ref == "" || digestImageRef.MatchString(ref) {
+		return ""
+	}
+	return fmt.Sprintf("sandbox default_image %q is not a digest reference (repo@sha256:<64 hex>): every `sandbox: auto` run follows whatever the tag means at pull time, outside the chart's image.requireDigest guard — pin it by digest", ref)
+}
+
 // BotVars is the bot-variable override record: the `${ITERION_X:-default}`
 // expansions every .bot declares (model pins, reasoning effort, tunables)
 // resolved from the DB before the pod's env — so re-tuning a bot no longer
@@ -128,286 +152,6 @@ type BotVars struct {
 
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
-}
-
-// botVarsInfraPrefixes are the env namespaces a DB record must never
-// shadow. Honest scope: most of these are read via plain os.Getenv at
-// boot and never through the overlay, so this list is namespace HYGIENE
-// and defence in depth (the read side additionally gates on ITERION_),
-// not the containment boundary — that is the overlay's reach itself.
-// It still matters for the sites that DO resolve through
-// ir.LookupEnv/ExpandEnvWithDefault today or gain it tomorrow: keeping
-// transport/auth/enforcement names unwritable means routing one more
-// os.Getenv site through the choke point can never turn a stored var
-// into an infra override. Grepped from the real config surface
-// (pkg/config, cmd), not written from memory. The usage-cap and
-// sandbox-image families are excluded because they already have their
-// own audited, validated settings surface.
-var botVarsInfraPrefixes = []string{
-	"ITERION_MONGO_", "ITERION_NATS_", "ITERION_QUEUE_", "ITERION_REDIS_",
-	"ITERION_JWT_", "ITERION_SECRETS_", "ITERION_S3_",
-	"ITERION_OIDC_", "ITERION_OAUTH_", "ITERION_AUTH_",
-	"ITERION_ACCESS_", "ITERION_PAT_", "ITERION_COOKIE_",
-	"ITERION_SMTP_", "ITERION_OTLP_", "ITERION_SANDBOX_",
-	"ITERION_USAGE_CAP", "ITERION_BOOTSTRAP_",
-	"ITERION_MODEL_SPECS_", "ITERION_UPDATE_", "ITERION_DISPATCHER_",
-	// The platform credential policy (keys_first, facade_default): which
-	// credential serves a route is the operator's, never a bot's.
-	"ITERION_PLATFORM_",
-	// Spend and quota ceilings: the cloud budget and retry ceilings, the
-	// tenant quota defaults, the knowledge-memory quotas.
-	"ITERION_CLOUD_", "ITERION_ORG_DEFAULT_", "ITERION_MEMORY_",
-	// Bounds on what untrusted input may cost: .botz extraction, the studio
-	// assistant's writes and its interpreter.
-	"ITERION_BUNDLE_", "ITERION_ASSISTANT_",
-	// The workspace safety net: tracking, checkpoints, captured file size.
-	"ITERION_WORKSPACE_",
-	// Marketplace visibility scopes (tenant isolation) and seed paths.
-	"ITERION_MARKETPLACE_",
-	// Plugin configuration has its own audited surface, and a URL key
-	// carries the plugin's credential to whatever host it names.
-	"ITERION_PLUGIN_",
-	// Processes and fleet rather than runs: the runner, the board
-	// dispatcher and its MCP capabilities, the studio's alerts, the instance
-	// registry, lifecycle and logs.
-	"ITERION_RUNNER_", "ITERION_BOARD_", "ITERION_ALERTS_", "ITERION_INSTANCES_",
-	"ITERION_SHUTDOWN_", "ITERION_LOG_",
-	// The merge-gate sweep's cadence: the server's net under the lossy
-	// outcome event, and what it spends of the forge's request budget.
-	"ITERION_GATE_SWEEP_",
-	// Endpoints and identities presented outside: the metrics listener,
-	// the CLI's remote instance, the forge app, web push, scan shards.
-	"ITERION_PROMETHEUS_", "ITERION_REMOTE_", "ITERION_FORGE_GITHUB_APP_",
-	"ITERION_WEBPUSH_", "ITERION_SHARD_",
-	// Written by the engine for a child: a run's identity and stores, the
-	// ticket it serves — and the bounds on a run's interactive shell.
-	"ITERION_RUN_", "ITERION_ISSUE_",
-	// A node session's variable (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md):
-	// a stored one would make a spawn carry another delegation's session, and
-	// that delegation's end would stop it.
-	"ITERION_NODE_SESSION_",
-	// The sovereign-pool run-stream prefix (#2029) is JetStream topology,
-	// not an environment knob: a stored bot var that could move a run's
-	// stream would route it outside its pool.
-	"ITERION_RUNS_POOL_",
-}
-
-// botVarsInfraExact are single infra names outside those namespaces —
-// exact matches, so a legitimate sibling (ITERION_BIN_PACKING…) is not
-// collaterally blocked the way a bare prefix would.
-//
-// The rule both lists serve: a stored bot var tunes how a bot's runs
-// behave. It never sets a name that lifts or weakens a guard (security,
-// spend and quota ceilings, bounds on untrusted input, workspace safety),
-// configures the process or the fleet rather than a run, names an endpoint
-// or an identity presented outside, or is written by the engine for a
-// child process — a stored value would forge it. The infra tests hold every
-// ITERION_ name the engine spells (its Go source and the vendored claw's, the
-// manifests and scripts it embeds under pkg) to that rule, and every knob a
-// shipped bot reads to the other side of it.
-var botVarsInfraExact = map[string]bool{
-	"ITERION_PUBLIC_URL": true,
-	// The schedule install's cron-line PATH bound (bytes): the process's
-	// own posture, never a bot variable.
-	"ITERION_SCHEDULE_PATH_MAX_BYTES": true,
-	// The schedule install's cron-line PATH bound (bytes): the process's
-	// own posture, never a bot variable.
-	"ITERION_SCHEDULE_PATH_MAX_BYTES": true,
-	// The pin list is the process's own: a stored record cannot choose
-	// which names it does not reach.
-	EnvBotVarsEnvPins:      true,
-	"ITERION_DISABLE_AUTH": true,
-	"ITERION_SIGNUP_MODE":  true,
-	// The pinned-version fallback dial (#1517): the SERVER's own posture —
-	// whether a missing botsource pin recovers to the nearest older
-	// version or refuses. It configures the process, never a bot's run.
-	"ITERION_BOTSOURCE_PIN_FALLBACK": true,
-	// The refresh reuse grace (#1668): the SERVER's own posture — how long
-	// a replayed refresh token still shares its successor. It tunes the
-	// session guard, never a bot's run.
-	"ITERION_REFRESH_REUSE_GRACE": true,
-	"ITERION_BIN":                 true,
-	"ITERION_PI_BIN":              true,
-	"ITERION_OPENCODE_BIN":        true,
-	// The two project-trust switches are ENFORCEMENT, not paths: each one
-	// lifts a refusal that stops an agent CLI executing code out of the
-	// repository under review.
-	"ITERION_PI_TRUST_PROJECT":       true,
-	"ITERION_OPENCODE_TRUST_PROJECT": true,
-	// Every other switch that lifts or weakens a guard — enumerated from
-	// what each one does, not from how its name reads. A stored value must
-	// never turn one of them on, or off.
-	// Origins, headers, cookies, redirects: the browser-facing guards.
-	"ITERION_ALLOWED_ORIGINS":             true,
-	"ITERION_REQUIRE_ORIGIN":              true,
-	"ITERION_REQUIRE_WS_ORIGIN":           true,
-	"ITERION_SECURITY_HEADERS":            true,
-	"ITERION_CANONICAL_REDIRECT":          true,
-	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
-	// Private-network reach (SSRF) and host allowlists.
-	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE": true,
-	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":       true,
-	"ITERION_OPENAI_COMPATIBLE_RESOLVED":       true,
-	"ITERION_CONNECTOR_ALLOW_PRIVATE":          true,
-	"ITERION_WEBHOOK_FORGE_HOSTS":              true,
-	// Code loaded from the repository under review or the host: MCP servers,
-	// plugins, CLI settings sources, context files, slash commands.
-	"ITERION_MCP_AUTOLOAD":                             true,
-	"ITERION_MCP_HEALTHCHECK":                          true,
-	"ITERION_SKIP_MCP_HEALTH":                          true,
-	"ITERION_PI_MCP_SERVERS":                           true,
-	"ITERION_MCP_EXPAND_UNTRUSTED_ENV":                 true,
-	"ITERION_PLUGINS_ENABLE":                           true,
-	"ITERION_PLUGINS_DISABLE":                          true,
-	"ITERION_CLAUDE_CODE_SETTING_SOURCES":              true,
-	"ITERION_CLAUDE_CODE_STRICT_MCP":                   true,
-	"ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS": true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_TASKS":             true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE":         true,
-	"ITERION_PI_NO_CONTEXT_FILES":                      true,
-	"ITERION_CLAW_SLASH_COMMANDS":                      true,
-	"ITERION_WEB_SEARCH":                               true,
-	// The permission gate's mode, and the LLM classifier, off unless its
-	// model is named: a classifier Allow skips the workflow's tool_policy.
-	"ITERION_PERMISSION":           true,
-	"ITERION_PI_PERMISSION":        true,
-	"ITERION_LLM_CLASSIFIER_MODEL": true,
-	// Spend and billing guards.
-	"ITERION_FORBID_SUBSCRIPTION_OAUTH": true,
-	"ITERION_OPENAI_USE_OAUTH":          true,
-	"ITERION_OPENAI_STREAM_USAGE":       true,
-	"ITERION_LOOP_BUDGET_GUARD":         true,
-	// Trust roots, host files and filesystem exposure.
-	"ITERION_JAVA_TRUSTSTORE": true,
-	"ITERION_ENV_FILE":        true,
-	"ITERION_BROWSE_ROOT":     true,
-	// Code and configuration taken from the repository or the host: the
-	// project connector tier, the repo's devbox toolchain, extra skills,
-	// bot search paths, pi's agent directory, the builtin plugins' binaries.
-	"ITERION_CONNECTOR_PROJECT_CATALOG": true,
-	"ITERION_REPO_DEVBOX":               true,
-	"ITERION_SKILLS":                    true,
-	"ITERION_BOTS_PATH":                 true,
-	"ITERION_PI_AGENT_DIR":              true,
-	"ITERION_RTK_BIN":                   true,
-	"ITERION_CODEINDEX_BIN":             true,
-	// Spend ceilings and brakes outside the namespaces above. ROUTE_COOLDOWN
-	// off is the fail-open probe; MODEL_SPECS disables the pricing table the
-	// cost accounting reads.
-	"ITERION_MAX_COST_PER_DAY_USD":         true,
-	"ITERION_MAX_CONCURRENT_PIPELINES":     true,
-	"ITERION_FORFAIT_CAP_PCT":              true,
-	"ITERION_BUDGET_EXIT_GRACE":            true,
-	"ITERION_PLAN_REVIEW":                  true,
-	"ITERION_RETRY_CIRCUIT_THRESHOLD":      true,
-	"ITERION_RETRY_CIRCUIT_COOLDOWN":       true,
-	"ITERION_RETRY_PROBE_FLOOR":            true,
-	"ITERION_RETRY_PROBE_BUDGET":           true,
-	"ITERION_ROUTE_COOLDOWN":               true,
-	"ITERION_MODEL_SPECS":                  true,
-	"ITERION_CLAW_SLASH_COMMAND_MAX_BYTES": true,
-	// The read budget of a bot — its .bot files together, or its YAML
-	// twin: a bound on what an uploaded bot may cost the server that reads
-	// it, 0 removing it.
-	"ITERION_DSL_READ_BUDGET": true,
-	// Bounds on work that spends: node re-executions (no DSL field sets
-	// them), schema-correction re-asks, a session spinning without progress
-	// or failing its tools in a streak (0 disables the last three).
-	"ITERION_NODE_MAX_RETRIES":                true,
-	"ITERION_NODE_MAX_TRANSIENT_RETRIES":      true,
-	"ITERION_OUTPUT_CORRECTION_BUDGET":        true,
-	"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT": true,
-	"ITERION_PI_NO_PROGRESS_TIMEOUT":          true,
-	"ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS":     true,
-	// How patient a claude_code session is with the background work it
-	// launched — the wave's budget, when to nudge a CLI that takes no turn,
-	// how long an answer to that nudge may take, how long a report is asked
-	// for, how long an idle must hold, how long a result on its way is
-	// waited for. Refused like their sibling NO_PROGRESS_TIMEOUT above: at
-	// their edges they disable what they bound (a wave budget of 0 is
-	// unbounded, a grace of 0 is no grace), so a stored bot var never tunes
-	// the engine's patience — the operator's environment does.
-	"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":             true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE":   true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":      true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":      true,
-	"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":      true,
-	// Defaults a node that names nothing inherits and a bot's author may
-	// have relied on: its backend (what its tools and its gate can be),
-	// auto-memory, off so a run neither reads nor writes the operator's, and
-	// the ambient context, the repository's instructions without the
-	// operator's setup (ADR-119).
-	"ITERION_DEFAULT_BACKEND":    true,
-	"ITERION_BACKEND_PREFERENCE": true,
-	"ITERION_AUTO_MEMORY":        true,
-	"ITERION_AMBIENT_CONTEXT":    true,
-	// Workspace safety outside ITERION_WORKSPACE_: pruning a checkout the
-	// run does not own, and the host disk the worktree pool and scratch
-	// sweep bound.
-	"ITERION_PRUNE_MIRROR_IN_CHECKOUT": true,
-	"ITERION_WORKTREE_POOL_MAX":        true,
-	"ITERION_SCRATCH_RETENTION":        true,
-	// Rollout levers. RELIABILITY_MODE is authoritative over
-	// EXECUTION_CONTEXT_POLICY, the emergency lever it generalises.
-	"ITERION_EXECUTION_CONTEXT_POLICY": true,
-	"ITERION_RELIABILITY_MODE":         true,
-	"ITERION_OUTCOME_ROUTER":           true,
-	"ITERION_DISPATCH_VIA_SERVICE":     true,
-	"ITERION_RUNS_DETACHED":            true,
-	"ITERION_MODE":                     true,
-	"ITERION_DESKTOP":                  true,
-	"ITERION_DESKTOP_ATTACH_DAEMON":    true,
-	// Sessions, run ownership and the process itself.
-	"ITERION_REFRESH_TTL":               true,
-	"ITERION_LOCK_TTL":                  true,
-	"ITERION_HEARTBEAT_INTERVAL":        true,
-	"ITERION_METRICS_PORT":              true,
-	"ITERION_POD_IP":                    true,
-	"ITERION_HOME":                      true,
-	"ITERION_PROJECT":                   true,
-	"ITERION_PROJECT_STORE":             true,
-	"ITERION_PROJECTS_CONFIG":           true,
-	"ITERION_SCHEDULES_FILE":            true,
-	"ITERION_SCHEDULER_INTERVAL":        true,
-	"ITERION_SERVER_URL":                true,
-	"ITERION_NATIVE_INDEX_RESCAN":       true,
-	"ITERION_ORPHAN_RECONCILE_INTERVAL": true,
-	"ITERION_WEBHOOK_SYNC_DEBOUNCE":     true,
-	// The forge publish's read-back budget (pkg/forge/gitlab), and the
-	// escape hatch on the GitLab quick-action guard (pkg/forge).
-	"ITERION_FORGE_READBACK_BUDGET":      true,
-	"ITERION_FORGE_GITLAB_QUICK_ACTIONS": true,
-	// Identities presented to forges and providers.
-	"ITERION_FORGE_BRAND_AVATAR": true,
-	"ITERION_GIT_AUTHOR_NAME":    true,
-	"ITERION_GIT_AUTHOR_EMAIL":   true,
-	"ITERION_LLM_USER_AGENT":     true,
-	"ITERION_CODEX_VERSION":      true,
-	// Written by the engine for a child process; a stored value would forge
-	// the directory, capabilities or provenance the child is promised.
-	"ITERION_ARTIFACT_FILES_DIR": true,
-	"ITERION_ENGINE_BIN":         true,
-	"ITERION_WORKSPACE":          true,
-	"ITERION_TENANT":             true,
-	"ITERION_PARENT_RUN_ID":      true,
-	"ITERION_TREE_NOISE":         true,
-	"ITERION_STORE_DIR":          true,
-	"ITERION_SOURCE_ISSUE_ID":    true,
-	"ITERION_FACADE_SLOT":        true,
-	"ITERION_FORFAIT_SUPPRESSED": true,
-	"ITERION_CODEX_HOST_VERSION": true,
-	"ITERION_PI_CONTRACT":        true,
-	"ITERION_PI_CTRL":            true,
-	"ITERION_PI_INTERACTION":     true,
-	"ITERION_PI_ITERATION":       true,
-	"ITERION_PI_NODE_ID":         true,
-	"ITERION_PI_RUN_ID":          true,
-	"ITERION_TOOL_NAME":          true,
-	"ITERION_TOOL_INPUT":         true,
-	"ITERION_DOTENV_PLANTED":     true,
-	"ITERION_SCHEDULE":           true,
-	"ITERION_SCHEDULE_BOT":       true,
 }
 
 // botVarsMax bounds the record so a runaway writer cannot grow the
@@ -647,19 +391,6 @@ func botVarValueRune(r rune) bool {
 	return strings.ContainsRune("._:/@+=,%-[]", r)
 }
 
-// withoutSegment is name with every `_`-separated segment equal to seg
-// dropped.
-func withoutSegment(name, seg string) string {
-	parts := strings.Split(name, "_")
-	kept := parts[:0]
-	for _, p := range parts {
-		if p != seg {
-			kept = append(kept, p)
-		}
-	}
-	return strings.Join(kept, "_")
-}
-
 // botVarNameOK is the name gate: ITERION_-prefixed upper snake case, no
 // credential-shaped words, no infra namespace.
 // EnvCloudEnvPassthrough lists, comma-separated, the credential-shaped names
@@ -701,29 +432,13 @@ var platformSecretName = func() map[string]bool {
 	return m
 }()
 
-// CredentialShapedName reports whether an environment variable name reads as a
-// credential: whatever the engine redacts as secret (store.IsSecretEnvName:
-// TOKEN, KEY, SECRET, PASSWORD, CREDENTIAL, AUTH anywhere — read without an
-// AUTHOR segment, a shipped bot's knob), a PRIVATE part, or a credential word
-// too short or too common to match inside a name (PAT in PATH) as a whole
-// segment. A webhook URL carries its own bearer, a header block carries
-// whatever authenticates the call it rides on, and a proxy URL carries its own
-// userinfo. Case-insensitive.
+// CredentialShapedName is envtrust's one credential-shape predicate
+// (internal/envtrust credential.go): the same list the dotenv plant gate
+// and the run-record redaction ask, so a name the bot-var gate refuses a
+// stored record is a name no other gate answers differently — the H-10
+// review measured the dotenv side drifting from this very list.
 func CredentialShapedName(name string) bool {
-	name = strings.ToUpper(name)
-	if store.IsSecretEnvName(withoutSegment(name, "AUTHOR")) || strings.Contains(name, "PRIVATE") {
-		return true
-	}
-	for _, segment := range strings.Split(name, "_") {
-		switch segment {
-		case "PAT", "PATS", "BEARER", "BEARERS", "PASS", "PASSWD", "PASSPHRASE", "PASSCODE",
-			"PASSFILE", "USERPASS", "HTPASSWD", "PW", "PWD", "CRED", "CREDS", "COOKIE", "COOKIES",
-			"JWT", "JWTS", "PEM", "PEMS", "NETRC", "OTP", "OTPS", "TOTP", "HOTP", "HMAC", "HMACS",
-			"SIGNATURE", "SESSIONID", "DSN", "WEBHOOK", "HEADER", "HEADERS", "PROXY":
-			return true
-		}
-	}
-	return false
+	return envtrust.CredentialShapedName(name)
 }
 
 func botVarNameOK(name string) bool {
@@ -738,15 +453,54 @@ func botVarNameOK(name string) bool {
 	if CredentialShapedName(name) {
 		return false
 	}
-	if botVarsInfraExact[name] {
+	// The infra names and namespaces are envtrust's one operator-grade
+	// inventory (internal/envtrust operator.go): the dotenv loaders ask the
+	// same lists, so a name the bot-var gate refuses is a name no lane
+	// plants, and the two gates cannot drift.
+	if envtrust.InfraGradeName(name) {
 		return false
 	}
-	for _, p := range botVarsInfraPrefixes {
-		if strings.HasPrefix(name, p) {
-			return false
+	return true
+}
+
+// EngineInjectedVarName reports whether name is an engine-injected launch
+// input: an env-shaped bot-var name the engine's expansion answers through
+// the bot-vars ladder (ADR-093's overlay — LookupEnv's reach), needing no
+// DSL var to declare it. This is botVarNameOK — the same grammar the
+// bot_vars record validates writes by — read from the launch side: a
+// sovereign pool's provision stamps exactly these onto an integration's
+// launch_vars (env-shaped routing dials, the model ids), so the
+// strict launch check classifies them here (#2416) rather than refuse them
+// as inputs naming no var of the workflow (#1757). An infra or credential
+// name is NOT engine-injected: no ladder level carries it, so a launch
+// input spelling it is a no-op the refusal still owes the caller.
+func EngineInjectedVarName(name string) bool { return botVarNameOK(name) }
+
+// SplitEngineInjectedInputs partitions the names a launch check found
+// undeclared (ir.UnknownInputNames) by their source: the engine-injected
+// ones (EngineInjectedVarName — they ride the launch, as they already do on
+// the webhook lanes' warn-and-proceed contract) and the rest, which a
+// strict launch keeps refusing. Input order is preserved on both sides, so
+// a caller's sorted input stays sorted.
+//
+// The launch vars the server mints per run (store.ServerMintedLaunchVars —
+// the forge publish grant's endpoints and bearer, injected by
+// applyPRLaunchContext before any door sees the inputs) classify
+// engine-injected too, though they are not env-shaped bot-var names: the
+// server itself just injected them, so a strict door refusing them refuses
+// the server's own mint (#3107) — a bundle predating one of the names
+// declares no var for it, and the IR drops it at wiring time, which is the
+// opt-in the mint documents. The names are the mint's complete list, so the
+// classification cannot drift from what is actually injected.
+func SplitEngineInjectedInputs(names []string) (injected, refused []string) {
+	for _, name := range names {
+		if EngineInjectedVarName(name) || slices.Contains(store.ServerMintedLaunchVars[:], name) {
+			injected = append(injected, name)
+		} else {
+			refused = append(refused, name)
 		}
 	}
-	return true
+	return injected, refused
 }
 
 // Store persists one settings family: Get returns (nil, nil) when no record
@@ -928,12 +682,17 @@ func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
 // nobody. That state is reachable by accident (enable enforcement, forget
 // the lists) and its symptom is every tenant-less run failing at its first
 // LLM call — a fleet-wide outage expressed as a config typo.
+//
+// The routing block is read as a launch reads a stored layer
+// (llmroute.ValidateStored): a record the launch folds blocks no edit of
+// the record's other fields. The write rule (llmroute.Validate) runs where a
+// request supplies the block — the server's routing decoder.
 func (p PlatformCredentials) Validate() error {
 	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
 		return fmt.Errorf("platformcfg: facade_default %q — want auto, tier, never or always", *p.FacadeDefault)
 	}
 	if p.Routing != nil {
-		if err := llmroute.Validate(*p.Routing); err != nil {
+		if err := llmroute.ValidateStored(*p.Routing); err != nil {
 			return err
 		}
 	}
@@ -972,9 +731,19 @@ type RunnerPool struct {
 	// (grammar-checked: 1–31 chars [a-z0-9-], starting alphanumeric).
 	Name string `bson:"name" json:"name"`
 	// ProvidersServed names the LLM providers this pool's own env serves
-	// (today: ["openai_compatible"]). The publisher treats a provider the
-	// pool serves as funded for the pool's teams.
+	// (today: ["openai_compatible"]). The registry records it and NO
+	// production code reads it — the funding walk answers "is this route
+	// env-funded?" from the route's own provider
+	// (model.EffectiveProviders over the whole provider vocabulary), never
+	// from this field. TestProvidersServedHasNoProductionReader holds the
+	// claim: wiring a reader reddens it, and the fix is to say here, and in
+	// docs/sovereign-pools.md, what the reader does.
 	ProvidersServed []string `bson:"providers_served,omitempty" json:"providers_served,omitempty"`
+	// GatewayBaseURL and ForgeHosts are static cluster-policy projections.
+	// They never replace a run's frozen content boundary or sealed URLs.
+	GatewayBaseURL string   `bson:"gateway_base_url,omitempty" json:"gateway_base_url,omitempty"`
+	ForgeHosts     []string `bson:"forge_hosts,omitempty" json:"forge_hosts,omitempty"`
+
 	// Note is free text for the operator (which team, which gateway).
 	Note string `bson:"note,omitempty" json:"note,omitempty"`
 	// State is the lifecycle. Entries are created provisioning and route
@@ -1030,6 +799,9 @@ func (r *RunnerPools) Validate() error {
 			return fmt.Errorf("runner pool %q appears twice", p.Name)
 		}
 		seen[p.Name] = true
+		if err := p.ValidateHosts(); err != nil {
+			return fmt.Errorf("runner pool %q: %w", p.Name, err)
+		}
 		switch p.State {
 		case "", RunnerPoolProvisioning, RunnerPoolActive, RunnerPoolDraining, RunnerPoolDisabled:
 		default:

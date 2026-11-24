@@ -70,21 +70,33 @@ type ProviderResolution struct {
 	// resolved to a known provider: an LLM node with no pin, an explicit
 	// "auto", a ${VAR} empty at resolution time, a hint the caller does
 	// not know, a model-calling node that carries no LLMFields at all
-	// (a human node answering with a model, a subbot), or a fallback
-	// route that pins nothing. A caller NARROWING a request on Providers
+	// (a subbot — a human node's LLM half and a Verified Action's
+	// recovery rungs are READ, through humanLLMModelOf and
+	// recoveryRungsOf), or a fallback route that pins nothing. A caller
+	// NARROWING a request on Providers
 	// must fail OPEN when it is false — treat the run as able to spend
 	// every provider — because a node that resolved to nothing takes
 	// whatever credential the process holds (claw substitutes the first
 	// available provider; claude_code walks its bundle precedence).
 	NarrowSafe bool
+	// EnvDeferred reports a route whose own text defers to an environment or
+	// to the run's vars (envDeferred): what it spends is decided where the
+	// run executes, even when this process's expansion reads narrow-safe — a
+	// `${DIAL:-default}` whose default names a vendor may expand to the
+	// gateway on the runner. Such a route is never env-funded nor
+	// key-attributed, and a reader that must not drop a credential the
+	// runner's expansion may spend reads this beside NarrowSafe.
+	EnvDeferred bool
 	// Unknown lists the hints that named something and matched no known
 	// provider — a typo in `provider:`, a model prefix the pool never
 	// lends — so the caller can say WHICH pin made it widen. Sorted.
 	Unknown []string
 	// EnvFunded lists the gateway-served prefixes the walk read
-	// (openai_compatible/…) — spend from the deployment's environment, not
-	// from a credential. It does NOT force NarrowSafe false: the route
-	// acquires no credential, so narrowing to the named providers is exact
+	// (openai_compatible/…) that no sealed key funds — spend from the
+	// deployment's environment, not from a credential. A gateway route the
+	// view attributes to a key (RouteView.GatewayKeyFunded) is in Providers
+	// instead. It does NOT force NarrowSafe false: the route acquires no
+	// credential, so narrowing to the named providers is exact
 	// (OnlyEnvFunded is the predicate the publisher spends). Sorted.
 	EnvFunded []string
 	// ForfaitFirst lists the providers of Providers whose EVERY route runs on
@@ -97,10 +109,20 @@ type ProviderResolution struct {
 	// Pins maps a provider in Providers to the sites that named it — the
 	// node id whose own route resolves to it, `node#name` for an authored
 	// `fallbacks:` route (its index when the author named none),
+	// `node#interaction` for an interaction generation, `node#self_repair`
+	// and `node#agent_recovery` for a Verified Action's recovery rungs,
 	// `run-fallback#<stage>` for the run-level chain, `supervisor:<name>`
 	// for a supervisor. A refusal built on this walk can say which node
 	// pinned what; sorted, deduplicated.
 	Pins map[string][]string
+	// Sites maps each site to the KNOWN providers its routes name, in the
+	// order the walk read them — the chain order the executor resolves, so
+	// a reader that must pick "the credential this site spends" walks the
+	// list the same way. Sorted pins answer "who named this provider";
+	// Sites answers "what does this site name", which is the direction the
+	// credential plan (#2288) reads. First occurrence wins, so a chain that
+	// names a provider twice holds it once.
+	Sites map[string][]string
 	// Forbidden maps a provider OUTSIDE the view's allowlist
 	// (RouteView.AllowedProviders, ADR-129 §5) to the sites that named it —
 	// the same site keys as Pins. A forbidden provider is excluded from
@@ -117,6 +139,20 @@ type ProviderResolution struct {
 	// pruned, never refused. Populated only when an allowlist is in force;
 	// sorted, deduplicated.
 	ForbiddenPrimary map[string][]string
+	// DecidedPrimary maps a provider of Providers to the sites of the
+	// PRIMARY node routes that name it with a DECIDED text: the node's own
+	// chain, an interaction generation, a Verified Action's recovery rungs, a
+	// human node's generation — whose text that picks the credential reads
+	// neither the environment (`${…}`: the runner's pod expands it with its
+	// own) nor an undecided var (`{{…}}`): the provider and the model, or —
+	// on a backend whose `provider:` hint picks the credential and whose
+	// chain decided (hintDecidesDeferral) — the provider text alone. A
+	// rescue route (`node#name`, the run-level chain's
+	// `run-fallback#<stage>`) and a supervisor are outside it. The content
+	// boundary's strict refusal reads it: a team_gateway run's decided
+	// primary route that nothing in its bundle funds can only die at the
+	// runner. Sorted, deduplicated.
+	DecidedPrimary map[string][]string
 	// Unreadable lists the routes the walk could not read while an
 	// allowlist was in force — a `{{vars.*}}` or empty-`${…}` field, a
 	// prefix-less model, a hint outside the vocabulary, a model-calling
@@ -129,11 +165,11 @@ type ProviderResolution struct {
 	// envFundedOnly reports whether every LLM route the walk read resolved
 	// to the openai_compatible gateway — a route whose credential the
 	// RUNNER's environment funds, never the bundle. A route that resolved
-	// to any bundle-funded provider, a route that could not resolve (an
-	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
-	// model-answering node without fields), and a run with no LLM route at
-	// all, all read false.
-
+	// to any bundle-funded provider (a gateway route the view attributes to
+	// a sealed key included), a route that could not resolve (an "auto", an
+	// empty ${VAR}, a name the vocabulary does not know, a model-answering
+	// node without fields), and a run with no LLM route at all, all read
+	// false.
 	envFundedOnly bool
 	// AnthropicWireDefaultReads lists the anthropic-wire key slots some route
 	// may spend as the run's DEFAULT credential — through the delegates'
@@ -150,12 +186,50 @@ type ProviderResolution struct {
 	// either would. A route the walk cannot resolve (NarrowSafe false) may
 	// read any. Sorted.
 	AnthropicWireDefaultReads []string
+	// GatewaySites lists the sites (Pins' site keys) whose route this walk
+	// read as the openai_compatible gateway — a literal `openai_compatible/…`
+	// model, a gateway hint over one, or an env-templated model that expanded
+	// to one here: the routes EnvFunded names the prefix of. Such a route
+	// acquires no credential from the bundle; the runner's environment funds
+	// it. A gateway route the allowlist pruned is not one, nor is one a
+	// sealed key funds (RouteView.GatewayKeyFunded): that route names the
+	// openai_compatible provider in Providers instead. Sorted.
+	GatewaySites []string
+	// DeferredSites lists the sites whose route is decided by the process
+	// that DISPATCHES it rather than by this reading: a deciding routing
+	// field — the provider override (or, without one, the node's provider
+	// chain), the effective model, the backend the route runs on — that
+	// reads the environment (`${…}`, which the runner expands with its OWN
+	// environment and settings overlay; a runner pool's env block pins its
+	// names ahead of the platform record) or a run var this view left late
+	// (`{{vars.…}}`). Whatever this walk recorded for such a site is this
+	// process's expansion, not the runner's word. Sorted.
+	DeferredSites []string
+	// UnattributedSites lists the sites at which the walk widened — every
+	// route that flips NarrowSafe false: a prefix-less model, an `auto` or
+	// empty step, a hint outside the vocabulary, a `${…}` that expands to
+	// nothing here, a `{{vars.…}}` the view left late, a model-calling node
+	// that exposes no LLM fields (a subbot, whose child bot this walk never
+	// reads), a supervisor with no model. Recorded with or without an
+	// allowlist: NarrowSafe says THAT some route may spend anything, this
+	// says WHICH. Sorted.
+	UnattributedSites []string
+	// WireDefaultSites maps each site whose route may read an anthropic-wire
+	// slot as the run's DEFAULT credential to the slots it may read — the
+	// per-site reading AnthropicWireDefaultReads is the union of, committed
+	// under the same rules (a pruned route reads nothing, a slot outside
+	// the allowlist is read by no route). A surviving route whose every slot
+	// the allowlist excludes maps to an EMPTY list, never to no entry: it
+	// still walks the wire's default on the runner, finds no slot it may
+	// spend, and is refused there — a funding reader must see it. Each list
+	// sorted.
+	WireDefaultSites map[string][]string
 }
 
 // OnlyEnvFunded reports whether the run's every LLM route is an
-// openai_compatible route — the gateway the runner's environment funds — so
-// the resolution acquires no LLM credential for it. See
-// ProviderResolution.envFundedOnly.
+// openai_compatible route the runner's environment funds — no sealed key
+// does (RouteView.GatewayKeyFunded) — so the resolution acquires no LLM
+// credential for it. See ProviderResolution.envFundedOnly.
 func (r ProviderResolution) OnlyEnvFunded() bool { return r.envFundedOnly }
 
 // EffectiveProviders is the walk every "which providers does this run
@@ -183,17 +257,67 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 	if wf == nil || len(known) == 0 {
 		return ProviderResolution{}
 	}
-	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars, allowed: AllowedProviderSet(v.AllowedProviders)}
+	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars, allowed: AllowedProviderSet(v.AllowedProviders), gatewayKeyFunded: v.GatewayKeyFunded}
 	gateVars := v.gateVars()
 	seenAnyLLM := false
+	// A run-level fallback stage naming no backend runs on each node's own,
+	// so it is late wherever some node's backend is.
+	anyNodeBackendLate := false
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
 		if !ok {
+			if mdl, human := humanLLMModelOf(n); human {
+				// The human node's LLM half (#2691): a direct generation on
+				// node.Model, read as the interaction arm below reads an
+				// agent's — the spec's own prefix routes, no hint, no
+				// backend, and no override cell (executeHumanLLMWithSpend
+				// never consults ForNode).
+				seenAnyLLM = true
+				acc.backend, acc.backendLate = "", false
+				acc.site = n.NodeID()
+				acc.resolveDirect(v.field(mdl), "")
+				continue
+			}
+			if spec, selfRepair, agentRung := recoveryRungsOf(n); selfRepair || agentRung {
+				// A Verified Action's recovery ladder (#2783): the rungs
+				// spend the recovery model — resolved like dispatch's
+				// recoveryModel, default included — and each is read the
+				// way dispatch runs it.
+				seenAnyLLM = true
+				spec = recoverySpecOf(v, spec)
+				if selfRepair {
+					// Rung 3 is a DIRECT generation on the spec (the
+					// registry, rung 3 never consults ForNode): the human
+					// arm's reading, at the rung's own site.
+					acc.backend, acc.backendLate = "", false
+					acc.site = n.NodeID() + "#self_repair"
+					acc.resolveDirect(spec, "")
+				}
+				if agentRung {
+					// Rung 4 dispatches a synthetic agent node — read it
+					// through the SAME shape dispatch builds, so the
+					// executor's whole precedence (a kind or glob override
+					// reaching `<tool>__recover`, the workflow's default
+					// backend) applies exactly as at dispatch.
+					syn := recoveryAgentNode(n.NodeID(), spec, nil)
+					ov := v.Overrides.ForNode(syn.NodeID(), syn.NodeKind())
+					b, fromEnv := resolveRouteBackend(v.field(ov.Backend), "", v.field(wf.DefaultBackend))
+					if fromEnv {
+						// Expanded with this process's env, not the runner's.
+						b = ""
+					}
+					acc.backend = b
+					acc.backendLate = routeBackendLate(v.field(ov.Backend), "", v.field(wf.DefaultBackend))
+					acc.site = n.NodeID() + agentRecoverySiteSuffix
+					acc.resolveNode(syn, &syn.LLMFields, v.Overrides)
+				}
+				continue
+			}
 			if ir.NodeUsesLLM(n) {
 				// Spends, but exposes nothing to resolve.
 				seenAnyLLM = true
-				acc.narrowSafe = false
 				acc.site = n.NodeID()
+				acc.widen()
 				acc.unreadableAt(fieldlessSite, "")
 			}
 			continue
@@ -206,7 +330,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			// the forfait-first accounting.
 			nodeBackend = ""
 		}
-		acc.backend = nodeBackend
+		nodeBackendLate := routeBackendLate(v.field(ov.Backend), v.field(fields.Backend), v.field(wf.DefaultBackend))
+		anyNodeBackendLate = anyNodeBackendLate || nodeBackendLate
+		acc.backend, acc.backendLate = nodeBackend, nodeBackendLate
 		acc.site = n.NodeID()
 		acc.resolveNode(n, fields, v.Overrides)
 		// `interaction: llm|llm_or_human` answers the node's questions
@@ -216,8 +342,8 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		// backend's forfait-first declaration covers it.
 		if inf, ok := n.(interface{ GetInteractionFields() *ir.InteractionFields }); ok {
 			if f := inf.GetInteractionFields(); f != nil && (f.Interaction == ir.InteractionLLM || f.Interaction == ir.InteractionLLMOrHuman) {
-				acc.backend = ""
-				acc.site = n.NodeID() + "#interaction"
+				acc.backend, acc.backendLate = "", false
+				acc.site = n.NodeID() + interactionSiteSuffix
 				acc.resolveDirect(v.field(f.InteractionModel), v.field(fields.Model))
 			}
 		}
@@ -226,6 +352,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		// to spend an anthropic credential, or the route is unreachable.
 		if gf, ok := n.(interface{ GetFallbacks() []ir.Fallback }); ok {
 			for i, fb := range gf.GetFallbacks() {
+				// A route-scoped rule pins the route's own fields (ADR-132
+				// §2, D21): the walk reads the route dispatch builds.
+				fb = v.Overrides.EffectiveFallback(n.NodeID(), i, fb)
 				if fb.Action == ir.FallbackActionSkip {
 					continue // executes nothing
 				}
@@ -235,14 +364,14 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 				if !FallbackWhenActive(gateVars, n.NodeID(), fb, nil) {
 					continue
 				}
-				acc.backend = nodeBackend
+				acc.backend, acc.backendLate = nodeBackend, nodeBackendLate
 				acc.site = fallbackSite(n.NodeID(), i, fb.Name)
 				if strings.TrimSpace(fb.Backend) != "" {
 					b, fromEnv := resolveRouteBackend("", v.field(fb.Backend), "")
 					if fromEnv {
 						b = ""
 					}
-					acc.backend = b
+					acc.backend, acc.backendLate = b, routeBackendLate("", v.field(fb.Backend), "")
 				}
 				acc.resolveRoute(v.field(fb.Provider), v.field(fb.Model))
 			}
@@ -260,9 +389,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			continue
 		}
 		seenAnyLLM = true
-		acc.backend = ""
-		acc.site = "supervisor:" + sup.Name
-		acc.resolveDirect(v.field(sup.Model), "")
+		acc.backend, acc.backendLate = "", false
+		acc.site = supervisorSitePrefix + sup.Name
+		acc.resolveDirect(v.field(v.Overrides.EffectiveSupervisorModel(sup)), "")
 	}
 	if !seenAnyLLM {
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
@@ -282,10 +411,20 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			b = ""
 		}
 		acc.backend = b
+		acc.backendLate = routeBackendLate("", v.field(fb.Backend), "") || (strings.TrimSpace(fb.Backend) == "" && anyNodeBackendLate)
 		acc.site = fmt.Sprintf("%s#%d", ir.RunFallbackName, i)
 		acc.resolveRoute(v.field(fb.Provider), v.field(fb.Model))
 	}
 	return acc.result()
+}
+
+// supervisorSitePrefix opens a supervisor's walk site (`supervisor:<name>`).
+const supervisorSitePrefix = "supervisor:"
+
+// SupervisorSite reports whether a walk site (ProviderResolution.Pins) is a
+// supervisor's — a route the run's supervision spends, not a node's.
+func SupervisorSite(site string) bool {
+	return strings.HasPrefix(site, supervisorSitePrefix)
 }
 
 // fallbackSite names the walk site a route was read at — the key a pin is
@@ -330,6 +469,9 @@ type providerAccumulator struct {
 	// recorded under (fallbackSite).
 	site string
 	pins map[string][]string
+	// siteProviders is the read-order twin of pins: the known providers
+	// each site named, first occurrence first (ProviderResolution.Sites).
+	siteProviders map[string][]string
 	// vars and late are the walk's vars reading (RouteView.Vars/LateVars);
 	// field resolves a routing field against them, and a late name stays
 	// as written exactly as a raw `${…}` would.
@@ -346,11 +488,35 @@ type providerAccumulator struct {
 	allowed          map[string]bool
 	forbidden        map[string][]string
 	forbiddenPrimary map[string][]string
-	unreadable       []UnreadableRoute
+	// decidedPrimary collects ProviderResolution.DecidedPrimary at endRoute.
+	decidedPrimary map[string][]string
+	unreadable     []UnreadableRoute
 	// route is the route being read (beginRoute/endRoute): its outside
 	// hints, whether an allowed one served, and the wire-default reads it
 	// may commit.
 	route *routeRead
+	// backendLate: the backend of the route about to be read is decided at
+	// dispatch (routeBackendLate) — set beside backend, read by deferAt.
+	backendLate bool
+	// gatewaySites / deferredSites / unattributedSites:
+	// ProviderResolution.GatewaySites, DeferredSites and UnattributedSites.
+	gatewaySites      map[string]bool
+	deferredSites     map[string]bool
+	unattributedSites map[string]bool
+	// wireSites: ProviderResolution.WireDefaultSites, per site a slot set.
+	wireSites map[string]map[string]bool
+	// gatewayKeyFunded is RouteView.GatewayKeyFunded: a decided gateway
+	// route spends a sealed key (gatewayKeyed).
+	gatewayKeyFunded bool
+}
+
+// gatewayKeyed reports whether a DECIDED gateway route records the
+// openai_compatible provider (RouteView.GatewayKeyFunded) — only where the
+// caller's vocabulary knows that provider: the pool's does not, and there the
+// route keeps its env-funded reading rather than becoming a name the walk
+// cannot resolve, which would widen the pool's wants to everything.
+func (a *providerAccumulator) gatewayKeyed() bool {
+	return a.gatewayKeyFunded && a.known[modelroute.OpenAICompatible]
 }
 
 // routeRead is one route mid-read: the site it lives at, whether it is a
@@ -365,10 +531,16 @@ type routeRead struct {
 	outside []string
 	inside  bool
 	wire    []string
+	// named are the providers the route recorded (hint); deferred marks a
+	// route whose provider or model text reads the environment or an
+	// undecided var (envDeferred) — what it names is this process's
+	// expansion, not the runner's word.
+	named    []string
+	deferred bool
 }
 
 func (a *providerAccumulator) result() ProviderResolution {
-	res := ProviderResolution{NarrowSafe: a.narrowSafe}
+	res := ProviderResolution{NarrowSafe: a.narrowSafe, EnvDeferred: a.envSeen}
 	// The widenings that matter here are narrowSafe's (an unresolvable or
 	// unknown route may spend anything), a recorded provider (some tier
 	// holds what it spends) and an env-dependent route (it may resolve to
@@ -407,16 +579,94 @@ func (a *providerAccumulator) result() ProviderResolution {
 		}
 		res.Pins[p] = deduped
 	}
+	for site, provs := range a.siteProviders {
+		if res.Sites == nil {
+			res.Sites = make(map[string][]string, len(a.siteProviders))
+		}
+		res.Sites[site] = append([]string(nil), provs...)
+	}
 	if len(a.allowed) > 0 {
 		res.Forbidden = sortedDedupSites(a.forbidden)
 		res.ForbiddenPrimary = sortedDedupSites(a.forbiddenPrimary)
 		res.Unreadable = sortDedupUnreadable(a.unreadable)
 	}
+	res.GatewaySites = sortedSiteSet(a.gatewaySites)
+	res.DeferredSites = sortedSiteSet(a.deferredSites)
+	res.UnattributedSites = sortedSiteSet(a.unattributedSites)
+	for site, slots := range a.wireSites {
+		if res.WireDefaultSites == nil {
+			res.WireDefaultSites = make(map[string][]string, len(a.wireSites))
+		}
+		res.WireDefaultSites[site] = append([]string{}, sortedSiteSet(slots)...)
+	}
+	res.DecidedPrimary = sortedDedupSites(a.decidedPrimary)
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
 	sort.Strings(res.EnvFunded)
 	sort.Strings(res.ForfaitFirst)
 	return res
+}
+
+// sortedSiteSet is a site set's sorted keys, nil when empty.
+func sortedSiteSet(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for site := range set {
+		out = append(out, site)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// readLate reports whether a routing field's text is resolved by the
+// process that dispatches the route rather than by this reading: an
+// environment expansion (`${…}`) the runner performs with its own
+// environment, or a `{{…}}` span the view left as written (a late var).
+func readLate(v string) bool {
+	return strings.Contains(v, "${") || strings.Contains(v, "{{")
+}
+
+// routeBackendLate reports whether the backend a route runs on is decided at
+// dispatch: the first of override, node and workflow default that would
+// decide it (resolveRouteBackend's precedence) — or any source read before
+// it that reads the environment, since the runner may expand that one to a
+// backend where this process expanded nothing — is read late.
+func routeBackendLate(override, node, wfDefault string) bool {
+	for _, raw := range []string{override, node, wfDefault} {
+		if readLate(raw) {
+			return true
+		}
+		if strings.TrimSpace(raw) != "" {
+			return false
+		}
+	}
+	return false
+}
+
+// deferAt records the site being read in DeferredSites when the route's
+// backend, or any of its deciding fields, is read late.
+func (a *providerAccumulator) deferAt(fields ...string) {
+	late := a.backendLate
+	for _, f := range fields {
+		late = late || readLate(f)
+	}
+	if !late {
+		return
+	}
+	if a.deferredSites == nil {
+		a.deferredSites = map[string]bool{}
+	}
+	a.deferredSites[a.site] = true
+}
+
+// gatewayAt records the site being read in GatewaySites.
+func (a *providerAccumulator) gatewayAt() {
+	if a.gatewaySites == nil {
+		a.gatewaySites = map[string]bool{}
+	}
+	a.gatewaySites[a.site] = true
 }
 
 // routeBackend is the backend a route runs on, as far as a launch can read
@@ -462,16 +712,19 @@ func resolveRouteBackend(override, node, wfDefault string) (backend string, from
 // runner expands it to is not this process's word.
 func (a *providerAccumulator) envDeferred(field string, parts ...string) {
 	for _, part := range parts {
+		if (strings.Contains(part, "{{") || strings.Contains(part, "${")) && a.route != nil {
+			a.route.deferred = true
+		}
 		if strings.Contains(part, "{{") {
 			a.envSeen = true
-			a.narrowSafe = false
+			a.widen()
 			a.unreadableAt(field, part)
 			return
 		}
 		if strings.Contains(part, "${") {
 			a.envSeen = true
 			if strings.TrimSpace(ir.ExpandEnvWithDefault(part)) == "" {
-				a.narrowSafe = false
+				a.widen()
 				a.unreadableAt(field, part)
 			}
 			return
@@ -492,7 +745,9 @@ func (a *providerAccumulator) beginRoute(primary bool) {
 // re-routed). The route's staged wire-default reads commit only if it
 // survives — an allowlisted route that named only outside providers never
 // runs, so it reads no default — and only the slots the allowlist admits:
-// a slot outside the list is spent by no route of this run.
+// a slot outside the list is spent by no route of this run. The SITE commits
+// with the route whatever the list leaves of its slots
+// (ProviderResolution.WireDefaultSites).
 func (a *providerAccumulator) endRoute() {
 	r := a.route
 	a.route = nil
@@ -507,7 +762,23 @@ func (a *providerAccumulator) endRoute() {
 			a.forbiddenPrimary[p] = appendSite(a.forbiddenPrimary[p], r.site)
 		}
 	}
+	if r.primary && !r.deferred && !SupervisorSite(r.site) {
+		for _, p := range r.named {
+			if a.decidedPrimary == nil {
+				a.decidedPrimary = map[string][]string{}
+			}
+			a.decidedPrimary[p] = appendSite(a.decidedPrimary[p], r.site)
+		}
+	}
 	if len(a.allowed) == 0 || r.inside || len(r.outside) == 0 {
+		if len(r.wire) > 0 {
+			if a.wireSites == nil {
+				a.wireSites = map[string]map[string]bool{}
+			}
+			if a.wireSites[r.site] == nil {
+				a.wireSites[r.site] = map[string]bool{}
+			}
+		}
 		for _, slot := range r.wire {
 			// A slot the allowlist excludes is spent by no route of this
 			// run — the dispatch filter drops its elements and the seal
@@ -519,8 +790,23 @@ func (a *providerAccumulator) endRoute() {
 				a.wireDefault = map[string]bool{}
 			}
 			a.wireDefault[slot] = true
+			a.wireSites[r.site][slot] = true
 		}
 	}
+}
+
+// widen marks the route being read as one the walk cannot attribute: the run
+// may spend anything there (NarrowSafe false), and its site joins
+// UnattributedSites — a caller that must refuse such a route names it.
+func (a *providerAccumulator) widen() {
+	a.narrowSafe = false
+	if a.site == "" {
+		return
+	}
+	if a.unattributedSites == nil {
+		a.unattributedSites = map[string]bool{}
+	}
+	a.unattributedSites[a.site] = true
 }
 
 // unreadableAt records a route the walk cannot read while an allowlist is
@@ -574,10 +860,13 @@ func (a *providerAccumulator) field(raw string) string {
 // z.ai key; pi's documented z.ai form is `model: "anthropic/glm-5.2"` +
 // `provider: "zai"`, the hint overriding the prefix); only a node with no
 // hint at all routes on the prefix of its effective model (override, then
-// DSL), the way claw's registry does. Anything the walk cannot resolve
-// widens. Every field arrives through the walk's vars reading first: a
-// `{{vars.x}}` whose value the run itself decided resolves like the
-// literal it will be at dispatch, a late name stays as written.
+// DSL). claw is the exception on the slot: its registry never lets the
+// hint name a different credential slot than the prefix's, so a decided
+// claw chain records the prefix's slot beside its hints
+// (prefixSlotForClaw). Anything the walk cannot resolve widens. Every
+// field arrives through the walk's vars reading first: a `{{vars.x}}`
+// whose value the run itself decided resolves like the literal it will be
+// at dispatch, a late name stays as written.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
 	a.beginRoute(true)
 	defer a.endRoute()
@@ -589,12 +878,31 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	prov := a.field(ov.Provider)
 	chain := a.field(fields.Provider)
 	m := a.field(mdl)
-	a.envDeferred("provider", prov)
-	a.envDeferred("provider", chain)
+	// The fields dispatch reads, and only those: a provider override
+	// collapses the node's own `provider:` chain (chainReading.providerField),
+	// so the chain's text — an env dial, an undecided var — decides nothing
+	// and defers nothing. A provider cell decides the credential reading on
+	// its literals and the model's; whether the node's backend can serve
+	// the route it names is the launch's gateway crossing check
+	// (runview), never this walk's.
+	if strings.TrimSpace(ov.Provider) != "" {
+		a.envDeferred("provider", prov)
+	} else {
+		a.envDeferred("provider", chain)
+	}
 	a.envDeferred("model", m)
+	// The deciding fields alone: a provider override collapses the chain,
+	// so the chain's own text decides nothing then.
+	if strings.TrimSpace(ov.Provider) != "" {
+		a.deferAt(prov, m)
+	} else {
+		a.deferAt(chain, m)
+	}
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
 		if a.chainDecides(prov, m) {
+			a.hintDecidesDeferral(prov)
+			a.prefixSlotForClaw(m)
 			return
 		}
 		// The override named no resolvable hint ("auto", or a ${VAR} this
@@ -602,15 +910,67 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 		// widen, as hint() on the override did before the gateway
 		// classification existed. Falling through would let the node's own
 		// chain narrow an answer the override deferred.
-		a.narrowSafe = false
+		a.widen()
 		a.unreadableAt("provider", prov)
 		return
 	}
 	a.noteWireDefault(chain, m)
 	if a.chainDecides(chain, m) {
+		a.hintDecidesDeferral(chain)
+		a.prefixSlotForClaw(m)
 		return
 	}
 	a.prefixOrWiden(m)
+}
+
+// hintDecidesDeferral re-reads, on a primary route whose `provider:` chain
+// just decided, whether the route defers (routeRead.deferred, what keeps it
+// out of ProviderResolution.DecidedPrimary): on a backend whose credential
+// the hint picks — every backend the walk reads but claw — only the chain's
+// own text does. The model text there picks the model the runner sends, never
+// the credential (claude_code spends the hint's whatever model the pod
+// expands a `${DIAL:-…}` to), so a literal hint beside an env-dial or
+// undecided model is a decided route. claw, whose slot follows the model's
+// prefix (prefixSlotForClaw), and a backend the walk cannot read (the runner
+// may expand it to claw) keep the deferral envDeferred read on every text.
+// Only the decided-route reading moves: envDeferred's widening and EnvDeferred
+// stay as they were.
+func (a *providerAccumulator) hintDecidesDeferral(chain string) {
+	if a.route == nil || a.backend == "" || a.backend == delegate.BackendClaw {
+		return
+	}
+	a.route.deferred = strings.Contains(chain, "{{") || strings.Contains(chain, "${")
+}
+
+// prefixSlotForClaw records, on a route whose `provider:` chain just
+// decided for backend CLAW, the providers the model's own prefix spends —
+// beside the hints the chain recorded. claw's hint decides the ROUTE the
+// element dispatch walks, never the SLOT the registry funds: the registry
+// reads it at exactly one switch (forcing Anthropic-direct for models
+// Anthropic serves) and the credential crossing forwards no hint-named
+// slot, so the spend follows the prefix — a GLM id on the anthropic wire
+// rides z.ai (prefixOrWiden's reading). Without this second reading the
+// walk names only the hint's slot, and the credential plan keys the
+// node's spend on a slot the route never funds: every observation joins
+// no row (the fine booking lost on every hint-steered claw route, each
+// miss voiding the report's table), or — before the event word was
+// claw-true — the hint's credential for a prefix spend.
+//
+// A spec naming no `provider/` prefix reads nothing here. The element
+// build hands such a stage the node's baseline model (or the portability
+// screen refuses a backend-changing stage whole), and the registry refuses
+// a bare claw spec at Execute outright — so the slot question is answered
+// by the node's own rows or by no spend at all, never by this reading;
+// widening it would nil the plans of runs whose other routes are perfectly
+// readable.
+func (a *providerAccumulator) prefixSlotForClaw(mdl string) {
+	if a.backend != delegate.BackendClaw {
+		return
+	}
+	if providerFromModelPrefix(mdl) == "" {
+		return
+	}
+	a.prefixOrWiden(mdl)
 }
 
 // resolveRoute is the fallback-route half, with the same precedence: the
@@ -623,8 +983,10 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 	defer a.endRoute()
 	a.envDeferred("provider", provider)
 	a.envDeferred("model", mdl)
+	a.deferAt(provider, mdl)
 	a.noteWireDefault(provider, mdl)
 	if a.chainDecides(provider, mdl) {
+		a.prefixSlotForClaw(mdl)
 		return
 	}
 	a.prefixOrWiden(mdl)
@@ -641,6 +1003,7 @@ func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) 
 		mdl = nodeModel
 	}
 	a.envDeferred("model", mdl, nodeModel)
+	a.deferAt(mdl)
 	a.prefixOrWiden(mdl)
 }
 
@@ -651,8 +1014,7 @@ func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) 
 func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 	// Read late — from the environment (the runner expands it with its own)
 	// or from the run's vars at dispatch: what it will say is unknown here.
-	late := func(v string) bool { return strings.Contains(v, "${") || strings.Contains(v, "{{") }
-	envRead := late(chain) || late(mdl)
+	envRead := readLate(chain) || readLate(mdl)
 	m := strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))
 	glm := GLMOnAnthropicWire(m)
 	read := func(slots ...string) {
@@ -702,27 +1064,36 @@ func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 // mdl is the route's effective model: an openai_compatible hint is only the
 // gateway route when the model carries the gateway prefix — a bare model
 // behind the hint spends a process-held credential (the backends that do not
-// honour the hint), so it widens as an unknown name, and OnlyEnvFunded reads
-// false.
+// honour the hint), so it widens as an unknown name, whatever the caller's
+// vocabulary, and OnlyEnvFunded reads false. A gateway route a sealed key
+// funds (gatewayKeyed) records the provider like any vendor hint.
 func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 	hints, unresolved := chainHints(raw)
 	if len(hints) == 0 {
 		return false
 	}
 	if unresolved {
-		a.narrowSafe = false
+		a.widen()
 		a.unreadableAt("provider", raw)
 	}
 	for _, h := range hints {
-		if h == modelroute.OpenAICompatible && rawGatewayPrefix(mdl) {
-			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
+		if h == modelroute.OpenAICompatible {
+			switch {
+			case !rawGatewayPrefix(mdl):
+				a.unknownHint(h)
+			case len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible]:
 				a.forbid(modelroute.OpenAICompatible)
-			} else if a.route != nil {
-				// The gateway step is an allowed server: it marks the route
-				// servable inside the list, the same way hint() does for a
-				// vendor step — a mixed chain refuses only when NO step
-				// inside the list holds.
-				a.route.inside = true
+			case a.gatewayKeyed():
+				a.hint(h)
+			default:
+				a.gatewayAt()
+				if a.route != nil {
+					// The gateway step is an allowed server: it marks the
+					// route servable inside the list, the same way hint()
+					// does for a vendor step — a mixed chain refuses only
+					// when NO step inside the list holds.
+					a.route.inside = true
+				}
 			}
 			continue
 		}
@@ -754,26 +1125,34 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 	}
 	if p := providerFromModelPrefix(mdl); p != "" {
 		if p == modelroute.OpenAICompatible {
-			// The gateway route: its credential is the runner's environment,
-			// so it names no bundle slot, and it is never a reason to widen
-			// (narrowing to the named providers is exact — the route
-			// acquires no credential). Named in EnvFunded for the caller;
-			// it is what OnlyEnvFunded is true OF. An env-TEMPLATED model
-			// may expand to the gateway here and to a vendor on the runner,
-			// so it widens (envDeferred covers the empty expansion; this
-			// branch covers the resolved one). Under an allowlist the
-			// gateway is a provider like any other: outside the list, the
-			// route is pruned.
+			// The gateway route. Under an allowlist the gateway is a
+			// provider like any other: outside the list, the route is
+			// pruned. A literal gateway route a sealed key funds
+			// (gatewayKeyed, ADR-131 §5) names the gateway's bundle slot,
+			// pinned at its site like any provider. Otherwise its
+			// credential is the runner's environment: it names no bundle
+			// slot and is never a reason to widen (narrowing to the named
+			// providers is exact — the route acquires no credential); it is
+			// named in EnvFunded for the caller, and it is what
+			// OnlyEnvFunded is true OF. An env-TEMPLATED model may expand to
+			// the gateway here and to a vendor on the runner, so it widens
+			// and is never key-funded (envDeferred covers the empty
+			// expansion; this branch covers the resolved one).
 			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
 				a.forbid(modelroute.OpenAICompatible)
+				return
+			}
+			if rawGatewayPrefix(mdl) && a.gatewayKeyed() {
+				a.hint(p)
 				return
 			}
 			if a.envFunded == nil {
 				a.envFunded = map[string]bool{}
 			}
 			a.envFunded[p] = true
+			a.gatewayAt()
 			if !rawGatewayPrefix(mdl) {
-				a.narrowSafe = false
+				a.widen()
 			}
 			return
 		}
@@ -785,7 +1164,7 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 	// names: the walk cannot say what the route spends, and under an
 	// allowlist a lock that cannot be checked must not pass (the run would
 	// ride whatever the serving pod's ambient precedence funds).
-	a.narrowSafe = false
+	a.widen()
 	a.unreadableAt("model", mdl)
 }
 
@@ -796,7 +1175,7 @@ func (a *providerAccumulator) hint(raw string) bool {
 	h := strings.ToLower(strings.TrimSpace(ir.ExpandEnvWithDefault(raw)))
 	switch {
 	case h == "" || h == "auto":
-		a.narrowSafe = false
+		a.widen()
 		return false
 	case a.known[h]:
 		if len(a.allowed) > 0 && !a.allowed[h] {
@@ -805,6 +1184,10 @@ func (a *providerAccumulator) hint(raw string) bool {
 		}
 		a.providers[h] = true
 		a.pin(h)
+		a.recordSiteProvider(h)
+		if a.route != nil {
+			a.route.named = append(a.route.named, h)
+		}
 		ff, seen := a.forfaitFirst[h]
 		a.forfaitFirst[h] = (!seen || ff) && delegate.ForfaitFirst(a.backend, h)
 		if a.route != nil {
@@ -812,11 +1195,18 @@ func (a *providerAccumulator) hint(raw string) bool {
 		}
 		return true
 	default:
-		a.unknown[h] = true
-		a.narrowSafe = false
-		a.unreadableAt("provider", h)
+		a.unknownHint(h)
 		return false
 	}
+}
+
+// unknownHint records a name the walk cannot resolve to a provider it may
+// attribute: Unknown, the fail-open widen, and — under an allowlist — an
+// unreadable route.
+func (a *providerAccumulator) unknownHint(h string) {
+	a.unknown[h] = true
+	a.widen()
+	a.unreadableAt("provider", h)
 }
 
 // pin records WHERE the provider just recorded was named — the site the
@@ -832,6 +1222,24 @@ func (a *providerAccumulator) pin(provider string) {
 		}
 	}
 	a.pins[provider] = append(a.pins[provider], a.site)
+}
+
+// recordSiteProvider appends the provider to its site's read-order list —
+// ProviderResolution.Sites, the direction the credential plan reads. First
+// occurrence wins: the chain order is what survives, not a repeat count.
+func (a *providerAccumulator) recordSiteProvider(provider string) {
+	if a.site == "" {
+		return
+	}
+	for _, p := range a.siteProviders[a.site] {
+		if p == provider {
+			return
+		}
+	}
+	if a.siteProviders == nil {
+		a.siteProviders = map[string][]string{}
+	}
+	a.siteProviders[a.site] = append(a.siteProviders[a.site], provider)
 }
 
 // chainHints splits a `provider:` field into its lower-cased hints the

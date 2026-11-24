@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -53,7 +54,7 @@ func appConnWorld(t *testing.T, mintFail, withToken bool) (*Server, *fakeGitHubF
 	f := newFakeGitHubForge(t)
 	f.mintFail = mintFail
 	s.forgeGitHubApp = ForgeGitHubAppConfig{AppID: 42, PrivateKey: testAppKeyPEM(t), AppSlug: "iterion-forge-x"}
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c-app", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime,

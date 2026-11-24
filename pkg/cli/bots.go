@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -182,8 +183,8 @@ func warnDiscoveryErrors(w io.Writer, diags []botregistry.DiscoveryError) {
 // for a studio bot-metadata save; a run refreshes only the copy its own
 // bundle owns (botregistry.RegenerateCatalogForBundle). This is the
 // manual escape hatch (and the way to refresh the committed copy).
-func BotsRegenCatalog(workdir string) (string, error) {
-	return botregistry.RegenerateWhatsNextCatalog(workdir)
+func BotsRegenCatalog(ctx context.Context, workdir string) (string, error) {
+	return botregistry.RegenerateWhatsNextCatalog(ctx, workdir)
 }
 
 // PrintCatalogWarning reports a catalog refresh that failed while the

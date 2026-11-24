@@ -375,14 +375,16 @@ const (
 	EventRunRewound EventType = "run_rewound"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.
-	EventReviewTurn     EventType = "review_turn"    // data: {interaction_id, role, turn}
-	EventReviewVerdict  EventType = "review_verdict" // data: {decision, confidence, blockers}
-	EventReviewMerged   EventType = "review_merged"  // data: {final_commit, merged_into, strategy}
-	EventJoinReady      EventType = "join_ready"
-	EventNodeFinished   EventType = "node_finished"
-	EventEdgeSelected   EventType = "edge_selected"
-	EventBudgetWarning  EventType = "budget_warning"
-	EventBudgetExceeded EventType = "budget_exceeded"
+	EventReviewTurn               EventType = "review_turn"    // data: {interaction_id, role, turn}
+	EventReviewVerdict            EventType = "review_verdict" // data: {decision, confidence, blockers}
+	EventReviewMerged             EventType = "review_merged"  // data: {final_commit, merged_into, strategy}
+	EventJoinReady                EventType = "join_ready"
+	EventNodeFinished             EventType = "node_finished"
+	EventNodeOutputSchemaMismatch EventType = "node_output_schema_mismatch"
+	EventReasoningEffortAdjusted  EventType = "reasoning_effort_adjusted"
+	EventEdgeSelected             EventType = "edge_selected"
+	EventBudgetWarning            EventType = "budget_warning"
+	EventBudgetExceeded           EventType = "budget_exceeded"
 	// EventUsageProgress is an OBSERVATIONAL mid-node usage sample —
 	// data: {tokens, used?, model} where tokens is the node's cumulative
 	// billed-token estimate so far and used its estimated USD cost
@@ -398,10 +400,11 @@ const (
 	// limit, node}. A run that emits it has, deliberately, spent past
 	// what it declared: the operator must be able to see that in the
 	// events, not only in the invoice.
-	EventBudgetExitGrace EventType = "budget_exit_grace"
-	EventRunFinished     EventType = "run_finished"
-	EventRunFailed       EventType = "run_failed"
-	EventRunCancelled    EventType = "run_cancelled"
+	EventBudgetExitGrace     EventType = "budget_exit_grace"
+	EventRunFinished         EventType = "run_finished"
+	EventRunFailed           EventType = "run_failed"
+	EventRunPreEngineRefused EventType = "run_pre_engine_refused"
+	EventRunCancelled        EventType = "run_cancelled"
 	// EventAlert is an in-process-only run-health alert (stall, budget,
 	// failure) fanned out to studio browser sessions via the event
 	// broker. It is NEVER persisted to events.jsonl — the alert Manager
@@ -496,10 +499,12 @@ const (
 	//   - source: precedence label ("workflow sandbox: block",
 	//     "cli flag --sandbox", "global sandbox default", …)
 	//   - reason: human-readable explanation
-	//   - refused: bool — true on the INLINE refusal path (the run
-	//     parks with FailureCode=SANDBOX_DRIVER_UNAVAILABLE); absent
-	//     or false on the AUTO soft-skip path (the run continues
-	//     unsandboxed)
+	//   - refused: bool — true on a refusal: the INLINE refusal path (the
+	//     run parks with FailureCode=SANDBOX_DRIVER_UNAVAILABLE) and the
+	//     attachments refusal (ATTACHMENTS_UNDELIVERABLE: the run holds
+	//     attachments the driver can neither bind nor copy, `attachments`
+	//     then lists their names); absent or false on the AUTO soft-skip
+	//     path (the run continues unsandboxed)
 	//   - error_code: string — the typed failure code, the same one
 	//     the run document carries as failure_code and the schedule
 	//     record copies into last_run_error_code (#1426). Set only
@@ -507,10 +512,23 @@ const (
 	//   - file_secrets_dropped: bool — set on an AUTO degrade whose
 	//     workflow declares `as: file` secrets: an unsandboxed run has
 	//     no container to mount them into, so they are not delivered
-	//   - driver: string — written only by the noop-pinned path
+	//   - driver: string — written by the noop-pinned path
 	//     (startNoopSandbox), where a caller chose the passthrough
-	//     driver deliberately
+	//     driver deliberately, and by the attachments refusal
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSandboxFloorApplied is emitted at run start when the operator
+	// isolation floor (#1959) neutralized a WORKFLOW-declared sandbox
+	// opt-out because the bot source that declared it is not one the
+	// operator controls (a team-authored botsource row). The run does NOT
+	// execute unsandboxed on the bot's say-so; resolution falls through
+	// to the operator's tiers. Loud by design — never a silent upgrade.
+	// Data:
+	//   - tier: the bot-source tier that spoke (e.g. "team")
+	//   - overridden_mode: the workflow's declared mode ("none")
+	//   - reason: human-readable explanation naming the floor
+	//   - escape_hatch: the env var that disables the floor
+	//     (ITERION_SANDBOX_FLOOR=off)
+	EventSandboxFloorApplied EventType = "sandbox_floor_applied"
 	// EventSkillsInjected fires at run start when the OPERATOR added
 	// skill-library skills to this run on top of the workflow's own
 	// (`--skill <name>`, or the ITERION_SKILLS machine default).
@@ -549,6 +567,89 @@ const (
 	//   - driver: the sandbox driver
 	//   - error: the export failure
 	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
+	// EventSandboxRunFilesDrainFailed fires when the read-back drain of a
+	// declared run-files path (ADR-143) fails at sandbox teardown, or lands
+	// its set short of members the host declined: the container wrote its
+	// artifact files into the emptyDir the driver served, and some or all
+	// of the bytes were not recovered into the run file store before the
+	// pod went away. The sibling of EventSandboxWorkspaceExportFailed and
+	// the answer to the same question ADR-143 §4 asks — a drain that lost
+	// files must stay distinguishable from a run that wrote nothing,
+	// because an empty or partial artifact-files panel is the silence
+	// #2668 is about. Data:
+	//   - driver: the sandbox driver
+	//   - reason: a stable token (sandbox.ReadBackLossReason), the twin of
+	//     run_attachment_lost's — "over_cap" (the dir's set outgrew its
+	//     cap — the set the host holds, a retried drain's attempts counted
+	//     together; the member the meter stopped on is dropped, what landed
+	//     before it uploads), "unsettled" (the tree kept changing under the
+	//     archiver past the retry budget; after more than one attempt what
+	//     uploads is the union of every attempt's members as far as the cap
+	//     holds it, a stale superset of the pod's final tree — a single
+	//     attempt uploads its own raced archive), "archiver" (the pod's
+	//     archiver failed for a cause no retry cures), "refused" (the host
+	//     could not land the set: a host list, write or replace that failed),
+	//     "declined" (the set landed short only of the members counted under
+	//     declined_count); "mixed" when the declared dirs were lost for
+	//     different reasons, "unknown" when the driver typed none
+	//   - error: the drain failure, every lost dir's cause joined
+	//   - stale: whether the set may hold members the attempt that ended
+	//     the drain did not land — an earlier attempt raced a writer and no
+	//     settled attempt swept what it landed (a later member that needed
+	//     their room under the cap may have swept some of it), so a file the
+	//     pod's final tree no longer has may upload: true for any reason
+	//     that followed a raced attempt, "unsettled" of more than one
+	//     attempt included; false where no earlier attempt ran — an
+	//     "unsettled" drain whose one attempt was its whole retry budget
+	//     (ITERION_SANDBOX_EXPORT_ATTEMPTS=1) or the only one before its
+	//     deadline. Always sent
+	//   - declined: the members the host declined on principle, each
+	//     {dir, name, why} — dir the declared container path, name the
+	//     member's path under it, why a stable token
+	//     (sandbox.ReadBackDeclineWhy): "unsafe_name" (a name the host
+	//     cannot write where it spells — the drain writes through no link,
+	//     nor onto an entry a filesystem that folds names lists under
+	//     another spelling),
+	//     "link_leaves_tree",
+	//     "unwritable_link" (a link the kernel refuses to create: an empty
+	//     target, or one too long for a path),
+	//     "hardlink_target" (a hardlink to no file the archive landed — one
+	//     to a landed file lands as a copy), "kind" (a device, a fifo),
+	//     "pre_drain_tree" (a tree the host held where the archive carries
+	//     a file or a link), "pre_drain_file" (a file or link the host held
+	//     where the archive carries a dir or another link, or on the
+	//     member's path); the
+	//     first 100 in dir and name order
+	//     (sandbox.ReadBackDeclinedListed — the drain keeps no more). Present
+	//     only when the host declined any, whatever the reason
+	//   - declined_count: how many members the host declined in all — the
+	//     runner's log warned the first 100 of each declared dir as the
+	//     drain met them, then one line counting the rest. Present with
+	//     declined
+	EventSandboxRunFilesDrainFailed EventType = "sandbox_runfiles_drain_failed"
+	// EventSandboxHostBindsDropped fires when the selected driver has no
+	// host filesystem and the runtime removes the host bind mounts the run
+	// declared — a bot's own `sandbox.mounts:` type=bind entries and the
+	// runtime's optional binds (attachments, run-files) — together with
+	// the promises it made on them. The runner's log said so before; the
+	// run's own stream says it now, so a reader of the run sees what the
+	// container never had. Data:
+	//   - driver: the sandbox driver
+	//   - mounts: []string of the container targets the dropped binds served
+	//   - withdrawn: []string of the variables withdrawn with their bind
+	//   - handed_back: map of variable → the bot's own value handed back in
+	//     its place, present only when one was
+	//   - carried: []string of dropped targets a seed lands all the same
+	//     (the attachments on a driver that copies), present only when one is
+	EventSandboxHostBindsDropped EventType = "sandbox_host_binds_dropped"
+	// EventSandboxAttachmentsCopied fires when a driver with no host
+	// filesystem receives the run's attachments as a directory to copy in
+	// (RunInfo.SeedDirs) instead of a bind it cannot honour: the path
+	// handed to nodes is then the container path, as on docker. Data:
+	//   - driver: the sandbox driver
+	//   - target: the container path the directory lands at
+	//   - attachments: []string of the attachment names copied
+	EventSandboxAttachmentsCopied EventType = "sandbox_attachments_copied"
 	// EventSandboxScratchBanked fires at the teardown of a sandbox whose
 	// ${PROJECT_SCRATCH_DIR} dies with it (kubernetes; docker without the
 	// host bind), when the run may resume (ADR-106). Data:
@@ -568,7 +669,8 @@ const (
 	// contains a node using backend=claw — the engine forwards the
 	// call to iterion __claw-runner inside the container. Data:
 	//   - reason: short summary
-	//   - limitations_v1: known V1 caveats
+	//   - limitations_v1: the caveats of this path (launcher-side MCP and
+	//     ask_user tools, docs/sandbox.md "Claw backend in sandbox")
 	EventSandboxClawRoutedViaRunner EventType = "sandbox_claw_routed_via_runner"
 	// EventSandboxHostStateMounted fires when the runtime auto-binds
 	// the host's persistent state directories (`~/.iterion` run store
@@ -584,7 +686,21 @@ const (
 	//     the shared <tmp> fallback); absent when it was mounted
 	//   - home_not_mounted: the home dir a project `.env` set, under which
 	//     nothing was mounted; absent when the operator's own
+	//   - guarded: []string of host paths the #2069 host-config guard
+	//     shadowed — "copy:<path>" (per-run copy), "copy-seeded:<path>"
+	//     (host file created empty so the shadow has a mountpoint),
+	//     "ro:<path>" / "ro-created:<path>" (read-only overlay); absent
+	//     when the guard is off or nothing was shadowed
 	EventSandboxHostStateMounted EventType = "sandbox_host_state_mounted"
+	// EventSandboxNoCredentialWarning fires at sandbox start for an
+	// untrusted (fork-lane) run when the per-backend credential predicate
+	// (#1768) cannot DECIDE whether a credential will reach a sandboxed
+	// node's process — an unknown backend, an undecided route. The cases
+	// the predicate CAN settle are a typed launch refusal instead
+	// (store.FailureSandboxCredentialUnreachable). Data:
+	//   - reason: short summary naming the nodes and their backends
+	//   - nodes: []string of "nodeID (backend)" the predicate cannot judge
+	EventSandboxNoCredentialWarning EventType = "sandbox_no_credential_warning"
 	// EventSandboxUserRemap fires when the docker driver injects
 	// `--user $(id -u):$(id -g)` because host_state=auto requires
 	// host-UID-owned writes into the mounted ~/.iterion / ~/.claude
@@ -636,16 +752,125 @@ const (
 	//     devcontainer.json path)
 	//   - run_id: the run scope
 	EventSandboxEnvDenied EventType = "sandbox_env_denied"
-	// EventSandboxNetworkDefaulted fires when a repo-defined sandbox
-	// (mode auto and a devcontainer.json found) runs on an
-	// iterion-default base the runtime chose because the workflow
-	// named none: no network: block, an empty one, or rules without a
-	// preset (#2303). Open egress on such a run is the repository's
-	// choice, not the operator's; a workflow block naming a preset (or
-	// a mode) is the override and never triggers this event. Data:
+	// EventSandboxImageEnvPlanted fires when the IMAGE a sandbox starts
+	// from bakes names of that same deny class into its own `ENV` — the
+	// second channel into the container's environment, and the one the
+	// devcontainer seam cannot see: the drivers pass `--env` for
+	// `spec.Env` alone, so a repository that commits
+	// `{"image":"ghcr.io/planter/dev:1"}` whose Dockerfile carries
+	// `ENV CLAUDE_CODE_USE_BEDROCK=1` plus the planter's keys re-routes
+	// every prompt of the run with ZERO containerEnv entries (#2317).
+	//
+	// Emitted once per sandbox boot, by the seam the container starts
+	// THROUGH — the screen runs after the image is local (pulled, or
+	// built from a `build:`), the container starts from the spec it
+	// amended, and the record is read back off that container — and only
+	// when the image has something to answer for, "not screened" and
+	// "not deduced" included. A boot that never created a container (the
+	// screen REFUSED it, or Start failed) still records what the image
+	// planted.
+	//
+	// It carries the WHOLE class, not the acted-on half alone: the kept
+	// half is what an operator reads to judge whether such an image
+	// belongs in the run at all.
+	//
+	// One fact needs no container, and every other key is a MEASUREMENT
+	// of one. `planted` is read from `image inspect`. The dispositions
+	// are the image's `ENV` compared, name by name, to the environment
+	// the container was CREATED with, read back by the driver that
+	// created it ([sandbox.StartedEnvReader],
+	// `docker container inspect -f '{{json .Config.Env}}'`) — never
+	// reassembled from the rules that produce that environment, which is
+	// how two earlier records came to contradict `docker inspect`
+	// (HTTP_PROXY published as emptied, then NODE_EXTRA_CA_CERTS as
+	// "untouched", of containers carrying iterion's own value). Data:
+	//   - image: the inspected image reference ("" when the driver's
+	//     prepared spec exposes none)
+	//   - planted: []string, sorted — the names of the deny class the
+	//     IMAGE bakes into its own `ENV`. Present whenever the class was
+	//     read, container or not; absent only with `unscreened`
+	//   - neutralized: []string, sorted — the names the container
+	//     carries EMPTY where the image baked a value: set and empty,
+	//     which every consumer of that sub-class reads as absent. It is
+	//     the credential and routing names, and the ones measured to
+	//     lead to CODE at the startup of a process iterion runs there
+	//     (the loader, the shells' startup channels, node's and npm's
+	//     and bun's options, git's config-from-the-environment). Present
+	//     whenever the container was read, empty list included
+	//   - reported: []string, sorted — the names the container carries
+	//     at the IMAGE's exact value, which its processes read: an empty
+	//     one would break an image doing its job (`PATH`, `HOME`, a
+	//     loader library path, `KUBECONFIG`), or nothing a process
+	//     iterion starts reads the name — plus any planted name no
+	//     driver could pass and no process could resolve. Present
+	//     whenever the container was read, empty list included
+	//   - allowed: []string, sorted — the same measurement for a name
+	//     the host-side ITERION_SANDBOX_IMAGE_ENV_ALLOW named: the
+	//     container carries the image's own value, untouched, as the
+	//     operator asked. A name the knob let through whose value the
+	//     driver's own pair overrode is filed under driver_set instead,
+	//     because that is what the container has; absent when none holds
+	//   - operator_set: []string, sorted — names of the class, EITHER
+	//     half, the container carries at the value the RUN's own
+	//     reviewed env holds (the workflow's `sandbox.env:`, the launch
+	//     overlay, the forfait config dirs). The image's value is never
+	//     read, and iterion does not override the reviewed channel with
+	//     an empty string; absent when none holds
+	//   - driver_set: []string, sorted — names the container carries at
+	//     ITERION's own value, for a name the DRIVER declares its Start
+	//     sets: the pairs it appends after the spec's env, the egress
+	//     proxy's six spellings and the per-run CA bundles among them.
+	//     Its own key rather than operator_set's: an operator finds one
+	//     of those names in their own `.bot`, and one of these nowhere;
+	//     absent when none holds
+	//   - unexplained: []string, sorted — names whose container value is
+	//     neither the image's, nor the run's own, nor a pair the driver
+	//     declares. Nothing in this repository produces one — it is the
+	//     shape of a driver whose declaration drifted from its argv —
+	//     and it is published rather than guessed into a neighbour;
+	//     absent when none holds
+	//   - unscreened: string — why nothing was screened: a driver that
+	//     cannot read an image's config (kubernetes, whose images the
+	//     kubelet pulls) or a failed read. The run PROCEEDS under that
+	//     stated silence; nothing is ever inferred from it, and not even
+	//     `planted` travels. Absent when the screen ran
+	//   - undeduced: string — why no disposition could be measured
+	//     although the class WAS read: no container this driver could
+	//     hand back (the boot was refused, or Start failed — which can
+	//     be a postCreate command failing in a container the driver
+	//     then removed), the driver cannot read one back, or the read
+	//     failed. NOT ONE disposition travels with it — an empty
+	//     `neutralized` beside it would read as "nothing was planted"
+	//     where the fact is "nobody looked". Absent when the container
+	//     was read
+	//   - refused: string — why a neutralisation the class DECIDED on
+	//     could not be installed, with refused_names ([]string, sorted)
+	//     naming it. Its own pair of keys, never `unscreened` and never
+	//     `undeduced` alone: this is the one disposition under which the
+	//     run does NOT start, so the names were neither overridden nor
+	//     kept by a container — there is no container. Absent when every
+	//     decided override took (ARB-119)
+	//   - run_id: the run scope
+	EventSandboxImageEnvPlanted EventType = "sandbox_image_env_planted"
+	// EventSandboxNetworkDefaulted fires in TWO shapes. First: a
+	// repo-defined sandbox (mode auto and a devcontainer.json found)
+	// runs on an iterion-default base the runtime chose because the
+	// workflow named none: no network: block, an empty one, or rules
+	// without a preset (#2303). Open egress on such a run is the
+	// repository's choice, not the operator's; a workflow block naming
+	// a preset (or a mode) is the override and never triggers this
+	// shape. Data (first shape):
 	//   - mode: "allowlist"
 	//   - preset: "iterion-default"
 	//   - source: the resolution source label
+	//   - run_id: the run scope
+	//
+	// Second: the workflow's rules refuse the run's own gateway
+	// admission — the engine had prepended an exact rule for the host
+	// the run's sealed credential names, and a workflow rule overrode
+	// it. Data (second shape):
+	//   - kind: "run_gateway_refused"
+	//   - host: the refused gateway host
 	//   - run_id: the run scope
 	EventSandboxNetworkDefaulted EventType = "sandbox_network_defaulted"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
@@ -654,6 +879,12 @@ const (
 	//   - reason: rule that fired
 	//   - run_id: the run scope
 	EventNetworkBlocked EventType = "network_blocked"
+	// EventSandboxNetworkTunneled fires ONCE per run, when its egress
+	// proxy shuts down, carrying the tally of requests the policy
+	// admitted per host — one event, not one per request. Data:
+	//   - hosts: map of admitted host -> request count
+	//   - run_id: the run scope
+	EventSandboxNetworkTunneled EventType = "sandbox_network_tunneled"
 	// EventPersistDegraded fires when session: persist could not pack or
 	// store the CLI session (sandbox without host_state, empty config
 	// dir, Put failure). The node succeeded; the next visit runs fresh.
@@ -699,6 +930,19 @@ const (
 	// independent, so `refused` alone does not mean "nothing to fix"),
 	// error.
 	EventMCPServerDegraded EventType = "mcp_server_degraded"
+	// EventWorkspaceTrustWithdrawal records what a workspace its tenant did
+	// not write (store.RunTrust) cost a node, or the whole run: a host
+	// capability, a memory space, an MCP server the tenant's environment
+	// would otherwise hand the agent reading that code. The node runs on
+	// without it — the fork lane exists to produce a review — so this event
+	// is the one place the run record says what the review ran without.
+	// NodeID is empty for a withdrawal decided before any node runs.
+	//
+	// Data keys: withdrawn (what: "capabilities" | "memory" | "auto_memory" |
+	// "mcp_servers"), items (the names withdrawn, when there are names),
+	// reason, and refused: true when the run could not start without it (an
+	// MCP server its workflow activates by name).
+	EventWorkspaceTrustWithdrawal EventType = "workspace_trust_withdrawal"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:
@@ -726,12 +970,17 @@ const (
 	// directly by the runtime/sandbox when it knows about a forwarded
 	// dev-server port. Data:
 	//   - url: the URL to render
-	//   - kind: optional hint ("dev-server", "deploy", "artifact-html")
+	//   - kind: optional hint ("dev-server", "deploy", "artifact-html",
+	//     "pr", "deliverable"). The last two are link-only: the studio
+	//     lists them in the run summary and never embeds them in the
+	//     Browser pane.
 	//   - scope: "internal" (route through /api/runs/:id/preview to
 	//     strip frame-ancestors / X-Frame-Options) or "external"
 	//     (load directly in iframe — only works if the target site
 	//     allows embedding). Defaults to "external" when unset.
-	//   - source: optional, "tool-stdout" or "runtime"
+	//   - source: optional, "tool-stdout", "runtime" or
+	//     "tool-attachment" (the ENGINE announcing a file it collected,
+	//     at its own download route — see EventRunAttachmentPublished)
 	EventPreviewURLAvailable EventType = "preview_url_available"
 	// EventBrowserScreenshot is emitted whenever the runtime captures
 	// a static screenshot of a preview URL — either via the tool-node
@@ -761,7 +1010,34 @@ const (
 	//   - attachment_name: store.AttachmentRecord.Name of the file
 	//   - mime: the stored (already neutralised) media type
 	//   - source: "tool-stdout"
+	//
+	// It carries a handle, not an address, so it travels with a sibling
+	// EventPreviewURLAvailable of kind "deliverable" naming the download
+	// route — the run summary is where a reader looks for a run's
+	// product (#2690).
 	EventRunAttachmentPublished EventType = "run_attachment_published"
+	// EventRunAttachmentLost fires when a tool node DECLARED a file —
+	// `[iterion] attachment=<path>` or `[iterion] preview_screenshot=<path>`
+	// — and the run never received it. The node still succeeds: the
+	// directive is how bytes reach a human, not the tool's contract with
+	// the workflow. But a loss that only ever reached the runner's log is
+	// a loss nobody learns about: on a pod the declared path lives in a
+	// container the host cannot stat, so every file-valued bot was mute
+	// in cloud without a single durable trace (#2668).
+	//
+	// The twin of EventRunAttachmentPublished, and the same gesture as
+	// EventSandboxWorkspaceExportFailed: say that work is gone, where it
+	// was gone, and why, on the run itself. Data:
+	//   - directive: "attachment" or "preview_screenshot" — the verb used
+	//   - path: the path the tool printed (already in the node's stdout,
+	//     so this discloses nothing the run does not already carry)
+	//   - name: the handle it would have been served under, when the
+	//     loss happened late enough for one to be derived
+	//   - reason: a stable token — "unreadable", "not_a_file",
+	//     "over_cap", "name_taken", "store_write_failed"
+	//   - detail: the human cause (the stat/open error, the sizes)
+	//   - source: "tool-stdout"
+	EventRunAttachmentLost EventType = "run_attachment_lost"
 	// EventBrowserSessionStarted fires when the runtime attaches a
 	// Chromium instance to a node and registers it in the
 	// BrowserRegistry. The studio uses this signal to flip the
@@ -836,6 +1112,8 @@ const (
 // time field) + run_id partition key. The Mongo backend assigns _id
 // itself (ObjectId), so we don't expose one here.
 type Event struct {
+	observation RunObservation
+
 	Seq       int64          `json:"seq" bson:"seq"`      // monotonic sequence within the run
 	Timestamp time.Time      `json:"timestamp" bson:"ts"` // wall-clock time
 	Type      EventType      `json:"type" bson:"type"`

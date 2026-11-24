@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -137,7 +138,7 @@ func seedForgejoSyncIntegration(t *testing.T, baseURL string, board native.Board
 		ID: "c-fj", TenantID: "t1", Provider: forge.ProviderForgejo, Kind: forge.KindPAT,
 		Status: forge.StatusActive, ForgeBaseURL: baseURL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
 	}
-	sealed, err := forge.SealPAT(s.sealer, conn.ID, "fj-token")
+	sealed, err := connection.SealForgePAT(s.sealer, conn.ID, "fj-token")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestBoardSyncPasses_SpendOnItsOwnForgeLane(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.boardSyncPasses(ctx, time.Hour) // one opening pass
+		s.boardSyncPasses(ctx, time.Hour, nil) // one opening pass
 	}()
 	waitForCond(t, 5*time.Second, "the opening pass", func() bool {
 		_, pages := gh.served()
@@ -1022,18 +1023,18 @@ func TestHandleSyncForgeIntegration_CarriesTheSweepsPageBudget(t *testing.T) {
 	r := forgeReq(superAdminCtx(), http.MethodPost,
 		"/api/teams/t1/forge/integrations/"+ri.ID+"/sync", "", ri.TenantID)
 	r.SetPathValue("iid", ri.ID)
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleSyncForgeIntegration(w, r)
 
 	_, pages := gh.served()
-	t.Logf("OBSERVED code=%d pages=%d mirrored-cards=%d body=%s", w.Code, pages, board.count(), strings.TrimSpace(w.Body.String()))
+	t.Logf("OBSERVED code=%d pages=%d mirrored-cards=%d body=%s", w.Code, pages, board.count(), strings.TrimSpace(w.Diagnostic(t)))
 	if pages != forgeIssueSyncMaxPages {
 		t.Fatalf("the click read %d pages, want the sweep's %d: a narrower cap mirrors less than the schedule already does",
 			pages, forgeIssueSyncMaxPages)
 	}
 	if w.Code != http.StatusBadGateway ||
-		!strings.Contains(w.Body.String(), strconv.Itoa(forgeIssueSyncMaxPages)+" pages") {
-		t.Fatalf("a window the budget could not exhaust answered code=%d %s, want 502 naming the budget", w.Code, w.Body.String())
+		!strings.Contains(w.Diagnostic(t), strconv.Itoa(forgeIssueSyncMaxPages)+" pages") {
+		t.Fatalf("a window the budget could not exhaust answered code=%d %s, want 502 naming the budget", w.Code, w.Diagnostic(t))
 	}
 	if got := storedMark(t, s, ri.ID); !got.Equal(mark) {
 		t.Fatalf("the click moved the mark to %s over a window it only partly read", got)

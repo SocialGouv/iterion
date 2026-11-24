@@ -1,6 +1,6 @@
 # Data model — credentials, metering and routing policy
 
-Sixteen Mongo collections hold what funds a run: a credential sealed at rest, the bundle that carries it to a runner pod, the four meters that bill it, and the policy that decides where it may route.
+Seventeen Mongo collections hold what funds a run: a credential sealed at rest, the connector alias a workflow addresses it by, the bundle that carries it to a runner pod, the four meters that bill it, and the policy that decides where it may route.
 
 > Drawn from the code at commit `6c136a77d` — main at v3.281.3, with #2652, #2005 PR-A and the PR-B'1 carriage; how this page is kept true: [README](README.md).
 
@@ -104,7 +104,7 @@ erDiagram
     map bundle.api_base_urls "INSIDE: provider -> gateway root, paired with api_keys (openai_compatible only)"
     map bundle.pinned_api_base_urls "INSIDE: provider -> gateway root, paired with pinned_api_keys"
     map bundle.api_key_fingerprints "INSIDE: provider -> the server's fingerprint (the runner stamps it, never recomputes a URL-folded one)"
-    bool bundle.ambient_llm_refused "INSIDE: the run's LLM routes spend these credentials only; absent on a bundle sealed today"
+    bool bundle.ambient_llm_refused "INSIDE: the run's LLM routes spend these credentials only; set on an untrusted or a team_gateway run"
     map bundle.oauth_credentials "INSIDE: kind -> the credentials.json / auth.json"
     map bundle.oauth_record_refs "INSIDE: kind -> oauth_credentials._id"
     map bundle.generic_secrets "INSIDE: workflow secret name -> plaintext"
@@ -118,8 +118,10 @@ erDiagram
     string tenant_id FK "teams._id"
     string project_path "the forge slug"
     string[] cred_fingerprints "API-key AND OAuth fingerprints"
+    string[] capacity_subjects "shared capacities the sealed keys draw on - gw:host (ADR-167)"
     string[] credential_tiers "byok|oauth-forfait|org|pool|platform - NOT credusage's four"
     object llm_route_policy
+    object content_boundary "kind team_gateway|own_keys, key_id, gateway_host - frozen at launch"
   }
   cred_pools {
     string _id PK
@@ -131,7 +133,7 @@ erDiagram
     bool audience.all_teams
   }
   cred_pledges {
-    string _id PK "'<user_id>|<source>|<ref>'"
+    string _id PK "'<user_id>|<source>|<ref>' for oauth; '<user_id>|<source>|<ref>|<key_id>' for api_key (two keys of one provider, two rows)"
     string pool_id FK "cred_pools._id"
     string user_id FK "users._id"
     string source "oauth | api_key"
@@ -148,7 +150,7 @@ erDiagram
   cred_leases {
     string _id PK
     string run_id FK "runs._id"
-    string pledge_id FK "cred_pledges._id"
+    string pledge_id FK "cred_pledges._id - rewritten, closed leases included, when an api_key pledge's _id moves"
     string pool_id FK "cred_pools._id"
     string donor_id FK "users._id"
     string source "oauth | api_key"
@@ -165,15 +167,24 @@ erDiagram
     datetime acquired_at
   }
   cred_pool_usage {
-    string _id PK "'<pledge_id>|d|2026-08-03' or '<pledge_id>|w|2026-W31'"
+    string _id PK "'<pledge_id>|d|2026-08-03' or '<pledge_id>|w|2026-W31' - the prefix is rewritten when the pledge _id moves"
     int runs
     int64 cost_usd_millis "integer millis"
     datetime period_start
+  }
+  pool_attachments {
+    string _id PK "'platform' | 'org:<id>' | 'team:<id>' | 'bot:<team>/<bot>'"
+    string pool_id FK "cred_pools._id"
+    bool enabled "false = resolved-disabled: the fold stops here, no inheritance"
+    object strategy "mode, margin_pct, triggers, reset_hold"
+    object limits "max_runs_per_day, max_usd_per_day - the borrower's draw caps"
+    datetime updated_at "CAS stamp"
   }
   run_secrets }o--|| runs : "run_id"
   run_secrets }o..o{ api_keys : "bundle.api_keys / bundle.pinned_api_keys - plaintext, with base_url beside a gateway key"
   run_secrets }o..o{ oauth_credentials : "bundle.oauth_record_refs"
   cred_pools }o--|| orgs : "org_id"
+  pool_attachments }o--|| cred_pools : "pool_id"
   cred_pledges }o--|| cred_pools : "pool_id"
   cred_pledges }o--|| users : "user_id"
   cred_pledges }o--o| api_keys : "key_id"
@@ -205,6 +216,10 @@ erDiagram
     string nature "metered | estimate"
     int64 cost_usd_millis
     datetime month_start
+  }
+  cred_slots {
+    string _id PK "credential fingerprint or capacity subject gw:host - one row per capped key or shared gateway"
+    object holders "{run_id, at}[] - the runs admitted under the key's or gateway's hard cap"
   }
   usage_windows {
     string _id PK "'<key>#<window>'"
@@ -248,6 +263,22 @@ erDiagram
     datetime updated_at
     string updated_by
   }
+  price_feeds {
+    string _id PK "'platform' | 'org:<org id>' | 'team:<team id>'"
+    object[] feeds "ADR-163 - name, source type (modelsdev|scaleway|litellm|exec|declared), params, enabled, interval, timeout - a declared feed's table IS params.entries (ADR-166)"
+    datetime updated_at
+    string updated_by
+  }
+  price_feed_state {
+    string _id PK "'platform/<feed name>' | '<scope>:<id>/<feed name>'"
+    string feed
+    string status "ok | stale | failing | never - staleness is first-class, derived on read; a declared feed is judged by its config, not here"
+    object entries "id -> window, prices, flags, accepted efforts - the feed-entry shape"
+    datetime refreshed_at
+    int fresh_for_s "2 x the feed's interval"
+    datetime last_attempt
+    string last_error
+  }
   platform_settings {
     string _id PK "family: usage_caps|platform_credentials|runner_pools|budget_floor|bot_roles|sandbox|bot_vars"
     int five_hour_pct "usage_caps"
@@ -267,16 +298,65 @@ erDiagram
   model_prefs }o--o| teams : "tenant_id"
   llm_routing_policies |o..o| teams : "llm_routing_policies._id as 'team:<id>'"
   llm_routing_policies |o..o| orgs : "llm_routing_policies._id as 'org:<id>'"
+  price_feeds |o..o| teams : "price_feeds._id as 'team:<id>'"
+  price_feeds |o..o| orgs : "price_feeds._id as 'org:<id>'"
+  price_feed_state |o..o| price_feeds : "price_feed_state._id as '<price_feeds._id>/<feed>'"
   platform_settings |o--o{ teams : "platform_settings.teams, in the platform_credentials family"
   teams }o..o| platform_settings : "runner_pool - resolved in the runner_pools family"
 ```
 
 - **Four meters, four identities, and none substitutes for another.** Their tier vocabularies differ too: `credential_usage.tier` has four values because it merges a tenant's key and its subscription into `team`, where `runs.credential_tiers` keeps the publisher's five and holds `byok` and `oauth-forfait` apart.
-- **Five dotted edges in this block carry the parent id inside a composed string**: `usage_windows.key`, `org_usage._id`, `llm_routing_policies._id`. No store joins on `orgs._id` or `teams._id`, so none of them is a key lookup. The solid edges are the ones whose field *is* the reference: `credential_usage.tenant_id` and `model_prefs.tenant_id`, both written verbatim, and `platform_credentials.teams`, an allow-list of team ids. The sixth dotted edge, `runner_pool`, is a pool name resolved in the `runner_pools` family.
+- **Five dotted edges in this block carry the parent id inside a composed string**: `usage_windows.key`, `org_usage._id`, `llm_routing_policies._id`, and — two more, ADR-163 — `price_feeds._id` and `price_feed_state._id`, the state document composing its scope's id with the feed name; their `platform` documents (ADR-166) name no org or team and survive every org purge. No store joins on `orgs._id` or `teams._id`, so none of them is a key lookup. The solid edges are the ones whose field *is* the reference: `credential_usage.tenant_id` and `model_prefs.tenant_id`, both written verbatim, and `platform_credentials.teams`, an allow-list of team ids. The sixth dotted edge, `runner_pool`, is a pool name resolved in the `runner_pools` family.
 - `org_usage`'s subject is a **team** id whenever the launch gate read the zero `Org` — an org-less team, or an org the gate could not read — so an `org|` subject is not proof of an org, and a meter row's owner is zero-or-one.
 - `usage_windows.key` carries five scope spellings — `platform`, `local`, `tenant:<id>`, `org:<id>` and the literal `account`. Three of its windows (`frequency`, `spend`, `auth`) are not provider windows at all.
 - `platform_settings` is **one collection, one document per family**. This page draws the four a run's funding and routing read — `platform_credentials`, `runner_pools`, `usage_caps` and `budget_floor`; the bot-facing families are drawn on [data-model-forge-bots.md](data-model-forge-bots.md). Sovereign runner pools are the `runner_pools` **family**, not a collection of their own.
 - `llm_routing_policies` is not a `platform_settings` family: its documents are tenant data, one per org or team, while `platform_credentials.routing` holds the platform level of the same policy. A document is a team's **or** an org's, never both — its `_id` carries exactly one of the two prefixes.
+
+## Block 4 — connector connections: a team's alias for one connector instance
+
+```mermaid
+erDiagram
+  connections {
+    string _id PK "'conn_' + a run id"
+    string tenant_id FK "team id"
+    string connector "package id: forgejo, slack, ..."
+    string alias "what a .bot writes in connection: - unique per (tenant, connector)"
+    string alias_norm "alias, lower-cased and trimmed - derived on every write, never trusted from a caller"
+    string display_name "cosmetic, what the studio reads"
+    string base_url "the instance this credential authenticates to - empty = the package default"
+    string scheme_id "which of the package's auth schemes this credential satisfies"
+    object auth_placement "what the scheme SAID: kind, in, name, value_prefix"
+    string[] capabilities "what this connection may be used for - empty means nothing"
+    string[] granted_scopes "what the provider said the credential carries"
+    bool scopes_known "whether the provider said anything at all"
+    string status "active | degraded | revoked"
+    string status_reason "a non-active status in words, cleared on return to active"
+    bytes sealed_payload "the credential, sealed with AAD connection:<_id>"
+    datetime expires_at "zero = never expires; no write path sets it yet (ADR-098)"
+    datetime created_at
+    datetime updated_at "the record's own version - the update precondition reads it back"
+  }
+  connections }o--|| teams : "tenant_id"
+```
+
+```mermaid
+erDiagram
+  connector_packages {
+    string _id PK "tenant_id/connector_id — the (tenant, connector) pair IS the key"
+    string tenant_id FK "team id, or the platform: sentinel for the platform tier"
+    string connector_id "the id the package answers to, checked equal to the content's own at publish"
+    map files "package-relative path to content — connector.yaml, overlay.yaml, ops/*, triggers.yaml"
+    string content_hash "sha256 over the canonical file stream — recorded at publish, never trusted"
+    string created_by
+    datetime created_at
+    datetime updated_at
+  }
+  connector_packages }o--|| teams : "tenant_id"
+```
+
+- The **unique `(tenant_id, connector, alias_norm)` index** is what keeps the alias rule true between replicas: the memory and file twins check alias-free under a lock they hold, and a cloud deployment has no such lock. Two concurrent Creates of one alias both passing an in-code check would answer one name twice — the index turns the second into a duplicate-key refusal the store reports as `ErrExists`.
+- The tenant is **in every filter**, not merely on the record: a read, update or delete that exists but belongs elsewhere is not found, never forbidden. `updated_at` is the record's own version — the update writes against the stamp it read, so a successful read followed by a zero-match replace is a conflict, not a missing record.
+- `auth_placement` records what the scheme said **at creation**, so a workspace-tier package update that keeps the connector's id but moves the credential into a query string cannot move a stored credential with it: the stored placement is compared at resolution and a mismatch is refused by name.
 
 ## The credential tier walk
 
@@ -327,6 +407,8 @@ flowchart TD
 | collection | package | document struct | tenant field (values) | unique / TTL indexes | twin |
 |---|---|---|---|---|---|
 | `api_keys` | `pkg/secrets` | `ApiKey` | `tenant_id`: team \| `orgtier:<org>` \| `platform:` | none unique; no TTL | none (cloud-only) |
+| `connections` | `pkg/connection` | `mongoDoc` (`Connection` + derived `alias_norm`) | `tenant_id`: team | `tenant_connector_alias` unique on `(tenant_id, connector, alias_norm)`; no TTL | `file connections.json` — the memory twin checks aliases under a lock the Mongo twin replaces with the unique index |
+| `connector_packages` | `pkg/connection` | `packageDoc` (`StoredPackage` + `_id`) | `tenant_id`: team \| `platform:` | none unique — `_id` is `<tenant_id>/<connector_id>`, unique by construction (`tenant` indexes `tenant_id` alone); no TTL | `memory-only` — `MemoryPackageStore`, held to the Mongo twin's answers by the conformance suite |
 | `oauth_credentials` | `pkg/secrets` | `OAuthRecord` | none — `user_id` namespace: user \| `org:<team>` \| `orgtier:<org>` \| `platform:` | `user_id+kind+rank` unique; no TTL | none (cloud-only) |
 | `oauth_pending` | `pkg/secrets` | `OAuthPending` | none — `owner_key` namespace | `owner_key+kind` unique; TTL `expires_at` (10 min) | none (cloud-only) |
 | `generic_secrets` | `pkg/secrets` | `GenericSecret` | `tenant_id`: team (empty in the file store, which pins `scope_team: local`) | none unique; no TTL | `file secrets.json` — the file and memory twins keep no order among duplicate names |
@@ -337,6 +419,7 @@ flowchart TD
 | `cred_leases` | `pkg/credpool` | `Lease` | `tenant_id`: team (audit + the cross-team takeover guard) | none unique; TTL `acquired_at` (90 d) | none (cloud-only) |
 | `cred_pool_usage` | `pkg/credpool` | `ledgerDoc` | none — `_id` is pledge + period | none unique; TTL `period_start` (400 d) | none (cloud-only) |
 | `credential_usage` | `pkg/credusage` | `usageDoc` | `tenant_id`: team \| empty (an `_id` segment) | none unique; TTL `month_start` (400 d) | none (cloud-only) |
+| `cred_slots` | `pkg/store` | `credSlotDoc` | none — `_id` is the credential fingerprint, one cap shared by every tenant a platform key serves | none unique; no TTL (the reconcile pulls a holder whose run document is gone) | memory-only twin `credslot_fs.go` (one process, one mutex) |
 | `usage_windows` | `pkg/usagecap` | `readingDoc` | none — scope inside `key`: `platform` \| `local` \| `tenant:<id>` \| `org:<id>` \| `account` | none unique; TTL `observed_at` (14 d) | `memory-only` |
 | `org_usage` | `pkg/orgusage` | `usageDoc` | none — `_id` subject is an ORG (a team for an org-less team, or an org the gate could not read) | none unique; TTL `month_start` (400 d) | none (cloud-only) |
 | `model_prefs` | `pkg/modelprefs` | `Pref` | `tenant_id`: team \| empty in local mode (an argument, not ctx) | `tenant+user+key` unique, `tenant+user+slot` unique partial | `file model-prefs.json` |

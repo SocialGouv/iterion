@@ -16,6 +16,7 @@ import (
 // commit really holds.
 
 func TestModernizeRecordBehindACommittedLinkLands(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	t.Run("behind a link the base holds", func(t *testing.T) {
 		ws, _, git := programmeOfLots(t)
@@ -114,6 +115,7 @@ func TestModernizeRecordBehindACommittedLinkLands(t *testing.T) {
 // add -A :/` — a record the index has dropped, and a root .gitignore keeps
 // the bank from re-adding, never lands, whatever HEAD carries.
 func TestModernizeRecordThatCannotLandFailsTheGate(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	const record = ".modernize/sweeps/L1.md"
 	t.Run("removed from the index behind a root .gitignore", func(t *testing.T) {
@@ -158,6 +160,7 @@ func TestModernizeRecordThatCannotLandFailsTheGate(t *testing.T) {
 // makes the staging fail, and with it every lot. Judge lot_verify directly:
 // the shape is the env the engine provisions on every tool process.
 func TestModernizeBankedTreeProbesItsExclusions(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	ws, _, git := programmeOfLots(t)
@@ -172,7 +175,7 @@ func TestModernizeBankedTreeProbesItsExclusions(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, contractGate,
-		append(os.Environ(), "ITERION_TREE_NOISE=':(exclude,top).claude'"))
+		append(modernizeChildEnv(t), "ITERION_TREE_NOISE=':(exclude,top).claude'"))
 	if exit != 0 || res.Unreadable {
 		t.Fatalf("a lot in a repository that ignores the mirror could not converge: exit=%d unreadable=%v log=%s",
 			exit, res.Unreadable, res.LogTail)
@@ -188,6 +191,7 @@ func TestModernizeBankedTreeProbesItsExclusions(t *testing.T) {
 // add-refusal on the literal part. A file named exactly like the prefix,
 // untracked and ignored, must not stop every lot from converging.
 func TestModernizeBankedTreeProbesThePrefixNotTheWildcard(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	ws, _, git := programmeOfLots(t)
@@ -199,7 +203,7 @@ func TestModernizeBankedTreeProbesThePrefixNotTheWildcard(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, contractGate,
-		append(os.Environ(), "ITERION_TREE_NOISE=':(exclude,top).iterion-script-*'"))
+		append(modernizeChildEnv(t), "ITERION_TREE_NOISE=':(exclude,top).iterion-script-*'"))
 	if exit != 0 || res.Unreadable {
 		t.Fatalf("a lot cannot converge when a literal .iterion-script- file exists: exit=%d unreadable=%v log=%s",
 			exit, res.Unreadable, res.LogTail)
@@ -207,7 +211,7 @@ func TestModernizeBankedTreeProbesThePrefixNotTheWildcard(t *testing.T) {
 	t.Run("control: the wildcard exclusion on an absent path is harmless", func(t *testing.T) {
 		ws, base, _ := programmeOfLots(t)
 		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, contractGate,
-			append(os.Environ(), "ITERION_TREE_NOISE=':(exclude,top).iterion-script-*'"))
+			append(modernizeChildEnv(t), "ITERION_TREE_NOISE=':(exclude,top).iterion-script-*'"))
 		if exit != 0 || res.Unreadable {
 			t.Fatalf("control failed: exit=%d unreadable=%v log=%s", exit, res.Unreadable, res.LogTail)
 		}
@@ -218,6 +222,7 @@ func TestModernizeBankedTreeProbesThePrefixNotTheWildcard(t *testing.T) {
 // index entry that follows it — run no hook: a hook in the run's tree must
 // not refuse them, or ride them.
 func TestModernizeMarkDoneWritesRunNoRepositoryHook(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	ws, base, _ := programmeOfLots(t, "L22")
 	hooks := filepath.Join(ws, ".git", "hooks")

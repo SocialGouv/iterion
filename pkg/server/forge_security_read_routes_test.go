@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -85,7 +86,7 @@ func TestSecurityReadPatch_EnableThenDisable(t *testing.T) {
 	if !ok || m["socialgouv"] != "ghs_minted" {
 		t.Fatalf("map = %v (present=%v), want the ORG key", m, ok)
 	}
-	conn, _ := s.forgeConnections.Get(context.Background(), "c1")
+	conn, _ := s.forgeConnections.Get(context.Background(), "t1", "c1")
 	if !conn.SecurityReadEnabled {
 		t.Fatal("the flag must be persisted")
 	}
@@ -100,7 +101,7 @@ func TestSecurityReadPatch_EnableThenDisable(t *testing.T) {
 	if _, ok := securityReadMapFor(t, s); ok {
 		t.Fatal("disabling must withdraw the entry (map emptied → secret gone)")
 	}
-	conn, _ = s.forgeConnections.Get(context.Background(), "c1")
+	conn, _ = s.forgeConnections.Get(context.Background(), "t1", "c1")
 	if conn.SecurityReadEnabled {
 		t.Fatal("the flag must be cleared")
 	}
@@ -175,7 +176,7 @@ func TestSecurityReadPatch_RollsBackWhenThePersistFails(t *testing.T) {
 
 // failingUpdateConnStore lets every read through and fails every write — the
 // "persisted the mint, could not persist the flag" window.
-type failingUpdateConnStore struct{ forge.ConnectionStore }
+type failingUpdateConnStore struct{ connection.ForgeStore }
 
 func (f failingUpdateConnStore) Update(context.Context, forge.Connection) error {
 	return errUpdateRefused

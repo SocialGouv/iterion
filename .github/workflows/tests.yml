@@ -12,9 +12,62 @@ name: 🧪 Tests
 # (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
 # queue build with no checks waits for a context that never arrives and
 # dequeues the PR after the 60-minute timeout.
+# A release commit does not cancel the merge it followed (#3161). The
+# concurrency group below is keyed by ref, which on `main` is the SAME ref for
+# every commit — so each push kills the run before it. A merge is immediately
+# followed by the release bot's `chore: release`, landing with no PR, so that
+# release cancelled the witness of the merge that triggered it, every time.
+# Measured over the last 100 `main` pushes: 51 runs cancelled, of which 26 were
+# cancelled by a release push and 25 by an ordinary merge. So this removes HALF
+# the cancellations and no more — the other half is merge-on-merge, whose fix is
+# the concurrency key itself (`cancel-in-progress: ${{ github.event_name !=
+# 'push' }}`, or a group keyed by sha on push), which costs runner time on a
+# pool that is already the bottleneck and is therefore a separate decision.
+# Worth doing anyway because of WHERE the release lands: release-cancelled runs
+# died at a median of ~3 minutes, the youngest and cheapest-to-finish of all of
+# them. In the worst drought of the window — 14 consecutive pushes, 2.1 h, zero
+# verdict — this alone would have produced about four verdicts instead of none.
+#
+# `paths-ignore` is the surgical half of the fix: no run is CREATED for a
+# release commit, so it joins no concurrency group and cancels nothing. It is
+# scoped to `push` alone — a pull request or a queue build touching these files
+# still runs the full suite, and the nine other workflows that fire on push
+# (images, release, docs) are untouched, which `[skip ci]` in the release
+# message could not have said.
+#
+# The paths are what a release writes, each by a declared writer: package.json
+# (release-it's bump), CHANGELOG.md (.release-it.mjs `infile`),
+# charts/iterion/Chart.yaml (scripts/sync-chart-version.sh at after:bump) and
+# internal/mdcode/testdata/committed-reading.txt (cmd/corpus-reading --cut at
+# before:git:beforeRelease). Over the last 100 releases: package.json,
+# CHANGELOG.md and the chart 100/100, the reading golden 72/100 — a release
+# that writes only the first three is a SUBSET of this list, so it is skipped
+# too. Exactly two releases ever carried a fifth path, both from
+# `cmd/release-floors --apply` realigning syntax-floor pins.
+#
+# A release touching anything outside the list simply creates its run as it
+# does today: the failure mode of this filter is "no improvement", never a new
+# defect. What WOULD break it silently is renaming one of these paths, so
+# internal/ciguard pins them against the tree — and pins the one direction that
+# breaks a MERGE rather than a convenience: a path filter must never reach
+# `pull_request:` or `merge_group:`, which produce six required checks.
+#
+# The residual, measured at push level because that is what GitHub filters: of
+# the last 55 pushes to `main`, 17 would be skipped and all 17 are
+# `chore: release` — no ordinary push lost a witness. A path filter reads the
+# WHOLE push diff rather than the tip commit, so a landing train that happens
+# to END on a corpus re-pin still runs. And a bad release cut cannot hide in
+# the gap: internal/mdcode re-derives the reading from the tree and compares it
+# byte for byte, on every pull request branched after the release, not merely
+# on `main`'s next commit.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - CHANGELOG.md
+      - charts/iterion/Chart.yaml
+      - internal/mdcode/testdata/committed-reading.txt
+      - package.json
   pull_request:
   merge_group:
     types: [checks_requested]
@@ -132,10 +185,9 @@ concurrency:
 # deliberately the mechanism rather than an edit to this file: repairing by
 # merging does not work when merging is what is broken. Unset means on.
 #
-# Three jobs carry a GitHub-hosted label whatever the ref: cloud-e2e and
-# desktop-vet-linux, each saying why at its own definition, and docs-links,
-# advisory and outside the queue. Every REQUIRED job routes through the
-# expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
+# Two jobs carry a GitHub-hosted label whatever the ref: desktop-vet-linux
+# (the platform-specific build) and docs-links (advisory and outside the queue).
+# Every REQUIRED job routes through the expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
 # the time: all six passed there, nine runner pods starting at once with no
 # queueing.
 #
@@ -159,15 +211,33 @@ jobs:
   test-unit:
     # The Go unit half of what `test` ran as one mega-job. Split so the wall
     # clock stops stacking studio, e2e and unit on one pod (2026-10-04: the
-    # mega-job was 24-26 min; unit alone is ~10, dominated by the single
+    # mega-job was 24-26 min; unit alone was ~10, dominated by the single
     # `bots` package). Runs in the merge queue behind the required `test`
     # aggregator; carries the tap skip and nothing else — see the header.
+    #
+    # SHARDED three ways, like race-shard (#3402). Unsharded, the suite grew
+    # to a 24.5-min `go test` step under a 30-min job ceiling: a slow runner
+    # cut the next step and a suite whose every package passed read red in the
+    # merge queue. Every package still runs: `./...` minus e2e, partitioned by
+    # scripts/ci/testshards with the UNIT weights table, a pure function of the
+    # commit, so the three legs of one entry pick complementary sets. LPT seats
+    # the heaviest row (`bots`) on shard 0; the one-time steps — the freshness
+    # gate, gofmt, vet, the census and the live compile, ~5 min together — run
+    # on the LAST shard, away from it. Should the weights ever put them
+    # together, that shard still fits the ceiling.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # Nested read-only mount witnesses need a namespace-capable runner.
+    # ARC pods refuse that mount; a qualified private runner may override
+    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,6 +270,7 @@ jobs:
           fi
 
       - name: Generated artefacts are fresh (fail fast)
+        if: matrix.shard == 2
         # Two pull requests that each regenerate the same committed artefact
         # can merge clean and stale together — the queue's most frequent
         # failure. The freshness tests that catch it take seconds, but the
@@ -251,8 +322,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -277,6 +348,7 @@ jobs:
           node "$ULTRA11Y_BIN" --version
 
       - name: gofmt (check)
+        if: matrix.shard == 2
         shell: bash
         run: |
           set -euo pipefail
@@ -291,10 +363,11 @@ jobs:
           fi
 
       - name: go vet
+        if: matrix.shard == 2
         run: go vet -mod=vendor ./...
 
       - name: Test capability census
-        if: always()
+        if: always() && matrix.shard == 2
         # Static inventory is identical locally; runner observations contain
         # boolean prerequisite presence only, never credential values.
         run: |
@@ -302,7 +375,7 @@ jobs:
           cat .iterion/test-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish test capabilities
-        if: always()
+        if: always() && matrix.shard == 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-capabilities-unit
@@ -310,6 +383,23 @@ jobs:
           include-hidden-files: true # the census lives under .iterion
           if-no-files-found: error
           retention-days: 30
+
+      - name: Prepare installed Helm chart dependencies
+        # Hosted VMs include Helm, so chart tests execute there as well as in
+        # helm-lint. Prepare the declared archives before either Go suite.
+        run: |
+          if command -v helm >/dev/null 2>&1; then
+            sh scripts/chart-check-deps.sh charts/iterion
+          fi
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
@@ -322,12 +412,24 @@ jobs:
         # is a budget a healthy run can reach, and did — ./bots carried the
         # whole job to the panic at 10m0s while the same commit passed on a
         # faster machine (measured: 521.8s on CI at one commit, a timeout at
-        # 10m0s on the next). The number bounds a HANG, not a slow machine; a
-        # package that genuinely needs 20 minutes of test time is a review
-        # finding either way.
-        run: go test -mod=vendor -count=1 -timeout 1200s $(go list -mod=vendor ./... | grep -v '/e2e$')
+        # 10m0s on the next). The same bots sources later passed in 1007s
+        # on the PR and reached the 1200s aggregate limit in its merge group
+        # while a test had run for only 9s (#2745). Allow 25m per package,
+        # still bounded by the job's 30m including setup and live compilation.
+        # Individual test deadlines and all assertions remain in force.
+        #
+        # The partition goes through an ASSIGNMENT, never inline `$( )`:
+        # inline substitution loses the splitter's exit code, and an
+        # empty-shard refusal would degrade into `go test` with no package.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
+          go test -mod=vendor -count=1 -timeout 1500s $pkgs
 
       - name: Live e2e compile check
+        if: matrix.shard == 2
         # Builds every -tags=live test in the repo and runs NONE of them
         # (`-run '^$'`). No credentials, no model call, no network — pure
         # compilation. The paid live layer would otherwise bit-rot green
@@ -347,8 +449,8 @@ jobs:
         run: go test -mod=vendor -tags live -count=1 -run '^$' ./...
 
   test-e2e:
-    # The e2e half. Its own pod, parallel with test-unit, so the suite's
-    # ~9 minutes stop appending to the unit floor. It rebuilds the studio
+    # Partition top-level test families across four pods: the growing e2e
+    # package exceeded its 900s ceiling in one pod (#2911). Each rebuilds the studio
     # frontend because `pkg/server/static/` is gitignored and embedded with
     # `//go:embed all:static` — the e2e server boots against nothing without
     # it, and artifact-sharing would serialize this job behind `studio`
@@ -359,6 +461,10 @@ jobs:
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       CGO_ENABLED: "0"
     steps:
@@ -387,8 +493,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -408,23 +514,16 @@ jobs:
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
 
-      - name: E2E tests
-        # The ONLY run of the e2e package in this workflow (the unit job
-        # excludes it). The number bounds a HANG, not a slow machine: a
-        # timeout that a healthy run can reach is a coin flip that ejects PRs
-        # from the merge queue with a panic dump naming whichever test
-        # happened to be in flight.
-        #
-        # The suite runs its tests in parallel (t.Parallel() on every row that
-        # owns its state; e2e/main_test.go caps how many run at once, because
-        # these tests wait on background loops and oversubscription starves
-        # them). Measured 2026-09-07 on a 32-core box, whole package, the two
-        # runs back to back: 503.8 s at -parallel 1, 114.5 s capped — a 4.4x
-        # cut. CI runners are smaller than that box, so the wall is longer
-        # here (9-10 min measured 2026-10-04) and the 900 s hang bound now
-        # carries less headroom than it did on the big box: the job budget is
-        # the real ceiling.
-        run: go test -mod=vendor -count=1 -v -timeout 900s ./e2e/...
+      - name: E2E tests (shard ${{ matrix.shard }} of 4)
+        # Discovery includes Test, Example and Fuzz corpus names. Subtests
+        # stay with their parent. All legs use one commit and Go's own
+        # inventory; a discovery failure must stop before running any test.
+        # The per-shard hang bound and e2e/main_test.go's parallel cap stay.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 5m)
+          go test -mod=vendor -count=1 -v -run "$pattern" -timeout 900s ./e2e
 
   studio:
     # The studio half: eslint + tsc -b + vitest, plus the two drift checks
@@ -570,8 +669,11 @@ jobs:
     # lesson: a matrix over runs-on diverges from its id silently).
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 40
+    # Nested read-only mount witnesses need a namespace-capable runner.
+    # ARC pods refuse that mount; a qualified private runner may override
+    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 50
     env:
       CGO_ENABLED: "1"
     strategy:
@@ -616,10 +718,27 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
+
+      - name: Prepare installed Helm chart dependencies
+        # Hosted VMs include Helm, so chart tests execute there as well as in
+        # helm-lint. Prepare the declared archives before either Go suite.
+        run: |
+          if command -v helm >/dev/null 2>&1; then
+            sh scripts/chart-check-deps.sh charts/iterion
+          fi
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Race tests (shard ${{ matrix.shard }} of 3)
         # 1800s bounds a HANG, not a slow machine — the same bound the
@@ -631,7 +750,10 @@ jobs:
           set -euo pipefail
           pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -weights scripts/ci/test-shards-weights.tsv)
           echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          go test -race -mod=vendor -count=1 -timeout 1800s $pkgs
+          # bots alone under -race is the wall of this leg: 1556 s on 1591e1911, over 1800 s on
+          # 69f2f501d (2026-10-29). 2400 s is the stopgap; the t.Parallel campaign (#2564 P2)
+          # and the next floor (#2789) are the fix.
+          go test -race -mod=vendor -count=1 -timeout 2400s $pkgs
 
   # ---- required aggregator: the name the ruleset requires ----
 
@@ -678,7 +800,12 @@ jobs:
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 15
+    # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
+    # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
+    # check_response_timeout: a hang is named by go test's own timeout, and
+    # this ceiling only backstops the steps around it. At 15 it cut a green
+    # 11-14 min suite whenever two runs shared the runners (#3390).
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -690,8 +817,8 @@ jobs:
           # No Go cache (#1839, like fmt-check): -mod=vendor needs no module
           # cache, the build cache it restores is another job's, and on the
           # scale set a slow restore of that ~400 MB archive has taken eleven
-          # minutes of this fifteen-minute budget (nats-conformance, the same
-          # setup, cancelled twice on 2026-09-29).
+          # minutes of a fifteen-minute job (nats-conformance, the same setup,
+          # cancelled twice on 2026-09-29).
           cache: false
 
       - name: Start mongo as a replica set
@@ -705,7 +832,7 @@ jobs:
           docker run -d --name mongo-rs \
             -p 127.0.0.1:27017:27017 \
             mongo:8.0 \
-            --replSet rs0 --bind_ip_all
+            --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
           for i in $(seq 1 30); do
             if docker exec mongo-rs mongosh --quiet --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; then
               break
@@ -749,19 +876,63 @@ jobs:
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo/... \
+          # This includes the complete server suite, which already exceeds
+          # five minutes without Mongo and reached the old 10m package budget
+          # with it under queue load (600.6s, #3390). The budget stays below
+          # the job's ceiling without shortening any test coverage.
+          go test -mod=vendor -count=1 -v -timeout 20m \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
+            ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
             ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
-            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
+            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... ./pkg/usernotify/... ./pkg/configshare/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
-            ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/...
+            ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/... \
+            ./pkg/connector/intake/... ./pkg/connector/poller/...
+          # The store harness runs alone on the replica set: its transactions
+          # and change streams saturate a shared mongod, which starves the
+          # suites beside it, so it carries its own budget.
+          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/store/mongo/...
           # Exercise the public cloud coordinator against the durable outbox,
           # including tenants that only subscribe to custom/run events.
           go test -mod=vendor -count=1 -v -timeout 5m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
+          # BuildSnapshot's run-origin matrix and the merge doors' expected
+          # birth against the native Mongo store. The `/...` form keeps
+          # pkg/runview visible to pkg/store/mongo's gated-package guard;
+          # -run leaves the rest of it to `test`.
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runview/... \
+            -run '^(TestSnapshotOriginNativeMongo|TestMergeExpectedBirthNativeMongo)$'
+
+      - name: Subbot lease Mongo and NATS witness
+        env:
+          ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+          ITERION_TEST_NATS_URI: nats://localhost:4222
+        run: |
+          set -euo pipefail
+          test -n "$ITERION_TEST_MONGO_URI"
+          test -n "$ITERION_TEST_NATS_URI"
+          trap 'docker rm -f nats-child-lease >/dev/null 2>&1 || true' EXIT
+          docker run -d --name nats-child-lease \
+            -p 127.0.0.1:4222:4222 nats:2.14-alpine -js
+          ready=0
+          for i in $(seq 1 30); do
+            logs="$(docker logs nats-child-lease 2>&1)"
+            if grep -Fq 'Server is ready' <<<"$logs" && grep -Fq 'JetStream' <<<"$logs"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs nats-child-lease
+            echo 'Owned NATS fixture failed to start' >&2
+            exit 1
+          fi
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo \
+            -run '^TestSubbotLeaseMongoNATS$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
@@ -842,7 +1013,7 @@ jobs:
     # merge-queue note at the top of this file.
     if: github.event_name != 'merge_group'
     # Builds the iterion image, spins kind + Helm-installs the cloud
-    # stack with bundled Mongo + NATS + MinIO (values-dev.yaml), then
+    # stack with its dev Mongo + NATS + SeaweedFS (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →
     # /metrics). Catches regressions that helm lint cannot — wrong
     # ConfigMap key, broken probe path, RBAC drift, missing image,
@@ -852,11 +1023,28 @@ jobs:
     # image and a Go compile error surfaces here too. The previous
     # `needs: test` was purely defensive and cost 3-4 min of
     # wall-clock per push.
-    # GitHub-hosted: kind comes up, kubectl cannot authenticate to it. The
-    # cause is NOT established — it is not the image's docker access, which a
-    # sibling job uses successfully. See #981.
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # ARC kind + kubectl proven usable on 2026-11-03 (#981):
+    # https://github.com/SocialGouv/iterion/actions/runs/41671007928
+    # Keep the same fork/bot isolation and operator escape hatch as every
+    # other job using the scale set.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # 79 m sits 3 m above the 76 m floor (25 + 32 + 19, witnessed in
+    # charts/iterion/kind_wait_test.go): a 25 m budget for the preamble
+    # (checkout, Go setup, image build, kind up, image load, chart deps),
+    # sized on arc-runners, where it measured 5.9-20.3 m over 90 runs of
+    # 3-4 Nov 2026 — 15 m for its steps (worst 14.8 m) and the 10 m Setup
+    # Go's cache restore stalls before its own segment timeout gives up (5 of
+    # those runs); the ubuntu-latest fallback measured 3.7-5.4 m (38 runs).
+    # Then the 32 m helm cap the install derives from the deadline its own
+    # render gives the server Deployment (values-dev's 1800 s, read by
+    # scripts/chart-kind-wait.sh); and the steps after the install, which a
+    # slow install that succeeds still runs, each capped by its own
+    # timeout-minutes (19 m together). The install and those steps end on a
+    # message — helm's timeout or a step's own. The preamble, the job's
+    # setup and its post steps carry no timeout-minutes of their own: a slow run
+    # ends on a message rather than the runner kill's silence only while
+    # they fit the budget and the 3 m above the floor.
+    timeout-minutes: 79
     env:
       KIND_CLUSTER: iterion-e2e
       IMG: iterion-e2e:ci
@@ -892,46 +1080,61 @@ jobs:
           kind load docker-image "${IMG}" --name "${KIND_CLUSTER}"
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      # The wait helper reads the install's own render through yq
+      # (scripts/chart-kind-wait.sh). Pinned by version and digest
+      # (mikefarah/yq, the implementation its expressions are written for),
+      # not taken from the runner image's inventory, at the version the root
+      # devbox locks — every yq download of the workflows alike
+      # (TestChartKindWaitToolchainPinsYq reds on a drift).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
 
       - name: Build chart dependencies
-        # Sub-charts (mongodb, nats, minio) are declared in Chart.yaml but
-        # not vendored in git (charts/iterion/charts/ is gitignored). Mirror
-        # what `task chart:kind` does locally so values-dev.yaml's bundled
-        # stack resolves at install time.
+        # The sub-charts declared in Chart.yaml are not vendored in git
+        # (charts/iterion/charts/ is gitignored). Mirror what `task chart:kind`
+        # does locally so values-dev.yaml's stack resolves at install time.
         run: helm dependency update ./charts/iterion
 
       - name: Helm install (values-dev.yaml)
-        # CI-specific overrides on top of values-dev.yaml:
-        #   - mongodb.arbiter.enabled=false: a 1-data-replica set doesn't
-        #     need an arbiter; bitnami's chart spawns one by default in
-        #     architecture=replicaset, which adds a pod that waits forever.
-        #   - {mongodb,minio}.persistence.enabled=false: PVC binding via
-        #     kind's local-path-provisioner adds 30-60s for no benefit
-        #     in a hermetic test.
-        # Combined with --timeout 10m these eliminated the 5m install
-        # deadline overruns observed in CI.
+        # CI-specific overrides on top of values-dev.yaml: the image built
+        # above, metrics on, auth off. The dev stores (devStack.*) run on
+        # emptyDirs: no PVC binding to wait for. One argument list feeds the
+        # wait helper and the install: the client wait derives from the
+        # deadline this install's own render gives the server Deployment
+        # (scripts/chart-kind-wait.sh runs `helm template` on the same
+        # arguments), so a slow-registry day exhausts the deadline's budget
+        # instead of a fixed cap while the workload is still Progressing.
         run: |
           set -euo pipefail
+          install=(
+            "${RELEASE}" ./charts/iterion
+            --namespace "${NS}"
+            --values ./charts/iterion/values-dev.yaml
+            --set "image.repository=$(echo ${IMG} | cut -d: -f1)"
+            --set "image.tag=$(echo ${IMG} | cut -d: -f2)"
+            --set "image.pullPolicy=Never"
+            --set "metrics.enabled=true"
+            --set "config.disableAuth=true"
+          )
+          KIND_WAIT=$(sh scripts/chart-kind-wait.sh "${install[@]}")
           kubectl create namespace "${NS}"
-          helm install "${RELEASE}" ./charts/iterion \
-            --namespace "${NS}" \
-            --values ./charts/iterion/values-dev.yaml \
-            --set "image.repository=$(echo ${IMG} | cut -d: -f1)" \
-            --set "image.tag=$(echo ${IMG} | cut -d: -f2)" \
-            --set "image.pullPolicy=Never" \
-            --set "metrics.enabled=true" \
-            --set "mongodb.arbiter.enabled=false" \
-            --set "mongodb.persistence.enabled=false" \
-            --set "minio.persistence.enabled=false" \
-            --set "config.disableAuth=true" \
-            --wait --timeout 10m
+          helm install "${install[@]}" --wait --timeout "${KIND_WAIT}"
 
       - name: Wait for /readyz on server
         # `iterion.fullname` renders as `<release>-iterion` for the
         # server (no `-server` suffix); the runner template appends
         # `-runner`. Mismatched names here would silently hang for the
         # full --timeout before erroring.
+        # Each step after the install carries its own cap (the job cap's
+        # floor sums them): here the two 180 s waits.
+        timeout-minutes: 7
         run: |
           set -euo pipefail
           kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
@@ -940,6 +1143,7 @@ jobs:
             deployment/${RELEASE}-iterion-runner
 
       - name: Port-forward server
+        timeout-minutes: 2 # 30 probes a second apart
         run: |
           kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 4891:4891 &
           # Give port-forward a moment to come up before curl-ing.
@@ -960,16 +1164,19 @@ jobs:
         # DSL shape (see docs/grammar/iterion_v1.ebnf + examples/*.bot):
         #   - top-level node decls, schemas, then `workflow` block
         #   - tool nodes use `output: <schema>` (singular) referencing a
-        #     declared schema, not an inline `outputs:` map
+        #     declared schema, not an inline `outputs:` map — and a node
+        #     that declares one prints that schema's fields as ONE JSON
+        #     object: plain text there fails the node (ADR-171)
         #   - edges live INSIDE the workflow block as `src -> dst`,
         #     not in a separate `edges:` list
         #   - entry point is `entry:`, not `start:`
         # The previous source mixed YAML idioms with the DSL and 400'd
         # at parse time on `:8` — see commit history for the parse
         # error trace from the cloud-e2e diagnostics.
+        timeout-minutes: 3 # the 90 s poll and its requests
         run: |
           set -euo pipefail
-          SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: "echo hello cloud"\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
+          SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: `printf \'{"stdout": "hello cloud"}\'`\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
           BODY=$(jq -n --arg src "$SOURCE" '{source: $src}')
           RUN_ID=$(curl -sf \
             -H "Content-Type: application/json" \
@@ -994,6 +1201,7 @@ jobs:
         # Confirms N1 wiring (post-fix from cloud_ready_review.md): the
         # registered counters are actually incremented by the live
         # cloudpublisher / runner code paths, not just declared.
+        timeout-minutes: 2 # a 3 s settle and two scrapes
         run: |
           set -euo pipefail
           kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 9090:9090 &
@@ -1006,6 +1214,7 @@ jobs:
 
       - name: Dump diagnostics on failure
         if: failure()
+        timeout-minutes: 5 # pods, events, descriptions and logs
         run: |
           kubectl -n "${NS}" get pods -o wide
           # Events sorted by timestamp surface image-pull, probe, and
@@ -1027,9 +1236,9 @@ jobs:
             echo "=== logs $d (previous) ==="
             kubectl -n "${NS}" logs deployment/$d --tail=200 --previous || true
           done
-          for app in mongodb nats minio; do
-            echo "=== logs label app.kubernetes.io/name=$app ==="
-            kubectl -n "${NS}" logs --tail=200 -l "app.kubernetes.io/name=$app" || true
+          for selector in app.kubernetes.io/component=dev-mongodb app.kubernetes.io/name=nats app.kubernetes.io/component=dev-seaweedfs app.kubernetes.io/component=dev-seaweedfs-init; do
+            echo "=== logs label $selector ==="
+            kubectl -n "${NS}" logs --tail=200 -l "$selector" || true
           done
 
   # ─── Hardening jobs (Sprint-8) ────────────────────────────────────
@@ -1072,13 +1281,13 @@ jobs:
     # merge-queue note at the top of this file.
     if: github.event_name != 'merge_group'
     # Catches values typing drift cheaply (~30s) so a broken values.yaml
-    # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
+    # surfaces before the cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
     # keys, the most common foot-gun on a Helm chart upgrade.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - name: helm dependency update
         run: helm dependency update charts/iterion
       - name: helm lint (values-dev.yaml)
@@ -1102,12 +1311,17 @@ jobs:
           # an assertion that actually passed.
           helm template t charts/iterion --set image.tag=edge \
             --set "image.digest=$digest" > /tmp/render-digest.yaml
-          grep -q "image: ghcr.io/socialgouv/iterion@$digest" /tmp/render-digest.yaml
-          # ...and that NOTHING still resolves through the tag. The render has
-          # two iterion.image containers (server + runner fallback) and grep -q
-          # stops at the first, so a refactor routing only one of them through
-          # the digest would otherwise still pass.
-          if grep -q "image: ghcr.io/socialgouv/iterion:edge" /tmp/render-digest.yaml; then
+          # The render has two shared-reference containers (server + runner
+          # fallback): count them, so a refactor routing only one through the
+          # digest goes red. The patterns accept the reference quoted or bare,
+          # so a quoting change in a template cannot blind either check.
+          pinned=$(grep -cE "image: \"?ghcr\.io/socialgouv/iterion@$digest\"?$" /tmp/render-digest.yaml || true)
+          if [ "$pinned" -lt 2 ]; then
+            echo "::error::$pinned container(s) resolved to the digest reference, want the server and the runner (2)"
+            exit 1
+          fi
+          # ...and that NOTHING still resolves through a tag.
+          if grep -qE 'image: "?ghcr\.io/socialgouv/iterion:' /tmp/render-digest.yaml; then
             echo "::error::a container still resolved through image.tag despite image.digest being set"
             exit 1
           fi
@@ -1115,6 +1329,29 @@ jobs:
             echo "::error::a malformed image.digest rendered instead of failing"
             exit 1
           fi
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      # The kind-wait witnesses run scripts/chart-kind-wait.sh, which reads
+      # the render through yq; without it on PATH they would SKIP, and the
+      # chart gate requires its tools here (REQUIRE=1 below). Pinned by
+      # version and digest (mikefarah/yq), at the version the root devbox
+      # locks (TestChartKindWaitToolchainPinsYq reds on a drift).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+      - name: chart render tests (dead selectors, backup and alert guards)
+        # The Go half of `task chart:check`: renders the chart (dev, prod,
+        # pools) and confronts every anti-affinity / spread / PDB selector with
+        # the labels of its own pods (internal/rendergate — the valkeyha defect
+        # of #2012), then the render guards of the backup CronJob and the alert
+        # packs. REQUIRE=1: on this job a missing helm is a red step, never a
+        # skip (the `test` job has Go but no helm, and skips them by design).
+        run: ITERION_CHART_RENDER_REQUIRE=1 go test -mod=vendor -count=1 -run 'TestChart' ./charts/iterion/
 
   golangci:
     # Curated golangci-lint pass (.golangci.yml): errcheck, govet,
@@ -1151,7 +1388,9 @@ jobs:
           sudo install -m 0755 /tmp/golangci-lint-2.12.2-linux-amd64/golangci-lint /usr/local/bin/golangci-lint
           golangci-lint version
       - name: Run golangci-lint
-        run: golangci-lint run --timeout 5m
+        # Cold package loading exceeded five minutes on the shared runners.
+        # Keep every analyzer enabled within the existing 20-minute job budget.
+        run: golangci-lint run --timeout 10m
 
   brand:
     # The positioning guard: every public surface must carry the product
@@ -1179,7 +1418,7 @@ jobs:
     # The other required jobs carry a timeout budget; brand is the one
     # required job without one. Two shell scripts, ~40 s: 10 minutes is ~15x
     # headroom, and a hung script fails this queue entry instead of holding
-    # the ruleset's 60-min check_response_timeout.
+    # the ruleset's check_response_timeout_minutes (60).
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1207,6 +1446,13 @@ jobs:
         run: ./scripts/ci/tap-entry-check.sh
       - name: Positioning
         run: ./scripts/brand/positioning-check.sh
+      - name: Setup prompt parity
+        # bash + awk + diff, all present on a bare runner — the same shape as
+        # the two checks above: content guards run DIRECTLY in the required
+        # job, because `task check` is not wired into any workflow (a guard
+        # that only a local session can run protects nothing between a PR
+        # and main).
+        run: ./scripts/prompt-parity.sh
       - name: OpenGraph card is not stale
         # bash + coreutils + python3, all present on a bare runner — no
         # browser, no fonts, no devbox. The script says why it checks the

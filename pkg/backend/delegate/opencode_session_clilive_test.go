@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +52,7 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	}
 	// The operator's own opencode settings must not reach the run.
 	for _, name := range []string{"OPENCODE_DB", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION"} {
-		t.Setenv(name, "")
+		unsetEnvForTest(t, name)
 	}
 	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "1")
 	t.Setenv("OPENCODE_DISABLE_AUTOUPDATE", "1")
@@ -69,7 +70,34 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
   "autoupdate": false
 }
 `)
-	repo := filepath.Join(tmp, "repo")
+	// 2.x routes `run` through a background service whose port is derived
+	// from the release channel (49374 on `latest`), so a test carrying its
+	// own scratch home would fight the operator's own service for it. The
+	// scratch service config pins a free port, and what the test started it
+	// stops — a service left holding a port and a deleted scratch home would
+	// break the operator's next opencode run.
+	//
+	// Both halves are 2.x-only: the 1.x line has no background service and
+	// no `service` subcommand, so an unconditional cleanup would fail the
+	// test on the very host the 1.x assertions below exist for. One probe
+	// for the whole test, reused by those assertions.
+	major := openCodeMajorVersion(t, cli, nil)
+	if major >= 2 {
+		mustWriteFile(t, filepath.Join(tmp, "config", "opencode", "service.json"),
+			"{\n  \"port\": "+strconv.Itoa(freeLocalPort(t))+"\n}\n")
+		t.Cleanup(func() {
+			stop := exec.Command(cli, "service", "stop") // #nosec G204 — the located CLI.
+			if out, err := stop.CombinedOutput(); err != nil {
+				t.Errorf("stopping the service this test started: %v: %s", err, out)
+			}
+		})
+	}
+
+	// The repo lives UNDER the scratch HOME: the workspace screen walks the
+	// project's ancestors and stops at HOME without screening it, so a
+	// sibling of HOME would climb to the filesystem root and the proof would
+	// read whatever the runner's shared TMPDIR carries.
+	repo := filepath.Join(tmp, "home", "repo")
 	for _, args := range [][]string{
 		{"init", "-q", repo},
 		{"-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
@@ -78,6 +106,15 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
+	// The project the CLI resolves must be the NODE's workspace. opencode 2.x
+	// reads the project's AGENTS.md into the prompt it sends, and it resolves
+	// the project from PWD rather than from its own cwd (measured on 2.2.5),
+	// so a spawn that left the engine's PWD in place would send the ENGINE's
+	// instructions and read the engine's checkout — while iterion's workspace
+	// screen guarded a tree the CLI never opened. The scripted model records
+	// what it was sent, so this token is the authority.
+	const projectToken = "PROJECT-INSTRUCTIONS-OSPREY-5"
+	mustWriteFile(t, filepath.Join(repo, "AGENTS.md"), "# project instructions\n\n"+projectToken+"\n")
 
 	b := NewOpenCodeBackend(testLogger(), cli)
 	turn := func(t *testing.T, prompt, sessionID string, fork bool) (Result, error) {
@@ -103,6 +140,7 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	if fresh.SessionID == "" {
 		t.Fatal("the fresh turn reported no session id")
 	}
+	model.requireAgentTurns(t, projectToken)
 
 	resumed, err := turn(t, second, fresh.SessionID, false)
 	if err != nil {
@@ -122,13 +160,59 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	}
 	model.requireAgentTurns(t, third, first, second)
 
-	gone, err := turn(t, "x", "ses_doesnotexist", false)
-	if err == nil {
-		t.Fatalf("a resume of an unknown session succeeded with %v", gone.Output)
+	// An id the CLI no longer holds is VERSION-dependent, so the assertion
+	// carries the version it measured rather than one line's worth of a
+	// single release: 1.19 exits 1 with "Session not found", so a lost
+	// transcript fails the call and `inherit_if_available` degrades loudly;
+	// 2.2.5 CREATES a session under the requested id, so the resume succeeds
+	// as an EMPTY conversation and nothing distinguishes it from a fresh one.
+	const unknown = "ses_doesnotexist"
+	gone, goneErr := turn(t, "x", unknown, false)
+	if major >= 2 {
+		if goneErr != nil {
+			t.Fatalf("opencode %d.x creates a session under an unknown id, but the resume failed: %v (stderr %q)", major, goneErr, gone.Stderr)
+		}
+		if gone.SessionID != unknown {
+			t.Fatalf("SessionID = %q, want the requested %q — the id the stream reports is what tells a caller the transcript did not come back", gone.SessionID, unknown)
+		}
+	} else {
+		if goneErr == nil {
+			t.Fatalf("opencode %d.x refuses an unknown id, but the resume succeeded with %v", major, gone.Output)
+		}
+		if !strings.Contains(gone.Stderr, "Session not found") {
+			t.Fatalf("Stderr = %q, want opencode's own reason", gone.Stderr)
+		}
 	}
-	if !strings.Contains(gone.Stderr, "Session not found") {
-		t.Fatalf("Stderr = %q, want opencode's own reason", gone.Stderr)
+}
+
+// unsetEnvForTest removes a variable for the duration of the test: t.Setenv
+// records the value to restore, os.Unsetenv is what the CLI then sees.
+// Blanking is not the same thing — an empty OPENCODE_* value is still a
+// value, and 2.x derives its managed service from those variables (measured
+// on 2.2.5: a run carrying `OPENCODE_DB=` dies with "Managed service port
+// 49374 on 127.0.0.1 is already in use").
+func unsetEnvForTest(t *testing.T, name string) {
+	t.Helper()
+	t.Setenv(name, "")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
 	}
+}
+
+// freeLocalPort reserves a loopback port the kernel reports free and hands it
+// back. The port is released before the CLI binds it, which is a race only
+// another process racing for the same ephemeral port could lose.
+func freeLocalPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
 
 // scriptedOpenAIModel is an OpenAI-compatible chat-completions endpoint that

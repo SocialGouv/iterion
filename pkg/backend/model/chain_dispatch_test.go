@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -24,15 +25,21 @@ type backendScriptedBackend struct {
 	// can mutate it without cross-talk.
 	tokens  int
 	costUSD float64
+	// session and credential are what the call reports it ran on: the
+	// session label and the credential keys (ADR-161 decision 8).
+	session    string
+	credential credroute.Spend
 }
 
 func (b *backendScriptedBackend) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
 	b.tasks = append(b.tasks, task)
 	res := delegate.Result{
-		BackendName: b.name,
-		Tokens:      b.tokens,
-		CostUSD:     b.costUSD,
-		Output:      map[string]any{"served_by": b.name},
+		BackendName:        b.name,
+		Tokens:             b.tokens,
+		CostUSD:            b.costUSD,
+		Output:             map[string]any{"served_by": b.name},
+		SessionFingerprint: b.session,
+		Credential:         b.credential,
 	}
 	if b.costUSD > 0 {
 		res.Output["_cost_usd"] = b.costUSD
@@ -70,6 +77,7 @@ func crossBackendChain(t *testing.T, headErr error) (*ClawExecutor, *backendScri
 // executed on claw yields an agent with ZERO tools that still carries an
 // output schema — a schema-valid verdict it never verified.
 func TestChainRebuildsTaskPerBackend(t *testing.T) {
+	t.Parallel()
 	e, head, tail, chain := crossBackendChain(t, &delegate.ErrTransient{Reason: "boom"})
 
 	assembled := map[string]int{}
@@ -119,6 +127,7 @@ func TestChainRebuildsTaskPerBackend(t *testing.T) {
 // still assemble exactly once, so adding the chain machinery costs
 // existing bots nothing.
 func TestChainReusesTaskWithinOneBackend(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"}}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaudeCode, head)
@@ -144,6 +153,7 @@ func TestChainReusesTaskWithinOneBackend(t *testing.T) {
 // session, invisible to max_cost_usd, the org monthly cap and a lending
 // donor's ledger.
 func TestChainAccumulatesFailedElementSpend(t *testing.T) {
+	t.Parallel()
 	e, _, _, chain := crossBackendChain(t, &delegate.ErrTransient{Reason: "boom"})
 	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
 		func(_ context.Context, bn string) (*delegate.Task, error) {
@@ -169,6 +179,7 @@ func TestChainAccumulatesFailedElementSpend(t *testing.T) {
 // the same executor must enter the chain at the accepting fallback without
 // spawning the refused primary again.
 func TestChainCooldownSkipsRefusedRouteAcrossNodes(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	head := &backendScriptedBackend{
@@ -241,6 +252,7 @@ func TestChainCooldownSkipsRefusedRouteAcrossNodes(t *testing.T) {
 // historical refused spawn on every node instead of silently keeping a route
 // dark until the remembered instant.
 func TestChainCooldownCanBeDisabled(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
@@ -277,6 +289,7 @@ func TestChainCooldownCanBeDisabled(t *testing.T) {
 }
 
 func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name  string
@@ -344,6 +357,7 @@ func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
 // refuses the category — cannot USE the cooldown, but it must still ARM it,
 // or the next node with a richer chain pays for the same refused spawn.
 func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	tests := []struct {
@@ -411,6 +425,7 @@ func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
 // primary dark for the whole run and stamp every later node `_fallback_used`.
 // The ledger declines the entry instead and dispatch stays fail-open.
 func TestChainCooldownRefusesAnImplausibleReset(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name  string
@@ -456,6 +471,7 @@ func TestChainCooldownRefusesAnImplausibleReset(t *testing.T) {
 }
 
 func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
@@ -489,6 +505,7 @@ func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
 // If the serving fallback then fails, downstream run-level recovery must still
 // see the remembered usage-window cause and park until its reset instant.
 func TestChainCooldownPreservesRememberedCauseWhenFallbackFails(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	head := &backendScriptedBackend{
@@ -550,6 +567,7 @@ func TestChainCooldownPreservesRememberedCauseWhenFallbackFails(t *testing.T) {
 // error; a chain that surfaced only its LAST failure would silently
 // disarm both whenever the forfait wall was followed by anything else.
 func TestErrChainExhaustedPreservesEveryCause(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr()}
 	tail := &backendScriptedBackend{
 		name: delegate.BackendClaw,
@@ -588,10 +606,120 @@ func TestErrChainExhaustedPreservesEveryCause(t *testing.T) {
 	}
 }
 
+// TestErrChainExhaustedNamesTheRouteOfEveryCause: each cause of an exhausted
+// chain travels with the route it failed on — the backend, the provider, the
+// session label and the credential keys the call reported — at its own
+// index, in either order of the walk. A reader that must tell WHOSE
+// credential a verdict is about (the credential pool resting or evicting a
+// lent donor) reads it there, never from the position of the cause.
+func TestErrChainExhaustedNamesTheRouteOfEveryCause(t *testing.T) {
+	t.Parallel()
+	teamKey := credroute.Spend{Channel: credroute.ChannelRunKey, Slot: "zai", Fingerprint: "fp-team-zai"}
+	for _, clawFirst := range []bool{false, true} {
+		subscription := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr(), session: "anthropic-oauth"}
+		key := &backendScriptedBackend{name: delegate.BackendClaw, credential: teamKey,
+			fail: &delegate.ErrAuthFailed{Provider: "zai", Detail: "401 invalid api key"}}
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendClaudeCode, subscription)
+		reg.Register(delegate.BackendClaw, key)
+		e := newFallbackExecutor(reg, EventHooks{})
+		base := delegate.BackendClaudeCode
+		chain := []chainElement{{Label: "subscription"}, {Label: "key", Backend: delegate.BackendClaw, Provider: "zai"}}
+		if clawFirst {
+			base = delegate.BackendClaw
+			chain = []chainElement{{Label: "key", Provider: "zai"}, {Label: "subscription", Backend: delegate.BackendClaudeCode}}
+		}
+		build := e.newElementBuilder("review", base, nil,
+			func(_ context.Context, bn string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: "review"}, nil
+			})
+		_, err := e.dispatchChain(context.Background(), "review", chain, "claude-opus-5", build)
+		var exhausted *ErrChainExhausted
+		if !errors.As(err, &exhausted) || len(exhausted.Errs) != 2 {
+			t.Fatalf("clawFirst=%v: terminal error = %v, want a two-cause ErrChainExhausted", clawFirst, err)
+		}
+		for i, cause := range exhausted.Errs {
+			route := exhausted.Route(i)
+			var auth *delegate.ErrAuthFailed
+			if errors.As(cause, &auth) {
+				if route.Backend != delegate.BackendClaw || route.Provider != "zai" || route.Credential != teamKey {
+					t.Fatalf("clawFirst=%v: the dead key's verdict (cause %d) names route %+v, want the claw route on the team's z.ai key %+v", clawFirst, i, route, teamKey)
+				}
+				continue
+			}
+			if route.Backend != delegate.BackendClaudeCode || route.Source != "anthropic-oauth" || route.Credential != (credroute.Spend{}) {
+				t.Fatalf("clawFirst=%v: the window's verdict (cause %d) names route %+v, want the claude_code session on the subscription", clawFirst, i, route)
+			}
+		}
+	}
+}
+
+// TestErrChainExhaustedNamesTheCredentialOfASkippedRoute: a route skipped on
+// a remembered cooldown makes no call, but the verdict it carries is the one
+// the call that armed the cooldown met — so it names THAT call's session label
+// and credential keys. A skip that named none left the verdict to the
+// credential plan's prediction or to nobody, and a dead lent key skipped on
+// its run-long auth cooldown was then cleared by another route's verdict
+// (#3032). Both cooldowns a skip can ride: an auth refusal on a policy run
+// whose triggers arm it, and a usage window that named its reset.
+func TestErrChainExhaustedNamesTheCredentialOfASkippedRoute(t *testing.T) {
+	t.Parallel()
+	lentKey := credroute.Spend{Channel: credroute.ChannelRunKey, Slot: "zai", Fingerprint: "fp-lent-zai"}
+	for _, tc := range []struct {
+		name     string
+		triggers []string
+		refusal  error
+	}{
+		{"auth cooldown", []string{"auth"}, &delegate.ErrAuthFailed{Provider: "zai", Detail: "401 invalid api key"}},
+		{"usage window cooldown", nil, &delegate.ErrRateLimited{Provider: "zai", Kind: delegate.RateLimitKindUsageWindow,
+			Detail: "[1308][Usage limit reached for 5 hour.]", ResetAt: time.Now().Add(5 * time.Hour)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			key := &backendScriptedBackend{name: delegate.BackendClaw, credential: lentKey, fail: tc.refusal}
+			subscription := &backendScriptedBackend{name: delegate.BackendClaudeCode, session: "anthropic-oauth"}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaw, key)
+			reg.Register(delegate.BackendClaudeCode, subscription)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.llmRouteTriggers = tc.triggers
+			chain := []chainElement{{Label: "key", Provider: "zai"}, {Label: "subscription", Backend: delegate.BackendClaudeCode}}
+			build := e.newElementBuilder("review", delegate.BackendClaw, nil,
+				func(_ context.Context, bn string) (*delegate.Task, error) {
+					return &delegate.Task{NodeID: "review"}, nil
+				})
+			// n1: the key is refused, the subscription serves — the chain
+			// succeeds and the refusal is remembered.
+			if _, err := e.dispatchChain(context.Background(), "review", chain, "claude-opus-5", build); err != nil {
+				t.Fatalf("first dispatch = %v, want the subscription to serve after the key's refusal", err)
+			}
+			calls := len(key.tasks)
+			// n2: the key is skipped on the cooldown, the subscription meets
+			// its window — the chain is exhausted.
+			subscription.fail = usageWindowErr()
+			_, err := e.dispatchChain(context.Background(), "review", chain, "claude-opus-5", build)
+			if len(key.tasks) != calls {
+				t.Fatalf("the key ran %d more time(s) on the second dispatch — the premise is a route skipped on its cooldown", len(key.tasks)-calls)
+			}
+			var exhausted *ErrChainExhausted
+			if !errors.As(err, &exhausted) || len(exhausted.Errs) != 2 {
+				t.Fatalf("second dispatch = %v, want a two-cause ErrChainExhausted (the skipped key's remembered refusal, the subscription's window)", err)
+			}
+			if route := exhausted.Route(0); route.Backend != delegate.BackendClaw || route.Credential != lentKey {
+				t.Fatalf("the skipped key's verdict names route %+v, want the claw route on the credential its refusal was met on %+v — a skip naming no keys is placed on the plan's guess or on nobody", route, lentKey)
+			}
+			if route := exhausted.Route(1); route.Backend != delegate.BackendClaudeCode || route.Source != "anthropic-oauth" {
+				t.Fatalf("the window's verdict names route %+v, want the claude_code session on the subscription", route)
+			}
+		})
+	}
+}
+
 // TestChainStopsWhenNoRemainingRouteAccepts: `on:` is a per-route
 // filter. When the only remaining route refuses the category, the walk
 // ends rather than burning a route that cannot help.
 func TestChainStopsWhenNoRemainingRouteAccepts(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: &delegate.ErrAuthFailed{Provider: "claude_code", Detail: "invalid bearer token"},
@@ -625,6 +753,7 @@ func TestChainStopsWhenNoRemainingRouteAccepts(t *testing.T) {
 // accepts transient_exhausted) must reach gpt when the primary dies of
 // a transient that exhausted its budget — not stop at api.
 func TestChainSkipsNonAcceptingRouteAndTriesLater(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		// ClassifyFallback maps *ErrTransient with exhausted retries via
@@ -689,6 +818,7 @@ func TestChainSkipsNonAcceptingRouteAndTriesLater(t *testing.T) {
 // all. A missing classifier must degrade to a fall-through, never to a
 // dead end.
 func TestChainAdvancesOnUnclassifiedDespiteFilter(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: errors.New("claw backend: runner: something opaque"),
@@ -718,6 +848,7 @@ func TestChainAdvancesOnUnclassifiedDespiteFilter(t *testing.T) {
 // last-good conversation. The fallback sees the baseline, while any partial
 // state captured by the failed route is discarded by the rollback helper.
 func TestChainRollsBackSessionOnFallThrough(t *testing.T) {
+	t.Parallel()
 	const runID, nodeID = "run-1", "review"
 	sessions := newNodeSessionStore()
 	sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`))
@@ -742,6 +873,7 @@ func TestChainRollsBackSessionOnFallThrough(t *testing.T) {
 // A cooled route executes no provider call and therefore must leave the
 // last-good conversation untouched for the fallback.
 func TestChainPreservesSessionOnCooldownFallThrough(t *testing.T) {
+	t.Parallel()
 	const runID, nodeID = "run-1", "review"
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
@@ -796,6 +928,7 @@ func TestChainPreservesSessionOnCooldownFallThrough(t *testing.T) {
 // into another backend re-sends one provider's turn to a provider that
 // never issued it.
 func TestChainDropsResumeContinuityOnFallThrough(t *testing.T) {
+	t.Parallel()
 	e, _, tail, chain := crossBackendChain(t, &delegate.ErrTransient{Reason: "boom"})
 	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
 		func(_ context.Context, bn string) (*delegate.Task, error) {
@@ -822,6 +955,7 @@ func TestChainDropsResumeContinuityOnFallThrough(t *testing.T) {
 // TestBuildFailureDoesNotVetoLaterElements: an unresolvable backend or
 // an uncredentialed element is that element's failure, not the node's.
 func TestBuildFailureDoesNotVetoLaterElements(t *testing.T) {
+	t.Parallel()
 	tail := &backendScriptedBackend{name: delegate.BackendClaw}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaw, tail)
@@ -848,6 +982,7 @@ func TestBuildFailureDoesNotVetoLaterElements(t *testing.T) {
 // lose its in-place budget on a usage window AND then stop at the
 // filter — strictly worse off than before the chain existed.
 func TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr()}
 	tail := &backendScriptedBackend{name: delegate.BackendClaw}
 	reg := delegate.NewRegistry()
@@ -878,6 +1013,7 @@ func TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt(t *testing.T) {
 // element as the terminal result. That element must NOT also sit in
 // `spent` — applyTo would then count its tokens twice (R5180a7).
 func TestFilterStopDoesNotDoubleCountSpend(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"},
 		tokens: 1000, costUSD: 0.40,
@@ -926,6 +1062,7 @@ func TestFilterStopDoesNotDoubleCountSpend(t *testing.T) {
 // what its routes burned. Dropping it under-reports whole agentic
 // sessions to max_cost_usd, the org monthly cap and a donor's ledger.
 func TestExhaustedChainCarriesEverySpend(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"},
 		tokens: 1000, costUSD: 0.40,
@@ -973,6 +1110,7 @@ func TestExhaustedChainCarriesEverySpend(t *testing.T) {
 // merely because an unrelated route exists re-issues an identical call
 // with a second full retry budget — the waste the guard exists for.
 func TestCollapseHintOnlyChain_TrimsPrefixNotWholeChain(t *testing.T) {
+	t.Parallel()
 	chain := []chainElement{
 		{Provider: "zai"},
 		{Provider: "anthropic"},
@@ -1041,6 +1179,7 @@ func claudeCodeChain(t *testing.T, task *delegate.Task, head delegate.Backend) c
 // direction that parks a run that still had budget. Nothing else pins this
 // wire: the fold's own tests call the loop directly.
 func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
+	t.Parallel()
 	head := &sessionScriptedBackend{
 		name: delegate.BackendClaudeCode, failFor: 1,
 		tokens: []int{1000, 300}, cost: []float64{0.10, 0.13},
@@ -1063,6 +1202,7 @@ func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
 // even though the id is non-empty throughout. A fold reading only the id
 // MAXes them and loses a whole attempt's spend.
 func TestChainDoesNotShareTheSessionItForks(t *testing.T) {
+	t.Parallel()
 	head := &sessionScriptedBackend{
 		name: delegate.BackendClaudeCode, failFor: 1,
 		tokens: []int{1000, 300}, cost: []float64{0.10, 0.13},
@@ -1086,6 +1226,7 @@ func TestChainDoesNotShareTheSessionItForks(t *testing.T) {
 // is neither kept nor silently evicted. Same-backend carries, delivery-1
 // routes and the "off" posture mark nothing.
 func TestChainCrossHarnessMarksTheFallbackEvent(t *testing.T) {
+	t.Parallel()
 	mkChain := func(mode string) (*ClawExecutor, *fallbackRecorder, []chainElement, func(context.Context, string, []chainElement) (chainOutcome, error)) {
 		rec := &fallbackRecorder{}
 		head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"}, tokens: 10}

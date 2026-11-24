@@ -80,6 +80,7 @@ secret_property = "value:" STRING
                 | "env:" string_or_ident
                 | "optional:" BOOL
                 | "hosts:" string_list
+                | "sinks:" string_list
                 | "description:" STRING ;
 ```
 
@@ -161,13 +162,14 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `deliverables` | string list | Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive |
 | `system` | prompt name, or its text as a string | The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
-| `session_slot` | ident | Named durable session slot; requires session: persist |
-| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
+| `session_slot` | ident | Named durable session slot; requires session: persist; must not be named like another node (C314) |
+| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
-| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
+| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
@@ -183,8 +185,9 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
+| `codemode` | one of `on`, `off`, or a block → [codemode](dsl-properties.md#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
-| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
+| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
 | `deny` | string list | Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
@@ -267,12 +270,14 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `deliverables` | string list | Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `permission` | ident | Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
 | `parallel_safe` | bool | Declares the node safe to run beside a mutating branch |
+| `capabilities` | tool list | Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport (a board.* action gates on it) and by a registry recipe naming an iterion host tool (`mcp.iterion_board.*`, held to it like an agent's tools:, C328); on a command:/script: node, an HTTP action or any other registry tool the list is inert (C332) |
 | `goal` | string | Verified action: what the command is for, in one line |
 | `postcondition` | string | Verified action: command whose exit code is the truth oracle at every rung |
 | `policy` | ident — `required`, `recover`, `best_effort` | Verified action: required (default), recover or best_effort (C103–C106) |
@@ -344,6 +349,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](dsl-properties.md#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](dsl-properties.md#attachments) | Workflow-scoped attachments |
+| `business_stores` | block → [business_stores](dsl-properties.md#business_stores) | Expected business-store identities, normalized at launch and inherited by children |
 | `budget` | block → [budget](dsl-properties.md#budget) | Run caps, each overridable by the matching run flag |
 | `resources` | block → [resources](dsl-properties.md#resources) | Named semaphores and pools nodes lease with needs: |
 | `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the run |
@@ -354,6 +360,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
+| `codemode` | one of `on`, `off`, or a block → [codemode](dsl-properties.md#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
 | `repo_devbox` | ident — `on`, `off` | Load the target repo's devbox.json toolchain: on (default) or off (C134) |
 | `workspace_checkpoint` | ident — `on`, `off` | Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139) |
@@ -362,7 +369,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `ask` | string list | Permission rules that pause for approval |
 | `deny` | string list | Permission rules always blocked |
 | `tool_policy` | tool list | Run-wide tool-policy entries |
-| `capabilities` | tool list | Run-wide board capabilities |
+| `capabilities` | tool list | Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none |
 | `skills` | skill list | Run-wide skill-library skills |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | Default interaction mode for the run's nodes that set none |
 <!-- dsl-spec:end -->
@@ -533,12 +540,12 @@ edge = node_ref "->" node_ref { "->" node_ref } { when_or_else | iteration | wit
 node_ref = IDENT { "." IDENT } | "done" | "fail" ;
 
 when_or_else = "when" ( [ "not" ] IDENT | STRING ) | "else" ;
-iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")"
+iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")" [ "guard" ":" ( "on" | "off" ) ] [ "sized_by" STRING ]
           | "as foreach" IDENT "(" IDENT "in" STRING ")" ;
 with_block = "with" "{" { IDENT ":" ( STRING | INT | FLOAT | BOOL ) [ "," ] } "}" ;
 ```
 
-A chain `a -> b -> c` is one edge per arrow, in order; the clauses belong to the last edge (a clause before a further arrow is E032). A non-string `with` literal is read as its text (`n: 3` maps `"3"`). Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge.
+A chain `a -> b -> c` is one edge per arrow, in order; the clauses belong to the last edge (a clause before a further arrow is E032). A non-string `with` literal is read as its text (`n: 3` maps `"3"`). Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge. A loop's `guard` and `sized_by` suffixes accept either order, each at most once — `sized_by` names the work signal the loop budget guard prorates with ([dsl.md](../dsl.md#budget-and-loop-back-edges)).
 
 ## Expression language
 

@@ -24,7 +24,7 @@ import (
 // exclusion in a tool's executable body. Both checks are gated on SHELL
 // bodies (`command:`, `postcondition:`, and a `script:` whose language is
 // sh/bash/empty): a js/py script body renders its refs as JSON literals
-// (resolveScriptTemplate, unconditional over languages), so
+// (renderScriptIn), so
 // `const noise = {{run.tree_noise}};` there is valid code consuming the
 // list as data — and both shell fixes break it (the bang form splices raw
 // pathspecs, a SyntaxError; a bare $ITERION_TREE_NOISE never env-expands in
@@ -32,13 +32,14 @@ import (
 //
 // On a shell body, `{{run.tree_noise}}` is the PROMPT rendering of the
 // canonical exclusion list: a command/postcondition shell-escapes it into
-// ONE argument, a shell script renders it as ONE JSON-quoted string — both
-// a single word that, read as a git pathspec list, matches no file, so the
+// ONE argument, and a shell script reads it from its environment as one
+// quoted word — a single word that, read as a git pathspec list, matches no
+// file, so the
 // exclusion vanishes in silence (a `git status`-based gate lists the noise
 // anyway, `git add` refuses the pathspec; the review-fanout scaffold
 // shipped exactly that defect until #1530's verdict caught it). Inside a
-// QUOTED span of a script the ref is interpreter-bound data, not a shell
-// word (the python3 -c shape), and the check leaves it alone. The
+// QUOTED span of a script the ref may be interpreter-bound data rather than
+// a shell word (the python3 -c shape), and the check leaves it alone. The
 // legitimate shell spellings are the bang form `{{!run.tree_noise}}`
 // (substituted verbatim) and `$ITERION_TREE_NOISE` unquoted (word-split).
 //
@@ -84,9 +85,10 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 					continue
 				}
 				seenRaw[ref.Raw] = true
-				// The AST keeps no per-property span (the lot-1b work), so
-				// the position travels in the message: the body-relative
-				// line of the reference, located by its raw text.
+				// Positioned on the body's property line; the AST keeps no
+				// position inside a body, so the line inside it travels in
+				// the message: the body-relative line of the reference,
+				// located by its raw text.
 				line := bodyLineOf(b.text, ref.Raw)
 				if b.where == "script" {
 					// A ref inside a quoted span or a heredoc of a script
@@ -98,26 +100,26 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 					if !free {
 						continue
 					}
-					c.warnfAt(DiagTreeNoiseRefInExecBody, t.ID, "",
-						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE JSON-quoted string (a script body renders its refs as JSON literals) — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the check cannot tell data from a collapsed word, and stays silent). "+
+					c.warnfAtProperty(DiagTreeNoiseRefInExecBody, "tool", t.ID, b.where,
+						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE word (a shell script reads a data reference from its environment as one quoted word, ${N+\"$N\"}) — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the check cannot tell data from a collapsed word, and stays silent). "+
 							"Write {{!run.tree_noise}} for a verbatim substitution, or read $%s unquoted — the engine exports it to every tool process",
 						t.ID, freeLine, treenoise.TreeNoiseEnvVar)
 					continue
 				}
-				c.warnfAt(DiagTreeNoiseRefInExecBody, t.ID, "",
+				c.warnfAtProperty(DiagTreeNoiseRefInExecBody, "tool", t.ID, b.where,
 					"tool %q %s, body line %d: {{run.tree_noise}} renders shell-escaped as ONE word — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying. "+
 						"Write {{!run.tree_noise}} for a verbatim substitution, or read $%s unquoted — the engine exports it to every tool process",
 					t.ID, b.where, line, treenoise.TreeNoiseEnvVar)
 			}
 			for _, q := range sc.hits {
 				if q.double {
-					c.warnfAt(DiagTreeNoiseEnvQuoted, t.ID, "",
+					c.warnfAtProperty(DiagTreeNoiseEnvQuoted, "tool", t.ID, b.where,
 						"tool %q %s, body line %d: %s — inside double quotes $%s expands as ONE word, so the pathspec list collapses into a single argument that matches nothing (git exits 0 and the whole tree stages). "+
 							"Drop the quotes so the list word-splits — inside [ … ] tests and assignments the quotes are mandatory and left alone",
 						t.ID, b.where, q.line, q.text, treenoise.TreeNoiseEnvVar)
 					continue
 				}
-				c.warnfAt(DiagTreeNoiseEnvQuoted, t.ID, "",
+				c.warnfAtProperty(DiagTreeNoiseEnvQuoted, "tool", t.ID, b.where,
 					"tool %q %s, body line %d: %s — single quotes never expand, so the literal text reaches the command and excludes nothing. "+
 						"Read $%s unquoted: the engine exports pre-quoted pathspecs meant to word-split",
 					t.ID, b.where, q.line, q.text, treenoise.TreeNoiseEnvVar)
@@ -127,7 +129,7 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 }
 
 // bodyLineOf returns the 1-based line of needle inside body — the position
-// the message carries where the AST keeps no per-property span. 0 when the
+// the message carries, the AST keeping no position inside a body. 0 when the
 // needle is absent (a ref reconstructed from an expression, say), so the
 // message degrades to "body line 0" rather than naming a wrong one.
 func bodyLineOf(body, needle string) int {
@@ -153,9 +155,14 @@ type treeNoiseQuote struct {
 // and, for the C188 braced-env lint, the names the body assigns and where
 // its unquoted and double-quoted positions open a braced `${` form.
 type shellScan struct {
-	hits    []treeNoiseQuote
-	quoted  [][2]int // [open, close) of every quoted span, close exclusive
-	data    [][2]int // heredoc bodies
+	hits   []treeNoiseQuote
+	quoted [][2]int // [open, close) of every quoted span, close exclusive
+	data   [][2]int // heredoc bodies
+	// single and literal are the regions the shell expands nothing in:
+	// single-quoted spans, and the bodies of heredocs whose delimiter is
+	// quoted (`<<'EOF'`, `<<"EOF"`) — C342 reads them.
+	single  [][2]int
+	literal [][2]int
 	assigns []shellAssign
 	// reads holds the offset of every `${` the SHELL reads — unquoted or
 	// double-quoted, so never one inside a comment, a single-quoted span
@@ -337,9 +344,10 @@ func scanShellBody(body string) shellScan {
 
 		arithDepth int // inside $(( … )) / (( … )): no word-splitting, no heredocs
 
-		heredocDelim string // pending: opens at the next newline
-		heredocStrip bool
-		heredocFrom  = -1 // active heredoc body's start offset
+		heredocDelim  string // pending: opens at the next newline
+		heredocStrip  bool
+		heredocQuoted bool // the pending delimiter was quoted: its body expands nothing
+		heredocFrom   = -1 // active heredoc body's start offset
 
 		// Per-command buffering for the ONE pipe rule: a span that passes
 		// every other check waits for its command's end; flushed at the
@@ -679,6 +687,9 @@ func scanShellBody(body string) shellScan {
 	// end (the pipe rule, see flushCmd).
 	closeSpan := func(close int) {
 		sc.quoted = append(sc.quoted, [2]int{spanStart, close + 1})
+		if quote == '\'' {
+			sc.single = append(sc.single, [2]int{spanStart, close + 1})
+		}
 		if hereWord {
 			// The operand of `<<<` is the command's stdin, never an argv
 			// word, and bash does not word-split it — neither clause of
@@ -721,7 +732,10 @@ func scanShellBody(body string) shellScan {
 			}
 			if cmp == heredocDelim {
 				sc.data = append(sc.data, [2]int{heredocFrom, i})
-				heredocFrom, heredocDelim = -1, ""
+				if heredocQuoted {
+					sc.literal = append(sc.literal, [2]int{heredocFrom, i})
+				}
+				heredocFrom, heredocDelim, heredocQuoted = -1, "", false
 			}
 			line++
 			i = next + 1 // past the newline (or len(body)+1, ending the loop)
@@ -902,8 +916,8 @@ func scanShellBody(body string) shellScan {
 				hereWord = true
 			case ch == '<' && i+1 < len(body) && body[i+1] == '<' && (i+2 >= len(body) || body[i+2] != '<'):
 				flushWord(i)
-				if delim, strip, n := parseHeredocDelim(body[i+2:]); delim != "" {
-					heredocDelim, heredocStrip = delim, strip
+				if delim, strip, quoted, n := parseHeredocDelim(body[i+2:]); delim != "" {
+					heredocDelim, heredocStrip, heredocQuoted = delim, strip, quoted
 					i += 2 + n
 				} else {
 					i += 2
@@ -1021,11 +1035,14 @@ func isShellCommandModifier(w string) bool {
 }
 
 // parseHeredocDelim reads the delimiter of a `<<` operator: an optional `-`
-// (strip leading tabs on the body), blanks, then the word, bare or quoted.
-// Returns the delimiter text (quotes removed), the strip flag, and the
-// number of bytes consumed after `<<`; an empty delimiter means the shape
-// was not a heredoc the scanner trusts.
-func parseHeredocDelim(s string) (delim string, strip bool, n int) {
+// (strip leading tabs on the body), blanks, then the word — bare, quoted,
+// or both at once (`E'OF'`, `\EOF`, `"E"OF`). Returns the delimiter text
+// after quote removal, as the shell takes it — a backslash removed before
+// any byte outside quotes and before `$`, the backquote, `"` and `\` inside
+// double quotes — the strip flag, whether ANY part was quoted (the body
+// then expands nothing), and the number of bytes consumed after `<<`; an
+// empty delimiter means the shape was not a heredoc the scanner trusts.
+func parseHeredocDelim(s string) (delim string, strip, quoted bool, n int) {
 	if n < len(s) && s[n] == '-' {
 		strip = true
 		n++
@@ -1033,20 +1050,42 @@ func parseHeredocDelim(s string) (delim string, strip bool, n int) {
 	for n < len(s) && (s[n] == ' ' || s[n] == '\t') {
 		n++
 	}
-	if n >= len(s) {
-		return "", false, 0
-	}
-	if s[n] == '\'' || s[n] == '"' {
-		q := s[n]
-		end := strings.IndexByte(s[n+1:], q)
-		if end < 0 {
-			return "", false, 0
-		}
-		return s[n+1 : n+1+end], strip, n + end + 2
-	}
-	start := n
+	var b strings.Builder
 	for n < len(s) && !isShellBoundaryOpen(s[n]) && s[n] != '(' && s[n] != ')' && s[n] != '<' && s[n] != '>' {
-		n++
+		switch c := s[n]; c {
+		case '\'':
+			end := strings.IndexByte(s[n+1:], '\'')
+			if end < 0 {
+				return "", false, false, 0
+			}
+			b.WriteString(s[n+1 : n+1+end])
+			quoted = true
+			n += end + 2
+		case '"':
+			j := n + 1
+			for j < len(s) && s[j] != '"' {
+				if s[j] == '\\' && j+1 < len(s) && strings.IndexByte("$`\"\\", s[j+1]) >= 0 {
+					j++
+				}
+				b.WriteByte(s[j])
+				j++
+			}
+			if j >= len(s) {
+				return "", false, false, 0
+			}
+			quoted = true
+			n = j + 1
+		case '\\':
+			if n+1 >= len(s) || s[n+1] == '\n' {
+				return "", false, false, 0
+			}
+			b.WriteByte(s[n+1])
+			quoted = true
+			n += 2
+		default:
+			b.WriteByte(c)
+			n++
+		}
 	}
-	return s[start:n], strip, n
+	return b.String(), strip, quoted, n
 }

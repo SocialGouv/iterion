@@ -19,7 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { OrgTreeView, MembershipView } from "@/api/auth";
 import { ApiError } from "@/api/client";
 import { getOrg, getTeam, type OrgView, type TeamSummary } from "@/api/orgs";
-import { useAuth } from "@/auth/AuthContext";
+import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { errorMessage } from "@/lib/errorHints";
 
 /**
@@ -41,6 +41,27 @@ export function findTeamGrant(
     if (team) return { org, team };
   }
   return null;
+}
+
+/**
+ * Whether the identity tree says the caller may administer teamID — the
+ * three arms of the server's canManageTeam: a platform admin, an admin or
+ * owner of the team, an admin or owner of the team's org. The body of
+ * useCanManageTeam, which documents how far the tree mirrors the server.
+ */
+export function managesTeam(
+  orgs: OrgTreeView[],
+  isSuperAdmin: boolean,
+  teamID: string,
+): boolean {
+  if (isSuperAdmin) return true;
+  // findTeamGrant is the one lookup useTeamSubject uses too: "may I see it"
+  // and "may I manage it" must not answer from two pictures of the caller. It
+  // returns the owning ORG as well, which is what makes the third arm free.
+  const grant = findTeamGrant(orgs, teamID);
+  if (!grant) return false;
+  if (grant.team.role === "admin" || grant.team.role === "owner") return true;
+  return hasOrgRole(grant.org.org_role || null, "admin");
 }
 
 export interface OrgSubject {

@@ -27,15 +27,28 @@ import (
 // Raising a budget is an edit of this table, read in review: that is the
 // escape hatch, and it is meant to be greppable. The first matching pattern
 // wins, so an index rule sits above any broader rule for the same directory.
+
+// budgetOf answers the max for one literal pattern in agentTreeBudgets —
+// the guard's own fixtures size themselves against the table so a raised
+// budget keeps biting.
+func budgetOf(pattern string) int {
+	for _, b := range agentTreeBudgets {
+		if b.pattern == pattern {
+			return b.max
+		}
+	}
+	return 0
+}
+
 var agentTreeBudgets = []agentTreeBudget{
-	{"AGENTS.md", 6144},
+	{"AGENTS.md", 6400},
 	{"CLAUDE.md", 1536},
 	{"docs/agents/**/README.md", 2560},
 	// One-line-per-field cheat sheet; the per-node reference lives in
 	// docs/dsl.md and this leaf is the cross-cutting doctrine that page
 	// does not carry (precedences, the gate diagnostics, roster rules).
 	{"docs/agents/engine/dsl-quick-reference.md", 10752},
-	{"docs/agents/**/*.md", 10240},
+	{"docs/agents/**/*.md", 12288},
 }
 
 type agentTreeBudget struct {
@@ -371,8 +384,10 @@ func TestTheAgentTreeGuardBites(t *testing.T) {
 		{"an index line commented out", map[string]string{"docs/agents/README.md": "# Tree\n\n| [a](a.md) | [sub](sub/) | [b](b.md) |\n<!-- [c](c.md) -->\n", "docs/agents/c.md": "# C\n"}, nil, unindexedPages, "docs/agents/c.md is not indexed"},
 		{"a sub-tree its parent index forgets", map[string]string{"docs/agents/README.md": "# Tree\n\n| [a](a.md) | [b](b.md) |\n"}, nil, unindexedPages, "docs/agents/sub/README.md is not indexed"},
 		{"a sub-tree with no index of its own", nil, []string{"docs/agents/sub/README.md"}, unindexedPages, "docs/agents/sub/leaf one.md has no index"},
-		{"a root over its budget", map[string]string{"AGENTS.md": "# Root\n\n[the tree](docs/agents/README.md)\n" + strings.Repeat("x", 6144)}, nil, budgetViolations, "AGENTS.md is"},
-		{"a nested index over its budget", map[string]string{"docs/agents/sub/README.md": "# Sub\n\n- [leaf](leaf%20one.md)\n" + strings.Repeat("x", 2560)}, nil, budgetViolations, "docs/agents/sub/README.md is"},
+		// The fixtures read the TABLE, never the number: a budget raised in
+		// review must not silence the guard's own witness.
+		{"a root over its budget", map[string]string{"AGENTS.md": "# Root\n\n[the tree](docs/agents/README.md)\n" + strings.Repeat("x", budgetOf("AGENTS.md")+1)}, nil, budgetViolations, "AGENTS.md is"},
+		{"a nested index over its budget", map[string]string{"docs/agents/sub/README.md": "# Sub\n\n- [leaf](leaf%20one.md)\n" + strings.Repeat("x", budgetOf("docs/agents/**/README.md")+1)}, nil, budgetViolations, "docs/agents/sub/README.md is"},
 		{"CLAUDE.md without the import", map[string]string{"CLAUDE.md": "# Claude\n\nRead AGENTS.md.\n"}, nil, importViolations, "no bare"},
 		{"the import fenced as code", map[string]string{"CLAUDE.md": "# Claude\n\n```\n" + agentsImport + "\n```\n"}, nil, importViolations, "no bare"},
 		{"the import commented out", map[string]string{"CLAUDE.md": "# Claude\n\n<!--\n" + agentsImport + "\n-->\n"}, nil, importViolations, "no bare"},
@@ -476,8 +491,16 @@ func TestUntrackedAgentDraftDoesNotChangeTheVerdict(t *testing.T) {
 			t.Fatalf("invalid baseline: %v", got)
 		}
 	}
+	// Sized just past the docs/agents page budget (agentTreeBudgets): the
+	// guard must redden the moment the draft is staged. The size reads the
+	// live budget, so the witness follows the table instead of decoupling
+	// from it at the next budget raise.
 	const draft = "docs/agents/local draft.md"
-	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", 11000))
+	budget, ok := firstBudget(agentTreeBudgets, draft)
+	if !ok {
+		t.Fatal("no budget matches a docs/agents draft")
+	}
+	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", budget.max))
 	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages} {
 		if got := check(t, root); len(got) != 0 {
 			t.Errorf("untracked draft changed the verdict: %v", got)

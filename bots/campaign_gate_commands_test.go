@@ -210,8 +210,36 @@ type finalizeRun struct {
 // finalizeOn runs the REAL finalize on a committed final tree holding the plan
 // and files; `after`, when given, then shapes the working tree the way a child
 // run could leave it. Finalize must answer: a crash leaves the campaign with
-// no handoff at all.
+// no handoff at all. The run has no wall, and the loop ended it.
 func finalizeOn(t *testing.T, plan string, files map[string]string, after func(ws string, git func(...string) string)) finalizeRun {
+	t.Helper()
+	return finalizeUnder(t, campaignClock{endedBy: "programme exhausted: no eligible lot remains"}, plan, files, after)
+}
+
+// campaignClock is the run a REAL campaign node script is rendered under: the
+// campaign's effective wall and the time it has spent, in seconds — a wall of
+// 0 is a run with none — and, for finalize, why the campaign ended.
+type campaignClock struct {
+	wall, elapsed float64
+	endedBy       string
+}
+
+// render substitutes the clock's run.* members as the engine renders them in
+// a script body: JSON numbers.
+func (c campaignClock) render(script string) string {
+	script = strings.ReplaceAll(script, "{{run.max_duration_seconds}}", strconv.FormatFloat(c.wall, 'f', -1, 64))
+	return strings.ReplaceAll(script, "{{run.elapsed_seconds}}", strconv.FormatFloat(c.elapsed, 'f', -1, 64))
+}
+
+// finalizeUnder is finalizeOn under a given clock.
+func finalizeUnder(t *testing.T, clock campaignClock, plan string, files map[string]string, after func(ws string, git func(...string) string)) finalizeRun {
+	t.Helper()
+	return finalizeUnderEnv(t, clock, plan, files, after, nil)
+}
+
+// finalizeUnderEnv is finalizeUnder with env appended to the script's
+// environment (a later key wins).
+func finalizeUnderEnv(t *testing.T, clock campaignClock, plan string, files map[string]string, after func(ws string, git func(...string) string), env []string) finalizeRun {
 	t.Helper()
 	requireModernizeTools(t)
 	script := toolScript(t, "campaign/main.bot", "finalize")
@@ -229,6 +257,8 @@ func finalizeOn(t *testing.T, plan string, files map[string]string, after func(w
 	body := strings.ReplaceAll(script, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{vars.plan_path}}", strconv.Quote(".modernize/plan.yaml"))
 	body = strings.ReplaceAll(body, "{{input.verify_path}}", strconv.Quote("sh verify.sh"))
+	body = strings.ReplaceAll(body, "{{input.ended_by}}", strconv.Quote(clock.endedBy))
+	body = clock.render(body)
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in finalize near %q", body[i:min(i+40, len(body))])
 	}
@@ -237,7 +267,8 @@ func finalizeOn(t *testing.T, plan string, files map[string]string, after func(w
 		t.Fatal(err)
 	}
 	var stderr strings.Builder
-	cmd := exec.Command("python3", p)
+	cmd := modernizeChild(t, "python3", p)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -271,6 +302,7 @@ func handoffLine(handoff, needle string) string {
 // is green on the final tree requalifies only when the repository's suites
 // are green there too, and the handoff says what the suites gave.
 func TestCampaignFinalizeRequalifiesOverTheSuites(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, suite, verdict, handoff string
 	}{
@@ -293,6 +325,7 @@ func TestCampaignFinalizeRequalifiesOverTheSuites(t *testing.T) {
 // — a stray tab, a bad merge — is said in the handoff and the notice, never
 // read as a programme of zero lots that declares no suite.
 func TestCampaignFinalizeSaysAnUnreadPlan(t *testing.T) {
+	t.Parallel()
 	for name, plan := range map[string]string{
 		"a plan that does not parse":   campaignSuitesPlan + "  bad: [unclosed\n",
 		"a plan that is not a mapping": "- id: L1\n",
@@ -313,6 +346,7 @@ func TestCampaignFinalizeSaysAnUnreadPlan(t *testing.T) {
 // TestCampaignFinalizeReadsOutputThatIsNotUTF8: a legacy application's test
 // log in Latin-1 is read with replacement characters, never raised on.
 func TestCampaignFinalizeReadsOutputThatIsNotUTF8(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ suite, want string }{
 		{"printf 'R\\351sultat OK\\n'", "GREEN"},
 		{"printf 'R\\351sultat KO\\n'; exit 1", "RED"},
@@ -330,6 +364,7 @@ func TestCampaignFinalizeReadsOutputThatIsNotUTF8(t *testing.T) {
 // command past its wall is a red the handoff names, never a crash that leaves
 // no handoff.
 func TestCampaignFinalizeRunsUnderTheContractsWalls(t *testing.T) {
+	t.Parallel()
 	plan := func(top, status, lotWall, gate string) string {
 		return "version: 1\n" + top + "oracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n" +
 			"    title: \"move the route\"\n    status: " + status + "\n" + lotWall +

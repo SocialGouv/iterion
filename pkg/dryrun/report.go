@@ -22,7 +22,10 @@ func (p Pass) died() bool {
 // or of a child it simulated — died, or a reference kept as written, shell
 // text refused, a fixture off its schema or naming nothing stands. The
 // verdict `--strict` exits on. An expression the dry run could not decide
-// on a shape (KindInconclusive) is not a defect and is not read here.
+// on a shape (KindInconclusive) is not a defect and is not read here, and
+// neither is a body's environment reading (KindEnvRead): a deliberate dial
+// read is the legitimate shape of that observation, so reporting it must
+// not redden a gate (ADR-130).
 func (r *Report) Failing() bool {
 	for _, p := range r.Passes {
 		if p.died() {
@@ -57,8 +60,9 @@ func (r *Report) Inconclusive() []Finding {
 
 // Clean reports whether the passes met nothing to fix and left nothing
 // undecided: no defect (Failing), and no expression that rested on a
-// shape it could not digest (Inconclusive). Unchecked things, shapes and
-// ceilings are said, not held against the bot.
+// shape it could not digest (Inconclusive). Unchecked things, shapes,
+// ceilings and the environment forms a body's reading answered are said,
+// not held against the bot.
 func (r *Report) Clean() bool {
 	return !r.Failing() && len(r.Inconclusive()) == 0
 }

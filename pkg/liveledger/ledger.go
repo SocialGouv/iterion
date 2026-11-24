@@ -18,13 +18,21 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
 // SchemaVersion is the on-disk format version. Increment on breaking
 // changes; readers must refuse a higher version rather than silently
 // dropping fields.
-const SchemaVersion = 1
+//
+// 2 — a row names what served it (ServedModel) and which credential route
+// funded it (FundedBy), and a target that could not run records a
+// VerdictSkipped row with the prerequisite it lacked. A reader that drops
+// those fields reads a run served by an overridden model as if the
+// fixture's pinned model had answered: a false receipt, which is exactly
+// what refusing a newer schema protects against.
+const SchemaVersion = 2
 
 // DefaultRelPath is the ledger's canonical location relative to the
 // repository root. Kept in code so tests and the CLI resolve it the
@@ -47,7 +55,90 @@ const (
 	// verdict reads as "fine" to every future reader, which is the one
 	// thing it never means; `never` is EXPLICIT.
 	VerdictNever Verdict = "never"
+	// VerdictSkipped — the last attempt could not run: a prerequisite the
+	// target needs was absent (a credential, a CLI, a docker image) and
+	// Row.SkipReason names it. Distinct from VerdictNever on purpose:
+	// `never` means nobody has paid for this target yet, while `skipped`
+	// means nobody could run it HERE — two different asks of the operator,
+	// which one word could not carry.
+	VerdictSkipped Verdict = "skipped"
 )
+
+// verdictStrength ranks the verdicts for the merges: a real failure
+// dominates everything, a real pass dominates a skip (something ran and
+// held), a skip dominates `never` (an attempt was made and named its
+// missing prerequisite). The merges read THIS table, so the two of them
+// cannot drift apart.
+var verdictStrength = map[Verdict]int{
+	VerdictNever:   0,
+	VerdictSkipped: 1,
+	VerdictPass:    2,
+	VerdictFail:    3,
+}
+
+// strongerVerdict folds two verdicts commutatively — the result does not
+// depend on which member of an aggregate target finished first.
+func strongerVerdict(a, b Verdict) Verdict {
+	if verdictStrength[b] > verdictStrength[a] {
+		return b
+	}
+	return a
+}
+
+// ServedModelUnobserved is the served_model of a run in which an LLM node
+// ran and the backend named no model: `llm_request` is emitted by the claw
+// path only, so a claude_code, codex or pi delegation reports nothing. It
+// keeps that run apart from "" — a run with no LLM node, where nothing
+// could have served.
+const ServedModelUnobserved = "unobserved"
+
+// ServedModelUnobservedPrefix opens the same sentinel when the harness
+// ASKED for a spec: "unobserved:<spec>" keeps the two facts a committed
+// receipt needs apart — the row did NOT see the pinned model answer, and it
+// did not see the override answer either.
+const ServedModelUnobservedPrefix = ServedModelUnobserved + ":"
+
+// UnobservedServedModel renders the served_model of a run whose backend
+// named nothing: the bare sentinel, or the sentinel carrying the spec that
+// was asked for.
+func UnobservedServedModel(asked string) string {
+	asked = strings.TrimSpace(asked)
+	if asked == "" {
+		return ServedModelUnobserved
+	}
+	return ServedModelUnobservedPrefix + asked
+}
+
+// ServedModelFor decides the served_model column from what the run's
+// events let the harness observe: the specs its llm_request events named,
+// how many LLM nodes (agent, judge) started, and the spec an override
+// asked for. What was observed wins. Otherwise the column says WHY it is
+// not a spec: "" when no LLM node ran (nothing could have served — a
+// tool-only run), the unobserved sentinel when one did and the backend
+// named nothing. A re-targeted run therefore never reads as a pass on the
+// fixture's pinned model, and a tool-only run never reads as an LLM run
+// the harness failed to observe.
+func ServedModelFor(served []string, llmNodes int, asked string) string {
+	if spec := FoldServedModels(served); spec != "" {
+		return spec
+	}
+	if llmNodes <= 0 {
+		return ""
+	}
+	return UnobservedServedModel(asked)
+}
+
+// IsUnobservedServedModel reports whether item is the unobserved sentinel,
+// bare or carrying the asked-for spec (returned; "" when bare).
+func IsUnobservedServedModel(item string) (asked string, ok bool) {
+	if item == ServedModelUnobserved {
+		return "", true
+	}
+	if strings.HasPrefix(item, ServedModelUnobservedPrefix) {
+		return strings.TrimPrefix(item, ServedModelUnobservedPrefix), true
+	}
+	return "", false
+}
 
 // Row is one target's last recorded run.
 type Row struct {
@@ -70,6 +161,63 @@ type Row struct {
 	// (typically the HEAD SHA), so a stale row can be traced back to
 	// the code it exercised.
 	Ref string `json:"ref,omitempty"`
+	// ServedModel names the model spec(s) that ACTUALLY answered the
+	// run, read from the persisted llm_request events — not the spec the
+	// harness asked for. Several distinct specs fold to a sorted,
+	// comma-separated list. Without it, a `pass` obtained on an
+	// overridden route is indistinguishable from a `pass` on the
+	// fixture's pinned model, which makes the row a false receipt.
+	//
+	// Honest scope: `llm_request` is emitted by the claw path only — the
+	// in-process loop and the relay of a claw running inside a sandbox. A
+	// claude_code, codex or pi delegation names no model, so the harness
+	// has nothing to read. The column is therefore a POSITIVE receipt and
+	// never a negative one, and it says which case a reader is in
+	// (ServedModelFor): empty means NO LLM NODE RAN (a tool-only run, or a
+	// row older than schema 2); ServedModelUnobserved means an agent or
+	// judge node ran and the backend named no model; the same under a
+	// re-target that asked for a spec is ServedModelUnobservedPrefix + that
+	// spec — so an overridden pass can never read as a pass on the pinned
+	// model. That reading holds because every recording path feeds the
+	// column: the harness's runBotLive before it takes a verdict, and each
+	// test that tracks its own row (TestEveryDirectTrackerFeedsProvenance).
+	ServedModel string `json:"served_model,omitempty"`
+	// FundedBy names the credential ROUTE that paid — a route name or a
+	// credential-source env var NAME, never a key value. Empty when the
+	// harness cannot attribute the spend without guessing; the operator
+	// names it through ITERION_LIVE_FUNDED_BY.
+	FundedBy string `json:"funded_by,omitempty"`
+	// SkippedAt is when the last attempt was skipped (UTC), zero when the
+	// target has never been skipped. It is NOT LastRun: a skip never ran,
+	// so it must not move the date a verdict was taken on.
+	//
+	// omitzero, not omitempty: a zero time.Time is a struct, which
+	// omitempty never drops, so omitempty would write
+	// "0001-01-01T00:00:00Z" into all 64 rows of a committed file whose
+	// value is being diffable.
+	SkippedAt time.Time `json:"skipped_at,omitzero"`
+	// SkipReason names the prerequisite the last skipped attempt lacked.
+	// It survives next to a recorded pass/fail — "it failed in October and
+	// today it could not even start, here is why" is two facts, and the
+	// row keeps both. An aggregate target's members fold their reasons on
+	// ReasonSep, which is therefore reserved inside one reason.
+	SkipReason string `json:"skip_reason,omitempty"`
+}
+
+// foldSkipOver folds a skip observation over whatever the committed ledger
+// already holds for the target. A skip did not run, so it never erases
+// what a run proved: a recorded pass/fail keeps its verdict, date,
+// duration, cost, ref and provenance, and the skip lands on
+// SkippedAt/SkipReason alone. Over a `never` or an earlier `skipped` row
+// the verdict BECOMES skipped — that is the point: `never` (nobody has
+// paid) stops meaning `skipped` (nobody could run it here).
+func foldSkipOver(prev, skip Row) Row {
+	if prev.Verdict != VerdictPass && prev.Verdict != VerdictFail {
+		return skip
+	}
+	prev.SkippedAt = skip.SkippedAt
+	prev.SkipReason = skip.SkipReason
+	return prev
 }
 
 // Ledger is the on-disk shape.

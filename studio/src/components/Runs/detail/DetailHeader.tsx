@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 
 import type { ExecutionState, RunEvent } from "@/api/runs";
 import { CopyButton, IconButton, StatusBadge } from "@/components/ui";
+import { attachReferenceById } from "@/lib/chatDock/attachToAssistant";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { mintReference } from "@/lib/chatDock/routeReference";
 import {
@@ -82,15 +83,21 @@ export function DetailHeader({
               </span>
             </h2>
             {reference?.ref === `node/${referenceId}` && (
-              <span
+              // The grip is the attach control (#2770, option A): a real
+              // button, so the tab order reaches it and Enter/Space attach —
+              // the keyboard and single-pointer path SC 2.1.1 / 2.5.7 owed.
+              // The drag still rides the same element, and the click mints
+              // the same reference the drop of this grip would.
+              <button
+                type="button"
                 {...referenceDragProps("node", referenceId, label)}
-                role="img"
-                aria-label="Drag node to assistant"
-                title="Drag node to assistant"
-                className="cursor-grab select-none text-fg-subtle hover:text-fg-default active:cursor-grabbing"
+                aria-label={`Attach ${label} to the assistant`}
+                title="Attach to the assistant, or drag onto it"
+                className="cursor-grab select-none text-fg-subtle hover:text-fg-default active:cursor-grabbing focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                onClick={() => attachReferenceById("node", referenceId, label)}
               >
                 ⠿
-              </span>
+              </button>
             )}
             {onToggleFollowLive && (
               <FollowLivePill
@@ -178,7 +185,13 @@ export function DetailHeader({
         <div className="mt-2 px-2 py-1.5 rounded bg-danger-soft text-danger-fg">
           <div className="flex items-center justify-between gap-2 mb-0.5">
             <span className="font-medium">Error</span>
-            <CopyButton value={exec.error} />
+            <CopyButton
+              value={exec.error}
+              // The label the header LEADS with (the node's description when
+              // it has one). The raw ir id is rendered beside it in mono, but
+              // it is the label that names the node for the reader.
+              describes={`the error of ${label}`}
+            />
           </div>
           <div className="font-mono text-micro whitespace-pre-wrap break-words">
             {exec.error}

@@ -205,6 +205,14 @@ func seedProbeConnection(t *testing.T, dir, baseURL string) *connection.Resolver
 		Store:    st,
 		Sealer:   sealer,
 		TenantID: connection.LocalTenant,
+		// The harness stands in for a LAUNCH SURFACE, so it bears the term
+		// every real one bears: whose code the run holds. A resolver that
+		// states nothing refuses every mutating action (#1802), and these
+		// scenarios call `probe.issue.comment` — the fork-lane cases live at
+		// the chokepoint (pkg/connection/trust_test.go) and at the real
+		// builder (pkg/runview/localconnectors_test.go), which is where a
+		// launch surface's trust can actually be wrong.
+		Trust: connection.TrustOfRun(store.RunTrustDefault),
 	}
 }
 
@@ -366,7 +374,12 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 		t.Fatalf("CreateRun: %v", err)
 	}
 
+	prepared, err := store.PrepareRunInvocation(t.Context(), s, store.ExistingRunInvocation{ID: runID})
+	if err != nil {
+		t.Fatalf("prepare run: %v", err)
+	}
 	espec := runview.ExecutorSpec{
+		Ctx:      prepared.Context,
 		Workflow: wf,
 		Store:    s,
 		RunID:    runID,
@@ -393,11 +406,14 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 	}
 	exec, err := runview.BuildExecutor(espec)
 	if err != nil {
-		t.Fatalf("BuildExecutor: %v", err)
+		// Admission refuses a workflow this process cannot serve (an `action:`
+		// with no connector catalog wired) before any node runs: the caller
+		// judges that refusal, it is not a harness failure.
+		return nil, nil, fmt.Errorf("BuildExecutor: %w", err)
 	}
 
 	eng := newEngine(t, wf, s, exec, opts...)
-	runErr := eng.Run(context.Background(), runID, nil)
+	runErr := eng.RunPrepared(prepared.Context, runID, nil, prepared)
 	// The PERSISTED run travels back on BOTH paths. What a failure leaves on
 	// the record — its status and its classification — is the thing a caller
 	// may be here to assert, and returning only the error would hide it.

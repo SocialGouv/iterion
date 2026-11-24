@@ -378,3 +378,23 @@ func TestDiffWorktreeSymlinkReadsLinkTextNotTarget(t *testing.T) {
 		t.Fatalf("Diff followed symlink target: got %q want link text %q", *p.After, outside)
 	}
 }
+
+func TestNotRepositoryDiagnosticRejectsUnrelatedFailures(t *testing.T) {
+	for _, tc := range []struct {
+		diagnostic string
+		want       bool
+	}{
+		{"fatal: not a git repository (or any of the parent directories): .git", true},
+		{"fatal: not a git repository: /missing", true},
+		{"fatal: gitfile does not point to a valid repository: /missing/.git", true},
+		{"fatal: invalid gitfile format: /broken/.git", false},
+		{"fatal: unable to read index: permission denied", false},
+		{"fatal: detected dubious ownership in repository at /tmp/not a git repository", false},
+		{"fatal: unrelated failure\nfatal: gitfile does not point to a valid repository: /missing", false},
+		{"error: path contains fatal: gitfile does not point to a valid repository: /missing", false},
+	} {
+		if got := IsNotRepositoryDiagnostic(tc.diagnostic); got != tc.want {
+			t.Errorf("%q: got %v, want %v", tc.diagnostic, got, tc.want)
+		}
+	}
+}

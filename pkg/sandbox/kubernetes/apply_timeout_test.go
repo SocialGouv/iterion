@@ -20,7 +20,7 @@ import (
 // context. A wedged apiserver (a control-plane rollout, a throttled
 // webhook, a TCP connect that never completes) therefore hangs sandbox
 // creation BEFORE the first bounded phase is reached: no
-// `sandbox_started`, no typed failure, no redelivery. kubectlCmdContext's
+// `sandbox_started`, no typed failure, no redelivery. Kubectl.command's
 // WaitDelay only bounds orphaned pipes after a cancellation that never
 // comes.
 //
@@ -32,15 +32,19 @@ func TestApplyManifest_StallIsBoundedAndTyped(t *testing.T) {
 		t.Skip("sh not on PATH")
 	}
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
+	if err := os.WriteFile(string(shim), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// PATH still carries the shim's directory: the shim's own `sleep` is
+	// resolved by sh, not by us. The apply itself runs the shim BY PATH the
+	// way Detect hands the driver its binary.
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(applyTimeoutEnv, "300ms")
 
 	done := make(chan error, 1)
 	go func() {
-		done <- applyManifest(context.Background(), iterlog.Nop(), "ns", "apply pod", []byte("kind: Pod\n"))
+		done <- shim.applyManifest(context.Background(), iterlog.Nop(), "ns", "apply pod", []byte("kind: Pod\n"))
 	}()
 
 	select {
@@ -83,14 +87,15 @@ func TestApplyManifest_PassesNoRequestTimeoutToKubectl(t *testing.T) {
 	}
 	shimDir := t.TempDir()
 	argvFile := filepath.Join(shimDir, "argv")
-	shim := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte(shim), 0o755); err != nil {
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\nexit 0\n"
+	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
+	if err := os.WriteFile(string(shim), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(applyTimeoutEnv, "90s")
 
-	if err := applyManifest(context.Background(), iterlog.Nop(), "ns", "apply pod", []byte("kind: Pod\n")); err != nil {
+	if err := shim.applyManifest(context.Background(), iterlog.Nop(), "ns", "apply pod", []byte("kind: Pod\n")); err != nil {
 		t.Fatalf("apply against a healthy shim failed: %v", err)
 	}
 	argv, err := os.ReadFile(argvFile)
@@ -115,14 +120,15 @@ func TestDeleteResource_StallIsBounded(t *testing.T) {
 		t.Skip("sh not on PATH")
 	}
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
+	if err := os.WriteFile(string(shim), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(applyTimeoutEnv, "300ms")
 
 	done := make(chan error, 1)
-	go func() { done <- deleteResource(context.Background(), "ns", "pod", "sandbox-x") }()
+	go func() { done <- shim.deleteResource(context.Background(), "ns", "pod", "sandbox-x") }()
 
 	select {
 	case err := <-done:

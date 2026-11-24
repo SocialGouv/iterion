@@ -1,0 +1,74 @@
+# Codemode concurrency
+
+`call(name, input)` still runs one tool and throws on ordinary tool failure.
+`call.parallel(entries)` submits up to four `{name, input}` entries and joins
+before returning to JavaScript. It does not return a promise. An empty batch
+returns `[]`; an invalid or oversized batch fails before it is sent.
+
+```js
+call.parallel([
+  {name: "glob", input: {pattern: "docs/**/*.md"}},
+  {name: "glob", input: {pattern: "pkg/**/*.go"}},
+]).map(result => ({ok: !result.isError, text: result.text}));
+```
+
+Each entry returns `{tool, status, text, isError, truncated, remaining}` in
+input order. `status` is `ok`, `error`, or `budget`. An ordinary error does
+not cancel the other entries. The parent reserves the admissible prefix
+before running any member; the suffix reports `budget` without executing.
+Every result gives the same post-admission `remaining`. A dispatcher abort
+or a broken tool channel ends the script. Cancellation cannot undo effects
+an already-started tool performed.
+
+## Structured results
+
+A tool that reports a structured result (MCP `structuredContent`) hands it to
+the program as `structured`, a JSON value, beside the text — in `call()`'s
+result object and in every `ok` batch entry. The parent clips it against
+`tool_result_bytes` whole: a payload past the bound is dropped, never cut in
+half, and the result then reports `structuredTruncated: true` plus
+`structuredBytes`, the size the program was shorted. When nothing was
+dropped the flag is `false`, so `structuredTruncated === false` and no
+`structured` means the tool sent none. A failed call throws without the
+structured fields — an error carries no payload. Bash output is re-capped to
+the same bound when called from a program, so its `truncated` cut and the
+structured drop report one budget.
+
+`concurrent_tool_calls` inherits like the other codemode limits. Its default
+is 1 (serial), and the platform ceiling is 4. This limit bounds work in flight,
+not the batch's cardinality. A tool without an audited concurrency capability
+runs exclusively, between groups of eligible calls. Every call still goes
+through the node's own dispatcher with its existing permissions, hooks and
+executable scope. The child does not choose eligibility. The scoped `glob`
+and `workspace_grep` registrations are eligible when the dispatch path is
+also audited; custom hooks or materializers keep the batch serial. MCP
+calls to the same client share one cancellable slot across tool names until
+the local SDK call returns. A remote handler may still be cleaning up after
+cancellation. The script host joins started handlers before returning;
+handlers must cooperate with cancellation for shutdown to be prompt.
+
+Two dispatch paths are audited for concurrency. The sandbox relay's event
+hooks are attested: each observation is a pure marshal into the runner's
+IPC envelope writer, whose own mutex keeps every event one whole line
+however the batch interleaves. The store hooks are attested for every
+in-process backend: each event crosses the store — already concurrency-
+proven by parallel branches — and every attached observer (ADR-046) is
+invoked under one mutex, so the attestation holds by construction for any
+runtime-owned callback. Three things still keep a batch serial, each on
+purpose: a secret materializer on the node (it has no concurrency
+contract), lifecycle hooks merged from the workspace's
+`.claude/settings.json` (user handlers register non-concurrent-safe), and
+an extra hook chained onto the store hooks without its own attestation.
+The tool events stay readable under overlap: facts travel with each event
+(`tool_use_id`), never with the arrival order.
+
+The launcher keeps reading events and session captures while forwarded tools
+run. Forwarded tools and operator questions share a serial lane; its
+admission and reply backlogs are bounded separately. This does not
+change tool placement or establish sandbox-crossing support for codemode.
+Queue schema v34 protects delivery to the cloud runner, not the runner in a
+separate sandbox image: a pre-concurrency image can ignore the new bound.
+
+A resume with no bounds replays the saved override. Restating any bound
+replaces that entire override block; restate the width too if it must stay
+pinned.

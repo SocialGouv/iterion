@@ -196,7 +196,7 @@ export default function RefAwarePopup({
               >
                 <span className="truncate font-mono">{item.label}</span>
                 {item.detail && (
-                  <span className="shrink-0 text-caption text-fg-subtle font-mono">
+                  <span className="shrink-0 text-caption text-fg-muted font-mono">
                     {item.detail}
                   </span>
                 )}

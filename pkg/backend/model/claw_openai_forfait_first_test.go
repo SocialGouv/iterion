@@ -33,12 +33,8 @@ func openAIClientAuth(t *testing.T, client any) (apiKey, oauthToken string) {
 // ResolveWithContext reads the run's credentials exactly as it does on a pod.
 func installRunLookups(t *testing.T) {
 	t.Helper()
-	SetCredentialsLookup(RunCredentialsLookup)
-	SetOAuthDirLookup(RunOAuthDirLookup)
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
+	t.Cleanup(SetOAuthDirLookup(RunOAuthDirLookup))
 }
 
 // claw spends, for an `openai/…` route: the run's default openai key, then its
@@ -114,7 +110,7 @@ func TestForwardableProviderEnv_OpenAIForfaitBeforeAPinnedKey(t *testing.T) {
 		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-pinned"},
 		OAuthCredentialFiles: codex,
 	})
-	env, err := forwardableProviderEnv(pinnedOnly, "openai/gpt-6")
+	env, _, err := forwardableProviderEnv(pinnedOnly, "openai/gpt-6", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -130,7 +126,7 @@ func TestForwardableProviderEnv_OpenAIForfaitBeforeAPinnedKey(t *testing.T) {
 		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-pinned"},
 		OAuthCredentialFiles: codex,
 	})
-	env, err = forwardableProviderEnv(withDefault, "openai/gpt-6")
+	env, _, err = forwardableProviderEnv(withDefault, "openai/gpt-6", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -204,7 +200,7 @@ func TestClawOpenAICredentialParity(t *testing.T) {
 							hostClient, hostErr := NewRegistry().ResolveWithContext(ctx, "openai/gpt-6")
 							host := pick(t, hostClient, hostErr)
 
-							env, err := forwardableProviderEnv(ctx, "openai/gpt-6")
+							env, _, err := forwardableProviderEnv(ctx, "openai/gpt-6", "")
 							if err != nil {
 								t.Fatalf("forwardableProviderEnv: %v", err)
 							}
@@ -240,6 +236,16 @@ func TestClawOpenAICredentialParity(t *testing.T) {
 // container (deliverHostCodexForfait) — never as an order to spend one the
 // container's disk holds — and any other value refuses nothing, on either
 // side.
+//
+// So the box side's codex home is PINNED to what crossed, and this row is the
+// container-shaped case where nothing did: a directory with no auth.json, the
+// disk of a container the dispatch wrote no copy into. Inherited instead, the
+// box reads the host's own codex home and the row certifies nothing — both
+// sides spend one blob off one disk, and the divergence the test exists to
+// see (a box ordered to spend a forfait its disk does not hold) cannot appear
+// (#2320). An EMPTY dir and not "": an unset CODEX_HOME resolves to
+// ~/.codex/auth.json ([secrets.CodexAuthJSONPath]), which hands the row the
+// operator's own login — the host identity the certifier must not read.
 func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
 	for _, useOAuth := range []string{"0", " 0", "1", ""} {
 		t.Run(fmt.Sprintf("oauth=%q", useOAuth), func(t *testing.T) {
@@ -249,7 +255,7 @@ func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
 			t.Setenv("ITERION_OPENAI_USE_OAUTH", useOAuth)
 			hostClient, hostErr := NewRegistry().ResolveWithContext(context.Background(), "openai/gpt-6")
 
-			env, err := forwardableProviderEnv(context.Background(), "openai/gpt-6")
+			env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-6", "")
 			if err != nil {
 				t.Fatalf("forwardableProviderEnv: %v", err)
 			}
@@ -263,6 +269,11 @@ func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
 			for _, name := range []string{"OPENAI_API_KEY", "ITERION_OPENAI_USE_OAUTH", "OPENAI_BASE_URL"} {
 				t.Setenv(name, env[name])
 			}
+			boxCodex := env["CODEX_HOME"]
+			if boxCodex == "" {
+				boxCodex = t.TempDir()
+			}
+			t.Setenv("CODEX_HOME", boxCodex)
 			boxClient, boxErr := NewRegistry().Resolve("openai/gpt-6")
 
 			spent := func(client any, err error) bool {
@@ -272,8 +283,19 @@ func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
 				_, token := openAIClientAuth(t, client)
 				return token != ""
 			}
-			if host, box := spent(hostClient, hostErr), spent(boxClient, boxErr); host != box {
-				t.Errorf("forfait spent in process = %v, in the sandbox = %v — the operator's setting did not cross as the host applies it", host, box)
+			hostSpent, boxSpent := spent(hostClient, hostErr), spent(boxClient, boxErr)
+			// The premise, asked before the verdict: the host's disk holds a
+			// forfait, and the host spends it unless the operator refused in
+			// the exact form. A quiet box below is then the crossing's doing,
+			// not a fixture that stopped being readable.
+			if wantHost := useOAuth != "0"; hostSpent != wantHost {
+				t.Fatalf("control: the host spent its own forfait = %v under ITERION_OPENAI_USE_OAUTH=%q, want %v — the fixture on this disk lost its premise", hostSpent, useOAuth, wantHost)
+			}
+			if want := env["CODEX_HOME"] != ""; boxSpent != want {
+				t.Errorf("forfait spent in process = %v, in the sandbox = %v with CODEX_HOME=%q crossed, want %v in the sandbox — the box spends a forfait its own disk does not hold, or leaves one that crossed unspent", hostSpent, boxSpent, env["CODEX_HOME"], want)
+			}
+			if useOAuth == "0" && (hostSpent || boxSpent) {
+				t.Errorf("the refusal did not cross: forfait spent in process = %v, in the sandbox = %v", hostSpent, boxSpent)
 			}
 		})
 	}

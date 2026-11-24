@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -33,9 +34,10 @@ type EntryWithSchema struct {
 	Presets     *PresetsBlock `json:"presets,omitempty"`
 	SchemaError string        `json:"schema_error,omitempty"`
 
-	// InvocationWarnings flags manifest invocations whose args_var names a
-	// var the bot's workflow doesn't declare — a soft authoring mistake the
-	// studio surfaces, never a hard error. Empty when the schema couldn't
+	// InvocationWarnings flags manifest invocations whose args_var or
+	// connector vars name a var the bot's workflow doesn't declare, or whose
+	// mode no effect honours — soft authoring mistakes the studio surfaces,
+	// never a hard error. Empty when the schema couldn't
 	// be parsed (vars unknown) so a parse failure isn't reported as a
 	// missing-var warning.
 	InvocationWarnings []string `json:"invocation_warnings,omitempty"`
@@ -98,13 +100,10 @@ type PresetValue struct {
 }
 
 // schemaCache memoises the (vars, presets) extracted from a workflow
-// source. Keyed by absolute path; the entry is reused while the unit's
-// digest is the one it was built from, so an editor save picks up
+// source. Keyed by absolute path; the entry is reused while every file of
+// the unit stats as it did (stampsHold), so an editor save picks up
 // instantly without a server restart.
 type cachedSchema struct {
-	// digest is the unit's source identity — every file's path and
-	// content — as read when the entry was built.
-	digest string
 	// stamps is what a stat of each file of the unit said when it was
 	// read: the cheap test a hit takes before any file is read. An edit
 	// moves a size or an mtime; a file added to the unit is an edit of
@@ -114,6 +113,25 @@ type cachedSchema struct {
 	vars    *VarsBlock
 	presets *PresetsBlock
 	err     string
+}
+
+// frontmatterCache memoises the frontmatter parse of one bot file — the
+// full parser.Parse discovery's catalogue identity reads through — keyed
+// by absolute path, hit while the file stats as it did. Two concurrent
+// misses both parse (idempotent, last wins), the same benign shape as
+// schemaCache. file, source and spent are the parse a unit load reuses
+// (unit.LoadDirWithMainAST), so one parse serves both readers of a bot
+// file; nil when the parse refused whole.
+type cachedFrontmatter struct {
+	stamps map[string]fileStamp
+	fm     *bundle.Frontmatter
+	// err is the refusal of the read or of the parse whole (a
+	// *parser.ReadRefusal the callers wrap for the entry); a refusal hits
+	// like a read.
+	err    error
+	file   *ast.File
+	source []byte
+	spent  int
 }
 
 // fileStamp is a file's size and modification time as a stat reports them.
@@ -155,6 +173,51 @@ func stampsHold(stamps map[string]fileStamp) bool {
 
 var schemaCache sync.Map // map[string]cachedSchema
 
+var frontmatterCache sync.Map // map[string]cachedFrontmatter
+
+// frontmatterParseCount counts the parses the frontmatter cache did not
+// answer — the discovery tests' witness that a bot is parsed once.
+var frontmatterParseCount atomic.Int64
+
+// cachedFrontmatterParse reads path and answers its frontmatter parse —
+// the cache's while the file stats as it did, a fresh parse otherwise. A
+// file the read itself fails on is not cached: absence is answered again
+// on the next list, and a file that appears later is seen.
+func cachedFrontmatterParse(path string) (fm *bundle.Frontmatter, file *ast.File, source []byte, spent int, err error) {
+	abs, aerr := filepath.Abs(path)
+	if aerr != nil {
+		// No usable cache key: parse, and answer without memoising.
+		frontmatterParseCount.Add(1)
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil, nil, nil, 0, rerr
+		}
+		fm, file, spent, err = bundle.FrontmatterParse(path, raw)
+		return fm, file, raw, spent, err
+	}
+	if v, ok := frontmatterCache.Load(abs); ok {
+		c := v.(cachedFrontmatter)
+		if stampsHold(c.stamps) {
+			return c.fm, c.file, c.source, c.spent, c.err
+		}
+	}
+	frontmatterParseCount.Add(1)
+	raw, rerr := os.ReadFile(path)
+	if rerr != nil {
+		return nil, nil, nil, 0, rerr
+	}
+	fm, file, spent, err = bundle.FrontmatterParse(path, raw)
+	frontmatterCache.Store(abs, cachedFrontmatter{
+		stamps: stampsOf([]string{abs}),
+		fm:     fm,
+		err:    err,
+		file:   file,
+		source: raw,
+		spent:  spent,
+	})
+	return fm, file, raw, spent, err
+}
+
 // ListWithSchema returns one EntryWithSchema per discovered bot. Each
 // entry's schema is loaded lazily through LoadSchema, with caching by
 // path+mtime — repeated calls are cheap. Parse errors do not abort the
@@ -192,9 +255,10 @@ func ListWithSchemaDiagnostics(opts ListOptions) ([]EntryWithSchema, []Discovery
 	return out, diags, nil
 }
 
-// invocationVarWarnings flags each invocation whose ArgsVar names a var the
-// bot's workflow does not declare — a manifest authoring mistake that would
-// silently drop the trigger payload. Soft: surfaced to the studio, never
+// invocationVarWarnings flags each invocation whose ArgsVar or connector
+// vars name a var the bot's workflow does not declare — a manifest authoring
+// mistake that would silently drop the trigger payload — or whose mode no
+// effect honours (every path refuses it). Soft: surfaced to the studio, never
 // fails the list. Only called when the schema parsed cleanly, so a nil vars
 // block here means the bot genuinely declares no vars.
 func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
@@ -204,8 +268,7 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 	// Delegate to bundlelint so args_var checking has a single implementation
 	// shared with `iterion validate`. Build the minimal manifest + workflow
 	// shapes the check needs — the invocations to scan and the declared var
-	// names to resolve against — then keep only the args_var findings (the
-	// surface the studio has always shown here).
+	// names to resolve against — then keep only the invocation findings.
 	w := &ir.Workflow{Vars: map[string]*ir.Var{}}
 	if vars != nil {
 		for _, f := range vars.Fields {
@@ -215,7 +278,8 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 	m := &bundle.Manifest{Invocations: e.Invocations}
 	var warns []string
 	for _, d := range bundlelint.CheckConsistency(bundlelint.Input{Manifest: m, Workflow: w}) {
-		if d.Code == bundlelint.DiagArgsVarUnknown {
+		switch d.Code {
+		case bundlelint.DiagArgsVarUnknown, bundlelint.DiagConnectorVarUnknown, bundlelint.DiagInvocationModeUnsupported:
 			warns = append(warns, d.Message)
 		}
 	}
@@ -224,8 +288,10 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 
 // LoadSchema parses the bot's main file, compiles to AST, and returns
 // the vars + presets blocks from the first workflow declaration. Uses
-// the package-level cache keyed by absolute path and the unit's digest, so
-// repeated calls within a request batch parse nothing.
+// the package-level cache keyed by absolute path, hit while every file
+// of the unit stats as it did, so repeated calls within a request batch
+// parse nothing. The main's AST comes from the frontmatter cache's parse
+// when it is fresh — one parse per bot file, discovery and schema alike.
 func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 	mainFile := e.MainFile()
 	abs, err := filepath.Abs(mainFile)
@@ -249,7 +315,19 @@ func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 			return c.vars, mergeFilePresets(e, c.presets), schemaErr
 		}
 	}
-	loaded, loadErr := unit.LoadDir(abs)
+	var loaded *unit.Unit
+	var loadErr error
+	// One parse serves both readers: the frontmatter cache's AST, when it
+	// is fresh, hands the main to the unit load instead of a re-parse
+	// (mainName "" is LoadDir's own naming of the main).
+	if v, ok := frontmatterCache.Load(abs); ok {
+		if c := v.(cachedFrontmatter); c.file != nil && stampsHold(c.stamps) {
+			loaded, loadErr = unit.LoadDirWithMainAST(abs, "", c.file, c.source, c.spent)
+		}
+	}
+	if loaded == nil && loadErr == nil {
+		loaded, loadErr = unit.LoadDir(abs)
+	}
 	// The salvage of a load cut short is read for its stamps alone — its
 	// files' names, through the view (unit.Salvage): the files it
 	// read are the ones that decide where the budget ran out, so the refusal
@@ -278,7 +356,6 @@ func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 		names = append(names, f.Name)
 	}
 	cached := cachedSchema{
-		digest:  view.Digest(),
 		stamps:  stampsOf(names),
 		vars:    vars,
 		presets: presets, // cache the in-source block only; file presets merge fresh
@@ -420,11 +497,15 @@ func loadSchemaFromUnit(u *unit.Unit) (*VarsBlock, *PresetsBlock, error) {
 	return vars, presets, nil
 }
 
-// ClearSchemaCache drops every cached entry. Intended for tests that
-// rewrite the same temp file across cases.
+// ClearSchemaCache drops every cached entry, schema and frontmatter
+// alike. Intended for tests that rewrite the same temp file across cases.
 func ClearSchemaCache() {
 	schemaCache.Range(func(k, _ any) bool {
 		schemaCache.Delete(k)
+		return true
+	})
+	frontmatterCache.Range(func(k, _ any) bool {
+		frontmatterCache.Delete(k)
 		return true
 	})
 }
@@ -443,6 +524,12 @@ func PurgeSchemaCacheUnder(dir string) {
 	schemaCache.Range(func(k, _ any) bool {
 		if p, ok := k.(string); ok && strings.HasPrefix(p, prefix) {
 			schemaCache.Delete(k)
+		}
+		return true
+	})
+	frontmatterCache.Range(func(k, _ any) bool {
+		if p, ok := k.(string); ok && strings.HasPrefix(p, prefix) {
+			frontmatterCache.Delete(k)
 		}
 		return true
 	})

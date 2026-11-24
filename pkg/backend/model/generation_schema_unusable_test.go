@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
@@ -17,6 +17,7 @@ import (
 // sentence — measured on run 01a07db7, where the sentence was classified
 // EXECUTION_FAILED and redelivered onto four pods.
 func TestGenerateObjectDirect_AnUnreadableSchemaIsTyped(t *testing.T) {
+	t.Parallel()
 	// Unreadable under ANY definition of the schema types — deliberately
 	// not the `type` union that produced the measured failure, because
 	// that one becomes readable the day the backend's types accept it,

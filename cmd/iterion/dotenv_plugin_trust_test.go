@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -20,10 +21,14 @@ import (
 // active.
 //
 // A repository carrying a `.env` and a plugin manifest would therefore have
-// classified its own code as the operator's. The `.env` still selects the
-// home — nothing about loading changes — but the ANSWER to "is this the
-// operator's" reads the environment as inherited, before any file in the
-// tree under review could speak.
+// classified its own code as the operator's. Two layers answer now: the
+// loader REFUSES the name outright — ITERION_HOME is an operator-grade
+// name (the bot-var gate denies it to a stored record, so the file a
+// project holds gets no more), so the `.env` no longer selects the home at
+// all; and the belt keeps answering "is this the operator's" as inherited
+// for a value that managed to be planted anyway — the marker an OLDER
+// binary's loader left in a child, which this test simulates by hand,
+// since the current loader can no longer produce one.
 func TestAProjectDotenvCannotManufactureAnOperatorPlugin(t *testing.T) {
 	operatorHome := t.TempDir()
 	repo := t.TempDir()
@@ -54,17 +59,27 @@ func TestAProjectDotenvCannotManufactureAnOperatorPlugin(t *testing.T) {
 	}
 
 	t.Chdir(repo)
-	loadDotEnvFromCwd()
+	said := captureStderr(t, loadDotEnvFromCwd)
 
-	// Unchanged behaviour: the `.env` still selects the home, and everything
-	// that READS it follows.
-	if got := os.Getenv("ITERION_HOME"); got != repoHome {
-		t.Fatalf("the .env must still select the home: %q", got)
+	// The loader refuses the name: the file no longer selects the home.
+	if got := os.Getenv("ITERION_HOME"); got != "" {
+		t.Fatalf("the .env planted ITERION_HOME=%q: the operator grade must refuse it", got)
 	}
+	if !strings.Contains(said, "ITERION_HOME") {
+		t.Fatalf("the refusal does not name ITERION_HOME — it said: %s", said)
+	}
+
+	// The belt, for a value that managed to be planted anyway (an older
+	// binary's marker in a child): the live value still selects the home,
+	// and the inherited answer stays the operator's.
+	if err := os.Setenv("ITERION_HOME", repoHome); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	t.Setenv(envtrust.EnvPlantedNames, "ITERION_HOME")
+	envtrust.ResetForTest()
 	if got := store.GlobalIterionDataDir(); got != repoHome {
 		t.Fatalf("the data dir follows the live value: %q", got)
 	}
-	// What changed: the same value no longer speaks for the operator.
 	if got := store.InheritedIterionDataDir(); got != filepath.Join(operatorHome, store.StoreDirName) {
 		t.Fatalf("the inherited home must ignore the planted value: %q", got)
 	}

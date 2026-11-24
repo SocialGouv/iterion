@@ -123,11 +123,31 @@ func TestAdminSandboxSettings(t *testing.T) {
 	if w := put(`{"default_image":"  "}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("blank image = %d, want 400 (clear = null, never empty)", w.Code)
 	}
-	if w := put(`{"default_image":"ghcr.io/x/img@sha256:abc"}`); w.Code != http.StatusOK {
+	// A moving tag is accepted (the operator's explicit choice) and named in
+	// the echoed view: the setting sits outside the chart's render guard.
+	w := put(`{"default_image":"ghcr.io/x/img:edge"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set tag = %d: %s", w.Code, w.Body.String())
+	}
+	var view struct {
+		Warning string `json:"warning"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(view.Warning, `"ghcr.io/x/img:edge" is not a digest reference`) {
+		t.Fatalf("set tag warning = %q, want the moving tag named", view.Warning)
+	}
+	const pinned = "ghcr.io/x/img@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	w = put(`{"default_image":"` + pinned + `"}`)
+	if w.Code != http.StatusOK {
 		t.Fatalf("set = %d: %s", w.Code, w.Body.String())
 	}
+	if strings.Contains(w.Body.String(), `"warning"`) {
+		t.Fatalf("set digest echoes a warning: %s", w.Body.String())
+	}
 	s.sandboxCfg.Invalidate()
-	if got := s.effectiveSandboxImageSetting(context.Background()); got != "ghcr.io/x/img@sha256:abc" {
+	if got := s.effectiveSandboxImageSetting(context.Background()); got != pinned {
 		t.Fatalf("effective = %q", got)
 	}
 	if w := put(`{"default_image":null}`); w.Code != http.StatusOK {

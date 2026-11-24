@@ -1,19 +1,41 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
+// unitNoteFor names, for the chip, why there is no program to price. These
+// notes and the verdict ones below ("workflow_errors", "workflow_incomplete")
+// are the client's whole contract (it hides on an empty nodes list, whatever
+// the note), so they stay apart for the operator reading the response: a
+// source that could not become one program is not a source that failed to
+// parse, and a main whose fragments did not travel parses perfectly.
+func unitNoteFor(err error) string {
+	if errors.Is(err, runview.ErrInlineImport) {
+		return "unit_not_loaded"
+	}
+	return "workflow_unparseable"
+}
+
 type previewCostRequest struct {
-	FilePath     string   `json:"file_path,omitempty"`
-	Source       string   `json:"source,omitempty"`
-	Permission   string   `json:"permission,omitempty"`
-	Backend      string   `json:"backend,omitempty"`
+	FilePath       string `json:"file_path,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Permission     string `json:"permission,omitempty"`
+	Backend        string `json:"backend,omitempty"`
+	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the launch's codemode override ("on"|"off"; ADR-165), the
+	// rung the capability screen must judge alongside the declaration: an
+	// explicit launch `on` on a backend that serves no codemode tool is
+	// refused at dispatch, and the preview is the screen that says so.
+	Codemode     string   `json:"codemode,omitempty"`
 	BackendNames []string `json:"backend_names,omitempty"`
 }
 
@@ -46,11 +68,68 @@ type previewCostResponse struct {
 	// The client layers its own override on top (it owns the selects,
 	// so "run_override" never appears here).
 	Effective *previewEffectiveSettings `json:"effective,omitempty"`
+	// RouteRefusals (#3259) names, per LLM node, why the backend the run
+	// will actually take — the inherit route, resolved exactly as
+	// resolveBackendName resolves it — is refused by a DECLARED capability
+	// (codemode, ambient_context). Terminal at dispatch: no fallbacks:
+	// route carries a node past them, so a launch on this route dies at the
+	// first node. Said here, before the launch.
+	RouteRefusals map[string]string `json:"route_refusals,omitempty"`
 	// BackendOptions is keyed by node id, then by the backend names the
 	// Studio is actually offering. The server computes the exact launch-time
 	// permission precedence and capability crossing so the picker cannot
 	// drift from runtime admission.
 	BackendOptions map[string]map[string]previewBackendOption `json:"backend_options,omitempty"`
+	// CodemodeLimits is what the launch form's codemode fields are built
+	// from (ADR-165): the defaults a placeholder shows and the platform
+	// ceiling a value above which draws a warning. READ FROM scripthost —
+	// never a table the studio keeps: the clamps that enforce them at spawn
+	// live in the same package, so the two cannot drift.
+	CodemodeLimits *previewCodemodeLimits `json:"codemode_limits,omitempty"`
+}
+
+// previewCodemodeLimits carries the codemode bounds twice: the
+// defaults (what an unset field runs under) and the platform ceiling (what
+// no tenant can raise past). Durations in the DSL's own orthography
+// ("30s"), sizes and counts as raw integers.
+type previewCodemodeLimits struct {
+	Default previewCodemodeBounds `json:"default"`
+	Ceiling previewCodemodeBounds `json:"ceiling"`
+	// MemoryFloor is the one bound with a FLOOR: a child cannot start below
+	// it, so a value under it is raised at spawn (Clamp reports through
+	// OnClamp). Served so the form can say so BEFORE the run — the
+	// "screen shows X, the run runs Y" divergence, found by the adversarial
+	// round.
+	MemoryFloor int64 `json:"memory_floor"`
+}
+
+type previewCodemodeBounds struct {
+	ToolCalls           int64  `json:"tool_calls"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls"`
+	Wall                string `json:"wall"`
+	CPU                 string `json:"cpu"`
+	Memory              int64  `json:"memory"`
+	ScriptBytes         int64  `json:"script_bytes"`
+	ResultBytes         int64  `json:"result_bytes"`
+	ToolResultBytes     int64  `json:"tool_result_bytes"`
+	StoreEntries        int64  `json:"store_entries"`
+	StoreBytes          int64  `json:"store_bytes"`
+}
+
+// previewCodemodeBoundsOf projects a scripthost Limits onto the wire shape.
+func previewCodemodeBoundsOf(l scripthost.Limits) previewCodemodeBounds {
+	return previewCodemodeBounds{
+		ToolCalls:           l.ToolCalls,
+		ConcurrentToolCalls: l.ConcurrentToolCalls,
+		Wall:                l.Wall.String(),
+		CPU:                 l.CPU.String(),
+		Memory:              l.Memory,
+		ScriptBytes:         l.ScriptBytes,
+		ResultBytes:         l.ResultBytes,
+		ToolResultBytes:     l.ToolResultBytes,
+		StoreEntries:        l.StoreEntries,
+		StoreBytes:          l.StoreBytes,
+	}
 }
 
 type previewBackendOption struct {
@@ -137,15 +216,18 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "resolve workflow: %v", err)
 			return
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
+		// The read proves the candidate is there and readable, with the 400
+		// the client expects for a path that is not. Its BYTES are not the
+		// program: the unit load below reads the file beside the fragments
+		// its `import` lines reach, which is what a launch of this path
+		// compiles.
+		if _, err := os.ReadFile(path); err != nil {
 			httpError(w, http.StatusBadRequest, "read workflow: %v", err)
 			return
 		}
-		src = string(data)
 		parserPath = path
 	}
-	if src == "" {
+	if src == "" && parserPath == "" {
 		httpError(w, http.StatusBadRequest, "missing source or file_path")
 		return
 	}
@@ -153,27 +235,93 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		parserPath = "studio.bot"
 	}
 
-	pr, err := parser.Parse(parserPath, src)
-	if err != nil || pr.File == nil {
+	// The preview prices the program a LAUNCH of this candidate compiles,
+	// through the launch's own load: a bot in several files is its whole
+	// unit, merged. Parsing the main by itself leaves the `import` lines
+	// unresolved, which the compiler refuses as such (C030) — so the chip
+	// answered "incomplete" and showed NOTHING for every multi-file bot,
+	// the one shape whose price is worth previewing.
+	bundleDir := ""
+	if req.FilePath != "" {
+		// A path the server cannot place is a label with no bundle behind
+		// it, exactly as the launch reads it (launchBundleDirFor), and the
+		// load falls back to the candidate's own bundle resolution. A bundle
+		// that EXISTS and does not open is the launch's 422; here it is one
+		// more reason there is no price to answer, and a chip that hides is
+		// not where a broken manifest gets explained — /api/validate and the
+		// Launch button are.
+		if dir, derr := s.launchBundleDirFor(req.FilePath); derr == nil {
+			bundleDir = dir
+		}
+	}
+	u, b, err := runview.LoadLaunchUnit(parserPath, src, bundleDir)
+	if err != nil || u == nil || u.Merged == nil {
 		// Never 5xx on bad input — the chip silently hides and /api/validate
-		// remains the authoritative blocker for the Launch button.
-		writeJSON(w, previewCostResponse{Notes: []string{"workflow_unparseable"}})
+		// remains the authoritative blocker for the Launch button. A unit
+		// that does not load is one note, not a parse verdict on a file that
+		// may well parse: an inline main whose fragments did not travel is
+		// refused by name, and the chip is not where that is explained.
+		writeJSON(w, previewCostResponse{Notes: []string{unitNoteFor(err)}})
 		return
 	}
-	cr := ir.Compile(pr.File)
+	// The verdict is the launch's own (compileLoadedUnit): a load that found
+	// errors is refused there before the compile, so it is not priced here —
+	// a fragment the import could not read leaves the merged program short of
+	// declarations, and a price for it would be a price of a program that
+	// cannot run.
+	for _, d := range u.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			writeJSON(w, previewCostResponse{Notes: []string{"workflow_errors"}})
+			return
+		}
+	}
+	// The bundle's prompts merge BEFORE the compile, the way the launch
+	// merges them: a `system:` naming a prompts/*.md the bundle ships is
+	// the program that runs, and without the merge it reads as the C003
+	// the launch would never see. A prompts/ the launch cannot read is its
+	// refusal, so it is no price here either.
+	if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
+		writeJSON(w, previewCostResponse{Notes: []string{"workflow_errors"}})
+		return
+	}
+	cr := ir.Compile(u.Merged)
 	if cr.Workflow == nil {
+		// No program at all is incomplete, not erroneous: an empty file
+		// carries a C006 the launch refuses as "no workflow found" before
+		// the compile, and the chip's word for it predates the verdict.
 		writeJSON(w, previewCostResponse{Notes: []string{"workflow_incomplete"}})
 		return
 	}
+	if cr.HasErrors() {
+		// A program the launch refuses (C003 and friends) is not priced:
+		// "is there a workflow" is not the question — a workflow survives
+		// its own compile errors, and pricing it would price a run that
+		// cannot start.
+		writeJSON(w, previewCostResponse{Notes: []string{"workflow_errors"}})
+		return
+	}
 
+	backendOptions, routeRefusals := buildBackendOverrideOptions(
+		cr.Workflow,
+		req.Permission,
+		req.Backend,
+		req.AmbientContext,
+		req.Codemode,
+		req.BackendNames,
+	)
 	resp := previewCostResponse{
 		Effective: buildEffectiveSettings(cr.Workflow),
-		BackendOptions: buildBackendOverrideOptions(
-			cr.Workflow,
-			req.Permission,
-			req.Backend,
-			req.BackendNames,
-		),
+		CodemodeLimits: &previewCodemodeLimits{
+			Default:     previewCodemodeBoundsOf(scripthost.DefaultLimits()),
+			Ceiling:     previewCodemodeBoundsOf(scripthost.Ceiling()),
+			MemoryFloor: scripthost.MemoryFloor().Memory,
+		},
+		// The ROUTE screen (#3259): per LLM node, why the backend the run
+		// will actually take — the inherit route — is refused by a DECLARED
+		// capability. The per-candidate loop cannot say it: the operator
+		// touching no per-node dropdown launches on exactly this route.
+		RouteRefusals:  routeRefusals,
+		BackendOptions: backendOptions,
 	}
 	hasPricing := false
 	for _, node := range cr.Workflow.Nodes {
@@ -196,7 +344,10 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		}
 		effort = ir.ResolveEffortLiteral(effort)
 		in, out := estimateNodeTokens(model, effort, maxTok)
-		costPer := cost.EstimateUSD(model, in, out)
+		// A preview prices a workflow nobody launched: the gateway catalog is
+		// read quietly, so a `.bot` naming an id this host has no table for
+		// does not log a warning each time the editor asks for a chip.
+		costPer := cost.EstimateUSDQuiet(model, in, out)
 		if costPer > 0 {
 			hasPricing = true
 		}

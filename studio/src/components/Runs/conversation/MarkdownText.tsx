@@ -22,17 +22,19 @@ interface Props {
 // and reparse every tick. See:
 // https://github.com/remarkjs/react-markdown#optimize
 const COMPONENTS: Components = {
+  // The run page's h1 is the run title (RunHeader); the markdown's own
+  // headings slot in one level below it.
   h1: ({ node: _node, ...props }) => (
-    <h3 className="font-semibold text-label mt-2 mb-1" {...props} />
+    <h2 className="font-semibold text-label mt-2 mb-1" {...props} />
   ),
   h2: ({ node: _node, ...props }) => (
-    <h4 className="font-semibold text-body mt-2 mb-1" {...props} />
+    <h3 className="font-semibold text-body mt-2 mb-1" {...props} />
   ),
   h3: ({ node: _node, ...props }) => (
-    <h5 className="font-semibold text-body mt-1 mb-0.5" {...props} />
+    <h4 className="font-semibold text-body mt-1 mb-0.5" {...props} />
   ),
   h4: ({ node: _node, ...props }) => (
-    <h6
+    <h5
       className="font-medium text-micro uppercase tracking-wide text-fg-subtle mt-1 mb-0.5"
       {...props}
     />

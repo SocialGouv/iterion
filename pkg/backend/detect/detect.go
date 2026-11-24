@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -56,11 +58,19 @@ type Report struct {
 
 // BackendStatus describes a single delegate backend.
 type BackendStatus struct {
-	Name      string   `json:"name"`
-	Available bool     `json:"available"`
-	Auth      string   `json:"auth"`
-	Sources   []string `json:"sources"`
-	Hints     []string `json:"hints,omitempty"`
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	// BinaryFound reports whether the backend's CLI is on the host at all,
+	// whatever the auth state: an API-key-only host (no OAuth) reports
+	// Available=false BY DESIGN (claw serves that key in-process), yet a
+	// node PINNED to the backend still runs on the key — the launch-time
+	// route judgement (#1221, pkg/reviewtopology) needs the distinction to
+	// tell "unavailable" (no CLI) from "auth" (a CLI with nothing to
+	// spend). In-process backends (claw) report true.
+	BinaryFound bool     `json:"binary_found,omitempty"`
+	Auth        string   `json:"auth"`
+	Sources     []string `json:"sources"`
+	Hints       []string `json:"hints,omitempty"`
 }
 
 // ProviderStatus describes a claw-driven provider.
@@ -169,6 +179,7 @@ func detectOpenCode(prov []ProviderStatus) BackendStatus {
 		st.Hints = []string{"opencode CLI not found on PATH"}
 		return st
 	}
+	st.BinaryFound = true
 
 	var sources []string
 	if openCodeOwnLoginPresent() {
@@ -311,6 +322,7 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 		st.Hints = []string{"pi CLI not found on PATH"}
 		return st
 	}
+	st.BinaryFound = true
 
 	var sources []string
 	if kind := piOwnLoginKind(); kind != AuthNone {
@@ -318,7 +330,7 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 		st.Auth = kind
 	}
 	for _, p := range prov {
-		if !p.Available || !piReadsProvider(p.Name) || !piEnvVarSource(p.Source) {
+		if !p.Available || !PiReadsProvider(p.Name) || !piEnvVarSource(p.Source) {
 			continue
 		}
 		sources = append(sources, p.Source)
@@ -372,18 +384,25 @@ func piEnvVarSource(source string) bool {
 	return strings.TrimSpace(os.Getenv(source)) != ""
 }
 
-// piReadsProvider reports whether an available provider is one pi can actually
+// PiReadsProvider reports whether an available provider is one pi can actually
 // resolve a credential for.
 //
 // bedrock and vertex are marked available on `AWS_REGION` / `GOOGLE_CLOUD_PROJECT`
 // alone — variables an AWS host or CI runner sets by default — and pi reads
 // neither AWS nor GCP application-default credentials; they are absent from the
-// env-key set the pi backend forwards. Counting them would report pi available
-// on a host where every call fails, and because auto-selection filters on this
-// report, `ITERION_BACKEND_PREFERENCE=pi` would then resolve there.
-func piReadsProvider(name string) bool {
+// env-key set the pi backend forwards. The gateway row is out too: pi resolves
+// none of the OPENAI_COMPATIBLE_* variables, so counting it would report pi
+// available on the deployment's gateway with no credential it can spend.
+// Counting any of these would report pi available on a host where every call
+// fails, and because auto-selection filters on this report,
+// `ITERION_BACKEND_PREFERENCE=pi` would then resolve there.
+//
+// Exported for the model catalogue, which must ask the same question before
+// pairing a model with the pi backend (OpenCodeReadsSource is the opencode
+// twin of this seam).
+func PiReadsProvider(name string) bool {
 	switch name {
-	case "bedrock", "vertex":
+	case "bedrock", "vertex", modelroute.OpenAICompatible:
 		return false
 	default:
 		return true
@@ -447,7 +466,7 @@ func piOwnLoginKind() string {
 // mode alone was weaker than the consumer's gate, so a partially-written or
 // logged-out Codex state made detect report pi available while the bridge
 // stepped aside, and the node then died with "No API key found for
-// openai-codex". That is the same false-positive class piReadsProvider argues
+// openai-codex". That is the same false-positive class PiReadsProvider argues
 // against just above; a probe must not be more optimistic than what will
 // actually use the credential.
 //
@@ -502,10 +521,11 @@ func detectClaudeCode(ctx context.Context) BackendStatus {
 	// covers claude.ai web-auth on hosts where no file/keychain entry surfaced.
 	if claudeAuthStatusFn(ctx, binPath) {
 		return BackendStatus{
-			Name:      BackendClaudeCode,
-			Available: true,
-			Auth:      AuthOAuth,
-			Sources:   []string{"claude auth status (claude.ai OAuth)", "PATH:" + binPath},
+			Name:        BackendClaudeCode,
+			Available:   true,
+			BinaryFound: true, // this branch just RAN it
+			Auth:        AuthOAuth,
+			Sources:     []string{"claude auth status (claude.ai OAuth)", "PATH:" + binPath},
 		}
 	}
 	return st
@@ -585,6 +605,7 @@ func detectOAuthCLI(
 		st.Hints = []string{binDesc + " not found in PATH or common locations"}
 		return st
 	}
+	st.BinaryFound = true
 	if dir := configDir(); dir != "" {
 		for _, credFile := range credFiles {
 			credPath := filepath.Join(dir, credFile)
@@ -615,7 +636,8 @@ func detectOAuthCLI(
 }
 
 func detectClaw(prov []ProviderStatus) BackendStatus {
-	st := BackendStatus{Name: BackendClaw}
+	// claw runs in this process: no binary to find, ever.
+	st := BackendStatus{Name: BackendClaw, BinaryFound: true}
 	var sources []string
 	for _, p := range prov {
 		if p.Available {
@@ -657,10 +679,9 @@ func detectProviders() []ProviderStatus {
 	// Anthropic credentials — otherwise the BYOK selection UI happily
 	// claimed anthropic was available when in fact only the z.ai
 	// façade was configured, and the resolver would pick anthropic
-	// models that 401'd against z.ai.
-	anthropicBase := strings.ToLower(os.Getenv("ANTHROPIC_BASE_URL"))
-	hasZAIBaseURL := strings.Contains(anthropicBase, "z.ai") ||
-		strings.Contains(anthropicBase, "bigmodel")
+	// models that 401'd against z.ai. The hostname reading is the claw
+	// registry's own (secrets.BaseURLNamesZAI), not a copy of it.
+	hasZAIBaseURL := secrets.BaseURLNamesZAI(os.Getenv("ANTHROPIC_BASE_URL"))
 	hasZAIKey := os.Getenv("ZAI_API_KEY") != ""
 	zaiAvailable := hasZAIKey ||
 		(hasZAIBaseURL && os.Getenv("ANTHROPIC_AUTH_TOKEN") != "")
@@ -720,8 +741,35 @@ func detectProviders() []ProviderStatus {
 			Source:         envSource("GOOGLE_CLOUD_PROJECT"),
 			SuggestedModel: "",
 		},
+		detectGatewayProvider(),
 	}
 	return out
+}
+
+// detectGatewayProvider reports the LOCAL OpenAI-compatible gateway row
+// (#2646 — the cloud presence row is #2005's, claw-only and never pi): the
+// host serves `openai_compatible/<id>` when the operator's own environment
+// names one AND authenticates it (compatgw.FromEnv, which refuses a keyless
+// gateway by name and a pair a project `.env` filled). Available says what a
+// node would get, so it answers no for a gateway no client can be built for.
+// It is a provider row, not a backend: claw is the backend that drives it.
+//
+// No SuggestedModel: the model id is the deployment's own naming, so nothing
+// here can guess one — and an empty suggestion is what keeps the row out of
+// every "pick a default model" consumer (detect.SuggestedModel,
+// supervise.resolveModelWith) and out of reviewtopology's family set
+// (familyOf maps only the vendor names). pi is excluded through
+// PiReadsProvider: it reads none of these variables, so counting the row
+// there would report pi available on a credential it cannot spend.
+func detectGatewayProvider() ProviderStatus {
+	st := ProviderStatus{
+		Name:   modelroute.OpenAICompatible,
+		Source: envSource(compatgw.APIKeyEnv, compatgw.BaseURLEnv),
+	}
+	if _, err := compatgw.FromEnv(os.Getenv); err == nil {
+		st.Available = true
+	}
+	return st
 }
 
 // detectOpenAIProvider reports the OpenAI provider availability across both

@@ -139,9 +139,10 @@ type Client interface {
 	// reference can never widen the key space.
 	GetIRBlob(ctx context.Context, storageKey string) ([]byte, error)
 
-	// DeleteRunIR removes the `ir/<runID>.json` blob. Best-effort, part of
-	// the per-run cleanup sweep alongside DeleteRun / DeleteRunToolBlobs.
-	// Idempotent: deleting a non-existent key returns nil.
+	// DeleteRunIR removes the `ir/<runID>.json` blob and the run's bundle
+	// snapshots (`ir/<runID>-bundle-<digest>.json`, IRBundleSnapshotPrefix),
+	// part of the per-run cleanup sweep alongside DeleteRun /
+	// DeleteRunToolBlobs. Idempotent: deleting a non-existent key returns nil.
 	DeleteRunIR(ctx context.Context, runID string) error
 
 	// PutBackendSession stores a packed CLI session (ADR-089) under
@@ -154,6 +155,21 @@ type Client interface {
 	// DeleteRunBackendSessions removes sessions/<runID>/, with DeleteRun's
 	// semantics.
 	DeleteRunBackendSessions(ctx context.Context, runID string) error
+
+	// PutUpload streams a staged upload's bytes under
+	// `uploads/<uploadID>/<filename>` with the given Content-Type; size is
+	// the exact byte length. Backs the cloud StagingStore twin: an upload
+	// waits here between POST /api/runs/uploads and the launch that
+	// promotes it to `attachments/<runID>/…`. Idempotent. The body is
+	// SEEKABLE by type: the client rewinds it to retry and to checksum, and
+	// over a plaintext endpoint it refuses an unseekable stream outright.
+	PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.ReadSeeker, size int64) error
+	// GetUpload streams the bytes previously PUT under the same key, or
+	// ErrArtifactNotFound. Callers must Close the returned reader.
+	GetUpload(ctx context.Context, uploadID, filename string) (io.ReadCloser, AttachmentMeta, error)
+	// DeleteUpload removes every blob under `uploads/<uploadID>/` in a
+	// single sweep, with DeleteRun's semantics.
+	DeleteUpload(ctx context.Context, uploadID string) error
 }
 
 // IRBlobKey returns the canonical layout key for an out-of-band compiled
@@ -191,6 +207,16 @@ type Config struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	UsePathStyle    bool
+	// DialTimeout bounds the TCP connect to the S3 endpoint; 0 applies
+	// the 10 s default. A degraded endpoint must fail the operation
+	// loudly instead of hanging the caller (issue #2890: an
+	// unresponsive gateway wedged every run at its first upload).
+	DialTimeout time.Duration
+	// ResponseHeaderTimeout bounds the wait for the server's response
+	// headers once the request is on the wire; 0 applies the 60 s
+	// default. Body streaming is NOT bounded by it — GetAttachment
+	// returns a reader the caller drains at its own pace.
+	ResponseHeaderTimeout time.Duration
 }
 
 // ArtifactKey returns the canonical layout key for an artifact. Using
@@ -251,6 +277,16 @@ func RunFileKey(runID, relPath string) (string, error) {
 // file for a run. Used by DeleteRunFiles and retention sweepers.
 func RunFileRunPrefix(runID string) (string, error) {
 	return runFileRunPrefix(runID)
+}
+
+// UploadKey is uploads/<upload_id>/<filename>, a staged upload's bytes.
+func UploadKey(uploadID, filename string) (string, error) {
+	return uploadKey(uploadID, filename)
+}
+
+// UploadPrefix is uploads/<upload_id>/.
+func UploadPrefix(uploadID string) (string, error) {
+	return uploadPrefix(uploadID)
 }
 
 // BackendSessionKey is sessions/<run_id>/<ref>.

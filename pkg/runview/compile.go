@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ErrInlineImport is the refusal of an inline source that imports: text
@@ -129,14 +130,23 @@ func hashCapturedResourceDir(h hash.Hash, files map[string]string, dir, tag stri
 	}
 }
 
+// AnalysisTrust is the trust a compile that executes nothing names — a
+// validation, a diagram, a graph build, a preflight that only reads the
+// program: its MCP catalog is resolved and never booted, so the trusted
+// default describes it. A compile whose result runs names the run's own
+// trust instead (compileUnit).
+const AnalysisTrust = store.RunTrustDefault
+
 // CompileWorkflow parses and compiles a workflow source file at path. It returns
 // the compiled workflow or an error with the first parse / compile
 // diagnostic encountered.
 //
-// MCP server resolution is finalised against the file's directory so
-// relative `command` paths in `mcp_server` blocks resolve correctly.
-func CompileWorkflow(path string) (*ir.Workflow, error) {
-	wf, _, err := compileWith(path, "", false, nil)
+// MCP server resolution reads the project `.mcp.json` beside the file, and
+// expands plugin `{{workspace}}` placeholders against the workspace the
+// caller names — the run's, on a surface that executes the result; "" for
+// an analysis that executes nothing (#1800).
+func CompileWorkflow(path, workspace string, trust store.RunTrust) (*ir.Workflow, error) {
+	wf, _, err := compileWith(path, "", false, nil, workspace, trust)
 	return wf, err
 }
 
@@ -145,23 +155,28 @@ func CompileWorkflow(path string) (*ir.Workflow, error) {
 // can detect when the workflow file has changed under it (and require
 // --force to proceed). Use this everywhere a workflow is loaded for
 // execution; CompileWorkflow is for static-only callers (validate,
-// diagram).
-func CompileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true, nil)
+// diagram). workspace is the directory the run roots at — what plugin
+// `{{workspace}}` placeholders expand against, never assumed from path
+// (#1800).
+func CompileWorkflowWithHash(path, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, nil, workspace, trust)
 }
 
 // CompileBundleWorkflow is CompileWorkflowWithHash specialised for bundle
 // inputs: it merges the bundle's prompts/*.md into the AST File before
 // compilation, so node-level prompt references resolve against bundle
-// resources during static validation.
-func CompileBundleWorkflow(path string, b *bundle.Bundle) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true, b)
+// resources during static validation. The workspace is the run's, for the
+// plugin `{{workspace}}` placeholders (#1800).
+func CompileBundleWorkflow(path string, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, b, workspace, trust)
 }
 
 // CompileSubbotWorkflow compiles a resolved child with its bundle context.
 // bot:// supplies the bundle directly; local workflow paths are promoted when
 // they live anywhere inside a directory bundle, including workflows/ exports.
-func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Workflow, string, *bundle.Bundle, error) {
+// workspace is the directory the CHILD's engine roots at — the parent's
+// effective workdir, never assumed from the child .bot's directory (#1800).
+func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b := resolvedBundle
 	if b == nil {
 		var err error
@@ -171,10 +186,10 @@ func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Work
 		}
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(path, b)
+		wf, hash, err := CompileBundleWorkflow(path, b, workspace, trust)
 		return wf, hash, b, err
 	}
-	wf, hash, err := CompileWorkflowWithHash(path)
+	wf, hash, err := CompileWorkflowWithHash(path, workspace, trust)
 	return wf, hash, nil, err
 }
 
@@ -182,9 +197,10 @@ func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Work
 // content is supplied verbatim (uploaded by the studio SPA). Path is
 // retained as a logical label for diagnostics + MCP relative-path
 // resolution; when empty, MCP resolution falls back to the current
-// working directory.
-func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error) {
-	return compileWith(path, source, true, nil)
+// working directory. workspace is the run's, for the plugin
+// `{{workspace}}` placeholders (#1800).
+func CompileWorkflowFromSource(path, source, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	return compileWith(path, source, true, nil, workspace, trust)
 }
 
 // compileForLaunch picks the right compile path for a Launch / Resume:
@@ -197,7 +213,8 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // — the same treatment a baked bundle gets through CompileBundleWorkflow —
 // so a stored bot's prompt references validate and hash identically. A
 // bundle dir that fails to open is an explicit error, never a silent
-// fall-through to a prompt-less compile.
+// fall-through to a prompt-less compile. bundleEntry is the entry the
+// launch named inside it (LaunchSpec.BundleEntry): empty for main.bot.
 //
 // A path alone is compiled the way every path-driven surface compiles it
 // (CompileWorkflowPath): a bundle's main.bot is promoted to its bundle —
@@ -213,30 +230,82 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // hands the engine the same handle it compiled against.
 //
 // Every refusal is cut by relLaunchError before it crosses to a client.
-func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
-	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir)
+// workspace is the directory the launched run roots at — what plugin
+// `{{workspace}}` placeholders expand against; the launch surface passes
+// the workdir its engine will be rooted at, and a check that executes
+// nothing passes "" (#1800).
+func compileForLaunch(path, source, bundleDir, bundleEntry, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
+	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace, trust)
 	return wf, cs, b, relLaunchError(path, bundleDir, u, err)
 }
 
-func compileForLaunchUncut(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
+func compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
 	if bundleDir != "" {
-		b, err := bundle.OpenDir(bundleDir)
+		// The entry the launch named is the bundle's main: main.bot unless
+		// the launch named a promoted sibling entry or a loose catalogue
+		// file the snapshot froze without one (#1896) — opening for
+		// main.bot would refuse that dir.
+		b, err := bundle.OpenDirEntry(bundleDir, bundleEntry)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		wf, cs, u, err := compileUnit(path, source, true, b)
+		wf, cs, u, err := compileUnit(path, source, true, b, workspace, trust)
 		return wf, cs, b, u, err
 	}
 	if source != "" {
-		wf, cs, u, err := compileUnit(path, source, true, nil)
+		wf, cs, u, err := compileUnit(path, source, true, nil, workspace, trust)
 		return wf, cs, nil, u, err
 	}
 	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	wf, cs, u, err := compileUnit(path, "", true, b)
+	wf, cs, u, err := compileUnit(path, "", true, b, workspace, trust)
 	return wf, cs, b, u, err
+}
+
+// ErrProgramChanged reports a pinned launch (LaunchSpec.ExpectProgramHash)
+// whose compile read another program than the one the pin names: a file of
+// the bot — its main, a prompt, a preset, a fragment, an included file —
+// changed since the caller read it. Nothing was persisted or published.
+var ErrProgramChanged = errors.New("runview: the program is not the one the launch was pinned to")
+
+// ErrLaunchPinUnsupported reports a pinned launch (LaunchSpec.ExpectProgramHash)
+// on a lane that cannot hold a pin. A pin is held where the launch is
+// published with the program its compile read — the publisher lane, whose
+// runner executes the frozen collection the message carries. Every other
+// lane reads the bot again after the launch is accepted: the in-process
+// engine merges the bundle's presets from disk, a detached runner compiles
+// its own copy, and a launch parked behind the pipeline cap compiles when
+// its slot frees, or from a rebuilt spec after a restart. A pin compared
+// there would be outrun by the next read, so it is refused instead.
+var ErrLaunchPinUnsupported = errors.New("runview: a pinned launch is the cloud lane's guarantee — only a launch published with its frozen program runs the bytes its pin was compared with, and this lane reads the bot's files again after the launch is accepted")
+
+// checkPinnedProgram holds a pinned launch to its pin, at the compile whose
+// result is published: cs is what that compile consumed, and the runner
+// executes the frozen collection it was read from. A compile that answered
+// no identity cannot honour a pin, and refuses it.
+func checkPinnedProgram(spec LaunchSpec, cs *CompiledSource) error {
+	if spec.ExpectProgramHash == "" {
+		return nil
+	}
+	if cs == nil || cs.Hash != spec.ExpectProgramHash {
+		return ErrProgramChanged
+	}
+	return nil
+}
+
+// LaunchProgramHash is the workflow identity a launch of these four
+// LaunchSpec fields compiles (CompiledSource.Hash): what a caller reads to pin
+// a later launch of the same program (LaunchSpec.ExpectProgramHash). It goes
+// through the launch's own compile, so a program a launch would refuse is
+// refused here by the same sentence, and it executes nothing.
+func LaunchProgramHash(path, source, bundleDir, bundleEntry string) (string, error) {
+	_, cs, _, err := compileForLaunch(path, source, bundleDir, bundleEntry, "", AnalysisTrust)
+	if err != nil {
+		return "", err
+	}
+	return cs.Hash, nil
 }
 
 // relLaunchError is the #1934 root cut for the launch path's refusals
@@ -410,8 +479,8 @@ func EntrypointBundleError(subject, dir string, err error) error {
 	return fmt.Errorf("%s the entrypoint of bundle %q, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, filepath.Base(dir), err)
 }
 
-func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
-	wf, cs, _, err := compileUnit(path, inline, withHash, b)
+func compileWith(path, inline string, withHash bool, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	wf, cs, _, err := compileUnit(path, inline, withHash, b, workspace, trust)
 	if err != nil {
 		return nil, "", err
 	}
@@ -430,14 +499,41 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // alongside, so the launch path's boundary cut (relLaunchError) works
 // from the loader's own root rather than a re-derived one. Callers that
 // are not that boundary — the CLI's compiles — ignore it, and their
-// errors keep the absolute names the operator typed.
-func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
+// errors keep the absolute names the operator typed. workspace is the
+// run's, for the plugin `{{workspace}}` placeholders; "" on a surface
+// that executes nothing (#1800).
+//
+// trust is who wrote the workspace of the run this compile serves
+// (store.RunTrust): the MCP catalog is resolved at compile time, for that
+// trust, and the resolution records it (ir.Workflow.MCPPrepared). Every
+// compile entry takes it as a required parameter, so every caller answers:
+// a launch passes the trust it launches with, a resume the run's recorded
+// trust, a sub-bot child its parent's, and a surface that executes nothing
+// the trusted default beside the reason. Nothing defaults it here.
+func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
 	if workflowfile.IsAuthorDocument(path) {
 		// The floor under every compile entry: a draft never becomes a
 		// program here, whatever door named it — and it is refused by
 		// name, never as a parse error of a text that was YAML.
 		return nil, nil, nil, bundle.AuthorDocumentError(path)
 	}
+	u, parserPath, err := loadUnitFor(path, inline, b)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b, workspace, trust)
+	return wf, cs, u, err
+}
+
+// loadUnitFor is the LOAD half of compileUnit: which files the source at
+// path belongs to, and the name the main is parsed under. It is a function
+// of its own so that every surface asking "which files would a launch of
+// this compile as one program" reads the SAME dispatch — a second copy
+// would price, preview or diagram a different bot than the one that runs.
+// The returned unit carries the merged program's AST, diagnostics and all;
+// what an error diagnostic means is the caller's (compileLoadedUnit refuses
+// on it, a cost preview prices what it can).
+func loadUnitFor(path, inline string, b *bundle.Bundle) (*unit.Unit, string, error) {
 	parserPath := path
 	if parserPath == "" {
 		parserPath = "<inline>"
@@ -455,13 +551,13 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	case besideBundleMain(parserPath, b):
 		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
+			return nil, parserPath, fmt.Errorf("cannot read file: %w", err)
 		}
 		u, loadErr = unit.LoadDirWithMain(b.IterPath, parserPath, src)
 	case inline != "":
 		u, loadErr = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
 		if loadErr == nil && len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
-			return nil, nil, nil, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
+			return nil, parserPath, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
 		}
 	default:
 		u, loadErr = unit.LoadDir(parserPath)
@@ -469,7 +565,7 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 			// The main itself was not read: the error names the file the
 			// caller asked for, wrapped, as it always has.
 			if _, err := os.ReadFile(parserPath); err != nil {
-				return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
+				return nil, parserPath, fmt.Errorf("cannot read file: %w", err)
 			}
 		}
 	}
@@ -478,10 +574,53 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 		// past the size cap — is not compiled from what was read of it:
 		// the refusal, positioned, with its remedy (relLaunchError cuts
 		// the load's root from it on the launch path).
-		return nil, nil, nil, fmt.Errorf("parse error: %w", loadErr)
+		return nil, parserPath, fmt.Errorf("parse error: %w", loadErr)
 	}
-	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b)
-	return wf, cs, u, err
+	return u, parserPath, nil
+}
+
+// LoadLaunchUnit is the files a Launch / Resume of this candidate would
+// compile as ONE program, for a surface that compiles them its own way:
+// the LOAD half of compileForLaunch, reached through the same dispatch and
+// the same bundle resolution, so no second surface re-derives which files a
+// bot is made of. A bot in several files is its whole unit, merged — a main
+// read alone carries `import` lines the compiler refuses as such (C030), so
+// a surface that parses the main by itself sees no program at all.
+//
+// bundleDir is a launch-materialised stored bot bundle (LaunchSpec.BundleDir)
+// when the caller has one; empty, a path-driven candidate resolves its own
+// bundle the way every path-driven compile does, and inline text alone has
+// none — and inline text alone that imports is refused (ErrInlineImport).
+// The bundle the load read against is returned so the caller can merge its
+// prompts the way compileLoadedUnit does.
+//
+// The unit's diagnostics travel with it, unjudged: a caller that must run
+// the program refuses on them (compileForLaunch), one that only describes it
+// decides for itself.
+func LoadLaunchUnit(path, source, bundleDir string) (*unit.Unit, *bundle.Bundle, error) {
+	if workflowfile.IsAuthorDocument(path) {
+		return nil, nil, bundle.AuthorDocumentError(path)
+	}
+	var b *bundle.Bundle
+	switch {
+	case bundleDir != "":
+		opened, err := bundle.OpenDir(bundleDir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
+		}
+		b = opened
+	case source == "":
+		opened, err := bundleForPath(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		b = opened
+	}
+	u, _, err := loadUnitFor(path, source, b)
+	if err != nil {
+		return nil, b, err
+	}
+	return u, b, nil
 }
 
 // CompileLoadedUnit runs, on a unit the caller loaded, every stage a
@@ -492,9 +631,10 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // taken. name is the file a refusal names. It is for a caller that loads
 // the unit itself — an author document's diagram, whose main is the
 // document's AST read as the .bot at path — so that what refuses the .bot
-// refuses the document read as it.
-func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.Workflow, error) {
-	wf, _, err := compileLoadedUnit(u, path, name, false, b)
+// refuses the document read as it. workspace is the run's, for the plugin
+// `{{workspace}}` placeholders; "" on an analysis that runs nothing (#1800).
+func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, error) {
+	wf, _, err := compileLoadedUnit(u, path, name, false, b, workspace, trust)
 	return wf, err
 }
 
@@ -503,11 +643,11 @@ func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.W
 // names — the CLI's compile path runs through here and the operator typed
 // those names; the launch path's boundary cut is relLaunchError's, applied
 // by compileForLaunch (#1970).
-func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
-	return compileLoadedUnitMode(u, path, name, withHash, b, true)
+func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, error) {
+	return compileLoadedUnitMode(u, path, name, withHash, b, true, workspace, trust)
 }
 
-func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool) (*ir.Workflow, *CompiledSource, error) {
+func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
@@ -553,12 +693,16 @@ func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bu
 		}
 		cs.Hash, cs.Included = hash, included
 	}
+	// Two directories, two facts (#1800): mcpDir is the project's — where a
+	// project `.mcp.json` is read from; workspace is the run's — what plugin
+	// `{{workspace}}` placeholders expand against, passed through from the
+	// launch surface, never derived from path.
 	mcpDir := "."
 	if path != "" {
 		mcpDir = filepath.Dir(path)
 	}
 	if prepareExecution {
-		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir); err != nil {
+		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir, workspace, trust); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -591,15 +735,18 @@ func BundleNameForPath(filePath string) string {
 // Every surface that derives a run's hash from a PATH — the dispatcher's
 // engine path, rewind, the export, a recipe's file — goes through it, so
 // a run launched on one surface resumes on another without `--force`.
-func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
+// workspace is the directory the run roots at — what plugin `{{workspace}}`
+// placeholders expand against; the launching surface passes the workdir its
+// engine roots at, an analysis passes "" (#1800).
+func CompileWorkflowPath(path, workspace string, trust store.RunTrust) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(path, b)
+		wf, hash, err := CompileBundleWorkflow(path, b, workspace, trust)
 		return wf, hash, b, err
 	}
-	wf, hash, err := CompileWorkflowWithHash(path)
+	wf, hash, err := CompileWorkflowWithHash(path, workspace, trust)
 	return wf, hash, nil, err
 }

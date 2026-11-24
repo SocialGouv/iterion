@@ -89,7 +89,78 @@ func (s *MongoConfigStore) Get(ctx context.Context, id string) (Config, error) {
 }
 
 func (s *MongoConfigStore) Update(ctx context.Context, c Config) error {
-	return s.kit.Replace(ctx, c.ID, c, ErrDuplicate, "update config")
+	filter := storekit.VersionCAS(c.ID, c.Version)
+	filter["provision_frozen"] = bson.M{"$ne": true}
+	c.Version++
+	raw, err := bson.Marshal(c)
+	if err != nil {
+		return err
+	}
+	var doc bson.M
+	if err = bson.Unmarshal(raw, &doc); err != nil {
+		return err
+	}
+	delete(doc, "last_used_at")
+	// A request snapshot cannot erase a delivery's independently stamped usage.
+	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{bson.M{"last_used_at": "$last_used_at"}, bson.M{"$literal": doc}}}}}}
+	r, err := s.kit.Coll().UpdateOne(ctx, filter, pipeline)
+	if mongo.IsDuplicateKeyError(err) {
+		return ErrDuplicate
+	}
+	if err != nil {
+		return fmt.Errorf("webhooks: update config: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.Get(ctx, c.ID); err != nil {
+			return err
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integrationID string) error {
+	r, err := s.kit.Coll().UpdateOne(ctx,
+		bson.M{"_id": id, "provision_integration_id": integrationID},
+		bson.M{"$set": bson.M{"enabled": false}, "$inc": bson.M{"version": 1}})
+	if err != nil {
+		return fmt.Errorf("webhooks: disable provisioned config: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.Get(ctx, id); err != nil {
+			return err
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
+// ClearCredentialPins removes every pin entry whose value names recordID —
+// the Mongo twin of the memory store's value-scoped drop, run by the clear
+// both pin-bearing stores share (storekit.MongoPinClear): judged against the
+// row as the store holds it at write time, one value-guarded $unset per
+// entry with a version bump, and a version-CAS rewrite for a name no path
+// can address — possible on rows written before the routes' name guard
+// existed. A swept pin cannot resurrect through a writer that validates
+// after the delete — the write-time validators refuse a dead record's id; a
+// write that validated while the record lived can still land after the
+// sweep, the race the delete's 404-heal pass and the routes' landed-pin
+// reconciliation close — and an editor holding a pre-sweep snapshot
+// conflicts on the bumped version instead of writing the swept pin back.
+func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
+	return storekit.MongoPinClear[Config]{
+		Coll:    s.kit.Coll(),
+		Get:     s.Get,
+		Version: func(c Config) int64 { return c.Version },
+		Fields:  configPinFields,
+		Op:      "webhooks: clear config credential pins",
+	}.Clear(ctx, id, recordID)
+}
+
+// configPinFields are the config's two credential-pin maps.
+var configPinFields = []storekit.PinField[Config]{
+	{Path: "key_overrides", Of: func(c Config) map[string]string { return c.KeyOverrides }},
+	{Path: "secret_overrides", Of: func(c Config) map[string]string { return c.SecretOverrides }},
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {
@@ -184,6 +255,65 @@ func (s *MongoDeliveryStore) ClaimFailedRetry(ctx context.Context, d Delivery, e
 		return false, fmt.Errorf("webhooks: claim failed delivery %s: %w", d.ID, err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// MarkRunOutcome stamps the outcome of the run this delivery launched (see
+// DeliveryStore). Keep its semantics in lock-step with the memory twin.
+//
+// One conditional update carries both guards: `run_id` must still name the
+// run being described, and `last_run_at` must be absent or not newer than
+// `at`. A zero-match is therefore ambiguous — row gone, row relaunched under
+// another run, or stale outcome — and is disambiguated with one Get: the
+// first is ErrNotFound, the other two are a silent no-op.
+func (s *MongoDeliveryStore) MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	if runID == "" {
+		// Nothing to match: a row whose run_id is empty launched no run, so
+		// there is no outcome of ITS run to stamp. Refused here rather than
+		// trusting the filter — `run_id: ""` would also match a row that
+		// never launched.
+		return nil
+	}
+	stamped := at.UTC()
+	set := bson.M{"last_run_status": status, "last_run_at": stamped}
+	unset := bson.M{}
+	if errMsg != "" {
+		set["last_run_error"] = errMsg
+	} else {
+		unset["last_run_error"] = ""
+	}
+	if errCode != "" {
+		set["last_run_error_code"] = errCode
+	} else {
+		unset["last_run_error_code"] = ""
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.kit.Coll().UpdateOne(ctx, bson.M{
+		"_id": id, "run_id": runID,
+		"$or": bson.A{
+			bson.M{"last_run_at": bson.M{"$exists": false}},
+			bson.M{"last_run_at": bson.M{"$lte": stamped}},
+		},
+	}, update)
+	if err != nil {
+		return fmt.Errorf("webhooks: mark delivery run outcome %s: %w", id, err)
+	}
+	if res.MatchedCount == 0 {
+		if _, getErr := s.Get(ctx, id); getErr != nil {
+			if errors.Is(getErr, ErrNotFound) {
+				return ErrNotFound
+			}
+			// A transient store failure must not be laundered into
+			// ErrNotFound — the spine warns on real errors and stays silent
+			// only on a purged row.
+			return fmt.Errorf("webhooks: mark delivery run outcome %s: disambiguate zero-match: %w", id, getErr)
+		}
+		// The row exists but reports another run, or already holds a NEWER
+		// outcome. Not an error — it already says something truer.
+	}
+	return nil
 }
 
 func (s *MongoDeliveryStore) ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
@@ -408,6 +538,23 @@ func (s *MongoCounter) bump(ctx context.Context, key string, limit int) (bool, e
 		return false, nil
 	}
 	return true, nil
+}
+
+// Release undoes a granted Allow: the org unit, and the per-webhook one when
+// a per-webhook cap made Allow count it. Detached from ctx, like Allow's own
+// rollback, so a cancelled request does not leak the unit.
+func (s *MongoCounter) Release(ctx context.Context, tenantID, webhookID string, when time.Time, lim Limits) error {
+	ctx = context.WithoutCancel(ctx)
+	m := monthKey(when)
+	if _, err := s.col.UpdateOne(ctx, bson.M{"_id": "org|" + tenantID + "|" + m, "count": bson.M{"$gt": 0}}, bson.M{"$inc": bson.M{"count": -1}}); err != nil {
+		return fmt.Errorf("webhooks: counter release: %w", err)
+	}
+	if lim.PerWebhookMonthly > 0 {
+		if _, err := s.col.UpdateOne(ctx, bson.M{"_id": "wh|" + tenantID + "|" + webhookID + "|" + m, "count": bson.M{"$gt": 0}}, bson.M{"$inc": bson.M{"count": -1}}); err != nil {
+			return fmt.Errorf("webhooks: counter release: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *MongoCounter) OrgCount(ctx context.Context, tenantID string, when time.Time) (int, error) {

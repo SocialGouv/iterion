@@ -37,6 +37,45 @@ import (
 // when neither a node, the workflow, nor a run override sets one.
 const ModeEnv = "ITERION_COMPRESS"
 
+// SandboxEnv is the operator escape hatch deciding whether the rewriter chain
+// still runs HOST-SIDE for a task whose commands execute inside a sandbox
+// (#2007). The chain rewrites a command in the launcher/engine process and
+// the sandboxed CLI or tool node runs the rewritten command in-container, so
+// under the previous placement each Bash command of a sandbox-requested run
+// passed through a host-side subprocess the sandbox boundary otherwise
+// excludes. The default is "skip" (also every unset/unknown value): the chain
+// stands down for sandboxed tasks, their commands run verbatim in-container,
+// and the stand-down is named on the run's log at each site it engages —
+// sandboxed runs forgo the rewrite's 60–90% output-token saving. "host"
+// restores the previous placement byte-identical; "skip" is the explicit
+// form of the default.
+const SandboxEnv = "ITERION_REWRITE_SANDBOX"
+
+// SandboxValues lists the values SandboxEnv accepts, for warnings.
+var SandboxValues = []string{"host", "skip"}
+
+// SkipsSandbox resolves the placement decision both rewrite sites consult
+// (the claude_code PreToolUse hook and the tool-node recipe), each through
+// its own named predicate: true whenever the command will execute inside a
+// sandbox AND the operator did not explicitly pin SandboxEnv=host. The
+// default under a sandbox is to skip; "host" is the greppable escape hatch
+// restoring the previous host-side placement. A non-sandboxed command is
+// always rewritten, whatever the knob.
+func SkipsSandbox(envValue string, sandboxed bool) bool {
+	return sandboxed && !strings.EqualFold(strings.TrimSpace(envValue), "host")
+}
+
+// InvalidSandboxEnv reports a non-empty SandboxEnv value that names no known
+// placement, so the reader can warn once (the value resolves to the default,
+// "skip").
+func InvalidSandboxEnv(envValue string) bool {
+	switch strings.ToLower(strings.TrimSpace(envValue)) {
+	case "", "host", "skip":
+		return false
+	}
+	return true
+}
+
 // DefaultRewriteTimeoutMs bounds a single rewriter invocation when the spec
 // does not set one. Generous so a wedged binary can never stall a node.
 const DefaultRewriteTimeoutMs = 5000
@@ -185,7 +224,11 @@ func locate(loc plugin.LocateSpec) string {
 		}
 	}
 	if loc.Bin != "" {
-		if p, err := exec.LookPath(loc.Bin); err == nil {
+		// envtrust.LookPath, not exec.LookPath: the env-named path above is
+		// already read as Inherited, and the PATH fallback answers the same
+		// authority question — a PATH a project .env planted chooses no
+		// executable here either (#2809).
+		if p, err := envtrust.LookPath(loc.Bin); err == nil {
 			return p
 		}
 	}

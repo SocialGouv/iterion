@@ -435,7 +435,7 @@ func TestFinalizeWorktree_WipBankSetAsideIsExactlyWhatItDidNotCarry(t *testing.T
 	writeFile(t, filepath.Join(wt, "réel.md"), "the pass's work\n")
 	// Read through the production helper and the production form: gittest.Run
 	// trims the output, which a `-z` record stream does not survive.
-	porcelain, err := runGit(wt, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(wt, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}

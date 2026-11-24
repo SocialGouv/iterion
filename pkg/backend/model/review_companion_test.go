@@ -1,14 +1,18 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 func TestReviewCompanionJSONSchemaBoundsHumanMessage(t *testing.T) {
+	t.Parallel()
 	raw, err := reviewCompanionJSONSchema(&ir.Schema{
 		Name: "verdict",
 		Fields: []*ir.SchemaField{
@@ -75,6 +79,7 @@ func TestReviewCompanionJSONSchemaBoundsHumanMessage(t *testing.T) {
 }
 
 func TestReviewCompanionJSONSchemaRejectsReservedFieldCollision(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"needs_human_input", "message"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := reviewCompanionJSONSchema(&ir.Schema{
@@ -87,5 +92,28 @@ func TestReviewCompanionJSONSchemaRejectsReservedFieldCollision(t *testing.T) {
 				t.Fatalf("expected reserved %s collision to fail", name)
 			}
 		})
+	}
+}
+
+// Under the AmbientRefused stamp the companion resolves through the run's
+// credentials: a vendor companion spec is refused at resolution (the pod
+// environment is not the run's money), and a gateway companion spec
+// resolves from the run's sealed pair.
+func TestExecuteReviewCompanion_AmbientRefusedRefusesAVendorSpec(t *testing.T) {
+	t.Parallel()
+	e := &ClawExecutor{
+		registry: NewRegistry(),
+		schemas: map[string]*ir.Schema{
+			"verdict": {Name: "verdict", Fields: []*ir.SchemaField{{Name: "decision", Type: ir.FieldTypeString}}},
+		},
+	}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	node := &ir.HumanNode{Model: "anthropic/claude-haiku-4-5"}
+	node.ID = "rev"
+	node.OutputSchema = "verdict"
+	_, err := e.ExecuteReviewCompanion(ctx, node, "system", "user")
+	var ambient *ErrAmbientCredentialRefused
+	if !errors.As(err, &ambient) {
+		t.Fatalf("err = %v, want *ErrAmbientCredentialRefused (a vendor companion spec on a stamped run is refused at resolution)", err)
 	}
 }

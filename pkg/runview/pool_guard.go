@@ -2,9 +2,9 @@ package runview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -15,8 +15,9 @@ import (
 // run stamped to a sovereign runner pool through a vendor-default model.
 // Detect with errors.Is. The remedy is the operator's: pin the surface to
 // the pool's openai_compatible gateway spec, or provide that gateway
-// credential to the process making the call.
-var ErrPoolContentRefused = errors.New("sovereign pool: refusing to send this run's content through a server-side LLM")
+// credential to the process making the call. The sentinel lives in
+// pkg/backend/credroute, the leaf every credential arm reaches (ADR-161).
+var ErrPoolContentRefused = credroute.ErrPoolContentRefused
 
 // poolContentRefusal reports the refusal for an auxiliary server-side LLM
 // call whose content derives from a run stamped to pool. A nil return means
@@ -33,6 +34,44 @@ func poolContentRefusal(pool, spec string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: the run is stamped to pool %q; pin the model to the pool's openai_compatible gateway, or run the surface on the pool", ErrPoolContentRefused, pool)
+}
+
+// contentRefusal reports the refusal for an auxiliary server-side LLM call
+// whose content derives from a stamped run. The CONTENT BOUNDARY outranks
+// the pool stamp: a team_gateway boundary refuses EVERY spec — the
+// boundary names the credential that funds the run, and no server-side
+// vendor default speaks for it — while own_keys keeps the pool guard's
+// semantics (the gateway pin escapes). A run with neither stamp takes the
+// pool path.
+func contentRefusal(boundary *store.RunContentBoundary, pool, spec string) error {
+	if err := contentBoundaryRefusal(boundary); err != nil {
+		return err
+	}
+	return poolContentRefusal(pool, spec)
+}
+
+// contentBoundaryRefusal is the spec-free half of contentRefusal: a
+// team_gateway boundary refuses EVERY spec, so a caller that has not
+// resolved its model yet — and may never, where it holds no credential —
+// can answer the policy question first. The refusal must reach the HTTP
+// layer as a refusal, not as the resolver's "no credential" 500 that a
+// credential-less host would produce first.
+func contentBoundaryRefusal(boundary *store.RunContentBoundary) error {
+	if boundary != nil && boundary.Kind == store.ContentBoundaryTeamGateway {
+		return fmt.Errorf("%w: the run's content boundary is the team gateway %q — no server-side vendor default speaks for it", ErrPoolContentRefused, boundary.GatewayHost)
+	}
+	return nil
+}
+
+// frozenContentBoundary reads the run document's content boundary. The
+// document is the stamp's authority, as for the pool stamp: written at
+// launch, replayed by every lane, never re-derived.
+func (s *Service) frozenContentBoundary(ctx context.Context, runID string) (*store.RunContentBoundary, error) {
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return r.ContentBoundary, nil
 }
 
 // frozenPoolStamp reads the run document's pool stamp. The document is the

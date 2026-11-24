@@ -1,0 +1,198 @@
+package kubernetes
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/sandbox"
+)
+
+// The emptydir mount type: how a declared read-back path is served on a
+// pod (ADR-143 §2) — storage the driver owns, carrying a sizeLimit only
+// where the author writes `size=`. The parse and the render are pinned
+// separately: the parse is what an author writes, the render is what the
+// pod runs.
+
+func TestParseMount_EmptyDir(t *testing.T) {
+	got, err := parseMount("type=emptydir,target=/iterion/artifact-files,size=256Mi")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Type != MountTypeEmptyDir {
+		t.Errorf("Type = %q, want emptydir", got.Type)
+	}
+	if got.Source != "" {
+		t.Errorf("Source = %q, want none — driver-owned storage names no cluster object", got.Source)
+	}
+	if got.Target != "/iterion/artifact-files" {
+		t.Errorf("Target = %q", got.Target)
+	}
+	if got.Size != "256Mi" {
+		t.Errorf("Size = %q, want 256Mi", got.Size)
+	}
+}
+
+func TestParseMount_EmptyDirRefusals(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"a source is not a hint", "type=emptydir,source=pvc-name,target=/scratch", "takes no source"},
+		{"a key is not a projection", "type=emptydir,target=/scratch,key=cfg", "takes no key"},
+		{"target is still required", "type=emptydir", "target is required"},
+		{"target stays absolute", "type=emptydir,target=relative", "must be absolute"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseMount(tc.raw)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("parseMount(%q) = %v, want it refused with %q", tc.raw, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseMount_SizeIsAnEmptydirKey(t *testing.T) {
+	if _, err := parseMount("type=pvc,source=v,target=/v,size=1Gi"); err == nil || !strings.Contains(err.Error(), "emptydir key") {
+		t.Errorf("parseMount = %v, want size= refused off an emptydir", err)
+	}
+}
+
+// size= renders a Kubernetes quantity (an emptyDir sizeLimit): anything a
+// quantity never is stops at the mount line, not at the API server after
+// the pod was built.
+
+func TestParseMount_SizeMustBeAKubernetesQuantity(t *testing.T) {
+	cases := []struct {
+		name string
+		size string
+		ok   bool
+	}{
+		{"binary suffix", "256Mi", true},
+		{"decimal suffix", "500M", true},
+		{"bare bytes", "1024", true},
+		{"a fraction", "1.5Gi", true},
+		{"milli", "500m", true},
+		{"an exponent", "1e3", true},
+		{"words", "abc", false},
+		{"a typo'd binary suffix", "10Mib", false},
+		{"a suffix with no number", "Mi", false},
+		{"a spaced value", "1 Gi", false},
+		{"the capital the grammar never takes", "1K", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseMount("type=emptydir,target=/scratch,size=" + tc.size)
+			if tc.ok {
+				if err != nil {
+					t.Errorf("parseMount(size=%s) = %v, want a quantity the pod accepts", tc.size, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Errorf("parseMount(size=%s) = nil, want it refused at the mount line as a non-quantity", tc.size)
+				return
+			}
+			if !strings.Contains(err.Error(), "not a Kubernetes quantity") || !strings.Contains(err.Error(), tc.size) {
+				t.Errorf("error = %v, want the bad size %q named with its mount line", err, tc.size)
+			}
+		})
+	}
+}
+
+func TestTranslateMounts_RendersAnEmptyDirVolume(t *testing.T) {
+	volumes, mounts, err := translateMounts([]string{"type=emptydir,target=/iterion/artifact-files,size=256Mi"})
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if len(volumes) != 1 || len(mounts) != 1 {
+		t.Fatalf("rendered %d volumes / %d mounts, want one of each", len(volumes), len(mounts))
+	}
+	// The volume is driver-owned storage at the declared path, capped.
+	if _, ok := volumes[0]["emptyDir"]; !ok {
+		t.Errorf("volume = %v, want an emptyDir", volumes[0])
+	}
+	volName, _ := volumes[0]["name"].(string)
+	if volName == "" || strings.HasSuffix(volName, "-") {
+		t.Errorf("volume name = %q, want a valid DNS-1123 label", volName)
+	}
+	if limit, ok := volumes[0]["emptyDir"].(map[string]any)["sizeLimit"]; !ok || limit != "256Mi" {
+		t.Errorf("sizeLimit = %v, want 256Mi — the cap is carried onto the pod, not only into the drain", volumes[0]["emptyDir"])
+	}
+	if mounts[0]["mountPath"] != "/iterion/artifact-files" {
+		t.Errorf("mountPath = %v, want the declared container path", mounts[0]["mountPath"])
+	}
+	if got, _ := mounts[0]["name"].(string); got != volName {
+		t.Errorf("mount references %q, want its own volume %q", got, volName)
+	}
+}
+
+// One volumeMount per mountPath: two mounts at one target build a pod the
+// API server refuses, and the refusal names the mount lines here instead
+// of surfacing a raw API error after creation.
+
+func TestTranslateMounts_RefusesTwoMountsAtOneTarget(t *testing.T) {
+	_, _, err := translateMounts([]string{
+		"type=pvc,source=persist,target=/iterion/artifact-files",
+		"type=emptydir,target=/iterion/artifact-files",
+	})
+	if err == nil {
+		t.Fatal("translateMounts = nil, want two mounts at one path refused before a pod is built")
+	}
+	for _, want := range []string{"already served", "/iterion/artifact-files"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %q", err, want)
+		}
+	}
+	// Nested targets are a different shape — a mount inside another's
+	// tree — and stay the API server's own call.
+	if _, _, err := translateMounts([]string{
+		"type=pvc,source=big,target=/data",
+		"type=emptydir,target=/data/scratch",
+	}); err != nil {
+		t.Errorf("translateMounts = %v, want nested targets through", err)
+	}
+}
+
+// TestTheMountReadersAgreeWithTheParser: outside this driver, one reader
+// answers what a mount's target, size and readonly flag are
+// (sandbox.MountField) — admission and the serving predicate ask it which
+// path a mount serves, the drain which figure its set is metered on, the
+// runtime whether a tool can write there. The driver mounts what
+// parseMount reads. A key written twice is where two parsers part ways —
+// this one assigns every field it meets, so the last wins — and each
+// disagreement is a decision made about a volume the pod does not have:
+// a declaration served at a path the pod mounts elsewhere, a 1Gi meter on
+// a 100Gi volume, a read-only path a tool is told to write.
+func TestTheMountReadersAgreeWithTheParser(t *testing.T) {
+	for _, m := range []string{
+		"type=emptydir,target=/a",
+		"type=emptydir,target=/a,dst=/b",
+		"type=emptydir,dst=/b,destination=/c,target=/d",
+		"type=emptydir,target=/a,size=1Gi,size=100Gi",
+		"type=emptydir, target = /a , size = 2Gi ",
+		"type=pvc,source=claim,target=/a,readonly",
+		"type=pvc,source=claim,target=/a,readonly,readonly=false",
+		"type=pvc,source=claim,target=/a,readonly=false,ro",
+		"type=pvc,source=claim,target=/a,ro=true,readonly=0",
+		"type=secret,source=sec,target=/a,key=k",
+	} {
+		parsed, err := parseMount(m)
+		if err != nil {
+			t.Fatalf("parseMount(%q) = %v — the fixture must be a mount the driver accepts", m, err)
+		}
+		if got := sandbox.MountTargetOf(m); got != parsed.Target {
+			t.Errorf("MountTargetOf(%q) = %q, the driver mounts it at %q", m, got, parsed.Target)
+		}
+		if got := sandbox.MountSizeOf(m); got != parsed.Size {
+			t.Errorf("MountSizeOf(%q) = %q, the driver sizes it %q", m, got, parsed.Size)
+		}
+		if got := sandbox.MountReadOnlyOf(m); got != parsed.ReadOnly {
+			t.Errorf("MountReadOnlyOf(%q) = %v, the driver mounts it readOnly=%v", m, got, parsed.ReadOnly)
+		}
+		if typ, _, _ := sandbox.MountField(m, "type"); MountType(typ) != parsed.Type {
+			t.Errorf("MountField(%q, type) = %q, the driver reads %q", m, typ, parsed.Type)
+		}
+	}
+}

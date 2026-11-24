@@ -35,7 +35,11 @@ task demo:rgaa-audit
    it prefers a matching global npm install; otherwise the first use
    installs the engine under `~/.cache/iterion/ultra11y` after
    verifying the pin's size and sha256).
-3. Installs the chromium build the engine's rendered scan navigates with.
+3. Installs the chromium build the engine's rendered scan navigates with
+   (a browser already on the machine is named instead with the bot's
+   `browser_path` var or `ULTRA11Y_BROWSER_PATH`, which the engine takes
+   as `--browser-path`; the sandbox browser image names its
+   `/usr/bin/chromium` that way).
 4. Runs `iterion run bots/rgaa-audit` with `rendered=required`: the
    studio is served locally (`studio/e2e/serve.mjs`, seeded workspace),
    the 21-page sample (`.ultra11yrc.json`) is captured with Chromium,
@@ -48,7 +52,10 @@ The report, page grid, coverage annex and ledger land under
 exception: the engine writes them under the audited checkout's
 `.ultra11y/pages/` (gitignored, like the e2e workspace `serve.mjs`
 seeds under `studio/e2e/.tmp/`) — so don't run the demo while a studio
-e2e session is live. The audit reads the checkout AS IT IS: uncommitted
+e2e session is live. A previous demo's captures are not inherited:
+`static_audit` purges that directory before the audit, so a second run
+on the same checkout never ingests the first's stale probes. The audit
+reads the checkout AS IT IS: uncommitted
 edits to `studio/src` are part of what gets judged.
 
 ## Options and variants
@@ -91,3 +98,82 @@ edits to `studio/src` are part of what gets judged.
 - The weekly CI advisory (`ci/a11y-advisory`) runs the deterministic
   layers only (no LLM); a red advisory names the criteria the next run
   will re-adjudicate.
+
+## The `rgaa` sandbox image class
+
+A sandboxed run of this bot needs two things no stock default image
+carries: a browser (Chromium) and the ultra11y engine. Both now exist as
+a published image class (#2632, decision (a)): the `rgaa` variant —
+`sandbox/rgaa/Dockerfile`, built FROM the browser base (Chromium +
+Playwright MCP + `ULTRA11Y_BROWSER_PATH=/usr/bin/chromium`) with the
+pinned ultra11y engine installed globally (`npm install -g
+ultra11y@<pin>`, the pin held equal to `bots/rgaa-audit/ultra11y.pin` by
+`bots/rgaa_audit_sandbox_rgaa_image_test.go`).
+
+A bot opts in by declaring the class on its sandbox block:
+
+```iter fragment:workflow
+sandbox:
+  image: rgaa    ## resolves at launch to ghcr.io/socialgouv/iterion-sandbox-rgaa:<version>
+```
+
+A bare class name (`slim`, `full`, `sec`, `browser`, `rgaa`) resolves to
+the published variant pinned to the running iterion; anything else keeps
+its meaning (a full `registry/repo:tag` reference is your own image; an
+unknown bare word is verbatim, with the compiler's C325 saying so).
+
+**Until the bot itself declares the class**, its `prepare` node keeps its
+engine resolution ladder: `ULTRA11Y_BIN` → a matching global npm install
+→ `ULTRA11Y_HOME` → a per-run `npm install ultra11y@<pin>` (fingerprint
+verified either way). On the rgaa image the second arm answers, so the
+per-run install disappears the day the bot declares `image: rgaa` — the
+fallback stays as the honest answer on every other image.
+
+## Running on iterion.cloud — what a sandboxed cloud run gets, and what it still does not
+
+A cloud run executes inside the run's sandbox pod, not in the runner
+image. Both decisions of
+[#2632](https://github.com/SocialGouv/iterion/issues/2632) are
+delivered: (a) the `rgaa` image class, above, and (b) the sandboxed
+board write path, below. What remains is the honest interim state of
+the image until the bot declares the class.
+
+- **The engine pre-install does not reach a run on the default image.**
+  The runner image pre-installs the pinned ultra11y
+  (`Dockerfile.runner-devbox`: `ARG ULTRA11Y_VERSION`, installed under
+  `/opt/iterion/ultra11y` and exported as `ULTRA11Y_HOME`), but the
+  sandbox pod defaults to `ghcr.io/socialgouv/iterion-sandbox-slim`
+  (`pkg/runtime/sandbox_default_image.go`) — node + devbox + Nix, no
+  ultra11y (`sandbox/slim/Dockerfile`). `prepare`'s candidate walk
+  (`ULTRA11Y_BIN` → global npm → `ULTRA11Y_HOME`,
+  `bots/rgaa-audit/main.bot`) therefore misses, and every cloud run on
+  the default image pays one `npm install ultra11y@<pin>` into its run
+  directory (`engine_source: "npm-install"`) — a per-run network fetch
+  from the registry, fingerprinted like any other engine source. The
+  `rgaa` class carries the engine pre-installed.
+- **No browser on the default image, so `rendered=off` there.** The
+  slim image ships no Chromium, so the rendered layer cannot run on
+  iterion.cloud while the bot rides the default: launch with
+  `rendered=off` (or let `auto` find nothing) and the coverage annex
+  says the layer did not run. The `browser` class and the `rgaa` class
+  both ship Chromium at `/usr/bin/chromium`, named to the bot through
+  `ULTRA11Y_BROWSER_PATH`.
+- **Board filing works on the cloud — and since #2388 it no longer
+  touches the sandbox at all.** The publication is deterministic
+  (`publish_list` / `publish_create` / `publish_verify_read` are native
+  `board.*` actions, ADR-151): the ENGINE executes them, in the runner
+  pod, against the tenant's Mongo board (resolved per grant through
+  `Config.BoardFor`, #2465). The `BoardHTTPEndpoint` + `BoardRunToken`
+  MCP transport that #2632 (b) built for the transcription judge is
+  simply off this path — no token, no endpoint, no model — and the
+  node's `capabilities:` (board.read / board.create on the tool nodes)
+  is the grant, per #78=A. `post_to_board=true` files from a cloud run;
+  with `post_to_board=false` the issue plan stays a run artefact
+  (`issues-<date>.json`). The remaining cloud gap of the family: the
+  `connectors` capability's facade is served by the server only, so a
+  sandboxed cloud node declaring `connectors` gets no endpoint — the
+  delegate warns and disables its connector tools, exactly the
+  pre-#2632 degradation (never an endpoint that would 404 per call).
+- **Credentials.** A cloud launch spends the credentials of the
+  account or team that launched it (BYOK); no platform key is
+  provisioned for this bot.

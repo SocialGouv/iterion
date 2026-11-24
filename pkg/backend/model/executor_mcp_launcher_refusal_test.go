@@ -52,6 +52,7 @@ func refusingExecutor(t *testing.T, extraTools ...string) *ClawExecutor {
 // skipping resolution for the whole server surfaces as "unknown tool" at
 // build time, which names neither the server nor the reason.
 func TestARefusedMCPServerReachesExecuteRatherThanFailingTheBuild(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		tools []string
@@ -103,6 +104,7 @@ func TestARefusedMCPServerReachesExecuteRatherThanFailingTheBuild(t *testing.T) 
 // And at execution, the sandboxed claw route refuses BY TYPE, which is what
 // makes the fallback chain walk on to a route that can serve the node.
 func TestSandboxedClawRefusesARefusedMCPServerByCapability(t *testing.T) {
+	t.Parallel()
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	task := delegate.Task{
 		NodeID:  "n",
@@ -131,6 +133,7 @@ func TestSandboxedClawRefusesARefusedMCPServerByCapability(t *testing.T) {
 // its tools, loudly. Failing the node there would make one repository's
 // `.mcp.json` able to stop every sandboxed claw node of every run.
 func TestAnAmbientRefusedServerDegradesTheNode(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
@@ -176,6 +179,7 @@ func TestAnAmbientRefusedServerDegradesTheNode(t *testing.T) {
 // would spawn a process beside the launcher and then refuse every tool it
 // offers. Least privilege reads the declaration first.
 func TestAWildcardDoesNotStartAServerTheNodeCannotUse(t *testing.T) {
+	t.Parallel()
 	started := false
 	tr := tool.NewRegistry()
 	if err := tr.RegisterBuiltin("bash", "bash", nil, func(context.Context, json.RawMessage) (string, error) {
@@ -221,6 +225,7 @@ func TestAWildcardDoesNotStartAServerTheNodeCannotUse(t *testing.T) {
 // list sends a bot author reading the target repository's `.mcp.json` for a
 // line that is in their own `.bot`.
 func TestTheDegradeEventSaysWhetherTheNodeAskedForTheServer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mcp    *ir.MCPConfig
@@ -271,6 +276,7 @@ func TestTheDegradeEventSaysWhetherTheNodeAskedForTheServer(t *testing.T) {
 // in the container — so a sentence claiming its tools are missing is one the
 // next second contradicts, written into the run record where a gate reads it.
 func TestAServerWhoseToolsTheNodeNamesDoesNotDegrade(t *testing.T) {
+	t.Parallel()
 	for _, tools := range [][]string{
 		{"bash", "mcp.repo.*"},
 		{"bash", "mcp.repo.search"},
@@ -313,6 +319,7 @@ func boolPtr(b bool) *bool { return &b }
 // malformed server definition, and the health problem would exist only
 // inside an error string nobody parses.
 func TestARefusedServerThatIsAlsoBrokenReportsBothFacts(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	for _, name := range []string{"bash", "todo_write"} {
 		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
@@ -364,6 +371,7 @@ func TestARefusedServerThatIsAlsoBrokenReportsBothFacts(t *testing.T) {
 // carries no cause, so `cause` present in the timeline always means "there
 // is something to go and fix".
 func TestAHealthyRefusedServerCarriesNoCause(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
@@ -399,6 +407,7 @@ func TestAHealthyRefusedServerCarriesNoCause(t *testing.T) {
 // node to a fallback for a tool which may not exist anywhere. The message
 // carries the fact instead.
 func TestABareToolNameOnARefusedServerFailsWithTheReason(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
 	f := backendFields{
@@ -420,6 +429,7 @@ func TestABareToolNameOnARefusedServerFailsWithTheReason(t *testing.T) {
 // And the enrichment must not fire when nothing was refused: an ordinary
 // typo would otherwise be answered with advice about servers that are fine.
 func TestAnUnknownToolWithNoRefusalKeepsItsPlainError(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}}
 	f := backendFields{
@@ -446,6 +456,7 @@ func TestAnUnknownToolWithNoRefusalKeepsItsPlainError(t *testing.T) {
 // the opposite: an ambient server sharing a name prefix got swept into the
 // refusal of the whole claw route, and its degrade event was swallowed.
 func TestTheFQNSpellingHasExactlyOneReading(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	for _, s := range []struct{ server, name string }{
 		{"repo", "list__all"},
@@ -494,6 +505,7 @@ func TestTheFQNSpellingHasExactlyOneReading(t *testing.T) {
 // that is in their own `.bot`. Exactly the misdirection this field removes,
 // reintroduced one level up.
 func TestAWorkflowLevelDeclarationIsNotAmbient(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		wfMCP  *ir.MCPConfig
@@ -538,6 +550,7 @@ func TestAWorkflowLevelDeclarationIsNotAmbient(t *testing.T) {
 // trace of the drop is a sentence the next line contradicts is worse than no
 // trace: a downstream gate reads it as "ran degraded".
 func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
@@ -572,6 +585,7 @@ func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
 // the gate saw only one of them. Worse, it suppressed a server that had
 // merely FAILED TO BOOT, a fact about the server that no route repairs.
 func TestARefusedRouteStillReportsTheToolsItsTaskLacks(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	for _, name := range []string{"bash", "todo_write"} {
 		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
@@ -634,6 +648,7 @@ func TestARefusedRouteStillReportsTheToolsItsTaskLacks(t *testing.T) {
 // `claude_code` fallback forwards it and its CLI skips it silently, so the
 // suppressed event was the only trace that existed.
 func TestABrokenServerIsReportedEvenWhenAnotherWasRefused(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	for _, name := range []string{"bash", "todo_write"} {
 		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
@@ -697,6 +712,7 @@ func TestABrokenServerIsReportedEvenWhenAnotherWasRefused(t *testing.T) {
 // refused several statements later. A node that never ran did not run
 // degraded.
 func TestNoDegradeEventWhenTheBuildFailsAfterResolution(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
@@ -727,6 +743,7 @@ func TestNoDegradeEventWhenTheBuildFailsAfterResolution(t *testing.T) {
 // started before the sandbox settled. A refusal carries its own origin —
 // take it from there, so the two fields describe the same moment.
 func TestTheDegradeEventTakesItsOriginFromTheRefusal(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
@@ -760,6 +777,7 @@ func TestTheDegradeEventTakesItsOriginFromTheRefusal(t *testing.T) {
 // a health cause attached. And it must not say the same thing twice: the
 // typed refusal already ends with the route-it-elsewhere advice.
 func TestTheRemedyCarriesEveryReasonExactlyOnce(t *testing.T) {
+	t.Parallel()
 	// The fixtures are built by the REAL producer, not hand-written: the
 	// typed refusal appends the route-it-elsewhere advice only when it has
 	// no cause to report instead, and it is the refusal that answers whether
@@ -823,6 +841,7 @@ func TestTheRemedyCarriesEveryReasonExactlyOnce(t *testing.T) {
 // was: it resolves to `unknown tool`, so the advice still fires — the
 // sanitized spelling below is the one shape ruled out.
 func TestTheBareNameAdviceOnlyAnswersAnUnknownTool(t *testing.T) {
+	t.Parallel()
 	e := refusingExecutor(t)
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
 

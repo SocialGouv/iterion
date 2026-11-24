@@ -1,0 +1,285 @@
+package tool
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawcmds "github.com/SocialGouv/iterion/pkg/claw/pkg/api/commands"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// DefaultWorkspaceCommandMaxBytes is the built-in ceiling on a workspace
+// command's body — and on its expansion — for the `command` tool. It is the
+// same bound the prompt-invocation path applies (pkg/backend/model's
+// ITERION_CLAW_SLASH_COMMAND_MAX_BYTES, whose host-side resolution the
+// host's registration passes in): on a review run the workspace is a
+// checkout the run does not control, so the file is untrusted input that
+// turns straight into a billed request.
+const DefaultWorkspaceCommandMaxBytes = 256 << 10
+
+// commandArgsPrefix introduces the arguments appended to a command body
+// that consumes none — what Claude Code 2.1.x does rather than drop them,
+// and what the prompt-invocation path does (slashCommandArgsPrefix): one
+// spelling, so an operator meets the same shape on both paths.
+const commandArgsPrefix = "\n\nARGUMENTS: "
+
+// RegisterClawCommand registers the `command` tool: the MODEL-invoked half
+// of the workspace slash-command capability (#1716), which claude_code
+// carries natively (its SlashCommand tool — withheld headless, since a
+// command there can be Bash-backed) and claw had no surface for. The tool
+// resolves `<workDir>/.claude/commands/<name>.md` through the same
+// contained pkg/api/commands lookup the prompt path uses and returns the
+// expanded body for the model to follow; executing anything the body asks
+// for still takes the node's own declared tools, so a `command` grant hands
+// over no capability the node did not already hold.
+//
+// maxBytes is the body/expansion ceiling: 0 falls back to
+// DefaultWorkspaceCommandMaxBytes, a negative value removes the ceiling
+// (the operator's dial, resolved host-side). An empty workDir registers the
+// tool against no workspace: every call answers "unknown command".
+//
+// workDir is CAPTURED once; hosts whose workspace can move after
+// registration — the engine replaces a run's workDir when `worktree: auto`
+// produces a per-run worktree (ClawExecutor.SetWorkDir, #2870) — register
+// through RegisterClawCommandWithProvider instead, so the lookup follows.
+//
+// Nothing here fails a call with a Go error but a missing name: claude_code
+// answers an unknown command locally (is_error: false), so every domain
+// outcome — unknown name, unreadable file, oversized body, empty expansion
+// — is the tool's TEXT, for the model to report. So are the notices the
+// answer opens with (commandNotices): the frontmatter the lookup still
+// discards, the body forms this backend expands differently, and the
+// `allowed-tools:` narrowing the invocation just applied to this
+// generation's tool surface (#1717).
+func RegisterClawCommand(reg *Registry, workDir string, maxBytes int) error {
+	return RegisterClawCommandWithProvider(reg, staticWorkspaceProvider(workDir), maxBytes)
+}
+
+// RegisterClawCommandWithProvider is RegisterClawCommand over a workspace
+// PROVIDER, consulted on every call, rather than a string captured at
+// registration. The prompt half of the capability reads the executor's
+// workDir live — the engine replaces it at run start when `worktree: auto`
+// produces a per-run worktree — so a captured string would resolve
+// `.claude/commands/` in a different checkout than the prompt path:
+// possibly a different commit, for the capability whose byte ceiling exists
+// precisely for that review case (#2870). A nil provider behaves as the
+// empty workspace: every call answers "unknown command".
+func RegisterClawCommandWithProvider(reg *Registry, workspace func() string, maxBytes int) error {
+	return RegisterClawCommandWithTrust(reg, workspace, maxBytes, nil)
+}
+
+// RegisterClawCommandWithTrust is RegisterClawCommandWithProvider with the
+// workspace's PROVENANCE beside its location, consulted per call (ADR-162
+// U3): on a workspace its tenant did not write, the command's body is the
+// checkout's own prose handed to the model as a curated instruction, so the
+// tool resolves nothing — the call answers with the withdrawal, as text,
+// the shape every domain outcome takes on this surface. A nil trust
+// provider is the trusted default: hosts with no notion of provenance keep
+// today's behavior. The live closure, never a captured value: the engine
+// pushes the trust after the registry exists (the same doctrine as the
+// skill allowlist's provider).
+func RegisterClawCommandWithTrust(reg *Registry, workspace func() string, maxBytes int, trust func() store.RunTrust) error {
+	if maxBytes == 0 {
+		maxBytes = DefaultWorkspaceCommandMaxBytes
+	}
+	if workspace == nil {
+		workspace = staticWorkspaceProvider("")
+	}
+	t := api.Tool{
+		Name: "command",
+		Description: "Invoke a workspace slash command from .claude/commands/ by name (without the leading slash), " +
+			"with optional arguments. The command's body — a curated prompt the workspace defines — is returned to you to follow. " +
+			"Invoke it when the task matches a command the workspace carries, instead of improvising the procedure it encodes.",
+		InputSchema: api.InputSchema{
+			Type: "object",
+			Properties: map[string]api.Property{
+				"name": {Type: "string", Description: "The command name, without the leading slash (a namespaced command uses ':', e.g. 'db:migrate')."},
+				"args": {Type: "string", Description: "Optional arguments the command body substitutes."},
+			},
+			Required: []string{"name"},
+		},
+	}
+	return RegisterClawTool(reg, t, func(ctx context.Context, input map[string]any) (string, error) {
+		if trust != nil && !trust().Trusted() {
+			return "workspace slash commands are not served from a workspace its tenant did not write — the command stays unresolved", nil
+		}
+		return executeWorkspaceCommand(ctx, workspace(), maxBytes, input)
+	})
+}
+
+// staticWorkspaceProvider wraps a registration-time workspace string into
+// the provider shape the workspace-scoped lookup tools resolve through, for
+// hosts whose workspace never moves after registration (the in-container
+// runner: its cwd IS the run's bind-mounted worktree).
+func staticWorkspaceProvider(workDir string) func() string {
+	return func() string { return workDir }
+}
+
+func executeWorkspaceCommand(ctx context.Context, workDir string, maxBytes int, input map[string]any) (string, error) {
+	name, _ := input["name"].(string)
+	// The model thinks in invocations: accept the slash it would type.
+	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
+	if name == "" {
+		return "", fmt.Errorf("command: 'name' is required")
+	}
+	args, _ := input["args"].(string)
+	cmd, found, err := clawcmds.LookupWorkspace(workDir, name, maxBytes)
+	switch {
+	case errors.Is(err, clawcmds.ErrBodyTooLarge):
+		return fmt.Sprintf("/%s is larger than the %d-byte ceiling — not invoked", name, maxBytes), nil
+	case err != nil:
+		return fmt.Sprintf("/%s could not be read (%s) — not invoked", name, err), nil
+	case !found:
+		return fmt.Sprintf("Unknown command: /%s — %s does not define it", name, clawcmds.CommandsDir(workDir)), nil
+	}
+	expanded, consumed, err := clawcmds.Expand(cmd, args, maxBytes)
+	if err != nil {
+		return fmt.Sprintf("/%s (%s) expands past the %d-byte ceiling — not invoked", name, cmd.Path, maxBytes), nil
+	}
+	if strings.TrimSpace(expanded) == "" {
+		return fmt.Sprintf("/%s (%s) expands to nothing — not invoked", name, cmd.Path), nil
+	}
+	if a := strings.TrimSpace(args); a != "" && !consumed {
+		expanded += commandArgsPrefix + a
+	}
+	if maxBytes > 0 && len(expanded) > maxBytes {
+		return fmt.Sprintf("/%s (%s) reaches %d bytes with its arguments, over the %d-byte ceiling — not invoked", name, cmd.Path, len(expanded), maxBytes), nil
+	}
+	// The command is invoked: its `allowed-tools:` frontmatter now binds the
+	// rest of this generation (#1717). INTERSECT-ONLY, a deliberate
+	// divergence from the vendor's applySkillSideEffects: there the
+	// OPERATOR's next turn lifts the narrowing, but on this surface every
+	// invocation is model-side — a command without the key changes NOTHING,
+	// and a command with one can only shrink the scope further, because a
+	// restriction the model could lift by invoking a plain command would be
+	// none at all (review HIGH). A nil scope — a caller that is not a
+	// generation loop — narrows nothing, as it did before the gate existed.
+	if scope := CommandScopeFrom(ctx); scope != nil && cmd.AllowedTools != nil {
+		scope.Apply(name, cmd.AllowedTools)
+		return commandNotices(name, cmd, args) + narrowingNotice(scope) + expanded, nil
+	}
+	return commandNotices(name, cmd, args) + expanded, nil
+}
+
+// commandNotices prefixes the body with the divergences the lookup reported
+// — the frontmatter it discarded, and the body forms this backend expands
+// differently — each the sentence the prompt path logs
+// (model.expandWorkspaceSlashCommand), addressed to the reader this surface
+// has.
+//
+// The discarded-frontmatter one is the divergence that carries a SECURITY
+// consequence: a command declaring `model:` means one thing on claude_code
+// and another here. Saying nothing is the "one file means two things
+// silently" outcome the prompt path's warning exists to prevent, and the
+// model-driven surface needs it MORE: nobody typed the invocation, so nobody
+// is watching for the file's claims. `allowed-tools:` is NOT among the keys
+// any more — the lookup honours it (#1717) and the invocation narrows this
+// generation's tool surface, which narrowingNotice says.
+//
+// The tool's own answer is the channel because it is the only one BOTH
+// placements have: `command` is PlacementSandbox, so in a sandboxed run the
+// registration that executes is the in-container one — no run logger, no
+// build session, no event bus. The answer crosses instead, and the host
+// persists it on the node's `tool_called` event (persistToolPayload), so a
+// gate reading events.jsonl finds the notice where the model found it. At
+// the HEAD for the same reason: an oversized answer is persisted as a
+// preview of its first bytes.
+func commandNotices(name string, cmd clawcmds.WorkspaceCommand, args string) string {
+	var b strings.Builder
+	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 {
+		fmt.Fprintf(&b, "NOTE (iterion): /%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them (#1717). Report this with your answer.\n",
+			noticeValue(name), cmd.Path, noticeValue(strings.Join(keys, ", ")))
+	}
+	if forms := clawcmds.DynamicBodyForms(cmd.Body, args); len(forms) > 0 {
+		fmt.Fprintf(&b, "NOTE (iterion): /%s uses %s — those mean something else here than in claude_code; see docs/backends.md#workspace-slash-commands.\n",
+			noticeValue(name), strings.Join(forms, ", "))
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return b.String() + "\n"
+}
+
+// narrowingNoticeMarker is the stable substring of every narrowing notice
+// (#1717): EnsureNarrowingNotice keys its already-said check on it, so the
+// invocation's notice and the re-statement can never drift apart on what
+// "said" means.
+const narrowingNoticeMarker = "narrowed your tool surface to"
+
+// narrowingNotice tells the model its tool surface just changed: the command
+// it invoked declared `allowed-tools:` and the rest of this generation is
+// bounded by it (#1717). Without the sentence the model meets the narrowing
+// as a refusal it cannot explain; with it the same answer that carries the
+// body also carries the bound, on the one channel both placements share.
+// Only the INVOCATION THAT NARROWS says so — a later plain command under an
+// active bound owes no repeat.
+func narrowingNotice(scope *CommandScope) string {
+	name, allowed, ok := scope.NarrowedBy()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("NOTE (iterion): /%s %s [%s] for the rest of this generation — it only shrinks from here.\n\n",
+		noticeValue(name), narrowingNoticeMarker, noticeValue(strings.Join(allowed, ", ")))
+}
+
+// EnsureNarrowingNotice re-states an active narrowing in a conversation that
+// does not carry it (#2905): the invocation's answer says it, but a retry
+// whose replay starts from the bare prompt (a caller with no session store),
+// a resume whose checkpoint compaction summarised the turn away, or a
+// delegated child's fresh conversation all leave the generation bounded by a
+// command its conversation never invoked — the next refusal then names a
+// command the model cannot place. The re-statement joins the LAST turn when
+// it is a user turn (a resumed generation's tail is its answering
+// tool_result, so no role flip ever unpairs it); a tail that is not a user
+// turn gets the notice as a fresh user message, which keeps the alternation
+// valid. No-op when no scope binds or the notice already rides the
+// conversation — including nested one block deep in the invocation's
+// tool_result (the depth api.ToolResult.ToContentBlock nests text at today;
+// a deeper future shape would only lose the dedupe, re-stating once too
+// often — noise, never a widened or a dropped bound).
+func EnsureNarrowingNotice(ctx context.Context, messages []api.Message) []api.Message {
+	scope := CommandScopeFrom(ctx)
+	if scope == nil || !scope.Active() {
+		return messages
+	}
+	for _, m := range messages {
+		for _, c := range m.Content {
+			if c.Type == "text" && strings.Contains(c.Text, narrowingNoticeMarker) {
+				return messages
+			}
+			for _, inner := range c.Content {
+				if inner.Type == "text" && strings.Contains(inner.Text, narrowingNoticeMarker) {
+					return messages
+				}
+			}
+		}
+	}
+	name, allowed, ok := scope.NarrowedBy()
+	if !ok {
+		return messages
+	}
+	note := fmt.Sprintf("NOTE (iterion): /%s %s [%s] earlier in this node execution (a previous attempt, or a turn a compaction folded away) — the bound still holds.",
+		noticeValue(name), narrowingNoticeMarker, noticeValue(strings.Join(allowed, ", ")))
+	block := api.ContentBlock{Type: "text", Text: note}
+	out := make([]api.Message, len(messages))
+	copy(out, messages)
+	if last := len(out) - 1; last >= 0 && out[last].Role == "user" {
+		out[last].Content = append(append([]api.ContentBlock(nil), out[last].Content...), block)
+		return out
+	}
+	return append(out, api.Message{Role: "user", Content: []api.ContentBlock{block}})
+}
+
+// noticeValue bounds a value a notice interpolates from untrusted input, to
+// the same 200 bytes the prompt path's safeDiag keeps. The notice is added
+// AFTER the ceiling check, so without this a frontmatter of megabyte-long
+// key names would reach the model past the bound the ceiling exists to
+// hold: the keys come from a file in a checkout the run does not control,
+// and the command name is whatever the model asked for. The forms need no
+// bound — they are this package's own words, from a closed vocabulary.
+func noticeValue(s string) string { return iterlog.Truncate(s, 200) }

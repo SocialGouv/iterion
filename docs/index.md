@@ -16,6 +16,9 @@ hero:
       text: Install & all modes
       link: /install
     - theme: alt
+      text: Cloud in one prompt →
+      link: /getting-started
+    - theme: alt
       text: Explore the bot fleet
       link: /examples
     - theme: alt
@@ -35,7 +38,7 @@ features:
     linkText: Backends & routing
   - icon: 🛡️
     title: Safe autonomy
-    details: Per-run Docker/Podman/Kubernetes sandboxes, a tool-permission gate, sealed secrets, and shared budget caps on tokens, cost, and time — on by default.
+    details: Per-run Docker/Podman/Kubernetes sandboxes (on by default locally; in cloud a chart setting), an opt-in tool-permission gate, sealed secrets, and shared budget caps on tokens, cost, and time.
     link: /sandbox
     linkText: Sandbox & policy
   - icon: ⏯️

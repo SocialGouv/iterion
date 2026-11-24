@@ -376,3 +376,6 @@ func withChildSandboxPath(run sandbox.Run, bin string) sandbox.Run {
 func combineResourceRestore(first, second func() error) func() error {
 	return func() error { return errors.Join(first(), second()) }
 }
+
+// OwnsCommandCancellation forwards the wrapped command lifecycle unchanged.
+func (r *childPathRun) OwnsCommandCancellation() bool { return sandbox.OwnsCommandCancellation(r.Run) }

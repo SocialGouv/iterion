@@ -2,10 +2,15 @@ package delegate
 
 import (
 	"encoding/json"
+
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/plugin"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // IOTask is the on-the-wire form of a [Task] used by the claw
@@ -43,60 +48,131 @@ import (
 // a proxy ToolDef whose Execute emits [EnvelopeToolCall] and blocks on the
 // matching [EnvelopeToolResult] (placement: tool.SandboxPlacementOf).
 type IOTask struct {
-	NodeID                 string                `json:"node_id"`
-	Iteration              int                   `json:"iteration,omitempty"`
-	SystemPrompt           string                `json:"system_prompt,omitempty"`
-	SystemPromptMode       SystemPromptMode      `json:"system_prompt_mode,omitempty"`
-	UserPrompt             string                `json:"user_prompt,omitempty"`
-	UserContent            []ContentBlock        `json:"user_content,omitempty"`
-	AllowedTools           []string              `json:"allowed_tools,omitempty"`
-	ToolsDeclared          bool                  `json:"tools_declared,omitempty"`
-	Readonly               bool                  `json:"readonly,omitempty"`
-	Capabilities           []string              `json:"capabilities,omitempty"`
-	StoreDir               string                `json:"store_dir,omitempty"`
-	RunStoreDir            string                `json:"run_store_dir,omitempty"`
-	Handoff                string                `json:"handoff,omitempty"`
-	HandoffMode            string                `json:"handoff_mode,omitempty"`
-	BoardHTTPEndpoint      string                `json:"board_http_endpoint,omitempty"`
-	BoardRunToken          string                `json:"board_run_token,omitempty"`
-	RunsHTTPEndpoint       string                `json:"runs_http_endpoint,omitempty"`
-	AskUserHTTPEndpoint    string                `json:"ask_user_http_endpoint,omitempty"`
-	AskUserRunToken        string                `json:"ask_user_run_token,omitempty"`
-	ToolDefs               []IOToolDef           `json:"tool_defs,omitempty"`
-	OutputSchema           json.RawMessage       `json:"output_schema,omitempty"`
-	Model                  string                `json:"model,omitempty"`
-	HasTools               bool                  `json:"has_tools,omitempty"`
-	ToolMaxSteps           int                   `json:"tool_max_steps,omitempty"`
-	MaxTokens              int                   `json:"max_tokens,omitempty"`
-	WorkDir                string                `json:"work_dir,omitempty"`
-	BaseDir                string                `json:"base_dir,omitempty"`
-	RepoRoot               string                `json:"repo_root,omitempty"`
-	ReasoningEffort        string                `json:"reasoning_effort,omitempty"`
-	Ultracode              bool                  `json:"ultracode,omitempty"`
-	SecretsHygiene         bool                  `json:"secrets_hygiene,omitempty"`
-	SecretFiles            []SecretFileHint      `json:"secret_files,omitempty"`
-	CursorFragments        []string              `json:"cursor_fragments,omitempty"`
-	SkillHints             []SkillHint           `json:"skill_hints,omitempty"`
-	PresetFragment         string                `json:"preset_fragment,omitempty"`
-	CompactThresholdRatio  float64               `json:"compact_threshold_ratio,omitempty"`
-	CompactPreserveRecent  int                   `json:"compact_preserve_recent,omitempty"`
-	SessionID              string                `json:"session_id,omitempty"`
-	SessionSlot            string                `json:"session_slot,omitempty"`
-	ForkSession            bool                  `json:"fork_session,omitempty"`
-	SessionFingerprint     string                `json:"session_fingerprint,omitempty"`
-	ProviderHint           string                `json:"provider_hint,omitempty"`
-	InteractionEnabled     bool                  `json:"interaction_enabled,omitempty"`
-	ResumeConversation     json.RawMessage       `json:"resume_conversation,omitempty"`
-	ResumePendingToolUseID string                `json:"resume_pending_tool_use_id,omitempty"`
-	ResumeAnswer           string                `json:"resume_answer,omitempty"`
-	Memory                 *MemorySpec           `json:"memory,omitempty"`
-	AutoMemoryDir          string                `json:"auto_memory_dir,omitempty"`
-	AutoMemoryPrompt       string                `json:"auto_memory_prompt,omitempty"`
-	AmbientContext         string                `json:"ambient_context,omitempty"`
-	AmbientContextSource   string                `json:"ambient_context_source,omitempty"`
-	CompressMode           string                `json:"compress_mode,omitempty"`
-	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
-	SettingsHooks          json.RawMessage       `json:"settings_hooks,omitempty"`
+	NodeID                string           `json:"node_id"`
+	Iteration             int              `json:"iteration,omitempty"`
+	SystemPrompt          string           `json:"system_prompt,omitempty"`
+	SystemPromptMode      SystemPromptMode `json:"system_prompt_mode,omitempty"`
+	UserPrompt            string           `json:"user_prompt,omitempty"`
+	UserContent           []ContentBlock   `json:"user_content,omitempty"`
+	AllowedTools          []string         `json:"allowed_tools,omitempty"`
+	ToolsDeclared         bool             `json:"tools_declared,omitempty"`
+	Readonly              bool             `json:"readonly,omitempty"`
+	Capabilities          []string         `json:"capabilities,omitempty"`
+	StoreDir              string           `json:"store_dir,omitempty"`
+	RunStoreDir           string           `json:"run_store_dir,omitempty"`
+	Handoff               string           `json:"handoff,omitempty"`
+	HandoffMode           string           `json:"handoff_mode,omitempty"`
+	BoardHTTPEndpoint     string           `json:"board_http_endpoint,omitempty"`
+	ConnectorHTTPEndpoint string           `json:"connector_http_endpoint,omitempty"`
+	BoardRunToken         string           `json:"board_run_token,omitempty"`
+	RunsHTTPEndpoint      string           `json:"runs_http_endpoint,omitempty"`
+	AskUserHTTPEndpoint   string           `json:"ask_user_http_endpoint,omitempty"`
+	AskUserRunToken       string           `json:"ask_user_run_token,omitempty"`
+	ToolDefs              []IOToolDef      `json:"tool_defs,omitempty"`
+	OutputSchema          json.RawMessage  `json:"output_schema,omitempty"`
+	Model                 string           `json:"model,omitempty"`
+	HasTools              bool             `json:"has_tools,omitempty"`
+	ToolMaxSteps          int              `json:"tool_max_steps,omitempty"`
+	ToolTurnsAnchor       *string          `json:"tool_turns_anchor,omitempty"`
+	MaxTokens             int              `json:"max_tokens,omitempty"`
+	WorkDir               string           `json:"work_dir,omitempty"`
+	// WorkspaceTrust travels WITH WorkDir, because the two answer one
+	// question about the same directory: a runner that rebuilt the task with
+	// the trusted zero value would read an outsider's checkout as the
+	// tenant's own exactly when the run is sandboxed. A launcher that predates
+	// the field sends nothing, which reads as trusted — and for an untrusted
+	// task the launcher also announces the trust before the task
+	// (EnvelopeWorkspaceTrust), which a runner that predates the field refuses.
+	WorkspaceTrust store.RunTrust `json:"workspace_trust,omitempty"`
+	// InjectedHooks travels WITH WorkspaceTrust, for the same reason: on an
+	// untrusted workspace it is the only hook configuration a node may run
+	// (see Task.InjectedHooks), and the on-disk record of those groups lives
+	// inside the checkout, where the runner must not go looking for it.
+	// Dropped here the sandboxed run fails closed — no hooks at all — which
+	// is why the field exists beside SettingsHooks rather than folding into
+	// it: SettingsHooks is the workspace's document, this is iterion's own
+	// in-memory record.
+	InjectedHooks map[string][]any `json:"injected_hooks,omitempty"`
+	BaseDir       string           `json:"base_dir,omitempty"`
+	RepoRoot      string           `json:"repo_root,omitempty"`
+	// ScratchDir is the run's scratch read root as the RUNNER sees it —
+	// the fixed container path on a sandbox crossing, where the host path
+	// would not exist. The runner's read tools (read_file, glob, grep)
+	// accept it as a read root beside the workspace (#2650): bots keep
+	// their run state there by design, and claude_code's unbounded Read
+	// reaches it, so without it a sandboxed claw node cannot read the
+	// run's own briefs. Empty from a launcher that predates it: the runner
+	// keeps its workspace-only scope. Since the narrowing (#2869) it is
+	// the root a runner that predates ScratchReadRoots registers alone:
+	// the shared project scratch when the push carries it (the run
+	// subtree lies beneath it, so the old runner reads exactly the union
+	// the new one does), else the run subtree. Written by the launcher at
+	// the crossing (model.ClawBackend.runnerIOTask) from the engine's
+	// SetScratchDirs push, which Task.ScratchReadRoots carried.
+	ScratchDir string `json:"scratch_dir,omitempty"`
+	// ScratchReadRoots is the ordered narrowing list (#2869): the run
+	// family's scratch subtree first, then the shared project scratch
+	// while the workflow still references it. A runner that reads it
+	// registers every entry; one that predates it registers ScratchDir
+	// alone. Empty from a launcher that predates the narrowing:
+	// ScratchDir alone then holds the legacy project scratch.
+	ScratchReadRoots []string `json:"scratch_read_roots,omitempty"`
+	// ScratchAnchor is the project scratch the ScratchReadRoots lie
+	// beneath (#2869): the runner attaches each root below it as a nested
+	// read root (tool.ReadScope.AddExtraRootBeneath), never following a
+	// link between the two — other runs write the shared scratch, so a
+	// link planted at runs/<id> must contain nothing rather than become
+	// the root. Empty from a launcher that predates it: every root then
+	// attaches plain.
+	ScratchAnchor string `json:"scratch_anchor,omitempty"`
+	// SkillAllowlist is the run's pinned skill set as the RUNNER serves it
+	// (iterion#1719): name → path WORKSPACE-RELATIVE, so the value means the
+	// same thing on both sides of the sandbox wire (the host's absolute
+	// paths would not exist in the container). Never set from a Task field
+	// — the launcher re-roots Task.SkillAllowlist at the crossing
+	// (model.ClawBackend.runnerIOTask), the way ScratchDir is written
+	// there. SkillAllowlistArmed carries the pinned mode itself: an armed
+	// run with no owned skills crosses an empty map, which `omitempty`
+	// would drop, and the runner must refuse rather than walk.
+	SkillAllowlist         map[string]string `json:"skill_allowlist,omitempty"`
+	SkillAllowlistArmed    bool              `json:"skill_allowlist_armed,omitempty"`
+	ReasoningEffort        string            `json:"reasoning_effort,omitempty"`
+	Ultracode              bool              `json:"ultracode,omitempty"`
+	SecretsHygiene         bool              `json:"secrets_hygiene,omitempty"`
+	SecretFiles            []SecretFileHint  `json:"secret_files,omitempty"`
+	CursorFragments        []string          `json:"cursor_fragments,omitempty"`
+	SkillHints             []SkillHint       `json:"skill_hints,omitempty"`
+	PresetFragment         string            `json:"preset_fragment,omitempty"`
+	CompactThresholdRatio  float64           `json:"compact_threshold_ratio,omitempty"`
+	CompactPreserveRecent  int               `json:"compact_preserve_recent,omitempty"`
+	SessionID              string            `json:"session_id,omitempty"`
+	SessionSlot            string            `json:"session_slot,omitempty"`
+	ForkSession            bool              `json:"fork_session,omitempty"`
+	SessionFingerprint     string            `json:"session_fingerprint,omitempty"`
+	ProviderHint           string            `json:"provider_hint,omitempty"`
+	InteractionEnabled     bool              `json:"interaction_enabled,omitempty"`
+	ResumeConversation     json.RawMessage   `json:"resume_conversation,omitempty"`
+	ResumePendingToolUseID string            `json:"resume_pending_tool_use_id,omitempty"`
+	ResumeAnswer           string            `json:"resume_answer,omitempty"`
+	// ResumeCommandNarrowing is the checkpointed command narrowing (#1717)
+	// the resumed generation re-pins — it must cross beside the
+	// conversation: a resumed SANDBOXED node rebuilds its loop in the
+	// container, where the bound the paused generation held is otherwise
+	// lost.
+	ResumeCommandNarrowing *CommandNarrowingState `json:"resume_command_narrowing,omitempty"`
+	Memory                 *MemorySpec            `json:"memory,omitempty"`
+	AutoMemoryDir          string                 `json:"auto_memory_dir,omitempty"`
+	AutoMemoryPrompt       string                 `json:"auto_memory_prompt,omitempty"`
+	AmbientContext         string                 `json:"ambient_context,omitempty"`
+	AmbientContextSource   string                 `json:"ambient_context_source,omitempty"`
+	Codemode               bool                   `json:"codemode,omitempty"`
+	CodemodeBounds         *scripthost.Limits     `json:"codemode_bounds,omitempty"`
+	// CodemodeState requires the matching pre-task capability marker. No
+	// bank identity or storage quota crosses this transport.
+	CodemodeState bool                  `json:"codemode_state,omitempty"`
+	CompressMode  string                `json:"compress_mode,omitempty"`
+	Rewriters     []plugin.RewriterSpec `json:"rewriters,omitempty"`
+	SettingsHooks json.RawMessage       `json:"settings_hooks,omitempty"`
 	// Retry is the launcher's claw retry budget, which is the backend's
 	// rather than the task's: no Task field carries it. The runner retries
 	// with it instead of reading its own env, so a variable a repository's
@@ -104,6 +180,17 @@ type IOTask struct {
 	// from a launcher that predates it: the runner keeps the built-in
 	// defaults.
 	Retry *IORetryPolicy `json:"retry,omitempty"`
+	// SlashCommandMaxBytes is the launcher's answer for the `command`
+	// tool's body/expansion ceiling, in the registration's vocabulary (0 =
+	// the built-in default, negative = unbounded). The dial that resolves
+	// it is read on the HOST (model.SlashCommandMaxBytesForRegistry,
+	// ITERION_CLAW_SLASH_COMMAND_MAX_BYTES): the tool is PlacementSandbox,
+	// so the registration that executes in a sandboxed run is the
+	// container's, and the container's environment carries no dial — an
+	// operator who tightens the ceiling for a review run would otherwise
+	// keep the default there. 0 from a launcher that predates the field:
+	// the runner keeps the built-in default, as it did.
+	SlashCommandMaxBytes int `json:"slash_command_max_bytes,omitempty"`
 	// LauncherEndsNodeSession says the launcher spawned the runner inside the
 	// node's session and ends that session when the node ends
 	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md): what the
@@ -111,6 +198,16 @@ type IOTask struct {
 	// that stops and reports it. False from a launcher that predates it: the
 	// runner then ends a session of its own.
 	LauncherEndsNodeSession bool `json:"launcher_ends_node_session,omitempty"`
+	// CredentialFunds is the crossing's record of the env it composed: each
+	// credential variable it wrote, and the Spend whose credential that
+	// variable carries — a run's key, its forfait, the pod's own — never a
+	// value. The runner names every call it makes (the node's, a
+	// subagent's) through it, and its events and its result carry what each
+	// spent (ADR-161 decision 8: the keys are written by the process that
+	// built the call). Never set from a Task field — the launcher writes it
+	// at the crossing (model.ClawBackend.runnerIOTask). Nil from a launcher
+	// that predates it: the runner's calls name no credential.
+	CredentialFunds map[string]credroute.Spend `json:"credential_funds,omitempty"`
 }
 
 // IORetryPolicy is model.RetryPolicy on the wire (this package cannot
@@ -147,6 +244,13 @@ type IOResult struct {
 	PeakInputTokens    int     `json:"peak_input_tokens,omitempty"`
 	ThinkingTokens     int     `json:"thinking_tokens,omitempty"`
 	ThinkingMs         int     `json:"thinking_ms,omitempty"`
+	ToolTurns          int     `json:"tool_turns,omitempty"`
+	// The efforts the in-container call's model requests carried
+	// (Result.WireReasoningEffort*): the launcher records what reached the
+	// model, not only what it handed the runner.
+	WireReasoningEffort         string `json:"wire_reasoning_effort,omitempty"`
+	WireReasoningEffortLast     string `json:"wire_reasoning_effort_last,omitempty"`
+	WireReasoningEffortReported bool   `json:"wire_reasoning_effort_reported,omitempty"`
 
 	Output              map[string]any  `json:"output,omitempty"`
 	Tokens              int             `json:"tokens,omitempty"`
@@ -156,12 +260,35 @@ type IOResult struct {
 	BackendName         string          `json:"backend_name,omitempty"`
 	RawOutputLen        int             `json:"raw_output_len,omitempty"`
 	ParseFallback       bool            `json:"parse_fallback,omitempty"`
+	ParseError          string          `json:"parse_error,omitempty"`
 	FormattingPassUsed  bool            `json:"formatting_pass_used,omitempty"`
 	SessionID           string          `json:"session_id,omitempty"`
 	SessionFingerprint  string          `json:"session_fingerprint,omitempty"`
 	PendingConversation json.RawMessage `json:"pending_conversation,omitempty"`
 	PendingToolUseID    string          `json:"pending_tool_use_id,omitempty"`
-	Error               string          `json:"error,omitempty"`
+	// PendingPermissionInput is the exact captured arguments of a
+	// permission-gate pause (#3513): the approval binds to these bytes, so
+	// the pause cannot checkpoint without them crossing. The in-process
+	// Result field is json:"-" — only this wire form carries it.
+	PendingPermissionInput json.RawMessage `json:"pending_permission_input,omitempty"`
+	// PendingCommandNarrowing rides the pause the container raised (#1717):
+	// the bound the in-container generation held crosses back with the
+	// conversation, or the resumed crossing restarts unbounded.
+	PendingCommandNarrowing *CommandNarrowingState `json:"pending_command_narrowing,omitempty"`
+	// Credential is what the runner's call spent, as the runner's own walk
+	// named it through the crossing's record (Result.Credential): the
+	// launcher relays it verbatim. Nil from a runner that predates it, or a
+	// call that named none.
+	Credential *credroute.Spend `json:"credential,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	// ProviderError carries a typed provider refusal across the runner. Error
+	// remains the human-readable wrapper; it is never parsed for HTTP status.
+	ProviderError *api.APIError `json:"provider_error,omitempty"`
+	// ProviderErrorStream says ProviderError was raised mid-stream (an error
+	// event of the response stream, not the HTTP refusal of the request), so
+	// the launcher rebuilds the stream error the in-process path returns and
+	// both classify it alike.
+	ProviderErrorStream bool `json:"provider_error_stream,omitempty"`
 }
 
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and
@@ -196,6 +323,7 @@ func ToIOTask(t Task) IOTask {
 		Handoff:                t.Handoff,
 		HandoffMode:            t.HandoffMode,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
+		ConnectorHTTPEndpoint:  t.ConnectorHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
 		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
 		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
@@ -205,10 +333,15 @@ func ToIOTask(t Task) IOTask {
 		Model:                  t.Model,
 		HasTools:               t.HasTools,
 		ToolMaxSteps:           t.ToolMaxSteps,
+		ToolTurnsAnchor:        t.ToolTurnsAnchor,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
+		WorkspaceTrust:         t.WorkspaceTrust,
+		InjectedHooks:          t.InjectedHooks,
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
+		ScratchReadRoots:       t.ScratchReadRoots,
+		ScratchAnchor:          t.ScratchAnchor,
 		ReasoningEffort:        t.ReasoningEffort,
 		Ultracode:              t.Ultracode,
 		SecretsHygiene:         t.SecretsHygiene,
@@ -227,11 +360,14 @@ func ToIOTask(t Task) IOTask {
 		ResumeConversation:     t.ResumeConversation,
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
+		ResumeCommandNarrowing: t.ResumeCommandNarrowing,
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
 		AmbientContext:         t.AmbientContext.String(),
 		AmbientContextSource:   t.AmbientContextSource,
+		Codemode:               t.Codemode,
+		CodemodeBounds:         t.CodemodeBounds,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,
@@ -260,6 +396,7 @@ func FromIOTask(t IOTask) Task {
 		Handoff:                t.Handoff,
 		HandoffMode:            t.HandoffMode,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
+		ConnectorHTTPEndpoint:  t.ConnectorHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
 		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
 		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
@@ -268,10 +405,15 @@ func FromIOTask(t IOTask) Task {
 		Model:                  t.Model,
 		HasTools:               t.HasTools,
 		ToolMaxSteps:           t.ToolMaxSteps,
+		ToolTurnsAnchor:        t.ToolTurnsAnchor,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
+		WorkspaceTrust:         t.WorkspaceTrust,
+		InjectedHooks:          t.InjectedHooks,
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
+		ScratchReadRoots:       t.ScratchReadRoots,
+		ScratchAnchor:          t.ScratchAnchor,
 		ReasoningEffort:        t.ReasoningEffort,
 		Ultracode:              t.Ultracode,
 		SecretsHygiene:         t.SecretsHygiene,
@@ -290,11 +432,14 @@ func FromIOTask(t IOTask) Task {
 		ResumeConversation:     t.ResumeConversation,
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
+		ResumeCommandNarrowing: t.ResumeCommandNarrowing,
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
 		AmbientContext:         ambientFromIO(t.AmbientContext),
 		AmbientContextSource:   t.AmbientContextSource,
+		Codemode:               t.Codemode,
+		CodemodeBounds:         t.CodemodeBounds,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,
@@ -303,7 +448,13 @@ func FromIOTask(t IOTask) Task {
 
 // ToIOResult converts a [Result] to its wire form.
 func ToIOResult(r Result) IOResult {
+	var credential *credroute.Spend
+	if r.Credential != (credroute.Spend{}) {
+		c := r.Credential
+		credential = &c
+	}
 	return IOResult{
+		Credential:         credential,
 		Output:             r.Output,
 		Tokens:             r.Tokens,
 		CostUSD:            r.CostUSD,
@@ -315,18 +466,27 @@ func ToIOResult(r Result) IOResult {
 		PeakInputTokens:    r.PeakInputTokens,
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
+		ToolTurns:          r.ToolTurns,
 
-		DurationMS:          r.Duration.Milliseconds(),
-		ExitCode:            r.ExitCode,
-		Stderr:              r.Stderr,
-		BackendName:         r.BackendName,
-		RawOutputLen:        r.RawOutputLen,
-		ParseFallback:       r.ParseFallback,
-		FormattingPassUsed:  r.FormattingPassUsed,
-		SessionID:           r.SessionID,
-		SessionFingerprint:  r.SessionFingerprint,
-		PendingConversation: r.PendingConversation,
-		PendingToolUseID:    r.PendingToolUseID,
+		WireReasoningEffort:         r.WireReasoningEffort,
+		WireReasoningEffortLast:     r.WireReasoningEffortLast,
+		WireReasoningEffortReported: r.WireReasoningEffortReported,
+
+		DurationMS:              r.Duration.Milliseconds(),
+		ExitCode:                r.ExitCode,
+		Stderr:                  r.Stderr,
+		BackendName:             r.BackendName,
+		RawOutputLen:            r.RawOutputLen,
+		ParseFallback:           r.ParseFallback,
+		ParseError:              r.ParseError,
+		FormattingPassUsed:      r.FormattingPassUsed,
+		SessionID:               r.SessionID,
+		SessionFingerprint:      r.SessionFingerprint,
+		PendingConversation:     r.PendingConversation,
+		PendingToolUseID:        r.PendingToolUseID,
+		PendingCommandNarrowing: r.PendingCommandNarrowing,
+
+		PendingPermissionInput: r.PendingPermissionInput,
 	}
 }
 
@@ -334,7 +494,12 @@ func ToIOResult(r Result) IOResult {
 // field is dropped — the launcher surfaces it via a separate error
 // return value, not by populating the Result.
 func FromIOResult(r IOResult) Result {
+	var credential credroute.Spend
+	if r.Credential != nil {
+		credential = *r.Credential
+	}
 	return Result{
+		Credential:         credential,
 		Output:             r.Output,
 		Tokens:             r.Tokens,
 		CostUSD:            r.CostUSD,
@@ -346,18 +511,27 @@ func FromIOResult(r IOResult) Result {
 		PeakInputTokens:    r.PeakInputTokens,
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
+		ToolTurns:          r.ToolTurns,
 
-		Duration:            time.Duration(r.DurationMS) * time.Millisecond,
-		ExitCode:            r.ExitCode,
-		Stderr:              r.Stderr,
-		BackendName:         r.BackendName,
-		RawOutputLen:        r.RawOutputLen,
-		ParseFallback:       r.ParseFallback,
-		FormattingPassUsed:  r.FormattingPassUsed,
-		SessionID:           r.SessionID,
-		SessionFingerprint:  r.SessionFingerprint,
-		PendingConversation: r.PendingConversation,
-		PendingToolUseID:    r.PendingToolUseID,
+		WireReasoningEffort:         r.WireReasoningEffort,
+		WireReasoningEffortLast:     r.WireReasoningEffortLast,
+		WireReasoningEffortReported: r.WireReasoningEffortReported,
+
+		Duration:                time.Duration(r.DurationMS) * time.Millisecond,
+		ExitCode:                r.ExitCode,
+		Stderr:                  r.Stderr,
+		BackendName:             r.BackendName,
+		RawOutputLen:            r.RawOutputLen,
+		ParseFallback:           r.ParseFallback,
+		ParseError:              r.ParseError,
+		FormattingPassUsed:      r.FormattingPassUsed,
+		SessionID:               r.SessionID,
+		SessionFingerprint:      r.SessionFingerprint,
+		PendingConversation:     r.PendingConversation,
+		PendingToolUseID:        r.PendingToolUseID,
+		PendingCommandNarrowing: r.PendingCommandNarrowing,
+
+		PendingPermissionInput: r.PendingPermissionInput,
 	}
 }
 

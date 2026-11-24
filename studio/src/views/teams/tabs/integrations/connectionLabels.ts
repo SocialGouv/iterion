@@ -7,6 +7,7 @@ const STATUS_LABELS: Record<ForgeConnectionStatus, string> = {
   active: "Connected",
   needs_reauth: "Needs re-auth",
   revoked: "Revoked",
+  degraded: "Degraded",
 };
 
 export function connectionStatusLabel(status: ForgeConnectionStatus): string {

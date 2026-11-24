@@ -137,6 +137,7 @@ stateDiagram-v2
 | --- | --- | --- |
 | `runs` | server, engine, runner, sweeper | the one `SaveRun`, the launch-failure flip, the status transitions, the outcome and its continuation |
 | `run_secrets` | server, runner | the sealed bundle, TTL 24 h, deleted on a terminal outcome |
+| `staged_uploads` | server | the uploads a launch names, promoted to the run between its row and its queue message (`runview.PromoteForHandoff`), then discarded |
 | `org_usage` | server, runner | the run unit at admission, its refund, and the run's cost and tokens |
 | `credential_usage` | server, runner | the per-repository, per-credential meter: the repo-quota ceiling reads it, and every route a run charges writes its spend back |
 | `teams`, `orgs` | reads | the frozen pool, the suspend state and the caps the gate reads |

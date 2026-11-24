@@ -138,6 +138,36 @@
       },
       "type": "object"
     },
+    "business_stores": {
+      "description": "Declared business stores; no inference from accessed files. A bare block declares none. One store per entry; the same id may name stores in different namespaces",
+      "items": {
+        "additionalProperties": false,
+        "description": "One store per entry; the same id may name stores in different namespaces",
+        "properties": {
+          "id": {
+            "description": "The entry's name",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Store kind",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Logical namespace",
+            "type": "string"
+          },
+          "required": {
+            "description": "The declared store is required (default false); does not itself add an admission gate",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "catalog": {
       "additionalProperties": false,
       "description": "The catalog identity the .bot carries in its `## ---` frontmatter; a non-empty triggers or capabilities OVERRIDES the manifest's at discovery.",
@@ -159,6 +189,79 @@
             "type": "string"
           },
           "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "codemode": {
+      "additionalProperties": false,
+      "description": "Bounds one codemode program runs under (ADR-165): the short form names a mode, the block form declares bounds and IMPLIES on — declaring bounds for a capability that is off is not a thing to express. Every bound is clamped to the platform ceiling in the parent (scripthost.Ceiling), with C347 at compile where a declared value is above it. Durations are quoted, the way timeout: is; byte sizes and counts are bare integers, because this DSL has no byte-size form and inventing one is its own lot.",
+      "properties": {
+        "concurrent_tool_calls": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "How many nested tool calls ONE program may run at once (default 1, ceiling 4; 0 means inherit). This does not change the total tool_calls budget",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cpu": {
+          "description": "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP",
+          "type": "string"
+        },
+        "defer": {
+          "description": "Defer this node's own `tools:` list to the codemode catalogue: on or off, off the default (C354 on another word). On, the author's tools are not declared to the model on the wire — the program discovers them with call.search, reads a declaration with call.describe and calls one by name — while the runtime's own appends (interaction, board, runs, agent, todo_write, memory) and the withheld classes stay declared, as does any tool the node's permission policy can ask about or the catalogue bound does not keep whole. Applied only to unsandboxed execution: a sandboxed runner declares every tool, and the build warns. Inert as written beside `mode: off` (C355). A block holding only `defer:` still implies `mode: on`, like any block",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "memory": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "description": "on or off — the short form's value, written out (C337 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "result_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "script_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "store_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Workflow scope only: total UTF-8 key and stored JSON bytes in the run's codemode bank (default 131072, ceiling 524288; 0 means inherit)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "store_entries": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_calls": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_result_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall": {
+          "description": "How long the child may live, e.g. \"60s\" (default \"30s\", ceiling \"10m\") — the parent's backstop, including for a child that never starts",
+          "type": "string"
         }
       },
       "type": "object"
@@ -739,7 +842,7 @@
           "type": "string"
         },
         "allow": {
-          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)",
+          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none)",
           "items": {
             "type": "string"
           },
@@ -782,11 +885,23 @@
           "type": "string"
         },
         "capabilities": {
-          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it",
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "codemode": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/codemode"
+            }
+          ],
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
@@ -805,6 +920,13 @@
         "cursors": {
           "$ref": "#/$defs/cursors",
           "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
+        },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "deny": {
           "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
@@ -955,7 +1077,7 @@
           ]
         },
         "session_slot": {
-          "description": "Named durable session slot; requires session: persist",
+          "description": "Named durable session slot; requires session: persist; must not be named like another node (C314)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -989,7 +1111,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -1277,7 +1399,7 @@
       "description": "An LLM node producing verdicts; same surface as an agent, typically without tools.",
       "properties": {
         "allow": {
-          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)",
+          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none)",
           "items": {
             "type": "string"
           },
@@ -1320,11 +1442,23 @@
           "type": "string"
         },
         "capabilities": {
-          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it",
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "codemode": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/codemode"
+            }
+          ],
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
@@ -1343,6 +1477,13 @@
         "cursors": {
           "$ref": "#/$defs/cursors",
           "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
+        },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "deny": {
           "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
@@ -1498,7 +1639,7 @@
           ]
         },
         "session_slot": {
-          "description": "Named durable session slot; requires session: persist",
+          "description": "Named durable session slot; requires session: persist; must not be named like another node (C314)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1532,7 +1673,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -1657,6 +1798,10 @@
       "additionalProperties": false,
       "description": "Runs another .bot as a nested child run; its outputs read back as {{outputs.<subbot>.<field>}} (C119).",
       "properties": {
+        "auto_merge": {
+          "description": "Lands the child when its own workflow completes: its own worktree finalization merges its branch; refused at launch where the child owns no worktree (`worktree: none`, or a run store with no filesystem root); requires isolated (C329)",
+          "type": "boolean"
+        },
         "description": {
           "description": "Free-text description shown by the studio and the reports",
           "type": "string"
@@ -1664,6 +1809,16 @@
         "isolated": {
           "description": "Asserts the child runs in its own workspace",
           "type": "boolean"
+        },
+        "merge_into": {
+          "description": "auto_merge: current (default), none or a branch name; read only under auto_merge (C330)",
+          "pattern": "^[^\\n\\r\\x85]*$",
+          "type": "string"
+        },
+        "merge_strategy": {
+          "description": "auto_merge: squash (default) or merge; another word is refused at compile",
+          "pattern": "^[^\\n\\r\\x85]*$",
+          "type": "string"
         },
         "needs": {
           "anyOf": [
@@ -1742,6 +1897,13 @@
             "best_effort"
           ]
         },
+        "capabilities": {
+          "description": "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport (a board.* action gates on it) and by a registry recipe naming an iterion host tool (`mcp.iterion_board.*`, held to it like an agent's tools:, C328); on a command:/script: node, an HTTP action or any other registry tool the list is inert (C332)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "command": {
           "description": "Shell command, run through bash -c (exclusive with script)",
           "type": "string"
@@ -1755,6 +1917,13 @@
           "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
+        },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "description": {
           "description": "Free-text description shown by the studio and the reports",
@@ -1973,7 +2142,7 @@
       "description": "Bounds of a Verified Action's recovery ladder (idempotent-skip → recipe → self-repair → agent → policy).",
       "properties": {
         "agent_tools": {
-          "description": "Tools the recovery agent may call",
+          "description": "Tools the recovery agent may call — its whole tool list, handed verbatim; on claw none declared is none served (C352)",
           "items": {
             "type": "string"
           },
@@ -2042,7 +2211,7 @@
           "type": "string"
         },
         "image": {
-          "description": "Container image (exclusive with build)",
+          "description": "Container image (exclusive with build): a full reference (registry/repo:tag), or a bare stock-class name (slim, full, sec, browser, rgaa) resolved at launch to the published variant — an unknown bare word passes through verbatim, with C325",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
@@ -2224,6 +2393,13 @@
                 "description": "A missing secret does not fail the launch",
                 "type": "boolean"
               },
+              "sinks": {
+                "description": "Materialization sinks the secret may reach — prompt, agent, command, params, file, egress; omitted = every sink (docs/secrets.md)",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "value": {
                 "description": "Inline value — the same field the sub-block's `value:` sets; prefer the stored secret, resolved by name",
                 "type": "string"
@@ -2390,12 +2566,28 @@
           "$ref": "#/$defs/budget",
           "description": "Run caps, each overridable by the matching run flag"
         },
+        "business_stores": {
+          "$ref": "#/$defs/business_stores",
+          "description": "Expected business-store identities, normalized at launch and inherited by children"
+        },
         "capabilities": {
-          "description": "Run-wide board capabilities",
+          "description": "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none",
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "codemode": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/codemode"
+            }
+          ],
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"
         },
         "compaction": {
           "$ref": "#/$defs/compaction",

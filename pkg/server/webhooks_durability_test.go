@@ -507,6 +507,7 @@ func TestWebhookDurability_RetryMustNotCancelNewerHead(t *testing.T) {
 	if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
+	cfg.Version++
 	secret := "review-secret"
 	cfg.HMACSecretSealed, _ = webhooks.SealHMACSecret(s.sealer, cfg.ID, secret)
 	if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {

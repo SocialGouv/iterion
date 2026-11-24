@@ -34,6 +34,19 @@ export interface NativeIssue {
    *  issue. Stamped by the dispatcher on every finish (success or
    *  failure). Empty for issues never picked up by a dispatcher. */
   last_run_id?: string;
+  /** What the run in last_run_id turned out to be (#1501), written by the
+   *  run-outcome spine from the run's terminal status and only while
+   *  last_run_id still names that run. Without them a card whose run died
+   *  reads exactly like a card that was dispatched and worked — the
+   *  decision, not the result. last_run_status is the wire run status
+   *  ("finished" / "failed" / "failed_resumable" / "cancelled");
+   *  last_run_error_code is the stable classifier (a store.FailureCode) and
+   *  both error fields are CLEARED by a successful run: this is a health
+   *  signal, not an audit trail (runs below is the audit). */
+  last_run_status?: string;
+  last_run_error?: string;
+  last_run_error_code?: string;
+  last_run_at?: string;
   /** Absolute filesystem path the last run executed in — typically the
    *  worktree directory when `worktree: auto` was used, otherwise the
    *  per-issue dispatcher workspace. Surfaced in the IssueModal as a

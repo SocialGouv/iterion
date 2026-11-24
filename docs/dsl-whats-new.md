@@ -159,12 +159,16 @@ their drafts were green when validated afterwards.
 Held: no lexical or keyword-collision error at all, even from a mid-size model
 reading only the skill; the cost of entry went from a session of reading to a
 few minutes; the errors left are semantic (exhaustiveness, a loop's exit, a
-condition's field, the loop namespace, a template written where an expression
-goes), and the diagnostics have them fixed in one round.
-Not held yet: the target of at most two semantic errors at the first draft is
-missed by the capped haiku run (four at the draft; the standard run holds it),
-and `--strict` stays a per-bot gate on the catalogue until the dry run crosses
-a bounded loop a few times only (#1307).
+condition's field, the loop namespace) or drift (a template written where an
+expression goes), and the diagnostics have them fixed in one round.
+Not held yet: the two runs of the 16th miss on opposite axes. The capped one
+misses the target of at most two semantic errors (four at the draft), which the
+standard one holds at one; the standard one misses the drift target of zero
+with three — a template written where an expression goes, twice in a `compute`
+and once in a loop cap. The reading target is not measured at all: it is set in
+tokens read and every row above records lines. And `--strict` stays a per-bot
+gate on the catalogue until the dry run crosses a bounded loop a few times only
+(#1307).
 
 ## Compatibility
 

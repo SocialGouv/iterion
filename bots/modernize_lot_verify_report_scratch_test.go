@@ -41,8 +41,11 @@ lots:
 
 func scratchVerify(t *testing.T, script, ws, base string, extraEnv ...string) modernizeLotVerifyOut {
 	t.Helper()
-	env := append(os.Environ(), extraEnv...)
-	res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, "true", env)
+	// extraEnv ADDS to the family's carrier (modernizeChildEnv): the env
+	// parameter of modernizeLotVerifyEnv names what to override, not the whole
+	// environment, so a fixture cannot drop the auto-maintenance refusal — or
+	// PATH — by listing what it cares about.
+	res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, "true", extraEnv)
 	if exit != 0 {
 		t.Fatalf("lot_verify exited %d, want a verdict (out %+v)", exit, res)
 	}
@@ -71,6 +74,7 @@ func strayReports(t *testing.T, root string) []string {
 // GM_REPORT_TMP into it, the wrapper died on the redirect before the oracle
 // ran, and four lots read "oracle RED" out of a missing directory.
 func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	green := scratchWrapperHead +

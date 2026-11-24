@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 
 import { IconButton, Meter, Stat } from "@/components/ui";
 import type { RunMetrics } from "@/hooks/useRunMetrics";
@@ -28,6 +29,7 @@ export function ProgressSection({
     ? Object.entries(run.loops).sort(([a], [b]) => a.localeCompare(b))
     : [];
   const steerable = isRunSteerable(run.status);
+  const canAct = useRunCanAct();
   const hasCounts =
     metrics.nodeCount > 0 ||
     metrics.branchCountActive > 0 ||
@@ -92,7 +94,7 @@ export function ProgressSection({
                   }.`}
                 />
               </div>
-              {steerable && (p.max ?? 0) > 0 && (
+              {steerable && canAct && (p.max ?? 0) > 0 && (
                 <IconButton
                   size="sm"
                   label={`Grant extra iterations to loop ${name}`}

@@ -753,13 +753,14 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider, Command: a.Command,
 			Input: a.Input, Output: a.Output, Publish: a.Publish, ArtifactLabels: a.ArtifactLabels,
-			System: a.System, User: a.User, Session: a.Session, SessionSlot: a.SessionSlot,
+			Deliverables: a.Deliverables,
+			System:       a.System, User: a.User, Session: a.Session, SessionSlot: a.SessionSlot,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, AutoMemory: a.AutoMemory, AmbientContext: a.AmbientContext, Permission: a.Permission,
+			Compress: a.Compress, AutoMemory: a.AutoMemory, AmbientContext: a.AmbientContext, Codemode: codemodeShortMode(a.Codemode), Permission: a.Permission,
 			Allow: a.Allow, Ask: a.Ask, Deny: a.Deny, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
@@ -768,6 +769,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		if a.Memory != nil {
 			writeMemory(&w.b, a.Memory, "  ", false)
 		}
+		writeCodemodeBlock(&w.b, a.Codemode, "  ")
 		writeSandboxBlock(&w.b, a.Sandbox, "  ")
 		if a.Cursors != nil {
 			writeCursorsBlock(&w.b, a.Cursors, "  ")
@@ -791,13 +793,14 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider, Command: j.Command,
 			Input: j.Input, Output: j.Output, Publish: j.Publish, ArtifactLabels: j.ArtifactLabels,
-			System: j.System, User: j.User, Session: j.Session, SessionSlot: j.SessionSlot,
+			Deliverables: j.Deliverables,
+			System:       j.System, User: j.User, Session: j.Session, SessionSlot: j.SessionSlot,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, AutoMemory: j.AutoMemory, AmbientContext: j.AmbientContext, Permission: j.Permission,
+			Compress: j.Compress, AutoMemory: j.AutoMemory, AmbientContext: j.AmbientContext, Codemode: codemodeShortMode(j.Codemode), Permission: j.Permission,
 			Allow: j.Allow, Ask: j.Ask, Deny: j.Deny, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
@@ -806,6 +809,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		if j.Memory != nil {
 			writeMemory(&w.b, j.Memory, "  ", false)
 		}
+		writeCodemodeBlock(&w.b, j.Codemode, "  ")
 		writeSandboxBlock(&w.b, j.Sandbox, "  ")
 		if j.Cursors != nil {
 			writeCursorsBlock(&w.b, j.Cursors, "  ")
@@ -1017,6 +1021,7 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 			writeProp(&w.b, "publish", t.Publish)
 		}
 		writeArtifactLabels(&w.b, t.ArtifactLabels, "  ")
+		writeDeliverables(&w.b, t.Deliverables, "  ")
 		if t.Await != ast.AwaitNone {
 			writeProp(&w.b, "await", t.Await.String())
 		}
@@ -1028,6 +1033,13 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		}
 		if len(t.Needs) > 0 {
 			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(t.Needs, ", "))
+		}
+		// The declared-list rule of #1801, on a tool node too (ADR-151):
+		// nil writes nothing (inherit the workflow's), a declared empty list
+		// writes `capabilities: []` — dropping it would turn a declared
+		// no-grant back into an inheritance on the round trip.
+		if t.Capabilities != nil {
+			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", refList(&w.b, t.Capabilities))
 		}
 		// Verified Action quad (ADR-044).
 		if t.Goal != "" {
@@ -1098,6 +1110,15 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 		}
 		if s.Isolated {
 			writeProp(&w.b, "isolated", "true")
+		}
+		if s.AutoMerge {
+			writeProp(&w.b, "auto_merge", "true")
+		}
+		if s.MergeStrategy != "" {
+			writeProp(&w.b, "merge_strategy", s.MergeStrategy)
+		}
+		if s.MergeInto != "" {
+			writeQuotedProp(&w.b, "merge_into", s.MergeInto)
 		}
 		w.ensureBody(mark)
 	}
@@ -1230,6 +1251,24 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		if wf.Attachments != nil {
 			writeAttachmentsBlock(&w.b, wf.Attachments, "  ")
 		}
+		if wf.BusinessStores != nil {
+			w.b.WriteString("  business_stores:\n")
+			if len(wf.BusinessStores) == 0 {
+				w.b.WriteByte('\n')
+			}
+			for _, declaration := range wf.BusinessStores {
+				fmt.Fprintf(&w.b, "    %s:\n", w.b.str(declaration.ID))
+				if declaration.Kind != "" {
+					writeStrProp(&w.b, "      ", "kind", declaration.Kind)
+				}
+				if declaration.Namespace != "" {
+					writeStrProp(&w.b, "      ", "namespace", declaration.Namespace)
+				}
+				if declaration.Required != nil {
+					fmt.Fprintf(&w.b, "      required: %t\n", *declaration.Required)
+				}
+			}
+		}
 		if wf.MCP != nil {
 			writeMCPConfigBlock(&w.b, wf.MCP, "  ")
 		}
@@ -1246,7 +1285,9 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			fmt.Fprintf(&w.b, "  tool_policy: [%s]\n", refList(&w.b, wf.ToolPolicy))
 		}
 
-		if len(wf.Capabilities) > 0 {
+		// Declared like a node's (see writeAgentFields): `capabilities: []`
+		// is written back so the workflow's explicit empty grant round-trips.
+		if wf.Capabilities != nil {
 			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", refList(&w.b, wf.Capabilities))
 		}
 		if len(wf.Skills) > 0 {
@@ -1267,6 +1308,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 
 		if wf.AmbientContext != "" {
 			writeProp(&w.b, "ambient_context", wf.AmbientContext)
+		}
+
+		if m := codemodeShortMode(wf.Codemode); m != "" {
+			writeProp(&w.b, "codemode", m)
 		}
 
 		if wf.LoopBudgetGuard != "" {
@@ -1294,6 +1339,7 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			fmt.Fprintf(&w.b, "  deny: [%s]\n", quoteList(&w.b, wf.Deny))
 		}
 
+		writeCodemodeBlock(&w.b, wf.Codemode, "  ")
 		writeSandboxBlock(&w.b, wf.Sandbox, "  ")
 
 		if wf.Entry != "" {
@@ -1436,6 +1482,22 @@ func writeArtifactLabels(b *buf, labels []string, indent string) {
 	fmt.Fprintf(b, "%sartifact_labels: [%s]\n", indent, strings.Join(items, ", "))
 }
 
+// writeDeliverables renders `deliverables: ["report.md"]` — the files the
+// node produces that the run collects. Every element is QUOTED: a path is a
+// string in this list, and `out/report.md` is no identifier (the string
+// list parser reads a bare word too, but writing a path bare would make the
+// round-trip depend on what the path happens to contain).
+func writeDeliverables(b *buf, paths []string, indent string) {
+	if len(paths) == 0 {
+		return
+	}
+	items := make([]string, len(paths))
+	for i, p := range paths {
+		items[i] = b.str(p)
+	}
+	fmt.Fprintf(b, "%sdeliverables: [%s]\n", indent, strings.Join(items, ", "))
+}
+
 // identOrStr renders v bare when it is an identifier and as a string
 // literal otherwise — for properties the parser reads as either.
 func identOrStr(b *buf, v string) string {
@@ -1526,7 +1588,7 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 		// Short form when only a value is set; block form when egress
 		// hosts, file materialisation, env wiring, or a description
 		// accompany it.
-		hasProps := s.As != "" || s.MountPath != "" || s.Env != "" || len(s.Hosts) > 0 || s.Description != ""
+		hasProps := s.As != "" || s.MountPath != "" || s.Env != "" || len(s.Hosts) > 0 || len(s.Sinks) > 0 || s.Description != ""
 		if !hasProps && b.blockScalarOK(s.Value) {
 			b.writeBlockScalar(indent+"  ", s.Name, s.Value)
 			continue
@@ -1556,6 +1618,11 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 		}
 		if len(s.Hosts) > 0 {
 			fmt.Fprintf(b, "%s    hosts: [%s]\n", indent, quoteList(b, s.Hosts))
+		}
+		if len(s.Sinks) > 0 {
+			// Sink names are identifiers of a closed vocabulary: written bare,
+			// as the parser reads them.
+			fmt.Fprintf(b, "%s    sinks: [%s]\n", indent, strings.Join(s.Sinks, ", "))
 		}
 		if s.Description != "" {
 			writeStrProp(b, indent+"    ", "description", s.Description)
@@ -1728,6 +1795,7 @@ type llmFields struct {
 	Model, Backend, Provider, Command   string
 	Input, Output, Publish              string
 	ArtifactLabels                      []string
+	Deliverables                        []string
 	System, User                        string
 	Session                             ast.SessionMode
 	SessionSlot                         string
@@ -1746,6 +1814,7 @@ type llmFields struct {
 	Compress                            string
 	AutoMemory                          string
 	AmbientContext                      string
+	Codemode                            string
 	Permission                          string
 	Allow, Ask, Deny                    []string
 	Needs                               []string
@@ -1774,6 +1843,7 @@ func writeAgentFields(b *buf, f llmFields) {
 		writeIdentProp(b, "publish", f.Publish)
 	}
 	writeArtifactLabels(b, f.ArtifactLabels, "  ")
+	writeDeliverables(b, f.Deliverables, "  ")
 	if f.System != "" {
 		writePromptRef(b, "system", f.System)
 	}
@@ -1801,7 +1871,12 @@ func writeAgentFields(b *buf, f llmFields) {
 	if len(f.ToolPolicy) > 0 {
 		fmt.Fprintf(b, "  tool_policy: [%s]\n", refList(b, f.ToolPolicy))
 	}
-	if len(f.Capabilities) > 0 {
+	// A DECLARED empty list is written back as `capabilities: []`: it is the
+	// author saying "this node holds NO host capability", an explicit empty
+	// grant that overrides the workflow's list (#1801) — dropping the line
+	// would turn it back into an inheritance. Only an absent (nil) list
+	// writes nothing.
+	if f.Capabilities != nil {
 		fmt.Fprintf(b, "  capabilities: [%s]\n", refList(b, f.Capabilities))
 	}
 	if len(f.Skills) > 0 {
@@ -1849,6 +1924,9 @@ func writeAgentFields(b *buf, f llmFields) {
 	if f.AmbientContext != "" {
 		writeProp(b, "ambient_context", f.AmbientContext)
 	}
+	if f.Codemode != "" {
+		writeProp(b, "codemode", f.Codemode)
+	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)
 	}
@@ -1875,6 +1953,83 @@ func writeAgentFields(b *buf, f llmFields) {
 // Round-trip stability: parser → IR → unparse → parser must produce
 // the same AST. Tests in pkg/dsl/unparse/unparse_test.go and
 // pkg/dsl/ir/sandbox_test.go pin the contract.
+// codemodeShortMode is the mode to write as a one-line `codemode: <mode>`
+// property, or "" when there is none to write that way — nothing declared,
+// or a block form that writeCodemodeBlock will emit instead.
+//
+// The split keeps the short form at the POSITION it has always had, between
+// `ambient_context:` and `permission:` in the scalar run, so every file that
+// says `codemode: on` round-trips byte-identically through `iterion fmt`.
+// Writing it among the blocks instead would reorder those files to say the
+// same thing — allowed, since fmt only promises the same program, but a
+// reordering nobody asked for is a diff reviewers have to read.
+//
+// A declared `defer` also takes the block form: the short form has no way to
+// carry it, and writing the short form there would drop the property.
+func codemodeShortMode(cb *ast.CodemodeBlock) string {
+	if cb == nil || cb.Bounded() || cb.Defer != "" {
+		return ""
+	}
+	return cb.Mode
+}
+
+// writeCodemodeBlock writes the indented `codemode:` block, and nothing at
+// all unless a bound or a `defer` is declared — the mode-only case is the
+// short form, handled by codemodeShortMode above.
+//
+// `mode:` is written first and only when it is not the implied `on`: the
+// block form implies the capability it bounds, so emitting `mode: on` beside
+// bounds would add a line the author did not write and the parser does not
+// need. An explicit `off` IS written — it is the one the author must see,
+// since it makes the bounds beside it inert (C348). `defer:` is written as
+// declared, empty meaning unset: it is not a bound, so there is no implied
+// value to omit — what the author wrote is what comes back.
+func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
+	if cb == nil || (!cb.Bounded() && cb.Defer == "") {
+		return
+	}
+	inner := indent + "  "
+	fmt.Fprintf(b, "%scodemode:\n", indent)
+	if cb.Mode != "" && cb.Mode != "on" {
+		fmt.Fprintf(b, "%smode: %s\n", inner, cb.Mode)
+	}
+	if cb.Defer != "" {
+		fmt.Fprintf(b, "%sdefer: %s\n", inner, cb.Defer)
+	}
+	// The order of the DSL block's own listing, so the written form and the
+	// reference read alike.
+	if cb.ToolCalls != 0 {
+		fmt.Fprintf(b, "%stool_calls: %d\n", inner, cb.ToolCalls)
+	}
+	if cb.ConcurrentToolCalls != 0 {
+		fmt.Fprintf(b, "%sconcurrent_tool_calls: %d\n", inner, cb.ConcurrentToolCalls)
+	}
+	if cb.Wall != "" {
+		writeStrProp(b, inner, "wall", cb.Wall)
+	}
+	if cb.CPU != "" {
+		writeStrProp(b, inner, "cpu", cb.CPU)
+	}
+	if cb.Memory != 0 {
+		fmt.Fprintf(b, "%smemory: %d\n", inner, cb.Memory)
+	}
+	if cb.ScriptBytes != 0 {
+		fmt.Fprintf(b, "%sscript_bytes: %d\n", inner, cb.ScriptBytes)
+	}
+	if cb.ResultBytes != 0 {
+		fmt.Fprintf(b, "%sresult_bytes: %d\n", inner, cb.ResultBytes)
+	}
+	if cb.ToolResultBytes != 0 {
+		fmt.Fprintf(b, "%stool_result_bytes: %d\n", inner, cb.ToolResultBytes)
+	}
+	if cb.StoreEntries != 0 {
+		fmt.Fprintf(b, "%sstore_entries: %d\n", inner, cb.StoreEntries)
+	}
+	if cb.StoreBytes != 0 {
+		fmt.Fprintf(b, "%sstore_bytes: %d\n", inner, cb.StoreBytes)
+	}
+}
+
 func writeSandboxBlock(b *buf, sb *ast.SandboxBlock, indent string) {
 	if sb == nil {
 		return
@@ -2246,6 +2401,12 @@ func writeEdge(b *buf, e *ast.Edge) {
 			fmt.Fprintf(b, " as %s(%s)", e.Loop.Name, b.str(e.Loop.MaxIterationsExpr))
 		default:
 			fmt.Fprintf(b, " as %s(%d)", e.Loop.Name, e.Loop.MaxIterations)
+		}
+		if e.Loop.Guard != "" {
+			fmt.Fprintf(b, " guard: %s", e.Loop.Guard)
+		}
+		if e.Loop.SizedBy != "" {
+			fmt.Fprintf(b, " sized_by %s", b.str(e.Loop.SizedBy))
 		}
 	}
 	if e.Foreach != nil {

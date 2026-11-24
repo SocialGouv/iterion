@@ -14,6 +14,7 @@ import (
 )
 
 func TestAmbientContextPolicyMeetsTheBackendsVerdict(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                       string
 		override, node, wf, envDef string
@@ -98,6 +99,7 @@ func (b *ambientRecorder) Execute(_ context.Context, task delegate.Task) (delega
 }
 
 func TestAmbientContextRefusesTheResolvedBackendBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"kimi", "opencode", "grok"} {
 		t.Run(backend, func(t *testing.T) {
 			fake := &ambientRecorder{}
@@ -123,6 +125,7 @@ func TestAmbientContextRefusesTheResolvedBackendBeforeDispatch(t *testing.T) {
 }
 
 func TestAmbientContextRefusesAFallbackThatCannotHonourIt(t *testing.T) {
+	t.Parallel()
 	head := &ambientRecorder{fail: &delegate.ErrTransient{Reason: "unavailable"}}
 	tail := &ambientRecorder{}
 	reg := delegate.NewRegistry()
@@ -144,6 +147,7 @@ func TestAmbientContextRefusesAFallbackThatCannotHonourIt(t *testing.T) {
 }
 
 func TestAmbientContextHandsTheBackendItsPolicyAndSource(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, backend, node string
 		want                ambient.Policy

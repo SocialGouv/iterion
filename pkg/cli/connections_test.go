@@ -49,6 +49,92 @@ func connectionsWorkspace(t *testing.T) string {
 	return ws
 }
 
+// connectionsProjectTierWorkspace puts the package in the WORKSPACE tier —
+// `connectors/<id>`, where `iterion connectors gen` writes by default — and
+// leaves the home tier empty, so the only thing that can answer is the tier
+// the grant and the trust both gate.
+func connectionsProjectTierWorkspace(t *testing.T) string {
+	t.Helper()
+	src, err := filepath.Abs(filepath.Join("..", "..", "connectors", "forgejo"))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("the shipped Forgejo package is not present: %v", err)
+	}
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "connectors"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(src, filepath.Join(ws, "connectors", "forgejo")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	home := filepath.Join(ws, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("ITERION_SECRETS_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("ITERION_HOME", home)
+	t.Setenv("FORGE_TEST_TOKEN", "probe-token")
+	t.Chdir(ws)
+	return ws
+}
+
+// TestConnectionsAddReadsTheOperatorsOwnWorkspaceTier is #2769's fourth site.
+//
+// `LocalCatalogs` now takes the run's trust, and this command has no run: it is
+// the operator, in their own checkout, at their own keyboard. Answering "nobody
+// stated it" here would close the workspace tier for the very case the grant
+// exists for — `iterion connectors gen` writes `connectors/<id>` by default —
+// and would break the invariant the shared tier builder exists for
+// (docs/adr/098-connector-catalog.md): this command refuses exactly what a
+// granted, trusted run refuses. Pinned so the signature change cannot silently
+// make an operator's own command read as untrusted.
+func TestConnectionsAddReadsTheOperatorsOwnWorkspaceTier(t *testing.T) {
+	t.Run("granted, so the operator's own project tier answers", func(t *testing.T) {
+		ws := connectionsProjectTierWorkspace(t)
+		t.Setenv(connection.ProjectCatalogEnv, "1")
+
+		var add bytes.Buffer
+		err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+			Connector: "forgejo",
+			Scheme:    "token",
+			BaseURL:   "https://codeberg.org",
+			TokenEnv:  "FORGE_TEST_TOKEN",
+			StoreDir:  filepath.Join(ws, ".iterion"),
+		}, &add)
+		if err != nil {
+			t.Fatalf("add: %v — the granted workspace tier is the operator's own, so their command must read it", err)
+		}
+		if !strings.Contains(add.String(), "capabilities: action") {
+			t.Errorf("add must report the grant it stored, got:\n%s", add.String())
+		}
+	})
+
+	// The falsifier: the same workspace with the grant closed is refused, and
+	// the refusal names the variable — so the arm above proves the GRANT was
+	// read, not that this command accepts anything.
+	t.Run("ungranted, so it refuses exactly what a run would", func(t *testing.T) {
+		ws := connectionsProjectTierWorkspace(t)
+		t.Setenv(connection.ProjectCatalogEnv, "")
+
+		var add bytes.Buffer
+		err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+			Connector: "forgejo",
+			Scheme:    "token",
+			BaseURL:   "https://codeberg.org",
+			TokenEnv:  "FORGE_TEST_TOKEN",
+			StoreDir:  filepath.Join(ws, ".iterion"),
+		}, &add)
+		if err == nil {
+			t.Fatal("an ungranted workspace tier must not serve `connections add` either")
+		}
+		if !strings.Contains(err.Error(), connection.ProjectCatalogEnv) {
+			t.Errorf("error = %v, want it to name %s", err, connection.ProjectCatalogEnv)
+		}
+	})
+}
+
 // TestConnectionsAddReportsTheGrantItStored.
 //
 // With no --capability the default is `action`, and `add` echoed the empty
@@ -80,6 +166,77 @@ func TestConnectionsAddReportsTheGrantItStored(t *testing.T) {
 	}
 	if !strings.Contains(list.String(), "action") {
 		t.Errorf("list must show the same grant, got:\n%s", list.String())
+	}
+}
+
+// TestConnectionsSaysWhatATriggerGrantBuysToday is #2761 at the two surfaces
+// where a grant is MADE and read back.
+//
+// `trigger` decides what may be believed about an inbound delivery, and the
+// ingress reads it (#2761 — the connector webhook lane) — so the grant is
+// accepted AND owed no inert warning: what it buys today is a declared
+// vendor event believed on the connection's word. Through the shared
+// rendering and the shared advice, so a third capability cannot be printed
+// by one command and forgotten by the other.
+func TestConnectionsSaysWhatATriggerGrantBuysToday(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	storeDir := filepath.Join(ws, ".iterion")
+
+	var add bytes.Buffer
+	err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector:    "forgejo",
+		Scheme:       "token",
+		Alias:        "inbound",
+		BaseURL:      "https://codeberg.org",
+		TokenEnv:     "FORGE_TEST_TOKEN",
+		Capabilities: []string{"action", "trigger"},
+		StoreDir:     storeDir,
+	}, &add)
+	if err != nil {
+		t.Fatalf("add: %v — `trigger` is a grant this build accepts", err)
+	}
+	for _, want := range []string{"action+trigger", "trigger"} {
+		if !strings.Contains(add.String(), want) {
+			t.Errorf("add must report %q, got:\n%s", want, add.String())
+		}
+	}
+	if strings.Contains(add.String(), "inert") {
+		t.Errorf("the ingress is wired — add must not call the grant inert, got:\n%s", add.String())
+	}
+
+	// Said on EVERY list, not only at `add`: the grant outlives the command
+	// that wrote it.
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(storeDir, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(list.String(), "action+trigger") {
+		t.Errorf("list must report the grant, got:\n%s", list.String())
+	}
+	if strings.Contains(list.String(), "inert") {
+		t.Errorf("the ingress is wired — list must not call the grant inert, got:\n%s", list.String())
+	}
+
+	// And a value this build does not know names the WHOLE set it does: a
+	// message listing two of three sends an operator to widen a record with a
+	// value that would have been taken.
+	var bad bytes.Buffer
+	err = cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector:    "forgejo",
+		Scheme:       "token",
+		Alias:        "nope",
+		BaseURL:      "https://codeberg.org",
+		TokenEnv:     "FORGE_TEST_TOKEN",
+		Capabilities: []string{"webhook"},
+		StoreDir:     storeDir,
+	}, &bad)
+	if err == nil {
+		t.Fatal("an unknown capability must be refused")
+	}
+	for _, want := range connection.CapabilityNames() {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %q", err, want)
+		}
 	}
 }
 
@@ -193,7 +350,7 @@ func TestConnectionsAddRefusesAConnectionNoCallCouldUse(t *testing.T) {
 		{"self-hosted connector with no instance", "token", "", "--base-url"},
 		{"a URL with no scheme", "token", "git.example.com", "http or https"},
 		{"a URL with no host", "token", "https://", "no host"},
-		{"basic auth, which this command cannot seal", "basic", "https://git.example.com", "token only"},
+		{"basic auth without its username", "basic", "https://git.example.com", "needs --username"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := connectionsWorkspace(t)
@@ -318,5 +475,87 @@ func TestAnHTTPOriginIsFlaggedOnAddAndOnEveryList(t *testing.T) {
 	}
 	if !strings.Contains(out, "192.168.1.10:3000") {
 		t.Errorf("the warning must name the host it is about, got:\n%s", out)
+	}
+}
+
+// A grant this build honours is owed NO warning — `agent` is honoured since
+// the facade landed (#2758), `trigger` since the connector webhook ingress
+// landed (#2761). This is both tickets' Done-when witness: BOTH CLI surfaces
+// stopped calling either grant inert, not because either was edited (they
+// were not — the warning is connection.GrantAdvice's call) but because the
+// one predicate changed.
+func TestAnAgentGrantIsNoLongerReportedAsInertOnAddOrOnList(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	storeDir := filepath.Join(ws, ".iterion")
+
+	var add bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Scheme: "token", Alias: "agentic",
+		BaseURL: "https://codeberg.org", TokenEnv: "FORGE_TEST_TOKEN",
+		Capabilities: []string{"action", "agent"}, StoreDir: storeDir,
+	}, &add); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if strings.Contains(add.String(), "inert") {
+		t.Errorf("the `agent` grant is honoured by the facade — add must stop calling it inert, got:\n%s", add.String())
+	}
+
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(storeDir, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if strings.Contains(list.String(), "inert") {
+		t.Errorf("list must stop too — one predicate, both surfaces:\n%s", list.String())
+	}
+
+	// The trigger-granting record next to it is honoured too (#2761): no
+	// surface may call it inert either, or the flip that silenced `agent`
+	// would have gone further than the predicate — which is the one place
+	// both read — ever meant to.
+	var addTrigger, listBoth bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Scheme: "token", Alias: "inbound",
+		BaseURL: "https://codeberg.org", TokenEnv: "FORGE_TEST_TOKEN",
+		Capabilities: []string{"action", "trigger"}, StoreDir: storeDir,
+	}, &addTrigger); err != nil {
+		t.Fatalf("add trigger: %v", err)
+	}
+	if strings.Contains(addTrigger.String(), "inert") {
+		t.Errorf("the `trigger` grant is honoured by the ingress — add must not call it inert, got:\n%s", addTrigger.String())
+	}
+	if err := cli.ConnectionsList(storeDir, &listBoth); err != nil {
+		t.Fatalf("list both: %v", err)
+	}
+	if n := strings.Count(listBoth.String(), "inert"); n != 0 {
+		t.Errorf("no honoured grant is flagged, got %d warnings in:\n%s", n, listBoth.String())
+	}
+}
+
+// An HTTP basic scheme is connected with its username as a flag and its
+// password from the environment, like a token: the credential never passes
+// through an argument.
+func TestConnectionsAddSealsABasicScheme(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	var add bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Alias: "basic", Scheme: "basic", BaseURL: "https://git.example.com",
+		Username: "jo", TokenEnv: "FORGE_TEST_TOKEN", StoreDir: filepath.Join(ws, ".iterion"),
+	}, &add); err != nil {
+		t.Fatalf("add a basic connection: %v", err)
+	}
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(filepath.Join(ws, ".iterion"), &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(list.String(), "basic") {
+		t.Fatalf("the basic connection is not listed:\n%s", list.String())
+	}
+	// --username belongs to basic alone.
+	err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Alias: "tok", Scheme: "token", BaseURL: "https://git.example.com",
+		Username: "jo", TokenEnv: "FORGE_TEST_TOKEN", StoreDir: filepath.Join(ws, ".iterion"),
+	}, &add)
+	if err == nil || !strings.Contains(err.Error(), "--username is HTTP basic's") {
+		t.Fatalf("a username for a token scheme = %v, want a refusal", err)
 	}
 }

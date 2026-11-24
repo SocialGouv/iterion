@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -47,10 +46,10 @@ func newDeferredWorld(t *testing.T) deferredWorld {
 
 func (w deferredWorld) publish(t *testing.T, gate string) publishReviewResponse {
 	t.Helper()
-	rec := httptest.NewRecorder()
+	rec := newErrorRecorder()
 	w.s.handleForgePublishReview(rec, publishReq("tok-gate", publishBodyWithGate(gate)))
 	var resp publishReviewResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal([]byte(rec.Diagnostic(t)), &resp); err != nil {
 		t.Fatalf("publish answered HTTP %d with an unreadable body: %s", rec.Code, rec.Body.String())
 	}
 	return resp

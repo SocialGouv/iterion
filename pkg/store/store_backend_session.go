@@ -4,58 +4,70 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 var _ BackendSessionStore = (*FilesystemRunStore)(nil)
 
-// backendSessionPath is runs/<id>/backend-sessions/<ref>.
-func (s *FilesystemRunStore) backendSessionPath(runID, ref string) string {
-	return filepath.Join(s.runDir(runID), "backend-sessions", ref)
-}
-
-func (s *FilesystemRunStore) PutBackendSession(_ context.Context, runID, ref string, body []byte) error {
+func (s *FilesystemRunStore) PutBackendSession(ctx context.Context, runID, ref string, body []byte) error {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("session ref", ref); err != nil {
 		return err
 	}
-	if err := s.guardNotDeleted(runID); err != nil {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(s.backendSessionPath(runID, ref))
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("store: mkdir backend-sessions: %w", err)
+	defer unlock()
+	p, err := s.openRunPayloadPath(ctx, runID, true, "backend-sessions", ref)
+	if err != nil {
+		return err
 	}
-	if err := writeFileAtomic(s.backendSessionPath(runID, ref), body, filePerm); err != nil {
+	defer p.Close()
+	if err := p.WriteAtomic(ctx, body, filePerm); err != nil {
 		return fmt.Errorf("store: write backend session: %w", err)
 	}
 	return nil
 }
 
-func (s *FilesystemRunStore) GetBackendSession(_ context.Context, runID, ref string) ([]byte, error) {
+func (s *FilesystemRunStore) GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("session ref", ref); err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(s.backendSessionPath(runID, ref))
+	p, err := s.openRunPayloadPath(ctx, runID, false, "backend-sessions", ref)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	b, err := p.ReadFile()
 	if err != nil {
 		return nil, fmt.Errorf("store: read backend session: %w", err)
 	}
 	return b, nil
 }
 
-func (s *FilesystemRunStore) DeleteBackendSession(_ context.Context, runID, ref string) error {
+func (s *FilesystemRunStore) DeleteBackendSession(ctx context.Context, runID, ref string) error {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("session ref", ref); err != nil {
 		return err
 	}
-	err := os.Remove(s.backendSessionPath(runID, ref))
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	dir, err := s.openRunPayloadDirectory(ctx, runID, false, "backend-sessions")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	err = dir.Remove(ctx, ref)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("store: delete backend session: %w", err)
 	}

@@ -39,18 +39,22 @@ const NodeSessionKillWait = 3 * time.Second
 var sweepGrace, sweepKillWait = NodeSessionGrace, NodeSessionKillWait
 
 // sweepGateWaitSeconds bounds, in seconds, how long a sweep program's scan
-// gate waits for its release before the program fails with an error. It is
-// shorter than a witness's own ceiling, so a held sweep never outlives its
-// test; a test that wants a shorter one sets it.
+// gate waits for its release — each scan's wait bounded on its own — before
+// the program fails with an error. It is shorter than a witness's own ceiling,
+// so a held sweep never outlives its test; a test that wants a shorter one
+// sets it.
 var sweepGateWaitSeconds = 20
 
 // sweepScanGateFile, empty in production, is the path a sweep program reports
 // its scans to and waits at: after every scan it appends what the scan found
-// of the session to "<path>.scanned" and waits for "<path>.resume" to exist,
-// before it acts on that scan. It is the seam a test holds a sweep program at,
-// to stage a process that shows between two scans instead of guessing when the
-// window between them opens; sweepScanGate is its counterpart for the sweep
-// that runs here.
+// of the session to "<path>.scanned", then waits for the release of THAT scan
+// — "<path>.resume.<n>", n being how many scans it has reported — or for
+// "<path>.resume", which frees every scan, before it acts on it; once freed it
+// appends n to "<path>.passed". Every scan is held, so a test holds the sweep
+// scan after scan and stages its window at the one its premise names. It is
+// the seam a test holds a sweep program at, to stage a process that shows
+// between two scans instead of guessing when the window between them opens;
+// sweepScanGate is its counterpart for the sweep that runs here.
 var sweepScanGateFile string
 
 // NodeSessionSettle is the interval between a sweep's scans. A sweep ends on
@@ -230,25 +234,30 @@ me=
 # value holding a newline cannot forge a line.
 if printf 'a\000' | grep -qzx a 2>/dev/null; then fastz=1; else fastz=; fi
 settle() { sleep "$SETTLE" 2>/dev/null || sleep 1; }
-# gate MEMBERS: with GATE set — a test holding this sweep at the scan it has
+# GATE_N counts the scans reported to the gate: a release names the scan it
+# frees, so a test holds this sweep scan after scan.
+GATE_N=0
+# gate MEMBERS: with GATE set — a test holding this sweep at each scan it has
 # just finished, never in production — report what the scan found and wait for
-# the test to let the sweep act on it. A gate nobody releases is an error, so
-# that a held sweep is never read as a sweep that found nothing.
+# the test to let the sweep act on THAT scan, or for the unnumbered release
+# that frees every scan. A gate nobody releases is an error, so that a held
+# sweep is never read as a sweep that found nothing.
 gate() {
   [ -n "$GATE" ] || return 0
+  GATE_N=$((GATE_N + 1))
   printf '%s\n' "$1" >> "$GATE.scanned" 2>/dev/null || {
     printf '%serror the scan gate at %s is not writable\n' "$H" "$GATE"
     exit 0
   }
   gate_deadline=$(( $(date +%s) + GATE_WAIT ))
-  while [ ! -f "$GATE.resume" ]; do
+  while [ ! -f "$GATE.resume" ] && [ ! -f "$GATE.resume.$GATE_N" ]; do
     if [ "$(date +%s)" -gt "$gate_deadline" ]; then
       printf '%serror the scan gate at %s was never released\n' "$H" "$GATE"
       exit 0
     fi
     settle
   done
-  printf '' > "$GATE.passed"
+  printf '%s\n' "$GATE_N" >> "$GATE.passed"
 }
 # slurp FILE: sets line to the whole of FILE, its lines joined by spaces — a
 # process name may hold a newline, and the fields that follow it are on the

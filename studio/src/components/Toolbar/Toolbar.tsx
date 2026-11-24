@@ -1,3 +1,4 @@
+import { shortcutsEnabled } from "@/lib/shortcuts";
 import { useEffect, useRef, useState } from "react";
 
 import { useDocumentStore } from "@/store/document";
@@ -8,6 +9,7 @@ import ConfirmDialog from "../shared/ConfirmDialog";
 import { useConfirm } from "@/hooks/useConfirm";
 import { Spinner } from "@/components/ui/Spinner";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
+import { HiddenFileInput } from "../shared/HiddenFileInput";
 import FilePicker from "../FilePicker/FilePicker";
 import {
   Button,
@@ -156,7 +158,7 @@ export default function Toolbar() {
       } else if ((e.ctrlKey || e.metaKey) && e.key === "o") {
         e.preventDefault();
         fileInputRef.current?.click();
-      } else if (e.key === "?" && !(e.target as HTMLElement).matches("input, textarea, select")) {
+      } else if (e.key === "?" && !(e.target as HTMLElement).matches("input, textarea, select") && shortcutsEnabled()) {
         e.preventDefault();
         setShowShortcuts(true);
       }
@@ -438,6 +440,7 @@ export default function Toolbar() {
       {workflows.length > 0 && (
         <ToolbarGroup>
           <Select
+            aria-label="Active workflow (switching redraws the canvas)"
             value={activeWorkflowName ?? workflows[0]?.name ?? ""}
             onChange={(e) => setActiveWorkflowName(e.target.value)}
             size="sm"
@@ -465,7 +468,14 @@ export default function Toolbar() {
         </ToolbarGroup>
       )}
 
-      <input ref={fileInputRef} type="file" accept=".bot" className="hidden" onChange={handleImport} />
+      {/* The control is the File menu's Import item; this input is the
+          mechanism it clicks (HiddenFileInput states that for every net,
+          including jsdom, which loads no stylesheet). NOT fixable by teaching
+          the harness `.hidden` globally: Tailwind's `hidden sm:table` surfaces
+          (the desktop runs table, the selection toolbar, the sort/group
+          controls) would then be hidden at every width, and a net over them
+          would pass on an empty tree. */}
+      <HiddenFileInput inputRef={fileInputRef} accept=".bot" onChange={handleImport} />
 
       {/* Right-aligned: file status → Launch run; then navigation icons */}
       <div className="ml-auto flex items-center gap-3">

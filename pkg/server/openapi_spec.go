@@ -13,6 +13,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -76,17 +79,23 @@ func BuildOpenAPISpec() (map[string]any, error) {
 
 		// Gate fields — non-nil stubs so every register*() fires. None are
 		// invoked here (registration only calls s.mux.Handle).
-		AuthService:                 authSvc,
-		Sealer:                      specNoopSealer{},
-		ApiKeys:                     secrets.NewMemoryApiKeyStore(),
-		GenericSecrets:              secrets.NewMemoryGenericSecretStore(),
-		BotBindings:                 secrets.NewMemoryBotSecretBindingStore(),
-		OAuthForfait:                secrets.NewMemoryOAuthStore(),
-		OAuthPending:                secrets.NewMemoryOAuthPendingStore(),
-		WebhookConfigs:              webhooks.NewMemoryConfigStore(),
-		WebhookDeliveries:           webhooks.NewMemoryDeliveryStore(),
-		WebhookCounter:              webhooks.NewMemoryCounter(),
-		ForgeConnections:            forge.NewMemoryConnectionStore(),
+		AuthService:       authSvc,
+		Sealer:            specNoopSealer{},
+		ApiKeys:           secrets.NewMemoryApiKeyStore(),
+		GenericSecrets:    secrets.NewMemoryGenericSecretStore(),
+		BotBindings:       secrets.NewMemoryBotSecretBindingStore(),
+		OAuthForfait:      secrets.NewMemoryOAuthStore(),
+		OAuthPending:      secrets.NewMemoryOAuthPendingStore(),
+		WebhookConfigs:    webhooks.NewMemoryConfigStore(),
+		WebhookDeliveries: webhooks.NewMemoryDeliveryStore(),
+		WebhookCounter:    webhooks.NewMemoryCounter(),
+		ConnectorIntakes:  intake.NewMemoryStore(),
+		ConnectorPollers:  poller.NewMemoryStore(),
+		ForgeConnections:  connection.NewMemoryForgeStore(),
+		// The connector-connection CRUD (#2759) registers on these three;
+		// the memory twin and the baked catalog are its in-memory stand-ins.
+		Connections:                 connection.NewMemoryStore(),
+		ConnectorCatalog:            connection.BakedCatalog(),
 		ForgeIntegrations:           forge.NewMemoryRepoIntegrationStore(),
 		BoardBindings:               forge.NewMemoryBoardBindingStore(),
 		ProvisionApprovals:          forge.NewMemoryProvisionApprovalStore(),

@@ -19,6 +19,7 @@ import (
 //
 // Removing the escaping turns this red on the sentinel, not on style.
 func TestToolCommandRefsAreShellEscaped(t *testing.T) {
+	t.Parallel()
 	ref := &ir.Ref{Kind: ir.RefVars, Path: []string{"branch"}, Raw: "{{vars.branch}}"}
 	// The command shape the catalog actually writes: a bare env assignment in
 	// front of an interpreter, no author-supplied quoting.
@@ -55,6 +56,7 @@ func TestToolCommandRefsAreShellEscaped(t *testing.T) {
 // substitutes verbatim. No catalog bot uses it (enforced by
 // bots.TestCatalogHasNoRawRefs); this pins WHY that rule exists.
 func TestRawRefsBypassEscapingByDesign(t *testing.T) {
+	t.Parallel()
 	ref := &ir.Ref{Kind: ir.RefVars, Path: []string{"branch"}, Raw: "{{!vars.branch}}", Unquoted: true}
 	resolved := resolveCommandTemplate(`BRANCH={{!vars.branch}} true`, []*ir.Ref{ref}, nil, map[string]any{"branch": "x;id"}, nil, "", nil)
 	if !strings.Contains(resolved, "BRANCH=x;id") {
@@ -71,6 +73,7 @@ func TestRawRefsBypassEscapingByDesign(t *testing.T) {
 // diagnostic C137 (ir.refInQuotes) flags it at compile, and the catalog
 // carries none.
 func TestAuthorQuotedRefsAreNotContained(t *testing.T) {
+	t.Parallel()
 	ref := &ir.Ref{Kind: ir.RefVars, Path: []string{"base_ref"}, Raw: "{{vars.base_ref}}"}
 
 	t.Run("single quotes cancel — the value becomes syntax", func(t *testing.T) {

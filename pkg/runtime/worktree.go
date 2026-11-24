@@ -85,6 +85,43 @@ func gitCommitMessage(dir, message string) (string, error) {
 	return string(out), err
 }
 
+// lockWorktreeRegistration serializes this process's runtime mutations of
+// one Git worktree registry. Linked checkouts and symlink spellings share
+// the common directory; unrelated repositories keep independent gates.
+// The existing resource gate supplies waiter lifetime and reference cleanup,
+// in a namespace separate from the gates held while a child executes.
+func lockWorktreeRegistration(repoRoot string) (func(), error) {
+	common, stderr, err := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree registry: %w (stderr: %s)", err, stderr)
+	}
+	common, err = filepath.EvalSymlinks(strings.TrimSuffix(common, "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree registry path: %w", err)
+	}
+	gate, release := retainResourceGate("git-worktree-registration:" + common)
+	if err := gate.sem.Acquire(context.Background(), resourceWriterWeight); err != nil {
+		release()
+		return nil, err
+	}
+	return func() {
+		gate.sem.Release(resourceWriterWeight)
+		release()
+	}, nil
+}
+
+// runWorktreeCommand holds the registry gate only for the Git command. A
+// sibling cannot observe a half-written commondir, but its nodes still run
+// alongside the other children once registration completes.
+func runWorktreeCommand(repoRoot string, args ...string) (string, error) {
+	release, err := lockWorktreeRegistration(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return runGitCombined(repoRoot, append([]string{"worktree"}, args...)...)
+}
+
 // worktreeContext is the state captured at setupWorktree time and
 // consumed by finalizeWorktree to decide whether the run actually
 // produced new commits and whether a fast-forward of the user's branch
@@ -190,11 +227,9 @@ func setupWorktree(storeRoot, runID, repoHint, baseCommit string, logger *iterlo
 	if startPoint == "" {
 		startPoint = "HEAD"
 	}
-	cmd, cancel := gitCmd("-C", repoRoot, "worktree", "add", wtPath, startPoint)
-	out, addErr := cmd.CombinedOutput()
-	cancel()
+	out, addErr := runWorktreeCommand(repoRoot, "add", wtPath, startPoint)
 	if addErr != nil {
-		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s at %s: %w\noutput: %s", wtPath, startPoint, addErr, string(out))
+		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s at %s: %w\noutput: %s", wtPath, startPoint, addErr, out)
 	}
 
 	if logger != nil {
@@ -217,15 +252,13 @@ func setupWorktree(storeRoot, runID, repoHint, baseCommit string, logger *iterlo
 		// the failure goes through a stderr fallback so it isn't
 		// completely silent — otherwise the worktree directory leaks on
 		// disk with no trace.
-		rmCmd, rmCancel := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath)
-		out, rmErr := rmCmd.CombinedOutput()
-		rmCancel()
+		out, rmErr := runWorktreeCommand(repoRoot, "remove", "--force", wtPath)
 		if rmErr != nil {
 			l := logger
 			if l == nil {
 				l = iterlog.NewFallback(iterlog.LevelWarn, os.Stderr)
 			}
-			l.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
+			l.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, out)
 		}
 	}
 	return worktreeContext{
@@ -400,24 +433,24 @@ func proveOwnWorktree(wc worktreeContext) error {
 		}
 		return abs
 	}
-	top, err := runGit(wc.wtPath, "rev-parse", "--show-toplevel")
+	top, topStderr, err := runGit(wc.wtPath, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git toplevel failed: %v", err)
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git toplevel failed: %v (stderr: %s)", err, topStderr)
 	}
 	if !samePath(resolve(strings.TrimSpace(top)), resolve(wc.wtPath)) {
 		return fmt.Errorf("the directory's git toplevel is %s, not the registered worktree %s", strings.TrimSpace(top), wc.wtPath)
 	}
-	common, err := runGit(wc.wtPath, "rev-parse", "--git-common-dir")
+	common, commonStderr, err := runGit(wc.wtPath, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git common dir failed: %v", err)
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git common dir failed: %v (stderr: %s)", err, commonStderr)
 	}
 	common = strings.TrimSpace(common)
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(wc.wtPath, common)
 	}
-	source, err := runGit(wc.repoRoot, "rev-parse", "--git-common-dir")
+	source, sourceStderr, err := runGit(wc.repoRoot, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return fmt.Errorf("cannot prove the worktree is the run's own: reading the source repository's git common dir failed: %v", err)
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading the source repository's git common dir failed: %v (stderr: %s)", err, sourceStderr)
 	}
 	source = strings.TrimSpace(source)
 	if !filepath.IsAbs(source) {
@@ -481,10 +514,10 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// as an explicit wip bank so the storage branch preserves it; the
 	// operator reviews it there (it is NEVER merged into their branch —
 	// see step 5).
-	porcelain, porcelainErr := runGit(wc.wtPath, "status", "--porcelain", "-z")
+	porcelain, porcelainStderr, porcelainErr := runGit(wc.wtPath, "status", "--porcelain", "-z")
 	if porcelainErr != nil {
 		if logger != nil {
-			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", porcelainErr)
+			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v (stderr: %s) — proceeding without wip bank", porcelainErr, porcelainStderr)
 		}
 	} else if work := runOutputPaths(wc.wtPath, porcelain); len(work) == 0 {
 		// Nothing of the run's to bank: clean, or tree noise only (the

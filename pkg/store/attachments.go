@@ -27,20 +27,14 @@ var readRandom = rand.Read
 // errors.Is to discriminate from other I/O errors.
 var ErrAttachmentNotFound = errors.New("store: attachment not found")
 
-// Sidecar stored next to each attachment so DeleteRunAttachments is
-// one rm -rf and ListAttachments is one directory scan.
-const attachmentMetaFilename = "meta.json"
+// The record sidecar sits next to each attachment (under `.iterion/`, out
+// of the bytes' namespace — see staging.go) so DeleteRunAttachments is one
+// rm -rf and ListAttachments is one directory scan.
 
 // HMAC signing key for presigned attachment URLs, generated lazily and
 // cached at the store root. Survives process restarts so URLs minted
 // before a reboot remain valid until their `exp` lapses.
 const attachmentSigningKeyFile = ".attachment-signing-key"
-
-// attachmentDir returns the on-disk directory for an attachment under
-// the FilesystemRunStore root.
-func (s *FilesystemRunStore) attachmentDir(runID, name string) string {
-	return filepath.Join(s.root, "runs", runID, "attachments", name)
-}
 
 // WriteAttachment persists the bytes of an attachment under
 // `<root>/runs/<run_id>/attachments/<name>/<original_filename>` and
@@ -57,9 +51,6 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if err := sanitizePathComponent("attachment name", rec.Name); err != nil {
 		return err
 	}
-	if err := s.guardNotDeleted(runID); err != nil {
-		return err
-	}
 	// OriginalFilename is path-joined; sanitise it through the same
 	// rules so a hostile uploader can't escape the run directory.
 	filename := rec.OriginalFilename
@@ -69,41 +60,37 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if err := sanitizePathComponent("attachment filename", filepath.Base(filename)); err != nil {
 		return err
 	}
-	dir := s.attachmentDir(runID, rec.Name)
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("store: mkdir attachment: %w", err)
-	}
-	dstPath := filepath.Join(dir, filepath.Base(filename))
-
-	// Stream-copy with a hash sink so the on-disk SHA-256 is
-	// authoritative even if the caller passed a stale rec.SHA256.
-	tmp, err := os.CreateTemp(dir, ".upload-*")
-	if err != nil {
-		return fmt.Errorf("store: tempfile: %w", err)
+	// Every caller-supplied field that can fail JSON encoding is persisted;
+	// reject it before draining a reader or replacing an existing body.
+	if _, err := json.Marshal(rec); err != nil {
+		return fmt.Errorf("store: marshal attachment meta: %w", err)
 	}
 	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmp, hasher), body)
+	bound, staged, written, err := s.stageRunMetadataBody(ctx, runID, body, hasher)
 	if err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return fmt.Errorf("store: copy attachment: %w", err)
+		return fmt.Errorf("store: stage attachment: %w", err)
 	}
-	// fsync before rename: matches WriteFileAtomic semantics. Without
-	// this, a crash between rename landing in the directory and the
-	// data blocks being flushed can surface a zero-length or partial
-	// file at dstPath while meta.json records the full size + sha256.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return fmt.Errorf("store: sync attachment: %w", err)
+	defer staged.Close()
+	r, unlock, err := s.lockRunMetadataMutation(bound, runID)
+	if err != nil {
+		return err
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("store: close tempfile: %w", err)
+	defer unlock()
+	dir, err := s.openRunPayloadDirectory(bound, runID, true, "attachments", rec.Name)
+	if err != nil {
+		return err
 	}
-	if err := os.Rename(tmp.Name(), dstPath); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("store: rename attachment: %w", err)
+	defer dir.Close()
+	storageRef, err := filepath.Rel(s.root, filepath.Join(dir.parent.key, filepath.Base(filename)))
+	if err != nil {
+		return err
+	}
+	payload, err := dir.file(filepath.Base(filename))
+	if err != nil {
+		return err
+	}
+	if err = staged.publish(bound, payload, filePerm); err != nil {
+		return fmt.Errorf("store: publish attachment: %w", err)
 	}
 
 	rec.OriginalFilename = filepath.Base(filename)
@@ -112,7 +99,7 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
-	rec.StorageRef = filepath.ToSlash(filepath.Join("runs", runID, "attachments", rec.Name, rec.OriginalFilename))
+	rec.StorageRef = filepath.ToSlash(storageRef)
 
 	// Persist meta sidecar (used by Open/List even if Run.Attachments
 	// is corrupted).
@@ -120,36 +107,45 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if err != nil {
 		return fmt.Errorf("store: marshal attachment meta: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, attachmentMetaFilename), metaData, filePerm); err != nil {
+	if err := writeRecordDirectory(bound, dir, metaData); err != nil {
+		// No residue: the bytes were renamed in place before the record,
+		// so a failed record would strand them on disk — a bytes file
+		// named exactly `.iterion` blocks the record's directory with a
+		// plain file (staging.go), which a later listing then trips over.
+		_ = dir.Remove(context.WithoutCancel(bound), filepath.Base(filename))
 		return err
 	}
 
-	// Reflect into Run.Attachments. Done under the same mu the rest of
-	// the read-modify-write paths use to avoid losing parallel writes.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := s.loadRunRaw(runID)
-	if err != nil {
-		// If run.json doesn't exist yet (race on CreateRun), the
-		// bytes are written and the meta sidecar is canonical;
-		// downstream LoadRun will see Attachments empty and a future
-		// caller can re-index by walking the attachments/ dir.
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("store: load run for attachment index: %w", err)
+	// The sidecar remains the historical authority for a legacy orphan.
+	// Existing parents share the same stable lock with body publication.
+	if r == nil {
+		return nil
 	}
 	if r.Attachments == nil {
 		r.Attachments = make(map[string]AttachmentRecord)
 	}
 	r.Attachments[rec.Name] = rec
-	return s.writeRun(r)
+	return s.writeRunLockedContext(bound, r, false, nil)
 }
 
-// OpenAttachment returns a streaming reader over the attachment bytes
-// and its metadata. The caller must Close the reader.
+// OpenAttachment admits and opens metadata plus bytes under the stable run
+// lock. The returned descriptor pins the original inode; transfer happens
+// after unlocking. The caller must Close the reader.
 func (s *FilesystemRunStore) OpenAttachment(ctx context.Context, runID, name string) (io.ReadCloser, AttachmentRecord, error) {
-	rec, err := s.loadAttachmentMeta(runID, name)
+	_, unlock, err := s.lockAttachmentRead(ctx, runID)
+	if err != nil {
+		return nil, AttachmentRecord{}, err
+	}
+	defer unlock()
+	if err := sanitizePathComponent("attachment name", name); err != nil {
+		return nil, AttachmentRecord{}, err
+	}
+	dir, err := s.openRunPayloadDirectory(ctx, runID, false, "attachments", name)
+	if err != nil {
+		return nil, AttachmentRecord{}, err
+	}
+	defer dir.Close()
+	rec, err := loadAttachmentMetaDirectory(ctx, dir)
 	if err != nil {
 		return nil, AttachmentRecord{}, err
 	}
@@ -162,37 +158,67 @@ func (s *FilesystemRunStore) OpenAttachment(ctx context.Context, runID, name str
 	if err := sanitizePathComponent("attachment filename", rec.OriginalFilename); err != nil {
 		return nil, rec, err
 	}
-	dir := s.attachmentDir(runID, name)
-	f, err := os.Open(filepath.Join(dir, rec.OriginalFilename))
+	payload, err := dir.file(rec.OriginalFilename)
+	if err != nil {
+		return nil, rec, err
+	}
+	f, err := payload.Open()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, rec, ErrAttachmentNotFound
 		}
 		return nil, rec, fmt.Errorf("store: open attachment: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = f.Close()
+		return nil, AttachmentRecord{}, err
+	}
 	return f, rec, nil
 }
 
 // ListAttachments enumerates the attachments persisted for a run.
 // Returns a nil slice when no attachments directory exists.
-func (s *FilesystemRunStore) ListAttachments(_ context.Context, runID string) ([]AttachmentRecord, error) {
+func (s *FilesystemRunStore) ListAttachments(ctx context.Context, runID string) ([]AttachmentRecord, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
-	root := filepath.Join(s.root, "runs", runID, "attachments")
-	entries, err := os.ReadDir(root)
+	_, unlock, err := s.lockAttachmentRead(ctx, runID)
+	if errors.Is(err, ErrAttachmentNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	root, err := s.openRunPayloadDirectory(ctx, runID, false, "attachments")
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	entries, err := root.ReadDir()
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("store: list attachments: %w", err)
 	}
 	out := make([]AttachmentRecord, 0, len(entries))
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !e.IsDir() {
 			continue
 		}
-		rec, err := s.loadAttachmentMeta(runID, e.Name())
+		child, err := root.OpenDirectory(ctx, e.Name(), false)
+		if err != nil {
+			return nil, err
+		}
+		rec, err := loadAttachmentMetaDirectory(ctx, child)
+		closeErr := child.Close()
+		if err == nil {
+			err = closeErr
+		}
 		if err != nil {
 			if errors.Is(err, ErrAttachmentNotFound) {
 				continue
@@ -200,6 +226,9 @@ func (s *FilesystemRunStore) ListAttachments(_ context.Context, runID string) ([
 			return nil, err
 		}
 		out = append(out, rec)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -215,18 +244,21 @@ func (s *FilesystemRunStore) RemoveAttachment(ctx context.Context, runID, name s
 	if err := sanitizePathComponent("attachment name", name); err != nil {
 		return err
 	}
-	dir := s.attachmentDir(runID, name)
-	if err := os.RemoveAll(dir); err != nil {
+	r, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	dir, err := s.openRunPayloadPath(ctx, runID, false, "attachments", name)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	if err := dir.removeAll(ctx); err != nil {
 		return fmt.Errorf("store: rm attachment dir: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := s.loadRunRaw(runID)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+	if r == nil {
+		return nil
 	}
 	if r.Attachments == nil {
 		return nil
@@ -235,7 +267,7 @@ func (s *FilesystemRunStore) RemoveAttachment(ctx context.Context, runID, name s
 		return nil
 	}
 	delete(r.Attachments, name)
-	return s.writeRun(r)
+	return s.writeRunLockedContext(ctx, r, false, nil)
 }
 
 // DeleteRunAttachments removes every attachment under the run directory
@@ -244,24 +276,27 @@ func (s *FilesystemRunStore) DeleteRunAttachments(ctx context.Context, runID str
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return err
 	}
-	root := filepath.Join(s.root, "runs", runID, "attachments")
-	if err := os.RemoveAll(root); err != nil {
+	r, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	root, err := s.openRunPayloadFile(ctx, runID, "attachments", false)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.removeAll(ctx); err != nil {
 		return fmt.Errorf("store: rm attachments dir: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := s.loadRunRaw(runID)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+	if r == nil {
+		return nil
 	}
 	if r.Attachments == nil {
 		return nil
 	}
 	r.Attachments = nil
-	return s.writeRun(r)
+	return s.writeRunLockedContext(ctx, r, false, nil)
 }
 
 // PresignAttachment emits an HMAC-signed local URL pointing at the
@@ -275,14 +310,25 @@ func (s *FilesystemRunStore) DeleteRunAttachments(ctx context.Context, runID str
 //	exp=<unix_seconds>     // absolute expiry
 //	sig=<hex_hmac_sha256>  // HMAC over `<run_id>\n<name>\n<exp>`
 //
+// Exact URLs additionally carry vf=2, authenticated as a suffix of the MAC
+// plaintext. Legacy URLs keep their historical shape and bind format one.
 // Cloud (S3-backed) stores override this with PresignGetObject; the
 // HMAC scheme is local-only.
-func (s *FilesystemRunStore) PresignAttachment(_ context.Context, runID, name string, ttl time.Duration) (string, error) {
+func (s *FilesystemRunStore) PresignAttachment(ctx context.Context, runID, name string, ttl time.Duration) (string, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return "", err
 	}
 	if err := sanitizePathComponent("attachment name", name); err != nil {
 		return "", err
+	}
+	format, unlock, err := s.lockAttachmentRead(ctx, runID)
+	// Historically URLs may be minted before bytes exist, including after
+	// deletion. Preserve that contract, retaining the original format intent.
+	if err != nil && !errors.Is(err, ErrAttachmentNotFound) {
+		return "", err
+	}
+	if unlock != nil {
+		unlock()
 	}
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
@@ -292,12 +338,16 @@ func (s *FilesystemRunStore) PresignAttachment(_ context.Context, runID, name st
 	if err != nil {
 		return "", fmt.Errorf("presign attachment: %w", err)
 	}
-	mac := hmac.New(sha256.New, key)
-	fmt.Fprintf(mac, "%s\n%s\n%d", runID, name, exp)
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := attachmentSignature(key, runID, name, exp, format)
 	q := url.Values{}
 	q.Set("exp", strconv.FormatInt(exp, 10))
 	q.Set("sig", sig)
+	if format == ExactValueFormat {
+		q.Set("vf", "2")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("/api/runs/%s/attachments/%s?%s",
 		url.PathEscape(runID),
 		url.PathEscape(name),
@@ -309,6 +359,10 @@ func (s *FilesystemRunStore) PresignAttachment(_ context.Context, runID, name st
 // the store's signing key. Returns true when the signature is valid
 // and the expiry has not passed.
 func (s *FilesystemRunStore) VerifyAttachmentSignature(runID, name, exp, sig string) bool {
+	return s.verifyAttachmentSignature(runID, name, exp, sig, LegacyValueFormat)
+}
+
+func (s *FilesystemRunStore) verifyAttachmentSignature(runID, name, exp, sig string, format ValueFormat) bool {
 	if exp == "" || sig == "" {
 		return false
 	}
@@ -332,15 +386,24 @@ func (s *FilesystemRunStore) VerifyAttachmentSignature(runID, name, exp, sig str
 	if err != nil {
 		return false
 	}
-	mac := hmac.New(sha256.New, key)
-	fmt.Fprintf(mac, "%s\n%s\n%d", runID, name, expN)
-	want := hex.EncodeToString(mac.Sum(nil))
+	want := attachmentSignature(key, runID, name, expN, format)
 	got, err := hex.DecodeString(sig)
 	if err != nil {
 		return false
 	}
 	wantBytes, _ := hex.DecodeString(want)
 	return hmac.Equal(got, wantBytes)
+}
+
+// attachmentSignature preserves the legacy plaintext byte-for-byte. The exact
+// domain includes the value format; stripping vf cannot produce a legacy MAC.
+func attachmentSignature(key []byte, runID, name string, exp int64, format ValueFormat) string {
+	mac := hmac.New(sha256.New, key)
+	fmt.Fprintf(mac, "%s\n%s\n%d", runID, name, exp)
+	if format == ExactValueFormat {
+		fmt.Fprint(mac, "\nvalue-format:2")
+	}
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // presignKey returns the per-store HMAC signing key. It is derived
@@ -377,28 +440,4 @@ func (s *FilesystemRunStore) presignKey() ([]byte, error) {
 	}
 	s.signingKey = buf
 	return s.signingKey, nil
-}
-
-// loadAttachmentMeta reads the on-disk meta sidecar for a single
-// attachment.
-func (s *FilesystemRunStore) loadAttachmentMeta(runID, name string) (AttachmentRecord, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return AttachmentRecord{}, err
-	}
-	if err := sanitizePathComponent("attachment name", name); err != nil {
-		return AttachmentRecord{}, err
-	}
-	dir := s.attachmentDir(runID, name)
-	data, err := os.ReadFile(filepath.Join(dir, attachmentMetaFilename))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return AttachmentRecord{}, ErrAttachmentNotFound
-		}
-		return AttachmentRecord{}, fmt.Errorf("store: read attachment meta: %w", err)
-	}
-	var rec AttachmentRecord
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return AttachmentRecord{}, fmt.Errorf("store: decode attachment meta: %w", err)
-	}
-	return rec, nil
 }

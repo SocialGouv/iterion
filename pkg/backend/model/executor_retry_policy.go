@@ -1,12 +1,12 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -91,7 +91,7 @@ func RetryPolicyFromEnv() RetryPolicy {
 // when unset, blank, non-numeric, or negative — the caller then keeps the
 // built-in default rather than treating a typo as "disable retries".
 func envRetryCount(key string) (int, bool) {
-	raw := strings.TrimSpace(os.Getenv(key))
+	raw := strings.TrimSpace(envGetenv(context.Background(), key))
 	if raw == "" {
 		return 0, false
 	}
@@ -213,9 +213,24 @@ type ErrNeedsInteraction struct {
 	// from system+user prompts. Backends that cannot persist conversation
 	// state (CLI: claude_code, codex) leave this nil.
 	Conversation json.RawMessage
+	// PermissionInput is the exact in-process gate input, not the UI marker.
+	PermissionInput json.RawMessage `json:"-"`
 	// PendingToolUseID is the ID of the tool_use block in Conversation
 	// that is awaiting an answer. Required when Conversation is non-nil.
 	PendingToolUseID string
+
+	// CommandNarrowing is the workspace-command narrowing the paused
+	// generation held (#1717): it checkpoints beside Conversation so the
+	// resumed generation re-pins the bound.
+	CommandNarrowing *delegate.CommandNarrowingState
+
+	// SessionStranded travels with Conversation when the crossing that
+	// captured it held none of its session's history (a relayed mirror
+	// gap, or a seed the sandbox channel refused). The runtime
+	// checkpoints it beside the conversation and hands it back on
+	// resume, so the resumed crossing's own captures stay out of the
+	// session store instead of replacing it (#2461).
+	SessionStranded bool
 
 	// SessionStateBlob is a packed CLI session (ADR-089). Transient: the
 	// runtime Puts it then drops the slice. Never logged or checkpointed.

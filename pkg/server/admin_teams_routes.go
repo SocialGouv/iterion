@@ -5,12 +5,17 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func (s *Server) registerAdminTeamRoutes() {
@@ -77,6 +82,48 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 			httpError(w, http.StatusConflict, "runner pool %q is already held by team %q (%s) — one team per pool; unmap that team first", pool, holder.Slug, holder.ID)
 			return
 		}
+		// The same invariant from the fork lane's side (ADR-162 Q3): an
+		// unmapped team's fork-lane config runs its untrusted runs on the
+		// pool it names, and the runner admits a stamped run on its pool
+		// alone. Mapping another team here would put that lane's queued,
+		// running and redelivered fork runs — their code and their team's
+		// sealed keys — on this team's sovereign pods, and refuse the lane's
+		// every next gesture. The config is immutable, so the remedy is to
+		// recreate it naming another pool before this mapping.
+		lanes, err := s.forkLanesNamingPool(r.Context(), teamID, pool)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if len(lanes) > 0 {
+			httpError(w, http.StatusConflict, "runner pool %q is the fork-lane pool of %s — that lane's untrusted runs execute there, and mapping team %s onto it would put them on its sovereign pods; recreate those fork-lane webhooks naming another pool first", pool, strings.Join(lanes, ", "), teamID)
+			return
+		}
+	}
+	// Force bypasses a known live-run answer only. Unknown state cannot be
+	// represented honestly in the boundary audit, so still refuses.
+	forceValue := r.URL.Query().Get("force")
+	if forceValue != "" && forceValue != "1" {
+		httpError(w, http.StatusBadRequest, "force must be 1 when explicitly requested")
+		return
+	}
+	forced := forceValue == "1"
+	aliveRuns := []string{}
+	if cur.RunnerPool != pool {
+		reader := store.AsTeamAliveRunsReader(s.cfg.Store)
+		if reader == nil {
+			httpError(w, http.StatusServiceUnavailable, "cannot verify team cutover: alive-run reader unavailable")
+			return
+		}
+		aliveRuns, err = reader.ListAliveRunsForTeam(store.WithTenant(r.Context(), teamID), teamID)
+		if err != nil {
+			httpError(w, http.StatusServiceUnavailable, "cannot verify team cutover: alive runs unreadable: %v", err)
+			return
+		}
+		if len(aliveRuns) > 0 && !forced {
+			httpError(w, http.StatusConflict, "team %q has %d alive runs %v: stop new launches and resumes, set the old dedicated pool draining, wait for these runs to end, then change the mapping (force=1 explicitly overrides this backstop)", teamID, len(aliveRuns), aliveRuns)
+			return
+		}
 	}
 	updated, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunnerPool: &pool})
 	if err != nil {
@@ -99,14 +146,52 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 	// org's own audit view, org mirror so the org admin sees the change that
 	// will refuse their resumes and launches.
 	s.auditTenant(r, teamID, "team.runner_pool_set", "team", teamID, map[string]any{
-		"runner_pool": pool, "previous": cur.RunnerPool,
+		"runner_pool": pool, "previous": cur.RunnerPool, "forced": forced, "alive_runs": aliveRuns,
 	})
 	if cur.OrgID != "" {
 		s.auditOrg(r, cur.OrgID, "team.runner_pool_set", "team", teamID, map[string]any{
-			"runner_pool": pool, "previous": cur.RunnerPool,
+			"runner_pool": pool, "previous": cur.RunnerPool, "forced": forced, "alive_runs": aliveRuns,
 		})
 	}
 	writeJSON(w, toTeamSummaryView(updated))
+}
+
+// forkLanesNamingPool lists, sorted, the fork-lane webhook configs of every
+// team but teamID whose runs execute on pool (webhooks.Config.ForkLanePool),
+// each rendered "webhook config <id> (team <id>)". Every team is walked, page
+// by page, and a disabled config counts: it can be re-enabled, and its pool
+// cannot be edited. No webhook store wired means no fork lane exists.
+func (s *Server) forkLanesNamingPool(ctx context.Context, teamID, pool string) ([]string, error) {
+	if s.webhookConfigs == nil || pool == "" {
+		return nil, nil
+	}
+	const pageSize = 1000
+	var lanes []string
+	for offset := 0; ; offset += pageSize {
+		teams, err := s.authStore().ListTeams(ctx, identity.Page{Offset: offset, Limit: pageSize})
+		if err != nil {
+			return nil, fmt.Errorf("list teams: %w", err)
+		}
+		for _, tm := range teams {
+			if tm.ID == teamID {
+				continue
+			}
+			cfgs, err := s.webhookConfigs.ListByTenant(ctx, tm.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list team %s's webhook configs: %w", tm.ID, err)
+			}
+			for _, c := range cfgs {
+				if c.ForkLane && c.ForkLanePool == pool {
+					lanes = append(lanes, fmt.Sprintf("webhook config %s (team %s)", c.ID, tm.ID))
+				}
+			}
+		}
+		if len(teams) < pageSize {
+			break
+		}
+	}
+	sort.Strings(lanes)
+	return lanes, nil
 }
 
 // handleAdminSetTeamLLMFallback sets (or resets) a team's credential-fallback
@@ -174,7 +259,7 @@ func (s *Server) handleAdminGetRunnerPools(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	writeJSON(w, rec)
+	writeJSON(w, runnerPoolRegistryView(rec))
 }
 
 // handleAdminPutRunnerPools replaces the registry WHOLESALE — entries are
@@ -202,5 +287,5 @@ func (s *Server) handleAdminPutRunnerPools(w http.ResponseWriter, r *http.Reques
 	s.auditPlatform(r, "", "platform.settings.runner_pools.updated", "platform_settings", platformcfg.FamilyRunnerPools, map[string]any{
 		"pools": len(rec.Pools),
 	})
-	writeJSON(w, rec)
+	writeJSON(w, runnerPoolRegistryView(&rec))
 }

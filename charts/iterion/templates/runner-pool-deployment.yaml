@@ -13,6 +13,36 @@
 {{- if not $gw.existingSecret }}
 {{- fail (printf "runnerPools[]: pool %s needs gateway.existingSecret (a manual k8s Secret carrying the gateway API key)" $pool.name) }}
 {{- end }}
+{{- /* The pool's sandbox (ADR-162 Q3): runnerPools[].sandbox.enabled, runner.sandbox.enabled when the pool does not spell it. Where it differs from the release-wide flag the pool renders its own literals over the shared ConfigMap's (literal env beats envFrom), so a pool can resolve the kubernetes sandbox for every run without moving every trusted `sandbox:` bot of the release into sibling pods, and a pool can opt out of a release-wide sandbox. */ -}}
+{{- $sandbox := include "iterion.poolSandbox" (dict "root" $ "pool" $pool) }}
+{{- $releaseSandbox := "" }}
+{{- if $.Values.runner.sandbox.enabled }}{{- $releaseSandbox = "true" }}{{- end }}
+{{- $ownSandbox := ne $sandbox $releaseSandbox }}
+{{- $poolEnv := $pool.env | default dict }}
+{{- if $ownSandbox }}
+{{- $owned := list "ITERION_SANDBOX_OVERRIDE" "ITERION_SANDBOX_HOST_STATE" }}
+{{- if $sandbox }}
+{{- /* The opted-in pool also owns the global-default tier: a bot declaring no `sandbox:` block (review-pr declares none) resolves through it, so a `none` there would run every such bot in-pod. */ -}}
+{{- $owned = append $owned "ITERION_SANDBOX_DEFAULT" }}
+{{- end }}
+{{- range $key := $owned }}
+{{- if hasKey $poolEnv $key }}
+{{- fail (printf "runnerPools[%s].env.%s conflicts with runnerPools[%s].sandbox.enabled, which decides it on this pool — drop the env entry" $pool.name $key $pool.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $sandbox (not $.Values.runner.sandbox.enabled) }}
+{{- /* Fail closed until ADR-154's pool shape (#2965) renders what a sandboxed pool needs beside the flag: its own ServiceAccount and Role, the pool label on its siblings, and its standing NetworkPolicy. */ -}}
+{{- if $.Values.serviceAccount.create }}
+{{- fail (printf "runnerPools[%s].sandbox.enabled: the pool would resolve the kubernetes sandbox where the release does not provision it, and the chart renders the sandbox Role only under runner.sandbox.enabled (runner-rbac.yaml) — the pool runs under the shared ServiceAccount %q, which then holds no grant, so every sandboxed run would fail at its first kubectl apply. The pool's own ServiceAccount and Role are ADR-154 decision 2 (#2965), not rendered yet. Leave the pool's sandbox off until it lands, or sandbox the whole release (runner.sandbox.enabled). The only interim this chart admits — serviceAccount.create=false with the sandbox driver's grants bound to the shared account by hand — hands those grants (every Secret of the namespace, pods/exec on any pod, NetworkPolicy create/delete) to EVERY pod of the release that mounts that account: docs/cloud-deployment.md § Sovereign runner pools says which, and what it costs" $pool.name (include "iterion.serviceAccountName" $)) }}
+{{- end }}
+{{- if not $.Values.serviceAccount.name }}
+{{- fail (printf "runnerPools[%s].sandbox.enabled with serviceAccount.create=false and no serviceAccount.name: the release's pods would run under the namespace's `default` ServiceAccount, so the sandbox driver's grants the interim binds by hand would reach EVERY pod of the namespace that names no account of its own, not only this release's — name the dedicated account those grants are bound to (serviceAccount.name), or leave the pool's sandbox off until #2965" $pool.name) }}
+{{- end }}
+{{- if $.Values.networkPolicy.enabled }}
+{{- fail (printf "runnerPools[%s].sandbox.enabled with networkPolicy.enabled: the release-wide NetworkPolicy selects this pool's runner pods and admits only the server and metrics ports, so a sandbox sibling cannot reach its runner's per-run egress proxy and every sandboxed run times out. The pool's standing policy that admits its own siblings is ADR-154 decision 3 (#2965), not rendered yet: set networkPolicy.enabled=false and bring the pool's policy yourself (docs/cloud-deployment.md § NetworkPolicy egress), or leave the pool's sandbox off" $pool.name) }}
+{{- end }}
+{{- end }}
 ---
 # One runner Deployment PER sovereign pool (plan v2 D10'): the pod is
 # pinned to the pool three ways — ITERION_RUNNER_POOL (the admission
@@ -62,6 +92,14 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "iterion.serviceAccountName" $ }}
+      {{- if and $ownSandbox (not $sandbox) }}
+      # runnerPools[].sandbox.enabled=false under a release-wide sandbox: this
+      # pool runs every job in its own pod, while the shared ServiceAccount is
+      # bound release-wide to the sandbox Role (runner-rbac.yaml). Nothing on
+      # it calls the API — the override disables the sandbox driver and its
+      # orphan reaper — so the pod mounts no token a run could read.
+      automountServiceAccountToken: false
+      {{- end }}
       {{- with $.Values.runner.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
@@ -76,11 +114,7 @@ spec:
       terminationGracePeriodSeconds: {{ $.Values.runner.terminationGracePeriodSeconds | default 90 }}
       containers:
         - name: iterion-runner
-          {{- if $pool.image }}
-          image: {{ $pool.image | quote }}
-          {{- else }}
-          image: {{ include "iterion.image" $ }}
-          {{- end }}
+          image: {{ include "iterion.runnerPoolImage" (dict "root" $ "pool" $pool) | quote }}
           imagePullPolicy: {{ $.Values.runner.imagePullPolicy | default $.Values.image.pullPolicy }}
           securityContext:
             {{- toYaml (default $.Values.containerSecurityContext $.Values.runner.containerSecurityContext) | nindent 12 }}
@@ -101,7 +135,7 @@ spec:
               value: {{ printf "ITERION_RUNS_POOL_%s" $pool.name | quote }}
             - name: ITERION_NATS_DLQ_STREAM
               value: {{ printf "ITERION_RUNS_POOL_%s_DLQ" $pool.name | quote }}
-            {{- if $.Values.runner.sandbox.enabled }}
+            {{- if $sandbox }}
             - name: ITERION_POD_IP
               valueFrom:
                 fieldRef:
@@ -144,6 +178,30 @@ spec:
               value: {{ .podReadyTimeout | quote }}
             {{- end }}
             {{- end }}
+            {{- if $ownSandbox }}
+            # runnerPools[].sandbox.enabled (ADR-162 Q3): this pool resolves
+            # the kubernetes sandbox where the release does not. Literal env
+            # beats the shared ConfigMap's envFrom: the empty override lifts
+            # the release's ITERION_SANDBOX_OVERRIDE=none on this pool alone,
+            # and host_state is pinned to none as runner.sandbox.enabled pins
+            # it release-wide (the driver has no host filesystem to bind).
+            - name: ITERION_SANDBOX_OVERRIDE
+              value: ""
+            - name: ITERION_SANDBOX_HOST_STATE
+              value: "none"
+            # The global-default tier too: a bot that declares no `sandbox:`
+            # block resolves through it, and the shared ConfigMap's
+            # config.extraEnv may set it to none for the rest of the release.
+            - name: ITERION_SANDBOX_DEFAULT
+              value: "auto"
+            {{- end }}
+            {{- else if $ownSandbox }}
+            # runnerPools[].sandbox.enabled=false: this pool opts out of the
+            # release's sandbox. The CLI-strength override neutralizes every
+            # bot-declared `sandbox:` block on this pool, as the ConfigMap
+            # does release-wide when runner.sandbox.enabled is off.
+            - name: ITERION_SANDBOX_OVERRIDE
+              value: "none"
             {{- end }}
             # The pool's gateway credential (P3's openai_compatible
             # escape hatch): the base URL is configuration, the API key
@@ -179,6 +237,10 @@ spec:
             {{- $pins := list }}
             {{- range $key, $value := $env }}
             {{- if ne $key "ITERION_BOT_VARS_ENV_PINS" }}
+            {{- if eq $key "ITERION_SANDBOX_DEFAULT_IMAGE" }}
+            {{- /* The pool's own `sandbox: auto` image overrides the ConfigMap's: same digest guard as the shared one. */ -}}
+            {{- $_ := include "iterion.pinnedImage" (dict "root" $ "field" (printf "runnerPools[%s].env.ITERION_SANDBOX_DEFAULT_IMAGE" $pool.name) "ref" (toString $value)) }}
+            {{- end }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- if regexMatch "^ITERION_[A-Z0-9_]+$" $key }}
@@ -250,11 +312,34 @@ spec:
         - name: run-iterion
           emptyDir:
             medium: Memory
-{{- if gt (int ($pool.replicas | default 1)) 1 }}
+      {{- /* The pool inherits the runner's placement knobs: nodeSelector and tolerations as wholes — a pool's own block, even empty, replaces the runner's (hasKey, not sprig default: default reads an empty block as absent, and a sovereign pool could never shed the fleet's selector or its tolerations); affinity and scheduling deep-merged key by key; the pool label joins the selector so each pool spreads its OWN replicas. */ -}}
+      {{- $nodeSelector := $.Values.runner.nodeSelector }}
+      {{- if hasKey $pool "nodeSelector" }}{{ $nodeSelector = $pool.nodeSelector }}{{ end }}
+      {{- with $nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $tolerations := $.Values.runner.tolerations }}
+      {{- if hasKey $pool "tolerations" }}{{ $tolerations = $pool.tolerations }}{{ end }}
+      {{- with $tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $scheduling := mergeOverwrite (deepCopy ($.Values.runner.scheduling | default dict)) (deepCopy ($pool.scheduling | default dict)) }}
+      {{- $affinity := mergeOverwrite (deepCopy ($.Values.runner.affinity | default dict)) (deepCopy ($pool.affinity | default dict)) }}
+      {{- with (include "iterion.scheduling" (dict "root" $ "component" "runner-pool" "extraLabels" (dict "iterion.io/runner-pool" $pool.name) "scheduling" $scheduling "affinity" $affinity)) }}
+      {{- . | trim | nindent 6 }}
+      {{- end }}
+{{- $pdb := mergeOverwrite (deepCopy ($.Values.runner.pdb | default dict)) (deepCopy ($pool.pdb | default dict)) }}
+{{- /* hasKey, not sprig default: default treats false as empty and a pool's `pdb: {enabled: false}` would be ignored. */ -}}
+{{- $pdbEnabled := "auto" }}
+{{- if hasKey $pdb "enabled" }}{{ $pdbEnabled = $pdb.enabled }}{{ end }}
+{{- if include "iterion.pdbWanted" (dict "enabled" $pdbEnabled "replicas" ($pool.replicas | default 1)) }}
 ---
-# A pool with more than one replica gets the same disruption budget as
-# the shared runner: a node drain must not evict every replica of a
-# team's pool at once.
+# A pool guaranteed more than one replica gets the same disruption budget
+# as the shared runner: a node drain must not evict every replica of a
+# team's pool at once. (pdb.enabled: auto never renders it on a single
+# replica, where it would block the drain instead.)
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -264,7 +349,7 @@ metadata:
     app.kubernetes.io/component: runner-pool
     iterion.io/runner-pool: {{ $pool.name }}
 spec:
-  minAvailable: 1
+  {{- include "iterion.pdbBudget" $pdb | nindent 2 }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" $ | nindent 6 }}

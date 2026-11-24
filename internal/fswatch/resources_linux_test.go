@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // childNoFile is the descriptor ceiling the child lowers itself to; small
@@ -72,12 +74,43 @@ func TestWatcherDescriptorExhaustionReportsActualProcessLimits(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$")
 	cmd.Env = append(os.Environ(), "ITERION_TEST_WATCHER_FD_CHILD=1")
-	out, err := cmd.CombinedOutput()
+	// The child's proof is the line it PRINTS, on stdout. Read through the
+	// combined stream, anything the environment writes on the child's
+	// stderr can stand in for that print and the parent reports a proof
+	// the child never gave.
+	out, stderr, err := proctest.SplitOutput(cmd)
 	if err != nil {
-		t.Fatalf("descriptor subprocess: %v\n%s", err, out)
+		t.Fatalf("descriptor subprocess: %v\nstdout: %s\nstderr: %q", err, out, stderr)
 	}
 	if !strings.Contains(string(out), watcherResourcesEvidence) {
-		t.Fatalf("the subprocess exited 0 without printing %q — it selected no test, so nothing was proven:\n%s", watcherResourcesEvidence, out)
+		t.Fatalf("the subprocess exited 0 without printing %q on stdout — it selected no test, so nothing was proven:\nstdout: %s\nstderr: %q", watcherResourcesEvidence, out, stderr)
+	}
+}
+
+// The negative twin of the parent's requirement above: the proof is the
+// line the child PRINTS on stdout, so a child whose only utterance of the
+// evidence is on stderr — the stream the environment talks on — must NOT
+// satisfy the parent. This is the witness that reddens if the parent-side
+// reader goes back to the combined stream, where anything the environment
+// writes on the child's stderr would stand in for the print.
+func TestWatcherDescriptorParentRefusesAChildThatOnlyTalksOnStderr(t *testing.T) {
+	if os.Getenv("ITERION_TEST_WATCHER_FD_CHILD_STDERR") == "1" {
+		fmt.Fprintln(os.Stderr, watcherResourcesEvidence+"stderr-only talker")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$")
+	cmd.Env = append(os.Environ(), "ITERION_TEST_WATCHER_FD_CHILD_STDERR=1")
+	out, stderr, err := proctest.SplitOutput(cmd)
+	if err != nil {
+		t.Fatalf("descriptor subprocess: %v\nstdout: %s\nstderr: %q", err, out, stderr)
+	}
+	if strings.Contains(string(out), watcherResourcesEvidence) {
+		t.Fatalf("the parent-side reader accepted a child whose only evidence was on stderr — the stream the environment talks on stood in for the child's print:\nstdout: %q", out)
+	}
+	if !strings.Contains(stderr, watcherResourcesEvidence) {
+		t.Fatalf("the child did not actually talk on stderr, so this witness proves nothing:\nstderr: %q", stderr)
 	}
 }
 

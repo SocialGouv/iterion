@@ -101,6 +101,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.AmbientContext = p.expectIdent()
 			p.skipNewlines()
 
+		case TokenCodemode:
+			// Both forms, the mode folded into the block — the
+			// parseCodemodeBlock reader consumes the keyword itself.
+			wd.Codemode = p.parseCodemodeBlock("workflow")
+			p.skipNewlines()
+
 		case TokenLoopBudgetGuard:
 			p.next() // consume "loop_budget_guard"
 			p.expect(TokenColon)
@@ -162,7 +168,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenCapabilities:
 			p.next() // consume "capabilities"
 			p.expect(TokenColon)
-			wd.Capabilities = p.parseToolList()
+			wd.Capabilities = p.parseDeclaredCapabilityList()
 			p.skipNewlines()
 
 		case TokenSkills:
@@ -180,6 +186,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 
 		case TokenComment:
 			p.next() // skip workflow-level comments
+			continue
 
 		default:
 			// Must be an edge: IDENT -> IDENT ... — unless a colon follows the
@@ -188,6 +195,16 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			// "expected ->", which is the edge parser's reading of it.
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
 				p.next()
+				if t.Value == "business_stores" && p.peek().Type == TokenColon {
+					declared := p.parseBusinessStoresBlock()
+					if wd.BusinessStores == nil {
+						wd.BusinessStores = declared
+					} else {
+						wd.BusinessStores = append(wd.BusinessStores, declared...)
+					}
+					p.recordProperty(&wd.Properties, t)
+					continue
+				}
 				if p.peek().Type == TokenColon {
 					p.unknownProperty("workflow", t, t.Value)
 					p.skipUnknownProperty() // a misspelt block header: its body is not a run of strays
@@ -199,7 +216,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 				p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in workflow")
 				p.next()
 			}
+			continue
 		}
+		p.recordProperty(&wd.Properties, t)
 	}
 	return wd
 }

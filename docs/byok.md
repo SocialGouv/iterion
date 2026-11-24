@@ -98,9 +98,9 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `tenant_id` | the tenant the row is stored under: the team, or a reserved sentinel — `orgtier:<org id>` for an org's shared keys, `platform:` for the deployment's. Every store read but `GetOwned` is tenant-filtered (fail-closed) |
 | `scope_team` | the team the key belongs to |
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
-| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` \| `moonshot` \| `openai_compatible` ([`Provider`](../pkg/secrets/byok.go)) — `openai_compatible` is a tenant-owned gateway (ADR-131): the record carries its base URL; until the walk learns the provider (#2005 PR-C') such a key is storable but never sealed into a run, and from then on a run holding the key spends it |
+| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` \| `moonshot` \| `openai_compatible` ([`Provider`](../pkg/secrets/byok.go)) — `openai_compatible` is a tenant-owned gateway (ADR-131): the record carries its base URL, and the credential walk seals the key with it for a run that may ride a gateway route (ADR-131 §5); a webhook pin on one is exclusive ([§6](#per-webhook-key-override)) |
 | `base_url` | gateway root of an `openai_compatible` key (https only, input and stored value each at most 2048 bytes; canonical at write: host lower-cased and in punycode, no default port, no trailing `/v1`, path of ASCII letters, digits and `-._~:@/`; literal non-public addresses, a host written as a number in any base, single-label hosts, reserved and container names — judged after the host is converted — whitespace, non-printable characters and percent-escapes refused; refused on every other provider — on update even blank, on create an empty value is the absent field); not secret, but the seal binds it: a row repointed in the store opens nowhere, and a `base_url` change through the API is a rotation — the secret is re-sent and sealed under the new URL; the stored secret is never re-sealed for a host its holder did not prove it for |
-| `repos` | repository audience: the forge's full path of one repository per entry (`owner/repo`, `group/sub/project`; lower-cased, `.git` dropped; a URL, a host, a glob, an empty or dot segment is refused — such an entry would silently fund nothing); empty admits every repository; checked in `Resolve` before the pin exemption, from the repository the launch stamps on the walk (`WithLaunchRepo`), and a launch that names no repository cannot spend a restricted key. **Where it stops:** the webhook lane, the HTTP repo-targeted launch, the trigger spine (`repo` of the event, asserted by its emitter), resume and fork name a repository; the scheduled, board and pipeline lanes do not yet (#2005 PR-R), so they never spend a restricted key, and a personal-source preview names none; a pledged key is served by the pledge's own rules, as for `bots`; the forfait tiers are not gated. A host prefix (`github.com/o/r`) is not told apart from a sub-group path and funds nothing until fixed — the preview shows it withheld. Operator intent, not an authorisation boundary: the generic webhook's caller asserts `project_path`, the trigger emitter asserts `repo` |
+| `repos` | repository audience: the forge's full path of one repository per entry (`owner/repo`, `group/sub/project`; lower-cased, `.git` dropped; a URL, a host, a glob, an empty or dot segment is refused — such an entry would silently fund nothing); empty admits every repository; checked in `Resolve` before the pin exemption, from the repository the launch stamps on the walk (`WithLaunchRepo`), and a launch that names no repository cannot spend a restricted key. **Where it stops:** the webhook lane, the HTTP repo-targeted launch, the trigger spine (`repo` of the event, asserted by its emitter), the board lane (the card's clone URL read against its integration's forge base), the scheduled lane (the bound integration's repository, else the slug of the schedule's `repo_url`), resume and fork name a repository; the pipeline lane does not (it deliberately applies neither the repository nor the pins of a webhook-materialised card, an open arbitration), so it never spends a restricted key, and a personal-source preview names none; a pledged key is served by the pledge's own rules, as for `bots`; the forfait tiers are not gated. A host prefix (`github.com/o/r`) is not told apart from a sub-group path and funds nothing until fixed — the preview shows it withheld. Operator intent, not an authorisation boundary: the generic webhook's caller asserts `project_path`, the trigger emitter asserts `repo` |
 | `name` | human label |
 | `last4` / `fingerprint` | shown in UI; the key itself is never returned. `fingerprint` is `APIKeyFingerprint(provider, plaintext, base_url)` — `sha256(plaintext)[:8]` for every vendor key, the base URL folded in for a gateway key (one token on two gateways is two identities) — the audit identity the run document, the GRANTED log line and the metering bump all key on; indexed (sparse) by `EnsureSchema` |
 | `sealed_secret` | the ciphertext (`SealAPIKeyFor(sealer, key, plaintext)` — AAD = the id, plus the base URL for a gateway key); JSON-hidden (`json:"-"`) |
@@ -108,7 +108,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends. **Scope follows the key's tier**: a tenant's own key is bumped under the run's tenant only, so a different tenant that stored the byte-identical secret never reads its own key as "in use" (the studio shows this field as exactly that, before a rotate or delete); a platform-tier or pool-lent key (`RunBundle.PlatformSourced` / `PoolSourced`) is bumped across tenants, because its row lives under the platform sentinel or in the donor's tenant and it serves every tenant |
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
 | `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
-| `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
+| `max_concurrent_runs` | optional **hard** cap on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. Enforced by an atomic per-key reservation at launch and at every resume; a full key **parks** a launch (`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes) instead of refusing it. What counts, and how the cap is enforced, is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
 | `bots` | optional **workload audience**: the bot ids whose runs may draw on this key. Empty admits every bot. See [Workload audience](#workload-audience--what-a-key-is-for) |
 | `expires_at` | optional |
 
@@ -124,12 +124,131 @@ events, artifacts, or returned by the API.
 
 ## Concurrency ceiling — what counts
 
-`max_concurrent_runs` is enforced at resolution
-(`cloudpublisher.apiKeyUsable`): a key at its ceiling is passed over like a
-refused one and the walk hands the next key of that provider over (or the
-next tier). The count is `CountAliveRunsWithCredFingerprint` on the run
-store — both twins, one conformance row — and a run counts against a key
-only when **all three** hold:
+`max_concurrent_runs` is enforced in two halves, and only the second one is
+the cap:
+
+- **The walk chooses.** At resolution (`cloudpublisher.apiKeyUsable`) a key
+  at its ceiling is passed over like a refused one and the walk hands the
+  next key of that provider over (or the next tier). The count is
+  `CountAliveRunsWithCredFingerprint` on the run store — both twins, one
+  conformance row. This half is advisory by construction: it reads the run
+  documents before this run is written (two publisher replicas admit on the
+  same reading), a `key_overrides` pin bypasses it, and the refused-key
+  restore undoes it on purpose.
+- **The admission enforces.** After the key is chosen and before anything
+  is persisted or published, the publisher reserves one slot per capped key
+  the run's stamp names on the **credential-slot ledger**
+  (`store.CredSlotStore`: Mongo collection `cred_slots`, one row per
+  fingerprint — or per shared capacity subject, a gateway's `gw:<host>`
+  (ADR-167) — listing the runs that hold a slot; an in-memory twin on the
+  filesystem store). The reservation is one conditional write — add the run
+  while the row has room — so of N concurrent admissions on a key with K
+  free slots exactly K succeed, whatever replica each ran on. A pinned key,
+  a restored key and a resumed run all pass through it; a resumed run's own
+  slot is admitted again in place, without taking a second one, while the
+  row is within the cap — **lower `max_concurrent_runs`** below the runs
+  holding the key and none of them is re-admitted (a paused one's resume
+  waits like a newcomer's) until enough of the others stop spending; two of
+  them resuming at the same instant can each count the other, queued, and
+  both be put back once — the next ask evicts the one put back. A key
+  lent through the [credential pool](credential-pool.md) is admitted on the
+  same row by the borrower's launch — the grant carries the donor key's
+  cap, so one ledger governs the key whoever runs on it; the pledge's own
+  `max_concurrent_runs` is the donor's lending dial on top. A store error
+  refuses the launch, never admits it.
+
+A **full key parks the run instead of refusing it**: the row is written
+`failed_resumable` under `CRED_SLOT_WAIT` with a durable retry armed
+(`retry_state.reason = cred_slot`), and the retry sweeper asks for a slot
+again every `cloudpublisher.CredSlotProbeInterval` (2 min) — free of
+attempts, since no ask reaches the provider — until a slot frees or the
+run's `max_wait` passes, at which point the run is abandoned naming the
+bound and the instant it is measured from. A run armed for a usage window
+whose resume finds its key full is deferred the same way, and its row is
+re-tagged `cred_slot` in that write: it waits for a slot now, and nothing
+reads it as the provider wall it no longer waits on. `max_wait` bounds the
+**whole** park, measured from its paid arming (`retry_state.scheduled_at`):
+such a row keeps the wall's anchor and the slot wait spends what is left of
+the same horizon, the way a circuit deferral does. A webhook delivery has
+nobody to click again; a parked run keeps its inputs and its pull request's
+pending check. An operator's `resume` of a parked run while the key is
+still full answers 429 and leaves the run parked. The launch API answers
+such a park with `status: failed_resumable` (never `running` or `queued`);
+the run's `failure_code` says `CRED_SLOT_WAIT`.
+
+**A parked run keeps no place in line.** The ledger has no order: a slot
+frees when an admission's reconcile evicts a holder whose run stopped
+spending, and that same admission takes it — whoever asks first after a run
+ends. A parked run asks only every probe interval, so on a key under steady
+load a fresher launch can take the slot it waited for, every time, until its
+`max_wait` abandons it with the bound named. The levers are the operator's:
+raise `max_concurrent_runs`, or give the provider another key the walk can
+choose.
+
+**Every resume asks the ledger; only the sweeper parks.** A resume that
+finds a key full is refused before anything is published and the run is put
+back as it was — a parked run keeps its armed retry, a paused one stays
+paused — with `cloudpublisher.ErrCredentialAtCapacity` for its caller.
+Asking again is the caller's: the retry sweeper defers the parked run for
+free; the automations that keep a retry of their own wait on it — the run
+watch re-delivers its episode, the workspace hand-off backs off, and an
+assistant mission puts the refused activation, action resume or result
+delivery back to prepared and asks again one probe interval out
+(`wait_until` on the receipt), spending none of its action budget, up to its
+TTL; an operator is answered 429 with `error_code: credential_at_capacity` —
+on `resume`, `answer-human`, an async answer's auto-resume and a host event
+alike — and the WebSocket answer fails with that code. A pool entry the run
+needs that exists but is busy now (another run holds its slot, its day's runs
+or the attachment's draw cap are spent, its window cools) is the same wait:
+the publisher's refusal unwraps to `ErrCredentialAtCapacity` (a launch
+refused on one is answered 429 with the same code) when such entries alone
+keep the run from starting, and stays the 422 `NO_LLM_CREDENTIAL` refusal
+otherwise. Under `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, where one funded
+provider starts the run, one such entry for any provider the refusal names is
+enough. Under a `team_gateway` boundary every provider it names must have one
+— a provider nothing holds keeps the refusal unfunded — and two providers only
+the legacy pool's busy entries hold are no wait: that pool lends one
+credential per run. `llm_fallback: none` consults no pool, so its refusal
+never waits. An entry that would refuse the launch once free — its pledge
+serving another bot, its credential gone or expired, its lent row's audiences
+excluding the launch — holds nothing for it.
+
+The ledger never becomes a second truth. A holder is free when its run
+stops counting under the two rules below, and a refusal re-reads the row's
+holders against their run documents before it is final
+(`store.CredSlotHolderStale`), evicting the ones that no longer spend the
+key and retrying the admission once. The eviction names the exact entry it
+judged, and every admission moves its holder's instant forward, so a run
+resumed on another replica between the judgment and the eviction keeps its
+slot. A holder whose run document does not exist yet keeps its slot for
+`store.CredSlotGrace` (a launch reserves before it persists); a deleted run
+is pulled from every row at once, on both stores. The other way round, a
+run whose document spends the key holds a slot whether or not the row names
+it: every admission first **adopts** those runs — alive before the ledger
+existed, launched while the key had no cap, or stripped of their entry by
+an undo another admission of the run outran — outside the cap, as the fact
+they are. **Setting `max_concurrent_runs` on a key in use** therefore counts
+the runs already on it at the first admission: a key with three runs alive
+and a new cap of two refuses (parks) every newcomer — pinned, restored or
+chosen — until two of the three end. No admission adopts a resume whose own
+admission has not decided: a resume claims its run (the flip to `queued`,
+which marks it `cred_admission_pending`) before it resolves and asks, and
+until its admission decides — the publisher then settles the mark — or its
+rollback clears it, the run is that admission's to decide. Two parked runs
+resumed together on a freed slot therefore queue one and put the other
+back, rather than each counting the other and both waiting on a key nobody
+holds. The mark is read on a queued run only: a run a runner claimed counts
+whatever it says. The one explicit release is the undo of a launch or a
+resume that **provably** never handed the run on — no row persisted, or a
+rollback that ended or reverted the row it wrote — and it names the entry
+its own admission wrote, like the eviction: a resume of the same run that
+re-admitted it before that undo ran keeps its slot. A publish can report
+an error after its message landed: the slot then stays, the rollback leaves
+a row a runner already claimed to that runner, and the reconcile frees the
+slot once the run stops spending. Because the reconcile reads the stamp, a
+resume that reserves a capped key is refused when its re-stamp fails: a run
+whose document does not name the key it holds would be evicted while it
+executes. A run counts against a key only when **both** hold:
 
 1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
    A parked or paused run spends nothing while it waits, and its resume
@@ -142,17 +261,27 @@ only when **all three** hold:
    whose every node pins `provider: anthropic` executes on the forfait and
    holds no slot on the z.ai facade key it also carries. A run with an
    unpinned or unresolvable route keeps every fingerprint (it takes
-   whatever the process holds — fail open toward protection).
-3. **It is not model-idle.** The runner sets `run.llm_idle_since` the moment
-   the run's last model-calling node finishes and clears it the moment one
-   starts (concurrent branches are counted, not flipped), so a
-   sixty-minute tool-only verify gate between two agent passes holds a slot
-   for nobody. A run counts from claim until it proves idle, and every
-   re-stamp starts it over. Explicit toggles, not a lease: a pod that dies
-   mid-node leaves a run the orphan sweeper parks, and rule 1 releases it.
+   whatever the process holds — fail open toward protection). A sealed
+   gateway key (`openai_compatible`) is always counted: the walk seals it
+   only for a run that may ride a gateway route, including a runner-pool
+   run whose `${DIAL:-…}` routes the pod expands.
+**Model-idle is not a release.** The runner sets `run.llm_idle_since` the
+moment the run's last model-calling node finishes and clears it the moment
+one starts (concurrent branches are counted, not flipped; every re-stamp
+clears it), so a run sitting in a sixty-minute tool-only verify gate between
+two agent passes reads as idle on its views — but it keeps its slot. A slot
+lent out there would have no path back: nothing in the runner can wait for
+the ledger when the next model node starts, so a cap that released it would
+admit one run past the cap on every wake, and a cap of one would ping-pong
+two runs through a park and a fresh pod at each hand-off. Under the hard
+cap the gate's slot stays taken, and a launch on that key parks until the
+run ends; raising `max_concurrent_runs` is the operator's lever. Explicit
+toggles, not a lease: a pod that dies mid-node leaves a run the orphan
+sweeper parks, and rule 1 releases it.
 
 Everything uncertain counts (over-protection), never the reverse: a count
-error leaves the ceiling unapplied for that resolution and is logged.
+error leaves the walk's skip unapplied for that resolution and is logged —
+the admission still decides, and it fails closed.
 
 ## Workload audience — what a key is FOR
 
@@ -167,10 +296,11 @@ funded yesterday. Same asymmetry, and same reason, as
 
 Three properties decide where it is enforced, and they are the whole design:
 
-1. **It is a gate, not a ceiling.** `max_concurrent_runs` rides
+1. **It is a gate, not a ceiling.** The walk's ceiling skip rides
    `apiKeyUsable`, whose refusals the refused-key restore deliberately undoes
-   — progress beats a soft cap. An audience must survive that path, so it is
-   checked inside `secrets.Resolve` itself.
+   — the cap itself is enforced after the walk, by the slot admission, which
+   parks. An audience must survive that path, so it is checked inside
+   `secrets.Resolve` itself.
 2. **A pin does not lift it.** `key_overrides` is honoured over the
    usable-predicate by design; the audience is read *before* that exemption,
    or "pin the key" would be the documented way around it.
@@ -263,15 +393,25 @@ the stored id on the document (a startup scrub is the doctrinal answer and
 does not exist yet).
 
 **The practical consequence, before you scope a key.** A launch that names no
-bot is refused by any non-empty audience — and the studio's main launch form
-uploads the bundle's bytes as inline `source` without a `bot_id`
-(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`), so that is the
-designed shape of a studio launch. Scoping a key makes it invisible to those
-launches, whatever bot they run, and the wire is filled by the org tier, the
-pool or the platform key instead. Scope keys on teams whose runs are launched
-by `bot_id` — webhooks, triggers, schedules, and the CLI's `--bot` form (a
-CLI file launch names no bot: the CLI refuses `--bot` beside a workflow
-file, so its file runs are unnamed work on the server too).
+bot is refused by any non-empty audience. In cloud the studio launches a bot
+BY NAME — its page's Launch and Test, `/runs/new?bot=<slug>`, the editor's Run
+on a bot's entry file: the form reads the program the server resolves
+(`GET /api/v1/bots/{name}/launch-source`) and posts `bot_id` beside
+`expect_source_sha256`, the identity that read issued, and no source — so the
+run is that bot, and the server refuses the launch (`409 bot_source_changed`)
+if the program changed under the form: its entry, its fragments, its prompts
+and the files they include, its preset files. A child bot's program and the
+skills are outside that identity
+([the pinned launch](cloud-rest-api.md#the-pinned-launch) lists both sides). Two studio launches still name no bot, by
+design: a `?file=` launch and the editor's unsaved buffer, which upload their
+text as inline `source`
+(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`). Scoping a key
+makes it invisible to those, whatever they run, and the wire is filled by the
+org tier, the pool or the platform key instead. Scope keys on teams whose runs
+are launched by `bot_id` — webhooks, triggers, schedules, the studio's named
+launch, and the CLI's `--bot` form (a CLI file launch names no bot: the CLI
+refuses `--bot` beside a workflow file, so its file runs are unnamed work on
+the server too).
 
 An audience narrows WHICH key serves, never whether the walk continues: the
 next key of that provider, then the next tier, still get their turn.
@@ -290,28 +430,35 @@ its OWN key has the vocabulary the donor already had.
 
 **Where it stops, said plainly.** `bots` governs the walk in `secrets.Resolve`
 — the team, org and platform **API-key** tiers, and every one of their restore
-lanes. Two things it does not reach:
+lanes — and every key a pool or the fallback door lends (below). One thing it
+does not reach:
 
 - **OAuth forfaits.** The field lives on `secrets.ApiKey`; the tenant, team, org
   and platform *forfait* tiers open `OAuthRecord`s and are not gated. A team
   funded by a Claude Code subscription gets nothing from this feature — on the
   same anthropic wire it believes it just restricted. An `OAuthRecord` twin is
   the real answer and is a separate change.
-- **A key PLEDGED to the credential pool.** The pool opens a lent key through
-  `GetOwned`, outside this walk, and applies the pledge's own `Bots`. So a
-  personal key scoped to one bot and then pledged is served to whatever the
-  PLEDGE admits. Which audience should win — or whether they should intersect,
-  as `IntersectHosts` does for egress — is an open decision; until it is taken,
-  set the audience on the pledge as well as on the key.
+
+**A key PLEDGED to a pool keeps its audiences — they intersect.** The broker
+opens a lent key outside this walk and applies the pledge's own `Bots`; the
+publisher then holds every lent-key grant — the legacy pool's, an attached
+pool's entry (a gateway entry included) and the fallback door's — to the key
+row's own `bots` and `repos` (`cloudpublisher.acquireLent`, reading the row
+the pledge lends through `credpool.Broker.LentKeyRow`). A grant they refuse is
+released, nothing is sealed, and the broker serves no second pledge for that
+want on that launch; the credential preview shows the candidate
+`bot_filtered` or `repo_filtered`. Both audiences must admit the launch.
 
 **A withheld key is announced, never silent.** Narrowing an audience does not
 stop the excluded run: it walks down to the next key, the org tier, the pool,
 the platform key, and finally the runner pod's ambient env. The bill moves, and
 possibly the vendor. So the publisher logs each withholding once per run, naming
 the key, the audience that refused (bot or repository: the cause travels with
-the withheld key, `secrets.AudienceRefusal`) and what it refused — and a **pin** the audience refuses
+the withheld key, `secrets.AudienceRefusal`) and what it refused — and a vendor **pin** the audience refuses
 gets its own line, because a pin does not lift an audience and losing silently
-is the failure `warnRefusedPins` exists to prevent.
+is the failure `warnRefusedPins` exists to prevent. A gateway pin the audience
+refuses does not walk down at all: the launch is refused by name
+([exclusive](#per-webhook-key-override), ADR-131 §6).
 
 **Where to read it**, precisely, because "the acquisition trace" means two
 surfaces and neither is the run's own event log:
@@ -429,8 +576,159 @@ mechanism; the wiring threads a webhook's pinned keys through to it:
 3. Set via the webhook create/PATCH API — `key_overrides` on
    `webhookConfigReq`. `validateKeyOverrides` rejects a `key_id` from
    another tenant or the wrong provider at config time (the resolver is
-   already tenant-scoped, so this is a fail-fast UX guard, not the
-   security boundary).
+   already tenant-scoped, so that arm is a fail-fast UX guard, not the
+   security boundary). It also rejects a key the lane could never spend —
+   a USER-scoped key, invisible to the synthetic `webhook:<id>` actor the
+   delivery fires under (`secrets.SpendableBy`, the predicate the
+   resolution walk itself applies). That arm is not UX: an unspendable pin
+   produces no refusal anywhere downstream, so the write is the only place
+   it can be said.
+
+The trigger subscription routes write the sibling home for keys:
+`key_overrides` on `POST /api/v1/triggers` / `PUT /api/v1/triggers/{id}`
+lands on `trigger.Subscription.KeyOverrides`, which the evaluator and
+scheduler lanes already thread into the launch plan. The write validates
+against `trigger-spine` — the synthetic actor the spine resolves under —
+through the same `validateKeyOverrides`, so every arm above answers the
+subscription lane identically. On update, a request that omits the field
+keeps the stored pin; an empty map is the explicit clear. Who may pin is the
+webhook lane's answer too: a team admin. The trigger routes' member rung
+admits automation work, and a pin is a credential decision — so a create
+that pins, and any edit but `enabled` of a subscription that holds a pin
+(the pins, or the bot, repo, vars, match or cadence the pinned credential is
+spent on), takes `canManageTeam`
+([REST surface](cloud-rest-api.md#triggers-event-driven-runs)).
+
+A cloud schedule is the third home: `key_overrides` on
+`POST /api/teams/{id}/schedules` and `PATCH /api/teams/{id}/schedules/{sid}`
+(team admin, like every schedule write) lands on
+`cloudsched.ScheduledBot.KeyOverrides`. The write validates through the
+same `validateKeyOverrides`, against `scheduler:<bot_id>` — the identity
+the schedule's tick resolves credentials under: it judges the pin's
+visibility (the team's key, of that provider, visible to that identity),
+not the key's `bots` and `repos` audiences, which the tick judges. On a
+PATCH, an absent field
+keeps the stored pins, `null` or `{}` clears them, an object replaces them,
+and an edit echoing the stored pins back writes and judges nothing. At the
+tick, a schedule bound to a repo integration inherits that integration's
+pins, read live from its webhook config under a tenant check (an
+integration naming a config that cannot be read, or one of another team,
+refuses the tick); the schedule's own pins win over them provider by
+provider. A slot held by maintenance and replayed launches with the
+schedule's current pins, not the ones its slot snapshotted. That is how two
+gateway keys of one team serving the same bot and repository split between
+schedules: each group of schedules pins its key.
+
+**A pin does not outlive its subject.** Deleting a pinned api key or stored
+secret sweeps every pin that names it — webhook configs and trigger
+subscriptions of the same tenant — at the delete route, instead of leaving
+a pin that resolves to nothing (the resolver drops an unresolvable pin id
+in silence and the walk seals the team's default, exactly the replacement
+the write-time guards refuse). The forge orchestrator's own deletions run
+the same sweep: the managed secrets it mints (a project bot's token, a
+connection's token) are team-scoped and pinnable by any webhook or
+subscription of the tenant, and the store the server hands it sweeps on
+delete — a deprovision or a disconnect clears those pins too, and a
+sweep it cannot finish fails the deprovision until a retry does.
+Revocation never waits on a config edit:
+the delete's audit line lists the `pins_cleared` surfaces, and a launch
+after the sweep falls back exactly as an explicit clear would. The sweep
+judges each row as the store holds it at write time — a pin edit or a
+second delete's sweep landing mid-sweep survives untouched, and a swept
+pin cannot resurrect: no writer can re-pin a deleted record (the
+write-time guards refuse it), and each real removal bumps the row's
+version — a full-document edit whose read predates the sweep conflicts
+(409 on the trigger PUT, the webhook config's CAS twin) and re-reads the
+swept row instead of writing the dead pin back. The version cannot reach
+a row BORN mid-delete — a write whose pin validated while the record
+still lived and lands after the sweep's listing, which therefore never
+sees it — and the write routes close that half themselves: every
+pin-landing write (both lanes' create and edit) re-checks the records its
+landed pins name, and one already revoked sweeps immediately under the
+same detached context as the delete's sweep. The two provision writes
+that land pins without validating them re-check what they name once
+their row is stored and clear a revoked one from it: a re-provision
+migrating a repo to a new hook identity carries the operator's pins from
+the old config onto a row the old config's version does not guard, and a
+failed provision's undo restores settings read before its own write at
+the version that write reached — a sweep that passed the row while the
+write did not name the record bumped nothing. The webhook routes carry that
+receipt in their audit line (`pins_cleared`); the trigger routes, which
+audit nothing today, log it. A re-check the store refuses splits by what a
+retry can mend: an edit answers 5xx — the edit is stored, nothing one-time
+is lost, and the retry lands on the same row and runs the re-check again
+over every pin the row holds, sweeping a record found revoked; re-validation
+is no part of that mend, since an edit validates only the pin maps its
+request names and the studio's trigger editor and toggle send none; a
+create answers 201 with the row and
+`pins_unreconciled`, the record ids it could not vouch for, the cause in
+the server log under the row id — the row is already stored under a fresh
+id, a retry of a 5xx would mint a second one, and a webhook's token exists
+only in that one answer. The sweep
+runs detached from the request: a
+client hanging up mid-sweep must not cancel the clear half-way. A sweep the
+store refuses answers 5xx — the client body stays opaque, the logged cause
+names both halves: the deletion that happened and the pins still standing
+— and the delete's RETRY finishes the sweep before its 404: revocation is
+the irreversible half, so "not found" is exactly the shape of an
+interrupted sweep, and the retry is the reconciliation path; a retry whose
+right to sweep the identity store cannot judge (an outage, not a refusal)
+answers 5xx too, never a 404 over pins that may still stand. One stored
+shape the sweep's targeted writes cannot address at all is a pin name
+holding `.` or `$`, or empty (possible on rows written before the name
+guard, when the validator checked the tenant alone): the
+Mongo clears rewrite that pin map's subdocument under a version CAS
+instead of `unset`-ing a path that would match nothing, so a legacy name
+cannot leave a dead pin standing behind a silent 204 either.
+
+A schedule's own pins are the exception, deliberately: the sweep does not
+visit schedule rows, whose store replaces the whole row on an edit and
+whose integration rebuild recreates it, with no version to fence either —
+a swept pin could be written back unseen. The tick judges them instead
+(`judgeScheduleKeyPins`), by the write's own rule and by the key's
+audiences: its `bots` must admit the bot the tick launches (read as the
+walk reads it, botregistry-normalised) and its `repos` the repository the
+tick names — the two fields the key `PATCH` can still narrow, and a pin
+does not lift an audience, so for a vendor provider the walk would spend
+the team's next key. A pin whose key was deleted, or no longer passes
+either judgment, refuses the tick by name — the schedule's `last_error`
+names the provider and the key — and no other key is spent in its place
+until the operator repins or clears it or widens the key. A schedule bound to an
+integration reads that integration's pins live from the webhook config the
+sweep does clear.
+
+**A pin is honoured or refused, never ignored.** One shape would be
+honoured by nobody: a key the launching identity cannot see (a user-scoped
+key under a machine lane's synthetic actor). It is refused where it is
+WRITTEN, because it leaves no trace downstream — `Resolve` reports the keys
+it withholds, and an invisible key never becomes a candidate to withhold.
+
+**A pin on a gateway key is exclusive** (ADR-131 §6). The write admits an
+`openai_compatible` key like any key of the team; at the walk, the gateway
+slot of a run that may ride a gateway route holds the very key the pin
+names, or the launch — or the resume — is refused by name
+(`cloudpublisher.GatewayPinRefusedError`: the key id and why — deleted,
+withheld by its bot or repository audience, invisible to the launch's
+identity, undecryptable, or held out by the run's providers allowlist or
+frozen pair order; on a resume, the pin is named as the run's own, frozen
+at its launch, and the remedy is a relaunch — editing the webhook never
+reaches a running run, and deleting the key already cleared the webhook's
+pin; a fork child's names its parent, and a second fork as the remedy
+when the key no longer exists — a key that exists is inherited again). A
+fork copies the parent's pins but drops one whose key no longer exists,
+named in the fork's notes — the sweep's rule: a swept pin is the explicit
+clear. Nothing else pays those routes in its place: not the
+team's other gateway key, not a shared tier's or an attached pool's, not the
+runner pod's environment. One chokepoint decides it after the tier walk
+(`gatewayPinRefusal`), reading what the walk sealed, so the env-funded run —
+whose walk consults no tier once the pinned key is out of sight — is held to
+it too. A run that rides no gateway route leaves the pin idle. A vendor pin
+keeps its warn-only contract (`warnRefusedPins`): a withheld or dropped one
+is said, and the run spends the walk's next key. The rule holds wherever a
+pin reaches the walk — the webhook lane, the trigger spine, the scheduled
+lane (a schedule's own pin, or its integration's read live at the tick) and
+a resume; the board lane's card carries a frozen copy of its integration's
+pins (#3240).
 
 **A pin bypasses the refusal skip, and says so.** The evidence predicate is
 consulted in Pass 2 only: an operator who names a key gets that key, even
@@ -518,11 +816,11 @@ token, all repos" without crossing the tenant boundary.
 - **Proper model:** each org enters its keys via `POST /api/teams/{id}/api-keys`
   (sealed into Mongo, per-tenant). The publisher then resolves *that org's*
   keys per run.
-- **Bootstrap shortcut (what ovh-dev used first):** the `iterion-llm`
-  sealed Secret holds `ANTHROPIC_API_KEY` + `OPENAI_API_KEY` as pod env —
-  a single instance-wide fallback. Fine to start, but it is **not**
-  multi-tenant; once orgs bring their own keys it should shrink to (or be
-  removed in favour of) the per-org store. Reseal/rotate playbook for the
+- **Bootstrap shortcut (what the ovh-dev development cluster used first):**
+  the `iterion-llm` sealed Secret holds `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`
+  as pod env — a single instance-wide fallback. Fine to start, but it is
+  **not** multi-tenant; once orgs bring their own keys it should shrink to (or
+  be removed in favour of) the per-org store. Reseal/rotate playbook for the
   fallback lives in the k8s-deploy notes.
 
 ## Security invariants

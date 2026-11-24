@@ -58,7 +58,7 @@ export function GitHubAppLogoHint({
               Open the App&apos;s settings ↗
             </a>
           ) : (
-            <span className="text-fg-subtle">
+            <span className="text-fg-muted">
               GitHub → Settings → Developer settings → GitHub Apps → this App.
             </span>
           )}

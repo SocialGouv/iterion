@@ -321,6 +321,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/llm/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/llm/pool-attachment */
+        get: operations["getAdminLlmPoolAttachment"];
+        /** PUT /api/admin/llm/pool-attachment */
+        put: operations["putAdminLlmPoolAttachment"];
+        post?: never;
+        /** DELETE /api/admin/llm/pool-attachment */
+        delete: operations["deleteAdminLlmPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/llm/pools */
+        get: operations["getAdminLlmPools"];
+        put?: never;
+        /** POST /api/admin/llm/pools */
+        post: operations["postAdminLlmPools"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/pools/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/admin/llm/pools/sync
+         * @description Super-admin only. Runs one pool-signal-sync sweep inline (the onboarding proof).
+         */
+        post: operations["postAdminLlmPoolsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/orgs": {
         parameters: {
             query?: never;
@@ -436,6 +493,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/price-feeds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/admin/price-feeds
+         * @description Super-admin only. The platform's feed list, folded below every org and team.
+         */
+        get: operations["getAdminPriceFeeds"];
+        /**
+         * PUT /api/admin/price-feeds
+         * @description Super-admin only. Body {"feeds": [feed, ...] | null, "expected_updated_at": RFC3339 (optional CAS)}: the list replaces the platform's feed list, null clears it; audited as platform.price_feeds.updated.
+         */
+        put: operations["putAdminPriceFeeds"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/price-feeds/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/admin/price-feeds/sync
+         * @description Super-admin only. Forces one platform feed's refresh (name) or every enabled one's, answering what changed per id.
+         */
+        post: operations["postAdminPriceFeedsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/runner-pools": {
         parameters: {
             query?: never;
@@ -447,6 +548,26 @@ export interface paths {
         get: operations["getAdminRunnerPools"];
         /** PUT /api/admin/runner-pools */
         put: operations["putAdminRunnerPools"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/admin/runs
+         * @description Every org's runs in one super-admin view. Filters combine (org_id, team_id, status, since). Paginated server-side across orgs: pass the previous page's next_cursor back as cursor; an absent next_cursor is the last page.
+         */
+        get: operations["getAdminRuns"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -692,6 +813,28 @@ export interface paths {
         head?: never;
         /** PATCH /api/admin/users/{id} */
         patch: operations["patchAdminUsersById"];
+        trace?: never;
+    };
+    "/api/admin/users/{id}/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/admin/users/{id}/erase
+         * @description Erase an account by anonymization (GDPR art. 17): the row keeps its id under an erased-<id>@erased.invalid marker with status `erased`; name, password, GitHub orgs, SSO links, memberships, pending invitations, sessions, personal access tokens and push subscriptions go; the audit rows naming the account lose their IP, user agent and address (the invitation rows addressed to it lose the address); the account's personal org is scheduled for the nightly purge. Idempotent: a second call answers 200 with already_erased. Refused on the caller's own account (422 self_erasure) and when the account is the last owner of a shared org (409 last_org_owner).
+         */
+        post: operations["postAdminUsersByIdErase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/admin/users/{id}/reset-password": {
@@ -1291,6 +1434,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/legal/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/legal/{slug}
+         * @description Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.
+         */
+        get: operations["getLegalBySlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/local/skills": {
         parameters: {
             query?: never;
@@ -1532,6 +1697,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/pool/entries/{pledge}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/me/pool/entries/{pledge} */
+        delete: operations["deleteMePoolEntriesByPledge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/pool/history": {
         parameters: {
             query?: never;
@@ -1565,6 +1749,24 @@ export interface paths {
         post?: never;
         /** DELETE /api/me/pool/{source}/{ref} */
         delete: operations["deleteMePoolBySourceByRef"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/me/pools */
+        get: operations["getMePools"];
+        put?: never;
+        /** POST /api/me/pools */
+        post: operations["postMePools"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2156,6 +2358,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orgs/{id}/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/pool-attachment */
+        get: operations["getOrgsByIdPoolAttachment"];
+        /** PUT /api/orgs/{id}/pool-attachment */
+        put: operations["putOrgsByIdPoolAttachment"];
+        post?: never;
+        /** DELETE /api/orgs/{id}/pool-attachment */
+        delete: operations["deleteOrgsByIdPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/pools */
+        get: operations["getOrgsByIdPools"];
+        put?: never;
+        /** POST /api/orgs/{id}/pools */
+        post: operations["postOrgsByIdPools"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/price-feeds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/price-feeds */
+        get: operations["getOrgsByIdPriceFeeds"];
+        /**
+         * PUT /api/orgs/{id}/price-feeds
+         * @description Org-admin only. Body {"feeds": [feed, ...] | null, "expected_updated_at": RFC3339 (optional CAS)}: the list replaces the org's feed list, null clears it.
+         */
+        put: operations["putOrgsByIdPriceFeeds"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/price-feeds/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/orgs/{id}/price-feeds/sync
+         * @description Org-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.
+         */
+        post: operations["postOrgsByIdPriceFeedsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/orgs/{id}/provision-approvals": {
         parameters: {
             query?: never;
@@ -2446,6 +2734,111 @@ export interface paths {
         put?: never;
         /** POST /api/parse */
         post: operations["postParse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/pools/{id} */
+        put: operations["putPoolsById"];
+        post?: never;
+        /** DELETE /api/pools/{id} */
+        delete: operations["deletePoolsById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/pools/{id}/entries */
+        get: operations["getPoolsByIdEntries"];
+        /** PUT /api/pools/{id}/entries */
+        put: operations["putPoolsByIdEntries"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/pools/{id}/entries/import
+         * @description Pool-manager only. Seals a subscription credentials blob verbatim under the pool's lender key and pledges it; a shape with no funding lane answers inert with a named reason.
+         */
+        post: operations["postPoolsByIdEntriesImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries/{pledge}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/pools/{id}/entries/{pledge} */
+        delete: operations["deletePoolsByIdEntriesByPledge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries/{pledge}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/pools/{id}/entries/{pledge}/reset
+         * @description Pool-manager only. Clears the provider cooldown, forgets the stale readings the margin skip acted on, resets held state.
+         */
+        post: operations["postPoolsByIdEntriesByPledgeReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4137,7 +4530,10 @@ export interface paths {
         /** GET /api/teams/{id}/bots/{bot_id}/bindings */
         get: operations["getTeamsByIdBotsByBotIdBindings"];
         put?: never;
-        /** POST /api/teams/{id}/bots/{bot_id}/bindings */
+        /**
+         * POST /api/teams/{id}/bots/{bot_id}/bindings
+         * @description Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.
+         */
         post: operations["postTeamsByIdBotsByBotIdBindings"];
         delete?: never;
         options?: never;
@@ -4159,12 +4555,60 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id} */
+        /**
+         * DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}
+         * @description Delete a binding. 204 on success.
+         */
         delete: operations["deleteTeamsByIdBotsByBotIdBindingsByBindingId"];
         options?: never;
         head?: never;
-        /** PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id} */
+        /**
+         * PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}
+         * @description Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.
+         */
         patch: operations["patchTeamsByIdBotsByBotIdBindingsByBindingId"];
+        trace?: never;
+    };
+    "/api/teams/{id}/bots/{bot}/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/bots/{bot}/pool-attachment */
+        get: operations["getTeamsByIdBotsByBotPoolAttachment"];
+        /** PUT /api/teams/{id}/bots/{bot}/pool-attachment */
+        put: operations["putTeamsByIdBotsByBotPoolAttachment"];
+        post?: never;
+        /** DELETE /api/teams/{id}/bots/{bot}/pool-attachment */
+        delete: operations["deleteTeamsByIdBotsByBotPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/bots/{name}/triggers/from-invocation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/bots/{name}/triggers/from-invocation */
+        post: operations["postTeamsByIdBotsByNameTriggersFromInvocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/teams/{id}/config-editor/shares": {
@@ -4328,6 +4772,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/connections */
+        get: operations["getTeamsByIdConnections"];
+        put?: never;
+        /** POST /api/teams/{id}/connections */
+        post: operations["postTeamsByIdConnections"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/connections/{conn_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/connections/{conn_id} */
+        get: operations["getTeamsByIdConnectionsByConnId"];
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id}/connections/{conn_id} */
+        delete: operations["deleteTeamsByIdConnectionsByConnId"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/connections/{conn_id} */
+        patch: operations["patchTeamsByIdConnectionsByConnId"];
+        trace?: never;
+    };
     "/api/teams/{id}/credentials/preview": {
         parameters: {
             query?: never;
@@ -4441,6 +4927,26 @@ export interface paths {
         get: operations["getTeamsByIdForgeConnectionsByConnIdHealth"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/forge/connections/{conn_id}/reauthorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/forge/connections/{conn_id}/reauthorize */
+        post: operations["postTeamsByIdForgeConnectionsByConnIdReauthorize"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4620,6 +5126,65 @@ export interface paths {
         put?: never;
         /** POST /api/teams/{id}/forge/repos */
         post: operations["postTeamsByIdForgeRepos"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/intakes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/intakes */
+        get: operations["getTeamsByIdIntakes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/intakes/{sub}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/intakes/{sub} */
+        get: operations["getTeamsByIdIntakesBySub"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/intakes/{sub}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/intakes/{sub}/replay */
+        post: operations["postTeamsByIdIntakesBySubReplay"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4827,6 +5392,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/pairs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/pairs */
+        get: operations["getTeamsByIdPairs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/pairs/{sub}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/pairs/{sub}/replay */
+        post: operations["postTeamsByIdPairsBySubReplay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/plugin-sources": {
         parameters: {
             query?: never;
@@ -4888,6 +5492,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/pool-attachment */
+        get: operations["getTeamsByIdPoolAttachment"];
+        /** PUT /api/teams/{id}/pool-attachment */
+        put: operations["putTeamsByIdPoolAttachment"];
+        post?: never;
+        /** DELETE /api/teams/{id}/pool-attachment */
+        delete: operations["deleteTeamsByIdPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/price-feeds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/price-feeds */
+        get: operations["getTeamsByIdPriceFeeds"];
+        /**
+         * PUT /api/teams/{id}/price-feeds
+         * @description Team-admin only. Body {"feeds": [feed, ...] | null, "expected_updated_at": RFC3339 (optional CAS)}: the list replaces the team's feed list, null clears it.
+         */
+        put: operations["putTeamsByIdPriceFeeds"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/price-feeds/effective": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/teams/{id}/price-feeds/effective
+         * @description Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.
+         */
+        get: operations["getTeamsByIdPriceFeedsEffective"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/price-feeds/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/teams/{id}/price-feeds/sync
+         * @description Team-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.
+         */
+        post: operations["postTeamsByIdPriceFeedsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/provision-approvals": {
         parameters: {
             query?: never;
@@ -4920,6 +5612,25 @@ export interface paths {
         get: operations["getTeamsByIdRoutingPolicy"];
         /** PUT /api/teams/{id}/routing-policy */
         put: operations["putTeamsByIdRoutingPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/run-visibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/teams/{id}/run-visibility */
+        put: operations["putTeamsByIdRunVisibility"];
         post?: never;
         delete?: never;
         options?: never;
@@ -4968,6 +5679,25 @@ export interface paths {
         patch: operations["patchTeamsByIdSecretsBySecretId"];
         trace?: never;
     };
+    "/api/teams/{id}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/sources */
+        get: operations["getTeamsByIdSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/status": {
         parameters: {
             query?: never;
@@ -4982,6 +5712,67 @@ export interface paths {
         /** POST /api/teams/{id}/status */
         post: operations["postTeamsByIdStatus"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/triggers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/triggers */
+        get: operations["getTeamsByIdTriggers"];
+        put?: never;
+        /** POST /api/teams/{id}/triggers */
+        post: operations["postTeamsByIdTriggers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/triggers/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/triggers/preview */
+        post: operations["postTeamsByIdTriggersPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/triggers/{sub}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/triggers/{sub} */
+        get: operations["getTeamsByIdTriggersBySub"];
+        /** PUT /api/teams/{id}/triggers/{sub} */
+        put: operations["putTeamsByIdTriggersBySub"];
+        post?: never;
+        /** DELETE /api/teams/{id}/triggers/{sub} */
+        delete: operations["deleteTeamsByIdTriggersBySub"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5328,6 +6119,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{name}/launch-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/bots/{name}/launch-source
+         * @description The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/<name>.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.
+         */
+        get: operations["getV1BotsByNameLaunchSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/{name}/overlay": {
         parameters: {
             query?: never;
@@ -5360,6 +6173,80 @@ export interface paths {
         put?: never;
         /** POST /api/v1/bots/{name}/triggers/from-invocation */
         post: operations["postV1BotsByNameTriggersFromInvocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{id}/icon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/connectors/{id}/icon */
+        get: operations["getV1ConnectorsByIdIcon"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/intakes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/intakes */
+        get: operations["getV1Intakes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/intakes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/intakes/{id} */
+        get: operations["getV1IntakesById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/intakes/{id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/intakes/{id}/replay */
+        post: operations["postV1IntakesByIdReplay"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5577,6 +6464,42 @@ export interface paths {
         get: operations["getV1NativeIssuesByIdDependencyGraph"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/pairs */
+        get: operations["getV1Pairs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairs/{id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pairs/{id}/replay */
+        post: operations["postV1PairsByIdReplay"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5986,6 +6909,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/sources */
+        get: operations["getV1Sources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/triggers": {
         parameters: {
             query?: never;
@@ -6038,6 +6978,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/triggers/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/triggers/preview */
+        post: operations["postV1TriggersPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/triggers/{id}": {
         parameters: {
             query?: never;
@@ -6070,6 +7027,25 @@ export interface paths {
         put?: never;
         /** POST /api/validate */
         post: operations["postValidate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhooks/c/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/webhooks/c/{id} */
+        post: operations["postWebhooksCById"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6250,6 +7226,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Accessibility: {
+            date?: string;
+            rate?: string;
+            status?: string;
+        };
         AdmissionDecision: {
             /** Format: date-time */
             checked_at: string;
@@ -6267,6 +7248,12 @@ export interface components {
             unverified?: boolean;
             value_from_revision?: boolean;
             version: number;
+        };
+        Audience: {
+            all_teams?: boolean;
+            contributors?: boolean;
+            orgs?: string[];
+            teams?: string[];
         };
         AuthMeResponse: {
             active_org_id?: string;
@@ -6290,6 +7277,7 @@ export interface components {
         BackendStatus: {
             auth: string;
             available: boolean;
+            binary_found?: boolean;
             hints?: string[];
             name: string;
             sources: string[];
@@ -6357,6 +7345,24 @@ export interface components {
             updated_at: string;
             updated_by?: string;
         };
+        BotSecretBinding: {
+            allowed_hosts?: string[];
+            bot_id: string;
+            context?: components["schemas"]["ContextSource"];
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            degraded_at?: string;
+            degraded_reason?: string;
+            id: string;
+            kind?: string;
+            secret_id: string;
+            secret_name_for_workflow: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
         BotVars: {
             /** Format: date-time */
             updated_at: string;
@@ -6394,6 +7400,9 @@ export interface components {
                 [key: string]: {
                     [key: string]: number;
                 };
+            };
+            loop_budget_sizes?: {
+                [key: string]: number;
             };
             loop_counters?: {
                 [key: string]: number;
@@ -6455,12 +7464,17 @@ export interface components {
             };
             artifacts_known?: boolean;
             /** Format: byte */
+            backend_command_narrowing?: string;
+            /** Format: byte */
             backend_conversation?: string;
             backend_name?: string;
             backend_pending_tool_use_id?: string;
+            /** Format: byte */
+            backend_permission_input?: string;
             backend_session_fingerprint?: string;
             backend_session_id?: string;
             backend_session_state_ref?: string;
+            backend_session_stranded?: boolean;
             budget_cost_usd?: number;
             budget_elapsed_ns?: number;
             budget_iterations_used?: number;
@@ -6468,6 +7482,7 @@ export interface components {
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
             budget_unreported_calls?: number;
+            correction_accounting?: components["schemas"]["CorrectionAccounting"];
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {
@@ -6484,6 +7499,9 @@ export interface components {
                 };
             };
             loop_budget_marks_v?: number;
+            loop_budget_sizes?: {
+                [key: string]: number;
+            };
             loop_counters: {
                 [key: string]: number;
             };
@@ -6502,6 +7520,9 @@ export interface components {
                     [key: string]: number;
                 };
             };
+            node_failure_streaks?: {
+                [key: string]: components["schemas"]["NodeFailureStreak"];
+            };
             node_id: string;
             node_sessions?: {
                 [key: string]: components["schemas"]["NodeSessionSlot"];
@@ -6514,6 +7535,7 @@ export interface components {
             parallel?: components["schemas"]["ParallelCheckpoint"];
             recovery_code?: string;
             recovery_pause?: boolean;
+            resume_pause_cost_readings?: components["schemas"]["ResumePauseCostReading"][];
             round_robin_counters?: {
                 [key: string]: number;
             };
@@ -6528,6 +7550,18 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        CodemodeBoundsRequest: {
+            concurrent_tool_calls?: number;
+            cpu?: string;
+            memory?: number;
+            result_bytes?: number;
+            script_bytes?: number;
+            store_bytes?: number;
+            store_entries?: number;
+            tool_calls?: number;
+            tool_result_bytes?: number;
+            wall?: string;
+        };
         Comment: {
             author?: string;
             body: string;
@@ -6535,50 +7569,39 @@ export interface components {
             created_at: string;
             id: string;
         };
-        Connection: {
-            /** Format: date-time */
-            access_token_expires_at?: string;
-            account_id?: string;
-            account_kind?: string;
-            account_login?: string;
-            app_slug?: string;
-            /** Format: date-time */
-            avatar_applied_at?: string;
-            avatar_error?: string;
-            bot_identity?: string;
-            /** Format: date-time */
-            created_at: string;
-            created_by: string;
-            display_name?: string;
-            forge_base_url?: string;
-            granted_permissions?: {
-                [key: string]: string;
-            };
-            id: string;
-            installation_account?: string;
-            installation_id?: number;
-            kind: string;
-            /** Format: date-time */
-            last_refreshed_at?: string;
-            namespace?: string;
-            oauth_app_id?: string;
-            provider: string;
-            purpose?: string;
-            scopes?: string[];
-            security_read_enabled?: boolean;
-            status: string;
-            status_reason?: string;
-            tenant_id: string;
-            /** Format: date-time */
-            updated_at: string;
-            webhook_base_url?: string;
-        };
         ContextRef: {
             id: string;
             kind: string;
             namespace?: string;
             required?: boolean;
             revision?: string;
+        };
+        ContextSource: {
+            git_url: string;
+            path: string;
+            ref: string;
+            secret_id?: string;
+        };
+        CorrectionAccounting: {
+            daily_marks?: {
+                [key: string]: number;
+            };
+            daily_scope_cost_usd?: {
+                [key: string]: number;
+            };
+            iteration_marks?: {
+                [key: string]: boolean;
+            };
+            unpriced_marks?: {
+                [key: string]: number;
+            };
+            unpriced_node_marks?: {
+                [key: string]: boolean;
+            };
+            usage_marks?: {
+                [key: string]: components["schemas"]["OutputCorrectionUsage"];
+            };
+            version: number;
         };
         CredentialPreview: {
             candidates: components["schemas"]["CredentialPreviewCandidate"][];
@@ -6629,9 +7652,15 @@ export interface components {
         };
         CredentialPreviewRequest: {
             bot_id?: string;
+            codemode?: string;
+            codemode_bounds?: components["schemas"]["CodemodeBoundsRequest"];
             llm_routing?: components["schemas"]["Policy"];
             permission?: string;
+            review_mode?: string;
             source: components["schemas"]["CredentialPreviewSource"];
+            vars?: {
+                [key: string]: string;
+            };
         };
         CredentialPreviewSource: {
             id?: string;
@@ -6709,6 +7738,14 @@ export interface components {
             status: string;
             version: number;
         };
+        DrawLimits: {
+            max_runs_per_day?: number;
+            max_usd_per_day?: number;
+        };
+        EffortsEntry: {
+            feed: string;
+            values: string[];
+        };
         Entry: {
             backends?: string[];
             context_window: number;
@@ -6721,15 +7758,20 @@ export interface components {
             price_known: boolean;
             provider: string;
             reachability: string;
-            reasoning: boolean;
+            reasoning?: boolean;
             recommended?: boolean;
             source: string;
             spec: string;
-            temperature: boolean;
-            tool_call: boolean;
+            temperature?: boolean;
+            tool_call?: boolean;
             ultracode_capable: boolean;
             unusable_reason?: string;
             usable: boolean;
+        };
+        EntryChange: {
+            id: string;
+            new?: components["schemas"]["Spec"];
+            old?: components["schemas"]["Spec"];
         };
         ExecutionContext: {
             business_stores?: components["schemas"]["ContextRef"][];
@@ -6788,6 +7830,54 @@ export interface components {
             served_by?: string;
             skipped?: boolean;
         };
+        FeedConfig: {
+            enabled: boolean;
+            interval: number;
+            name: string;
+            params?: {
+                [key: string]: string;
+            };
+            timeout: number;
+            type: string;
+        };
+        ForgeConnection: {
+            /** Format: date-time */
+            access_token_expires_at?: string;
+            account_id?: string;
+            account_kind?: string;
+            account_login?: string;
+            app_slug?: string;
+            /** Format: date-time */
+            avatar_applied_at?: string;
+            avatar_error?: string;
+            bot_identity?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            display_name?: string;
+            forge_base_url?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
+            id: string;
+            installation_account?: string;
+            installation_id?: number;
+            kind: string;
+            /** Format: date-time */
+            last_refreshed_at?: string;
+            namespace?: string;
+            oauth_app_id?: string;
+            provider: string;
+            purpose?: string;
+            scopes?: string[];
+            security_read_enabled?: boolean;
+            status: string;
+            status_reason?: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+            webhook_base_url?: string;
+        };
         ForgeOAuthApp: {
             app_manage_url?: string;
             app_slug?: string;
@@ -6835,6 +7925,15 @@ export interface components {
             reason: string;
             spec: string;
         };
+        InvocationUsageRoute: {
+            backend?: string;
+            provider?: string;
+            reported_model?: string;
+            requested_model?: string;
+            scope: string;
+            session_fingerprint?: string;
+            session_id?: string;
+        };
         Issue: {
             assignee?: string;
             awaiting_input?: boolean;
@@ -6861,7 +7960,12 @@ export interface components {
             gave_up?: components["schemas"]["GiveUp"];
             id: string;
             labels?: string[];
+            /** Format: date-time */
+            last_run_at?: string;
+            last_run_error?: string;
+            last_run_error_code?: string;
             last_run_id?: string;
+            last_run_status?: string;
             last_workdir?: string;
             launch_refusal?: components["schemas"]["LaunchRefusal"];
             parent_id?: string;
@@ -6883,10 +7987,24 @@ export interface components {
             /** Format: date-time */
             not_before?: string;
         };
+        Limits: {
+            max_concurrent_runs?: number;
+            max_runs_per_day?: number;
+            max_usd_per_day?: number;
+            max_usd_per_week?: number;
+        };
         LineageContext: {
             parent_node_id?: string;
             parent_run_id?: string;
             root_run_id?: string;
+        };
+        Literal: {
+            bool_val?: boolean;
+            float_val?: number;
+            int_val?: number;
+            kind?: string;
+            raw?: string;
+            str_val?: string;
         };
         Maintenance: {
             fence_launches: boolean;
@@ -6895,12 +8013,25 @@ export interface components {
             updated_at: string;
             updated_by?: string;
         };
+        Matcher: {
+            actions?: string[];
+            authors?: string[];
+            kinds?: string[];
+            labels?: string[];
+            repos?: string[];
+            sources?: string[];
+            subject_states?: string[];
+        };
         MembershipView: {
             personal?: boolean;
             role: string;
             team_id: string;
             team_name: string;
             team_slug: string;
+        };
+        NodeFailureStreak: {
+            count: number;
+            fingerprint: string;
         };
         NodeServed: {
             backend: string;
@@ -6909,6 +8040,7 @@ export interface components {
             fingerprint?: string;
             max_output_tokens?: number;
             model?: string;
+            provider?: string;
         };
         NodeSessionSlot: {
             backend: string;
@@ -6924,25 +8056,65 @@ export interface components {
             org_slug: string;
             personal?: boolean;
             teams: components["schemas"]["MembershipView"][];
+            unavailable?: boolean;
+        };
+        OutputCorrectionCause: {
+            kind: string;
+            node_id?: string;
+            provider?: string;
+            /** Format: date-time */
+            reset_at?: string;
+            self_imposed?: boolean;
+            timeout_nanos?: number;
+            version: number;
+            window_kind?: string;
         };
         OutputCorrectionEpisode: {
             attempts?: number;
             budget?: number;
+            cause?: components["schemas"]["OutputCorrectionCause"];
             episode_id?: string;
+            generation?: string;
             input_fingerprint?: string;
             invocation_id?: string;
             last_error?: string;
             last_output_fingerprint?: string;
             last_violation_fingerprint?: string;
+            ledger_key?: string;
             node_id?: string;
+            reservations?: components["schemas"]["OutputCorrectionReservation"][];
             /** Format: date-time */
             retired_at?: string;
             retired_reason?: string;
+            revision?: number;
             /** Format: date-time */
             started_at?: string;
             status?: string;
+            terminal_kind?: string;
             /** Format: date-time */
             updated_at?: string;
+            usage?: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReceipt: {
+            observation?: components["schemas"]["UsageObservation"];
+            projection?: components["schemas"]["UsageProjection"];
+            usage: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReservation: {
+            execution_epoch: string;
+            id: string;
+            initial_usage_id?: string;
+            logical_invocation_id?: string;
+            origin?: components["schemas"]["UsageOrigin"];
+            receipt?: components["schemas"]["OutputCorrectionReceipt"];
+            scope_key: string;
+            /** Format: date-time */
+            started_at: string;
+        };
+        OutputCorrectionUsage: {
+            cost_usd?: number;
+            tokens?: number;
+            unreported_calls?: number;
         };
         Override: {
             backend?: string;
@@ -7102,6 +8274,41 @@ export interface components {
             strict?: boolean;
             triggers?: string[];
         };
+        PreEngineRefusal: {
+            code: string;
+            hint?: string;
+            message: string;
+            /** Format: date-time */
+            observed_at: string;
+            phase: string;
+            /** Format: date-time */
+            published_at?: string;
+            /** Format: date-time */
+            queued_at?: string;
+        };
+        Preset: {
+            description?: string;
+            display_name?: string;
+            name?: string;
+            prompt?: string;
+            skills?: string[];
+            values?: components["schemas"]["PresetValue"][];
+        };
+        PresetValue: {
+            key?: string;
+            value?: components["schemas"]["Literal"];
+        };
+        PresetsBlock: {
+            entries?: components["schemas"]["Preset"][];
+        };
+        PricefeedEntry: {
+            declared?: boolean;
+            feed: string;
+            fresh_for: number;
+            /** Format: date-time */
+            refreshed_at: string;
+            spec: components["schemas"]["Spec"];
+        };
         ProjectSyncConflict: {
             /** Format: date-time */
             at?: string;
@@ -7131,6 +8338,16 @@ export interface components {
             preference_order: string[];
             providers: components["schemas"]["ProviderStatus"][];
             resolved_default: string;
+        };
+        ReportedEconomicSession: {
+            backend: string;
+            fingerprint?: string;
+            session_id: string;
+        };
+        ResumePauseCostReading: {
+            backend: string;
+            session: string;
+            usd: number;
         };
         RoutingPolicy: {
             allowed_actions?: string[];
@@ -7164,6 +8381,7 @@ export interface components {
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
             bank_state?: string;
+            birth_id: string;
             bot_source_tenant?: string;
             bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
@@ -7217,6 +8435,7 @@ export interface components {
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
+            pre_engine_refusal?: components["schemas"]["PreEngineRefusal"];
             project_path?: string;
             queue_position?: number;
             rewindable?: boolean;
@@ -7291,14 +8510,18 @@ export interface components {
             executions: components["schemas"]["ExecutionState"][];
             last_seq: number;
             run: components["schemas"]["RunHeader"];
+            viewer?: components["schemas"]["RunViewer"];
         };
         RunSource: {
             client_id?: string;
             conversation_id?: string;
+            delivery_id?: string;
+            intake_id?: string;
             issue_id?: string;
             issue_identifier?: string;
             issue_title?: string;
             kind?: string;
+            pair_id?: string;
             schedule_id?: string;
             schedule_name?: string;
         };
@@ -7306,6 +8529,7 @@ export interface components {
             active: boolean;
             auto_merge?: boolean;
             bank_state?: string;
+            birth_id: string;
             bundle_display_name?: string;
             bundle_name?: string;
             /** Format: date-time */
@@ -7327,28 +8551,41 @@ export interface components {
             name?: string;
             parent_node_id?: string;
             parent_run_id?: string;
+            pre_engine_refusal?: components["schemas"]["PreEngineRefusal"];
             project_path?: string;
             queue_position?: number;
             repo_root?: string;
             /** Format: date-time */
             retry_after?: string;
             retry_attempts?: number;
+            runner_pool?: string;
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
             source?: components["schemas"]["RunSource"];
             source_kind?: string;
             status: string;
+            team_id?: string;
             /** Format: date-time */
             updated_at: string;
             work_dir?: string;
             workflow_name: string;
+        };
+        RunViewer: {
+            role: string;
+            via?: string;
         };
         Sandbox: {
             default_image?: string;
             /** Format: date-time */
             updated_at: string;
             updated_by?: string;
+        };
+        SessionCostObservation: {
+            backend: string;
+            cost_usd: number;
+            fingerprint?: string;
+            session_id: string;
         };
         SessionLedgerEntry: {
             session_id: string;
@@ -7361,9 +8598,110 @@ export interface components {
             updated_by?: string;
             week_pct?: number;
         };
+        Spec: {
+            cache_read_cost_per_m?: number;
+            context_window?: number;
+            input_cost_per_m?: number;
+            max_output_tokens?: number;
+            output_cost_per_m?: number;
+            reasoning?: boolean;
+            reasoning_efforts?: string[];
+            temperature?: boolean;
+            tool_call?: boolean;
+        };
         StatusMapping: {
             state: string;
             status: string;
+        };
+        Strategy: {
+            margin_pct?: number;
+            mode?: string;
+            reset_hold?: boolean;
+            triggers?: string[];
+        };
+        Subscription: {
+            args_var?: string;
+            backfill?: number;
+            backfill_done?: boolean;
+            bot_id: string;
+            connection_id?: string;
+            connector_key?: string;
+            consume_labels?: boolean;
+            /** Format: date-time */
+            created_at: string;
+            created_by?: string;
+            cron?: string;
+            enabled: boolean;
+            filters?: {
+                [key: string]: string[];
+            };
+            guard?: string;
+            guard_timeout?: string;
+            guard_var?: string;
+            id: string;
+            interval_seconds?: number;
+            invocation: string;
+            key_overrides?: {
+                [key: string]: string;
+            };
+            last_error?: string;
+            /** Format: date-time */
+            last_error_at?: string;
+            /** Format: date-time */
+            last_run_at?: string;
+            last_run_error?: string;
+            last_run_error_code?: string;
+            last_run_id?: string;
+            last_run_status?: string;
+            match: components["schemas"]["Matcher"];
+            max_concurrent?: number;
+            mode?: string;
+            no_live_run?: string;
+            origin?: string;
+            overlap?: string;
+            poll_query?: {
+                [key: string]: string;
+            };
+            poller?: string;
+            poller_since?: number;
+            repo?: string;
+            retry_jitter?: string;
+            retry_max_attempts?: number;
+            retry_max_wait?: string;
+            retry_usage_window?: string;
+            routing?: components["schemas"]["Policy"];
+            secret_overrides?: {
+                [key: string]: string;
+            };
+            stale_after?: string;
+            tenant_id?: string;
+            trigger_id?: string;
+            /** Format: date-time */
+            updated_at: string;
+            var_map?: {
+                [key: string]: string;
+            };
+            vars?: {
+                [key: string]: string;
+            };
+            when?: string;
+        };
+        SyncOutcome: {
+            changes?: components["schemas"]["EntryChange"][];
+            error?: string;
+            feed: string;
+            fresh_for?: number;
+            /** Format: date-time */
+            refreshed_at?: string;
+            status: string;
+        };
+        Table: {
+            efforts?: {
+                [key: string]: components["schemas"]["EffortsEntry"];
+            };
+            entries: {
+                [key: string]: components["schemas"]["PricefeedEntry"];
+            };
         };
         Token: {
             /** Format: date-time */
@@ -7380,6 +8718,67 @@ export interface components {
             team_id?: string;
             token_last4: string;
             user_id: string;
+        };
+        UsageComponent: {
+            call_id?: string;
+            cost_kind: string;
+            cost_known: boolean;
+            cost_usd: number;
+            ordinal: number;
+            outcome?: string;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            source: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens: number;
+            unpriced_tokens: number;
+            unreported_calls: number;
+        };
+        UsageObservation: {
+            collection_id?: string;
+            components?: components["schemas"]["UsageComponent"][];
+            count_iteration?: boolean;
+            other_cost_usd?: number;
+            sessions?: components["schemas"]["SessionCostObservation"][];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+            version: number;
+        };
+        UsageOrigin: {
+            org_id?: string;
+            pool_grantless?: boolean;
+            publication: string;
+            run_id: string;
+            tenant_id: string;
+            version: number;
+        };
+        UsageProjection: {
+            collection_id: string;
+            lines: components["schemas"]["UsageProjectionLine"][];
+            version: number;
+        };
+        UsageProjectionLine: {
+            call_id?: string;
+            cost_known: boolean;
+            cost_usd: number;
+            kind: string;
+            ordinal?: number;
+            previous_max_usd?: number;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            session?: components["schemas"]["SessionCostObservation"];
+            source?: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+        };
+        UsageTokenSplit: {
+            cache_read: number;
+            cache_write: number;
+            input: number;
+            output: number;
         };
         UserView: {
             created_at?: string;
@@ -7410,6 +8809,12 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
             watcher_id?: string;
+        };
+        Window: {
+            end_hour: number;
+            start_hour: number;
+            timezone?: string;
+            weekdays?: number[];
         };
         WireEdge: {
             condition?: string;
@@ -7468,12 +8873,56 @@ export interface components {
             mode?: string;
             workspace_id?: string;
         };
+        adminEraseUserResponse: {
+            already_erased: boolean;
+            api_keys_removed: number;
+            audit_events_scrubbed: number;
+            config_share_deliveries_scrubbed: number;
+            invitations_removed: number;
+            memberships_removed: number;
+            oauth_credentials_removed: number;
+            org_memberships_removed: number;
+            personal_access_tokens_revoked: number;
+            personal_orgs_marked_for_purge?: string[];
+            pool_pledges_removed: number;
+            push_subscriptions_removed: number;
+            run_notes_reattributed: number;
+            secrets_removed: number;
+            sessions_deleted: number;
+            sso_links_removed: number;
+            user: components["schemas"]["UserView"];
+        };
         adminForgeOAuthAppReq: {
             client_id: string;
             client_secret: string;
             forge_base_url?: string;
             provider: string;
             webhook_base_url?: string;
+        };
+        adminRunRow: {
+            bundle_name?: string;
+            /** Format: date-time */
+            created_at: string;
+            error?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            name?: string;
+            org_id?: string;
+            org_name?: string;
+            project_path?: string;
+            runner_pool?: string;
+            source_kind?: string;
+            status: string;
+            team_id?: string;
+            team_name?: string;
+            /** Format: date-time */
+            updated_at: string;
+            workflow_name: string;
+        };
+        adminRunsResponse: {
+            next_cursor?: string;
+            runs: components["schemas"]["adminRunRow"][];
         };
         adminUpdateUserReq: {
             is_super_admin?: boolean;
@@ -7536,6 +8985,16 @@ export interface components {
             repos: string[];
             scope_user_id?: string;
         };
+        attachmentView: {
+            attached: boolean;
+            enabled: boolean;
+            limits: components["schemas"]["DrawLimits"];
+            pool_id: string;
+            scope_id: string;
+            strategy: components["schemas"]["Strategy"];
+            /** Format: date-time */
+            updated_at?: string;
+        };
         boardBindingReq: {
             connection_id: string;
             number: number;
@@ -7546,12 +9005,38 @@ export interface components {
             };
             sync_every_seconds?: number;
         };
+        botBindingPatchReq: {
+            allowed_hosts?: string[];
+            context?: components["schemas"]["ContextSource"];
+            secret_id?: string;
+            secret_name_for_workflow?: string;
+        };
+        botBindingReq: {
+            allowed_hosts?: string[];
+            context?: components["schemas"]["ContextSource"];
+            kind?: string;
+            secret_id?: string;
+            secret_name_for_workflow?: string;
+        };
+        botLaunchSourceResponse: {
+            bindable: boolean;
+            bot_id: string;
+            diagnostics?: string[];
+            document: unknown;
+            presets?: components["schemas"]["PresetsBlock"];
+            read_refusal?: components["schemas"]["readRefusalInfo"];
+            sha256: string;
+            source: string;
+            tier: string;
+            unit?: components["schemas"]["unitInfo"];
+        };
         botRolesSettingsView: {
             effective: components["schemas"]["effectiveBotRoles"];
             origin: string;
             stored?: components["schemas"]["BotRoles"];
         };
         botSourceFilePutReq: {
+            allow_fold?: boolean;
             content: string;
             id?: string;
             stored_sha256?: string;
@@ -7585,6 +9070,7 @@ export interface components {
             version: number;
         };
         botSourcePutReq: {
+            allow_fold?: boolean;
             files: {
                 [key: string]: string;
             };
@@ -7630,6 +9116,48 @@ export interface components {
             current_password: string;
             email: string;
             new_password: string;
+        };
+        connectionCreateReq: {
+            alias?: string;
+            base_url?: string;
+            capabilities?: string[];
+            connector: string;
+            display_name?: string;
+            password?: string;
+            scheme_id?: string;
+            token?: string;
+            username?: string;
+        };
+        connectionDTO: {
+            alias: string;
+            base_url: string;
+            capabilities: string[];
+            connector: string;
+            /** Format: date-time */
+            created_at: string;
+            display_name?: string;
+            /** Format: date-time */
+            expires_at?: string;
+            granted_scopes?: string[];
+            id: string;
+            placement: string;
+            scheme_id: string;
+            scheme_kind: string;
+            scopes_known?: boolean;
+            status: string;
+            status_reason?: string;
+            /** Format: date-time */
+            updated_at: string;
+            warnings?: string[];
+        };
+        connectionPatchReq: {
+            capabilities?: string[];
+            display_name?: string;
+            password?: string;
+            status?: string;
+            status_reason?: string;
+            token?: string;
+            username?: string;
         };
         createApiKeyReq: {
             base_url?: string;
@@ -7694,7 +9222,7 @@ export interface components {
         };
         forgeAvatarResp: {
             avatar_url?: string;
-            connection?: components["schemas"]["Connection"];
+            connection?: components["schemas"]["ForgeConnection"];
         };
         forgeConnectReq: {
             bot_identity?: string;
@@ -7708,7 +9236,7 @@ export interface components {
         };
         forgeConnectResp: {
             authorize_url?: string;
-            connection?: components["schemas"]["Connection"];
+            connection?: components["schemas"]["ForgeConnection"];
             install_url?: string;
         };
         forgeConnectionHealth: {
@@ -7778,6 +9306,20 @@ export interface components {
             sync_issues_enabled: boolean;
             web_url?: string;
         };
+        launchBudgetSpec: {
+            max_cost_usd?: number;
+            max_duration?: string;
+            max_iterations?: number;
+            max_parallel_branches?: number;
+            max_tokens?: number;
+        };
+        legalDocumentView: {
+            accessibility: components["schemas"]["Accessibility"];
+            contact_email?: string;
+            markdown: string;
+            slug: string;
+            title: string;
+        };
         loginReq: {
             email: string;
             password: string;
@@ -7811,6 +9353,18 @@ export interface components {
             key: string;
             model?: string;
             set: boolean;
+        };
+        namedPoolView: {
+            audience: components["schemas"]["Audience"];
+            enabled: boolean;
+            id: string;
+            name?: string;
+            org_id?: string;
+            owner_id?: string;
+            owner_type: string;
+            /** Format: date-time */
+            updated_at?: string;
+            visibility: string;
         };
         oauthConnectionView: {
             access_token_expires_at?: string;
@@ -7925,9 +9479,88 @@ export interface components {
             routing_effective_scope: string;
             stored?: components["schemas"]["PlatformCredentials"];
         };
+        poolAttachmentRequest: {
+            enabled?: boolean;
+            /** Format: date-time */
+            expected_updated_at?: string;
+            margin_pct?: number;
+            max_runs_per_day?: number;
+            max_usd_per_day?: number;
+            mode?: string;
+            pool_id: string;
+            reset_hold?: boolean;
+            triggers?: string[];
+        };
+        poolCreateRequest: {
+            audience?: components["schemas"]["Audience"];
+            enabled?: boolean;
+            name?: string;
+            visibility?: string;
+        };
+        poolEntryRequest: {
+            backend?: string;
+            bots?: string[];
+            enabled?: boolean;
+            fallback_use?: boolean;
+            key_id?: string;
+            lend_scope?: string;
+            limits?: components["schemas"]["Limits"];
+            model?: string;
+            priority?: number;
+            ref: string;
+            source: string;
+            window?: components["schemas"]["Window"];
+        };
+        poolEntryView: {
+            backend?: string;
+            /** Format: date-time */
+            cooldown_until?: string;
+            enabled: boolean;
+            health: string;
+            health_detail?: string;
+            id: string;
+            key_id?: string;
+            lender: string;
+            limits: components["schemas"]["Limits"];
+            model?: string;
+            pool_id: string;
+            priority?: number;
+            ref: string;
+            source: string;
+            status: string;
+        };
+        poolImportRequest: {
+            credentials_json: string;
+            model?: string;
+            priority?: number;
+            source: string;
+        };
+        poolPutRequest: {
+            audience?: components["schemas"]["Audience"];
+            enabled?: boolean;
+            name?: string;
+            visibility?: string;
+        };
         previewBackendOption: {
             unavailable_reason?: string;
             warning?: string;
+        };
+        previewCodemodeBounds: {
+            concurrent_tool_calls: number;
+            cpu: string;
+            memory: number;
+            result_bytes: number;
+            script_bytes: number;
+            store_bytes: number;
+            store_entries: number;
+            tool_calls: number;
+            tool_result_bytes: number;
+            wall: string;
+        };
+        previewCodemodeLimits: {
+            ceiling: components["schemas"]["previewCodemodeBounds"];
+            default: components["schemas"]["previewCodemodeBounds"];
+            memory_floor: number;
         };
         previewCostNode: {
             cost_max_usd: number;
@@ -7940,8 +9573,10 @@ export interface components {
             tokens_out: number;
         };
         previewCostRequest: {
+            ambient_context?: string;
             backend?: string;
             backend_names?: string[];
+            codemode?: string;
             file_path?: string;
             permission?: string;
             source?: string;
@@ -7952,11 +9587,15 @@ export interface components {
                     [key: string]: components["schemas"]["previewBackendOption"];
                 };
             };
+            codemode_limits?: components["schemas"]["previewCodemodeLimits"];
             cost_max_usd: number;
             cost_min_usd: number;
             effective?: components["schemas"]["previewEffectiveSettings"];
             nodes: components["schemas"]["previewCostNode"][];
             notes?: string[];
+            route_refusals?: {
+                [key: string]: string;
+            };
             tokens_max: number;
             tokens_min: number;
         };
@@ -7972,11 +9611,98 @@ export interface components {
             compress: components["schemas"]["previewEffectiveKnob"];
             permission: components["schemas"]["previewEffectiveKnob"];
         };
+        priceFeedContributor: {
+            answers_efforts?: boolean;
+            answers_entry?: boolean;
+            efforts?: string[];
+            feed: string;
+            scope: string;
+            scope_id?: string;
+            spec?: components["schemas"]["Spec"];
+        };
+        priceFeedEffectiveModel: {
+            contributors?: components["schemas"]["priceFeedContributor"][];
+            efforts?: components["schemas"]["EffortsEntry"];
+            efforts_named_only?: boolean;
+            entry?: components["schemas"]["PricefeedEntry"];
+            entry_named_only?: boolean;
+            id: string;
+        };
+        priceFeedEffectiveOverBudget: {
+            budget: number;
+            bytes: number;
+        };
+        priceFeedEffectiveScope: {
+            feeds?: string[];
+            id?: string;
+            scope: string;
+            unread?: string;
+        };
+        priceFeedEffectiveView: {
+            /** Format: date-time */
+            at: string;
+            models: components["schemas"]["priceFeedEffectiveModel"][];
+            org_id?: string;
+            over_budget?: components["schemas"]["priceFeedEffectiveOverBudget"];
+            runner_env_fallback: string;
+            scopes: components["schemas"]["priceFeedEffectiveScope"][];
+            table?: components["schemas"]["Table"];
+            team_id: string;
+            warnings?: string[];
+        };
+        priceFeedView: {
+            /** Format: date-time */
+            declared_at?: string;
+            entries?: number;
+            feed: components["schemas"]["FeedConfig"];
+            fresh_for?: number;
+            last_error?: string;
+            redacted_params?: string[];
+            /** Format: date-time */
+            refreshed_at?: string;
+            status: string;
+        };
+        priceFeedsSyncReq: {
+            name?: string;
+        };
+        priceFeedsSyncResponse: {
+            results: components["schemas"]["SyncOutcome"][];
+        };
+        priceFeedsView: {
+            feeds: components["schemas"]["priceFeedView"][];
+            origin: string;
+            scope: string;
+            source_types: string[];
+            /** Format: date-time */
+            updated_at?: string;
+            updated_by?: string;
+        };
+        readRefusalInfo: {
+            hint?: string;
+            message: string;
+        };
         registerReq: {
             email: string;
             invitation?: string;
             name?: string;
             password: string;
+        };
+        resumeCodemodeStoreRequest: {
+            store_bytes?: number;
+            store_entries?: number;
+        };
+        resumeRunRequest: {
+            accept_scratch_loss?: boolean;
+            answers?: {
+                [key: string]: unknown;
+            };
+            attachments?: string[];
+            budget?: components["schemas"]["launchBudgetSpec"];
+            codemode_store?: components["schemas"]["resumeCodemodeStoreRequest"];
+            file_path?: string;
+            force?: boolean;
+            source?: string;
+            timeout?: string;
         };
         routingPolicyView: {
             origin: string;
@@ -7990,6 +9716,7 @@ export interface components {
             effective_default_image: string;
             origin: string;
             stored?: components["schemas"]["Sandbox"];
+            warning?: string;
         };
         setOrgStatusReq: {
             reason?: string;
@@ -8011,9 +9738,28 @@ export interface components {
             name: string;
             org_id?: string;
             personal?: boolean;
+            run_visibility?: string;
             runner_pool?: string;
             slug: string;
             status: string;
+        };
+        unitFileInfo: {
+            dependency?: string;
+            digest?: string;
+            imports?: string[];
+            parse_error?: string;
+            parse_errors?: number;
+            profile?: number;
+            rel: string;
+        };
+        unitInfo: {
+            files: components["schemas"]["unitFileInfo"][];
+            load_error?: string;
+            load_errors?: number;
+            main: string;
+            revision: string;
+            root: string;
+            unread?: string[];
         };
         updateApiKeyReq: {
             base_url?: string;
@@ -8025,6 +9771,8 @@ export interface components {
             secret?: string;
         };
         updateOrgReq: {
+            fork_author_cost_cap_usd?: number;
+            fork_author_run_quota?: number;
             memory_quota_bytes?: number;
             monthly_cost_cap_usd?: number;
             monthly_run_quota?: number;
@@ -8097,7 +9845,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8131,7 +9879,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8167,7 +9915,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8207,7 +9955,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8218,7 +9966,12 @@ export interface operations {
     };
     deleteAdminBotsBySlug: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
+                bot_id?: string;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -8234,7 +9987,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8275,7 +10028,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8289,7 +10042,7 @@ export interface operations {
             query?: {
                 /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
                 version?: number;
-                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. */
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
                 bot_id?: string;
             };
             header?: never;
@@ -8317,7 +10070,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8357,7 +10110,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8391,7 +10144,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8427,7 +10180,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8465,7 +10218,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8492,7 +10245,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8528,7 +10281,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8566,7 +10319,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8593,7 +10346,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8633,7 +10386,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8667,7 +10420,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8694,7 +10447,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8721,7 +10474,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8748,7 +10501,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8775,7 +10528,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8802,7 +10555,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8829,7 +10582,223 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminLlmPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminLlmPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAdminLlmPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminLlmPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"][];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmPoolsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8865,7 +10834,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8903,7 +10872,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8939,7 +10908,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8975,7 +10944,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9015,7 +10984,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9051,7 +11020,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9091,7 +11060,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9129,7 +11098,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9156,7 +11125,113 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminPriceFeedsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["priceFeedsSyncReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsSyncResponse"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9181,7 +11256,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9206,8 +11281,62 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminRuns: {
+        parameters: {
+            query?: {
+                /** @description Narrow to the runs of one org (all its teams). */
+                org_id?: string;
+                /** @description Narrow to one team's runs. Combines with org_id: a team outside the org answers an empty page. */
+                team_id?: string;
+                /** @description Exact run status (running, queued, paused_waiting_human, paused_operator, finished, failed, failed_resumable, cancelled). */
+                status?: string;
+                /** @description Only runs updated at or after this RFC3339 instant. */
+                since?: string;
+                /** @description Page size, 1..500 (default 50). */
+                limit?: number;
+                /** @description Keyset token from the previous page's next_cursor. A malformed value is refused with 400. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminRunsResponse"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Run store unavailable */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9240,7 +11369,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9274,7 +11403,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9308,7 +11437,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9342,7 +11471,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9367,7 +11496,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9392,7 +11521,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9426,7 +11555,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9464,7 +11593,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9498,7 +11627,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9532,7 +11661,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9566,7 +11695,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9600,7 +11729,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9634,7 +11763,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9668,7 +11797,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9695,7 +11824,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9722,7 +11851,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9750,7 +11879,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9786,7 +11915,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9825,7 +11954,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9861,7 +11990,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9901,8 +12030,72 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminUsersByIdErase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminEraseUserResponse"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The account is the last owner of an organization: transfer its ownership or delete the organization first */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller's own account */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A step of the erasure failed: the message names it; repeat the request */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9928,7 +12121,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10106,7 +12299,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10142,7 +12335,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10635,6 +12828,42 @@ export interface operations {
             };
         };
     };
+    getLegalBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["legalDocumentView"];
+                };
+            };
+            /** @description no such legal document, or not published on this deployment */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rate limit exceeded; Retry-After says when */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getLocalSkills: {
         parameters: {
             query?: never;
@@ -10994,7 +13223,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11022,6 +13251,26 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteMePoolEntriesByPledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pledge: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -11092,6 +13341,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getMePools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"][];
+                };
+            };
+        };
+    };
+    postMePools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
             };
         };
     };
@@ -11187,7 +13480,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11244,7 +13537,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11278,7 +13571,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11341,7 +13634,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11368,7 +13661,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11756,8 +14049,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12017,6 +14317,196 @@ export interface operations {
             };
         };
     };
+    getOrgsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    putOrgsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    deleteOrgsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    getOrgsByIdPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"][];
+                };
+            };
+        };
+    };
+    postOrgsByIdPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+        };
+    };
+    getOrgsByIdPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+        };
+    };
+    putOrgsByIdPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+        };
+    };
+    postOrgsByIdPriceFeedsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["priceFeedsSyncReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsSyncResponse"];
+                };
+            };
+        };
+    };
     getOrgsByIdProvisionApprovals: {
         parameters: {
             query?: never;
@@ -12049,8 +14539,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12201,7 +14698,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12229,7 +14726,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12257,7 +14754,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12304,7 +14801,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12332,7 +14829,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12360,7 +14857,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12486,6 +14983,178 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    putPoolsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolPutRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+        };
+    };
+    deletePoolsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    getPoolsByIdEntries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"][];
+                };
+            };
+        };
+    };
+    putPoolsByIdEntries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolEntryRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"];
+                };
+            };
+        };
+    };
+    postPoolsByIdEntriesImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolImportRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"];
+                };
+            };
+        };
+    };
+    deletePoolsByIdEntriesByPledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    postPoolsByIdEntriesByPledgeReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"];
+                };
             };
         };
     };
@@ -13907,7 +16576,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["resumeRunRequest"];
+            };
+        };
         responses: {
             /** @description Response */
             default: {
@@ -14567,7 +17240,12 @@ export interface operations {
     };
     deleteTeamsByIdBotSourcesBySlug: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
+                bot_id?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -14619,7 +17297,7 @@ export interface operations {
             query?: {
                 /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
                 version?: number;
-                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. */
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
                 bot_id?: string;
             };
             header?: never;
@@ -14676,12 +17354,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        bindings: components["schemas"]["BotSecretBinding"][];
+                    };
+                };
             };
         };
     };
@@ -14695,10 +17377,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botBindingReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BotSecretBinding"];
+                };
+            };
+            /** @description the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description admin or owner required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a binding for this workflow name already exists on this bot */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14719,8 +17435,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description admin or owner required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no binding with this id on this bot */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14736,6 +17466,136 @@ export interface operations {
                 id: string;
                 bot_id: string;
                 binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["botBindingPatchReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BotSecretBinding"];
+                };
+            };
+            /** @description the merged record contradicts its kind, or the referenced credential is not bindable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description admin or owner required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no binding with this id on this bot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the new name is already bound on this bot */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdBotsByBotPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdBotsByBotPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    deleteTeamsByIdBotsByBotPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    postTeamsByIdBotsByNameTriggersFromInvocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                name: string;
             };
             cookie?: never;
         };
@@ -14906,8 +17766,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14969,8 +17836,153 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConnections: {
+        parameters: {
+            query?: {
+                /** @description Restrict the listing to one connector id (e.g. forgejo). Absent lists every connector's connections. */
+                connector?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        connections: components["schemas"]["connectionDTO"][];
+                    };
+                };
+            };
+        };
+    };
+    postTeamsByIdConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["connectionCreateReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["connectionDTO"];
+                };
+            };
+        };
+    };
+    getTeamsByIdConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["connectionDTO"];
+                };
+            };
+            /** @description connection not found (including another tenant's) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description connection not found (including another tenant's) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["connectionPatchReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["connectionDTO"];
+                };
+            };
+            /** @description connection not found (including another tenant's) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15042,7 +18054,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        connections: components["schemas"]["Connection"][];
+                        connections: components["schemas"]["ForgeConnection"][];
                     };
                 };
             };
@@ -15163,6 +18175,27 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["forgeConnectionHealth"];
                 };
+            };
+        };
+    };
+    postTeamsByIdForgeConnectionsByConnIdReauthorize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -15344,8 +18377,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15406,8 +18446,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15468,6 +18515,68 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdIntakes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdIntakesBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdIntakesBySubReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdInvitations: {
         parameters: {
             query?: never;
@@ -15499,8 +18608,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15760,6 +18876,47 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdPairs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdPairsBySubReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdPluginSources: {
         parameters: {
             query?: never;
@@ -15882,6 +19039,173 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    deleteTeamsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    getTeamsByIdPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+        };
+    };
+    getTeamsByIdPriceFeedsEffective: {
+        parameters: {
+            query?: {
+                /** @description A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets. */
+                model?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedEffectiveView"];
+                };
+            };
+        };
+    };
+    postTeamsByIdPriceFeedsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["priceFeedsSyncReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsSyncResponse"];
+                };
+            };
+        };
+    };
     getTeamsByIdProvisionApprovals: {
         parameters: {
             query?: never;
@@ -15943,6 +19267,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["routingPolicyView"];
                 };
+            };
+        };
+    };
+    putTeamsByIdRunVisibility: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -16028,12 +19372,155 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postTeamsByIdStatus: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdTriggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdTriggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdTriggersPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdTriggersBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdTriggersBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdTriggersBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
             };
             cookie?: never;
         };
@@ -16079,8 +19566,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16184,8 +19678,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16503,6 +20004,63 @@ export interface operations {
             };
         };
     };
+    getV1BotsByNameLaunchSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botLaunchSourceResponse"];
+                };
+            };
+            /** @description a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the name resolves on no tier */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the bot resolves but not to a launchable program — the refusal a launch of it would draw */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the resolution or the reading itself failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     putV1BotsByNameOverlay: {
         parameters: {
             query?: never;
@@ -16529,6 +20087,84 @@ export interface operations {
             header?: never;
             path: {
                 name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1ConnectorsByIdIcon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1Intakes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1IntakesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1IntakesByIdReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };
@@ -16790,6 +20426,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DependencyGraphResponse"];
                 };
+            };
+        };
+    };
+    getV1Pairs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1PairsByIdReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -17123,7 +20797,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17170,7 +20844,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17197,7 +20871,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17224,7 +20898,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17251,7 +20925,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17279,7 +20953,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17388,7 +21062,7 @@ export interface operations {
             };
         };
     };
-    getV1Triggers: {
+    getV1Sources: {
         parameters: {
             query?: never;
             header?: never;
@@ -17403,6 +21077,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getV1Triggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        subscriptions: components["schemas"]["Subscription"][];
+                    };
+                };
             };
         };
     };
@@ -17460,6 +21156,24 @@ export interface operations {
             };
         };
     };
+    postV1TriggersPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getV1TriggersById: {
         parameters: {
             query?: never;
@@ -17471,12 +21185,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Subscription"];
+                };
             };
         };
     };
@@ -17525,6 +21241,26 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postWebhooksCById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -17756,7 +21492,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;

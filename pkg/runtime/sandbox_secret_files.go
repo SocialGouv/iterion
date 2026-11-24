@@ -44,7 +44,7 @@ func addSecretFileMounts(ctx context.Context, spec *sandbox.Spec, wf *ir.Workflo
 			continue
 		}
 		value := ""
-		if strings.TrimSpace(s.Value) != "" {
+		if s.HasInlineValue() {
 			value = resolveRuntimeSecretValue(s.Value, vars)
 		} else {
 			value = creds.GenericSecret(name)

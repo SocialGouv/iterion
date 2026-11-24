@@ -77,12 +77,20 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureUsageLimitBlocked:   DispositionTransient, // the window reopens; the retry is armed for that instant
 	store.FailureNetworkTransient:    DispositionTransient,
 	store.FailureToolFailedTransient: DispositionTransient,
+	// Parked on a credential's hard concurrency cap: a slot frees when one
+	// of the runs holding it ends, and waiting is exactly what helps. The
+	// sweeper asks again on its own cadence (store.RetryReasonCredSlot); a
+	// CLI loop may re-drive it like any other wait.
+	store.FailureCredSlotWait: DispositionTransient,
 
 	// Infrastructure — the run never failed; a healthy pod is the cure.
 	store.FailureInterrupted:         DispositionInfrastructure, // runner drain, lost heartbeat
 	store.FailureProcessOrphaned:     DispositionInfrastructure, // a liveness probe found the owner dead
 	store.FailureSandboxSetupTimeout: DispositionInfrastructure,
 	store.FailureSandboxCapacity:     DispositionInfrastructure,
+	// The store did not hand the run's attachments over before the
+	// sandbox: nothing of this attempt executed, a fresh delivery fetches again.
+	store.FailureAttachmentsUnfetchable: DispositionInfrastructure,
 
 	// Re-executable — an LLM node decided it, so the next sample may pass.
 	// Behaviour is unchanged for these: the point of naming them is that
@@ -152,8 +160,13 @@ var classification = map[store.FailureCode]Disposition{
 	// the serving backend read as a single string — five attempts, four
 	// pods, one verdict. SchemaValidation stays re-executable: there, a
 	// request WAS served and the next sample may conform.
-	store.FailureSchemaUnusable:        DispositionDeterministic,
-	store.FailureCapabilityUnsupported: DispositionDeterministic,
+	store.FailureSchemaUnusable:         DispositionDeterministic,
+	store.FailureProviderRequestInvalid: DispositionDeterministic,
+	store.FailureCapabilityUnsupported:  DispositionDeterministic,
+	// The node's declared grant was refused (ADR-151): the same IR meets
+	// the same `capabilities:` on every attempt, so a retry hears the same
+	// no — and the cure is an author's declaration, not a redelivery.
+	store.FailureCapabilityDenied: DispositionDeterministic,
 	// The workflow requested an EXPLICIT sandbox mode (`sandbox: { mode:
 	// inline, image/build: … }`) and the host has no driver that can
 	// honour it. Every redelivery reaches the same absent runtime — a
@@ -163,6 +176,30 @@ var classification = map[store.FailureCode]Disposition{
 	// keeps the code in last_run_error_code (#1426) for the operator
 	// who has to change the isolation ask or provision a driver. #1425.
 	store.FailureSandboxDriverUnavailable: DispositionDeterministic,
+	// The fork-lane credential refusal (#1768): a redelivery meets the
+	// same launcher and the same absent credential channel — nothing an
+	// automatic retry can change; an operator adds a credential or stops
+	// admitting the lane.
+	store.FailureSandboxCredentialUnreachable: DispositionDeterministic,
+	// Its two typed siblings (ADR-161 decision 7): a stamp that refuses the
+	// pod's money, a switch that refuses the subscription — a redelivery
+	// meets the same run credentials and the same switch.
+	store.FailureCredentialAmbientRefused:        DispositionDeterministic,
+	store.FailureCredentialSubscriptionForbidden: DispositionDeterministic,
+	// The fork lane's two sandbox refusals (ADR-162 decision 7): a
+	// credential channel the proxy cannot hold, and a driver that
+	// enforces no network policy around the container. A redelivery
+	// meets the same sealed channels and the same driver advertisement —
+	// the cures are an operator's (rewrite the channel, move the lane to
+	// a policy-holding driver), never a retry.
+	store.FailureSandboxCrossingRefused: DispositionDeterministic,
+	store.FailureSandboxNetworkRefused:  DispositionDeterministic,
+	// The driver can neither bind nor copy the run's attachments: a
+	// redelivery meets the same driver.
+	store.FailureAttachmentsUndeliverable: DispositionDeterministic,
+	// The node names an attachment path the run cannot hand it: the same
+	// on every redelivery.
+	store.FailureAttachmentPathUnavailable: DispositionDeterministic,
 }
 
 // Classify reports what an automatic resume can achieve for this code.

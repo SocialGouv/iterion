@@ -89,7 +89,7 @@ export function FilterMenu({
               />
               <span className="flex-1 truncate">{o.label}</span>
               {o.count !== undefined && (
-                <span className="text-fg-subtle tabular-nums">{o.count}</span>
+                <span className="text-fg-muted tabular-nums">{o.count}</span>
               )}
             </button>
           );

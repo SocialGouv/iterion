@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -17,13 +19,6 @@ import (
 // The cloud (Mongo) store satisfies the plan-snapshot seam so the
 // studio Plans panel is fed identically in cloud and local mode.
 var _ store.PlanStore = (*Store)(nil)
-
-// appendPlanMaxRetries caps the seq-collision retry loop for plan
-// snapshots. Mirrors appendEventMaxRetries: parallel branches firing
-// TodoWrite/todo_write concurrently can race on the next per-run
-// sequence, and the (run_id, seq) unique index is the safety net that
-// forces a re-read + realloc rather than a silent collapse.
-const appendPlanMaxRetries = 10
 
 // runPlanDoc is one persisted plan snapshot, one document per (run_id,
 // seq). The cloud twin of the filesystem store's runs/<id>/plans/<NNNN>.json:
@@ -55,27 +50,11 @@ func (d runPlanDoc) toSnapshot() store.PlanSnapshot {
 	}
 }
 
-// AppendPlanSnapshot implements store.PlanStore over the run_plans
-// collection. It assigns snap.Seq itself (callers leave it zero) and
-// DEDUPS against the immediately-previous snapshot: when the incoming
-// Todos are byte-identical (via the same JSON marshal the filesystem
-// impl uses) nothing is written and (previous, false, nil) is returned —
-// TodoWrite fires often with no change. Otherwise the snapshot is
-// inserted at the next sequence and (snap, true, nil) is returned.
-//
-// The dedupe is best-effort under concurrency: racing byte-identical
-// writers get DISTINCT seqs from the counter and can both persist (see
-// the PlanStore interface contract) — a redundant snapshot, never a
-// lost one.
-//
-// Seq is allocated from a per-run monotonic counter (allocPlanSeq),
-// mirroring AppendEvent's allocSeq — a clean atomic increment rather than
-// the former max-read+1, which removed the theoretical seq-0 poisoning
-// asymmetry with events. The (run_id, seq) unique index remains the
-// safety net: a duplicate-key error (e.g. a server-runner handoff that
-// desynced the counter) reallocs with a jittered backoff rather than
-// surfacing a hard failure.
+// AppendPlanSnapshot freezes its input, then deduplicates, seeds the counter
+// from the committed tail and publishes under one parent-WRITE transaction.
+// A no-op aborts that transaction, so neither parent nor counter advances.
 func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error) {
+	snap.Todos = slices.Clone(snap.Todos)
 	newTodos, err := json.Marshal(snap.Todos)
 	if err != nil {
 		return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: marshal plan todos: %w", err)
@@ -84,105 +63,95 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 		snap.Timestamp = time.Now().UTC()
 	}
 	tenantID, _ := store.TenantFromContext(ctx)
-
-	// Dedup against the immediately-previous snapshot before consuming a
-	// seq: a byte-identical TodoWrite writes nothing and never advances
-	// the counter.
-	prev, hasPrev, perr := s.lastPlanSnapshot(ctx, runID)
-	if perr != nil {
-		return store.PlanSnapshot{}, false, perr
-	}
-	if hasPrev {
-		if prevTodos, merr := json.Marshal(prev.Todos); merr == nil && bytes.Equal(prevTodos, newTodos) {
-			return prev, false, nil
+	var out store.PlanSnapshot
+	var inserted bool
+	err = s.withRunMetadataWrite(ctx, runID, func(sc context.Context, parent *store.Run) error {
+		n, e := s.streamNamespace(sc, runID, parent)
+		if e != nil {
+			return e
 		}
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < appendPlanMaxRetries; attempt++ {
-		if attempt > 0 {
-			if err := backoffOrCancel(ctx, attempt); err != nil {
-				return store.PlanSnapshot{}, false, err
+		out = store.PlanSnapshot{}
+		inserted = false
+		prev, hasPrev, err := s.lastStreamPlanSnapshot(sc, n)
+		if err != nil {
+			return err
+		}
+		floor := int64(0)
+		if hasPrev {
+			if prevTodos, e := json.Marshal(prev.Todos); e == nil && bytes.Equal(prevTodos, newTodos) {
+				out = prev
+				return errValuePublicationNoop
 			}
-		}
-
-		seq64, aerr := s.allocPlanSeq(ctx, runID)
-		if aerr != nil {
-			return store.PlanSnapshot{}, false, aerr
-		}
-		seq := int(seq64)
-		snap.Seq = seq
-		doc := runPlanDoc{
-			TenantID:  tenantID,
-			RunID:     runID,
-			Seq:       seq,
-			NodeID:    snap.NodeID,
-			Iteration: snap.Iteration,
-			Tool:      snap.Tool,
-			Timestamp: snap.Timestamp,
-			Todos:     snap.Todos,
-		}
-		if _, err := s.runPlans.InsertOne(ctx, doc); err != nil {
-			if mongo.IsDuplicateKeyError(err) {
-				// The seq is already taken: either a sibling branch raced us,
-				// or the counter is BEHIND the persisted tail — runs whose
-				// snapshots predate the counter (max-read allocation) have
-				// docs at 0..N with no counter document, so a fresh counter
-				// would hand out colliding seqs until the retries run dry and
-				// the snapshot is LOST. Re-sync the counter to tail+1 ($max:
-				// monotonic, never rewinds a concurrent advance) and realloc.
-				lastErr = err
-				if tail, hasTail, terr := s.lastPlanSnapshot(ctx, runID); terr == nil && hasTail && tail.Seq >= seq {
-					if serr := s.seedSeqField(ctx, runID, planSeqField, int64(tail.Seq)+1); serr != nil {
-						return store.PlanSnapshot{}, false, serr
-					}
-				}
-				continue
+			if int64(prev.Seq) == math.MaxInt64 {
+				return fmt.Errorf("store/mongo: plan sequence exhausted")
 			}
-			return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: insert plan snapshot %s/%d: %w", runID, seq, err)
+			floor = int64(prev.Seq) + 1
 		}
-		return snap, true, nil
+		if err = s.seedStreamSeqField(sc, n, planSeqField, floor); err != nil {
+			return err
+		}
+		seq, err := s.allocStreamSeqField(sc, n, planSeqField)
+		if err != nil {
+			return err
+		}
+		next := snap
+		next.Seq = int(seq)
+		doc := runPlanDoc{TenantID: tenantID, RunID: runID, Seq: next.Seq, NodeID: next.NodeID, Iteration: next.Iteration, Tool: next.Tool, Timestamp: next.Timestamp, Todos: next.Todos}
+		raw, e := bson.Marshal(doc)
+		if e != nil {
+			return e
+		}
+		row := bson.M{}
+		if e = bson.Unmarshal(raw, &row); e != nil {
+			return e
+		}
+		n.stamp(row)
+		if _, err = n.plans.InsertOne(sc, row); err != nil {
+			return fmt.Errorf("store/mongo: insert plan snapshot %s/%d: %w", runID, seq, err)
+		}
+		out = next
+		inserted = true
+		return nil
+	})
+	if err != nil {
+		return store.PlanSnapshot{}, false, err
 	}
-	return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: race on plan seq for run %s after %d attempts: %w", runID, appendPlanMaxRetries, lastErr)
+	return out, inserted, nil
 }
 
-// lastPlanSnapshot returns the highest-seq snapshot for the run (the
-// dedup anchor + seq source), or (_, false, nil) when the run has none.
-func (s *Store) lastPlanSnapshot(ctx context.Context, runID string) (store.PlanSnapshot, bool, error) {
-	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	opts := options.FindOne().SetSort(bson.D{{Key: "seq", Value: -1}})
+// lastStreamPlanSnapshot returns the selected namespace's highest-seq snapshot,
+// or (_, false, nil) when that namespace has no plans.
+func (s *Store) lastStreamPlanSnapshot(ctx context.Context, n streamDataNamespace) (store.PlanSnapshot, bool, error) {
 	var doc runPlanDoc
-	if err := s.runPlans.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
-		if err == mongo.ErrNoDocuments {
-			return store.PlanSnapshot{}, false, nil
-		}
-		return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: load last plan snapshot %s: %w", runID, err)
+	e := n.plans.FindOne(ctx, n.filter(ctx, nil), options.FindOne().SetSort(bson.D{{Key: "seq", Value: -1}})).Decode(&doc)
+	if e == mongo.ErrNoDocuments {
+		return store.PlanSnapshot{}, false, nil
+	}
+	if e != nil {
+		return store.PlanSnapshot{}, false, e
 	}
 	return doc.toSnapshot(), true, nil
 }
-
-// ListPlanSnapshots implements store.PlanStore: every persisted snapshot
-// for the run in ascending Seq (chronological) order. A run with no
-// snapshots yields (nil, nil).
 func (s *Store) ListPlanSnapshots(ctx context.Context, runID string) ([]store.PlanSnapshot, error) {
-	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	opts := options.Find().SetSort(bson.D{{Key: "seq", Value: 1}})
-	cur, err := s.runPlans.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("store/mongo: list plan snapshots %s: %w", runID, err)
-	}
-	defer cur.Close(ctx)
-
 	var out []store.PlanSnapshot
-	for cur.Next(ctx) {
-		var doc runPlanDoc
-		if err := cur.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("store/mongo: decode plan snapshot %s: %w", runID, err)
+	err := s.withOpaqueStreamRead(ctx, runID, func(sc context.Context, n streamDataNamespace, _ *store.Run) error {
+		out = []store.PlanSnapshot{}
+		cur, e := n.plans.Find(sc, n.filter(sc, nil), options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}))
+		if e != nil {
+			return e
 		}
-		out = append(out, doc.toSnapshot())
-	}
-	if err := cur.Err(); err != nil {
-		return nil, fmt.Errorf("store/mongo: iterate plan snapshots %s: %w", runID, err)
+		defer cur.Close(sc)
+		for cur.Next(sc) {
+			var doc runPlanDoc
+			if e = cur.Decode(&doc); e != nil {
+				return e
+			}
+			out = append(out, doc.toSnapshot())
+		}
+		return cur.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

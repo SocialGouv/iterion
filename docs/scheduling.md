@@ -194,6 +194,9 @@ store.
 
 `overlap: keepalive` runs a bot **continuously**: every tick relaunches
 it, but with **at-most-one-live** semantics *and* a **staleness cutoff**.
+(A bot that stays addressable and is woken by an event, rather than relaunched
+on a clock, is a different question:
+[the live-agents study](references/live-agents-openmausbot.md).)
 It is how you keep an agent (a watcher, a poller, your own long-lived
 bot) alive as a stream of fresh, individually-budgeted runs rather than
 one immortal run that fights `max_duration`, per-node deadlines, and the
@@ -360,30 +363,168 @@ identically local and cloud. A run that stops retrying records **why**
 (budget spent, admission denied, source no longer resolvable) rather than
 going quiet.
 
+**One window, every reader (cloud).** The run record names the window a
+parked run waits on: the wall its park is on (`RunRetryState.Wall`, the
+provider's own instant or the bounded guess) and the reopening of a credential
+the launch passed over (`skipped_cred_reopens_at`), the earlier of the two —
+never past the instant the arming itself chose. The wall is the wait's
+identity, and a park that brought no dated news keeps the one the row already
+holds: a forfait the launch passed over while the run now waits on a team
+key's five hours, or a window the run already got past before a blind
+refusal. Read alone it held such a run days past its own arming's instant;
+the arming's instant is the fact of the park, so a kept wall never outlives
+it. Every automatic re-launcher reads that one instant —
+`retrypolicy.UsageWindowNotBefore` — and none resumes the run before it on its
+own: the due pass holds a row due too early (a pull whose resume aged out)
+until the window, free of charge, coming back the way the arming would have —
+a minute past the window, spread by the run's jitter (`run.retry.window_wait`
+on the audit trail); and the pull-request notice, the owner's notification and
+the operator's alert all promise the same instant
+(`retrypolicy.UsageParkResumesAt`). The in-process `--auto-resume` loop keeps
+its own reading of the refusal in hand: the filesystem store holds no retry
+row. The one relaunch before it is the probe of the run's **credential
+window** below — one run per credential, not one per parked run — and the
+notice says so beside the date, with its bound. Measured before this rule (#3127): a review parked on a weekly wall
+dated four days out was announced for that date and relaunched every hour by
+the probe, each attempt a pod and ten of the run's active minutes, and so was
+every other run parked on the same forfait. Two bounds keep the rule from
+parking a run indefinitely: a record that names **no** window keeps the
+cadence its arming chose, and the run's own `max_wait`, measured from its last
+paid park, still wakes it to check again.
+
+**Parked minutes leave `max_duration`.** The wait between attempts was never
+counted; the part of an attempt that only re-meets the wall now is not either.
+When a run stops on a usage window, the span since its last booking — no node
+finished, no token spent, no call unreported — leaves the duration budget
+before the checkpoint is written, and the `run_failed` event says how much
+(`duration_refunded_ms`). Work stays counted: a node that finished, or a route
+that spent tokens before another route met the wall, ends the refundable span,
+and so does the body of a node with no executor — a subbot's child run (its
+nodes book in the child's budget), a compute, a wait — whatever it answered: a
+subbot whose child worked fifty minutes before meeting the wall keeps those
+minutes on the parent's `max_duration`.
+Before this, twelve zero-token resumes took a review to "budget hard limit
+reached: duration at 90%" days before its window reopened.
+
+**A usage window wins an exhausted chain.** When a node's fallback chain is
+exhausted and at least one route met a usage window, the node stops on
+`USAGE_LIMIT_BLOCKED` whatever the other routes met — a dead credential on
+another route no longer turns a five-hour wait into a pause for a human
+(`AUTH_FAILED`, #3032). The dead route stays in the evidence: the
+`node_recovery` event carries `chain_routes`, each route's own code and
+error. A chain whose routes are all dead credentials is still `AUTH_FAILED`.
+The window is read the same whichever backend served the route: claude_code
+and pi type it, claw types the facade's HTTP 429 and its stream error frames
+(`[1308]`, `[1310]`) at its own boundary — its transport retry loop no longer
+re-issues them; the executor's in-place budget treats them as every backend's,
+codex types its limit notice, and a refusal a hop flattened to text is read
+from the marker it prints. A refusal of the ACCOUNT — a spend ceiling, a
+fair-usage restriction — names no reset and no wait is known to cure it: such
+routes park the chain as a window does, except beside a dead credential, where
+the chain stays `AUTH_FAILED` and the human the pause calls can revive the
+dead route. The wall such a chain parks on is read route by route — the route
+that reopens first decides, typed or parsed from its own words — so it is the
+same in every order the walk met its routes in.
+
 **Observing a reset nobody announced (cloud).** An operator who tops up or
 clears their forfait by hand reopens the window with no notice, and a retry
 armed for the date the provider named is invisible to every sweep until that
 date — six reviews once slept four days on a wall that had fallen the first
 afternoon. So the sweeper also runs a **pull-forward probe**: it moves a
 not-yet-due `usage_window` retry to *now*, and the ordinary pass resumes it on
-its next tick. The runner's usage preflight is the authoritative reading of
-the window and it refuses *before* anything spends, so the worst case is one
-wasted pod and a retry re-armed on the instant the provider names; the best
-case is a run that comes back hours or days early.
+its next tick.
+
+A wall belongs to a **credential**, not to a run, so a wait the window rule
+above still holds is probed through its **credential window**: the runs
+parked on the same credentials — the set the attempt that met the wall
+sealed, copied into the wait by its paid arming (`retry_state.wall_credentials`)
+— are probed together, ONE of them per floor. The run's own stamp
+(`cred_fingerprints`) cannot be the key: every resume re-writes it, and a
+canary whose re-resolution sealed another set (the next pool slot, an empty
+resolution) would leave its window, which then lost its pace and its budget
+and pulled a fresh canary within the hour:
+
+- the **canary** is the wait of the window pulled least recently (never-pulled
+  first), then the earliest-parked (its last paid park), then its id: keys the
+  records carry, never the order a scan answered in, so two replicas and a
+  restarted one pick the same run — and the canary walks the window, so a run
+  whose resume never reaches the provider (a refusal before publish, its
+  tenant's quota) does not take every probe;
+- when the canary gets past the wall — its runner records the instant a
+  call on one of the wall's credentials was served
+  (`retry_state.probe_answered_at`, consumed with the marker) — every other
+  run parked on the same credentials **before** the canary was pulled is
+  released in the pass that reads it (`run.retry.released` on the audit
+  trail, naming the canary). Only that record answers: a canary whose pod
+  started late, whose resume re-resolved onto another credential or that a
+  cap held runs without asking the wall anything, and once its pull is older
+  than the marker's TTL (1 h) it answers nothing — the window's next canary
+  asks again, one pod later. A runner that cannot place a call on a
+  credential (no credential keys, no plan row: claude_code, pi and codex on a
+  publication without a credential plan) records no answer; its window then
+  releases nobody and is probed one run per floor. A release is a pull that records its
+  answer (`retry_state.released_by`, consumed with the marker): a run whose
+  resume still meets the wall is re-armed on its announced instant, free —
+  but a release is no probe's guess. The window no longer holds the run
+  however late its resume comes (behind the shared circuit), its resume is
+  metered like any launch, and a transient refusal of it — the admission
+  gate's deferral (a mass release is what trips the tenant's concurrency cap
+  or launch rate) or a stored bot that did not resolve for a store blip —
+  re-arms it on the ordinary 15-minute backoff, free
+  (`run.retry.release_deferred`), instead of the announced instant a probe's
+  stand-down puts back: the answer that released it cannot release it again.
+  Any other failure of that resume takes the stand-down after that one
+  failure: a bot redeployed under the run (its workflow hash moved) fails the
+  same way every quarter hour, and a publish that may have landed keeps the
+  admission it metered, so on the backoff either repeated until the date —
+  four days of them under a weekly wall. The announced instant is back, and
+  until it only the window's probes relaunch the run, one per floor within
+  the window's budget;
+- when the canary meets the wall again, nobody else moves: its free re-arm
+  puts back the provider's instant, and its pull stamp paces the window for a
+  floor. A run released on an answer is not released again on it, and the
+  pass that releases takes no new probe of the window.
+
+Everything is read from the run records — the pace is the latest pull any of
+the window's rows carries (`last_probe_at`), the budget the pulls its rows carry,
+summed (`probe_count`, per wall — summed because the canary walks the window,
+releases included), the answer what the runner recorded on the run the pull
+marked (`probe_from`) — and every write is the store's compare-and-swap, so
+the sweeper on every replica takes the same decision and a restart does not
+probe twice. The cost is one pod per credential per floor, not one per parked
+run. The window key is the whole sealed set, because the record does not say
+which credential refused, and the answer is a call served on any of them:
+two runs of one set walled on different members answer for each other — one
+released on the other member's answer meets its own wall again and is
+re-armed free on its announced instant, a pod counted on the window's budget.
+A run that sealed a second credential beside the walled one is probed in a
+window of its own: one more canary. A run whose record names no credential
+(ambient credentials) has no window to be probed through and waits for its
+date.
+
+A wait whose window is unreadable or already passed (a skipped credential
+that has reopened, a legacy row with no wall) is probed on its own, as before.
+`ITERION_RETRY_PROBE_BEFORE_WINDOW=true` is the operator's per-run escape
+hatch: it probes every wait on its own before its window, one pod per parked
+run per floor. The manual sweep (`iterion remote runs resume --usage-blocked`)
+is not an automatic re-launcher and ignores the window.
 
 The probe is bounded, and its bounds are the deployment's:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `ITERION_RETRY_PROBE_FLOOR` | How long a wait rests between probes, and how close to its announced instant probing stops being worth a pod | `1h` |
-| `ITERION_RETRY_PROBE_BUDGET` | Probes one armed wait may spend; `0` turns probing off | `24` |
+| `ITERION_RETRY_PROBE_FLOOR` | How long a credential window (or a wait probed on its own) rests between probes, and how close to its announced instant probing stops being worth a pod | `1h` |
+| `ITERION_RETRY_PROBE_BUDGET` | Probes one provider wall may spend — a credential window's, or a wait's probed on its own; `0` turns probing off | `24` |
+| `ITERION_RETRY_PROBE_BEFORE_WINDOW` | `true`: probe every wait on its own before the usage window its record names (one pod per parked run) | off |
+| `ITERION_RETRY_CREDENTIAL_PROBE_SCAN` | Rows one credential pass reads (every armed usage-window wait and every marked probe, platform-wide); a pass that reads its bound says so in the log, since a window cut by it can be probed twice within its floor | `500` |
 
-The probe ships **armed**: a deployment that sets neither variable probes every
-parked wait hourly, up to twenty-four times — a bounded day of observation,
-then the run simply waits for the instant the provider named. That is the
-decision, and the bet it makes is one pod an hour per parked wait (the price
-this codebase already accepts for a refusal that names no instant at all)
-against a run sleeping through a window that reopened the first afternoon.
+The probe ships **armed**: a deployment that sets none of these variables
+probes each credential window hourly, up to twenty-four times — a bounded day
+of observation, then its runs simply wait for the instant the provider named.
+That is the decision, and the bet it makes is one pod an hour per credential
+(the price this codebase already accepts for a refusal that names no instant
+at all) against runs sleeping through a window that reopened the first
+afternoon.
 `ITERION_RETRY_PROBE_BUDGET=0` disarms it in one variable, with no code change
 and no redeploy of anything else.
 
@@ -514,13 +655,16 @@ other, which closes the probe ledger, so every resume after it is metered
 again.
 
 A forfait nobody resets is probed for a bounded day and then simply waits —
-per parked run, so a large parked fleet multiplies the pods and is where
-lowering the budget (or raising the floor) earns its keep. The day is per
-provider WALL: a run's own ceiling is `budget` probes per wall the provider
-names, whatever the attempts spent re-stating it. The pass pulls at
-most two rows a minute whatever the fleet: every row it pulls becomes due, and
-a probe batch as wide as the due pass's would fill the capacity that resumes
-runs whose own instant has arrived.
+per credential window, so a large parked fleet on one forfait costs the pods
+of one run; it is the escape hatch's per-run probing, and the waits probed on
+their own, that multiply them, and where lowering the budget (or raising the
+floor) earns its keep. The day is per provider WALL: the ceiling is `budget`
+probes per wall the provider names, whatever the attempts spent re-stating it.
+The pass pulls at most two probes a minute whatever the fleet: every row it
+pulls becomes due, and a probe batch as wide as the due pass's would fill the
+capacity that resumes runs whose own instant has arrived. A release is not a
+probe and is not batched — it moves every run of the window in one pass, and
+the due pass resumes them five a tick, oldest instant first.
 
 **One park, one audience, per wall.** The persisted wall is the unit of a
 usage park for everything that observes one, and each reads it from the row:
@@ -589,6 +733,12 @@ as JSON, including `last_run_status`, `last_run_error_code`, `last_run_error`
 and `last_error`. `iterion schedule list` lists the local cron manifest instead;
 it does not contain cloud run outcomes.
 
+The schedule is one of four records that carry this tuple: a trigger
+subscription ([cloud REST API](cloud-rest-api.md#triggers-event-driven-runs))
+and a board card ([native tracker](native-tracker.md)) report the same way,
+written by one spine ([pkg/server/outcome_spine.go](../pkg/server/outcome_spine.go))
+and rendered by one studio component.
+
 ## Retention — pair recurring schedules with `iterion runs prune`
 
 Every scheduled run persists forever under `<store-dir>/runs/<run_id>/`;
@@ -645,16 +795,40 @@ you have accepted their loss.
   tick at clone (`Invalid username or token`) while manual launches keep
   working. If a schedule is stuck in that state, recreate it with the
   repo attached (or bind the bot to the connection's managed secret).
+- **A cloud schedule names its repository and can pin its keys.** Each
+  tick names the repository it serves: the bound integration's (or the
+  repository its `repo_url` names, when that is another one of the
+  integration's forge), or the slug of `repo_url` for a schedule bound to
+  none. A bound schedule whose
+  `repo_url` is not on its integration's forge refuses the tick by name
+  (`last_error`): the integration's forge token is aimed at that forge
+  only. A BYOK key restricted to the repository (`repos`) funds the
+  schedule, the repository's monthly quota binds the tick, and the spend
+  is charged to it. `key_overrides` (provider → api key id, on the
+  schedule's create or `PATCH`, `iterion remote schedules update <id>
+  --data '{"key_overrides": {…}}'`) picks the key a provider spends — over
+  the integration's own pins, read live at each tick; a slot held and
+  replayed launches with the schedule's current pins. The write judges a
+  pin's visibility (the team's key, of that provider, visible to
+  `scheduler:<bot_id>`); each tick judges it again and also judges the
+  key's `bots` and `repos` audiences against the bot it launches and the
+  repository it names. A pinned key deleted, or whose audience no longer
+  admits the schedule, refuses the tick by name (`last_error`) rather than
+  spending another key ([byok.md](byok.md#per-webhook-key-override)).
 - **A repo-bound schedule survives a re-provision.** Re-provisioning the
   repo integration (enabling another bot, `POST …/forge/repo-bots`)
   deletes the integration's schedule rows and rebuilds one per
   `kind: schedule` invocation carrying a cron, but each surviving bot's
   row keeps its id (runs and audit entries point at it), the vars the
   operator set — merged over the manifest's `schedule.default_vars`,
-  operator keys winning — its last fire, pause state, overlap/guard policy
-  and customised cron. It does **not** keep `stale_after`, the keepalive
-  interval, the pinned `repo_ref`, or the routing and retry overrides, and
-  its last-run and last-error fields start empty. A row whose bot declares no schedule
+  operator keys winning — its last fire, pause state, overlap/guard policy,
+  its cadence (a customised cron or the keepalive interval, with its next
+  fire — unless the enable request names a cron), `stale_after`, the
+  pinned `repo_ref`, the retry overrides, its own routing and pool blocks
+  (a block projected from the integration follows the integration
+  instead) and its `key_overrides`. Its `repo_url` is reset
+  to the integration's clone URL, and its last-run and last-error fields
+  start empty. A row whose bot declares no schedule
   invocation with a cron — an operator-created row that the integration
   adopted because its `repo_url` matched — is deleted and not recreated.
   A bot whose scheduled behaviour hinges on a var

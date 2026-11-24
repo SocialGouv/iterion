@@ -1,14 +1,18 @@
 package store
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // The launch vars a server mints for one run's forge publish grant: its bearer
-// and the three endpoints the bearer is presented to.
+// and the four endpoints the bearer is presented to.
 const (
 	ForgePublishURLVar           = "forge_publish_url"
 	ForgePublishTokenVar         = "forge_publish_token"
 	ForgePRStateURLVar           = "forge_pr_state_url"
 	ForgeDeliveryPreflightURLVar = "forge_delivery_preflight_url"
+	ForgeDispatchURLVar          = "forge_dispatch_url"
 )
 
 // ServerMintedLaunchVars are the launch vars a server mints for one run: the
@@ -18,7 +22,13 @@ const (
 // (DropServerMintedVars): the server binds the bearer to its endpoints, and a
 // client able to set an endpoint while the run keeps its bearer would point a
 // live grant at a host of its choosing.
-var ServerMintedLaunchVars = [...]string{ForgePublishURLVar, ForgePublishTokenVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar}
+var ServerMintedLaunchVars = [...]string{ForgePublishURLVar, ForgePublishTokenVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar, ForgeDispatchURLVar}
+
+// ServerMintedEndpointVars are the ServerMintedLaunchVars that name an
+// endpoint the bearer is presented to — every one but the bearer itself. The
+// run's secret guard scopes the bearer to their hosts, so an endpoint missing
+// here would be one the egress gate refuses the grant toward.
+var ServerMintedEndpointVars = [...]string{ForgePublishURLVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar, ForgeDispatchURLVar}
 
 // ServerMintedSecretVars are the ServerMintedLaunchVars that are credentials.
 // Every read surface that hands a run's inputs out masks them
@@ -29,6 +39,76 @@ var ServerMintedSecretVars = []string{ForgePublishTokenVar}
 // RedactedLaunchVar is what a read surface shows in place of a server-minted
 // secret var: it says a grant was minted without handing it out.
 const RedactedLaunchVar = "[redacted]"
+
+// mintedSecretEnvPrefix prefixes the environment name a server-minted secret
+// var travels under to a child process. It reads as a credential
+// (IsSecretEnvName: SECRET anywhere), so the engine redacts the name's value
+// from its sinks and the platform refuses it as a settable bot var.
+const mintedSecretEnvPrefix = "ITERION_LAUNCH_SECRET_"
+
+// ServerMintedSecretEnvName is the environment name under which a
+// server-minted secret var reaches a child process iterion spawns, instead of
+// its argv: a command line is readable by any co-resident process through
+// /proc/<pid>/cmdline for the whole life of the process, while an environment
+// is readable by the owning user and root only.
+func ServerMintedSecretEnvName(name string) string {
+	return mintedSecretEnvPrefix + strings.ToUpper(name)
+}
+
+// ServerMintedSecretEnv splits vars for a child process iterion spawns: the
+// vars that ride its command line, and the "NAME=value" environment entries
+// carrying the server-minted secrets that must not. ONE decision answers both
+// halves, so no var can end up on neither channel or on both.
+//
+// A var with no value is not a credential — it is a caller withdrawing one, as
+// DropServerMintedVars reads it — so it stays on the argv the child reads its
+// var set from, where it says exactly that.
+func ServerMintedSecretEnv(vars map[string]string) (argv map[string]string, env []string) {
+	for name, v := range vars {
+		if IsServerMintedSecretVar(name) && mintedSecretValue(v) {
+			env = append(env, ServerMintedSecretEnvName(name)+"="+v)
+			continue
+		}
+		if argv == nil {
+			argv = make(map[string]string, len(vars))
+		}
+		argv[name] = v
+	}
+	return argv, env
+}
+
+// TakeServerMintedSecretVarsFromEnv returns the server-minted secret vars the
+// spawning process passed through the environment and REMOVES them from it:
+// the launch is their only reader, and a value left in the environment is
+// inherited by every tool process the run goes on to spawn. Call it once, at
+// the launch boundary, before the first node runs.
+//
+// The unset is about the CHILDREN: this process's own /proc/<pid>/environ
+// keeps the initial environment for its whole life, readable by the owning
+// user and by root. That residue is the exposure this carriage accepts in
+// exchange for keeping the grant out of a command line, which any co-resident
+// process reads.
+func TakeServerMintedSecretVarsFromEnv() map[string]string {
+	var out map[string]string
+	for _, name := range ServerMintedSecretVars {
+		envName := ServerMintedSecretEnvName(name)
+		v, ok := os.LookupEnv(envName)
+		if !ok {
+			continue
+		}
+		// Unset whatever was passed, value or not: a name the parent set is
+		// a name no tool process may inherit.
+		_ = os.Unsetenv(envName)
+		if !mintedSecretValue(v) {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(ServerMintedSecretVars))
+		}
+		out[name] = v
+	}
+	return out
+}
 
 // IsServerMintedSecretVar reports whether name is one of ServerMintedSecretVars.
 func IsServerMintedSecretVar(name string) bool {
@@ -91,6 +171,27 @@ func RedactLaunchVars(vars map[string]any) map[string]any {
 	return out
 }
 
+// RedactLaunchStringVars is RedactLaunchVars for a STRING-valued var map — a
+// board card's bot args, a tracker's vars: a copy with every server-minted
+// secret var that holds a value masked, or vars itself when it holds none.
+// vars is never mutated — the caller's map may be the stored record's own.
+//
+// Separate from RedactLaunchVars rather than generic over the value type: the
+// mask IS a string, so a map[string]V could not receive it.
+func RedactLaunchStringVars(vars map[string]string) map[string]string {
+	if !HasServerMintedSecret(vars) {
+		return vars
+	}
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if IsServerMintedSecretVar(k) && mintedSecretValue(v) {
+			v = RedactedLaunchVar
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // DropServerMintedVars returns vars without any VALUE sent under one of
 // ServerMintedLaunchVars — a copy when one was present, vars itself
 // otherwise. For the write paths a client drives (fork inputs, board-card bot
@@ -124,15 +225,15 @@ func DropServerMintedVars[V any](vars map[string]V) map[string]V {
 	return out
 }
 
-// RedactCheckpoint is cp for a read surface: a shallow copy whose vars mask
-// the server-minted secret vars, or cp itself when it holds none. cp is never
-// mutated — the engine resumes from it.
+// RedactCheckpoint masks server-minted vars and removes approval authority
+// from read surfaces without mutating the engine's resume state.
 func RedactCheckpoint(cp *Checkpoint) *Checkpoint {
-	if cp == nil || !HasServerMintedSecret(cp.Vars) {
+	if cp == nil || (len(cp.BackendPermissionInput) == 0 && !HasServerMintedSecret(cp.Vars)) {
 		return cp
 	}
 	out := *cp
 	out.Vars = RedactLaunchVars(cp.Vars)
+	out.BackendPermissionInput = nil
 	return &out
 }
 
@@ -140,11 +241,16 @@ func RedactCheckpoint(cp *Checkpoint) *Checkpoint {
 // dump): a shallow copy with its inputs and checkpoint vars masked, or r
 // itself when neither holds a server-minted secret var. r is never mutated.
 func RedactRunForOutput(r *Run) *Run {
-	if r == nil || !HasServerMintedSecret(r.Inputs) && (r.Checkpoint == nil || !HasServerMintedSecret(r.Checkpoint.Vars)) {
+	if r == nil {
+		return nil
+	}
+	checkpoint := RedactCheckpoint(r.Checkpoint)
+	if r.ToolApprovalClaim == nil && checkpoint == r.Checkpoint && !HasServerMintedSecret(r.Inputs) {
 		return r
 	}
 	out := *r
 	out.Inputs = RedactLaunchVars(r.Inputs)
-	out.Checkpoint = RedactCheckpoint(r.Checkpoint)
+	out.Checkpoint = checkpoint
+	out.ToolApprovalClaim = nil
 	return &out
 }

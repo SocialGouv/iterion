@@ -10,8 +10,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // Keep a read result below the 256 KiB transport/sink boundary used by a few
@@ -27,7 +29,8 @@ const workspaceReadMaxFileBytes = 64 * 1024 * 1024
 
 func workspaceReadFileTool() api.Tool {
 	t := clawtools.ReadFileTool()
-	t.Description = "Read a file inside the active workspace. Credential files and internal run stores are excluded. " +
+	t.Description = "Read a file inside the active workspace or a declared read root (the run's scratch directory is one when the engine resolves it). " +
+		"Credential files and internal run stores are excluded. " +
 		"PDF files (.pdf) are returned as their extracted text (BT/ET content streams); a text-less PDF reads empty. " +
 		"Large files are returned in explicit line chunks; " +
 		"when the result is partial, call it again with the next start_line printed in the marker."
@@ -45,7 +48,8 @@ func workspaceReadFileTool() api.Tool {
 func workspaceGrepTool() api.Tool {
 	t := clawtools.GrepTool()
 	t.Name = "workspace_grep"
-	t.Description = "Search file contents inside the active workspace. Credential files and internal run stores are excluded. " +
+	t.Description = "Search file contents inside the active workspace or a declared read root (the run's scratch directory is one when the engine resolves it). " +
+		"Credential files and internal run stores are excluded. " +
 		"The path is optional; an omitted or empty path searches the active workspace root. " +
 		"Use this to discover source and project artifacts by content, then read the matching files."
 	// The handler has an explicit active-workspace default for the optional
@@ -63,21 +67,23 @@ func diagnosticShellTool() api.Tool {
 	return t
 }
 
-func executeWorkspaceReadFile(input map[string]any, workspace string) (string, error) {
+func executeWorkspaceReadFile(input map[string]any, scope *ReadScope) (string, error) {
 	rawPath, ok := input["path"].(string)
 	if !ok || strings.TrimSpace(rawPath) == "" {
 		return "", fmt.Errorf("read_file: 'path' input is required and must be a string")
 	}
 	// Same boundary as workspace_grep and glob: the path is resolved and
-	// contained inside the active workspace, and a credential file is
-	// refused. Without this an absolute path skipped the join entirely and
-	// only got filepath.Clean, so the model could read ~/.ssh/id_rsa or
+	// contained inside the active read scope (workspace plus its declared
+	// read roots, #2650), and a credential file is refused — the gate's
+	// list follows the paths credentials are actually read from (#2868).
+	// Without this an absolute path skipped the join entirely and only got
+	// filepath.Clean, so the model could read ~/.ssh/id_rsa or
 	// ~/.iterion/secrets.json through the one read tool that had no guard.
-	path, err := resolveWorkspacePath(workspace, rawPath)
+	path, err := resolveReadPath(scope, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	if sensitiveWorkspacePath(rawPath) || sensitiveWorkspacePath(path) {
+	if gate := newCredentialReadGate(scope); gate.refused(rawPath) || gate.refused(path) {
 		return "", fmt.Errorf("read_file: %q is excluded as a credential or secret file", rawPath)
 	}
 
@@ -99,20 +105,20 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 	var lines []string
 	var total int
 	if strings.EqualFold(filepath.Ext(path), ".pdf") {
-		pdfLines, pdfTotal, isPDF, pdfErr := workspacePDFWindow(workspace, path, start, workspaceReadMaxBytes, workspaceReadMaxFileBytes)
+		pdfLines, pdfTotal, isPDF, pdfErr := workspacePDFWindow(scope, path, start, workspaceReadMaxBytes, workspaceReadMaxFileBytes)
 		if pdfErr != nil {
 			return "", fmt.Errorf("read_file: %w", pdfErr)
 		}
 		if isPDF {
 			lines, total = pdfLines, pdfTotal
 		} else {
-			lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+			lines, total, err = workspaceFileWindow(scope, path, start, workspaceReadMaxBytes)
 			if err != nil {
 				return "", fmt.Errorf("read_file: %w", err)
 			}
 		}
 	} else {
-		lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+		lines, total, err = workspaceFileWindow(scope, path, start, workspaceReadMaxBytes)
 		if err != nil {
 			return "", fmt.Errorf("read_file: %w", err)
 		}
@@ -161,7 +167,7 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 
 // workspacePDFWindow windows a .pdf-suffixed file as its EXTRACTED TEXT,
 // reading the file exactly the way the regular path does — one
-// openWorkspaceFile open (O_NOFOLLOW|O_NONBLOCK: a FIFO substituted for
+// openReadFile open (O_NOFOLLOW|O_NONBLOCK: a FIFO substituted for
 // the .pdf cannot hang the call), one Stat, one bounded read, no re-open
 // for the extraction to race against. isPDF=false (nil err) means "not
 // actually a PDF" — a misnamed text file, or a non-regular file — and
@@ -172,8 +178,8 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 // error, not allocate. Peak in-process memory is bounded at roughly
 // 3x maxFile (the bytes read + one inflated stream + the accumulated
 // text), all under the caller's own ceiling.
-func workspacePDFWindow(workspace, path string, start int, maxBytes, maxFile int64) (lines []string, total int, isPDF bool, err error) {
-	f, err := openWorkspaceFile(workspace, path)
+func workspacePDFWindow(scope *ReadScope, path string, start int, maxBytes, maxFile int64) (lines []string, total int, isPDF bool, err error) {
+	f, err := openReadFile(scope, path)
 	if err != nil {
 		return nil, 0, false, nil
 	}
@@ -253,8 +259,8 @@ func textWindowLines(text string, start, maxBytes int) ([]string, int) {
 // address space on a single model tool call. Retaining one line PAST the
 // cap is deliberate — it is what lets the caller distinguish "byte cap
 // reached" from "that was the whole file".
-func workspaceFileWindow(workspace, path string, start, maxBytes int) ([]string, int, error) {
-	f, err := openWorkspaceFile(workspace, path)
+func workspaceFileWindow(scope *ReadScope, path string, start, maxBytes int) ([]string, int, error) {
+	f, err := openReadFile(scope, path)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -337,100 +343,70 @@ func workspacePathInput(input map[string]any, toolName string) (string, error) {
 	return path, nil
 }
 
-// openWorkspaceFile checks aliases before opening and verifies the opened
-// identity. Internal symlinks remain readable only after canonical policy
-// checks; descriptor traversal refuses any links substituted after resolution.
-func openWorkspaceFile(workspace, raw string) (*os.File, error) {
-	path, err := resolveWorkspacePath(workspace, raw)
-	if err != nil {
-		return nil, err
-	}
-	if sensitiveWorkspacePath(raw) || sensitiveWorkspacePath(path) {
-		return nil, fmt.Errorf("path is a protected credential or secret file")
-	}
-	root, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		return nil, err
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("path is outside workspace")
-	}
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("%q is not a regular file", filepath.Base(path))
-	}
-	f, err := openWorkspaceFileAt(root, strings.Split(rel, string(filepath.Separator)))
-	if err != nil {
-		return nil, err
-	}
-	after, err := f.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		_ = f.Close()
-		if err != nil {
-			return nil, err
+// credentialReadGate is one tool call's view of the credential exclusion
+// (#2868): claw's first-party CredentialReadGuard — whose list follows the
+// paths credentials are actually read from (real layouts at any depth,
+// the process's own env/home-derived locations, .npmrc anchored at a read
+// root) — plus iterion's own carriers. Built ONCE per tool invocation:
+// the derivation resolves a dozen paths, which a grep/glob walk must not
+// pay per visited entry.
+type credentialReadGate struct {
+	guard *clawtools.CredentialReadGuard
+	roots []string
+}
+
+// newCredentialReadGate derives the gate from the process environment
+// (os.Getenv — the derivation reads HOME, KUBECONFIG, NPM_CONFIG_USERCONFIG
+// and their siblings; in a sandboxed runner that IS the runner's own
+// environment, whose HOME lives under the scratch read root) and anchors
+// the root-relative carriers on the scope's current roots.
+//
+// The workspace anchors in BOTH spellings: as the scope holds it, which
+// is how a raw absolute path arrives, and canonical, which is how the
+// resolved target the gate also judges arrives. A workspace reached
+// through a symlink (a symlinked projects dir in $PWD, an ITERION_HOME
+// that is a link, macOS /tmp) otherwise anchors .npmrc on a spelling no
+// resolved path ever carries, and the project-root .npmrc reads. The
+// extra roots are canonical already (AddExtraRoot, AddExtraRootBeneath).
+func newCredentialReadGate(scope *ReadScope) credentialReadGate {
+	workspace, extra := scope.snapshot()
+	roots := make([]string, 0, len(extra)+2)
+	if strings.TrimSpace(workspace) != "" {
+		roots = append(roots, workspace)
+		if canon, err := canonicalReadRoot(workspace); err == nil && canon != workspace {
+			roots = append(roots, canon)
 		}
-		return nil, fmt.Errorf("workspace file changed or is not a regular file")
 	}
-	return f, nil
+	roots = append(roots, extraRootPaths(extra)...)
+	return credentialReadGate{guard: clawtools.NewCredentialReadGuard(os.Getenv), roots: roots}
 }
 
-func resolveWorkspacePath(workspace, raw string) (string, error) {
-	if strings.TrimSpace(workspace) == "" {
-		return "", fmt.Errorf("active workspace is required")
-	}
-	path := raw
-	if !filepath.IsAbs(path) && workspace != "" {
-		path = filepath.Join(workspace, path)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", err
-	}
-	root, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		return "", err
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q is outside workspace", raw)
-	}
-	return resolved, nil
+// refused reports whether a read target is a credential or secret
+// location, under the workspace and under every declared read root alike.
+// iterion's own carriers are checked first; the guard judges the rest.
+//
+// Every comparison in the guard is case-folded: a file system that folds
+// case (macOS, Windows) makes `.ENV` and `.env` THE SAME FILE, so a list
+// read in one spelling only is a bypass of itself. Folding errs closed —
+// on a case-sensitive file system a distinct `.ENV` is refused rather
+// than read, which costs a refusal, never a leak.
+func (g credentialReadGate) refused(path string) bool {
+	return iterionCredentialPath(path) || g.guard.Refused(path, g.roots...)
 }
 
-func sensitiveWorkspacePath(path string) bool {
-	clean := filepath.ToSlash(filepath.Clean(path))
+// iterionCredentialPath covers the carriers the first-party guard cannot
+// know: the clone's own credential store and the iterion home's secrets.
+func iterionCredentialPath(path string) bool {
+	clean := strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
 	base := filepath.Base(clean)
-	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".netrc" || base == ".git-credentials" || base == "cli-auth.json" {
+	// The clone's own credential store: `.git/iterion-credentials` holds the
+	// run's live forge token in plaintext. A prefix match also covers the
+	// sibling the atomic replace writes first (`.tmp` on the host,
+	// `.tmp.$$` in the sandbox), which a failed replace leaves on disk.
+	if strings.HasPrefix(base, gitlib.CredentialStoreFile) {
 		return true
 	}
-	if strings.Contains(base, "id_rsa") || strings.Contains(base, "id_ed25519") {
-		return true
-	}
-	switch strings.ToLower(filepath.Ext(base)) {
-	case ".pem", ".key", ".p12":
-		return true
-	}
-	for _, fragment := range []string{
-		"/.ssh/", "/.aws/", "/.gnupg/", "/.docker/config.json",
-		"/.claude/.credentials.json", "/.codex/auth.json",
-		"/.iterion/secrets.json", "/.iterion/secrets.key",
-	} {
+	for _, fragment := range []string{"/.iterion/secrets.json", "/.iterion/secrets.key"} {
 		if strings.Contains("/"+clean, fragment) {
 			return true
 		}

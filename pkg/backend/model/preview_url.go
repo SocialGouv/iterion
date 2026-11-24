@@ -15,6 +15,29 @@ const previewURLDirective = "[iterion] preview_url="
 // the runtime will read it and persist it as a versioned attachment.
 const previewScreenshotDirective = "[iterion] preview_screenshot="
 
+// The preview_url vocabulary, spelled once. These values cross a
+// contract — the studio keys its presentation off them
+// (RESULT_LINK_KINDS and the Browser-pane branch in
+// studio/src/store/run/reducer.ts) — so the engine must not invent a
+// second spelling of a kind the UI already knows.
+const (
+	// previewKindDeliverable is what a run's own product carries: a
+	// report, bundle or document the workflow DECLARED. The studio
+	// lists it as a headline link beside the pull requests and never
+	// embeds it in the Browser pane.
+	previewKindDeliverable = "deliverable"
+	// previewScopeExternal loads the URL directly (the default);
+	// "internal" asks the studio to proxy it through
+	// /api/runs/:id/preview to strip frame-blocking headers, which only
+	// matters for a URL the pane embeds.
+	previewScopeExternal = "external"
+	// previewSourceToolStdout marks a URL a tool printed itself.
+	previewSourceToolStdout = "tool-stdout"
+	// previewSourceToolAttachment marks a link the ENGINE announced for
+	// a file it collected, so a consumer can tell the two apart.
+	previewSourceToolAttachment = "tool-attachment"
+)
+
 // scanDirectiveLines walks tool stdout and yields the token list of
 // each line that starts with directive. The first token is whatever
 // comes after `directive=`; subsequent tokens are space-separated
@@ -27,17 +50,59 @@ func scanDirectiveLines(output, directive string) [][]string {
 	}
 	var found [][]string
 	for _, raw := range strings.Split(output, "\n") {
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, directive) {
-			continue
+		if tokens := directiveTokens(raw, directive); tokens != nil {
+			found = append(found, tokens)
 		}
-		tokens := strings.Fields(line[len(directive):])
-		if len(tokens) == 0 || tokens[0] == "" {
-			continue
-		}
-		found = append(found, tokens)
 	}
 	return found
+}
+
+// directiveTokens reads ONE line as directive: its tokens, nil when the line
+// is not one — another prefix, or nothing after the `=`. The single reading
+// of "this line is the engine's", shared by the scanners that consume a
+// directive and by withoutDirectiveLines, which takes the same lines out of
+// a node's answer.
+func directiveTokens(line, directive string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, directive) {
+		return nil
+	}
+	tokens := strings.Fields(line[len(directive):])
+	if len(tokens) == 0 || tokens[0] == "" {
+		return nil
+	}
+	return tokens
+}
+
+// toolOutputDirectives are the directives a tool node's output may carry for
+// the ENGINE: every prefix scanDirectiveLines is asked for. A line the engine
+// consumes is an instruction to it, not part of what the node answers
+// (TestEveryDirectiveTheEngineScansIsOutOfTheAnswer holds the list to the
+// scanners' own call sites).
+var toolOutputDirectives = []string{toolAttachmentDirective, previewURLDirective, previewScreenshotDirective}
+
+// withoutDirectiveLines returns stdout without the lines the engine consumes
+// as directives (toolOutputDirectives), every other byte as it was.
+func withoutDirectiveLines(stdout string) string {
+	consumed := false
+	for _, directive := range toolOutputDirectives {
+		consumed = consumed || strings.Contains(stdout, directive)
+	}
+	if !consumed {
+		return stdout
+	}
+	lines := strings.Split(stdout, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		directive := false
+		for _, d := range toolOutputDirectives {
+			directive = directive || directiveTokens(line, d) != nil
+		}
+		if !directive {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // scanPreviewURLs walks the captured stdout of a tool node and returns
@@ -55,8 +120,8 @@ func scanPreviewURLs(output string) []map[string]any {
 	for _, tokens := range lines {
 		data := map[string]any{
 			"url":    tokens[0],
-			"source": "tool-stdout",
-			"scope":  "external",
+			"source": previewSourceToolStdout,
+			"scope":  previewScopeExternal,
 		}
 		for _, kv := range tokens[1:] {
 			eq := strings.IndexByte(kv, '=')

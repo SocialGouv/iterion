@@ -17,9 +17,6 @@ Shared repository instructions for coding agents.
 - Streaming input: `QueryStream(ctx, messages, opts...)`
 - Stateful sessions: `NewClient()` + `Client`
 - Lifecycle helper: `WithClient(ctx, fn, opts...)`
-- Session metadata: `StatSession(ctx, sessionID, opts...)`
-- Session listing: `ListSessions(ctx, opts...)`
-- Session rollouts: `GetSessionMessages(ctx, sessionID, opts...)`
 
 ### Canonical Commands
 

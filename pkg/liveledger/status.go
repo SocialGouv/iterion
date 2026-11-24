@@ -3,6 +3,7 @@ package liveledger
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -89,8 +90,55 @@ func renderTable(w io.Writer, ledger *Ledger) error {
 		); err != nil {
 			return err
 		}
+		// The provenance and the skip go on their own line rather than in
+		// a column: a verdict nobody can read the route of is a false
+		// receipt, and a reason nobody prints leaves `skipped`
+		// indistinguishable from `never` on the operator's screen — the
+		// one surface that reads this file.
+		if detail := rowDetail(r); detail != "" {
+			if _, err := fmt.Fprintf(w, "%-46s %s\n", "", detail); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+// rowDetail renders what the fixed-width columns cannot carry: what
+// served, who funded it, and the prerequisite the last skipped attempt
+// lacked. Empty when the row has none of the three.
+func rowDetail(r Row) string {
+	var parts []string
+	if r.ServedModel != "" {
+		parts = append(parts, "served by "+describeServedModel(r.ServedModel))
+	}
+	if r.FundedBy != "" {
+		parts = append(parts, "funded by "+r.FundedBy)
+	}
+	if r.SkipReason != "" {
+		parts = append(parts, "skipped "+formatTime(r.SkippedAt)+": "+r.SkipReason)
+	}
+	// Not ReasonSep: that token separates the reasons INSIDE one column,
+	// and a reader must be able to tell the two levels apart.
+	return strings.Join(parts, " · ")
+}
+
+// describeServedModel renders the served_model column for the operator's
+// screen: a spec as itself, the unobserved sentinel in words — printed raw,
+// "served by unobserved:<spec>" reads as a model named that way.
+func describeServedModel(column string) string {
+	items := strings.Split(column, ListSep)
+	for i, item := range items {
+		asked, ok := IsUnobservedServedModel(item)
+		switch {
+		case !ok:
+		case asked == "":
+			items[i] = "a model the backend did not name"
+		default:
+			items[i] = "a model the backend did not name (asked " + asked + ")"
+		}
+	}
+	return strings.Join(items, ListSep+" ")
 }
 
 func formatTime(t time.Time) string {

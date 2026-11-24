@@ -27,6 +27,7 @@ import {
   isEditorSessionActive,
   resolveEditorSession,
 } from "@/lib/chatDock/editorSession";
+import { resolveProposalTarget } from "@/lib/chatDock/proposalTarget";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
@@ -91,13 +92,18 @@ export default function EditorChangeOffer({
     isSharedBundleFilePath(path) ||
     (!!path && isCloud && api.parseBotSourceEditorPath(path) === null);
   // A bot in several files: the editor holds the merged program with each
-  // declaration's file, and a proposal is one text — it could only be
-  // folded into the main, which the save refuses.
-  const readUnitBound = useCallback(
-    () => !!targetStore?.getState().unit,
+  // declaration's file, and a proposal is ONE file's text (#1647) — applied
+  // through the unit's re-parse, to the file the Source view's picker names.
+  const readUnit = useCallback(
+    () => targetStore?.getState().unit ?? null,
     [targetStore],
   );
-  const unitBound = useSyncExternalStore(subscribeRevision, readUnitBound, () => false);
+  const unit = useSyncExternalStore(subscribeRevision, readUnit, () => null);
+  const readSourceFile = useCallback(
+    () => targetStore?.getState().sourceFile ?? null,
+    [targetStore],
+  );
+  const pickedFile = useSyncExternalStore(subscribeRevision, readSourceFile, () => null);
   // A file the author asked for is still opening in that tab: that request
   // wins, and an apply landing first would get its answer refused for edits
   // nobody made. Available again once it ends — on the document it left.
@@ -106,7 +112,11 @@ export default function EditorChangeOffer({
     [targetStore],
   );
   const replacementPending = useSyncExternalStore(subscribeRevision, readPending, () => false);
-  const unavailable = targetStale || !onEditor || readOnly || unitBound || replacementPending;
+  // The per-file target: the picker's selection, with the model's
+  // editor_file as a hint that can only refuse, never redirect (#1647).
+  const proposalTarget = unit ? resolveProposalTarget(unit, pickedFile, proposal.file) : null;
+  const unitBlocked = proposalTarget !== null && "reason" in proposalTarget;
+  const unavailable = targetStale || !onEditor || readOnly || unitBlocked || replacementPending;
   const hasDraft = !!proposal.source;
   // Intent is model-reported but never grants authority: it can only select
   // the operator's preconfigured branch. Unknown/legacy intent is non-explicit
@@ -155,9 +165,18 @@ export default function EditorChangeOffer({
       setAction("saving");
       const savedGeneration = state._generation;
       // The digest rule: the save presents the digest this tab's open
-      // issued — a concurrent edit is a 409, never an overwrite.
+      // issued — a concurrent edit is a 409, never an overwrite. A bot in
+      // several files presents its unit's REVISION instead (its files carry
+      // their own digests, judged with it): without it the save lands on
+      // saveUnit's "names no revision" branch (#1647), whose message tells
+      // the author to reopen a file that is already open.
       const digest = targetStore?.getState().openedDigest ?? undefined;
-      const result = await api.saveFile(currentPath, state.document, digest ? { digest } : undefined);
+      const result = state.unit
+        ? await api.saveFile(currentPath, state.document, {
+            revision: state.unit.revision,
+            unitFiles: state.unit.files,
+          })
+        : await api.saveFile(currentPath, state.document, digest ? { digest } : undefined);
       const afterSave = resolveEditorSession(proposalSession);
       if (
         afterSave &&
@@ -169,6 +188,11 @@ export default function EditorChangeOffer({
         // digest rule): held stale, the offer's second save is a 409
         // against its own first.
         savedState.setOpenedDigest(result.digest ?? null);
+        // A unit's claim is its revision, which this write advanced: the
+        // next save presents the one the answer carries.
+        if (savedState.unit) {
+          savedState.setUnit({ ...savedState.unit, revision: result.revision ?? savedState.unit.revision });
+        }
         savedState.markSaved();
         setAction("saved");
       } else {
@@ -288,8 +312,40 @@ export default function EditorChangeOffer({
       setAction("applying");
       setError(null);
       try {
-        const parsed = await api.parseSource(proposal.source);
-        const validated = await api.validate(parsed.document);
+        // A bot in several files: the proposal is ONE file's text, re-parsed
+        // through the unit — the server rebuilds the merged document from
+        // the files as stored plus this overlay — and never through
+        // parseSource, which would read a fragment as a whole program. The
+        // file is the Source view picker's selection; the model's
+        // editor_file hint can only refuse a mismatch, never pick (#1647).
+        const unitNow = current.store.getState().unit;
+        let targetRel: string | null = null;
+        let parsed:
+          | Awaited<ReturnType<typeof api.parseSource>>
+          | Awaited<ReturnType<typeof api.parseUnitFile>>;
+        if (unitNow) {
+          const decision = resolveProposalTarget(
+            unitNow,
+            current.store.getState().sourceFile,
+            proposal.file,
+          );
+          if ("reason" in decision) throw new Error(decision.reason);
+          targetRel = decision.rel;
+          const unitPath = current.store.getState().currentFilePath;
+          if (!unitPath) {
+            throw new Error("The editor's file is unknown; reopen the bot.");
+          }
+          parsed = await api.parseUnitFile(unitPath, decision.rel, proposal.source);
+        } else {
+          parsed = await api.parseSource(proposal.source);
+        }
+        // For a unit the path travels, so the merged document compiles with
+        // the bundle's prompts in scope, the way a launch compiles it.
+        const validated = await api.validate(
+          parsed.document,
+          undefined,
+          unitNow ? current.store.getState().currentFilePath : undefined,
+        );
         const diagnostics = [
           ...(parsed.diagnostics ?? []),
           ...(validated.diagnostics ?? []),
@@ -326,6 +382,21 @@ export default function EditorChangeOffer({
             "The editor changed while the proposal was being validated. Nothing was applied.",
           );
         }
+        // The picker is no part of the generation: it can move while the
+        // round trip is out, and applying file A's text under file B's name
+        // is exactly what the target resolution exists to refuse.
+        if (unitNow) {
+          const again = resolveProposalTarget(
+            afterValidation.store.getState().unit ?? unitNow,
+            afterValidation.store.getState().sourceFile,
+            proposal.file,
+          );
+          if ("reason" in again || again.rel !== targetRel) {
+            throw new Error(
+              "The Source view's picker moved while the proposal was being validated. Nothing was applied.",
+            );
+          }
+        }
         const state = afterValidation.store.getState();
         // Document and verdict together: a proposal that parses whole ends
         // the salvage of a file that did not parse, so a buffer opened on an
@@ -334,11 +405,37 @@ export default function EditorChangeOffer({
         // ended: Copi never saw that file, and the proposal is not it.
         applyParsedSource(parsed, state);
         const after = afterValidation.store.getState();
-        after.setCurrentSource(proposal.source);
+        if (unitNow) {
+          // The verdict on the files as they are STORED rides the answer —
+          // the per-file parse, the load, the unread fragments — and is
+          // installed as the Source view's own apply installs it, so the
+          // launch gate never stands on a reading the server has just
+          // contradicted. The root and the revision are NOT taken: an
+          // overlay wrote nothing, so it presents neither.
+          const parsedUnit = "unit" in parsed ? parsed.unit : undefined;
+          const appliedUnit = after.unit;
+          if (parsedUnit && appliedUnit) {
+            after.setUnit({
+              ...appliedUnit,
+              files: parsedUnit.files,
+              unread: parsedUnit.unread,
+              load_errors: parsedUnit.load_errors,
+              load_error: parsedUnit.load_error,
+            });
+          }
+          // currentSource is what a resume sends inline AS the program:
+          // only the main's text may land there — a fragment declares no
+          // workflow.
+          if (targetRel === appliedUnit?.main) {
+            after.setCurrentSource(proposal.source);
+          }
+        } else {
+          after.setCurrentSource(proposal.source);
+        }
         after.setDiagnostics(
           validated.diagnostics ?? [],
           validated.warnings ?? [],
-          validated.issues ?? parsed.issues ?? [],
+          validated.issues ?? ("issues" in parsed ? parsed.issues : undefined) ?? [],
         );
         const generation = afterValidation.store.getState()._generation;
         setAppliedRevision(generation);
@@ -457,10 +554,12 @@ export default function EditorChangeOffer({
     ? path
       ? "Save the current host-owned editor buffer to its existing file."
       : "Choose a destination for the current host-owned editor buffer."
-    : "Apply changes only the live buffer; you can undo or save afterwards.";
+    : proposalTarget && "rel" in proposalTarget
+      ? `Apply the proposed ${proposalTarget.rel} to the live buffer; you can undo or save afterwards.`
+      : "Apply changes only the live buffer; you can undo or save afterwards.";
   if (action === "saved") detail = path ?? "Saved";
   else if (needsReturn) detail = "Return to the captured editor tab to review or run this action.";
-  else if (unitBound) detail = "This bot is in several files: a proposed source cannot be split back into them. Copy the part that belongs to each file into the Source view, which is a picker over this bot’s files.";
+  else if (proposalTarget && "reason" in proposalTarget) detail = proposalTarget.reason;
   else if (readOnly) detail = "This locked shared bundle is read-only in the consumer project.";
   else if (!revisionMatches) detail = "The document changed since this proposal was created.";
   else if (saveOnly && saveDecision === "deny") detail = "Saving assistant changes is disabled in Settings → Assistant.";

@@ -3,7 +3,6 @@ package connection
 import (
 	"context"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -31,8 +30,51 @@ type Store interface {
 	// List returns a tenant's connections, oldest first. Pass an empty
 	// connector for all of them.
 	List(ctx context.Context, tenantID, connector string) ([]Connection, error)
+	// Update replaces one connection of its own tenant, with the record's
+	// own UpdatedAt as a PRECONDITION: a caller hands back the value it
+	// read, and a record that moved since answers ErrConflict rather than
+	// overwriting whoever moved it.
+	//
+	// The precondition is the contract because the read-modify-write window
+	// belongs to the CALLER, not to the store: an HTTP PATCH reads the whole
+	// record (credential included), applies its fields and writes the whole
+	// thing back, so a lock held inside Update spans none of the window that
+	// matters. Last-write-wins there meant a revocation, a rotation and a
+	// capability narrowing were each silently reverted by a concurrent
+	// cosmetic edit — both requests answering 200, `connections list` still
+	// reading `active`, and the leaked credential still authenticating.
 	Update(ctx context.Context, c Connection) error
 	Delete(ctx context.Context, tenantID, id string) error
+}
+
+// checkUnchanged is the precondition every twin applies, so the three cannot
+// answer differently: the UpdatedAt the caller carries must be the stored one.
+//
+// A zero value is NOT a wildcard. A caller that did not read the record has no
+// business replacing it, and letting zero mean "no precondition" would make
+// the guard opt-in — which is the state this replaced, where the one caller
+// that forgets is the one that loses an operator's revocation.
+func checkUnchanged(prev, next Connection) error {
+	if !prev.UpdatedAt.Equal(next.UpdatedAt) {
+		return ErrConflict
+	}
+	return nil
+}
+
+// nextStamp is the stamp a successful write puts on the record, forced to
+// ADVANCE past the stored one.
+//
+// The precondition is a timestamp, and the cloud twin stores it at
+// millisecond precision — so a bare clock read can REPEAT the stored value,
+// and two writers that both read inside that millisecond would then both pass
+// a precondition that never moved: a silent overwrite, the exact shape this
+// whole guard exists to refuse. One millisecond is nobody's read-modify-write
+// window on its own, but it is free to close.
+func nextStamp(prev, now time.Time) time.Time {
+	if !now.After(prev) {
+		return prev.Add(time.Millisecond)
+	}
+	return now
 }
 
 // MemoryStore is the in-process Store: the local CLI and desktop tier, and
@@ -159,6 +201,9 @@ func (s *MemoryStore) Update(_ context.Context, c Connection) error {
 	if prev.TenantID != c.TenantID {
 		return ErrNotFound
 	}
+	if err := checkUnchanged(prev, c); err != nil {
+		return err
+	}
 	// The alias is checked on UPDATE as well as on create, which it was not.
 	// Renaming one connection onto another's alias left two answering the same
 	// name, and `ByAlias` returns the first map match — so identical workflow
@@ -169,7 +214,7 @@ func (s *MemoryStore) Update(_ context.Context, c Connection) error {
 	}
 	c.SealedPayload = keptCredential(prev, c)
 	c.CreatedAt = prev.CreatedAt
-	c.UpdatedAt = s.clock()
+	c.UpdatedAt = nextStamp(prev.UpdatedAt, s.clock())
 	s.byID[c.ID] = c
 	return nil
 }
@@ -192,8 +237,16 @@ func (s *MemoryStore) Delete(_ context.Context, tenantID, id string) error {
 //
 // The normalisation is what makes the uniqueness rule meaningful: without it
 // "main", "MAIN" and " main " are three aliases that all answer to one lookup.
+//
+// Defined THROUGH aliasNorm, the value the cloud twin's unique index reads, so
+// the comparison and the index are one rule rather than two that agree on
+// ASCII. They did not agree elsewhere: EqualFold is case FOLDING and ToLower
+// is a case MAPPING, so σ/ς and s/ſ collided in code and not in the index,
+// while i/İ collided in the index and not in code — and `connection: İ` in a
+// `.bot` resolved a DIFFERENT credential on the cloud tier than on the local
+// one, which is the exact failure the uniqueness rule exists to prevent.
 func aliasEq(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+	return aliasNorm(a) == aliasNorm(b)
 }
 
 // checkAliasFree refuses an alias another connection of the same tenant and

@@ -131,8 +131,10 @@ workflow main:
   open -> done
 `)
 
-	choices := buildBackendOverrideOptions(
+	choices, _ := buildBackendOverrideOptions(
 		wf,
+		"",
+		"",
 		"",
 		"",
 		[]string{"claw", "claude_code", "codex"},
@@ -148,7 +150,7 @@ workflow main:
 	}
 
 	// Run-level off wins over BOTH the node and workflow declarations.
-	choices = buildBackendOverrideOptions(wf, "off", "", []string{"codex"})
+	choices, _ = buildBackendOverrideOptions(wf, "off", "", "", "", []string{"codex"})
 	for _, nodeID := range []string{"gated", "open"} {
 		if got := choices[nodeID]["codex"].UnavailableReason; got != "" {
 			t.Errorf("run permission: off did not win for %s: %s", nodeID, got)
@@ -156,7 +158,7 @@ workflow main:
 	}
 
 	// Conversely, a run-level gate wins over the node's explicit off.
-	choices = buildBackendOverrideOptions(wf, "ask", "", []string{"codex"})
+	choices, _ = buildBackendOverrideOptions(wf, "ask", "", "", "", []string{"codex"})
 	for _, nodeID := range []string{"gated", "open"} {
 		if got := choices[nodeID]["codex"].UnavailableReason; got == "" {
 			t.Errorf("run permission: ask did not gate %s", nodeID)
@@ -173,9 +175,52 @@ func TestBuildBackendOverrideOptionsRequiresPauseForAskRules(t *testing.T) {
 		Nodes:      map[string]ir.Node{"work": agent},
 	}
 	wf.PermissionAsk = []string{"Bash(git push:*)"}
-	choices := buildBackendOverrideOptions(wf, "", "", []string{"grok"})
+	choices, _ := buildBackendOverrideOptions(wf, "", "", "", "", []string{"grok"})
 	if got := choices["work"]["grok"].UnavailableReason; !strings.Contains(got, "cannot pause") {
 		t.Fatalf("grok assessment = %q, want explicit ask-rule refusal", got)
+	}
+}
+
+// The picker's half of the capability-drift disclosure (iterion#2815): a
+// claude_code choice carries the withholdings no tools: list can lift, and a
+// restricted list that skips `agent` is told the subagent pair leaves. The
+// names come from the delegate's own projection — never a second list.
+func TestBuildBackendOverrideOptionsDisclosesClaudeCodeRosterDrift(t *testing.T) {
+	t.Setenv("ITERION_PERMISSION", "")
+	t.Setenv("ITERION_DEFAULT_BACKEND", "")
+	wf := compileSource(t, `agent restricted:
+  backend: "claude_code"
+  tools: [read_file]
+
+agent ambient:
+  backend: "claude_code"
+
+workflow main:
+  restricted -> ambient
+  ambient -> done
+`)
+	choices, _ := buildBackendOverrideOptions(wf, "off", "", "", "", []string{"claude_code", "codex"})
+
+	restricted := choices["restricted"]["claude_code"].Warning
+	for _, want := range []string{"AskUserQuestion", "SlashCommand", "BashOutput", "KillShell", "ScheduleWakeup"} {
+		if !strings.Contains(restricted, want) {
+			t.Errorf("the claude_code choice of a restricted node does not name %s as unconditionally withheld: %q", want, restricted)
+		}
+	}
+	if !strings.Contains(restricted, "Agent/Task") || !strings.Contains(restricted, "`agent`") {
+		t.Errorf("a list without agent must be told the subagent pair leaves, with the declaration that keeps it: %q", restricted)
+	}
+
+	ambient := choices["ambient"]["claude_code"].Warning
+	if !strings.Contains(ambient, "AskUserQuestion") {
+		t.Errorf("an undeclared node loses the headless surface all the same: %q", ambient)
+	}
+	if strings.Contains(ambient, "Agent/Task") {
+		t.Errorf("an undeclared node KEEPS the ambient roster, subagent pair included — the notice must not say it leaves: %q", ambient)
+	}
+
+	if got := choices["restricted"]["codex"].Warning; strings.Contains(got, "withholds") {
+		t.Errorf("the drift notice is claude_code's — a codex choice must not carry it: %q", got)
 	}
 }
 
@@ -189,6 +234,7 @@ func TestPreviewCost_EffectiveBlock(t *testing.T) {
 
 workflow main:
   compress: off
+  entry: draft
   draft -> done
 `
 	got := postPreviewCost(t, hs.URL, `{"source":`+jsonString(src)+`}`)
@@ -215,6 +261,7 @@ agent open:
 
 workflow main:
   permission: deny
+  entry: gated
   gated -> open
   open -> done
 `
@@ -241,8 +288,57 @@ func TestBuildBackendOverrideOptionsReadsTheNodesOwnAskRules(t *testing.T) {
 		Nodes:      map[string]ir.Node{"work": agent},
 	}
 	// The workflow declares none: only the node's list can produce the refusal.
-	choices := buildBackendOverrideOptions(wf, "", "", []string{"grok"})
+	choices, _ := buildBackendOverrideOptions(wf, "", "", "", "", []string{"grok"})
 	if got := choices["work"]["grok"].UnavailableReason; !strings.Contains(got, "cannot pause") {
 		t.Fatalf("grok assessment = %q, want a refusal from the NODE's ask rules", got)
+	}
+}
+
+// TestBuildBackendOverrideOptionsRefusesCodemodeCrossings holds the CALL
+// SITE of the codemode screen. The predicate it calls has its own matrix in
+// pkg/dsl/ir; this is what reddens if the picker stops asking the question —
+// the shape an adversarial round found live, with all three refusing backends
+// offered as selectable and an empty unavailable_reason.
+//
+// A launch override beats everything the source wrote, so the route it lands
+// on is one C339 never judged: this screen is the only thing between an
+// operator and a dispatch that refuses.
+func TestBuildBackendOverrideOptionsRefusesCodemodeCrossings(t *testing.T) {
+	t.Setenv("ITERION_PERMISSION", "")
+	t.Setenv("ITERION_DEFAULT_BACKEND", "")
+	wf := compileSource(t, `agent composer:
+  model: "anthropic/claude-sonnet-4-6"
+  backend: "claw"
+  permission: off
+  codemode: on
+
+agent plain:
+  model: "anthropic/claude-sonnet-4-6"
+  backend: "claw"
+  permission: off
+
+workflow main:
+  composer -> plain
+  plain -> done
+`)
+
+	choices, _ := buildBackendOverrideOptions(wf, "", "", "", "", []string{"claw", "claude_code", "codex"})
+	if got := choices["composer"]["claw"].UnavailableReason; got != "" {
+		t.Errorf("the backend that serves codemode is refused: %s", got)
+	}
+	for _, backend := range []string{"claude_code", "codex"} {
+		got := choices["composer"][backend].UnavailableReason
+		if got == "" {
+			t.Errorf("the picker offers %q to a `codemode: on` node; the dispatch refuses it", backend)
+			continue
+		}
+		if !strings.Contains(got, "codemode") {
+			t.Errorf("%q is refused for the wrong reason: %s", backend, got)
+		}
+		// A node that declared nothing keeps every backend: the screen
+		// follows the declaration, not the capability.
+		if other := choices["plain"][backend].UnavailableReason; other != "" {
+			t.Errorf("a node without codemode lost %q: %s", backend, other)
+		}
 	}
 }

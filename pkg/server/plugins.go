@@ -14,7 +14,7 @@ import (
 func (s *Server) handlePluginsList(w http.ResponseWriter, r *http.Request) {
 	reg, err := plugin.Load()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 		return
 	}
 	s.writeJSONFor(w, r, map[string]any{"plugins": reg.Views()})
@@ -31,7 +31,7 @@ func (s *Server) handlePluginEnable(enabled bool) http.HandlerFunc {
 		}
 		reg, err := plugin.Load()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 			return
 		}
 		if err := reg.SetEnabled(name, enabled); err != nil {
@@ -69,7 +69,7 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	// view (enabled state resolved, kinds populated).
 	reg, err := plugin.Load()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 		return
 	}
 	resp := map[string]any{"name": name}
@@ -115,7 +115,7 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	reg, err := plugin.Load()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 		return
 	}
 	if _, ok := reg.Get(name); !ok {

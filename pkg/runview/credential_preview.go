@@ -3,10 +3,13 @@ package runview
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -27,11 +30,34 @@ type CredentialPreviewRequest struct {
 	// ITERION_PERMISSION, exactly as the launch would. See
 	// docs/permissions.md.
 	Permission string `json:"permission,omitempty"`
+	// Codemode is the run-level codemode override ("on"|"off"; ADR-165) the
+	// caller is about to launch with — the same field the launch request
+	// carries — so the launch warnings (C348/C347's launch-time twins)
+	// answer for THAT launch on the surface that shows them. Empty inherits
+	// the workflow/node codemode: DSL, exactly as the launch would.
+	// CodemodeBounds is the launch's field-by-field raise, in the launch
+	// request's own orthography.
+	Codemode       string                 `json:"codemode,omitempty"`
+	CodemodeBounds *CodemodeBoundsRequest `json:"codemode_bounds,omitempty"`
 	// LLMRouting is the RUN level of the adaptive-routing policy the
 	// caller is about to launch with (ADR-121) — folded as the HEAD
 	// Launcher layer so the preview's whitelist answers the launch the
-	// operator shapes, not the launch the defaults would make. Optional.
+	// operator shapes, not the launch the defaults would make. Optional;
+	// it meets the write gate the launch's own field meets.
 	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
+	// Vars is the launch's own --var-style map the caller is about to
+	// launch with — the personal lane's operator-owned values, read the
+	// way fill, restore and the gate read them (ir.LaunchVarsView under
+	// ADR-129 §4). The webhook lane resolves its vars from the config
+	// layers and the delivery payload, so it takes no caller values.
+	Vars map[string]string `json:"vars,omitempty"`
+	// ReviewMode is the run-level review-topology override
+	// (auto|single|paired) the caller is about to launch with — the launch
+	// request's dedicated field. `paired` puts the second reviewer on the
+	// run's topology, so the preview walks a different plan for it; empty
+	// inherits the workflow's own value, as the launch does. The retired
+	// mono/dual spellings resolve as single/paired.
+	ReviewMode string `json:"review_mode,omitempty"`
 }
 
 type CredentialPreviewContext struct {
@@ -132,6 +158,11 @@ type CredentialPreviewSpec struct {
 	// equal, and every consumer reads one policy. Nil on both = the launch
 	// is unwired; everything is sealable.
 	LLMRoutePolicy *store.RunLLMRoutePolicy
+	// PoolAttachment is the launch's RESOLVED pool attachment (ADR-164),
+	// resolved by the server exactly as the launch site would — the same
+	// parity doctrine: the preview's pool answers what the launch will
+	// draw. Nil = no attachment, the legacy pool behavior.
+	PoolAttachment *store.RunPoolAttachment
 }
 
 type CredentialPreviewer interface {
@@ -140,6 +171,29 @@ type CredentialPreviewer interface {
 
 var ErrCredentialPreviewUnavailable = errors.New("credential preview is unavailable")
 
+// ErrFundingUnjudgeable marks a funding verdict nobody can reach because the
+// program the launch or the resume would run cannot be built: a bot gone
+// from its catalog, a source that no longer compiles, an input or an
+// override the launch funnel refuses. PERMANENT, unlike a store or metadata
+// read that failed: the same subject is refused identically on every
+// attempt, so a surface abandons it rather than re-arming it.
+var ErrFundingUnjudgeable = errors.New("the run's program cannot be built, so whether it is funded cannot be judged")
+
+// CredentialFundingJudge is the publisher's unfunded verdict asked BEFORE a
+// launch or a resume is metered — the credential preview's own decision,
+// returned as an error instead of printed as a warning: nil when the run
+// starts, an error wrapping ErrNoLLMCredential when the live launch would
+// refuse it, ErrCredentialPreviewUnavailable when the publisher seals no
+// credential (and so decides nothing). The launch gate's funding arm reads
+// it for an untrusted subject (ADR-162 decision 7, ADR-154 D13): a fork run
+// spends the team's own API keys alone, and a gesture metered for a run the
+// publisher refuses is a unit the outside author and the org paid for
+// nothing.
+type CredentialFundingJudge interface {
+	FundingRefusal(context.Context, CredentialPreviewSpec, *ir.Workflow) error
+	ResumeFundingRefusal(context.Context, *store.Run, *ir.Workflow) error
+}
+
 // PreviewCredentials compiles exactly as Launch does, but never creates a run,
 // snapshot, reservation, probe, or secret bundle.
 func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreviewSpec) (CredentialPreview, error) {
@@ -147,9 +201,98 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if !ok {
 		return CredentialPreview{}, ErrCredentialPreviewUnavailable
 	}
-	wf, _, _, err := compileForLaunch(spec.Launch.FilePath, spec.Launch.Source, spec.Launch.BundleDir)
+	wf, spec, previewWarnings, err := s.compileCredentialPreview(spec)
 	if err != nil {
 		return CredentialPreview{}, err
+	}
+	out, err := p.PreviewCredentials(ctx, spec, wf)
+	if err != nil {
+		return CredentialPreview{}, err
+	}
+	out.Warnings = append(out.Warnings, previewWarnings...)
+	return out, nil
+}
+
+// FundingRefusal is the publisher's funding verdict on the launch spec
+// describes, compiled and folded exactly as PreviewCredentials (and so as
+// Launch) compiles and folds it: the gate refuses on the program the launch
+// would judge, never on a second reading of it.
+func (s *Service) FundingRefusal(ctx context.Context, spec CredentialPreviewSpec) error {
+	j, ok := s.publisher.(CredentialFundingJudge)
+	if !ok {
+		return ErrCredentialPreviewUnavailable
+	}
+	wf, spec, _, err := s.compileCredentialPreview(spec)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrFundingUnjudgeable, err)
+	}
+	return j.FundingRefusal(ctx, spec, wf)
+}
+
+// ResumeFundingRefusal is the publisher's funding verdict on resuming the run
+// spec names, on the workflow Resume would compile: the run document read
+// first, a bare spec's source re-derived by the server's filler, the shared
+// bundle and the bundle directory resolved, compiled under the run's own
+// trust — then judged by the publisher against the run's frozen program.
+func (s *Service) ResumeFundingRefusal(ctx context.Context, spec ResumeSpec) error {
+	j, ok := s.publisher.(CredentialFundingJudge)
+	if !ok {
+		return ErrCredentialPreviewUnavailable
+	}
+	if spec.RunID == "" {
+		return errors.New("runview: resume funding: run_id is required")
+	}
+	r, err := s.store.LoadRun(ctx, spec.RunID)
+	if err != nil {
+		return err
+	}
+	if spec.FilePath == "" {
+		spec.FilePath = r.FilePath
+	}
+	if s.resumeFiller != nil && spec.Source == "" && spec.BundleDir == "" && spec.BotBundle == nil {
+		cleanup, ferr := s.resumeFiller(ctx, r, &spec)
+		if ferr != nil {
+			return fmt.Errorf("runview: resolve resume source: %w", ferr)
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+	if _, err := resolveSharedResumeSpec(r, &spec); err != nil {
+		return fmt.Errorf("%w: %w", ErrFundingUnjudgeable, err)
+	}
+	spec.BundleDir = resumeBundleDir(r, spec)
+	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrFundingUnjudgeable, err)
+	}
+	return j.ResumeFundingRefusal(ctx, r, wf)
+}
+
+// compileCredentialPreview is the one compile-and-fold every reading of a
+// would-be launch crosses — the preview and the funding judge alike — so
+// neither can judge a program the other does not.
+func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Workflow, CredentialPreviewSpec, []string, error) {
+	wf, _, _, err := compileForLaunch(spec.Launch.FilePath, spec.Launch.Source, spec.Launch.BundleDir, spec.Launch.BundleEntry, s.effectiveWorkDir(spec.Launch.WorkDir), spec.Launch.Trust)
+	if err != nil {
+		return nil, spec, nil, err
+	}
+	// The SAME unknown-input refusal the launch funnel applies (#1757): a
+	// preview over a var no var of the workflow declares would answer for a
+	// launch that refuses itself. The operator's opt-out rides with a
+	// visible warning instead of silently reading the defaults. The
+	// engine-injected names are carved out exactly as the launch carves
+	// them (#2416): a provision's stamped dials are not unknowns, and a
+	// preview that refused them would describe a launch that runs.
+	var previewWarnings []string
+	if unknown := ir.UnknownInputNames(wf, spec.Launch.Vars); len(unknown) > 0 {
+		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
+			if !spec.Launch.AllowUnknownInputs {
+				return nil, spec, nil, fmt.Errorf("credential preview input %s names no var of the workflow (declared: %s)",
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			}
+			previewWarnings = append(previewWarnings, fmt.Sprintf("Input %s name(s) no var of the workflow — riding on the operator's opt-out (declared: %s).", strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", ")))
+		}
 	}
 	// The resolved policy rides the spec's TOP-LEVEL field — the server
 	// resolves it exactly as the launch site would — while the fold reads
@@ -170,10 +313,83 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	// Service.Launch, so a fold in Launch alone would leave the preview
 	// deriving candidates, pool wants and warnings from the unfolded set —
 	// the operator shown credentials the launch never acquires. One
-	// shared body with the two launch entries (foldAndScreen), so the
-	// order exists in exactly one place.
-	if err := foldAndScreen(wf, &spec.Launch); err != nil {
-		return CredentialPreview{}, err
+	// shared body with the two launch entries (foldAndScreenLaunch), so
+	// the order exists in exactly one place.
+	foldWarnings, err := foldAndScreenLaunch(wf, &spec.Launch, "")
+	if err != nil {
+		return nil, spec, nil, err
 	}
-	return p.PreviewCredentials(ctx, spec, wf)
+	previewWarnings = append(previewWarnings, foldWarnings...)
+	return wf, spec, previewWarnings, nil
+}
+
+// CodemodeBoundsRequest is the launch request's bounds raise (ADR-165), with
+// the codemode: block's own properties for names — one spelling, so an
+// API caller reads the same vocabulary the DSL documents. Durations parse
+// with time.ParseDuration ("500ms" rounds up the way RLIMIT_CPU's unit
+// demands); a value the platform cannot read is a 400, never an inherit.
+type CodemodeBoundsRequest struct {
+	ToolCalls           int64  `json:"tool_calls,omitempty"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
+	Wall                string `json:"wall,omitempty"`
+	CPU                 string `json:"cpu,omitempty"`
+	Memory              int64  `json:"memory,omitempty"`
+	ScriptBytes         int64  `json:"script_bytes,omitempty"`
+	ResultBytes         int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
+	StoreEntries        int64  `json:"store_entries,omitempty"`
+	StoreBytes          int64  `json:"store_bytes,omitempty"`
+}
+
+// toBounds converts the request shape to the resolver's, parsing the two
+// duration strings. An unparsable duration names the field, the way C349
+// does for the DSL.
+func (b *CodemodeBoundsRequest) ToBounds() (*ir.CodemodeBounds, error) {
+	if b == nil {
+		return nil, nil
+	}
+	// A negative bound is a typo, not a choice: the resolver's pick rule
+	// would silently read it as unset. The integer fields check before the
+	// parse; the durations check on their parsed values, so "-5s" is named
+	// exactly like a raw negative. The launch surface never silently
+	// inverts an input into an inherit.
+	out := &ir.CodemodeBounds{
+		ToolCalls:           b.ToolCalls,
+		ConcurrentToolCalls: b.ConcurrentToolCalls,
+		Memory:              b.Memory,
+		ScriptBytes:         b.ScriptBytes,
+		ResultBytes:         b.ResultBytes,
+		ToolResultBytes:     b.ToolResultBytes,
+		StoreEntries:        b.StoreEntries,
+		StoreBytes:          b.StoreBytes,
+	}
+	if name := ir.CodemodeBoundsNegativeField(out); name != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: a bound is negative — a bound is a size or a count, not a signal", name)
+	}
+	// Ordered, never a map: two invalid durations in one request must name
+	// the SAME field on every retry (a 400 that changes its mind between
+	// identical requests reads as a different defect each time — found by
+	// tour 2: 200 identical requests named wall 177 times, cpu 23).
+	for _, pair := range []struct {
+		name string
+		raw  *string
+	}{{"wall", &b.Wall}, {"cpu", &b.CPU}} {
+		name, v := pair.name, *pair.raw
+		if v == "" {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("codemode_bounds.%s: %q is not a duration (e.g. 30s, 5m)", name, v)
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("codemode_bounds.%s: %q is negative — a bound is a size or a count, not a signal", name, v)
+		}
+		if name == "wall" {
+			out.Wall = d
+		} else {
+			out.CPU = d
+		}
+	}
+	return out, nil
 }

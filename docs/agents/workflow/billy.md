@@ -34,11 +34,16 @@ declare.
 
 **Until the production override is re-pushed, reviews here still carry
 `Correction : /billy`.** A stored bundle outranks the baked catalog at every
-launch surface, and the staleness warning cannot help: the deployed override is
-version-suffixed (`0.9.2-codex-claw.N`) and a suffixed version is unorderable,
-so `shadowsNewerVersion` never fires — a blind spot
-`pkg/server/bot_override_staleness.go` names itself. Landing the change moves
-`main`; re-pushing the override is what moves what a developer reads.
+launch surface, so landing the change moves `main` and nothing else;
+re-pushing the override is what moves what a developer reads. Which signal
+says so depends on the override's version, and the live one is not in this
+tree — read the row (`iterion remote admin bots`, super-admin): a plain
+dotted version against a newer bake raises
+`iterion_bot_override_shadows_newer{slug="review-pr"}` and its alert, while a
+suffixed pin (`0.9.2-codex-claw.N`) parses as nothing, so `shadowsNewerVersion`
+stays silent and only the informational
+`iterion_bot_override_unorderable_version{slug="review-pr"}` carries it — by
+design, and the gap `docs/platform-bots.md` registers.
 
 ### Re-arm when this repo's team spends its own BYOK key
 

@@ -39,7 +39,16 @@ type RunRetryStore interface {
 	// DelayRunRetry moves an already-armed retry without consuming another
 	// attempt. expectedAfter is a CAS guard against an operator or another
 	// sweeper changing the intent concurrently.
-	DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (delayed bool, err error)
+	//
+	// reason and code, when non-empty, re-tag WHAT the row waits for
+	// (RunRetryState.Reason and Code) in the same write: a deferral that
+	// changes the wait's class — a usage-window row whose resume was refused
+	// on a credential's concurrency cap now waits for a slot, not for the
+	// provider — says so, or every reader keyed on the reason (the probe
+	// pass, UsageParkWall, the audit trail) keeps treating the row as the
+	// wait it no longer is. Empty keeps the row's own, like the zero wall
+	// of RearmProbedRunRetry.
+	DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time, reason, code string) (delayed bool, err error)
 	// PullRunRetry pulls an armed retry FORWARD to probeAt (the sweeper's
 	// "now") so the runner's usage preflight — the only authoritative
 	// reading of the provider's window — gets to answer before the
@@ -49,6 +58,16 @@ type RunRetryStore interface {
 	// RunRetryState.ProbeFrom, counts the probe and refuses a row that
 	// already carries a marker.
 	PullRunRetry(ctx context.Context, runID string, expectedAfter, probeAt time.Time) (pulled bool, err error)
+	// ReleaseRunRetry is PullRunRetry on an ANSWER: the probe of the row's
+	// credential window, run releasedBy, got past the wall, so the row is
+	// pulled to releaseAt for the due pass to resume. Same filter (the
+	// status, the exact retry_after, no marker held) and the same marker
+	// (expectedAfter kept in ProbeFrom, the pull stamped), plus
+	// RunRetryState.ReleasedBy — the fact every reader that must tell a
+	// release from a guess keys on. It counts on the wall's probe ledger like
+	// a pull: a release on a wrong answer is a pod relaunched into the wall,
+	// and the window's budget bounds those too.
+	ReleaseRunRetry(ctx context.Context, runID string, expectedAfter, releaseAt time.Time, releasedBy string) (released bool, err error)
 	// RearmProbedRunRetry re-arms a PROBE-MARKED retry at `at` without
 	// spending an attempt or consulting the attempt budget, and consumes
 	// the marker. It is how both halves settle a probe that found the
@@ -92,6 +111,26 @@ type RunRetryStore interface {
 	// closed or re-queued under it leaves nothing to wake, whatever instant
 	// the row holds.
 	AbandonRunRetry(ctx context.Context, runID, reason string, expectedAfter time.Time) (abandoned bool, err error)
+}
+
+// RunProbeAnswerStore is the runner's half of a credential window's probe
+// (RunRetryState.ProbeAnsweredAt): the attempt that followed a pull records
+// that the wall the pull set aside fell. A capability of its own, like
+// RunRetryStore, and hosted by the same store; callers MUST nil-check via
+// AsRunProbeAnswerStore.
+type RunProbeAnswerStore interface {
+	// AnswerRunProbe records that the wall a probe-marked row sets aside
+	// fell at `at`, iff the row holds the marker (probe_from) and carries no
+	// answer yet. answered=false with no error when it does not: an arming
+	// consumed the marker first, or an earlier call of the attempt answered.
+	// No status term: the run answering is running.
+	AnswerRunProbe(ctx context.Context, runID string, at time.Time) (answered bool, err error)
+}
+
+// AsRunProbeAnswerStore returns s as RunProbeAnswerStore when the backend
+// hosts durable retry state, or nil otherwise.
+func AsRunProbeAnswerStore(s RunStore) RunProbeAnswerStore {
+	return capability[RunProbeAnswerStore](s)
 }
 
 // AsRunRetryStore returns s as RunRetryStore when the backend can host

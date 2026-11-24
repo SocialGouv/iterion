@@ -78,14 +78,22 @@ The rollout is deliberately reversible:
 
 1. Capture a baseline with `iterion reliability report` — finished, failed,
    failed-resumable, paused and queued runs, plus retry-armed and ledger-use
-   counts, over the store the working directory resolves to (`--store-dir`
-   overrides it, `--json` makes it diffable). The same command with
-   `--run-id <id>` answers the per-run question instead: legacy or contract
-   context, admission recorded, how many nodes published, and whether the run
-   is rollback-safe. Both are strictly read-only — reporting on a legacy run
-   never upgrades its policy. The report's first lines are the RESOLVED mode
-   and context policy, so the baseline always states which of the two
-   variables below was in effect when it was taken.
+   counts (`--json` makes it diffable). **Over the store the pilot runs on:**
+   the plain command reads the filesystem store the working directory
+   resolves to (`--store-dir` overrides which one), which is a developer's
+   local runs, not the population a cloud promotion is decided on;
+   `--cloud` reads the Mongo run store through the same configuration the
+   server and runner use (`ITERION_MONGO_URI` plus `ITERION_S3_*`, which
+   that store requires to open at all), and `--tenant <id>` scopes the
+   baseline to one tenant. The report's `store` line names the source it
+   actually read, so a before/after pair cannot silently compare two
+   different populations. The same command with `--run-id <id>` answers the
+   per-run question instead: legacy or contract context, admission
+   recorded, how many nodes published, and whether the run is
+   rollback-safe. All of them are strictly read-only — reporting on a
+   legacy run never upgrades its policy. The report's first lines are the
+   RESOLVED mode and context policy, so the baseline always states which of
+   the two variables below was in effect when it was taken.
 2. Start a pilot in `report` mode with `ITERION_RELIABILITY_MODE=report`.
    Admission decisions are recorded and surfaced, but legacy contexts remain
    runnable; correction and watcher ledgers are observational evidence that
@@ -103,15 +111,18 @@ The rollout is deliberately reversible:
    resume safe.
 
 The output correction budget is deliberately **not a rollback lever** for this
-pilot. `ITERION_OUTPUT_CORRECTION_BUDGET` does exist: it sets the process-wide
-default (two attempts when unset), while `runtime.WithOutputCorrectionBudget`
-overrides it for one engine. Correction still runs only when output validation
-is enabled and the executor implements `runtime.OutputCorrector`; no production
-path currently satisfies both conditions because `ClawExecutor` validates and
-retries upstream of this optional engine path. Changing the variable therefore
-does not disable the other reliability controls listed above. The
-`output_corrections` ledger stays readable either way — pre-pilot runs simply
-have none.
+pilot. `ITERION_OUTPUT_CORRECTION_BUDGET` sets the process-wide default (two
+attempts per node invocation when unset), while
+`runtime.WithOutputCorrectionBudget` overrides it for one engine. The executor's
+schema correction loop for agents, judges and LLM routers shares the runtime's
+durable allowance; `0` disables correction. Other outputs warn by default and
+reject in strict mode (`ITERION_STRICT_OUTPUT_VALIDATION=1` or
+`WithOutputValidation(true)`); a tool recipe's stdout that is not a JSON object
+under a declared `output:` is refused in the default too, and wrapped again
+only when the dial is written out as off
+([the output contract](dsl.md#tool)). Changing the correction budget does not disable
+the reliability controls listed above. The `output_corrections` ledger stays
+readable either way — pre-pilot runs simply have none.
 
 ### The two variables, and which one wins
 
@@ -133,6 +144,129 @@ unset the older variable. An unrecognised value emits a one-time warning; an
 invalid new mode falls back to the older valid policy, while an invalid or
 absent value in both variables resolves to `legacy`.
 
+### The tiers above those variables: a level, and the env as a floor
+
+The promotion step is `enforce` **by level**: a run-affecting setting belongs
+to a database level above the bot, not to a process variable (ADR-132,
+[#2699](https://github.com/SocialGouv/iterion/issues/2699)). That resolver
+does not exist yet, so what ships here is the half that can be true today —
+the resolution is TIERED, and the process environment is its documented
+FLOOR:
+
+1. an explicit `ITERION_RELIABILITY_MODE=legacy` is a **cap**, not a floor.
+   No level overrules it. Step 4 above promises an emergency lever, and
+   under plain floor arithmetic a level resolving to `enforce` would raise
+   the gate straight back over the operator pulling that lever;
+2. otherwise the stricter of the level and the floor wins
+   (`legacy` < `report` < `enforce`): a level may **raise** the gate above
+   what the operator set on the process, and may not lower it — a database
+   row must not quietly un-enforce a host an operator set to `enforce`;
+3. a level value the resolution cannot parse is not an answer. The floor
+   stands, exactly as it does for an unparseable variable;
+4. `ITERION_EXECUTION_CONTEXT_POLICY=legacy` is **not** the lever. That
+   variable is the narrower switch this rollout generalises, the rollback is
+   performed through the authoritative one, and treating it as a cap would
+   make every deployment still carrying it un-promotable by a level.
+
+Today every caller passes `reliability.ModeUnset` for the level, so the
+floor is the whole answer and the resolved mode is exactly what the two
+variables said before this tier existed. `ModeUnset` is the greppable seam:
+when the level resolver lands, its caller passes the level-resolved mode to
+`ModeFloor.Resolve` instead of adding a second resolution the launch
+surfaces could disagree with.
+
+`report` is the hatch this ordering makes usable: a scope promoted too far
+is walked back by lowering its level to `report` — admission decisions keep
+being recorded and surfaced, and not one run is refused — without touching
+the process floor, and the floor itself remains the one place an operator
+stops everything.
+
 Legacy documents are always readable. Missing context, admission, correction
 or watcher fields mean “pre-pilot”, not “successful”; the compatibility report
 marks that state explicitly so a green status cannot be inferred by accident.
+
+## The divergence baseline (tranche 8 close-out)
+
+The eight implementation tranches landed in September 2026. What the design
+owes after them is this: state, against the code and not against the plan,
+which of its eleven acceptance criteria the tree actually meets. A criterion
+is `met` only when a named witness refuses its violation; anything else is
+`partial` or `open` and says what is missing. `verdict` is the measurement,
+not an intention.
+
+| # | Acceptance criterion | Owner | Witness | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | A missing prerequisite is diagnosed before any model call | [`pkg/runtime/admission.go`](../pkg/runtime/admission.go) (`admitRun`, reached from `engine_run.go` before attachments, workspace setup and the first executor call) | `TestAdmissionEnforceDeniesBeforeExecution` | met, for the contract the gate owns — see row 3 for what the gate does not compare; the BEFORE itself is the call site's order (`engine_run.go`, `resume.go`) and no cited test observes a node that did not run, so that qualifier is an owed witness |
+| 2 | CLI, Studio and Copi show the same structured cause for a parent or child failure | [`pkg/runview/diagnostic.go`](../pkg/runview/diagnostic.go) (one versioned projection) | `TestBuildDiagnostic_ProjectsNestedNodeOutputDetail`, `TestSnapshotBuilder_IncludesTheSameDiagnosticProjection` | met |
+| 3 | A deliberately isolated subbot is accepted; an UNDECLARED store divergence is blocked before fan-out | `ExecutionContext.BusinessStores` is declared and normalised ([`pkg/store/execution_context.go`](../pkg/store/execution_context.go)); the child keeps the parent's store declarations ([`pkg/runner/subbot.go`](../pkg/runner/subbot.go)) | first half: the subbot resolution; second half: **none** | **open** — `admitRun` names neither `RunStore` nor `BusinessStores`: the declaration is recorded and never compared with the effective stores, so no divergence can be blocked by it |
+| 4 | An invalid model output is corrected at its producer within a defined limit | the verified-action ladder for repairable tool recipes ([`pkg/backend/model/executor_verified_action.go`](../pkg/backend/model/executor_verified_action.go)); model schema correction in [`pkg/backend/model/executor_build_task.go`](../pkg/backend/model/executor_build_task.go), with the durable allowance in [`pkg/runtime/executor_output_correction.go`](../pkg/runtime/executor_output_correction.go) and `WithOutputCorrectionBudget` | `TestVerifiedAction_SelfRepair`, `TestVerifiedAction_OnlyARepairableRecipeEntersTheSelfRepairRung`, `TestOnlyPolicyRecoverHandsTheGoalToTheRungAgent`, `TestVerifiedAction_RecoverExhaustedFails`, `TestSchemaReask_ExhaustsDefaultAllowance`, `TestSchemaReask_AllViolationsCarryFeedback`, `TestValidateAndRetry_BooksTheClawRecoveryCall`, `TestR2ExecutorCorrectionSpendGuard`, `TestR2ExecutorCorrectionAfterAndResumeRaise` | **partial** on the previously recorded tool-ladder rung-3 attempt-count gap; that ladder is outside this change. Model correction covers missing fields, parse failures, types, enums and nulls within a default allowance of two calls per node invocation. The runtime persists attempts before calls and terminal status afterward; tests witness the spend guard and an explicit budget raise on resume. In-process schema exhaustion avoids a generic business-prompt repeat; cloud redelivery may repeat the node within its delivery limit while retaining the consumed correction allowance. |
+| 5 | An unchanged payload and unchanged violations cannot loop forever | the episode fingerprint comparison of the engine seam, [`pkg/runtime/node_output.go`](../pkg/runtime/node_output.go); the production ladder's rungs, [`pkg/backend/model/executor_verified_action.go`](../pkg/backend/model/executor_verified_action.go) | `TestSchemaValidation_UnchangedCorrectionStopsImmediately`, `TestSchemaValidation_UnchangedSemanticPayloadChargesFailedCorrection` | **partial**, on ONE named gap ([ADR-152](adr/152-the-reliability-invariants-have-owning-layers.md), decision 4): every production correction is BOUNDED by construction — the re-ask at one call, the ladder at its declared attempt budget, witnessed on rung 4 by `TestOnlyPolicyRecoverHandsTheGoalToTheRungAgent` and on neither rung by `TestVerifiedAction_RecoverExhaustedFails`, which refuses a success after the rungs are exhausted and counts no attempt (the loop tripled, the whole producer package stays green) — so an unbounded loop is impossible in the code while the self-repair COUNT stays unwitnessed, and the ladder has no unchanged-fingerprint STOP: the self-repair rung carries the previous stdout, stderr and resolved command forward and compares no fingerprint, so an identical corrected command spends every attempt. The stop exists only on the engine seam of row 4, which ADR-152 decision 5 puts on the model-node path; the ladder keeps a stop of its own to build, because it answers another failure class — an unmet postcondition, judged by the postcondition under bounds the author declares per node, not by the schema the episode validates a candidate against |
+| 6 | A resume explicitly refuses incompatible artifacts and destroys no effect without authorisation | [`pkg/runtime/artifact_contract.go`](../pkg/runtime/artifact_contract.go) (`ValidateArtifactContractsPreflight`, `ValidateResumeArtifacts`) + `Service.PreflightResume` | `TestValidateArtifactContractsRefusesIncompatibleRevisionInEnforce`, `TestForcedArtifactCompatibilitySurvivesWorkflowRestamp` | met |
+| 7 | A shared outage stops new waves without blocking a healthy scope | [`pkg/retrycoord`](../pkg/retrycoord) (durable circuit, tenant-scoped, keyed by workflow revision) | `TestSweepDueRetries_OpenCircuitDelaysWithoutSpendingAttempt`, `TestKeyPrefersWorkflowRevision`, `TestRetryCircuitFailureOpensAndSuccessCloses` | met on the DELAY and on the key's composition — an open circuit delays the due retry without spending an attempt, the key is derived from the workflow revision, and a circuit-store outage falls back to the per-run retry rather than dropping work; the ISOLATION half is witnessed by nothing outside Mongo, because every circuit-store double in the tree answers one circuit whatever the key, so collapsing the sweeper's key to a single constant keeps `pkg/server` and `pkg/retrycoord` green — an owed witness (two runs, two revisions, one open circuit). The durable half (`TestRetryCircuitFailureOpensAndSuccessCloses`) runs under `ITERION_TEST_MONGO_URI`, in CI's Mongo conformance job |
+| 8 | Budgets and attempt identities survive checkpoints and restarts without double counting | [`pkg/runner`](../pkg/runner) usage-window retry | `TestArmUsageWindowRetry_ALegacyRowGainsItsWallWithoutASecondBudget`, `TestArmUsageWindowRetry_AWindowDurationWindowIsOneWall` | met |
+| 9 | Watchers do not repeat the same action without new evidence | [`pkg/supervise`](../pkg/supervise) durable cursor per (run, supervisor, watched set) | `TestCoordinatorPersistsCursorAndSuppressesDuplicateWake`, `TestCoordinatorCursorLoadFailureStopsActionsAndWrites` | met — per launch surface: a coordinator persists only where one wired a cursor store, which is why the baseline reports `runs_with_watcher_cursors` per run instead of a global flag |
+| 10 | The automated scenarios produce zero duplicated effect, zero unauthorised destructive resume and zero unbounded identical loop | per-lot suites across `pkg/runtime`, `pkg/runview`, `pkg/runner`; `pkg/botreplay` for node contracts | **no single suite** | **open** — the coverage exists lot by lot, but the tranche-8 scenario suite (launch, fan-out, crash, resume, rewind, quota, repair over simulated `NodeExecutor`s, in one place) does not exist; botreplay is deliberately not a graph simulator |
+| 11 | The pilot report includes the BLOCKED admissions and compares cost, delay and interventions with the baseline | `reliability.Baseline` — `admissions_denied`, readable against `admissions_recorded`, with `legacy_context_runs` | `TestSummarizeCountsBlockedAdmissions`, `TestSummarizeDoesNotReadAnUnknownVerdictAsAllowed` | **partial** — the artifact can no longer hide a blocked admission (a denied run never executes and lands in `failed`, where the status counters cannot tell it apart from a run that failed on its own work); the comparison itself needs a pilot that has RUN |
+
+### What the baseline leaves open, named
+
+[ADR-152](adr/152-the-reliability-invariants-have-owning-layers.md) is the
+record that rules on these: it maps every invariant to its owning layer and
+its witness, and names the slices the tree still owes.
+
+1. **The declared stores are inert, and not yet comparable.**
+   `ExecutionContext.RunStore` and `BusinessStores` are filled by the launch
+   authority and compared by nobody; `admitRun` compares the workflow
+   revision, the lineage and the runner's expected context only — while its
+   denial hint already says "align the run store". Adding the comparison
+   needs a store identity that can diverge: `Root()` is empty for the Mongo
+   store by design, so today's derivation is ONE constant for every Mongo
+   database, and the kind comes from `%T`, which changes under a store
+   decorator that changes nothing operationally. The escape hatch is a field
+   with no reader (`ContextRef.Required`, stamped `true` over any caller
+   declaration). So the seam comes first, then the comparison, and promoting
+   it to a denial still belongs to the promotion decision rather than to
+   this close-out.
+2. **Correction is bounded at the producer, and one stop is missing.** Two
+   production paths correct — the verified-action ladder under the author's
+   declared budget, and the schema re-ask's single call for two eligible
+   classes — which is why row 4 reads `partial` rather than open: the bound
+   exists and half of it is witnessed. What the ladder does NOT have is a
+   witness for the self-repair rung's attempt count: inflate that loop and
+   the whole producer package stays green, so the count is one owed slice
+   that keeps row 4 off the tick. The re-ask owes the other: its single call
+   is witnessed, its ELIGIBILITY is not — force the gate open and the same
+   package stays green. The re-ask's own attempt is durable
+   (`delegate_retry`, `delegate_finished` with its mode and marginal cost);
+   what neither producer keeps is a correction EPISODE with a budget that
+   survives a restart.
+   The engine's ledgered loop has no production implementor today. ADR-152
+   first kept it a seam, neither retired nor wired; the operator decided on
+   2026-11-03 to wire it, and decision 5 now records the reconciliation:
+   `ClawExecutor` implements the seam, its re-ask becomes the round the
+   engine's episode counts under ONE owner, one round per execution by
+   default, the persisted episode is the budget a retry or a resume
+   continues — so the recovery dispatch's node retry draws a fresh first
+   answer and buys no second round, up to four generations where a trunk
+   node pays six today — and the ladder stays outside it. Owed: that unit, and
+   row 5's named gap for the ladder — no unchanged-fingerprint stop.
+3. **The scenario suite of row 10 was never written.** The per-lot tests are
+   not a substitute for the end-to-end matrix the tranche names. It
+   implements the `scenarioExecutor` stubs already in `e2e/`, and its rows
+   are in [docs/e2e-coverage-matrix.md](e2e-coverage-matrix.md) as
+   `uncovered` with the reason written.
+4. **"Business stores" has no producer.** Outside tests the field appears
+   only in its declaration, `Clone` and `Normalize`; the wire type is live
+   and no DSL keyword or launch field fills it. Until a declaration surface
+   exists no gate may read it, and inferring business stores from the files a
+   run touches is what this design forbids.
+
+Rows 1, 2, 6, 7, 8 and 9 are ticked on the ticket, each on the witness named
+above; rows 1, 7 and 9 also name the qualifier their witness does not cover,
+while rows 2, 6 and 8 read a bare `met`. Row 4 reads `partial` under
+ADR-152, so its box stays unticked until the self-repair rung's attempt
+count and the re-ask's eligibility have witnesses. Rows 3, 4, 5, 10 and 11
+stay unticked, each with an owner and a slice: a criterion ticked on a path
+nothing reaches is the false green this document's own compatibility rule
+refuses, and a criterion left open with nothing behind it is the state the
+record ends.

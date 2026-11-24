@@ -98,7 +98,10 @@ func CanonicalRows() map[string]string {
 //     botscaffold.TestNoScaffoldedNodeDeclaresReadonlyWithAWritingTool;
 //   - the writing vocabulary every readonly argv row is asserted over
 //     (delegate.claudeWritingDeclarations, floored by
-//     delegate.TestTheWritingVocabularyIsReadFromTheTable).
+//     delegate.TestTheWritingVocabularyIsReadFromTheTable);
+//   - the durable-memory question's own reading of the set, which ADDS the
+//     shell and claw's `memory_write` (DurableWriteCanonicals below, read by
+//     bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne).
 //
 // Each held its own literal, and nothing held them equal: growing the
 // delegate's left both corpus rules silently narrower than the rule they
@@ -118,6 +121,33 @@ func WritingCanonicals() []string {
 }
 
 var writingCanonicals = []string{"write", "edit", "notebookedit"}
+
+// DurableWriteCanonicals are the canonical concepts whose tool can put bytes
+// in a bot's workspace memory tree — the question "could this node keep a
+// durable file across sessions at all". Copied, like the set it derives from.
+//
+// It is WritingCanonicals plus two members, and both additions are the whole
+// point of asking separately rather than reusing that set:
+//
+//   - **the shell.** The memory tree is a directory under
+//     `$ITERION_HOME/projects/<key>/memory/`, so a node that holds `bash`
+//     writes it — that is exactly what a claude_code recipe used to tell a
+//     bot to do (iterion#2773). WritingCanonicals excludes the shell by
+//     CONTRACT, because `readonly:` KEEPS it on claude_code and a corpus rule
+//     reading it as a declared writer would refuse 26 shipped nodes. That
+//     contract is about what a tool-withholding FLAG removes; this question is
+//     about what a process can write, and codex's sandbox reading is the
+//     precedent for a second reading of the shell living beside the first.
+//   - **`memory_write`.** Claw's own durable-write builtin is on no roster the
+//     spelling table projects, so it has no canonical row and folds onto
+//     itself; a question about durable memory that omitted it would miss the
+//     only tool named for it.
+//
+// Members are canonical concepts: fold a declaration through
+// CanonicalToolName before testing membership, never compare raw spellings.
+func DurableWriteCanonicals() []string {
+	return append(slices.Clone(writingCanonicals), "bash", "memory_write")
+}
 
 var canonicalToolNames = map[string]string{
 	// shell. `run_command` is accepted as a Bash grant by the claude_code

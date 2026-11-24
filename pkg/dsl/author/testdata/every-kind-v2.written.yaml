@@ -53,6 +53,7 @@ secrets:
     env: DEPLOY_KEY_PATH
     optional: true
     hosts: [github.com]
+    sinks: [file, prompt]
     description: The deploy key
 schemas:
   verdict:
@@ -178,6 +179,7 @@ nodes:
     output: verdict
     publish: survey_out
     artifact_labels: [plan, review-ledger]
+    deliverables: [report.md, out/annex.html]
     system: reviewer
     user: Inline text is a prompt too
     session_slot: main
@@ -198,6 +200,16 @@ nodes:
     compress: on
     auto_memory: off
     ambient_context: none
+    codemode:
+      defer: on
+      tool_calls: 256
+      concurrent_tool_calls: 3
+      wall: 2m
+      cpu: 45s
+      memory: 536870912
+      script_bytes: 524288
+      result_bytes: 2097152
+      tool_result_bytes: 131072
     permission: ask
     allow: [Read(**)]
     ask: [Bash(git *)]
@@ -253,6 +265,7 @@ nodes:
     output: verdict
     reasoning_effort: high
     ambient_context: operator
+    codemode: off
     sandbox: none
   - router: split
     mode: fan_out_each
@@ -298,12 +311,14 @@ nodes:
     output: verdict
     publish: test_output
     artifact_labels: [tests]
+    deliverables: [tests.log]
     await: wait_all
     sandbox: auto
     compress: ultra
     permission: off
     needs: gpu
     parallel_safe: true
+    capabilities: [board.read]
     goal: The tag exists
     postcondition: git rev-parse --verify v1
     policy: recover
@@ -348,6 +363,9 @@ nodes:
     output: verdict
     needs: slots
     isolated: true
+    auto_merge: true
+    merge_strategy: merge
+    merge_into: main
   - emit: ready
     description: Announces readiness
     event: ready
@@ -376,6 +394,11 @@ workflow:
       default: x
   attachments:
     extra: file
+  business_stores:
+    - id: ledger
+      kind: postgres
+      namespace: finance
+      required: true
   budget:
     max_parallel_branches: 4
     max_duration: 4h
@@ -399,6 +422,9 @@ workflow:
   compress: on
   auto_memory: on
   ambient_context: all
+  codemode:
+    store_entries: 48
+    store_bytes: 262144
   loop_budget_guard: on
   repo_devbox: off
   workspace_checkpoint: on

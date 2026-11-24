@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -18,6 +19,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
+// registerForgeProvisioningRoutes wires the Integrations surface. The enable
+// and the update CAN mint a team token: their success path runs
+// forge.Orchestrator.Provision, which reserves the repo's hook identity with
+// webhooks.MintToken and writes the webhooks.Config row whose token
+// authenticates POST /api/webhooks/{provider}/{id} — the same door the
+// team-scoped webhook mints open. They mint it only when no live hook
+// identity exists yet (a repo's FIRST enable, or a retired integration
+// re-reserving one): a reconcile, a settings-only PATCH and an add-bots
+// request reuse the integration's sealed secret and fabricate nothing.
+//
+// So the chokepoint is NOT at this door. It is asked where the mint is
+// decided — forge.Orchestrator.ApproveTeamTokenMint, wired to
+// Server.approveTeamTokenMint — and a refusal arrives here as
+// forge.ErrMintNotApproved, which writeForgeProvisionError answers with the
+// credential's own status. A gate on the route would refuse the three
+// non-minting gestures above, which is what the runbooks run from a stored
+// token. The preview, the list and the disable mint nothing either.
 func (s *Server) registerForgeProvisioningRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleListForgeRepoBots)))
 	s.mux.Handle("POST /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleEnableForgeRepoBots)))
@@ -93,6 +111,15 @@ type forgeEnableReq struct {
 	// (the binding level holds no lock primitive) and the block is
 	// validated before anything is written.
 	Routing json.RawMessage `json:"routing,omitempty"`
+	// Pool is the repo's pool block (ADR-164) — the binding level of the
+	// pool-attachment fold for every launch this integration makes:
+	// {pool_id, enabled, strategy}. The same three-way rule as Routing
+	// (absent keeps, null clears, an object replaces), decoded STRICTLY
+	// through decodePoolBlock and validated before anything is written or
+	// parked: the pool's existence and enablement and its CONSENT (an org
+	// pool of this team's org, or a user pool whose audience admits it —
+	// never a private or the platform's instance pool).
+	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +146,13 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, rerr.status, "%s", rerr.err.Error())
 		return
 	}
+	// The pool block decodes and validates at the edge too (ADR-164): its
+	// consent is checked before anything is provisioned or parked.
+	pool, poolSpoke, perr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if perr != nil {
+		httpError(w, http.StatusBadRequest, "%s", perr.Error())
+		return
+	}
 	// Assert the connection belongs to this team before we provision.
 	conn, ok := s.forgeConnForTenant(w, r, teamID, req.ConnectionID)
 	if !ok {
@@ -137,7 +171,21 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	// forge-side until approved. Validated exactly like the direct path
 	// above, so what the admin approves is what would have run. A store
 	// error here FAILS the request (503): the gate never fails open.
-	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+	// drawsShared reads the block the repo's runs will fold AFTER this
+	// request: the spoken one, or — when the request says nothing (an
+	// add-bots enable) — the one the existing integration already carries.
+	// An unreadable integration counts as drawing (the gate fails closed).
+	drawsShared := pool != nil && pool.Enabled
+	if !poolSpoke && s.forgeIntegrations != nil {
+		existing, xerr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, strings.TrimSpace(req.Repo))
+		switch {
+		case xerr == nil:
+			drawsShared = existing.Pool != nil && existing.Pool.Enabled
+		case !errors.Is(xerr, forge.ErrIntegrationNotFound):
+			drawsShared = true
+		}
+	}
+	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, drawsShared)
 	if gerr != nil {
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
 		return
@@ -165,7 +213,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots, baseHolds, baseAllow, routing, routingSpoke)
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots, baseHolds, baseAllow, routing, routingSpoke, pool, poolSpoke)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -183,10 +231,12 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		LabelAllowlist:    req.LabelAllowlist,
 		Routing:           routing,
 		RoutingSet:        routingSpoke,
+		Pool:              pool,
+		PoolSet:           poolSpoke,
 		ActorID:           id.UserID,
 	})
 	if err != nil {
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	s.writeProvisionResult(w, r, teamID, "forge.integration.provisioned", res, s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
@@ -239,6 +289,15 @@ type forgeUpdateReq struct {
 	// clears, an object replaces), through the ONE routing decoder with
 	// locks refused at the binding level.
 	Routing json.RawMessage `json:"routing,omitempty"`
+	// Pool is the repo's pool block (ADR-164) — the binding level of the
+	// pool-attachment fold for every launch this integration makes:
+	// {pool_id, enabled, strategy}. The same three-way rule as Routing
+	// (absent keeps, null clears, an object replaces), decoded STRICTLY
+	// through decodePoolBlock and validated before anything is written or
+	// parked: the pool's existence and enablement and its CONSENT (an org
+	// pool of this team's org, or a user pool whose audience admits it —
+	// never a private or the platform's instance pool).
+	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -274,11 +333,22 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, rerr.status, "%s", rerr.err.Error())
 		return
 	}
+	pool, poolSpoke, perr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if perr != nil {
+		httpError(w, http.StatusBadRequest, "%s", perr.Error())
+		return
+	}
 	// Org ex-ante validation: only an update EXPANDING the automated
 	// surface needs the org's approval — removals and tightenings go
 	// through directly (see expandsProvisionSurface). A store error FAILS
 	// the request (503): the gate never fails open.
-	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+	// The block the repo's runs fold after this PATCH: the spoken one, or
+	// the integration's stored one when the request says nothing about it.
+	effective := ri.Pool
+	if poolSpoke {
+		effective = pool
+	}
+	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, effective != nil && effective.Enabled)
 	if ugerr != nil {
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ugerr)
 		return
@@ -296,7 +366,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			HoldLabels:           req.HoldLabels,
 			LabelAllowlist:       req.LabelAllowlist,
 			Routing:              req.Routing,
-		}, ri.ID, true, ri.BotIDs, ri.HoldLabels, ri.LabelAllowlist, routing, routingSpoke)
+			Pool:                 req.Pool,
+		}, ri.ID, true, ri.BotIDs, ri.HoldLabels, ri.LabelAllowlist, routing, routingSpoke, pool, poolSpoke)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -314,11 +385,13 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		LabelAllowlist:    req.LabelAllowlist,
 		Routing:           routing,
 		RoutingSet:        routingSpoke,
+		Pool:              pool,
+		PoolSet:           poolSpoke,
 		ActorID:           id.UserID,
 		Replace:           true,
 	})
 	if err != nil {
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	s.writeProvisionResult(w, r, teamID, "forge.integration.bots_updated", res,
@@ -340,7 +413,7 @@ func (s *Server) handleDisableForgeRepoBots(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusNotFound, "integration not found")
 			return
 		}
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	s.auditTenant(r, teamID, "forge.integration.deprovisioned", "forge_integration", integrationID, nil)
@@ -535,13 +608,51 @@ func hookRefusedDetail(e *forge.HookRefusedError) string {
 	}
 }
 
+// The stable machine codes of the three launch_vars refusals a caller must
+// act on rather than display. A studio panel branches on these — not on the
+// prose, which is free to be reworded — and each one names a DIFFERENT
+// gesture: echo the pins or replace the map (launchVarsDropCode and
+// provisionDivergedCode), or simply re-send the same request
+// (provisionDivergedRetryCode, where provisioning converges on its own).
+const (
+	launchVarsDropCode         = "launch_vars_drop"
+	provisionDivergedCode      = "provision_diverged"
+	provisionDivergedRetryCode = "provision_diverged_retry"
+)
+
+// launchVarsRefusalBody is the envelope of a launch_vars refusal: the stable
+// code, the refusal's own words, and — read from the TYPED cause, never
+// parsed back out of the message — the keys the remedy must name. An absent
+// typed cause omits the list rather than inventing an empty one: "no keys"
+// and "this build did not say" are different facts to whatever renders them.
+func launchVarsRefusalBody(code string, err error) map[string]any {
+	body := map[string]any{"error_code": code, "error": err.Error()}
+	var refusal *forge.LaunchVarsRefusal
+	if errors.As(err, &refusal) && len(refusal.Keys) > 0 {
+		body["launch_vars_keys"] = refusal.Keys
+	}
+	return body
+}
+
 // writeForgeProvisionError maps orchestrator/admin failures to stable HTTP
 // shapes the studio can act on.
-func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
+func (s *Server) writeForgeProvisionError(w http.ResponseWriter, r *http.Request, err error) {
 	var restoreFailed *forge.ConfigRestoreError
 	var hookRefused *forge.HookRefusedError
 	var indeterminate *forge.HookWriteIndeterminateError
 	switch {
+	case errors.Is(err, forge.ErrMintNotApproved):
+		// The derivation chokepoint refused the team token this
+		// provisioning reached (forge.Orchestrator.ApproveTeamTokenMint,
+		// asked at the reservation itself). The refusal belongs to the
+		// credential, not to the forge, so it answers through the same
+		// mapping the door gate used — 403 for a credential that may never
+		// mint one, 401 for one that no longer stands, and a chokepoint
+		// that could not be READ is an identity failure and not a
+		// "provisioning failed" 502. The wrapped message keeps the
+		// instance's own wording, which is what the CLI recognises to
+		// render the advice.
+		s.derivationError(w, r, err)
 	case errors.As(err, &restoreFailed):
 		// First: the repo has stopped receiving deliveries, which outranks the
 		// hook failure it is joined with — whichever case matched that one would
@@ -556,8 +667,8 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 			// with it, since a 500 whose cause is a refused URL is still that
 			// refusal for whatever the studio renders for it.
 			writeJSONStatus(w, http.StatusInternalServerError, map[string]any{
-				"error":  "hook_url_refused",
-				"detail": restoreFailed.Error() + " " + hookRefusedDetail(hookRefused),
+				"error_code": "hook_url_refused",
+				"error":      restoreFailed.Error() + " " + hookRefusedDetail(hookRefused),
 			})
 			return
 		}
@@ -574,15 +685,30 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 			"error":  "hook_url_refused",
 			"detail": hookRefusedDetail(hookRefused),
 		})
+	case errors.Is(err, forge.ErrProvisionBusy), errors.Is(err, forge.ErrIntegrationConflict), errors.Is(err, webhooks.ErrConflict):
+		httpError(w, http.StatusConflict, "%v", err)
 	case errors.Is(err, forge.ErrLaunchVarsDrop):
 		// The operator's own request is inadmissible as sent: it would drop
 		// pins it did not name. 400, with the echo and the escape hatch in
-		// the message — never a silent partial apply.
-		httpError(w, http.StatusBadRequest, "%v", err)
+		// the message — never a silent partial apply. A 4xx keeps its whole
+		// payload (internal/httpx.WriteErrorJSON), so the keys travel as a
+		// list a caller can offer gestures over, not only inside the prose.
+		writeJSONStatus(w, http.StatusBadRequest, launchVarsRefusalBody(launchVarsDropCode, err))
 	case errors.Is(err, forge.ErrProvisionDiverged):
-		// iterion's own stores diverged mid-write; the message carries the
-		// converge-on-rerun remedy. Not the forge's fault, so not a 502.
-		httpError(w, http.StatusInternalServerError, "%v", err)
+		// iterion's own stores diverged mid-write. Not the forge's fault, so
+		// not a 502 — and the two flavors are DIFFERENT remedies: the
+		// retry-convergent one lands on a plain re-run of the same request,
+		// the deterministic one needs the explicit launch_vars gesture. The
+		// 5xx floor keeps only error_code and retryable, so those two carry
+		// the distinction; the keys stay in the log, where a 500's
+		// driver-controlled detail belongs.
+		code, retryable := provisionDivergedCode, false
+		if errors.Is(err, forge.ErrProvisionDivergedRetry) {
+			code, retryable = provisionDivergedRetryCode, true
+		}
+		body := launchVarsRefusalBody(code, err)
+		body["retryable"] = retryable
+		writeJSONStatus(w, http.StatusInternalServerError, body)
 	case errors.Is(err, forge.ErrProjectBotNotPermitted):
 		// The forge refused to mint the repo's bot for the authorising
 		// account. GitLab answers one 400 for two causes, so both remedies
@@ -688,6 +814,13 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	if len(req.Routing) > 0 {
 		return true
 	}
+	// A pool block (ADR-164) moves which credentials fund the repo's
+	// unattended runs — the binding level outranks every stored scope in
+	// the pool fold. The routing precedent: park every SPOKEN block, null
+	// included; absent goes direct.
+	if len(req.Pool) > 0 {
+		return true
+	}
 	// Overlap: "allow" is the only unbounded concurrency policy (skip and
 	// supersede both cap the repo at one live run); moving to it from a
 	// bounded stored policy widens. An empty stored value already means
@@ -780,17 +913,30 @@ func (s *Server) writeProvisionResult(w http.ResponseWriter, r *http.Request, te
 // enforcement: a bot enabled after the write is never screened here, and
 // a more specific cell below the binding (the bot's manifest, the run
 // layer) can still win where this screen saw a crossing.
+//
+// Each bot is screened as its launch folds it — its resolved id and the
+// manifest name of the bundle it serves — and a cell scoped to a bot that
+// neither spelling of any enabled bot reaches is warned too: no enabled
+// bot's own launch folds it (unreachedBotCellWarnings).
 func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, botIDs []string, block *llmroute.Policy) []string {
 	if block == nil || len(block.Overrides) == 0 {
 		return nil
 	}
-	snapshot := &store.RunLLMRoutePolicy{}
-	for _, o := range block.Overrides {
+	// The snapshot built the way a launch builds it (llmroute.Resolve), so
+	// the screen folds the cells the launch would fold.
+	resolved, sources := llmroute.Resolve(llmroute.Layer{Source: llmroute.SourceWebhook, Policy: *block})
+	snapshot := &store.RunLLMRoutePolicy{Sources: sources}
+	for _, o := range resolved.Overrides {
 		snapshot.Overrides = append(snapshot.Overrides, store.RunLLMRouteOverride{
 			Selector: o.Selector, Backend: o.Backend, Model: o.Model, Provider: o.Provider, Effort: o.Effort,
 		})
 	}
 	var warnings []string
+	bots := make([]llmroute.BotIdentity, 0, len(botIDs))
+	// subbotHosts are the enabled bots a subbot child may run under: the
+	// ones whose workflow declares a subbot node, and the ones the screen
+	// could not resolve or compile.
+	var subbotHosts []string
 	for _, botID := range botIDs {
 		lb, err := s.resolveBotSource(ctx, teamID, botID)
 		if err != nil {
@@ -798,22 +944,80 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 			// answer a silent all-clear: the launch refusal is the
 			// enforcement, and this warning tells the operator which bot
 			// the screen could not judge.
+			bots = append(bots, llmroute.BotIdentity{ID: botID})
+			subbotHosts = append(subbotHosts, botID)
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be resolved for the blast-radius screen (%v); its launches are screened at launch time only", botID, err))
 			continue
 		}
+		bot := lb.botIdentity()
+		bots = append(bots, bot)
 		// The screen owns what resolution materialized, exactly like the
 		// launch lanes that defer lb.Cleanup(): a stored bot's bundle lives
 		// in a temp dir, and a screen that skips the collection leaks one
 		// directory per screened bot per spoken routing write.
-		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, snapshot)
+		reasons, declaresSubbot, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, bot, snapshot)
 		lb.Cleanup()
 		if serr != nil {
+			subbotHosts = append(subbotHosts, botID)
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be screened (%v); its launches are screened at launch time only", botID, serr))
 			continue
+		}
+		if declaresSubbot {
+			subbotHosts = append(subbotHosts, botID)
 		}
 		for _, reason := range reasons {
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q: %s", botID, reason))
 		}
 	}
-	return warnings
+	return append(warnings, unreachedBotCellWarnings(block, bots, subbotHosts)...)
+}
+
+// unreachedBotCellWarnings names each cell of block whose bot part reaches
+// none of bots by bot id or manifest name (llmroute.Selector.MatchBot):
+// written at an integration, such a cell is folded by no enabled bot's own
+// launch — a typo, a bot not enabled here, or a spelling the bot does not
+// answer to. A subbot child runs as its own bot and folds the cell for it
+// (runview.FoldForSubbotChild), so when subbotHosts names enabled bots a
+// child may run under, the warning adds that reach as a condition: the
+// screen does not resolve the children. A cell reaching every bot (no bot
+// part, `*/`) is never one.
+func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentity, subbotHosts []string) []string {
+	named := make([]string, 0, len(bots))
+	for _, b := range bots {
+		if b.Name != "" {
+			named = append(named, fmt.Sprintf("%q [manifest %q]", b.ID, b.Name))
+			continue
+		}
+		named = append(named, fmt.Sprintf("%q", b.ID))
+	}
+	enabled := strings.Join(named, ", ")
+	if enabled == "" {
+		enabled = "none enabled"
+	}
+	child := ""
+	if len(subbotHosts) > 0 {
+		hosts := make([]string, len(subbotHosts))
+		for i, h := range subbotHosts {
+			hosts[i] = strconv.Quote(h)
+		}
+		child = fmt.Sprintf(", unless a subbot child of %s runs as that bot (its bundle's slug or manifest name)", strings.Join(hosts, " or "))
+	}
+	var out []string
+	for _, o := range block.Overrides {
+		sel, err := llmroute.ParseSelector(o.Selector)
+		if err != nil || sel.MatchBot(llmroute.BotIdentity{}) == llmroute.BotMatchAll {
+			continue
+		}
+		reached := false
+		for _, b := range bots {
+			if sel.MatchBot(b) != llmroute.BotMatchNone {
+				reached = true
+				break
+			}
+		}
+		if !reached {
+			out = append(out, fmt.Sprintf("routing: override cell %q is scoped to bot %q, which reaches none of this integration's enabled bots (%s) by bot id or manifest name — no enabled bot's own launch folds it: a typo, or a bot not enabled on this integration%s", o.Selector, sel.Bot, enabled, child))
+		}
+	}
+	return out
 }

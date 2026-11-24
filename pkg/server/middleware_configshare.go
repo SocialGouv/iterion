@@ -52,7 +52,7 @@ func (s *Server) configShareAuth(next http.Handler) http.Handler {
 		// Per-IP guard BEFORE any store lookup — bounds id-guessing + flooding
 		// cheaply (a miss costs only this check, not a DB round-trip).
 		if s.authLimiter != nil {
-			if ok, _ := s.authLimiter.allow("csip:"+s.clientIP(r), configShareRateBucket); !ok {
+			if ok, _ := s.authLimiter.allow("csip:"+s.rateBucket(r), configShareRateBucket); !ok {
 				httpError(w, http.StatusTooManyRequests, "rate limited")
 				return
 			}

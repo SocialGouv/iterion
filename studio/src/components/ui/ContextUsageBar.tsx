@@ -22,9 +22,21 @@ export function ContextUsageBar({ used, window, className }: Props) {
       : { fill: "bg-accent/80", bg: "bg-accent/20" };
   return (
     <div
+      // A gauge, announced as one (ui/Meter does the same): aria-label on a
+      // roleless div is prohibited ARIA, and role="img" would hide the value
+      // assistive tech can otherwise report and compare.
+      role="progressbar"
+      aria-valuemin={0}
+      // Both from the formatter, which owns the clamp the percentage already
+      // applies: a valuenow above valuemax is an out-of-range gauge.
+      aria-valuemax={usage.max}
+      aria-valuenow={usage.now}
+      aria-valuetext={usage.title}
       className={`mt-1 h-[3px] w-full rounded-sm overflow-hidden ${tone.bg} ${className ?? ""}`}
       title={usage.title}
-      aria-label={usage.title}
+      // The name says WHICH gauge, the value text says how full: the same
+      // sentence in both is read twice, around the role.
+      aria-label="Context usage"
     >
       <div
         className={`h-full ${tone.fill} transition-[width] duration-300`}

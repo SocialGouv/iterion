@@ -12,40 +12,93 @@ on:
       - '.github/workflows/ci-runner-image.yml'
   workflow_dispatch:
 
+# `packages: write` is NOT here, and that is the point of the split (#2787): at
+# workflow level every run of every pull request receives a token that can
+# write the organisation's registry, for a pipeline that publishes only from
+# main. The publish job below holds that scope alone.
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: ci-runner-image-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  image:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.version.outputs.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Choose an immutable image version
+        id: version
         shell: bash
         run: |
-          echo "CI_RUNNER_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/iterion-ci-runner:1.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/iterion-ci-runner:1.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          echo "CI_RUNNER_IMAGE=$image" >> "$GITHUB_ENV"
+          # The tag crosses to the publish job as an OUTPUT. Recomputing it
+          # there from GITHUB_RUN_NUMBER/GITHUB_RUN_ATTEMPT would be a second
+          # source of one truth: it agrees today and diverges the day a run is
+          # re-attempted, publishing a tag nothing validated.
+          echo "image=$image" >> "$GITHUB_OUTPUT"
       - name: Build the runner image
         run: docker build --pull --tag "$CI_RUNNER_IMAGE" --label "org.opencontainers.image.revision=$GITHUB_SHA" ci/arc-runner
       - name: Prove the baked toolchains, cgo and race as the runner user
         run: bash ci/arc-runner/verify.sh "$CI_RUNNER_IMAGE"
-      - name: Login to GHCR after validation
+      # The validated bytes, not the recipe: docker save keeps the tag and the
+      # config, so the publish job pushes the image verify.sh judged rather
+      # than one it rebuilt from a context whose apt and curl answer to
+      # upstream. A pull request needs neither the artefact nor the 2 GB.
+      - name: Save the validated image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: docker save "$CI_RUNNER_IMAGE" -o "$RUNNER_TEMP/ci-runner-image.tar"
+      - name: Hand the validated image to the publish job
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-runner-image
+          path: ${{ runner.temp }}/ci-runner-image.tar
+          # Long enough to outlive a publish job waiting for a runner, short
+          # enough that a 2 GB tarball is not kept for a month.
+          retention-days: 1
+          if-no-files-found: error
+          # A docker save is already compressed layers: zipping it again buys
+          # nothing and costs minutes on both sides.
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CI_RUNNER_IMAGE: ${{ needs.build.outputs.image }}
+    steps:
+      - name: Take the image the build job validated
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-runner-image
+          path: ${{ runner.temp }}
+      - name: Load it, tag and config included
+        run: docker load --input "$RUNNER_TEMP/ci-runner-image.tar"
+      - name: Login to GHCR after validation
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish the exact validated image
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           docker push "$CI_RUNNER_IMAGE"
+          # RepoDigests exists only once the push has happened, so this read
+          # stays here, after it.
           docker image inspect "$CI_RUNNER_IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
           echo "Published: $CI_RUNNER_IMAGE" >> "$GITHUB_STEP_SUMMARY"

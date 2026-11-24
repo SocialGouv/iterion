@@ -169,18 +169,19 @@ func TestUserPatchSetWritesTheSameRowAsTheMemoryTwin(t *testing.T) {
 // leg: drop the `$nin` arm and the write lands on a row a deactivation
 // reached first, with nothing but the Mongo-only conformance run to notice.
 func TestUserPatchFilterCarriesThePrecondition(t *testing.T) {
-	t.Run("no precondition selects the row by _id alone", func(t *testing.T) {
+	t.Run("no precondition still refuses an erased row", func(t *testing.T) {
 		got := userPatchFilter("u1", UserPatch{Status: ptr(UserStatusActive)})
-		if !reflect.DeepEqual(got, bson.M{"_id": "u1"}) {
-			t.Errorf("filter = %+v, want {_id: u1}", got)
+		want := bson.M{"_id": "u1", "status": bson.M{"$nin": []string{"erased"}}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("filter = %+v, want %+v", got, want)
 		}
 	})
 
-	t.Run("a precondition adds a $nin arm naming every refused status", func(t *testing.T) {
+	t.Run("a precondition adds every refused status to the $nin arm", func(t *testing.T) {
 		got := userPatchFilter("u1", UserPatch{
 			IfNotStatus: []UserStatus{UserStatusDisabled, UserStatusPendingPasswordChange},
 		})
-		want := bson.M{"_id": "u1", "status": bson.M{"$nin": []string{"disabled", "pending_password_change"}}}
+		want := bson.M{"_id": "u1", "status": bson.M{"$nin": []string{"disabled", "pending_password_change", "erased"}}}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("filter = %+v, want %+v", got, want)
 		}

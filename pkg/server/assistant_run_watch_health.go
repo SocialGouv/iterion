@@ -67,6 +67,17 @@ type assistantWatchCoordinatorHealth struct {
 	Holder          string     `json:"holder,omitempty"`
 	HolderExpiresAt *time.Time `json:"holder_expires_at,omitempty"`
 	HolderState     string     `json:"holder_state,omitempty"`
+	// Handover is THIS replica's handover state: whether its term can end on
+	// the work failing at all, where the current run of failing passes
+	// stands, how many terms it has handed over, and whether it has stopped
+	// handing over because the peers gave the lease back just as sick
+	// (#2685). It is the replica's, like Elected and unlike Holder: the
+	// policy and its counters live in the campaign, not in the lease
+	// document, so the answer to read is the one from the replica that
+	// SERVES — and `elected: true` with a run of failing passes is exactly
+	// the sick-but-alive leader this field exists to make visible. Absent
+	// when no campaign armed a policy.
+	Handover *lease.HandoverState `json:"handover,omitempty"`
 	// termStartedAt is the heartbeat's term start, for sweepStaleIsAttention;
 	// not part of the answer.
 	termStartedAt        time.Time
@@ -161,6 +172,20 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 			expires := h.ExpiresAt
 			out.Coordinator.Holder, out.Coordinator.HolderExpiresAt = h.Owner, &expires
 			out.Coordinator.HolderState = assistantWatchHolderHeld
+		}
+		// The handover of the replica that answers. Reported whether or not
+		// it is elected: a replica that just handed a term over is not
+		// elected any more, and its counters are what says why the lease
+		// moved.
+		if handover := snapshot.handoverState(); handover.Armed || handover.Handovers > 0 {
+			out.Coordinator.Handover = &handover
+			if handover.CircuitOpen {
+				// Every peer took the lease and gave it back just as sick,
+				// so this replica keeps serving a net whose passes fail: no
+				// hand-over left to make, and nothing recovers it but the far
+				// side coming back.
+				out.Attention = append(out.Attention, "sweep_handover_circuit_open")
+			}
 		}
 		if sweepStaleIsAttention(out.Coordinator, now) {
 			out.Attention = append(out.Attention, "sweep_stale")

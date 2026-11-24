@@ -384,7 +384,7 @@ func TestAGuardedLoopExitRefusesAnOutputWithNoConditionField(t *testing.T) {
 			// assess answers without `ok` — the field its conditional edges read.
 			exec.on("assess", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 			s := tmpStore(t)
-			err := New(compileBotText(t, src), s, exec).Run(context.Background(), "run-guarded-malformed", nil)
+			err := New(compileBotText(t, src), s, exec, WithOutputValidation(false)).Run(context.Background(), "run-guarded-malformed", nil)
 			if tc.wantFailure == "" && err != nil {
 				t.Fatalf("the bare exit did not carry the unchecked output onward: %v", err)
 			}
@@ -420,7 +420,7 @@ func TestALoopEdgeWhoseCapCannotResolveFailsTheRunInEitherOrder(t *testing.T) {
 			s := tmpStore(t)
 			src := strings.Replace(spentLoopBot, "schema verdict:\n  ok: bool\n", "schema verdict:\n  ok: bool\n  cap: int\n", 1)
 			src = strings.Replace(src, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", edges, 1)
-			err := New(compileBotText(t, src), s, exec).Run(context.Background(), "run-cap-order", nil)
+			err := New(compileBotText(t, src), s, exec, WithOutputValidation(false)).Run(context.Background(), "run-cap-order", nil)
 			if err == nil || !strings.Contains(err.Error(), `loop "broken"`) {
 				t.Fatalf("the unresolvable cap did not fail the run: %v", err)
 			}
@@ -544,7 +544,7 @@ func TestADeathWithNoEdgeLeftCarriesTheDecline(t *testing.T) {
 	exec := newStubExecutor()
 	exec.on("check", never)
 	exec.on("assess", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	err := New(compileBotText(t, spentLoopBot), tmpStore(t), exec).Run(context.Background(), "run-carries-none", nil)
+	err := New(compileBotText(t, spentLoopBot), tmpStore(t), exec, WithOutputValidation(false)).Run(context.Background(), "run-carries-none", nil)
 	var rtErr *RuntimeError
 	var d *LoopDeclined
 	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeNoOutgoingEdge || errors.As(err, &d) {
@@ -641,7 +641,7 @@ func TestABranchEndReachesTheRun(t *testing.T) {
 		exec.on("b1", yes)
 		exec.on("b2", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 		exec.on("c1", yes)
-		err := New(compileBotText(t, branchEndBot), tmpStore(t), exec).Run(context.Background(), "run-branch-dead-end", nil)
+		err := New(compileBotText(t, branchEndBot), tmpStore(t), exec, WithOutputValidation(false)).Run(context.Background(), "run-branch-dead-end", nil)
 		var rtErr *RuntimeError
 		var d *LoopDeclined
 		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeNoOutgoingEdge || errors.As(err, &d) {

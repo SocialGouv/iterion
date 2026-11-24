@@ -103,6 +103,14 @@ export interface UnitFileInfo {
    *  older server answers no verdict, as it answers no `bindable`. */
   parse_errors?: number;
   parse_error?: string;
+  /** The BUNDLE this file comes from when it is not this bot's own: a
+   *  shared fragment the manifest's `dependencies.fragments` declares,
+   *  which the server resolved into the unit for this reading (ADR-145).
+   *  It is read-only — the save refuses a write to it, and persisting it
+   *  would make the bundle ship the fragment it declares a dependency on —
+   *  so the picker shows it and offers no edit. Absent reads as "this
+   *  bot's own file". */
+  dependency?: string;
 }
 
 /** A declared terminal failure: `fail <name>:` with a typed code the run's
@@ -265,6 +273,43 @@ export interface UploadLimits {
   allowed_mime: string[];
 }
 
+// The three states of the French accessibility statement model (décret
+// 2019-768); the empty string means "not published".
+export type LegalAccessibilityStatus =
+  | "non_compliant"
+  | "partially_compliant"
+  | "compliant";
+
+export interface LegalAccessibility {
+  status?: LegalAccessibilityStatus | "";
+  // YYYY-MM-DD, the date the statement was established.
+  date?: string;
+  // Conformance rate in percent, as the operator wrote it ("42" or "42.5").
+  rate?: string;
+}
+
+// One configured legal document: its address segment under /legal/ and
+// its link text (French, set by the server).
+export interface LegalDocumentRef {
+  slug: string;
+  title: string;
+}
+
+// The `legal` block of /api/server/info.
+export interface LegalInfo {
+  contact_email?: string;
+  accessibility: LegalAccessibility;
+  documents: LegalDocumentRef[];
+}
+
+// GET /api/legal/{slug}: the document as markdown, with the metadata the
+// page renders beside it.
+export interface LegalDocument extends LegalDocumentRef {
+  markdown: string;
+  contact_email?: string;
+  accessibility: LegalAccessibility;
+}
+
 export interface ServerInfo {
   mode: string;
   version: string;
@@ -353,6 +398,11 @@ export interface ServerInfo {
   // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.
   // OAuth / PAT connect modes don't depend on it.
   forge_github_app_configured?: boolean;
+  // legal is the operator's published legal surface (ADR-160): the
+  // configured documents (slug + title — the SPA links those and only
+  // those), the contact address and the accessibility declaration. Absent
+  // on a server that predates the surface; treated as "nothing published".
+  legal?: LegalInfo;
   // session_board_enabled is true when the LLM Session-board curation layer
   // is on for this server (ITERION_SESSION_BOARD). The Tasks tab only
   // fetches the curated widget spec when true; otherwise it shows the
@@ -917,13 +967,19 @@ export interface WhenClause {
 // template bound (`as name("{{...}}")`) as `max_iterations_expr`, and
 // the unbounded form (`as name(unbounded [fuel])`) as `unbounded` (+
 // optional `fuel_cap`). Consumers must handle an absent bound instead
-// of assuming a number.
+// of assuming a number. `guard` carries the clause's budget-guard word
+// (`as name(3) guard: off`), absent when the loop inherits the chain;
+// `sized_by` its declared work signal (`as name(3) sized_by
+// "outputs.probe.pending"`, #2677), absent when the guard prices
+// unscaled.
 export interface LoopClause {
   name: string;
   max_iterations?: number;
   max_iterations_expr?: string;
   unbounded?: boolean;
   fuel_cap?: number;
+  guard?: string;
+  sized_by?: string;
 }
 
 export interface WithEntry {

@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "report": {"$ref": "#/$defs/n0"},
+    "backup": {"$ref": "#/$defs/alias~1~0"},
+    "matrix": {"type": "array", "items": {"type": "array", "items": {"$ref": "#/$defs/n0"}}},
+    "payload": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+    "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}}
+  },
+  "required": ["report", "backup", "matrix", "payload", "tags"],
+  "$defs": {
+    "n0": {
+      "type": "object",
+      "description": "A finite tree value described by a recursive schema.",
+      "properties": {
+        "label": {"type": "string", "enum": ["branch", "leaf"]},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/n0"}},
+        "note": {"type": ["string", "null"]}
+      },
+      "required": ["label", "children", "note"]
+    },
+    "alias/~": {"$ref": "#/$defs/n0"},
+    "anything": {},
+    "currentResource": {"$ref": ""}
+  }
+}

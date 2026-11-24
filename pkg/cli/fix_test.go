@@ -30,7 +30,7 @@ func TestFixWritesTheMechanicalRemedies(t *testing.T) {
 	path := writeBot(t, "f/quoted.bot", quotedRefBot)
 	broken := writeBot(t, "f/broken.bot", "agent :\n  model\n")
 	p, out := humanPrinter()
-	res, err := RunFix(FixOptions{Paths: []string{"f"}, DryRun: true, Printer: p})
+	res, err := RunFix(t.Context(), FixOptions{Paths: []string{"f"}, DryRun: true, Printer: p})
 	if !errors.Is(err, ErrFixRefused) || len(res.Refused) != 1 || len(res.Files) != 1 || !res.Files[0].Changed || res.Files[0].Written {
 		t.Fatalf("dry run: %v %+v\n%s", err, res, out.String())
 	}
@@ -41,7 +41,7 @@ func TestFixWritesTheMechanicalRemedies(t *testing.T) {
 		t.Fatalf("the report does not list the edit:\n%s", out.String())
 	}
 	jp, jout := jsonPrinter()
-	res, err = RunFix(FixOptions{Paths: []string{path}, Printer: jp})
+	res, err = RunFix(t.Context(), FixOptions{Paths: []string{path}, Printer: jp})
 	if err != nil || !res.Files[0].Written {
 		t.Fatalf("fix: %v %+v", err, res)
 	}
@@ -218,7 +218,7 @@ func TestFixReachesAFragmentThroughItsMain(t *testing.T) {
 	for _, named := range []string{"b/main.bot", "b/lib/tools.bot", "b"} {
 		writeBot(t, "b/main.bot", mainText)
 		fragPath := writeBot(t, "b/lib/tools.bot", frag)
-		res, err := RunFix(FixOptions{Paths: []string{named}})
+		res, err := RunFix(t.Context(), FixOptions{Paths: []string{named}})
 		if err != nil {
 			t.Fatalf("%s: %v %+v", named, err, res)
 		}

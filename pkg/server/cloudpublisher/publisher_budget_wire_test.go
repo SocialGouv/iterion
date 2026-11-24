@@ -48,7 +48,7 @@ func donorClampedPublisher(t *testing.T, maxUSDPerDay float64) (*Publisher, stor
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: maxUSDPerDay},
 	}); err != nil {
@@ -218,7 +218,7 @@ func TestDonorCeilingWireRoundTrip(t *testing.T) {
 			if err := decoded.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if decoded.V != 27 || decoded.Budget == nil || !decoded.Budget.CapImposed || decoded.Budget.DonorMaxCostUSD != 10+spent {
+			if decoded.V != queue.SchemaVersion || decoded.Budget == nil || !decoded.Budget.CapImposed || decoded.Budget.DonorMaxCostUSD != 10+spent {
 				t.Fatalf("wire lost absolute donor ceiling: %+v", decoded.Budget)
 			}
 			// This is the same decoder and IR application the runner invokes.

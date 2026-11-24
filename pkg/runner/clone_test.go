@@ -76,8 +76,9 @@ func TestValidateRepoTarget(t *testing.T) {
 // TestValidateRepoTargetHostGuard covers the SSRF host-allowlist layer added
 // on top of ValidateCloneSource/ValidateBranchName: a holder of a per-org
 // `iwh_` webhook token must not be able to point the cloud runner at an
-// internal host (loopback, RFC1918, link-local, cloud-metadata) and use it
-// as an SSRF probe. Uses IP literals so the test is hermetic (no DNS).
+// internal host (loopback, RFC1918, CGNAT, link-local, cloud-metadata, a
+// non-public IPv6 transition address) and use it as an SSRF probe. Uses IP
+// literals so the test is hermetic (no DNS).
 func TestValidateRepoTargetHostGuard(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -97,14 +98,18 @@ func TestValidateRepoTargetHostGuard(t *testing.T) {
 		{"rfc1918 10.x", "https://10.0.0.5:8200/org/repo.git", false, true},
 		{"rfc1918 192.168.x", "https://192.168.1.10/org/repo.git", false, true},
 		{"link-local", "https://169.254.169.254/latest/meta-data/", false, true},
-		// (IPv6 literal URLs like https://[::1]/... are already rejected one
-		// layer up by ValidateCloneSource's `::` remote-helper guard, so they
-		// never reach the host check — no case needed here.)
+		// The shared (CGNAT) space rides the private classes' rule. (IPv6
+		// literal URLs like https://[::1]/... are already rejected one layer
+		// up by ValidateCloneSource's `::` remote-helper guard; a spelled-out
+		// one reaches the host check, a 6to4 address among them.)
+		{"cgnat", "https://100.64.0.1/org/repo.git", false, true},
+		{"6to4 spelled out", "https://[2002:7f00:1:0:0:0:0:0]/org/repo.git", false, true},
 		// Escape hatch (ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1) lets on-prem
 		// deployments reach internal forges.
 		{"loopback with allow_private", "https://127.0.0.1/org/repo.git", true, false},
 		{"rfc1918 with allow_private", "https://10.0.0.5:8200/org/repo.git", true, false},
 		{"scp-like with allow_private", "git@127.0.0.1:org/repo.git", true, false},
+		{"cgnat with allow_private", "https://100.64.0.1/org/repo.git", true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -128,6 +133,25 @@ func TestValidateRepoTargetHostGuard(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The hatch's advice rides only the refusal the hatch lifts — one wrapping
+// httpdial.ErrNotPublic. A malformed host is refused with no such advice,
+// the hatch set or not: setting it would change nothing.
+func TestValidateRepoTargetNamesTheHatchOnlyOnALiftableRefusal(t *testing.T) {
+	ctx := context.Background()
+	for _, hatch := range []string{"", "1"} {
+		t.Setenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE", hatch)
+		_, err := validateRepoTarget(ctx, "https://gw..example.test/org/repo.git", "main")
+		if err == nil || strings.Contains(err.Error(), "ITERION_RUNNER_CLONE_ALLOW_PRIVATE") {
+			t.Errorf("hatch=%q: a malformed host = %v; want a refusal that names no hatch", hatch, err)
+		}
+	}
+	t.Setenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE", "")
+	_, err := validateRepoTarget(ctx, "https://10.0.0.5/org/repo.git", "main")
+	if err == nil || !strings.Contains(err.Error(), "ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1") {
+		t.Errorf("a private host = %v; want the refusal naming the hatch that lifts it", err)
 	}
 }
 

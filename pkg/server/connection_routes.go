@@ -1,0 +1,556 @@
+package server
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// The tenant-facing CRUD over pkg/connection records (ADR-098, #2759): how a
+// team manages its connector connections from the cloud, where the CLI's
+// `connections add/list/rm` cannot reach.
+//
+// Three rules hold HERE rather than by each handler's discipline:
+//
+//   - EVERY read goes through the Store's tenant-in-the-signature methods
+//     with the PATH's team id, so a caller holding another tenant's
+//     connection id gets ErrNotFound — the same answer as a record that
+//     does not exist, never a distinguishable "forbidden".
+//   - NOTHING the route returns carries a credential or anything derived
+//     from one: Connection.SealedPayload is json:"-" by construction, and
+//     the response DTO below is built field by field so a future field on
+//     the record does not silently become part of the API.
+//   - The credential is sealed (connection.SealToken, AAD "connection:<id>")
+//     before the store ever sees it, on the ONLY paths that accept one —
+//     create, and the rotation arm of PATCH.
+
+// connectionDTO is the API shape of one connection. Built field by field —
+// see the file comment.
+type connectionDTO struct {
+	ID          string `json:"id"`
+	Connector   string `json:"connector"`
+	Alias       string `json:"alias"`
+	DisplayName string `json:"display_name,omitempty"`
+	BaseURL     string `json:"base_url"`
+	SchemeID    string `json:"scheme_id"`
+	// SchemeKind is the kind of the credential the connection holds
+	// (spec.AuthKind: api_key, bearer, basic, oauth2, none) — the pinned
+	// placement's, the one a rotation is judged against — so a client picks
+	// the fields a rotation takes without reading Placement, which is prose.
+	SchemeKind    string     `json:"scheme_kind"`
+	Placement     string     `json:"placement"`
+	Capabilities  []string   `json:"capabilities"`
+	GrantedScopes []string   `json:"granted_scopes,omitempty"`
+	ScopesKnown   bool       `json:"scopes_known,omitempty"`
+	Status        string     `json:"status"`
+	StatusReason  string     `json:"status_reason,omitempty"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	Warnings      []string   `json:"warnings,omitempty"`
+}
+
+// connectionDTOOf projects the record. The WARNINGS travel with every read:
+// a grant nothing performs (`GrantAdvice`) and a cleartext origin outlive the
+// command that wrote them, and the operator reading an inventory months later
+// is the one deciding what this connection can be used for.
+func connectionDTOOf(c connection.Connection) connectionDTO {
+	caps := make([]string, 0, len(c.Capabilities))
+	for _, cap := range c.Capabilities {
+		caps = append(caps, string(cap))
+	}
+	d := connectionDTO{
+		ID:            c.ID,
+		Connector:     c.Connector,
+		Alias:         c.Alias,
+		DisplayName:   c.DisplayName,
+		BaseURL:       c.BaseURL,
+		SchemeID:      c.SchemeID,
+		SchemeKind:    c.AuthPlacement.Kind,
+		Placement:     c.AuthPlacement.Describe(),
+		Capabilities:  caps,
+		GrantedScopes: c.GrantedScopes,
+		ScopesKnown:   c.ScopesKnown,
+		Status:        string(c.Status),
+		StatusReason:  c.StatusReason,
+		CreatedAt:     c.CreatedAt,
+		UpdatedAt:     c.UpdatedAt,
+	}
+	if !c.ExpiresAt.IsZero() {
+		exp := c.ExpiresAt
+		d.ExpiresAt = &exp
+	}
+	if advice := connection.GrantAdvice(c.Capabilities); advice != "" {
+		d.Warnings = append(d.Warnings, advice)
+	}
+	if advice := connection.CleartextOrigin(c.BaseURL); advice != "" {
+		d.Warnings = append(d.Warnings, advice)
+	}
+	return d
+}
+
+// connectionCreateReq is the body of POST /api/teams/{id}/connections.
+type connectionCreateReq struct {
+	Connector string `json:"connector"`
+	// Alias is the name a `.bot` writes in `connection:`. Defaults to "main",
+	// like the CLI: one connection per connector is the common case.
+	Alias        string   `json:"alias,omitempty"`
+	BaseURL      string   `json:"base_url,omitempty"`
+	SchemeID     string   `json:"scheme_id,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	// Token is the credential of a token-shaped scheme (api_key, bearer,
+	// oauth2); Username and Password are HTTP basic's; a scheme of kind none
+	// takes none of them. Write-only: sealed before the store sees them and
+	// never read back by any route.
+	Token    string `json:"token,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// connectionPatchReq is the body of PATCH /api/teams/{id}/connections/{conn_id}.
+//
+// Every scalar field is a pointer: absent and "set to empty" are different
+// intents. Capabilities needs none — JSON already tells a missing list (nil)
+// from an explicitly empty one (a non-nil slice of length zero) — and the
+// handler answers them differently, which is the whole point of knowing.
+type connectionPatchReq struct {
+	DisplayName  *string  `json:"display_name,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Status is the revocation path: "revoked" with a reason an operator can
+	// act on. Reactivating ("active") is allowed; "degraded" is the system's
+	// word, not an operator's.
+	Status       *string `json:"status,omitempty"`
+	StatusReason *string `json:"status_reason,omitempty"`
+	// Token rotates the credential IN PLACE: a fresh value, sealed onto the
+	// same record. Omitted keeps the stored one (keptCredential). A basic
+	// connection rotates Username and Password together instead.
+	Token    *string `json:"token,omitempty"`
+	Username *string `json:"username,omitempty"`
+	Password *string `json:"password,omitempty"`
+}
+
+// sealConnectionCredential seals what a scheme of this kind presents — a
+// token, a username and password, or nothing — refusing any value the
+// scheme does not take: a token pasted for a basic scheme, or a credential
+// for one that presents none, would be sealed and never sent, or sent as
+// something it is not. The shape gate runs at the paste, like the CLI's.
+func sealConnectionCredential(sealer secrets.Sealer, connID string, kind spec.AuthKind, token, username, password string) ([]byte, error) {
+	refuse := func(format string, args ...any) ([]byte, error) {
+		return nil, &credentialRequestError{fmt.Errorf(format, args...)}
+	}
+	switch kind {
+	case spec.AuthNone:
+		if token != "" || username != "" || password != "" {
+			return refuse("scheme kind none presents no credential — send no token, username or password")
+		}
+		return connection.SealNone(sealer, connID)
+	case spec.AuthBasic:
+		if token != "" {
+			return refuse("an HTTP basic scheme takes a username and a password, not a token")
+		}
+		username = strings.TrimSpace(username)
+		if username == "" {
+			return refuse("an HTTP basic scheme needs a username")
+		}
+		if err := secrets.ValidateBasicShape(username, password); err != nil {
+			return nil, &credentialRequestError{err}
+		}
+		return connection.SealBasic(sealer, connID, username, password)
+	}
+	if username != "" || password != "" {
+		return refuse("scheme kind %s takes a token, not a username and password", kind)
+	}
+	if err := secrets.ValidateTokenShape("token", token); err != nil {
+		return nil, &credentialRequestError{err}
+	}
+	return connection.SealToken(sealer, connID, token, time.Time{})
+}
+
+// credentialRequestError is a credential the request got wrong — a 400 —
+// as opposed to the sealer failing, which is the server's.
+type credentialRequestError struct{ err error }
+
+func (e *credentialRequestError) Error() string { return e.err.Error() }
+func (e *credentialRequestError) Unwrap() error { return e.err }
+
+// credentialStatus is the status a sealConnectionCredential error answers.
+func credentialStatus(err error) int {
+	var req *credentialRequestError
+	if errors.As(err, &req) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+func (s *Server) registerConnectionRoutes() {
+	s.mux.Handle("GET /api/teams/{id}/connections", s.requireAuth(http.HandlerFunc(s.handleListConnections)))
+	s.mux.Handle("POST /api/teams/{id}/connections", s.requireAuth(http.HandlerFunc(s.handleCreateConnection)))
+	s.mux.Handle("GET /api/teams/{id}/connections/{conn_id}", s.requireAuth(http.HandlerFunc(s.handleGetConnection)))
+	s.mux.Handle("PATCH /api/teams/{id}/connections/{conn_id}", s.requireAuth(http.HandlerFunc(s.handlePatchConnection)))
+	s.mux.Handle("DELETE /api/teams/{id}/connections/{conn_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteConnection)))
+}
+
+func (s *Server) handleListConnections(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canViewTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "not a member")
+		return
+	}
+	list, err := s.connectionStore.List(r.Context(), teamID, r.URL.Query().Get("connector"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	out := make([]connectionDTO, 0, len(list))
+	for _, c := range list {
+		out = append(out, connectionDTOOf(c))
+	}
+	writeJSON(w, struct {
+		Connections []connectionDTO `json:"connections"`
+	}{Connections: out})
+}
+
+func (s *Server) handleGetConnection(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canViewTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "not a member")
+		return
+	}
+	c, ok := s.connectionForTenant(w, r, teamID, r.PathValue("conn_id"))
+	if !ok {
+		return
+	}
+	writeJSON(w, connectionDTOOf(c))
+}
+
+// connectionForTenant reads one connection of THIS team. A record that exists
+// but belongs to another team answers 404 (never 403 — the same
+// non-enumeration discipline as the store's tenant filter).
+func (s *Server) connectionForTenant(w http.ResponseWriter, r *http.Request, teamID, connID string) (connection.Connection, bool) {
+	c, err := s.connectionStore.Get(r.Context(), teamID, connID)
+	if err != nil {
+		if errors.Is(err, connection.ErrNotFound) {
+			httpError(w, http.StatusNotFound, "connection not found")
+			return connection.Connection{}, false
+		}
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return connection.Connection{}, false
+	}
+	return c, true
+}
+
+func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	var req connectionCreateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	connectorID := strings.TrimSpace(req.Connector)
+	if connectorID == "" {
+		httpError(w, http.StatusBadRequest, "connector is required")
+		return
+	}
+	alias := strings.TrimSpace(req.Alias)
+	if alias == "" {
+		alias = "main"
+	}
+
+	// The package is resolved FIRST, so an unknown connector or scheme is
+	// refused before a credential is sealed anywhere — through the TEAM's
+	// composition, the one its facade serves: a connector the team published
+	// for itself must be one it can connect.
+	pkg, tier, err := s.connectorCatalogFor(teamID).Package(connectorID)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	schemeID, err := resolveConnectionScheme(pkg, req.SchemeID)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	scheme, _ := pkg.Connector.AuthScheme(schemeID)
+	baseURL, err := resolveConnectionBaseURL(pkg, req.BaseURL)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	caps, err := parseConnectionCapabilities(req.Capabilities)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+
+	connID, err := store.GenerateRunID()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "generate id: %s", err.Error())
+		return
+	}
+	connID = "conn_" + connID
+	// The credential is validated at the PASTE, like `connections add` and
+	// `secret set`: a value that could not possibly authenticate is refused
+	// here, not discovered as a provider 401 in the middle of a run — and
+	// only once the scheme says which values it takes.
+	sealed, err := sealConnectionCredential(s.sealer, connID, scheme.Kind, req.Token, req.Username, req.Password)
+	if err != nil {
+		httpError(w, credentialStatus(err), "scheme %q of connector %q: %s", schemeID, pkg.Connector.ID, err.Error())
+		return
+	}
+
+	conn := connection.Connection{
+		ID: connID, TenantID: teamID,
+		Connector: connectorID, Alias: alias,
+		DisplayName: strings.TrimSpace(req.DisplayName), BaseURL: baseURL,
+		SchemeID: schemeID, AuthPlacement: connection.PlacementOf(scheme),
+		Capabilities: caps, Status: connection.StatusActive, SealedPayload: sealed,
+		// Deliberately NOT claiming to know the grant: a provider that never
+		// enumerated a PAT's scopes has told us nothing (the CLI writes the
+		// same third state).
+		ScopesKnown: false,
+	}
+	if err := s.connectionStore.Create(r.Context(), conn); err != nil {
+		if errors.Is(err, connection.ErrExists) {
+			httpError(w, http.StatusConflict, "a %q connection named %q already exists — revoke or rename it first", connectorID, alias)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditTenant(r, teamID, "connection.created", "connection", connID, map[string]any{
+		"connector": connectorID, "alias": alias, "tier": tier.String(),
+	})
+	writeJSON(w, connectionDTOOf(conn))
+}
+
+func (s *Server) handlePatchConnection(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	conn, ok := s.connectionForTenant(w, r, teamID, r.PathValue("conn_id"))
+	if !ok {
+		return
+	}
+	var req connectionPatchReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.DisplayName != nil {
+		conn.DisplayName = strings.TrimSpace(*req.DisplayName)
+	}
+	if req.Capabilities != nil {
+		// An EXPLICIT empty list is refused rather than defaulted.
+		//
+		// parseConnectionCapabilities answers `[action]` to an empty list,
+		// which is right for CREATE ("one connection per connector, used by
+		// automation" is the common case) and wrong here: a connection
+		// created `[trigger]` — events believed, the token never spent — was
+		// PATCHed with `{"capabilities": []}`, answered 200, and came back
+		// holding `action`. The token became spendable by a deterministic
+		// node from a request that asked for nothing, which is the opposite
+		// of "never silently replace an operator's explicit choice".
+		if len(req.Capabilities) == 0 {
+			httpError(w, http.StatusBadRequest,
+				"capabilities is an empty list: a connection that declares no capability is one nothing may use, so say which of %s it keeps — or DELETE it",
+				strings.Join(connection.CapabilityNames(), ", "))
+			return
+		}
+		caps, err := parseConnectionCapabilities(req.Capabilities)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
+		conn.Capabilities = caps
+	}
+	if req.Status != nil {
+		switch connection.Status(strings.TrimSpace(*req.Status)) {
+		case connection.StatusActive:
+			conn.Status = connection.StatusActive
+			conn.StatusReason = ""
+		case connection.StatusRevoked:
+			conn.Status = connection.StatusRevoked
+			if req.StatusReason != nil {
+				conn.StatusReason = strings.TrimSpace(*req.StatusReason)
+			}
+		default:
+			httpError(w, http.StatusBadRequest,
+				"status must be %q or %q — %q is the system's word, set when a credential degrades, not an operator's",
+				connection.StatusActive, connection.StatusRevoked, connection.StatusDegraded)
+			return
+		}
+	}
+	if req.Token != nil || req.Username != nil || req.Password != nil {
+		// Rotation: the same gate as creation, for the kind the connection
+		// was entrusted with.
+		kind := spec.AuthKind(conn.AuthPlacement.Kind)
+		if kind == spec.AuthNone {
+			httpError(w, http.StatusBadRequest, "connection %q presents no credential (scheme kind none), so there is nothing to rotate", conn.Alias)
+			return
+		}
+		if kind == spec.AuthBasic && (req.Username == nil || req.Password == nil) {
+			httpError(w, http.StatusBadRequest, "connection %q is HTTP basic: rotate its username and password together", conn.Alias)
+			return
+		}
+		sealed, err := sealConnectionCredential(s.sealer, conn.ID, kind, deref(req.Token), deref(req.Username), deref(req.Password))
+		if err != nil {
+			httpError(w, credentialStatus(err), "connection %q: %s", conn.Alias, err.Error())
+			return
+		}
+		conn.SealedPayload = sealed
+	}
+	if err := s.connectionStore.Update(r.Context(), conn); err != nil {
+		if errors.Is(err, connection.ErrExists) {
+			httpError(w, http.StatusConflict, "%s", err.Error())
+			return
+		}
+		if errors.Is(err, connection.ErrConflict) {
+			// The read-modify-write this handler IS: it read the whole record
+			// above, applied the body's fields and wrote the whole thing
+			// back, so another request landing in between would be
+			// overwritten — and the overwrite is silent, both answers being
+			// 200. A revocation, a rotation and a capability narrowing were
+			// each lost that way. 409 names the retry, which is the caller's
+			// to make: re-read, re-apply, re-send.
+			httpError(w, http.StatusConflict,
+				"connection %q changed since this request read it, so nothing was written — read it again and re-apply the change", conn.ID)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditTenant(r, teamID, "connection.updated", "connection", conn.ID, map[string]any{
+		"connector": conn.Connector, "alias": conn.Alias, "status": string(conn.Status),
+	})
+	// The STORED record is what the response serves, not the one this handler
+	// wrote: Update advanced `updated_at` to the write's own stamp, and that
+	// field is the precondition the caller's next PATCH carries — a response
+	// serving the pre-write value would make every following edit answer 409
+	// against a version nothing still holds.
+	stored, err := s.connectionStore.Get(r.Context(), teamID, conn.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "connection %q updated but cannot be read back: %s", conn.ID, err.Error())
+		return
+	}
+	writeJSON(w, connectionDTOOf(stored))
+}
+
+func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	connID := r.PathValue("conn_id")
+	if err := s.connectionStore.Delete(r.Context(), teamID, connID); err != nil {
+		if errors.Is(err, connection.ErrNotFound) {
+			httpError(w, http.StatusNotFound, "connection not found")
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditTenant(r, teamID, "connection.deleted", "connection", connID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// resolveConnectionScheme picks the auth scheme, refusing to guess when the
+// package declares several: placement differs between them, so a wrong guess
+// is a 401 that reads like a bad credential.
+func resolveConnectionScheme(pkg *spec.Package, want string) (string, error) {
+	ids := make([]string, 0, len(pkg.Connector.Auth))
+	for _, a := range pkg.Connector.Auth {
+		ids = append(ids, a.ID)
+	}
+	sort.Strings(ids)
+	want = strings.TrimSpace(want)
+	if want != "" {
+		for _, id := range ids {
+			if id == want {
+				return id, nil
+			}
+		}
+		return "", fmt.Errorf("connector %q has no auth scheme %q (it declares: %s)", pkg.Connector.ID, want, strings.Join(ids, ", "))
+	}
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("connector %q declares no auth scheme", pkg.Connector.ID)
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("connector %q declares several auth schemes (%s) — name one in scheme_id", pkg.Connector.ID, strings.Join(ids, ", "))
+	}
+}
+
+// resolveConnectionBaseURL pins the instance URL the credential may be sent
+// to: the request's, else the package's default, else refused. What a
+// credential may be sent to is decided when it is entrusted, never re-derived
+// at call time.
+func resolveConnectionBaseURL(pkg *spec.Package, baseURL string) (string, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if !pkg.AddressesBaseURL() {
+		// The executor joins an operation's path after the base; a URL that
+		// IS the resource (a feed's) keeps its trailing slash.
+		baseURL = strings.TrimRight(baseURL, "/")
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimRight(pkg.Connector.BaseURL.Default, "/")
+	}
+	if baseURL == "" {
+		return "", fmt.Errorf("connector %q names no default instance, so base_url is required (e.g. https://git.example.com)", pkg.Connector.ID)
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("base_url %q does not parse: %w", baseURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("base_url %q needs an http or https scheme (e.g. https://%s)", baseURL, strings.TrimPrefix(baseURL, "//"))
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("base_url %q names no host", baseURL)
+	}
+	if u.User != nil {
+		// A credential in the URL would be stored in the clear on the record
+		// every member reads, and sent whatever the scheme says.
+		return "", fmt.Errorf("base_url names a user and password in its URL — they would be stored unsealed and sent with every call; pick the package's basic scheme and send them as username and password")
+	}
+	return baseURL, nil
+}
+
+// parseConnectionCapabilities turns the request's capability names into the
+// record's, defaulting to `action` alone — the narrower grant, since an agent
+// choosing its own calls is a decision an operator makes deliberately.
+func parseConnectionCapabilities(vals []string) ([]connection.Capability, error) {
+	if len(vals) == 0 {
+		return []connection.Capability{connection.CapAction}, nil
+	}
+	out := make([]connection.Capability, 0, len(vals))
+	for _, v := range vals {
+		c := connection.Capability(strings.TrimSpace(v))
+		if !connection.ValidCapability(c) {
+			return nil, fmt.Errorf("unknown capability %q (want one or more of %s)", v, strings.Join(connection.CapabilityNames(), ", "))
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}

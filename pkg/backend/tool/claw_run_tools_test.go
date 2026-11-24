@@ -25,7 +25,7 @@ func TestRegisterClawRunToolsCapabilityGateAndExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := definition.Execute(context.Background(), []byte(`{"run_id":"run-1"}`))
+	out, err := definition.Execute(WithHostCapabilities(context.Background(), []string{"runs.read"}, nil), []byte(`{"run_id":"run-1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

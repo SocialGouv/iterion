@@ -1,5 +1,7 @@
 package store
 
+import "fmt"
+
 // This file is the canonical terminal-state contract for runs (ADR-095).
 //
 // Two things live here and nowhere else:
@@ -72,7 +74,11 @@ const (
 	FailureUsageLimitBlocked     FailureCode = "USAGE_LIMIT_BLOCKED"
 	FailureContextLengthExceeded FailureCode = "CONTEXT_LENGTH_EXCEEDED"
 	FailureToolFailedTransient   FailureCode = "TOOL_FAILED_TRANSIENT"
-	FailureToolFailedPermanent   FailureCode = "TOOL_FAILED_PERMANENT"
+	// FailureToolFailedPermanent: a tool's failure that re-running it cannot
+	// change — a host capability the node does not hold, an output a strict
+	// schema refuses, or a tool node's command that failed the same way
+	// several executions in a row (runtime.IdenticalToolFailure).
+	FailureToolFailedPermanent FailureCode = "TOOL_FAILED_PERMANENT"
 	// FailureNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
 	// reaching the upstream model API. Distinct from
 	// FailureExecutionFailed so the recovery dispatcher can apply a
@@ -111,9 +117,25 @@ const (
 	// fixing the schema (or the backend that cannot read it), then
 	// resuming.
 	FailureSchemaUnusable FailureCode = "SCHEMA_UNUSABLE"
+
+	// FailureProviderRequestInvalid is a provider HTTP 400 after recoverable
+	// context overflow and model availability refusals have been classified.
+	FailureProviderRequestInvalid FailureCode = "PROVIDER_REQUEST_INVALID"
 	// The selected backend cannot serve a declared node capability. A
 	// configuration change is needed before the same run can make progress.
+	// Raised before the first node, too, when the run's RESOLVED sandbox
+	// image carries no CLI for a backend the run will dispatch (#1643): what
+	// cannot serve there is the image, and the cure is the same shape — the
+	// image, the backend, or `sandbox: none`.
 	FailureCapabilityUnsupported FailureCode = "CAPABILITY_UNSUPPORTED"
+
+	// FailureCapabilityDenied: the node named something its declared
+	// `capabilities:` grant does not open — a board verb without board.read
+	// on the tool node, the native action transport answering #78=A
+	// (ADR-151). Deterministic by construction: the same IR meets the same
+	// grant on every attempt, so no retry and no auto-resume can change the
+	// answer; the cure is the declaration, then a resume.
+	FailureCapabilityDenied FailureCode = "CAPABILITY_DENIED"
 
 	// FailureSandboxDriverUnavailable: an EXPLICIT sandbox mode was
 	// requested (a workflow's `sandbox:` block declaring `mode: inline`
@@ -129,6 +151,67 @@ const (
 	// a real driver). A schedule's `last_error` keys on this to explain
 	// why a scheduled run parked without executing.
 	FailureSandboxDriverUnavailable FailureCode = "SANDBOX_DRIVER_UNAVAILABLE"
+
+	// FailureSandboxCredentialUnreachable: an untrusted (fork-lane) run was
+	// refused before its container started because the per-backend credential
+	// predicate (#1768) settled that NO credential can reach a sandboxed
+	// node's process — no run credential, nothing the launcher forwards at
+	// exec, and no file-based login the host_state mount still carries. The
+	// alternative is the run dying mid-execution on the backend's own opaque
+	// "not logged in". The cases the predicate cannot settle stay a launch
+	// warning (sandbox_no_credential_warning).
+	FailureSandboxCredentialUnreachable FailureCode = "SANDBOX_CREDENTIAL_UNREACHABLE"
+
+	// FailureCredentialAmbientRefused: a run stamped to its own credentials
+	// (ADR-131 §7) was refused before it started because a node of it has
+	// no leg its own credentials fund — only the pod's environment would,
+	// which the stamp refuses (ADR-161 decision 7).
+	FailureCredentialAmbientRefused FailureCode = "CREDENTIAL_AMBIENT_REFUSED"
+
+	// FailureCredentialSubscriptionForbidden: a judged run was refused before
+	// it started because a node of it is funded by a subscription alone and
+	// ITERION_FORBID_SUBSCRIPTION_OAUTH refuses spending one outside the
+	// vendor's own CLI (ADR-161 decision 7).
+	FailureCredentialSubscriptionForbidden FailureCode = "CREDENTIAL_SUBSCRIPTION_FORBIDDEN"
+
+	// FailureSandboxCrossingRefused: an untrusted (fork-lane) run was refused
+	// because a channel it would spend cannot cross the sandbox the egress
+	// proxy can hold (ADR-162 decision 7): a forfait's OAuth credential, a
+	// provider whose key rides an SDK signing chain, the launcher's ambient
+	// env — or a Layer 2 the start cannot arm (TLS inspection off, a driver
+	// that cannot inspect). The alternative is the container holding the
+	// credential raw, or a placeholder that resolves nowhere.
+	FailureSandboxCrossingRefused FailureCode = "SANDBOX_CROSSING_REFUSED"
+
+	// FailureSandboxNetworkRefused: an untrusted (fork-lane) run was refused
+	// because its only route out is the egress proxy and only a driver that
+	// enforces a network policy can hold that floor (ADR-162 decision 7) —
+	// kubernetes today; docker refuses, typed, until it isolates the
+	// container's network. Starting it anyway would hand the container a
+	// proxy env nothing enforces: one ignored variable away from full egress.
+	FailureSandboxNetworkRefused FailureCode = "SANDBOX_NETWORK_REFUSED"
+
+	// FailureAttachmentsUndeliverable: the run carries attachments and the
+	// selected sandbox driver can neither bind-mount their directory into
+	// the container nor copy it in, so no node could have opened them.
+	// Refused at sandbox start, before any node: the operator attached the
+	// files on purpose, and a run that went on without them would read as
+	// a run that never had them (#2086).
+	FailureAttachmentsUndeliverable FailureCode = "ATTACHMENTS_UNDELIVERABLE"
+	// FailureAttachmentPathUnavailable: a node names an attachment's path
+	// (`{{attachments.<name>.path}}`, or the bare form) while the run holds
+	// that attachment with no path a node can open — a store with no
+	// filesystem root whose attachments were not materialised for this
+	// run. The node fails before it runs instead of running on an empty
+	// string (#2086).
+	FailureAttachmentPathUnavailable FailureCode = "ATTACHMENT_PATH_UNAVAILABLE"
+	// FailureAttachmentsUnfetchable: on a store with no filesystem root the
+	// engine fetches the run's attachments before the sandbox, and the store
+	// did not hand them over (a bucket blip). Nothing of this attempt executed;
+	// the run parks resumable and a redelivery fetches again. Distinct from
+	// ATTACHMENTS_UNDELIVERABLE, which is the driver's refusal and does not
+	// change on a redelivery (#2086).
+	FailureAttachmentsUnfetchable FailureCode = "ATTACHMENTS_UNFETCHABLE"
 
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
@@ -169,6 +252,12 @@ const (
 	// launch is re-done by its caller (a forge redelivery, a new click),
 	// never by resuming this row.
 	FailureLaunchFailed FailureCode = "LAUNCH_FAILED"
+	// FailureCredSlotWait: the launch or resume found a credential it sealed
+	// at its HARD concurrency cap (secrets.ApiKey.MaxConcurrentRuns, held on
+	// the atomic slot ledger of CredSlotStore) and parked instead of being
+	// refused. Resumable: the retry sweeper asks for a slot again on a short
+	// cadence (RetryReasonCredSlot), and the run proceeds when one frees.
+	FailureCredSlotWait FailureCode = "CRED_SLOT_WAIT"
 	// FailureSandboxSetupTimeout: a sandbox driver's bounded SETUP
 	// phase (workspace copy, git fixup, …) exceeded its per-phase
 	// budget. Distinct from FailureTimeout (a node's deadline — raising
@@ -257,8 +346,18 @@ var ReservedFailureCodes = []FailureCode{
 	FailureAuthFailed,
 	FailureModelUnavailable,
 	FailureSchemaUnusable,
+	FailureProviderRequestInvalid,
 	FailureCapabilityUnsupported,
+	FailureCapabilityDenied,
 	FailureSandboxDriverUnavailable,
+	FailureSandboxCredentialUnreachable,
+	FailureCredentialAmbientRefused,
+	FailureCredentialSubscriptionForbidden,
+	FailureSandboxCrossingRefused,
+	FailureSandboxNetworkRefused,
+	FailureAttachmentsUndeliverable,
+	FailureAttachmentPathUnavailable,
+	FailureAttachmentsUnfetchable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,
@@ -266,6 +365,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureDLQParked,
 	FailureIRUnloadable,
 	FailureLaunchFailed,
+	FailureCredSlotWait,
 	FailureSandboxSetupTimeout,
 	FailureSandboxCapacity,
 	FailureBotRequiresNewerEngine,
@@ -330,6 +430,18 @@ func (s RunStatus) CarriesPausePointer() bool {
 	return s.IsPaused() || s == RunStatusQueued
 }
 
+// CarriesResumePauseHandoff reports whether a transition into s can retain
+// the durable continuation of a consumed pause.
+func (s RunStatus) CarriesResumePauseHandoff() bool {
+	return s == RunStatusRunning || s.CanReclaimResumePauseHandoff()
+}
+
+// CanReclaimResumePauseHandoff reports whether a run with an unfinished
+// pause handoff can claim it for a new execution attempt.
+func (s RunStatus) CanReclaimResumePauseHandoff() bool {
+	return s == RunStatusQueued || s == RunStatusFailedResumable
+}
+
 // ---------------------------------------------------------------------------
 // Policy predicates — one named question each
 // ---------------------------------------------------------------------------
@@ -366,9 +478,54 @@ func (s RunStatus) CanOperatorResume() bool {
 		s == RunStatusPausedOperator || s == RunStatusPausedWaitingHuman
 }
 
+// CanStartExecution names the precreated local and queued cloud start lanes.
+// Acquiring a durable execution identity does not bypass their caller's lock.
+func (s RunStatus) CanStartExecution() bool {
+	return s == RunStatusRunning || s == RunStatusQueued
+}
+
 // RequiresResumeAnswers: resuming this status needs the pending human
 // interaction answered first (`--answers-file`, the studio form).
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }
+
+// TeamCutoverInactiveStatuses returns the known states that cannot execute
+// until another admission. Unknown states never prove that a team is drained.
+func TeamCutoverInactiveStatuses() []RunStatus {
+	return []RunStatus{RunStatusPausedWaitingHuman, RunStatusPausedOperator,
+		RunStatusFailedResumable, RunStatusFailed, RunStatusFinished, RunStatusCancelled}
+}
+
+// TeamCutoverStatusAlive validates lifecycle metadata before a cutover read
+// treats it as evidence. Local runs may legitimately have no tenant.
+func TeamCutoverStatusAlive(status RunStatus) (bool, error) {
+	if status == RunStatusQueued || status == RunStatusRunning {
+		return true, nil
+	}
+	for _, inactive := range TeamCutoverInactiveStatuses() {
+		if status == inactive {
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("unknown run lifecycle status %q", status)
+}
+
+// IsPreEngineFailureVerdict names the two failure statuses a final delivery refusal may write.
+func (s RunStatus) IsPreEngineFailureVerdict() bool {
+	return s == RunStatusFailed || s == RunStatusFailedResumable
+}
+
+// PreEngineRefusalFromStatuses is the common eligibility set of both stores.
+// Usage retains its historical queued/running scope; final resume refusals
+// leave queued to the existing release owner.
+func PreEngineRefusalFromStatuses(q PreEngineRefusalRequest) []RunStatus {
+	if q.Disposition == PreEngineUsagePark {
+		return []RunStatus{RunStatusRunning, RunStatusQueued}
+	}
+	if q.LeaveQueued {
+		return []RunStatus{RunStatusRunning, RunStatusFailedResumable}
+	}
+	return RunnerVerdictFromStatuses()
+}
 
 // RunnerVerdictFromStatuses is the CAS set of the runner's own writes on a
 // run it claimed — the DLQ park and the unloadable-IR verdict: a claimed

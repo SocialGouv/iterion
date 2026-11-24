@@ -12,6 +12,11 @@ import (
 // file. The mode is the one asked for; the temporary file never outlives
 // an error. (The directory sync is best effort: a filesystem that refuses
 // it has already made the rename durable, or cannot.)
+//
+// This is the raw primitive. A writer of a bot's FILE calls replaceBotFile
+// instead — atomicity is not exclusion, and a stored bot file is one an
+// authoring editor replaces too — and a caller that writes something else
+// names its reason in botFileWriterAllowed, which a test holds it to.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	// A symlinked file is written through the link, as os.WriteFile does:
 	// the temporary file and the rename land beside the target, and the

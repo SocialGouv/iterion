@@ -16,14 +16,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
@@ -37,7 +40,12 @@ import (
 // executeToolNode runs a tool node (direct command, no LLM).
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
-func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
+func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (output map[string]any, err error) {
+	defer func() {
+		if err != nil {
+			err = &ToolExecutionError{Cause: err}
+		}
+	}()
 	// A connector action's invariants are enforced HERE, before anything
 	// else can claim the node.
 	//
@@ -88,35 +96,23 @@ func checkActionInvariants(node *ir.ToolNode) error {
 	return nil
 }
 
-// recipeKind classifies how a tool node's recipe is executed. The
-// classification is shared by executeToolNodeRecipe (standard path) and
-// runVerifiedRecipe (Verified Action ladder) so the script/shell/registry
-// heuristic lives in exactly one place.
-type recipeKind int
+// recipeKind classifies how a tool node's recipe is executed, under
+// dispatch's own names for ir's answer. The classification lives in ir,
+// with the fields it reads: executeToolNodeRecipe (standard path),
+// runVerifiedRecipe (Verified Action ladder) and the launch walks that
+// price the self-repair rung (ir.ToolRecoverySelfRepairRung) all read the
+// one heuristic, so none can drift from the others.
+type recipeKind = ir.ToolRecipeKind
 
 const (
-	recipeScript   recipeKind = iota // `script:` body via an interpreter
-	recipeShell                      // `command:` with template refs or shell metacharacters
-	recipeRegistry                   // bare `command:` resolved as a registered tool name
-	recipeAction                     // `action:` — a connector operation (ADR-098)
+	recipeScript   = ir.ToolRecipeScript   // `script:` body via an interpreter
+	recipeShell    = ir.ToolRecipeShell    // `command:` with template refs or shell metacharacters
+	recipeRegistry = ir.ToolRecipeRegistry // bare `command:` resolved as a registered tool name
+	recipeAction   = ir.ToolRecipeAction   // `action:` — a connector operation (ADR-098)
 )
 
-// recipeKindOf reports how node's recipe should run. `action:` and `script:`
-// take precedence over `command:` (IR validation makes all three mutually
-// exclusive); a command with template refs or shell metacharacters runs via
-// sh, else it is a bare registered-tool name.
-func recipeKindOf(node *ir.ToolNode) recipeKind {
-	switch {
-	case node.Action != "":
-		return recipeAction
-	case node.Script != "":
-		return recipeScript
-	case len(node.CommandRefs) > 0 || looksLikeShellCommand(node.Command):
-		return recipeShell
-	default:
-		return recipeRegistry
-	}
-}
+// recipeKindOf reports how node's recipe should run.
+func recipeKindOf(node *ir.ToolNode) recipeKind { return ir.ToolRecipeKindOf(node) }
 
 // toolNodeSetupError marks the sandbox refusal of a registry recipe: the
 // recipe can never run under this sandbox, so the Verified Action ladder
@@ -230,6 +226,9 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: execute: %w", node.ID, err)
 	}
+	if lost := e.deliverToolNodeFiles(node.ID, outputForEvent); lost != nil {
+		return nil, lost
+	}
 
 	// Try to parse tool output as JSON map, otherwise wrap as text.
 	// Registry-tool path preserves untrimmed stdout in the fallback;
@@ -257,7 +256,12 @@ func (e *ClawExecutor) emitToolNodeStarted(nodeID, toolName string, inputSize in
 // executeToolNodeShell and executeToolNodeScript). The registry-tool
 // path uses a different payload shape (single combined output stream,
 // privacy-redacted variants) and intentionally does not use this helper.
-func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, stderr string, dur time.Duration, runErr error) {
+//
+// It also hands over the files the output declared and returns their
+// verdict — nil unless a `required=true` directive lost its file — so
+// the delivery reads the SAME combined stream the event and the log
+// carry, built once here.
+func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, stderr string, dur time.Duration, runErr error) error {
 	// Both streams concatenated, stdout first so the structured payload is
 	// visible at the top of long stderr dumps from yarn/npm/git.
 	logged := combineStreamsForLog(stdout, stderr)
@@ -281,6 +285,33 @@ func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, st
 	if e.hooks.OnToolNodeResult != nil {
 		e.hooks.OnToolNodeResult(nodeID, toolName, []byte(resolved), logged, dur, runErr)
 	}
+	// A recipe that failed has its own story: the files it did not finish
+	// writing are that failure's consequence, not a second verdict, and
+	// the loss is on the run either way (the event). Only a recipe that
+	// SUCCEEDED can be held to what it declared.
+	if runErr != nil {
+		return nil
+	}
+	return e.deliverToolNodeFiles(nodeID, logged)
+}
+
+// deliverToolNodeFiles fires OnToolNodeDeliverables and returns the
+// verdict that fails the node: the loss of a file the node's output
+// declared `required=true`. Nil when no hook is registered, when every
+// declared file reached the run, and for every loss the author did not
+// mark required — the directive's default contract is unchanged.
+//
+// The verdict is wrapped with the node id the way every other tool-node
+// failure is, so an operator reading the run cannot tell it apart from
+// the rest by its shape — only by what it says.
+func (e *ClawExecutor) deliverToolNodeFiles(nodeID, output string) error {
+	if e.hooks.OnToolNodeDeliverables == nil {
+		return nil
+	}
+	if err := e.hooks.OnToolNodeDeliverables(nodeID, output); err != nil {
+		return fmt.Errorf("model: tool node %q: %w", nodeID, err)
+	}
+	return nil
 }
 
 // parseToolNodeOutput parses stdout as a JSON object; on failure wraps
@@ -293,11 +324,24 @@ func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, st
 // skips leading/trailing whitespace), so the raw stdout is always
 // acceptable for the parse attempt.
 func parseToolNodeOutput(stdout, fallback string) map[string]any {
-	var output map[string]any
-	if json.Unmarshal([]byte(stdout), &output) != nil {
-		return map[string]any{"result": fallback}
-	}
+	output, _ := parseToolNodeOutputWrapped(stdout, fallback)
 	return output
+}
+
+// parseToolNodeOutputWrapped is parseToolNodeOutput plus WHICH of the two
+// shapes came back: wrapped reports that stdout did not parse and the map is
+// the `result` text wrapper. A caller that knows the drain of this output was
+// cut short needs that answer, because the two shapes differ in what they can
+// hide — bytes that parsed carry no EVIDENCE of a cut, since a prefix of a
+// JSON object does not parse at all, while the wrapper may be a prefix of
+// anything. No evidence is not proof of whole: bytes cut where they happen
+// to parse are published unmarked, and [toolNodeDrainCutKey] names that
+// hole.
+func parseToolNodeOutputWrapped(stdout, fallback string) (output map[string]any, wrapped bool) {
+	if json.Unmarshal([]byte(stdout), &output) != nil {
+		return map[string]any{"result": fallback}, true
+	}
+	return output, false
 }
 
 // executeToolNodeCommon is the shared execution skeleton for the two
@@ -333,7 +377,21 @@ func (e *ClawExecutor) executeToolNodeCommon(
 	if res.runErr != nil {
 		return nil, fmt.Errorf("model: tool node %q: %s: %w\nstdout: %s\nstderr: %s", node.ID, failVerb, res.runErr, res.stdout, res.stderr)
 	}
-	return res.output, nil
+	// The recipe succeeded and a file it declared `required=true` did not
+	// reach the run: the node did not do what it says it does.
+	if res.deliveryErr != nil {
+		return nil, res.deliveryErr
+	}
+	// The recipe succeeded and its stdout is not the JSON object its
+	// `output:` declares: publishing the text wrapper would hand every
+	// declared field to the next node as a hole. Only this path asks — a
+	// node with a `postcondition:` publishes a MERGE of its recipe's stdout
+	// and its postcondition's, and is judged by the latter (ADR-044).
+	output, err := declaredAnswer(ctx, node, res)
+	if err != nil {
+		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+	}
+	return output, nil
 }
 
 // recipeResult is the full outcome of running a tool node's recipe (shell
@@ -347,7 +405,25 @@ type recipeResult struct {
 	stdout   string
 	stderr   string
 	resolved string
-	runErr   error
+	// repair is the recipe's body as a recovery model may read it
+	// (authoredBody.repair): resolved with every placeholder that is not the
+	// author's reference defused. Set by the command and script recipes,
+	// the two the self-repair rung corrects.
+	repair     string
+	repairData repairData
+	runErr     error
+	// deliveryErr is the verdict of handing over the files the output
+	// declared: non-nil only when a `required=true` directive lost its
+	// file (#2668). It is NOT a recipe failure — the recipe exited 0 —
+	// so it never feeds the self-repair rungs, which would re-run a
+	// command that did nothing wrong.
+	deliveryErr error
+	// notObject reports that stdout was not a JSON object — output is then
+	// the `result` text wrapper, or nil for a JSON `null` — and drainCut
+	// that the drain bound cut the copy of that stdout short. The two facts
+	// declaredAnswer judges a recipe's answer on.
+	notObject bool
+	drainCut  bool
 }
 
 // toolCommand is a tool node's command as runToolNodeCore runs it: the
@@ -357,6 +433,21 @@ type recipeResult struct {
 type toolCommand struct {
 	cmd        *exec.Cmd
 	completion *sandbox.Completion
+	// repair is the body this command runs as a recovery model may read it
+	// (authoredBody.repair), "" for a command no recovery rung corrects.
+	repair string
+	// repairData is what the body's variable reads need to run: a shell
+	// script's data (scriptData.deliver), which a command the recovery
+	// model corrects from repair reads the same way.
+	repairData repairData
+}
+
+// repairData is a shell script's data delivery, for a corrected command
+// that keeps the script's variable reads: the environment, and the prologue
+// assigning what the environment cannot hold.
+type repairData struct {
+	env      map[string]string
+	prologue string
 }
 
 // runToolNodeCore is the shared recipe-execution skeleton: policy check,
@@ -367,6 +458,21 @@ type toolCommand struct {
 // recovery ladder must NOT try to repair). Extracted from
 // executeToolNodeCommon so the Verified Action ladder can reuse the exact
 // same execution path and observe the streams.
+//
+// Every caller judges a run by its EXIT STATUS, which is why the drain
+// bound's cut is read here, once, instead of four times (#2855):
+//   - executeToolNodeCommon — the recipe: a non-zero status fails the node;
+//   - runVerifiedRecipe — rung 2 of the ladder: the status is recorded, and
+//     the postcondition is what judges it (ADR-044);
+//   - runPostcondition — the oracle itself, "exit 0 = met";
+//   - selfRepair — the corrected command's re-run, judged by that same
+//     oracle.
+//
+// A caller whose answer is the BYTES could not take this reading, and must
+// not be added here: it calls runWithSeparateStreams itself, where exec's
+// sentinel comes back unwrapped. The set above is not prose a fifth reader
+// can join unnoticed — `TestEveryReaderOfRunToolNodeCoreNamesItsFamily`
+// (tool_node_core_callers_test.go) is its inventory.
 func (e *ClawExecutor) runToolNodeCore(
 	ctx context.Context,
 	node *ir.ToolNode,
@@ -385,7 +491,7 @@ func (e *ClawExecutor) runToolNodeCore(
 		defer cleanup()
 	}
 	if err != nil {
-		return recipeResult{resolved: resolved}, err
+		return recipeResult{resolved: resolved, repair: tc.repair, repairData: tc.repairData}, err
 	}
 
 	e.emitToolNodeStarted(node.ID, toolName, len(resolved))
@@ -397,8 +503,46 @@ func (e *ClawExecutor) runToolNodeCore(
 	// `[detached HEAD ...]` line, a `script: js` body's console.error)
 	// without that prose breaking the JSON parse downstream.
 	// CombinedOutput() conflated the two and poisoned the parse.
-	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(tc.cmd)
+	stdoutBytes, stderrStr, drainBound, runErr := runWithSeparateStreams(tc.cmd)
 	duration := time.Since(start)
+	drainCut := proc.DrainCutShort(runErr)
+	if drainCut {
+		// exec reports this sentinel for no other status: the command
+		// exited 0 and only the copy of its output's tail was abandoned.
+		// Every reader above judges by that status, so the success and the
+		// answer stand and the drain is REPORTED — on the node's event,
+		// which carries this stream, and in the run log, the way the claw
+		// crossing already reports the pipes an agent's `server &` keeps.
+		// Read before the sandbox settles its run: there the completion
+		// line is what judges the command's end, and a sentinel left in
+		// runErr would travel joined to its verdict. The cut itself travels
+		// to the parse below, which is where a consumer of the OUTPUT can
+		// still be told the bytes may stop mid-answer.
+		//
+		// The cut is also the node's TEARDOWN of what held the drain
+		// (#2883): exec's context watcher hands its verdict to Wait as soon
+		// as the direct child is REAPED, so the group kill
+		// [proc.TerminateGroupOnCancel] arms is never dispatched once the
+		// shell has exited — a leftover would otherwise survive the node's
+		// whole teardown window (measured: a node under a 3 s deadline whose
+		// command left `sleep 30 &` came back at 30 s, the group's kill
+		// never sent). The group id is the child's own pid, recorded at
+		// spawn, and the kill is delivered HERE — inside the window the
+		// bound just closed, never stored for later, so it cannot land on a
+		// group the OS built over the recycled id. What the signal cannot
+		// reach (a descendant that escaped the group, an in-container job
+		// behind a driver's exec client) keeps its own bound: the pipes the
+		// cut closed under it, the sandbox teardown, the completion sweep.
+		groupKilled, killErr := proc.KillProcessGroup(tc.cmd)
+		if killErr != nil && e.logger != nil {
+			e.logger.Warn("tool node %q: the group the command led could not be killed: %v", node.ID, killErr)
+		}
+		stderrStr = noteAbandonedDrain(stderrStr, drainBound, groupKilled)
+		if e.logger != nil {
+			e.logger.Warn("tool node %q: %s", node.ID, abandonedDrainReport(drainBound, groupKilled))
+		}
+		runErr = nil
+	}
 	// A client that never started ran nothing in the container: its own
 	// error is the whole story, and there is no session to sweep.
 	if tc.completion != nil && tc.cmd.Process != nil {
@@ -406,14 +550,30 @@ func (e *ClawExecutor) runToolNodeCore(
 	}
 	outputStr := string(stdoutBytes)
 
-	e.emitToolNodeFinish(node.ID, toolName, resolved, outputStr, stderrStr, duration, runErr)
+	deliveryErr := e.emitToolNodeFinish(node.ID, toolName, resolved, outputStr, stderrStr, duration, runErr)
+
+	output, wrapped := parseToolNodeOutputWrapped(outputStr, strings.TrimSpace(outputStr))
+	if drainCut && wrapped {
+		// The success and the bytes stand — the verdict is the exit status
+		// — but these bytes did not parse as the node's answer, and the
+		// bound abandoned the copy that would have completed them: a
+		// downstream {{outputs.<node>.result}} reads what MAY be a prefix.
+		// The mark is the only thing here that can tell it so; the report
+		// of the bound and the knob rides the node's event and the run log.
+		output[toolNodeDrainCutKey] = true
+	}
 
 	return recipeResult{
-		output:   parseToolNodeOutput(outputStr, strings.TrimSpace(outputStr)),
-		stdout:   outputStr,
-		stderr:   stderrStr,
-		resolved: resolved,
-		runErr:   runErr,
+		output:      output,
+		stdout:      outputStr,
+		stderr:      stderrStr,
+		resolved:    resolved,
+		repair:      tc.repair,
+		repairData:  tc.repairData,
+		runErr:      runErr,
+		deliveryErr: deliveryErr,
+		notObject:   wrapped || output == nil,
+		drainCut:    drainCut,
 	}, nil
 }
 
@@ -430,6 +590,9 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 // and the Verified Action ladder share one source of truth for how a
 // shell recipe is resolved and built.
 func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
+	// The rendering resolve reports and buildCmd runs: resolve hands its
+	// shown form to the hooks, buildCmd resolves its markers.
+	var body authoredBody
 	return func() string {
 			// Expand environment variables FIRST, on the author-controlled
 			// command template only. Doing this AFTER resolveCommandTemplate
@@ -450,7 +613,8 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
 			// under the same shell escaping and the same missing-value rule.
 			td := TemplateDataFromContext(ctx)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
+			body = renderCommandBody(expandedCommand, node.CommandRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
+			resolved := body.shown()
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -461,15 +625,33 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// command line and never rewrites.
 			// A command naming a secret is not compressed: the compressor
 			// runs it with the value (rtk records every command it runs).
-			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && e.secretGuard.Materialize(resolved) == resolved {
-				if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
+			// The rewrite runs host-side, in this engine process, even when the
+			// command itself runs in-container — sandboxSkipsRewrite is the one
+			// predicate consulting that sandbox signal, and its default under a
+			// sandbox is to stand the chain down (#2007).
+			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && !e.secretGuard.NamesMaterializableSecret(resolved) && !e.secretGuard.NamesEnvOnlySecret(resolved) {
+				if e.sandboxSkipsRewrite() {
+					if e.logger != nil {
+						e.logger.Warn("tool node %q: rewriter chain stands down (%s, default skip; =host restores the host-side chain) — the sandboxed command runs in-container verbatim, without the chain's 60–90%% output-token saving",
+							node.ID, rewrite.SandboxEnv)
+					}
+				} else if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
+					// A command naming no secret holds no marker: the
+					// rewrite is the whole body.
 					resolved = rewritten
+					body = authoredBody{text: rewritten, secrets: newBodySecrets(e.secretGuard)}
 				}
 			}
 			return resolved
 		},
 		func(resolved string) (toolCommand, func(), error) {
-			// Materialise secret placeholders into the command actually
+			// Before anything runs: an output field its producer declared and
+			// did not supply is refused, not handed to `bash -c` as the
+			// reference's own text.
+			if err := e.owedOutputRefs(ctx, "command", node.CommandRefs); err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			// Materialise the author's references into the command actually
 			// executed via env-var indirection, not by inlining the raw
 			// value into the command string: `resolved` (placeholder
 			// form) is what the hooks/logs persist, and the exec'd
@@ -477,8 +659,18 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// either — a command line is visible to any co-resident
 			// local process via `ps`/`/proc/<pid>/cmdline` for the
 			// subprocess's whole lifetime, unlike envp.
-			materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
-			return e.toolNodeCommand(ctx, materialized, env), nil, nil
+			// Authored: only the markers of the node's own `command:`
+			// resolve — the env-only class (the run's minted grant) among
+			// them — and a placeholder that arrived through data stays
+			// text. A command a MODEL proposed — the self-repair rung — goes
+			// through the plain materialiser, the agent sink's.
+			materialized, env, err := body.shellFor(resolved)
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			tc := e.toolNodeCommand(ctx, materialized, env)
+			tc.repair = body.repair()
+			return tc, nil, nil
 		}
 }
 
@@ -559,17 +751,192 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 	return td.QualifiedName, td.QualifiedName
 }
 
+// toolNodeDrainBound is this site's default bound on the wait for a tool
+// node's output once the command itself is gone, overridable through
+// [proc.WaitDelayEnv].
+//
+// A tool node's command is the BOT's text, and backgrounding a process in it
+// (`server &`) is an authored recipe, not an accident: the shell exits, the
+// job it forked inherits the output pipe, and [exec.Cmd.Wait] ends only when
+// EVERY holder of that pipe has closed it. Nothing else bounds that wait:
+// `timeout:` on a tool node is read by the `action:` recipe alone
+// ([ir.ToolNode.CallTimeout]) and warned as inert on a command or a script
+// (C266, `TestOrphanTimeoutWarns`), and the cancel that signals the whole
+// process GROUP
+// ([proc.TerminateGroupOnCancel], installed by toolNodeCommand) does not
+// reach it either — exec hands the context watcher's verdict to Wait as soon
+// as the direct child is REAPED, so once the shell has exited that kill is
+// never dispatched, whatever the context does afterwards (measured: a node
+// under a 3 s deadline whose command left `sleep 30 &` came back at 30 s
+// with no error). That is why the cut is also where the group kill lands
+// (#2883): [proc.KillProcessGroup] is dispatched where the sentinel is read,
+// inside the window the bound just closed, so the leftover that held the
+// drain does not survive the node's teardown.
+//
+// Two seconds, the family's default: the copier drains the output WHILE the
+// command runs, so what is left to read at its exit is a pipe buffer, not a
+// transcript.
+//
+// It is the HOST's bound, and the readings above are the host path's —
+// which is every run the engine did not place in a sandbox, not `none`
+// alone: a declared `sandbox: auto` the host degraded to unsandboxed for
+// want of a container runtime (the run's sandbox_skipped event, #1425)
+// leaves e.sandbox nil, so its nodes take the branch below and read exactly
+// like none's — this bound, this report, this mark, this override. On a
+// node whose driver runs the command elsewhere, this Cmd is the DRIVER's
+// exec client — [ClawExecutor.sandboxToolCommand] hands a
+// [sandbox.HostRun] driver's command straight through instead, so the noop
+// one stays on the host path — and the bound in force is then that
+// client's: the driver's own when it set one — the kubernetes driver puts
+// kubectlDrainBound on every kubectl it builds (cmdContext, through
+// [proc.WaitDelayEnv] like this site, which is the only reason the override
+// reaches it), and [runWithSeparateStreams] keeps that choice — this site's
+// default otherwise, which is what the docker driver takes, having set
+// none. What a cut can say there follows the same
+// rule: [proc.DrainCutShort] is asked about the CLIENT's pipes. A driver
+// that bounds its client raises exec's sentinel, which this site reports,
+// and marks when the bytes in hand do not parse — about that client's
+// drain. One that does not leaves this site reading a nil error, with no
+// sentinel to report or to mark: measured with the docker CLI (29.9.2,
+// image ghcr.io/socialgouv/iterion-sandbox-slim:edge; a podman client's
+// grace is its own), `docker exec` itself stops copying some 2 s after the
+// exec'd process exits and exits 0 — holders writing at 4 s and at 10 s
+// both leave the command's own bytes in hand after 2.05 s, and the same
+// recipe run at bounds of 10 ms, 100 ms, 2 s and unbounded comes back at
+// 2.04–2.07 s alike, so no override widens that grace.
+//
+// Either way the reading says nothing about the in-container job that held
+// the command's output: [toolNodeDrainCutKey] and the report describe the
+// drain of what THIS process waited for, and a sandboxed node's answer
+// carries no promise from them.
+//
+// A sandboxed node has one other thing to read, and it does not stand in
+// for a sentinel that did not come. What the completion line proves is the
+// command's END — it arrives after every byte the command wrote to stdout
+// before it, and it is what judges a sandboxed command
+// ([ClawExecutor.settleSandboxedRun]) — never that what followed that line
+// is whole: this process holds only what the client copied to it. The one
+// thing left to ask the container is whether the command's
+// session still holds a process ([sandbox.Completion.Sweep] scans it), and a
+// process proves a process: a job that redirected its own streams reads
+// there exactly like one that held the output, and neither says a byte was
+// lost. So a recipe whose answer comes from a process it did not wait for
+// has nothing to read under a sandbox.
+const toolNodeDrainBound = 2 * time.Second
+
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
-// distinct buffers. Returns (stdout bytes, stderr string, run error).
+// distinct buffers. Returns (stdout bytes, stderr string, the drain bound in
+// force, run error).
 // Use this for tool nodes where downstream needs to parse stdout as a
 // structured payload while leaving stderr free for diagnostic chatter.
-func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, error) {
+//
+// The run error is exec's OWN, unwrapped — [exec.ErrWaitDelay] included,
+// which is what comes back when the drain bound cut the copy of a finished
+// command's output short. Reading that sentinel belongs to the CALLER,
+// because the reading depends on what the caller answers with: a verdict
+// that is the exit status keeps the success and reports the abandoned drain,
+// one that is the BYTES cannot ([proc.DrainCutShort] holds both readings).
+// The bound travels back so whoever reports names the bound that RAN, never
+// this site's default, which a tightened override would make a lie.
+func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, time.Duration, error) {
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
+	// Before Start, which Output performs — Start reads the field to decide
+	// whether to arm the context watcher — and only when no layer below chose
+	// a bound of its own: a sandbox driver that bounded the client it built
+	// (the kubernetes one, for a credential plugin holding kubectl's pipes)
+	// keeps its choice, which it took through this same override.
+	drainBound := cmd.WaitDelay
+	if drainBound == 0 {
+		drainBound = proc.SetWaitDelay(cmd, toolNodeDrainBound)
+	}
 	stdoutBytes, runErr := cmd.Output()
 	// exec.ExitError carries stderr it captured before we set ours; the
 	// buffer we provided is still the source of truth in our path.
-	return stdoutBytes, stderrBuf.String(), runErr
+	return stdoutBytes, stderrBuf.String(), drainBound, runErr
+}
+
+// toolNodeDrainCutKey marks a tool node's output as possibly SHORT of the
+// answer: the drain bound abandoned the copy of this run's output, and what
+// arrived did not parse as a JSON object, so the `result` wrapper beside the
+// mark may be a prefix rather than the whole. The report of the bound and the
+// knob goes on the node's event and in the run log; this is the same fact in
+// the one place a consumer of the OUTPUT reads.
+//
+// Private and `_`-prefixed, the shape `_verified_action` already uses
+// (ADR-044): [ValidateOutput] reads the schema's declared fields only, so the
+// mark never fails a node whose output it describes. Unlike
+// `_verified_action`, which the engine strips once it has emitted its event,
+// this one is NOT stripped: it travels with the output into the artifact a
+// `publish:` writes and into the node_finished event's data, where the reader
+// who has to tell a prefix from an answer is.
+//
+// Its reach, exactly: a `{{outputs.<node>._drain_cut}}` ref resolves on
+// EVERY tool node, whether it declares an `output:` schema or not. The rule
+// is `isRuntimeInjectedField` (pkg/dsl/ir, validate_edges.go): an
+// underscore-prefixed field is exempt from the outputs-ref validator
+// (C031/C032) and from the static type checker, the exemption session
+// metadata already travels on. Measured on a node declaring a schema whose
+// only field is `result`: `{{outputs.held.nope}}` is C031 and
+// `{{outputs.held._drain_cut}}` validates and resolves to `true`. The price
+// of that exemption is that a MISSPELLING compiles too — `_drain_cutt` earns
+// no diagnostic, and its raw `{{…}}` reaches `bash -c` as text.
+//
+// An edge gate is the other surface, and the schema does decide there:
+// `node -> warn when _drain_cut` is C014 on a node that declares an
+// `output:` schema, because the condition validator takes no such exemption
+// (pkg/dsl/ir, validateConditionFields), and compiles and fires on a node
+// that declares none. The engine's own event SUMMARY line skips
+// `_`-prefixed keys by convention (engine_events.go), which is why the drain
+// is reported in prose beside the node's event as well as marked here.
+//
+// What it cannot mark is named by the PARSE, not by a shape: a cut whose
+// bytes still parse is published unmarked, whatever they parse TO. A command
+// emitting one JSON object per line, cut after a whole one, parses and is
+// unmarked; so is a bare `null` — what `cmd | jq '.absent'` prints — which
+// parses to no map at all, so the output a `publish:` writes is nil and
+// carries neither the mark nor the engine's own `_duration_ms`. Measured,
+// all three with the drain cut and reported: `null` leaves a nil output,
+// `{}` leaves `{"_duration_ms": …}` unmarked, and a lone space is marked
+// because a space does not parse. The mark rides the wrapper because that is
+// the shape this site can prove nothing about, never a claim that every lost
+// byte is named.
+const toolNodeDrainCutKey = "_drain_cut"
+
+// abandonedDrainReport is what a tool node's run says when the drain bound
+// stopped the wait for an output a process the command left behind still
+// holds: what the site KNOWS — the command exited 0, something still holds
+// the pipe, the wait stopped at the bound that ran — and the knob that
+// widens it. groupKilled says whether the teardown that rides the cut
+// ([proc.KillProcessGroup], dispatched where the cut is read) signalled the
+// process group the command led; it is false on a driver whose client was
+// never made a group leader and when the group was already gone, and the
+// report then says nothing about a kill rather than claim one.
+//
+// Never that the output was "read short": what the bound cuts is the TAIL of
+// a copy, and the measured case is a complete answer whose fd a descendant
+// merely kept — this site cannot tell the two apart, so it reports only the
+// one it can prove. The one shape where the difference is invisible to a
+// reader of the OUTPUT carries [toolNodeDrainCutKey] instead.
+func abandonedDrainReport(bound time.Duration, groupKilled bool) string {
+	report := fmt.Sprintf("the command exited 0 and a process it left still holds its output; stopped waiting %s",
+		proc.WaitDelayHint(bound))
+	if groupKilled {
+		report += "; the process group the command led was killed"
+	}
+	return report
+}
+
+// noteAbandonedDrain adds that report to the stderr the node's event and the
+// run log carry, so the drain is auditable from the node itself and not only
+// from the engine's log. Engine prose, marked as such: the directives a tool
+// node's output declares are `[iterion] <key>=` lines, which this is not.
+func noteAbandonedDrain(stderr string, bound time.Duration, groupKilled bool) string {
+	note := "iterion: " + abandonedDrainReport(bound, groupKilled)
+	if trimmed := strings.TrimRight(stderr, "\n"); trimmed != "" {
+		return trimmed + "\n" + note
+	}
+	return note
 }
 
 // combineStreamsForLog formats stdout + stderr into a single string for
@@ -606,23 +973,68 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 // node, factored out of executeToolNodeScript so the standard path and
 // the Verified Action ladder share one source of truth.
 func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
+	// The rendering resolve reports and buildCmd writes, the author's own
+	// text it was rendered from, what a shell script's data references hand
+	// the interpreter, and the rendering's refusal.
+	var body authoredBody
+	var authored string
+	var data scriptData
+	var renderErr error
 	return func() string {
 			// Same env-then-substitution ordering as executeToolNodeShell:
 			// only the author-controlled `${NAME}` braces are env-expanded so
-			// injected values from inputs/vars stay inert. But where the shell
-			// path uses shell-escape, script: tools use resolveScriptTemplate
-			// (JSON literal rendering) so values land as valid JS/Python/Ruby
-			// literals — shell-escape's single-quote wrapping breaks
-			// script-language string parsers when the value contains embedded
-			// apostrophes. No compression: a script body is not a shell command line.
+			// injected values from inputs/vars stay inert. A js/py body
+			// renders values as JSON literals — shell-escape's single-quote
+			// wrapping breaks script-language string parsers when the value
+			// contains embedded apostrophes — and a sh/bash body reads each
+			// from its environment, the value never in its text
+			// (renderShellScript). No compression: a script body is not a
+			// shell command line.
 			expanded, _ := ToolBodyEnv(node, node.Script, lookupToolEnv)
 			// Same single pass over one snapshot as the shell recipe:
-			// {{run.*}} and {{outputs.*}} beside {{input.*}}, here as JSON
-			// literals.
+			// {{run.*}} and {{outputs.*}} beside {{input.*}}.
 			td := TemplateDataFromContext(ctx)
-			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			authored = expanded
+			body, data, renderErr = renderScriptBodyIn(expanded, node.Language, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			return body.shown()
 		},
 		func(resolved string) (toolCommand, func(), error) {
+			// Before any temp file exists: a value no form carries (a NUL
+			// byte in a shell script's data) is refused, naming the reference.
+			if renderErr != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, renderErr)
+			}
+			// Before any temp file exists: an output field its producer
+			// declared and did not supply is refused, not rendered as `null`.
+			if err := e.owedOutputRefs(ctx, "script", node.ScriptRefs); err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			// Before any temp file exists: a {{vars.x}} naming a server-minted
+			// (env-only) credential is refused, not rendered — the value would
+			// sit in the script file in clear.
+			if err := refuseMintedScriptRef(e.secretGuard, node); err != nil {
+				return toolCommand{}, nil, err
+			}
+			// Materialise the author's references into the executed script
+			// body only. `resolved` (placeholder form) stays the value passed
+			// to hooks/logs, so the real secret never reaches the event
+			// stream; a placeholder that arrived through data stays text.
+			script, refEnv, err := body.scriptFor(resolved, node.Language)
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			// A shell script's data: the values its variable reads name, in
+			// the interpreter's environment, or assigned ahead of the
+			// author's text where the environment cannot hold them.
+			spillMax, err := scriptDataSpillMaxFromEnv()
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			dataEnv, prologue, err := data.deliver(spillMax)
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			script = prologue + script
 			interp, ext := scriptInterpreter(node.Language)
 			if len(interp) == 0 {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
@@ -638,7 +1050,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// that judges the tree's cleanliness would otherwise read as
 			// uncommitted work of the run. Removed on success or failure via
 			// the returned cleanup.
-			wd := e.workDir
+			wd := e.WorkDir()
 			if wd == "" {
 				wd = "."
 			}
@@ -649,17 +1061,33 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 					return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
 				}
 			}
-			tmpFile, err := os.CreateTemp(scriptDir, ".iterion-script-*"+ext)
+			tmpFile, err := os.CreateTemp(scriptDir, toolScriptTempPrefix+"*"+ext)
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
 			}
 			tmpPath := tmpFile.Name()
 			cleanup := func() { _ = os.Remove(tmpPath) }
-			// Materialise secret placeholders into the executed script body
-			// only. `resolved` (placeholder form) stays the value passed to
-			// hooks/logs, so the real secret never reaches the event stream.
-			body := e.secretGuard.MaterializeShell(resolved)
-			if _, werr := tmpFile.WriteString(body); werr != nil {
+			// A script body is the author's own program: iterion cannot
+			// rewrite a reference into a variable read for it, so the author
+			// names the environment variable and the engine hands the value
+			// to the interpreter — instead of the body (and the temp file it
+			// is written to, which a copy-based sandbox pushes into the
+			// workspace) carrying the credential in clear. Named by the
+			// AUTHOR's text, before any value is rendered into it: a
+			// placeholder data carries names no variable.
+			scriptEnv := e.secretGuard.AuthoredEnvForBody(authored)
+			// And the values of the author's references the script reads
+			// from its environment (bodySecrets.script): a shell script
+			// names them as variables instead of holding them in its text.
+			for _, env := range []map[string]string{refEnv, dataEnv} {
+				for name, value := range env {
+					if scriptEnv == nil {
+						scriptEnv = make(map[string]string, len(refEnv)+len(dataEnv))
+					}
+					scriptEnv[name] = value
+				}
+			}
+			if _, werr := tmpFile.WriteString(script); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)
@@ -682,7 +1110,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// dotfile would otherwise be swept up by a later `git add -A`.
 			if inWorkspace && e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
 				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
-					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
+					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(script)); rerr != nil {
 						cleanup()
 						return toolCommand{}, nil, fmt.Errorf("model: tool node %q: write script into sandbox: %w", node.ID, rerr)
 					}
@@ -698,8 +1126,50 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			}
 			// In the workspace, just the basename (the bind mount uses the same
 			// relative path); out of it, the absolute scratch path.
-			return e.toolNodeScriptCommand(ctx, interp, scriptArg), cleanup, nil
+			tc := e.toolNodeScriptCommand(ctx, interp, scriptArg, scriptEnv)
+			tc.repair = body.repair()
+			tc.repairData = repairData{env: dataEnv, prologue: prologue}
+			return tc, cleanup, nil
 		}
+}
+
+// refuseMintedScriptRef is the script-side half of the env-only rule. A
+// {{vars.x}} naming a credential the server minted for this run resolves in
+// the author's `command:` and `postcondition:` by environment — the
+// placeholder, single-quoted, which MaterializeAuthoredShellEnv swaps for a
+// reference to the CHILD's. A `script:` body has no such swap: the quoted
+// form is shell, and each interpreter's env read is its own expression
+// (node's `process.env.X`, python's `os.environ[...]` — which also needs an
+// import the body may not have), so nothing can turn the reference into the
+// variable read for the author. Left to render, the value would be written
+// to the script's temp file IN CLEAR — on disk for the node's lifetime,
+// pushed into the workspace by a copy-based sandbox. The reference is
+// refused instead, naming the door that works: the body names the variable
+// itself (the placeholder doubles as the environment-variable name) and the
+// engine hands the value to the interpreter of a body that names it
+// (AuthoredEnvForBody, scriptRecipe below).
+//
+// The condition mirrors the shell branch of resolveTemplateWith exactly: a
+// top-level vars ref in its default form, asked of the guard rather than
+// derived from the name — only a credential this run actually holds
+// env-only is refused. The raw {{!vars.x}} form keeps the value here as it
+// does in a command: the author's own text, quoting included.
+func refuseMintedScriptRef(guard *secretguard.Guard, node *ir.ToolNode) error {
+	for _, ref := range node.ScriptRefs {
+		if ref.Kind != ir.RefVars || len(ref.Path) != 1 || ref.Unquoted {
+			continue
+		}
+		ph := guard.AuthoredEnvPlaceholder(ref.Path[0])
+		if ph == "" {
+			continue
+		}
+		return fmt.Errorf("model: tool node %q: {{vars.%s}} in a script: body names a server-minted credential, which a script body resolves nothing of: "+
+			"the value would be written to the script's temp file in clear. Read it from the interpreter's environment instead — "+
+			"the body names the variable itself (sh: \"$%s\", js: process.env.%s, python: os.environ.get(%q)) "+
+			"and the engine hands the value to the body that names it",
+			node.ID, ref.Path[0], ph, ph, ph)
+	}
+	return nil
 }
 
 // scriptInterpreter maps a `language:` token to the interpreter argv (the
@@ -771,11 +1241,47 @@ func (e *ClawExecutor) engineBinaryEnvEntry() (string, bool) {
 	return "", false
 }
 
-// withEngineBinaryEnv applies the engine-binary entry to a per-command env
-// map (the sandbox path's shape), creating the map when the command has no
-// env of its own.
-func (e *ClawExecutor) withEngineBinaryEnv(env map[string]string) map[string]string {
+// engineChildEnvEntries returns the entries the engine owns on every command
+// it spawns against the workspace: the path of its own binary (when one
+// resolves) and the invocation-class marker, which is unconditional — the
+// class is a fact about the spawn, not about what resolved.
+//
+// The marker is what tells a nested iterion — the one a bot script re-enters
+// through sandbox.EngineBinaryEnvVar, and every iterion below it by
+// inheritance — that it is the engine's child and not a human's CLI call, so
+// it does not auto-load the `.env` of the workspace it runs in (#2844,
+// internal/envtrust EnvEngineChild).
+//
+// An untrusted run's command also carries its trust (RunTrustEnvEntry), so an
+// iterion a script re-enters adopts it and leaves the workspace `.env` alone.
+func (e *ClawExecutor) engineChildEnvEntries() []string {
+	entries := []string{envtrust.EngineChildEnvEntry()}
 	if entry, ok := e.engineBinaryEnvEntry(); ok {
+		entries = append(entries, entry)
+	}
+	if entry, ok := RunTrustEnvEntry(e.WorkspaceTrust()); ok {
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// RunTrustEnvEntry is the KEY=value entry (envtrust.EnvRunTrust) that carries
+// an untrusted run's workspace trust to a process the engine starts, in the
+// shape exec.Cmd.Env and the sandbox ExecOpts both take. ok is false for a
+// trusted run: the trusted value is never written, so a trusted run's
+// processes see exactly the environment they did before the carrier existed.
+func RunTrustEnvEntry(trust store.RunTrust) (entry string, ok bool) {
+	if trust.Trusted() {
+		return "", false
+	}
+	return envtrust.EnvRunTrust + "=" + string(trust), true
+}
+
+// withEngineChildEnv applies those entries to a per-command env map (the
+// sandbox path's shape), creating the map when the command has no env of its
+// own.
+func (e *ClawExecutor) withEngineChildEnv(env map[string]string) map[string]string {
+	for _, entry := range e.engineChildEnvEntries() {
 		k, v, _ := strings.Cut(entry, "=")
 		if env == nil {
 			env = map[string]string{}
@@ -789,10 +1295,11 @@ func (e *ClawExecutor) withEngineBinaryEnv(env map[string]string) map[string]str
 // argv (scriptInterpreter) on the script temp file. Mirrors toolNodeCommand
 // for the script-mode path: sandbox-routed if a sandbox is active and the
 // node has not opted out.
-func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) toolCommand {
+func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string, env map[string]string) toolCommand {
 	argv := append(append([]string{}, interpreter...), script)
+	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(e.withRunEnv(nil))})
+		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineChildEnv(env)})
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -803,7 +1310,7 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	// container env (the same dir is bind-mounted there). The run-level
 	// env (the launch surface's layer plus the engine's PATH composition)
 	// is appended after the inherited env so on a duplicate key it wins.
-	cmd.Env = os.Environ()
+	cmd.Env = envEnviron(ctx)
 	if runLevelEnv := e.processExtraEnv(); e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
 		cmd.Env = append(cmd.Env, runLevelEnv...)
 		if e.artifactFilesDir != "" {
@@ -811,20 +1318,24 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 		}
 	}
 	cmd.Env = append(cmd.Env, e.chain.RunEnv()...)
+	// The values the body named, keyed by the variable it reads.
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	// The canonical tree-noise pathspecs, engine-owned: a run without a
 	// devbox.json carries them just the same (#1464) — but the operator,
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
-	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(nil)...)
-	// The engine's own binary path, engine-owned: appended last so no
-	// inherited or launch-surface value can forge the resolution a bot
-	// script trusts when it re-enters the CLI (#1799).
-	if entry, ok := e.engineBinaryEnvEntry(); ok {
-		cmd.Env = append(cmd.Env, entry)
-	}
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
+	// The engine's own binary path and the invocation-class marker,
+	// engine-owned: appended last so no inherited or launch-surface value
+	// can forge the resolution a bot script trusts when it re-enters the
+	// CLI (#1799), nor claim the re-entered iterion is a human's call
+	// (#2844).
+	cmd.Env = append(cmd.Env, e.engineChildEnvEntries()...)
 
-	if e.workDir != "" {
-		cmd.Dir = e.workDir
+	if dir := e.WorkDir(); dir != "" {
+		cmd.Dir = dir
 	}
 	return toolCommand{cmd: cmd}
 }
@@ -888,7 +1399,11 @@ func (e *ClawExecutor) settleSandboxedRun(ctx context.Context, nodeID string, co
 	clean, status, ended := completion.Settle(stdout)
 	if ended {
 		if status != 0 && runErr == nil {
-			runErr = fmt.Errorf("sandbox: the command exited %d but its exec client reported success", status)
+			// Not "the client reported success": runToolNodeCore clears the
+			// drain bound's sentinel before this settle runs, so a nil
+			// runErr here is a client that reported nothing this site can
+			// charge the command with — success, or a drain it abandoned.
+			runErr = fmt.Errorf("sandbox: the command exited %d but its exec client did not report that status", status)
 		}
 		return clean, runErr
 	}
@@ -950,7 +1465,7 @@ func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
 	if value, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set && value != "" {
 		return nil
 	}
-	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {
+	if value, inherited := envLookupEnv(context.Background(), treenoise.TreeNoiseEnvVar); inherited && value != "" {
 		return nil
 	}
 	for _, entry := range e.runExtraEnv {
@@ -1022,7 +1537,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 			// it arrived. Run as a file, it means what `bash -s` makes of it.
 			args = []string{"bash", "-c", streamedRecipeRunner, "iterion-recipe", strconv.Itoa(len(resolved))}
 		}
-		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
+		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineChildEnv(env), Stdin: stdin})
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
@@ -1033,7 +1548,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
 	runLevelEnv := e.processExtraEnv()
-	cmd.Env = os.Environ()
+	cmd.Env = envEnviron(ctx)
 	// Run-level env (the launch surface's layer plus the engine's
 	// PATH composition) — appended after the inherited env so on a
 	// duplicate key it wins.
@@ -1051,14 +1566,14 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
 	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
-	// The engine's own binary path, engine-owned: appended last so no
-	// inherited or launch-surface value can forge the resolution a bot
-	// script trusts when it re-enters the CLI (#1799).
-	if entry, ok := e.engineBinaryEnvEntry(); ok {
-		cmd.Env = append(cmd.Env, entry)
-	}
-	if e.workDir != "" {
-		cmd.Dir = e.workDir
+	// The engine's own binary path and the invocation-class marker,
+	// engine-owned: appended last so no inherited or launch-surface value
+	// can forge the resolution a bot script trusts when it re-enters the
+	// CLI (#1799), nor claim the re-entered iterion is a human's call
+	// (#2844).
+	cmd.Env = append(cmd.Env, e.engineChildEnvEntries()...)
+	if dir := e.WorkDir(); dir != "" {
+		cmd.Dir = dir
 	}
 	return toolCommand{cmd: cmd}
 }
@@ -1086,12 +1601,16 @@ func (e *ClawExecutor) nodeOptsOutOfSandbox(_ nodeOptOut) bool {
 	return false
 }
 
-// looksLikeShellCommand returns true if the command string looks like a shell
-// command rather than a bare tool name. Tool names are simple identifiers
-// (e.g. "read_file", "bash"), while shell commands contain spaces, operators,
-// or path separators.
-func looksLikeShellCommand(cmd string) bool {
-	return strings.ContainsAny(cmd, " \t|&;><$`(){}\"'/")
+// sandboxSkipsRewrite is the tool-node half of the #2007 placement decision:
+// the one predicate consulting the sandbox signal before a tool node's
+// command goes through the rewriter chain host-side. Its default under a
+// sandbox is to skip; ITERION_REWRITE_SANDBOX=host restores the previous
+// placement. The knob's value is read once at construction
+// (rewriteSandboxEnv); a node that opted out of the sandbox runs its command
+// on the host, so the host-side rewrite costs the boundary nothing there.
+func (e *ClawExecutor) sandboxSkipsRewrite() bool {
+	sandboxed := e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut)
+	return rewrite.SkipsSandbox(e.rewriteSandboxEnv, sandboxed)
 }
 
 // resolveCommandTemplate substitutes {{input.X}}, {{vars.X}}, {{secrets.X}},
@@ -1123,7 +1642,19 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, shapes, nil)
+	//
+	// The text returned is the run's rendering in its shown form — the one
+	// hooks, events and logs persist; what runs is renderCommandBody's.
+	return renderCommandBody(command, refs, input, vars, td, ctxRunID, guard, shapes).shown()
+}
+
+// renderCommandBody is the run's rendering of a shell body — a `command:`, a
+// `postcondition:` — under guard: resolveCommandTemplate's reading, with each
+// secret reference the author wrote as a marker of this one rendering, which
+// the body's materialiser resolves and nothing else (bodySecrets).
+func renderCommandBody(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes) authoredBody {
+	secrets := newBodySecrets(guard)
+	return authoredBody{text: renderCommand(command, refs, input, vars, td, ctxRunID, guard, shapes, nil, secrets.markFunc()), secrets: secrets}
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -1139,6 +1670,10 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 // The bang form `{{!input.X}}` keeps the legacy raw-passthrough
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
+//
+// A sh/bash body is not one of these: a JSON literal is a double-quoted word
+// a shell expands, so a tool node's script goes through renderScriptIn,
+// which hands a shell script its data through the environment.
 func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
@@ -1149,23 +1684,44 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 	// parse time before any user logic can react. Substitute with the
 	// language's null literal (rendered as JSON null = "null") so the
 	// script can still run and handle the missing input itself.
-	return renderScript(script, refs, input, vars, td, ctxRunID, guard, nil)
+	return renderScriptBody(script, refs, input, vars, td, ctxRunID, guard).shown()
+}
+
+// renderScriptBody is the run's rendering of a `script:` body under guard:
+// resolveScriptTemplate's reading, with each secret reference the author
+// wrote as a marker of this one rendering (bodySecrets).
+func renderScriptBody(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard) authoredBody {
+	secrets := newBodySecrets(guard)
+	return authoredBody{text: renderScript(script, refs, input, vars, td, ctxRunID, guard, nil, secrets.markFunc()), secrets: secrets}
+}
+
+// renderScriptBodyIn is the run's rendering of a tool node's `script:`
+// written in language under guard: renderScriptIn's reading — a sh/bash
+// script's data read from its environment — with each secret reference the
+// author wrote as a marker of this one rendering (bodySecrets). The
+// scriptData is what the interpreter must receive for the data; the error
+// names a reference no form carries (renderShellScript).
+func renderScriptBodyIn(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard) (authoredBody, scriptData, error) {
+	secrets := newBodySecrets(guard)
+	text, data, err := renderScriptIn(script, language, refs, input, vars, td, ctxRunID, guard, nil, secrets.markFunc())
+	return authoredBody{text: text, secrets: secrets}, data, err
 }
 
 // renderCommand and renderScript are the two readings of a tool body —
 // shell-escaped values with a hole kept as written, JSON literals with a
 // hole as null — named once each so the production path and a dry run
-// cannot choose differently.
-func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string)) string {
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, shellEscapeValue, false, unresolved)
+// cannot choose differently. mark is resolveTemplateWith's: a run's
+// bodySecrets, nil for a preview.
+func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string), mark func(text string) string) string {
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, true, shellEscapeValue, false, unresolved, mark)
 }
 
 // A script body carries no declared shape: every namespace renders as a
 // JSON literal there, which is already what both list types mean to a
 // JS/Python/Ruby parser — `["a","b"]` for a `string[]`, the parsed document
 // for a `json`. Passing the declarations would be wiring nothing reads.
-func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, jsonLiteralValue, true, unresolved)
+func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string), mark func(text string) string) string {
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, false, jsonLiteralValue, true, unresolved, mark)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -1190,7 +1746,15 @@ func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td 
 // text is never re-read for braces, since a value may carry `{{…}}` of its
 // own and that is the value, not a reference. The production callers
 // listen to none; a dry run names them.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string)) string {
+//
+// mark, when set, is handed the text of each secret reference the AUTHOR
+// wrote — a `{{secrets.NAME}}`'s secretRefText, a server-minted
+// `{{vars.x}}`'s placeholder — and renders what stands in its place: a
+// marker of that one rendering (authoredSecrets for an action's params,
+// bodySecrets for a run's tool body), so the materialiser behind it can tell
+// the author's reference from a placeholder data spells. Nil for a preview,
+// which materialises nothing.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, shellBody bool, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string), mark func(text string) string) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -1201,6 +1765,62 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// not shell-escape/JSON-quote it or rescan the emitted braces.
 			subs[ref.Raw] = "{{"
 			continue
+		}
+		// A credential the server minted for this run
+		// (store.ServerMintedSecretVars) renders as the guard's placeholder,
+		// single-quoted: exactly the form MaterializeAuthoredShellEnv swaps
+		// for a reference to the CHILD's environment, so the bearer never
+		// enters a command line — which any co-resident process reads from
+		// /proc/<pid>/cmdline for the whole life of the command.
+		//
+		// The placeholder is ASKED of the guard, never derived from the
+		// name: only one this guard will materialise may take a value's
+		// place, or the command would run with a reference resolving to
+		// nothing. Emitted here rather than through a renderer below,
+		// because the text and its quoting are one decision: no declared
+		// shape can reshape it into a form the materialiser no longer
+		// recognises.
+		//
+		// Shell bodies only: a script body REFUSES the reference instead
+		// (refuseMintedScriptRef, at the build of its temp file) — no swap
+		// turns a reference into another language's variable read, and a
+		// rendered value would sit in the script file in clear. The raw
+		// {{!vars.x}} form is the author's own text, quoting included, and
+		// keeps the value in both bodies.
+		//
+		// The placeholder is the author's reference, so it is MARKED like a
+		// `{{secrets.NAME}}`: the materialiser resolves the marker and never a
+		// placeholder that data spells, quotes included.
+		if shellBody && !ref.Unquoted && ref.Kind == ir.RefVars && len(ref.Path) == 1 {
+			if ph := guard.AuthoredEnvPlaceholder(ref.Path[0]); ph != "" {
+				if mark != nil {
+					ph = mark(ph)
+				}
+				subs[ref.Raw] = "'" + ph + "'"
+				continue
+			}
+		}
+		// The same mask where NO materialiser stands behind the reference —
+		// the preview renderings (RenderCommand/RenderScript) pass a nil
+		// guard, so the placeholder the branch above would emit resolves
+		// nowhere here. The value must still not render: freeze the
+		// identity, as the prompt path does (TemplateResolver). A shell
+		// body gets the placeholder in the one form the run renders it;
+		// a script body gets it as the language literal its value would
+		// have been. A guard — the run — keeps its own reading (it either
+		// holds the name env-only and took the branch above, or it
+		// deliberately did not register the value), and the raw
+		// {{!vars.x}} form keeps the value, as it does on the run: it is
+		// the author's own text.
+		if guard == nil && !ref.Unquoted && ref.Kind == ir.RefVars && len(ref.Path) == 1 {
+			if ph, masked := mintedVarMask(ref.Path[0], vars[ref.Path[0]]); masked {
+				if shellBody {
+					subs[ref.Raw] = "'" + ph + "'"
+				} else {
+					subs[ref.Raw] = defaultRender(ph, shapes.Of(ref))
+				}
+				continue
+			}
 		}
 		var val any
 		var handled, present bool
@@ -1247,13 +1867,13 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// value is swapped in by the secret guard immediately before
 			// exec (executeToolNodeShell / Script), never landing in the
 			// persisted command text or logs. File secrets render their
-			// mounted path instead.
-			if guard != nil {
-				val = guard.ResolveSecretRef(ref.Path[0])
+			// mounted path instead. A run renders the author's reference as
+			// its marker (mark), which the materialiser resolves.
+			text := secretRefText(guard, ref.Path[0])
+			if mark != nil {
+				text = mark(text)
 			}
-			if val == nil || val == "" {
-				val = secretguard.PlaceholderForName(ref.Path[0])
-			}
+			val = text
 			handled = true
 		case ref.Kind == ir.RefArtifacts || ref.Kind == ir.RefAttachments || ref.Kind == ir.RefLoop:
 			// The namespaces a prompt resolves — artifacts, attachments, loop
@@ -1305,6 +1925,19 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			subs[ref.Raw] = rawTemplateValue(val, ShapeUndeclared)
 		} else {
 			subs[ref.Raw] = defaultRender(val, shape)
+		}
+		// A placeholder that arrives through DATA — an input an edge mapped
+		// from a model's output, an upstream output, a launch var — is not
+		// the author's: no body's materialiser resolves it, since each
+		// resolves only the markers of its own rendering (bodySecrets,
+		// authoredSecrets), so it is text whatever its secret grants. It is
+		// still the agent sink's beyond the body: whatever the body sends on
+		// — a request the egress proxy substitutes on the wire, whoever
+		// spelled the placeholder — carries it as a model would have, so a
+		// secret kept off the agent is defused here, into the form that
+		// resolves nowhere.
+		if ref.Kind != ir.RefSecrets {
+			subs[ref.Raw] = guard.DefuseUngranted(secretsink.Agent, subs[ref.Raw])
 		}
 	}
 	if len(subs) == 0 {
@@ -1373,6 +2006,17 @@ func rawTemplateValue(val any, _ ValueShape) string {
 		return s
 	}
 	return formatValue(val)
+}
+
+// secretRefText is what an authored `{{secrets.NAME}}` renders to: the
+// guard's reading (the placeholder, a file secret's mounted path, the value
+// with placeholders off), or the name's own placeholder when the guard holds
+// none. Nil-safe.
+func secretRefText(guard *secretguard.Guard, name string) string {
+	if text := guard.ResolveSecretRef(name); text != "" {
+		return text
+	}
+	return secretguard.PlaceholderForName(name)
 }
 
 // ToolBodyEnv is the one reading of a tool body's environment forms. It
@@ -1568,7 +2212,7 @@ func lookupToolEnv(name string) (string, bool) {
 	if !ir.ProcessEnvReadable(name) {
 		return "", false
 	}
-	return os.LookupEnv(name)
+	return envLookupEnv(context.Background(), name)
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention

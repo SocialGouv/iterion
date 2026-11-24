@@ -18,6 +18,7 @@ import {
 import WSStatusDot from "@/components/shared/WSStatusDot";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
+import { runCanAct } from "@/hooks/useRunCanAct";
 import { formatCredentialFingerprint, formatDateTime, formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -43,6 +44,7 @@ import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import AssistantWatchBadge from "./runHeader/AssistantWatchBadge";
+import RunOriginLostBanner from "./runHeader/RunOriginLostBanner";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
 import { isDeletable, isResumable } from "./runStatusActions";
@@ -51,6 +53,10 @@ interface Props {
   run: RunHeaderType;
   active: boolean;
   wsState: WsState;
+  // The caller's effective standing for this run (ADR-148), from the
+  // server-resolved snapshot. Undefined on auth-less local servers —
+  // the affordances then stay unconditional.
+  viewer?: { role: string; via?: string } | null;
   // Restores the run-console panels to their default layout.
   onResetLayout?: () => void;
   // When true, drop the component's own bottom border so the parent can
@@ -58,7 +64,7 @@ interface Props {
   bare?: boolean;
 }
 
-export default function RunHeader({ run, active, wsState, onResetLayout, bare = false }: Props) {
+export default function RunHeader({ run, active, wsState, viewer, onResetLayout, bare = false }: Props) {
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const applySnapshot = useRunStore((s) => s.applySnapshot);
   // Headline result-links (opened PR, live deploy) derived from the run's
@@ -72,6 +78,14 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   const [editingName, setEditingName] = useState(false);
   const [, setLocation] = useLocation();
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+
+  // canAct is the caller's standing for THIS run, server-resolved
+  // (ADR-148): a viewer — a team viewer, an org-admin-lineage reader, an
+  // org-shared reader — reads but never acts, so every action affordance
+  // below is gated on it instead of proposing commands the ladder will
+  // 403. Undefined on auth-less local servers: today's affordances. A lost
+  // socket (scope_lost) acts on nothing: the ID may name another run now.
+  const canAct = runCanAct(viewer, wsState);
 
   // canCancel covers every state where a cancel actually does something
   // distinct from Resume:
@@ -91,17 +105,18 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // (local mode); cloud and paused/queued runs are never "active" in
   // this server's process. See cloud-ready plan §F (T-14).
   const canCancel =
-    (run.status === "running" && active) ||
-    run.status === "paused_waiting_human" ||
-    run.status === "paused_operator" ||
-    run.status === "queued";
+    canAct &&
+    ((run.status === "running" && active) ||
+      run.status === "paused_waiting_human" ||
+      run.status === "paused_operator" ||
+      run.status === "queued");
   // Soft pause is only meaningful while the run is actually executing
   // in this process — paused/queued/terminal states have nothing to
   // interrupt. The "active" gate also keeps the button hidden for
   // cloud-mode runs whose engine lives in another process (Phase 1
   // doesn't ship cross-process pause; cancel falls back via NATS but
   // pause has no NATS subject yet).
-  const canPause = run.status === "running" && active;
+  const canPause = canAct && run.status === "running" && active;
   // The WS "disconnected — data may be stale" banner is only meaningful
   // while MORE live events are expected (running / queued). A paused or
   // terminal run legitimately ENDS its event stream — the broker closes
@@ -118,16 +133,16 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // because "fork from a finished run" is a perfectly valid use case
   // (re-run the last LLM turn with different inputs).
   const checkpointNode = run.checkpoint?.node_id ?? null;
-  const canFork = Boolean(checkpointNode);
+  const canFork = canAct && Boolean(checkpointNode);
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
   // (Phase 5). The header button stays for failed_resumable / cancelled
   // / paused_operator runs (isResumable — shared with the run list's
   // inline Resume quick action).
-  const canResume = isResumable(run.status);
+  const canResume = canAct && isResumable(run.status);
   // `failed` is terminal for execution but not necessarily irrecoverable.
   // The server stamps this capability only when a usable checkpoint exists.
-  const canRewind = run.rewindable === true;
+  const canRewind = canAct && run.rewindable === true;
 
   const onCancel = () => runAction(() => cancelRun(run.id));
 
@@ -167,6 +182,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
     (s) => Boolean(s.info?.run_shell_enabled),
   );
   const shellEligible =
+    canAct &&
     runShellEnabled &&
     run.status !== "running" &&
     run.status !== "queued" &&
@@ -215,7 +231,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // Delete is offered only for terminal runs — an active run must be
   // cancelled first. Irreversible: removes the run + all its data.
   // isDeletable is shared with the run list's bulk Delete.
-  const canDelete = isDeletable(run.status);
+  const canDelete = canAct && isDeletable(run.status);
   const deleteWithConfirm = async () => {
     const ok = await confirm({
       title: "Delete this run?",
@@ -245,27 +261,29 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           {editingName ? (
             <RunNameEditor initial={friendlyName} onSubmit={onRename} onCancel={() => setEditingName(false)} />
           ) : (
-            <div className="inline-flex items-center gap-1 min-w-0 group">
+            <h1 className="inline-flex items-center gap-1 min-w-0 group font-semibold text-fg-default text-base m-0">
               <Tooltip content="Double-click to rename">
                 <button
                   type="button"
-                  onDoubleClick={() => setEditingName(true)}
+                  onDoubleClick={canAct ? () => setEditingName(true) : undefined}
                   className="font-semibold tracking-tight truncate max-w-md text-left hover:text-fg-default focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded"
                 >
                   <span className="truncate">{friendlyName}</span>
                 </button>
               </Tooltip>
-              <IconButton
-                label="Rename run"
-                tooltip="Rename run"
-                size="sm"
-                variant="ghost"
-                onClick={() => setEditingName(true)}
-                className="opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 transition-opacity h-6 w-6"
-              >
-                <Pencil1Icon className="w-3 h-3" />
-              </IconButton>
-            </div>
+              {canAct && (
+                <IconButton
+                  label="Rename run"
+                  tooltip="Rename run"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setEditingName(true)}
+                  className="opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 transition-opacity h-6 w-6"
+                >
+                  <Pencil1Icon className="w-3 h-3" />
+                </IconButton>
+              )}
+            </h1>
           )}
           <StatusBadge status={run.status} />
           <AssistantWatchBadge runId={run.id} />
@@ -288,7 +306,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               content={
                 `Credential fingerprint${run.cred_fingerprints.length > 1 ? "s" : ""} this run can spend — the audit identity shown on the API-key and connection views.` +
                 (run.llm_idle_since
-                  ? " No model node is running: the run currently holds none of these keys' concurrency slots."
+                  ? " No model node is running right now; the run keeps its slot on these keys until it ends."
                   : "")
               }
             >
@@ -491,6 +509,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
+      {/* Whatever the run's status: a socket closed scope_lost never
+          reconnects, so the view says its data is the original run's. */}
+      <RunOriginLostBanner state={wsState} />
       {/* Headline result-links (opened PR, live deploy, declared
           deliverable) and the files the run left behind — the run's
           "what did it produce" at a glance, like a CI run's summary,

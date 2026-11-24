@@ -12,6 +12,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // unsetSettingSourcesEnv makes ITERION_CLAUDE_CODE_SETTING_SOURCES absent for
@@ -37,12 +39,26 @@ func ambientTree(t *testing.T) (home, lab, repo, work string) {
 	lab = filepath.Join(home, "lab")
 	repo = filepath.Join(lab, "repo")
 	work = filepath.Join(repo, "sub")
-	for _, d := range []string{filepath.Join(home, ".claude"), filepath.Join(repo, ".git"), work} {
+	for _, d := range []string{filepath.Join(home, ".claude"), work} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	mustGitDir(t, filepath.Join(repo, ".git"))
 	return home, lab, repo, work
+}
+
+// mustGitDir plants the shape ambient.RepoRoot requires of a `.git`
+// directory — git's own is_git_directory criteria: a HEAD that reads, and
+// objects/ and refs/ directories. An empty directory is no repository.
+func mustGitDir(t *testing.T, dotGit string) {
+	t.Helper()
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(dotGit, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(dotGit, "HEAD"), "ref: refs/heads/main\n")
 }
 
 func TestClaudeAmbientTranslatesEveryPolicy(t *testing.T) {
@@ -209,7 +225,7 @@ func TestClaudeAmbientKeepsANestedWorktreesOwnFiles(t *testing.T) {
 		{"-C", main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
 		{"-C", main, "worktree", "add", "-q", "--detach", wt},
 	} {
-		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil {
+		if out, err := exec.Command(git, gitlib.NoAutoMaintenance(args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
@@ -232,6 +248,66 @@ func TestClaudeAmbientKeepsANestedWorktreesOwnFiles(t *testing.T) {
 	for _, f := range append(own, mainFile, filepath.Join(main, ".claude", "rules", "m.md")) {
 		if !slices.ContainsFunc(op.excludes, func(e string) bool { return excludeMatches(e, f) }) {
 			t.Errorf("operator: %s is repository content and must be excluded: %v", f, op.excludes)
+		}
+	}
+}
+
+// TestClaudeAmbient_UntrustedProjectHooksTypedAndSaid is the witness for the
+// ADR-162 U3: on a workspace the tenant did not write, the checkout's own
+// scopes — project and local — never reach the spawn, whatever resolved them
+// (the ambient policy, or the operator's raw legacy list): the repo's
+// settings.json carries hooks and an `env` block, and its CLAUDE.md is
+// project-scope discovery. Iterion's own mirrored skills are untouched — on
+// an untrusted run they arrive through the pinned skill channel (#1719).
+//
+// Mutations: dropping the withoutCheckoutScopes call in claudeAmbient reddens
+// every untrusted row on its own assertion; stripping `local` but not
+// `project` (or the reverse) reddens the legacy-hatch row.
+func TestClaudeAmbient_UntrustedDropsTheCheckoutScopes(t *testing.T) {
+	unsetSettingSourcesEnv(t)
+	_, _, _, work := ambientTree(t)
+
+	project := claudesdk.SettingSourceProject
+	local := claudesdk.SettingSourceLocal
+	user := claudesdk.SettingSourceUser
+	for _, row := range []struct {
+		name    string
+		policy  ambient.Policy
+		legacy  string // "" = the variable stays absent
+		sources []claudesdk.SettingSource
+	}{
+		{"the default policy loads nothing of the checkout's", ambient.Workspace, "", nil},
+		{"all keeps only the operator's scope", ambient.All, "", []claudesdk.SettingSource{user}},
+		{"none resolves to nothing at all", ambient.None, "", nil},
+		{"the operator's raw list is floored as well", ambient.Workspace, "user,project,local", []claudesdk.SettingSource{user}},
+		{"a raw list of checkout scopes only loads nothing", ambient.Workspace, "project,local", nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if row.legacy != "" {
+				t.Setenv(settingSourcesEnv, row.legacy)
+			}
+			spawn := claudeAmbient(Task{WorkDir: work, AmbientContext: row.policy, WorkspaceTrust: store.RunTrustFork})
+			for _, s := range spawn.sources {
+				if s == project || s == local {
+					t.Errorf("untrusted spawn still loads the checkout scope %q: %v", s, spawn.sources)
+				}
+			}
+			// nil and the empty list both read as "load nothing".
+			if len(spawn.sources)+len(row.sources) > 0 && !reflect.DeepEqual(spawn.sources, row.sources) {
+				t.Errorf("sources = %v, want %v", spawn.sources, row.sources)
+			}
+			if spawn.excludes != nil {
+				t.Errorf("exclusions outlived the scope they exclude from: %v", spawn.excludes)
+			}
+		})
+	}
+
+	// The trusted control: every policy keeps its project scope, exclusions
+	// included — the floor reads Trusted(), not the shape of the list.
+	for _, policy := range []ambient.Policy{ambient.All, ambient.Workspace, ambient.Operator, ambient.None} {
+		spawn := claudeAmbient(Task{WorkDir: work, AmbientContext: policy})
+		if !slices.Contains(spawn.sources, project) {
+			t.Errorf("trusted %s: the project scope is gone: %v", policy, spawn.sources)
 		}
 	}
 }

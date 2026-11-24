@@ -3,6 +3,7 @@ package model
 import "testing"
 
 func TestResolveSkillHints_NodePlusWorkflowUnion(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		wfSkills: []string{"house-style"},
 		skillHints: map[string]string{
@@ -26,6 +27,7 @@ func TestResolveSkillHints_NodePlusWorkflowUnion(t *testing.T) {
 }
 
 func TestResolveSkillHints_DropsUnresolved(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		skillHints: map[string]string{"present": "here"},
 	}
@@ -38,6 +40,7 @@ func TestResolveSkillHints_DropsUnresolved(t *testing.T) {
 }
 
 func TestResolveSkillHints_NoHintsNil(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{}
 	if got := e.resolveSkillHints([]string{"x"}); got != nil {
 		t.Errorf("hints = %+v, want nil when no skill hints set", got)

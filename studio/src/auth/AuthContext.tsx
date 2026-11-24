@@ -10,10 +10,12 @@ import {
   type ReactNode,
 } from "react";
 import { apiBase } from "@/lib/scope";
+import { clearLaunchNotices, forgetLaunches } from "@/lib/sendLaunch";
 import {
   beforeSignIn,
   cancelScheduledRefresh,
   currentSessionGeneration,
+  publishExplicitTeam,
   renewSession,
   sessionDelivered,
   settlePendingSignOut,
@@ -291,7 +293,7 @@ function withActiveContext(prev: AuthState, res: AuthIdentity | AuthSession, org
   const activeTeamID = res.active_team_id ?? prev.activeTeamID ?? "";
   if (!activeOrgID || !orgs.some((o) => o.org_id === activeOrgID)) {
     const owner = orgs.find((o) => o.teams.some((t) => t.team_id === activeTeamID));
-    activeOrgID = owner?.org_id ?? orgs[0]?.org_id ?? "";
+    activeOrgID = owner?.org_id ?? orgs.find((o) => !o.unavailable)?.org_id ?? orgs[0]?.org_id ?? "";
   }
   const activeOrg = orgs.find((o) => o.org_id === activeOrgID);
   return {
@@ -299,8 +301,10 @@ function withActiveContext(prev: AuthState, res: AuthIdentity | AuthSession, org
     user: res.user,
     orgs,
     activeOrgID,
-    activeOrgRole: (res.active_org_role || activeOrg?.org_role || null) as OrgRole | null,
+    activeOrgRole: activeOrg?.unavailable ? null : (res.active_org_role || activeOrg?.org_role || null) as OrgRole | null,
     activeTeamID,
+    // The credential's team role still selects the appropriate shell,
+    // including config_editor, even when the org document cannot be read.
     activeRole: (res.active_role ?? null) as Role | null,
     treeStale,
     signedOutNotice: null,
@@ -383,6 +387,17 @@ function stateWithout(kind: Exclude<IdentityFetch["kind"], "ok">): AuthState {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initial);
+
+  // The tab publishes the team it displays (#2662): every adoption point —
+  // bootstrap, switch, identity re-read — re-publishes, and a sign-out
+  // clears. The access cookie is browser-wide, so what a tab displays must
+  // travel with its own requests: the server scopes them to this team
+  // (validated against the session's grants), whatever another tab's switch
+  // did to the cookie since.
+  useEffect(() => {
+    publishExplicitTeam(state.status === "authenticated" ? state.activeTeamID || null : null);
+    clearLaunchNotices();
+  }, [state.status, state.activeTeamID]);
 
   // The machine's record, re-read on every change of it — this tab's writes
   // and another tab's storage events alike (I6: every tab re-renders from the
@@ -527,8 +542,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const nextID = res.user?.id ?? null;
     if (scopedToUserID.current !== null && nextID !== null && scopedToUserID.current !== nextID) {
       // Drop the repo-first context so a different account on this browser
-      // never inherits the previous user's active repo.
+      // never inherits the previous user's active repo — nor its launches in
+      // flight and their notices.
       useActiveRepoStore.getState().reset();
+      forgetLaunches();
     }
     // An empty response rescopes nothing; keep the identity the stores hold.
     if (nextID !== null) {
@@ -636,6 +653,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // sign-in has nothing to displace.
   const finishSignOut = useCallback(() => {
     useActiveRepoStore.getState().reset();
+    // A launch in flight and its notice are the account's that sent it.
+    forgetLaunches();
     scopedToUserID.current = null;
     // Whether a warning stands is the machine record's answer, derived — an
     // unconfirmed sign-out left it standing, a confirmed one cleared it.
@@ -843,6 +862,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     abortSwitches();
     cancelScheduledRefresh();
     useActiveRepoStore.getState().reset();
+    forgetLaunches();
     scopedToUserID.current = null;
     setState({ ...initial, status: "anonymous", signedOutNotice: notice });
   }, [abortSwitches, beginIdentityChange]);
@@ -1033,7 +1053,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isRestricted:
         state.status === "authenticated" &&
         !state.user?.is_super_admin &&
-        state.orgs.every((o) => o.teams.length === 0),
+        state.orgs.every((o) => !o.unavailable && o.teams.length === 0),
       signIn,
       signUp,
       signOut,

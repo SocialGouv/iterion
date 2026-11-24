@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Of several invalid servers, a refusal names the same one on every run —
@@ -27,7 +28,7 @@ func TestAnInvalidServerIsNamedTheSameOnEveryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 30; i++ {
-		if _, _, err := loadProjectServers(projectDir); err == nil || !strings.Contains(err.Error(), `"alpha"`) {
+		if _, _, err := loadProjectServers(projectDir, store.RunTrustDefault); err == nil || !strings.Contains(err.Error(), `"alpha"`) {
 			t.Fatalf("run %d: the project's refusal names %v, want alpha", i, err)
 		}
 		if _, err := mergeCatalog(nil, explicit); err == nil || !strings.Contains(err.Error(), `"alpha"`) {

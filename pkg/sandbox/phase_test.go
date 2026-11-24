@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -50,38 +50,8 @@ func captureLogger() (*iterlog.Logger, *lockedBuffer) {
 // undoing the redirect.
 func captureStderr(t *testing.T) (read func() string, restore func()) {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	restored := false
-	restore = func() {
-		if restored {
-			return
-		}
-		restored = true
-		os.Stderr = orig
-		_ = w.Close()
-		_ = r.Close()
-	}
-	read = func() string {
-		// Close the write side so ReadAll sees EOF, then re-open a fresh
-		// pipe so the caller can drain multiple times without blocking.
-		// Order matters — close BEFORE reopening.
-		os.Stderr = orig
-		_ = w.Close()
-		buf, _ := io.ReadAll(r)
-		_ = r.Close()
-		nr, nw, perr := os.Pipe()
-		if perr == nil {
-			r, w = nr, nw
-			os.Stderr = w
-		}
-		return string(buf)
-	}
-	return read, restore
+	c := stdiotest.Start(t, &os.Stderr)
+	return c.Read, c.Close
 }
 
 // A stall past the phase budget must surface as a typed timeout error

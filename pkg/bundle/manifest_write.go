@@ -11,21 +11,21 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/store"
 
+	// The loader (manifest.go) parses with yaml.v3 through the yamlx
+	// strict entry point. The writer therefore parses with gopkg.in/yaml.v3
+	// for the tree — the position and the decoded value of every key — but
+	// edits the SOURCE TEXT of the keys it touches, leaving every other
+	// byte of the file alone: the comments, the blank lines between keys,
+	// the flow style of a list, and the characters a re-encode would
+	// escape — a non-BMP icon comes back from yaml.v3's emitter as
+	// "\U0001F9ED" (#1349), and a blank line between two keys does not
+	// survive its node tree at all. go.yaml.in/yaml/v2 keeps one job in
+	// this file: the plain-safety probe reads the manifest through a
+	// yaml.v1.1 reader too, because a manifest outlives the binary that
+	// wrote it. The rewritten bytes are cross-validated through
+	// decodeManifest (yamlx strict) before the file is replaced, so a
+	// manifest can never land on disk in a form the loader would reject.
 	yamlv2 "go.yaml.in/yaml/v2"
-
-	// The loader (manifest.go) parses with go.yaml.in/yaml/v2, which
-	// cannot round-trip comments or preserve key order on marshal. The
-	// writer therefore parses with gopkg.in/yaml.v3 for the tree — the
-	// position and the decoded value of every key — but edits the SOURCE
-	// TEXT of the keys it touches, leaving every other byte of the file
-	// alone: the comments, the blank lines between keys, the flow style of
-	// a list, and the characters a re-encode would escape — a non-BMP icon
-	// comes back from yaml.v3's emitter as "\U0001F9ED" (#1349), and a
-	// blank line between two keys does not survive its node tree at all.
-	// The two libraries coexist in this package; the rewritten bytes are
-	// cross-validated through decodeManifest (v2 strict) before the file is
-	// replaced, so a manifest can never land on disk in a form the loader
-	// would reject.
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -799,6 +799,10 @@ func manifestPlainSafe(v string) bool {
 	if val.Tag != "!!str" || val.Value != v {
 		return false
 	}
+	// The loader reads yaml.v3, but a manifest outlives the binary that
+	// wrote it: marketplace bundles cross version boundaries, and a
+	// yaml.v1.1 reader turns a plain `yes` into a bool it cannot fit in a
+	// string field. A value is only plain-safe when BOTH resolutions agree.
 	var m2 map[string]any
 	if err := yamlv2.Unmarshal([]byte("k: "+v+"\n"), &m2); err != nil {
 		return false

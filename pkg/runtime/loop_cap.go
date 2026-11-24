@@ -41,7 +41,7 @@ func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) (int, error) {
 	var value any = loop.MaxIterations
 	if loop.MaxIterationsAST != nil {
 		var err error
-		value, err = loop.MaxIterationsAST.Eval(e.exprContext(rs, nil))
+		value, err = loop.MaxIterationsAST.EvalContext(rs.ctx, e.exprContext(rs, nil))
 		if err != nil {
 			return 0, err
 		}

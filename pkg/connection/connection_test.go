@@ -190,6 +190,27 @@ func TestValidateRefusesAnIncoherentConnection(t *testing.T) {
 	}
 }
 
+// The status vocabulary is ONE (ADR-098): the forge-lifecycle state the
+// contract brought in (#2760) validates on a generic record too — a status
+// only half the codebase accepts would be two vocabularies spelled alike.
+// And the line that admits it is load-bearing: removing it must redden this
+// test, not slip a generic record into a state nothing refreshes out of.
+func TestValidateAdmitsNeedsReauthAndStillRefusesAnUnknownStatus(t *testing.T) {
+	c := conn("c1", "tenant-a", "main")
+	c.Status = connection.StatusNeedsReauth
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a needs_reauth record must validate — one status vocabulary: %v", err)
+	}
+	if c.Status.Usable() {
+		t.Fatal("needs_reauth is NOT usable: its credential is dead until an operator reconnects")
+	}
+
+	c.Status = "bogus"
+	if err := c.Validate(); err == nil {
+		t.Fatal("an unknown status must stay refused")
+	}
+}
+
 // TestADuplicateAliasIsRefused: the alias is how a `.bot` names a connection,
 // so two of them would make the workflow's choice depend on map iteration
 // order — a run that reaches a different vendor account on different days.

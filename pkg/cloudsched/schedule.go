@@ -8,8 +8,10 @@ package cloudsched
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/robfig/cron/v3"
 
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -59,6 +61,20 @@ type ScheduledBot struct {
 	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
 	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
+	// Pool is the schedule's pool block (ADR-164): the binding-level opt-in
+	// naming the pool this schedule's launches draw from, with its
+	// strategy. Validated at record-write time (the schedule routes: the
+	// writer must manage the team AND the pool must consent); the fold
+	// consumes it as the binding layer — nearest wins, a disabled block
+	// blocks inheritance. nil = the schedule binds nothing.
+	Pool *PoolBinding `bson:"pool,omitempty" json:"pool,omitempty"`
+	// PoolFromIntegration marks the row's pool block as the PROJECTION of
+	// the owning integration's own block (pkg/forge syncSchedules) — the
+	// twin of RoutingFromIntegration: a projected block follows every later
+	// integration write (a clear and a replace alike), an operator's block
+	// written through the schedule PATCH (the flag false) is the more
+	// specific voice and survives the rebuild.
+	PoolFromIntegration bool `bson:"pool_from_integration,omitempty" json:"pool_from_integration,omitempty"`
 	// Routing is the schedule's routing block (ADR-121, pkg/llmroute) —
 	// the binding level for a cron-provisioned bot: it overrides every
 	// UNLOCKED field of the shipped bot's `routing:` manifest block, and
@@ -72,6 +88,14 @@ type ScheduledBot struct {
 	// it came from; an operator's block (the flag false) is the more
 	// specific voice and survives until the operator speaks again.
 	RoutingFromIntegration bool `bson:"routing_from_integration,omitempty" json:"routing_from_integration,omitempty"`
+	// KeyOverrides pins a BYOK api key per LLM provider (provider name →
+	// api key id) for every run this schedule launches — the schedule's own
+	// voice, written only through the schedule routes (validated against the
+	// identity the tick launches under) and carried across an integration
+	// rebuild. A repo-bound schedule's integration pins are NOT copied here:
+	// the tick reads them live from the integration, and this map wins over
+	// them provider by provider. nil = the schedule pins nothing.
+	KeyOverrides map[string]string `bson:"key_overrides,omitempty" json:"key_overrides,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -126,6 +150,12 @@ type Store interface {
 	// WithSchedule excludes other replicas through overlap evaluation and launch.
 	// Its context fences the final run persistence against an expired owner.
 	WithSchedule(context.Context, string, func(context.Context)) (bool, error)
+	// ListIntentSchedules returns the ids of the schedules holding at least one
+	// due, unfinished intent, OLDEST-WORK first (a schedule ranks by its oldest
+	// due intent's not_before, ties break on the id), capped by limit (0 = no
+	// cap). The seniority order is the starvation fence: a lexical cap would
+	// let a durably held prefix re-occupy the whole selection at every tick
+	// and never attempt a schedule beyond it.
 	ListIntentSchedules(context.Context, time.Time, int) ([]string, error)
 	ClaimScheduleIntents(context.Context, string, time.Time, int) ([]LaunchIntent, error)
 	// PutIntent is idempotent per nominal slot and must precede ClaimTick.
@@ -196,6 +226,14 @@ type SchedulePatch struct {
 	// contradictory — the route handler refuses that shape.
 	Routing      *llmroute.Policy
 	ClearRouting bool
+	// Pool block (ADR-164): nil = leave untouched; ClearPool removes the
+	// stored block (the schedule inherits again). Pool + ClearPool set
+	// together are contradictory — the route handler refuses that shape.
+	Pool      *PoolBinding
+	ClearPool bool
+	// KeyOverrides replaces the schedule's key pins wholesale: nil = leave
+	// untouched, a pointer to an empty (or nil) map clears them.
+	KeyOverrides *map[string]string
 	// Retry policy fields; nil = leave untouched. An explicit empty string
 	// (or 0) clears the field so the schedule stops overriding the bot.
 	RetryUsageWindow *string
@@ -287,6 +325,22 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 		sb.Routing = patch.Routing
 		sb.RoutingFromIntegration = false
 	}
+	if patch.ClearPool {
+		sb.Pool = nil
+		sb.PoolFromIntegration = false
+	}
+	if patch.Pool != nil {
+		sb.Pool = patch.Pool
+		sb.PoolFromIntegration = false
+	}
+	if patch.KeyOverrides != nil {
+		// A cleared map is stored as no map, so the row reads the same
+		// whichever store holds it (the Mongo twin omits an empty one).
+		sb.KeyOverrides = nil
+		if len(*patch.KeyOverrides) > 0 {
+			sb.KeyOverrides = maps.Clone(*patch.KeyOverrides)
+		}
+	}
 	if patch.RetryUsageWindow != nil {
 		sb.RetryUsageWindow = *patch.RetryUsageWindow
 	}
@@ -315,6 +369,18 @@ func (sb ScheduledBot) Policy() schedgate.Policy {
 		GuardVar:      sb.GuardVar,
 		StaleAfter:    sb.StaleAfter,
 	})
+}
+
+// PoolBinding is the schedule's binding-level pool opt-in (ADR-164) — the
+// ONE record-carried block shape, shared with the forge integration and
+// its webhook config (credpool.Binding).
+type PoolBinding = credpool.Binding
+
+// PoolBindingLayer projects the block as the binding layer the launch fold
+// consumes (route_resolve.go's `higher`). ok=false when the schedule binds
+// no pool — the fold then reads the stored scopes alone.
+func (sb ScheduledBot) PoolBindingLayer() (credpool.BindingLayer, bool) {
+	return sb.Pool.Layer("schedule")
 }
 
 // RoutingPolicy projects the schedule's routing block (ADR-121). Not

@@ -28,7 +28,7 @@ func TestUsageCapPreflight_AResumeWhoseStoredInputsRideTheWireIsParked(t *testin
 	blankAnthropicWireEnv(t)
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	templated := func(def string) *ir.Workflow {
 		wf := chainWorkflow(agentRoute("impl", "{{vars.b}}", "openai", "openai/gpt-6"))
@@ -65,7 +65,7 @@ func TestUsageCapPreflight_EngineNamedMsgValueNeverReadsAsTheDefault(t *testing.
 	blankAnthropicWireEnv(t)
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	wf := chainWorkflow(agentRoute("impl", "{{vars.cfg.backend}}", "openai", "{{vars.cfg.model}}"))
 	wf.Vars = map[string]*ir.Var{
@@ -86,7 +86,7 @@ func TestUsageCapPreflight_LiteralMsgValueOverEnvDefaultDecides(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	t.Setenv("E2RV_LIT_OVER_ENV", "")
 	wf := chainWorkflow(agentRoute("impl", "{{vars.b}}", "openai", "openai/gpt-6"))

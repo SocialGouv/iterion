@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -145,5 +147,135 @@ func TestSchemaReaskDeliversTheNodeInsteadOfFailingResumable(t *testing.T) {
 	}
 	if !ended {
 		t.Error("no delegate_finished event marks the re-ask's own end (attempt 2, its own tokens)")
+	}
+}
+
+type schemaViolationBackend struct {
+	tasks   []delegate.Task
+	validAt int
+}
+
+func (b *schemaViolationBackend) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
+	b.tasks = append(b.tasks, task)
+	verdict := fmt.Sprintf("wrong-%d", len(b.tasks))
+	if b.validAt > 0 && len(b.tasks) >= b.validAt {
+		verdict = "pass"
+	}
+	return delegate.Result{Output: map[string]any{"summary": verdict, "score": 1}, Tokens: 10, CostUSD: 0.01, BackendName: delegate.BackendClaudeCode, SessionID: "test-session"}, nil
+}
+
+func TestSchemaReaskUsesRuntimeBudgetAndEvents(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		budget, validAt, calls int
+		succeeds               bool
+	}{
+		{"enum corrected", 2, 2, 2, true},
+		{"second correction", 2, 3, 3, true},
+		{"exhausted", 2, 0, 3, false},
+		{"disabled", 0, 0, 1, false},
+		{"one correction", 1, 0, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := validationWorkflow()
+			node := wf.Nodes["my_agent"].(*ir.AgentNode)
+			node.Backend = delegate.BackendClaudeCode
+			wf.Schemas["MySchema"].Fields[0].EnumValues = []string{"pass"}
+			b := &schemaViolationBackend{validAt: tc.validAt}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, b)
+			st := tmpStore(t)
+			exec := model.NewClawExecutor(model.NewRegistry(), wf, model.WithBackendRegistry(reg), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+			genericRetries := 0
+			eng := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(tc.budget), WithRecoveryDispatch(func(_ context.Context, err error, prior func(ErrorCode) int) (RecoveryAction, ErrorCode) {
+				var rt *RuntimeError
+				if errors.As(err, &rt) && rt.Code == ErrCodeSchemaValidation {
+					return RecoveryAction{Kind: RecoveryFailTerminal}, rt.Code
+				}
+				genericRetries++
+				if prior(ErrCodeExecutionFailed) == 0 {
+					return RecoveryAction{Kind: RecoveryRetrySameNode}, ErrCodeExecutionFailed
+				}
+				return RecoveryAction{Kind: RecoveryFailTerminal}, ErrCodeExecutionFailed
+			}))
+			err := eng.Run(context.Background(), "schema-loop", nil)
+			if tc.succeeds && err != nil {
+				t.Fatal(err)
+			}
+			if !tc.succeeds {
+				var rt *RuntimeError
+				if !errors.As(err, &rt) || rt.Code != ErrCodeSchemaValidation {
+					t.Fatalf("want typed schema failure, got %v", err)
+				}
+			}
+			if len(b.tasks) != tc.calls || genericRetries != 0 {
+				t.Fatalf("calls=%d, generic retries=%d; want %d/0", len(b.tasks), genericRetries, tc.calls)
+			}
+			for _, task := range b.tasks[1:] {
+				if !strings.Contains(task.UserPrompt, "not in enum") {
+					t.Fatalf("feedback missing: %q", task.UserPrompt)
+				}
+			}
+			run, err := st.LoadRun(context.Background(), "schema-loop")
+			if err != nil {
+				t.Fatal(err)
+			}
+			episode := run.OutputCorrections["my_agent"]
+			if episode.Attempts != tc.calls-1 || episode.Budget != tc.budget {
+				t.Fatalf("episode=%+v", episode)
+			}
+			events, err := st.LoadEvents(context.Background(), "schema-loop")
+			if err != nil {
+				t.Fatal(err)
+			}
+			attemptEvents := 0
+			for _, event := range events {
+				if event.Type == store.EventNodeRecovery && event.Data["strategy"] == "schema_output_correction" && event.Data["phase"] == "attempt" {
+					attemptEvents++
+				}
+			}
+			if attemptEvents != tc.calls-1 {
+				t.Fatalf("correction events=%d want %d", attemptEvents, tc.calls-1)
+			}
+			if !tc.succeeds {
+				_ = eng.Resume(context.Background(), "schema-loop", nil)
+				if len(b.tasks) != tc.calls+1 {
+					t.Fatalf("resume reset correction allowance: calls=%d", len(b.tasks))
+				}
+				resumed, err := st.LoadRun(context.Background(), "schema-loop")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resumed.OutputCorrections["my_agent"].Attempts != tc.calls-1 {
+					t.Fatalf("resume ledger=%+v", resumed.OutputCorrections)
+				}
+			}
+		})
+	}
+}
+
+func TestSchemaReaskRouterUsesRuntimeAllowance(t *testing.T) {
+	for _, budget := range []int{0, 1, 2} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			wf := validationWorkflow()
+			wf.Nodes["my_agent"] = &ir.RouterNode{BaseNode: ir.BaseNode{ID: "my_agent"}, LLMFields: ir.LLMFields{Backend: delegate.BackendClaudeCode}, RouterMode: ir.RouterLLM}
+			b := &schemaViolationBackend{}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, b)
+			st := tmpStore(t)
+			exec := model.NewClawExecutor(model.NewRegistry(), wf, model.WithBackendRegistry(reg), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+			err := New(wf, st, exec, WithOutputCorrectionBudget(budget)).Run(context.Background(), "router-budget", nil)
+			var schemaErr *model.OutputSchemaError
+			if !errors.As(err, &schemaErr) || len(b.tasks) != budget+1 {
+				t.Fatalf("calls=%d, budget=%d err=%v", len(b.tasks), budget, err)
+			}
+			run, err := st.LoadRun(context.Background(), "router-budget")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ep, ok := run.OutputCorrections["my_agent"]; !ok || ep.Attempts != budget {
+				t.Fatalf("missing router allowance: %+v", run.OutputCorrections)
+			}
+		})
 	}
 }

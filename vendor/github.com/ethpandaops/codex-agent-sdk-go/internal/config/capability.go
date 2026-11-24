@@ -115,7 +115,7 @@ var optionCapabilities = []OptionCapability{
 	},
 	{
 		Field: "CodexHome", OptionName: "WithCodexHome", Exec: SupportSupported,
-		AppServer: SupportSupported, Notes: "only used by StatSession, no-op for Query/Client",
+		AppServer: SupportSupported, Notes: "inert in this fork: session APIs removed (FORK.md); no-op for Query/Client",
 	},
 	{
 		Field: "MeterProvider", OptionName: "WithMeterProvider", Exec: SupportSupported,

@@ -52,12 +52,22 @@ func (s *Server) handleBumpLoop(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	res, err := s.runs.BumpLoopCtx(r.Context(), id, runview.BumpLoopRequest{
+	// Under an admitted expectation the service's loads are the bound
+	// pre-checks of the ID-keyed steering signal.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.BumpLoopCtx(ctx, id, runview.BumpLoopRequest{
 		LoopName: req.LoopName,
 		Delta:    req.Delta,
 		IssuedBy: steerIssuer(r.Context()),
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.writeSteerError(w, r, err)
 		return
 	}
@@ -73,7 +83,12 @@ func (s *Server) handleRaiseBudget(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	res, err := s.runs.RaiseBudgetCtx(r.Context(), id, runview.RaiseBudgetRequest{
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.RaiseBudgetCtx(ctx, id, runview.RaiseBudgetRequest{
 		Budget: ir.BudgetOverrides{
 			MaxCostUSD:    req.Budget.MaxCostUSD,
 			MaxTokens:     req.Budget.MaxTokens,
@@ -83,6 +98,9 @@ func (s *Server) handleRaiseBudget(w http.ResponseWriter, r *http.Request) {
 		IssuedBy: steerIssuer(r.Context()),
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.writeSteerError(w, r, err)
 		return
 	}
@@ -114,8 +132,18 @@ func (s *Server) handleAnswerInteraction(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "answer is required")
 		return
 	}
-	res, err := s.runs.AnswerInteractionCtx(r.Context(), id, iid, req.Answer)
+	// Under an admitted expectation the record and the delivery are bound to
+	// the admitted run and the auto-resume carries it.
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.AnswerInteractionExpecting(r.Context(), id, iid, req.Answer, expect)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, runview.ErrInteractionNotFound):
 			s.httpErrorFor(w, r, http.StatusNotFound, "%s", err.Error())
@@ -163,9 +191,18 @@ func (s *Server) handleAnswerHuman(w http.ResponseWriter, r *http.Request) {
 	// Detach the resumed run from the HTTP request lifecycle: returning the
 	// 202 cancels r.Context, but the engine goroutine must keep running. Keep
 	// the request values so tenant/auth scoping still reaches the run store.
+	// Under an admitted expectation the resume carries it.
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
 	ctx := context.WithoutCancel(r.Context())
-	res, err := s.runs.AnswerHumanCtx(ctx, id, req.Answers)
+	res, err := s.runs.AnswerHumanExpecting(ctx, id, req.Answers, expect)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.writeSteerError(w, r, err)
 		return
 	}
@@ -221,12 +258,22 @@ func (c *runConn) handleBumpLoop(env runWSEnvelope) {
 		c.sendError("bad_payload", err.Error(), env.AckID)
 		return
 	}
-	res, err := c.server.runs.BumpLoopCtx(c.authCtx(), c.runID, runview.BumpLoopRequest{
+	// On a socket admitted on an expected birth the service's loads are the
+	// bound pre-checks of the ID-keyed steering signal.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	res, err := c.server.runs.BumpLoopCtx(ctx, c.runID, runview.BumpLoopRequest{
 		LoopName: req.LoopName,
 		Delta:    req.Delta,
 		IssuedBy: c.identity.UserID,
 	})
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError(steerWSCode(err), err.Error(), env.AckID)
 		return
 	}
@@ -243,7 +290,12 @@ func (c *runConn) handleRaiseBudget(env runWSEnvelope) {
 		c.sendError("bad_payload", err.Error(), env.AckID)
 		return
 	}
-	res, err := c.server.runs.RaiseBudgetCtx(c.authCtx(), c.runID, runview.RaiseBudgetRequest{
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	res, err := c.server.runs.RaiseBudgetCtx(ctx, c.runID, runview.RaiseBudgetRequest{
 		Budget: ir.BudgetOverrides{
 			MaxCostUSD:    req.MaxCostUSD,
 			MaxTokens:     req.MaxTokens,
@@ -253,6 +305,9 @@ func (c *runConn) handleRaiseBudget(env runWSEnvelope) {
 		IssuedBy: c.identity.UserID,
 	})
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError(steerWSCode(err), err.Error(), env.AckID)
 		return
 	}
@@ -283,8 +338,13 @@ func steerWSCode(err error) string {
 	}
 }
 
-// writeSteerError maps the service-layer contract onto HTTP.
+// writeSteerError maps the service-layer contract onto HTTP. Answering a
+// human gate resumes the run, so the resume's own refusals are answered as
+// writeResumeError answers them.
 func (s *Server) writeSteerError(w http.ResponseWriter, r *http.Request, err error) {
+	if s.writeCredentialAtCapacityError(w, r, "resume", err) {
+		return
+	}
 	var (
 		unknownLoop *runtime.UnknownLoopError
 		terminal    *runview.RunTerminalError
@@ -303,6 +363,11 @@ func (s *Server) writeSteerError(w http.ResponseWriter, r *http.Request, err err
 		s.httpErrorFor(w, r, http.StatusConflict, "%s", terminal.Error())
 	case errors.Is(err, runview.ErrNotAwaitingHuman):
 		s.httpErrorFor(w, r, http.StatusConflict, "%s", err.Error())
+	case errors.Is(err, runview.ErrResumeNotAdmitted):
+		// answer-human and an async answer's auto-resume cross no admission
+		// gate, so the run service refuses them on an untrusted run; the
+		// message names the gated resume that admits it.
+		s.httpErrorCode(w, r, http.StatusConflict, resumeNotAdmittedErrorCode, "%s", err.Error())
 	case errors.Is(err, runtime.ErrNoBudgetDeclared):
 		s.httpErrorFor(w, r, http.StatusConflict, "%s", err.Error())
 	case errors.Is(err, runview.ErrRunNotHeld):

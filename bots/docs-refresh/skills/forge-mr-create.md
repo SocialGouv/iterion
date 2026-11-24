@@ -3,13 +3,12 @@ name: forge-mr-create
 description: How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or Forgejo/Gitea (REST), authenticating from the mounted forge_token, then post the PR URL back to the source issue. Read this before the finalize_mr node pushes or opens anything.
 ---
 
-<!-- DIVERGED copy — this file carries docs-refresh's own amend-mode
-     delta on top of the skill the other bundles byte-share (iterion has
-     no skill-sharing primitive; see docs/agents/bots/skills.md ("Skills live with
-     their bundle — across multiple bundles")). Do NOT blind-sync it from the
-     shared copies (app-dev / branch-improve-loop / feature-dev /
-     instrument / whole-improve-loop) — port shared fixes by hand and
-     keep the delta. -->
+<!-- DIVERGED copy — a declared variant of the forge-mr-create.md family
+     (internal/skillshare/families.go), carrying docs-refresh's own
+     amend-mode delta (§6) on top of the shared skill. Do NOT blind-sync it
+     from the source (bots/app-dev/skills/forge-mr-create.md): port shared
+     fixes by hand, keep the delta, and re-pin with `task skills:bless`
+     (docs/agents/bots/skills.md). -->
 
 # Opening a pull request from a finished run
 
@@ -124,13 +123,35 @@ Title: a short semantic summary of the improvements (reuse the run's
 commit subjects / scope_notes). Body: what changed and why, then the run
 footer below.
 
+### GitLab quick-action guard — mandatory on every GitLab-bound body
+
+GitLab runs quick actions (`/merge`, `/approve`, `/label`, …) written at
+the start of a line of a description or note, with the rights of the
+account that posted it — API posts included. The body is model-written
+over untrusted content (a diff, a changelog, a ticket), and a `/approve`
+quoted faithfully at a line start would run with this bot's token. Before
+EVERY `glab mr create`, `glab mr note` or `glab issue note`, escape the
+body — the same rewrite the server-side guard applies (#2413, #2422):
+
+```sh
+body="$(printf '%s' "$body" | sed -E 's#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\2#')"
+```
+
+The `[^[:print:]]` branch is load-bearing: under `LC_ALL=C` `[[:alpha:]]`
+leaves `/ſpend 1h` and `/ﬆatus done` raw, and Onigmo case-folds them onto
+real command names. The class is `[:print:]`,
+not `[:ascii:]`: GNU sed rejects `[:ascii:]`, and `[^[:print:]]` catches the
+same non-ASCII bytes on GNU and BSD. GitHub and Forgejo run no quick actions — no escape
+needed on those paths.
+
 - **GitHub:**
   `gh pr create --base "$BASE" --head "$BRANCH" --title "<title>" --body "<body>"`
   (prints the PR URL on success). If a PR already exists for the branch,
   `gh pr view "$BRANCH" --json url -q .url` — treat as `opened=true`.
 - **GitLab:**
-  `glab mr create --source-branch "$BRANCH" --target-branch "$BASE" --title "<title>" --description "<body>" --yes`
-  (prints the MR URL). Idempotent: if an MR already exists, fetch its URL
+  `glab mr create --source-branch "$BRANCH" --target-branch "$BASE" --title "<title>" --description "$body" --yes`
+  (with `$body` escaped by the quick-action guard above; prints the MR
+  URL). Idempotent: if an MR already exists, fetch its URL
   with `glab mr view "$BRANCH" -F json` and reuse it.
 - **Forgejo / Gitea (REST):** parse `<owner>/<repo>` from the origin URL,
   then `POST https://<host>/api/v1/repos/<owner>/<repo>/pulls` with body
@@ -220,7 +241,8 @@ on top of it. Do NOT open a new PR — land the commits IN that PR and comment.
      URL directly), or `gh pr view <branch> --json url,number` then
      `gh pr comment <number> --body "<comment>"`.
    - GitLab: `glab mr list --source-branch <branch>` → the MR iid →
-     `glab mr note <iid> --message "<comment>"`.
+     `glab mr note <iid> --message "$comment"` — with `$comment` escaped
+     by §4's quick-action guard first.
    - Forgejo/Gitea: `GET /repos/<owner>/<repo>/pulls?head=<owner>:<branch>`
      → comment via `POST /repos/<owner>/<repo>/issues/<index>/comments`.
 

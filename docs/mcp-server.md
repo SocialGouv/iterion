@@ -142,7 +142,7 @@ to log in.
 
 | Tool | Access | What it does |
 |------|--------|--------------|
-| `remote_status` | read | Instance + account + active org/team. |
+| `remote_status` | read | Instance + account + active org/team, `client_version`, and what the instance runs (`server.version`, `server.commit`, from `GET /api/server/info`) — or `server_info_error` saying why it is unknown; the status still answers. |
 | `remote_runs_list` / `remote_run_get` / `remote_run_events` / `remote_run_log` / `remote_run_artifacts` | read | Follow cloud runs. |
 | `remote_bots_list` / `remote_bots_get` | read | The instance's bot catalog. |
 | `remote_issues_list` | read | The remote native board. |

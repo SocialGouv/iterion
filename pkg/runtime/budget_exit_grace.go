@@ -41,6 +41,12 @@ import (
 // exists to let through.
 const defaultBudgetExitGraceRatio = 0.1
 
+// DefaultBudgetExitGraceRatio is the exit grace a deployment grants when
+// ITERION_BUDGET_EXIT_GRACE is unset: the share of a cap a run may spend past
+// it to reach its exit. A run's duration therefore reaches its wall times
+// (1 + this ratio) by default — the figure a parent sizes a child's run by.
+const DefaultBudgetExitGraceRatio = defaultBudgetExitGraceRatio
+
 // budgetExitGraceRatio resolves the grace allowance:
 // ITERION_BUDGET_EXIT_GRACE → 0.1. `0` means the declared caps are
 // absolute (no grace) — the escape hatch for deployments where a cap
@@ -107,8 +113,19 @@ func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok 
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
 	//
+	// The same holds one loop down: a loop whose own clause lifts the
+	// guard (`as name(…) guard: off`) is a back-edge the run can still
+	// take past a spent cap, so ONE opted-out loop refuses the grace for
+	// the run.
 	if !e.loopBudgetGuardEnabled() {
 		return "", false
+	}
+	if e.workflow != nil {
+		for loopName := range e.workflow.Loops {
+			if !e.loopBudgetGuardEnabledFor(loopName) {
+				return "", false
+			}
+		}
 	}
 	ratio := budgetExitGraceRatio()
 	if ratio <= 0 {

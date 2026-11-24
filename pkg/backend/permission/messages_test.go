@@ -31,6 +31,25 @@ func TestParseAnswer(t *testing.T) {
 	}
 }
 
+func TestParseExactApprovalAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		answer        string
+		allow, always bool
+	}{
+		{"allow", true, false},
+		{"allow once", true, false},
+		{" ALLOW ALWAYS ", true, true},
+		{"deny", false, false},
+		{"yes", false, false},
+		{"ask me always", false, false},
+		{"", false, false},
+	} {
+		if allow, always := ParseExactApprovalAnswer(tc.answer); allow != tc.allow || always != tc.always {
+			t.Errorf("ParseExactApprovalAnswer(%q) = (%v, %v), want (%v, %v)", tc.answer, allow, always, tc.allow, tc.always)
+		}
+	}
+}
+
 func TestGrantRuleFor(t *testing.T) {
 	// always → bare tool name (whole-tool grant)
 	if got := GrantRuleFor("Bash", map[string]any{"command": "go build"}, true); got != "Bash" {

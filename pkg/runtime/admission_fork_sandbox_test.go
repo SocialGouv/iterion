@@ -34,6 +34,13 @@ func forkLaneWorkflow() *ir.Workflow {
 
 func workingHostRegistry(t *testing.T) map[string]sandbox.DriverConstructor {
 	t.Helper()
+	// A working docker registry is a LOCAL host's fact: pin the host kind so
+	// the factory's preference walk consults this registry. Left to
+	// detection, a CI pod (KUBERNETES_SERVICE_HOST set) resolves HostCloud,
+	// whose kubernetes,noop order never asks the synthetic docker
+	// constructor — every "sandboxed" branch of a witness then reads as a
+	// driverless host and fails fast on the machine, not the code.
+	t.Setenv("ITERION_MODE", "local")
 	return map[string]sandbox.DriverConstructor{
 		"docker": func() (sandbox.Driver, error) { return &podDriver{root: t.TempDir()}, nil },
 	}

@@ -35,12 +35,15 @@
 package cost
 
 import (
-	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"context"
+	"os"
 	"sort"
 	"strings"
 
-	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
@@ -144,38 +147,132 @@ var modelPriceTable = map[string]modelPricing{
 // resolves to "claude-sonnet-4-6" — intentional, since pricing is the
 // same across regions for the providers we track.
 // gatewayPricer prices one gateway id (the wire id after
-// openai_compatible/): the per-mtok pair, and whether the catalog KNOWS the
-// id. Nil until the compatgw package's init wires the catalog in — cost
-// stays a leaf, and an unpriced gateway is 0-that-is-not-a-measured-zero.
-var gatewayPricer func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)
+// openai_compatible/): the per-mtok triple — input, output, and cache-read
+// input — and whether the catalog KNOWS the id, reading every catalog name
+// through the get the CALLER carries. That get is the seam that keeps the
+// stamp and the price on one table: a run whose price feed rides its
+// context (ADR-163) prices at the entry its resolution answered from, and
+// an env-less caller falls back to the process environment it runs in.
+// A zero cache-read rate means the catalog carries no cache price: cached
+// tokens then price at the input rate, which is the arithmetic that
+// predates the cache split, so an entry without a cache rate changes no
+// number. Nil until the compatgw package's init wires the catalog in —
+// cost stays a leaf, and an unpriced gateway is 0-that-is-not-a-measured-
+// zero.
+var gatewayPricer func(modelID string, get func(string) string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool)
+
+// gatewayPricerQuiet prices the same id for a READ — a listing, a pricing
+// audit, a cost preview. Same sources and same verdict; the difference is
+// that an id in no table is not news there (the operator may still be
+// typing it), so the quiet form says nothing and leaves the catalog's
+// per-id warning budget to the launch.
+var gatewayPricerQuiet func(modelID string, get func(string) string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool)
 
 // SetGatewayPricer wires the gateway catalog into the estimator. Called by
 // the compatgw package's init — the catalog's owner — never by a caller.
-func SetGatewayPricer(f func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)) {
-	gatewayPricer = f
+// BOTH forms in one call: a read path left with a nil quiet pricer would
+// price every gateway id at zero without saying so.
+func SetGatewayPricer(loud, quiet func(modelID string, get func(string) string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool)) {
+	gatewayPricer, gatewayPricerQuiet = loud, quiet
 }
 
+// EstimateUSD is the LAUNCH and usage-reading estimate: a gateway id in no
+// table earns the catalog's warning here, where it is about to cost a run.
+// It is the pre-cache-share signature: every cached token prices at the
+// input rate, the arithmetic this function always had.
 func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
+	return EstimateUSDWithCache(model, inputTokens, outputTokens, 0)
+}
+
+// EstimateUSDQuiet is EstimateUSD for a READ — the same estimate, with a
+// gateway id resolved quietly. What a preview or a listing prices is a
+// model nobody launched yet.
+func EstimateUSDQuiet(model string, inputTokens, outputTokens int) float64 {
+	return estimateUSDWithCache(model, inputTokens, outputTokens, 0, gatewayPricerQuiet, os.Getenv)
+}
+
+// EstimateUSDQuietInEnv is EstimateUSDQuiet reading the gateway catalog
+// through the environment ctx carries — the probe form the run's own
+// meters use (the metrics emitter's per-model rate cache), so the org
+// usage cap and the credential ledger book a feed-priced gateway node at
+// the table its run carried, not the runner's process floor (ADR-163).
+func EstimateUSDQuietInEnv(ctx context.Context, model string, inputTokens, outputTokens int) float64 {
+	return estimateUSDWithCache(model, inputTokens, outputTokens, 0, gatewayPricerQuiet, func(name string) string { return credroute.Getenv(ctx, name) })
+}
+
+// EstimateUSDWithCache is EstimateUSD for a caller that measured how much
+// of the prompt the provider served from its cache. Cached input prices at
+// the catalog's cache-read rate when one is published (Scaleway bills
+// deepseek-v4.1-flash cached input at a fifth of the uncached rate), and at
+// the input rate when none is — which is the figure EstimateUSD returns,
+// so a model without a cache rate is unchanged. The cached share clamps to
+// the input total: an account reporting more cache than prompt is corrupt,
+// not a credit.
+func EstimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadTokens int) float64 {
+	return estimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, os.Getenv)
+}
+
+// EstimateUSDWithCacheInEnv is EstimateUSDWithCache reading the gateway
+// catalog through the environment ctx CARRIES — a run's posture or env
+// overlay — falling back to the process environment when it carries
+// nothing. This is the metering form: the process that measured the usage
+// prices it at the same tables its dispatch resolved from, the #3104
+// class's standing rule.
+func EstimateUSDWithCacheInEnv(ctx context.Context, model string, inputTokens, outputTokens, cacheReadTokens int) float64 {
+	return estimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, func(name string) string { return credroute.Getenv(ctx, name) })
+}
+
+// EstimateUSDWithKnown preserves pricing presence even for measured zero usage.
+func EstimateUSDWithKnown(model string, inputTokens, outputTokens int) (float64, bool) {
+	return estimateUSDWithCacheKnown(model, inputTokens, outputTokens, 0, gatewayPricer, os.Getenv)
+}
+
+// EstimateUSDWithCacheKnownInEnv prices an invocation at its own catalog and
+// retains both cache accounting and the distinction between unknown and zero.
+func EstimateUSDWithCacheKnownInEnv(ctx context.Context, model string, inputTokens, outputTokens, cacheReadTokens int) (float64, bool) {
+	return estimateUSDWithCacheKnown(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, func(name string) string { return credroute.Getenv(ctx, name) })
+}
+
+func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadTokens int, gatewayPricer func(string, func(string) string) (float64, float64, float64, bool), get func(string) string) float64 {
+	amount, _ := estimateUSDWithCacheKnown(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, get)
+	return amount
+}
+
+func estimateUSDWithCacheKnown(model string, inputTokens, outputTokens, cacheReadTokens int, gatewayPricer func(string, func(string) string) (float64, float64, float64, bool), get func(string) string) (float64, bool) {
 	// FIRST: the gateway branch — a gateway id is whatever the gateway
 	// serves, and must never false-match a vendor table below, not even
 	// claw's live cache. Unknown or unpriced is 0 the budget reads as
 	// unpriced spend (cost_usd_unpriced), never as free.
 	if route := modelroute.Parse(model); route.Gateway() {
 		if gatewayPricer == nil {
-			return 0
+			return 0, false
 		}
-		inPerM, outPerM, known := gatewayPricer(route.Wire)
+		inPerM, outPerM, cachePerM, known := gatewayPricer(route.Wire, get)
 		if !known {
-			return 0
+			return 0, false
 		}
-		return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0
+		if cachePerM <= 0 {
+			// No cache price published: cached input costs what uncached
+			// input costs here. Return the pre-split expression itself —
+			// (uncached+cached)*inPerM is not bit-identical to
+			// uncached*inPerM + cached*inPerM in floating point, and this
+			// fallback's contract is that an unextended table reports the
+			// number it always did, every bit of it.
+			return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0, true
+		}
+		cached := min(max(cacheReadTokens, 0), inputTokens)
+		uncached := inputTokens - cached
+		return (float64(uncached)*inPerM + float64(cached)*cachePerM + float64(outputTokens)*outPerM) / 1_000_000.0, true
 	}
 	// First: ask claw's live registry cache. When it has a hit, it
 	// reflects the OpenRouter pricing as published — which means new
 	// models picked up since the last static-table update get correct
-	// estimates without anyone editing this file.
-	if pricing, ok := clawapi.LookupModelPricing(model); ok {
-		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0
+	// estimates without anyone editing this file. None of the non-gateway
+	// sources publishes a cache-read rate today, so the cache share is not
+	// subtracted here: the full input prices at the input rate, exactly as
+	// before the cache split.
+	if pricing, ok := livePricing(model); ok {
+		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0, true
 	}
 	// The model string arrives in every shape a backend might report:
 	// bare ("claude-opus-5"), qualified ("anthropic/claude-opus-5"),
@@ -189,16 +286,16 @@ func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
 	// alone — so a model models.dev knew the price of could still report
 	// no cost at all.
 	if in, out, ok := specRate(prefix, bare); ok {
-		return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000.0
+		return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000.0, true
 	}
 	model = bare
 	// Fallback: the static table below. Used on cold starts (no cache
 	// populated) and for any model neither live source has shipped.
 	p, ok := modelPriceTable[model]
 	if !ok {
-		return 0
+		return 0, false
 	}
-	return (float64(inputTokens)*p.inputUSDPerMillion + float64(outputTokens)*p.outputUSDPerMillion) / 1_000_000.0
+	return (float64(inputTokens)*p.inputUSDPerMillion + float64(outputTokens)*p.outputUSDPerMillion) / 1_000_000.0, true
 }
 
 // splitModelSpec separates a model string's leading component from its model
@@ -215,6 +312,11 @@ func splitModelSpec(model string) (prefix, bare string) {
 	}
 	return model[:i], model[i+1:]
 }
+
+// livePricing is claw's live-registry seam, a package var like specLookup:
+// the real lookup reads the host's cache and refreshes it from the network in
+// a goroutine that outlives the call, so tests pin it to a fixture instead.
+var livePricing = clawapi.LookupModelPricing
 
 // specLookup is the aggregator seam, a package var so tests swap in a fixture
 // instead of resolving against whatever the host's ~/.iterion cache last
@@ -254,13 +356,37 @@ func specRate(provider, bareModel string) (inputPerM, outputPerM float64, ok boo
 // unknown to the price table, so observers can distinguish "no cost
 // data" from "$0". A nil output map is a no-op (returns 0).
 func Annotate(output map[string]any, model string, inputTokens, outputTokens int) (totalTokens int) {
+	return AnnotateWithCache(output, model, inputTokens, outputTokens, 0)
+}
+
+// AnnotateWithCache is Annotate for a caller that measured the provider's
+// cache read: the `_cost_usd` it stamps is EstimateUSDWithCache's, so the
+// map a failed node's spend is booked from carries the same figure the
+// Result does — the two disagreeing would make one of them lie.
+func AnnotateWithCache(output map[string]any, model string, inputTokens, outputTokens, cacheReadTokens int) (totalTokens int) {
 	totalTokens = inputTokens + outputTokens
 	if output == nil {
 		return totalTokens
 	}
 	output["_tokens"] = totalTokens
 	output["_model"] = model
-	if cost := EstimateUSD(model, inputTokens, outputTokens); cost > 0 {
+	if cost := EstimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens); cost > 0 {
+		output["_cost_usd"] = cost
+	}
+	return totalTokens
+}
+
+// AnnotateWithCacheInEnv is AnnotateWithCache pricing through the
+// environment ctx carries — the metering form, same table as the
+// invocation's stamp (see EstimateUSDWithCacheInEnv).
+func AnnotateWithCacheInEnv(ctx context.Context, output map[string]any, model string, inputTokens, outputTokens, cacheReadTokens int) (totalTokens int) {
+	totalTokens = inputTokens + outputTokens
+	if output == nil {
+		return totalTokens
+	}
+	output["_tokens"] = totalTokens
+	output["_model"] = model
+	if cost := EstimateUSDWithCacheInEnv(ctx, model, inputTokens, outputTokens, cacheReadTokens); cost > 0 {
 		output["_cost_usd"] = cost
 	}
 	return totalTokens
@@ -370,9 +496,13 @@ func StaticTableModels() []string {
 // the committed table against the aggregator alone and declared GLM unpriced,
 // while the live registry was pricing it all along. Reporting on a source the
 // estimator does not use produces confident, false verdicts.
+//
+// Asking what a model WOULD cost is a read — the model listing, the pricing
+// audit — so the gateway catalog is resolved quietly: the rate is identical,
+// and an id in no table is left for the launch to say out loud.
 func EffectiveRate(model string) (inputPerM, outputPerM float64, ok bool) {
-	inputPerM = EstimateUSD(model, 1_000_000, 0)
-	outputPerM = EstimateUSD(model, 0, 1_000_000)
+	inputPerM = EstimateUSDQuiet(model, 1_000_000, 0)
+	outputPerM = EstimateUSDQuiet(model, 0, 1_000_000)
 	return inputPerM, outputPerM, inputPerM > 0 || outputPerM > 0
 }
 

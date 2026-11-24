@@ -47,7 +47,10 @@ func (m *mapper) diagnostics(diags []parser.Diagnostic) []parser.Diagnostic {
 	return out
 }
 
-var posType = reflect.TypeOf(ast.Pos{})
+var (
+	posType  = reflect.TypeOf(ast.Pos{})
+	spanType = reflect.TypeOf(ast.Span{})
+)
 
 // spans rewrites every position of the AST onto the YAML: a walk over
 // every exported field, slice element and pointer, so a position added to
@@ -63,6 +66,21 @@ func (m *mapper) walk(v reflect.Value) {
 			m.walk(v.Elem())
 		}
 	case reflect.Struct:
+		if v.Type() == spanType {
+			if v.CanAddr() {
+				sp := v.Addr().Interface().(*ast.Span)
+				if sp.Start.Line > 0 {
+					sp.Start.File = m.name
+					sp.Start.Line, sp.Start.Column = m.at(sp.Start.Line, sp.Start.Column)
+				}
+				// The mapper knows where a YAML node STARTS, never where its
+				// text ends — at maps every column of a value to the value's
+				// first rune — so a span has no end on the document: an end
+				// it cannot know is no end, not the value's first rune.
+				sp.End = ast.Pos{}
+			}
+			return
+		}
 		if v.Type() == posType {
 			if v.CanAddr() {
 				p := v.Addr().Interface().(*ast.Pos)

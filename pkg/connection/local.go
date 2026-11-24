@@ -67,15 +67,24 @@ func NewLayeredCatalog(tiers ...Catalog) Catalog {
 	return &layeredCatalog{tiers: kept}
 }
 
-func (c *layeredCatalog) Package(connectorID string) (*spec.Package, error) {
+func (c *layeredCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	if len(c.tiers) == 0 {
-		return nil, fmt.Errorf("no connector catalog is configured, so %q cannot be resolved", connectorID)
+		return nil, Tier{}, fmt.Errorf("no connector catalog is configured, so %q cannot be resolved", connectorID)
 	}
 	var reasons []string
 	for _, t := range c.tiers {
-		pkg, err := t.Package(connectorID)
+		pkg, tier, err := t.Package(connectorID)
 		if err == nil {
-			return pkg, nil
+			if tier.Kind == "" {
+				// The tier that answered is the only one that KNOWS it did,
+				// so a tier that does not name itself makes the answer
+				// unattributable — and an observer cannot recover it from the
+				// order of a search it did not watch. Refused by name rather
+				// than papered over with the index of the loop: a guess here
+				// would read as provenance at every surface that prints it.
+				return nil, Tier{}, fmt.Errorf("connector %q was served by a %T that did not name its tier, so nothing can say which tier won", connectorID, t)
+			}
+			return pkg, tier, nil
 		}
 		// A tier that HAS the package and could not load it stops the search.
 		//
@@ -86,30 +95,50 @@ func (c *layeredCatalog) Package(connectorID string) (*spec.Package, error) {
 		// different operations and a different policy. The run succeeded
 		// against the wrong connector, which is worse than failing.
 		if !errors.Is(err, errNoSuchConnector) {
-			return nil, err
+			return nil, Tier{}, err
 		}
 		reasons = append(reasons, err.Error())
 	}
 	// Every tier's reason, not just the last: two tiers can be absent for
 	// different reasons, and reporting only the last sends the reader to the
 	// wrong directory.
-	return nil, fmt.Errorf("%s", strings.Join(reasons, "; "))
+	return nil, Tier{}, &absentFromEveryTier{reasons: strings.Join(reasons, "; ")}
 }
 
-// Connectors is the union of every tier's, deduplicated and sorted.
-func (c *layeredCatalog) Connectors() []string {
+// absentFromEveryTier is the layered verdict that no tier holds the
+// connector: its text is every tier's reason, and it still unwraps to the one
+// sentinel a caller tests (IsNoSuchConnector) — a joined string alone lost it.
+type absentFromEveryTier struct{ reasons string }
+
+func (e *absentFromEveryTier) Error() string { return e.reasons }
+func (e *absentFromEveryTier) Unwrap() error { return errNoSuchConnector }
+
+// Connectors is the union of every tier's, deduplicated and sorted. A tier
+// that cannot list fails the union, every failing tier's reason joined in
+// tier order: a partial union would drop that tier's ids with no sign, and
+// the facade would serve the lower tiers' packages in their place.
+func (c *layeredCatalog) Connectors() ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
+	var errs []error
 	for _, t := range c.tiers {
-		for _, id := range t.Connectors() {
+		ids, err := t.Connectors()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, id := range ids {
 			if !seen[id] {
 				seen[id] = true
 				out = append(out, id)
 			}
 		}
 	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // ProjectCatalogEnv opts this process into resolving connector packages from
@@ -165,19 +194,46 @@ func ProjectCatalogGranted() bool {
 // disappear — it becomes a tier that reports WHY it did not answer, which is
 // what keeps a repository-shipped catalog from reading as a feature nobody
 // configured.
-func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
+//
+// TRUST is the second condition on that tier, and it is read HERE rather than
+// at the resolution for the reason the paragraph above already gives (#2769).
+// The grant answers "does this deployment consult workspace packages at all";
+// the run's trust answers "is the workspace of THIS run the tenant's own code".
+// A deployment that grants the tier and also serves a review lane would
+// otherwise let the reviewed tree ship `connectors/<id>/` declaring `effect:
+// read` on a DELETE — and that package's own word is what #1802's refusal
+// reads, so the guard would consult the thing it is guarding against. There is
+// no shape that pins the tier onto the resolved PACKAGE (spec.Package carries
+// no provenance), so the tier that must not win is simply not built for that
+// run. A layered lookup does now hand back the tier that SERVED, which is a
+// name for the operator reading an error and not a guard: it arrives after the
+// win, and a rule keyed on it would be read from the answer the tier itself
+// produced.
+func LocalCatalogs(paths LocalPaths, trust ActionTrust) ([]Catalog, error) {
 	var out []Catalog
 	for i, root := range []string{paths.Project, paths.Home} {
 		if root == "" {
 			continue
 		}
 		project := i == 0
+		// The RANK of each root, known here and nowhere else: this is the
+		// function that decides which root is the repository's and which is
+		// the operator's own, so it is the one that can label them.
+		kind := TierHome
+		if project {
+			kind = TierProject
+		}
+		// ONE answer per root, read by all three decisions below — an
+		// unreadable root, a present-but-closed tier, a live one. A tier that
+		// is skipped for one of them and consulted for another is how a
+		// stranger's `connectors/` directory would decide something.
+		closed := project && !projectTierConsulted(trust)
 		fi, err := os.Stat(root)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			if project && !ProjectCatalogGranted() {
+			if closed {
 				// Not consulted, so its readability is nobody's problem.
 				continue
 			}
@@ -188,31 +244,69 @@ func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 			// hold one, so this is an absence rather than a refusal.
 			continue
 		}
-		if project && !ProjectCatalogGranted() {
-			out = append(out, disabledCatalog{root: root})
+		if closed {
+			out = append(out, disabledCatalog{root: root, untrusted: !trust.tenantsOwnCode()})
 			continue
 		}
-		out = append(out, NewFSCatalog(root))
+		tier := NewFSCatalogAs(kind, root)
+		// The refusal of a tier that does not hold the connector ends with the
+		// ids it DOES hold — the operator's install. The layered lookup joins
+		// that reason into the error a run reads, so for a run whose workspace
+		// holds code the tenant does not control the list is withheld (#2810):
+		// the refusal names the id that was asked for and nothing else, which
+		// is #1802's rule for the aliases applied to the packages. Read from
+		// the same trust the tier decision above already reads, so the two
+		// cannot disagree about whose code this run holds.
+		tier.quiet = !trust.tenantsOwnCode()
+		out = append(out, tier)
 	}
 	return out, nil
 }
 
-// disabledCatalog is a project tier that is present and not granted.
+// projectTierConsulted reports whether this process serves workspace packages
+// to a run with this trust: the deployment's grant AND the run's own trust.
+//
+// Both halves in one predicate so the two can never be asked in two places
+// with two answers, and so the reason a tier was skipped stays derivable from
+// the same inputs (disabledCatalog says which of the two it was).
+func projectTierConsulted(trust ActionTrust) bool {
+	return ProjectCatalogGranted() && trust.tenantsOwnCode()
+}
+
+// disabledCatalog is a project tier that is present and not consulted.
 //
 // It holds nothing, so it never serves a package and never widens what a run
 // can reach — its whole job is to put the reason into the layered lookup's own
 // "no such connector" text, at every surface at once. Without it a repository
 // that ships `connectors/` gets the message for a catalog that is not there,
 // which is the silently-inert-capability shape this repo calls a defect.
-type disabledCatalog struct{ root string }
+//
+// It carries WHICH of the two conditions closed it, because the two readers
+// are different people: an operator whose own project tier is not granted has
+// a one-variable fix, while a run over code the tenant does not control has
+// none and must not be told otherwise (#2769).
+type disabledCatalog struct {
+	root string
+	// untrusted: the tier is closed by the RUN's trust rather than by the
+	// deployment's grant. Checked first when wording the refusal — the grant
+	// is an operator's to flip, this is not, so advising it would hand a
+	// reviewed tree the one sentence that gets it served.
+	untrusted bool
+}
 
-func (c disabledCatalog) Package(connectorID string) (*spec.Package, error) {
-	return nil, fmt.Errorf("a project connector catalog exists at %s but this process does not consult one (a repository under review must not be able to redefine what an operation does); set %s=1 to grant it: %w",
+// Package never serves, so it never names a tier: a zero Tier beside an error
+// is the shape every refusal in this package returns.
+func (c disabledCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
+	if c.untrusted {
+		return nil, Tier{}, fmt.Errorf("a project connector catalog exists at %s and this run's workspace holds code the tenant does not control, so it is not consulted for this run (a repository under review must not be able to redefine what an operation does): %w",
+			c.root, errNoSuchConnector)
+	}
+	return nil, Tier{}, fmt.Errorf("a project connector catalog exists at %s but this process does not consult one (a repository under review must not be able to redefine what an operation does); set %s=1 to grant it: %w",
 		c.root, ProjectCatalogEnv, errNoSuchConnector)
 }
 
 // Connectors lists nothing: a tier that cannot serve must not advertise.
-func (c disabledCatalog) Connectors() []string { return nil }
+func (c disabledCatalog) Connectors() ([]string, error) { return nil, nil }
 
 // LocalResolver builds the resolver a local run uses: the layered package
 // catalog, the file-backed connection store, and the local sealer.
@@ -222,8 +316,13 @@ func (c disabledCatalog) Connectors() []string { return nil }
 // resolver: it leaves the executor's Connectors unset, so a `.bot` declaring
 // an action fails with "this process has no connector catalog wired" instead
 // of a resolution error that reads as though the connector were at fault.
-func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer) (*Resolver, error) {
-	catalogs, err := LocalCatalogs(paths)
+//
+// TRUST is a parameter rather than defaulted here: a local resolver is built
+// per run, and only the caller knows which run — the CLI's own cwd, a launch
+// spec, a parent's document. Defaulting it to "trusted" inside the builder
+// would be the whole defect #1802 names, so the compiler asks instead.
+func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer, trust ActionTrust) (*Resolver, error) {
+	catalogs, err := LocalCatalogs(paths, trust)
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +347,7 @@ func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer) (*R
 		Store:    st,
 		Sealer:   sealer,
 		TenantID: LocalTenant,
+		Trust:    trust,
 	}, nil
 }
 
@@ -275,6 +375,37 @@ func allowPrivateHosts() bool {
 	return os.Getenv(AllowPrivateHostsEnv) == "1"
 }
 
+// guardedBase builds the dial-guarded client WITHOUT the executor's mark:
+// the guarded dialer (strict or not) with dial failures marked as never-sent
+// for the executor's unknown-outcome contract. The mark
+// (exec.MarkGuarded) is applied LAST by each public client below, so no
+// wrapper a tier adds can sit outside it and hide it from Call.
+func guardedBase(strict bool, timeout time.Duration) *http.Client {
+	c := httpdial.SafeClient(strict, timeout)
+	markDialFailuresAsNotSent(c)
+	return c
+}
+
+// GuardedHTTPClient is the ONE construction a connector call goes out on
+// when the caller adds nothing of its own: guardedBase plus the guard mark
+// Call refuses to run without.
+func GuardedHTTPClient(strict bool, timeout time.Duration) *http.Client {
+	return exec.MarkGuarded(guardedBase(strict, timeout))
+}
+
+// CloudHTTPClient is the client the SERVER's connector calls go out on
+// (#2758's facade, and any future cloud tier of the node path).
+//
+// Always strict — LocalHTTPClient's AllowPrivateHostsEnv hatch is the LOCAL
+// tier's: there the operator runs the process, so relaxing the guard is their
+// call. In cloud the base URL is TENANT-supplied, and the same relaxation
+// would hand one tenant the pod's own network. A self-hosted vendor on a
+// private address needs a deployment decision with a network control behind
+// it, not an environment variable the route can be talked into honoring.
+func CloudHTTPClient() *http.Client {
+	return GuardedHTTPClient(true, 2*time.Minute)
+}
+
 // LocalHTTPClient is the client a local connector call goes out on.
 //
 // The GUARDED one by default, with no exception for a local run. A connector
@@ -292,16 +423,14 @@ func allowPrivateHosts() bool {
 // for, not an ergonomic papercut.
 func LocalHTTPClient() *http.Client {
 	strict := !allowPrivateHosts()
-	c := httpdial.SafeClient(strict, 2*time.Minute)
-	markDialFailuresAsNotSent(c)
+	c := guardedBase(strict, 2*time.Minute)
 	if strict {
 		// Only under the guard: with the hatch open there is no refusal to
 		// explain, and a hint on an ordinary "connection refused" to localhost
-		// would name a variable that is already set.
+		// would name a variable that is already set. The hint goes UNDER the
+		// mark, which is applied last so Call sees it outermost.
 		c.Transport = &privateHostHint{base: c.Transport}
 	}
-	// Marked LAST, so the mark sits outside every wrapper this function adds
-	// and no later one has to forward it.
 	return exec.MarkGuarded(c)
 }
 
@@ -312,9 +441,10 @@ func LocalHTTPClient() *http.Client {
 // `unknown_outcome` — terminal, un-retryable, off the auto-resume list — which
 // is right for a lost answer and exactly wrong for a request that was never
 // written. It recognises the ordinary shapes by type (a *net.DNSError, a
-// dial-stage *net.OpError), but the guard's own refusal is an opaque
-// `fmt.Errorf` string from httpdial, and matching it by text would break the
-// first time that wording changed.
+// dial-stage *net.OpError), but not the guard's own refusals — httpdial's
+// errors: httpdial.ErrNotPublic in a strict refusal's chain, a plain error
+// for a malformed name — and an executor that learned each of them would
+// miss the next one the guard grows.
 //
 // So the fact is attached where it is KNOWN. A dialer that returned an error
 // returned no connection, so nothing can have been written on it — and
@@ -345,6 +475,13 @@ func markDialFailuresAsNotSent(c *http.Client) {
 // way to permit the host. The remedy is added here rather than in httpdial
 // because the env var is this package's, and the guard is shared with callers
 // (webhooks, OIDC, the preview proxy) for whom it is not a way out at all.
+//
+// It is added on exactly the refusals the hatch lifts: the guard wraps
+// httpdial.ErrNotPublic around each of them (an address that is not public, a
+// name no public host carries, refused before any lookup), and around
+// nothing else. A host that does not resolve is a typo or a dead
+// DNS, a malformed name stays refused under the hatch, and telling their
+// author to open a security guard would be advice about the wrong problem.
 type privateHostHint struct{ base http.RoundTripper }
 
 func (t *privateHostHint) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -352,37 +489,15 @@ func (t *privateHostHint) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err == nil {
 		return resp, nil
 	}
-	ip, ok := refusedAsPrivate(req.Context(), req.URL.Hostname())
-	if !ok {
+	if !errors.Is(err, httpdial.ErrNotPublic) {
 		return nil, err
 	}
-	return nil, fmt.Errorf("%w (%s is a private or loopback address; set %s=1 to let connector calls reach a self-hosted instance)",
-		err, ip, AllowPrivateHostsEnv)
+	return nil, fmt.Errorf("%w (%s is not a public address; set %s=1 to let connector calls reach a self-hosted instance)",
+		err, req.URL.Hostname(), AllowPrivateHostsEnv)
 }
 
-// refusedAsPrivate reports whether host is one the guard refuses FOR WHAT IT
-// RESOLVED TO, and the address that settles it.
-//
-// The two-step is the whole point, and both callers need exactly it: resolving
-// with the policy OFF separates two failures that look alike from the outside.
-// A host that resolves and is refused for its address is the hatch's case; a
-// host that does not resolve at all is a typo or a dead DNS, and telling its
-// author to open a security guard would be advice about the wrong problem. A
-// cancelled or timed-out context lands in the second branch, so the answer is
-// "no" rather than a guess.
-func refusedAsPrivate(ctx context.Context, host string) (net.IP, bool) {
-	if host == "" {
-		return nil, false
-	}
-	ip, err := httpdial.ResolvePublicHost(ctx, host, false)
-	if err != nil || httpdial.IsPublicUnicast(ip) {
-		return nil, false
-	}
-	return ip, true
-}
-
-// UnreachableBaseURL says why this process will refuse to call baseURL, or ""
-// when it will reach it.
+// UnreachableBaseURL says why this process will refuse to call baseURL when
+// AllowPrivateHostsEnv would permit it, or "" otherwise.
 //
 // Told at the moment a connection is ADDED, because that is where the mistake
 // is made. The refusal otherwise arrives a layer away — in a run, from a
@@ -390,18 +505,23 @@ func refusedAsPrivate(ctx context.Context, host string) (net.IP, bool) {
 // broken connector rather than as a host this deployment does not permit.
 // Advice only: the answer can change with the environment, so it never
 // refuses the record.
+//
+// The verdict is the dial's own — the guard at the strictness
+// LocalHTTPClient dials at with the hatch closed — and the advice rides the
+// refusal the hatch lifts (httpdial.ErrNotPublic) alone: a host that does
+// not resolve, or one no hatch admits, gets none.
 func UnreachableBaseURL(ctx context.Context, baseURL string) string {
 	if baseURL == "" || allowPrivateHosts() {
 		return ""
 	}
 	u, err := url.Parse(baseURL)
-	if err != nil {
+	if err != nil || u.Hostname() == "" {
 		return ""
 	}
-	ip, ok := refusedAsPrivate(ctx, u.Hostname())
-	if !ok {
+	_, refusal := httpdial.ResolvePublicHost(ctx, u.Hostname(), true)
+	if !errors.Is(refusal, httpdial.ErrNotPublic) {
 		return ""
 	}
-	return fmt.Sprintf("%s resolves to %s, a private or loopback address that connector calls refuse by default — set %s=1 to permit a self-hosted instance",
-		u.Hostname(), ip, AllowPrivateHostsEnv)
+	return fmt.Sprintf("%s is not a public address (%v), which connector calls refuse by default — set %s=1 to permit a self-hosted instance",
+		u.Hostname(), refusal, AllowPrivateHostsEnv)
 }

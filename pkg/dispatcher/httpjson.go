@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/SocialGouv/iterion/internal/httpx"
 )
 
 // WriteJSON encodes v as JSON with the given HTTP status. Exported so
@@ -17,5 +19,5 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 // WriteErr is the convention for surfacing an error to the SPA:
 // {"error": "<message>"} at the requested status.
 func WriteErr(w http.ResponseWriter, status int, err error) {
-	WriteJSON(w, status, map[string]string{"error": err.Error()})
+	httpx.WriteError(w, status, "", err.Error())
 }

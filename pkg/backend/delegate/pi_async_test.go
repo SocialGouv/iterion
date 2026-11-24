@@ -160,13 +160,13 @@ func TestPiAwaitAnswers(t *testing.T) {
 // tools that do not exist.
 func TestPiInteractionModeMatchesWiring(t *testing.T) {
 	sync := Task{NodeID: "n", InteractionEnabled: true}
-	if got := piExtensionEnv(sync, nil)["ITERION_PI_INTERACTION"]; got != "sync" {
+	if got := piExtensionEnv(sync, nil, "")["ITERION_PI_INTERACTION"]; got != "sync" {
 		t.Errorf("ITERION_PI_INTERACTION = %q for a blocking node, want sync", got)
 	}
 
 	async := Task{NodeID: "n", InteractionEnabled: true}
 	(&asyncStub{}).bind(&async)
-	if got := piExtensionEnv(async, nil)["ITERION_PI_INTERACTION"]; got != "async" {
+	if got := piExtensionEnv(async, nil, "")["ITERION_PI_INTERACTION"]; got != "async" {
 		t.Errorf("ITERION_PI_INTERACTION = %q for an async node, want async", got)
 	}
 

@@ -61,14 +61,17 @@ const (
 )
 
 // ErrModelUnavailable marks a model the resolved credential cannot
-// reach — a bad or withdrawn id, or one the account is not entitled to.
+// reach — a bad or withdrawn id, one the account is not entitled to, or
+// one the resolved FACADE would substitute with its own model under the
+// requested label (facadeSubstitutionRefusal, #2772: z.ai answers any id
+// with GLM, so "success" there is a mislabel, not a serve).
 // Normally non-transient: retrying the same (credential, model) pair cannot
 // fix it, which is precisely what makes it a good reason to try the next
 // chain element. ResetAt is reserved for a future stage-3 producer that can
 // report a temporary provider unavailability window; no shipped backend sets
 // it today.
 type ErrModelUnavailable struct {
-	Provider string // backend that reported it ("claude_code", …)
+	Provider string // the route that cannot serve it — a backend ("claude_code", …) or a provider slot ("zai", …)
 	Model    string // the model id that was refused
 	Detail   string // raw upstream message for diagnostics
 	// ResetAt is the provider-reported instant at which a temporary

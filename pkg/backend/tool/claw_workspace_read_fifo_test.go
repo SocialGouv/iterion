@@ -28,12 +28,12 @@ func TestWorkspaceReadAndGrep_DoNotBlockOnAFIFO(t *testing.T) {
 		call func() (string, error)
 	}{
 		{"read_file", func() (string, error) {
-			return executeWorkspaceReadFile(map[string]any{"path": "pipe"}, workspace)
+			return executeWorkspaceReadFile(map[string]any{"path": "pipe"}, NewReadScope(workspace))
 		}},
 		// grep walks the whole tree, so it reaches the FIFO with no help
 		// from the model at all.
 		{"workspace_grep", func() (string, error) {
-			return executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, workspace)
+			return executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(workspace))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestWorkspaceGrep_DoesNotFollowSymlinksOutOfTheWorkspace(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("needle-private-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// An innocuous name inside the workspace: sensitiveWorkspacePath sees
+	// An innocuous name inside the workspace: the credential gate sees
 	// "notes.txt" and waves it through.
 	if err := os.Symlink(secret, filepath.Join(workspace, "notes.txt")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
@@ -73,7 +73,7 @@ func TestWorkspaceGrep_DoesNotFollowSymlinksOutOfTheWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, workspace)
+	out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}

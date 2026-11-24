@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -48,6 +48,27 @@ func installWorkspaceMemory(ctx context.Context, opts *GenerationOptions, store 
 		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: block})
 	}
 
+	// A run holds no platform authority, so it is not handed a write tool on
+	// the instance-wide `global` space — every org reads that space back, and
+	// the super-admin gate used to exist on the REST surface ONLY (the engine
+	// installed memory_write on spec.Write alone, with no visibility test, and
+	// wrote unmetered). The refusal is the SHARED one, so the engine and both
+	// store adapters answer the same question: a granted context still gets
+	// the tool, so the capability is gated, not removed.
+	writeRefused := error(nil)
+	if spec.Write {
+		writeRefused = knowledge.AuthorizeSpaceWrite(ctx, ref)
+	}
+	if writeRefused != nil {
+		// Explicit, never silent: the model is told the tool is withheld and
+		// why, so a withheld capability shows in the transcript instead of
+		// looking like a prompt it ignored. The author is warned at compile
+		// time too (C319).
+		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: fmt.Sprintf(
+			"<workspace_memory_write_refused space=%q visibility=%q>\n%s\nThis space is instance-wide: an operator writes it through the REST surface (super-admin) or `iterion memory import`. Do not retry; record findings in a tenant-scoped space instead.\n</workspace_memory_write_refused>",
+			ref.Name, ref.Visibility, writeRefused.Error())})
+	}
+
 	// Extend the prompt cache to cover the memory blocks too: without
 	// this, the system prompt's existing breakpoint stops at block 0
 	// and the (often-stable, often-large) memory blocks re-bill on
@@ -59,7 +80,7 @@ func installWorkspaceMemory(ctx context.Context, opts *GenerationOptions, store 
 	if spec.Read {
 		opts.Tools = append(opts.Tools, memoryReadTool(store, ref), memoryListTool(store, ref))
 	}
-	if spec.Write {
+	if spec.Write && writeRefused == nil {
 		opts.Tools = append(opts.Tools, memoryWriteTool(store, ref, memoryAttribution(spec.BotID)))
 	}
 	if spec.PreCompactInject {
@@ -216,8 +237,10 @@ func memoryListTool(store knowledge.MemoryStore, ref knowledge.SpaceRef) Generat
 }
 
 // memoryPreCompactInjector re-reads the auto-index + autoload set
-// and prepends them as a synthetic user turn so claw's summariser
-// folds them into the surviving summary. Returns nil (no-op) when
+// and inserts them as a synthetic user turn near the start so claw's
+// summariser folds them into the surviving summary. The first message stays
+// first: only claw recognises whether it is a previous continuation summary.
+// Returns nil (no-op) when
 // the scope is empty.
 func memoryPreCompactInjector(ctx context.Context, store knowledge.MemoryStore, ref knowledge.SpaceRef, autoload []string) func(messages []api.Message) []api.Message {
 	return func(messages []api.Message) []api.Message {
@@ -248,8 +271,12 @@ func memoryPreCompactInjector(ctx context.Context, store knowledge.MemoryStore, 
 			Content:    []api.ContentBlock{{Type: "text", Text: text}},
 		}
 		out := make([]api.Message, 0, len(messages)+1)
+		// Preserve the compactor's leading-message slot without duplicating its
+		// continuation recogniser. An ordinary first turn stays in order too.
+		prefix := min(1, len(messages))
+		out = append(out, messages[:prefix]...)
 		out = append(out, injected)
-		out = append(out, messages...)
+		out = append(out, messages[prefix:]...)
 		return out
 	}
 }

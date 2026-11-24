@@ -6,6 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import MainSpinner from "@/components/shared/MainSpinner";
 import RunTabHost from "@/components/shared/RunTabHost";
 import InnerTabBar from "@/components/shared/InnerTabBar";
+import { HiddenSubtreeContext } from "@/components/ui/hiddenSubtree";
 import {
   selectRunTabs,
   useTabsStore,
@@ -125,7 +126,14 @@ export default function RunsTabsView() {
               className={`absolute inset-0 ${visible ? "block" : "hidden"}`}
               aria-hidden={visible ? undefined : true}
             >
-              <RunTabHost runId={runId} tabId={tab.id} />
+              {/* A hidden tab stays MOUNTED, so mark its subtree: the kit's
+                  portals render nothing inside it (a hidden tab's open dialog
+                  would otherwise sit over the tab on screen), and what listens
+                  on window — the run console's keyboard — consults the same
+                  flag (#1812, the #1788 class on the run console). */}
+              <HiddenSubtreeContext.Provider value={!visible}>
+                <RunTabHost runId={runId} tabId={tab.id} />
+              </HiddenSubtreeContext.Provider>
             </div>
           );
         })}

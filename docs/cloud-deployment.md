@@ -8,8 +8,8 @@ egress, observability, resume, and migration from a filesystem store.
 The Helm chart is published to GHCR as an OCI artifact at
 `oci://ghcr.io/socialgouv/charts/iterion` (sources in
 [charts/iterion/](../charts/iterion/)). It renders the full stack;
-values-dev.yaml bundles in-cluster Mongo / NATS / MinIO for smoke
-tests, values-prod.yaml expects external dependencies.
+values-dev.yaml brings up an in-cluster Mongo, NATS and SeaweedFS for
+smoke tests, values-prod.yaml expects external dependencies.
 
 ## Install
 
@@ -35,6 +35,73 @@ tar -tzf iterion-<semver>.tgz | head
 For chart hacking against unreleased changes, install from a checkout:
 `helm install iterion ./charts/iterion -f values.yaml`. `task chart:kind`
 exercises this path end-to-end on a kind cluster.
+
+**A first install on a cold cluster.** `helm install --wait` waits on the
+Deployment's `progressDeadlineSeconds`, and Kubernetes' default 600 s is not
+a statement about iterion's boot: on a fresh node the kubelet serialises
+image pulls, so a store whose image waits behind the others fails the install
+while the server pod turns Ready a minute later (measured on kind: the nats
+image waited 7m15 behind the pinned mongo and seaweedfs pulls, iterion#2780).
+`server.progressDeadlineSeconds` is the knob, next to the runner's — **unset
+by default**, so an existing install keeps the behaviour it was deployed
+with, while `values-dev.yaml` (the `task chart:kind` path) sets 1800. It
+renders in cloud mode only: `mode=local` renders a StatefulSet, which has no
+such field. The cost of raising it is worth stating: a genuinely broken
+rollout (bad image, a crash at boot) then reads as Progressing for as long as
+the deadline says instead of failing at 10 minutes, so an ArgoCD sync or a CI
+install step hangs rather than reports. A `0` is not a way to remove the
+deadline — both templates render the key through a `with`, which skips a
+zero.
+
+The install clients follow the same knob through the render: the wait
+follows the rendered server Deployment's `progressDeadlineSeconds`. `task
+chart:kind` and the `cloud-e2e` CI job build one argument list — release,
+chart, `-f`, `--set` — and hand it to both `scripts/chart-kind-wait.sh` and
+`helm install`; the helper runs `helm template` on that list, reads the server
+Deployment's `spec.progressDeadlineSeconds` from the render with yq
+(mikefarah/yq v4, in devbox as `yq-go`), and prints that deadline plus a
+120 s margin as the client `--timeout`, so the server's deadline — not a
+fixed client cap — decides whether a slow server rollout is called
+**Failed**. It is the one deadline the wait follows: `helm --wait` watches
+every workload of the release, so a Deployment whose own deadline outlives
+the server's — the runner's 30000 s, a lame-duck drain budget
+`values-dev.yaml` keeps — is cut by the client cap, not its deadline, if it
+is still Progressing when the wait ends, and a StatefulSet (NATS) has no
+deadline, only the cap. And the deadline bounds the whole server rollout for
+one pod only: Kubernetes measures it from the rollout's last sign of
+progress, not its start, and each pod that turns Ready is one — with several
+server pods (`server.replicas` above 1, or the HPA owning the count) the
+rollout can stay Progressing past the wait, so the helper prints the wait
+with a warning naming the count; `values-dev.yaml` runs one pod. Nothing
+reads the values file itself: the render already applies what stands between
+a file and the field
+(go-yaml's reading of the file, the `--set` overrides, the `with` that skips
+an unset or `0` knob, the StatefulSet of `mode=local`), and a reader of the
+file would have to reimplement all of it. That render is the install's own
+while the templates the server Deployment renders through read no cluster or
+release state — `.Capabilities`, `lookup`, `.Release.IsInstall` /
+`.Release.IsUpgrade` / `.Release.Revision`, which `helm template` renders
+off-cluster as an install at revision 1; none is read today, and
+`TestChartKindWaitRenderReadsNoClusterState` (`charts/iterion`) refuses one on
+that path, whatever its receiver (the chart hands its includes the root as
+`.root`). The helper refuses, naming the
+cause: a render helm refuses, a render with no Deployment labelled
+`app.kubernetes.io/component=server` (`mode=local`), several such Deployments
+(the first in render order would be a guess), a Deployment that renders no
+deadline (unset or `0` — the install would silently watch Kubernetes' default
+600 s), a value other than plain decimal digits with no leading zero, and
+one beyond the int32 the field holds. helm hands the API the render as a
+YAML 1.1 decoder reads it: a string or a fraction is refused there, an
+integral float (`6e2`, or the `1e+06` helm prints for a values number of a
+million or more — quote such a number) and a signed, hex, octal, binary or
+underscored spelling are read as the integers they denote, and a leading
+zero makes octal digits octal (`010` is 8) where a YAML 1.2 reader such as
+yq reads 10 — so the helper sizes the wait from plain digits alone. Its
+messages print the install as its release, its chart and its values files,
+never its other arguments — a `--set` can carry a credential, and CI logs keep
+stderr — and a URL among them without its userinfo, query or fragment. From
+the first flag it does not know (`--password`) on, it prints nothing: only
+helm knows whether that flag takes the next argument.
 
 ## Topology
 
@@ -110,11 +177,65 @@ runnerPools:
 When `networkPolicy.egress` is active, allow the gateway host through
 `networkPolicy.egress.extraAllow` (the pool pods use the same policy;
 the sandbox runs' own egress is governed by each run's `network:`
-allowlist as for any runner).
+block as for any runner — open when the workflow declares none, unless
+the run is a repo-defined sandbox, see [below](#networkpolicy-egress)).
 
 Draining follows the shared runner contract (lame-duck
 `terminationGracePeriodSeconds`): scale the pool's Deployment down and
 its in-flight run finishes or checkpoints within the window.
+
+**A pool's own sandbox** (`runnerPools[].sandbox.enabled`, ADR-162 Q3):
+unset, the pool follows `runner.sandbox.enabled`; set, it resolves the
+kubernetes sandbox — or opts out of it — on its own, and nothing else of
+the release moves. This is the fork review lane's pool
+([webhooks.md](webhooks.md#fork-lane-pool)): every run on it is
+sandboxed, without moving every trusted `sandbox:` bot of the deployment
+into sibling pods. The pool renders the sandbox's downward-API env and,
+where its flag differs from the release-wide one, its own literals over
+the shared ConfigMap: an empty `ITERION_SANDBOX_OVERRIDE`,
+`ITERION_SANDBOX_HOST_STATE=none` and `ITERION_SANDBOX_DEFAULT=auto` (a bot
+declaring no `sandbox:` block — `review-pr` declares none — resolves
+through that tier) to opt in; `ITERION_SANDBOX_OVERRIDE=none` and
+`automountServiceAccountToken: false` to opt out — the opted-out pool runs
+every job in its own pod while the release binds the shared ServiceAccount
+to the sandbox Role, and nothing on it calls the API (the override disables
+the driver and its orphan reaper). The pool's env block cannot spell the
+names its flag owns. The `sandbox` key takes `enabled` alone: any other key,
+or a value that is not a map, fails the render rather than leaving the pool
+on the release's posture.
+
+Until ADR-154's pool shape lands (#2965: the pool's own ServiceAccount and
+Role, the `iterion.io/runner-pool` label on its siblings, its standing
+NetworkPolicy), turning a pool's sandbox ON where the release-wide flag is
+off **fails the render** in two cases — and so does it with the chart's
+defaults and under the prod values: a sandboxed fork pool is #2965's, not
+this flag's alone.
+
+- `serviceAccount.create` — the chart renders the sandbox Role only under
+  `runner.sandbox.enabled`, so the pool's token would hold no grant and
+  every sandboxed run would fail at its first `kubectl apply`. The pool
+  runs under the release's shared ServiceAccount, so the only interim the
+  chart admits — `serviceAccount.create: false` with a dedicated account
+  named in `serviceAccount.name` (the chart refuses the empty name, which
+  mounts the namespace's `default` account and would hand the grants to
+  every pod of the namespace that names none), the sandbox driver's verbs
+  (the rules of `runner-rbac.yaml`) bound to that account by hand —
+  hands them to **every pod of the release that mounts it**: the shared
+  runner, which under a release-wide `runner.sandbox.enabled: false` runs
+  EVERY trusted run in its own pod, and every other pool. Each of those
+  runs then holds a token that lists and reads every Secret of the
+  namespace (the auth ring, the platform LLM keys, every pool's gateway
+  Secret), execs into any pod (the fork run's sandbox included) and
+  deletes NetworkPolicies (a fork run's per-run policy, after its start
+  probe passed). That is wider than sandboxing the whole release
+  (`runner.sandbox.enabled`, Q3's rejected option B), whose runs execute
+  in siblings that mount no token — it is not ADR-154's measured residual,
+  which was measured on a release that sandboxes its runs. Prefer leaving
+  the pool's sandbox off until #2965, or the release-wide flag.
+- `networkPolicy.enabled` — [below](#networkpolicy-egress): the
+  release-wide policy closes the pool runner's egress proxy to its
+  siblings. The interim is the release-wide policy off — the cost Q3
+  rejected option B for — and the pool's own policy brought by hand.
 
 ## Prerequisites
 
@@ -212,6 +333,29 @@ default).
 | `ITERION_NATS_MAX_AGE` / `ITERION_NATS_DLQ_MAX_AGE` | Runs-stream / DLQ retention |
 | `ITERION_NATS_MAX_PAYLOAD` | Max message size |
 
+**A broker that is not up yet is waited for, bounded.** On a fresh cluster the
+queue pod routinely starts after the processes that need it — the kubelet
+serialises image pulls, and a Service's DNS record appears when the Service
+does — so the boot dial retries for at most **30 s** (5 s per attempt, 500 ms
+between) while the failure means "not up yet": nothing listening (`nats: no
+servers available for connection`), an unresolved host, or a container that
+accepts TCP before it serves the protocol. That is the policy
+[pkg/store/mongo/ping.go](../pkg/store/mongo/ping.go) already applies to its
+primary ping, value for value. A failure no retry can cure (a malformed URI,
+a credentials refusal) is reported from the FIRST attempt, and a broker that
+never answers ends the boot with `connect NATS: queue/nats: connect: no
+broker after N attempt(s) (deadline …)` — never with a connection that looks
+live but is not (`nats.RetryOnFailedConnect` is deliberately unused: a
+readiness probe would pass on it).
+
+Neither wait is an operator knob, because the two of them plus the
+~28-collection schema pass share ONE budget: the startup probe's 30 × 5 s =
+150 s (`probes.startup`). Raising either is a decision about that 150 s. And
+what the wait buys on a cold cluster is one crash-loop backoff, not an
+arbitrarily late broker — the 7-minute image pull measured in iterion#2780 is
+far longer than the budget, and what `helm install --wait` concludes is the
+Deployment's `progressDeadlineSeconds` business.
+
 The queue's internal semantics (the `MaxAckPending` fleet ceiling, `AckWait`
 heartbeats, DLQ parking, the orphan sweeper) are covered in
 [cloud-architecture.md § Queue internals](cloud-architecture.md#queue-internals).
@@ -268,8 +412,150 @@ networkPolicy:
 
 The chart synthesises a single egress block from the union of
 defaults + `egress.extraAllow`. There is no auto-detection of bundled
-sub-charts; if you also bundle Mongo via `mongodb.enabled`, add the
+sub-charts; if you run the dev stores (`devStack.*`), add the
 matching `egress.extraAllow` entry.
+
+**Sandbox pods are not selected by this policy.** It matches the
+release's `app.kubernetes.io/*` labels; a per-run sandbox pod carries
+`iterion.io/*` labels only. Its egress is the run's own
+`network:` policy ([sandbox](sandbox.md#network-policy)): open by
+default, and routed through the CONNECT proxy on the runner pod plus a
+per-run NetworkPolicy only when the workflow declares an `allowlist` or
+`denylist` `sandbox.network` mode, the run is a repo-defined sandbox,
+or the run carries secrets Layer 2 inspects / a gateway credential
+(then the proxy admits every public host the workflow's own `!host`
+exclusions do not refuse). Without the proxy the sandbox pod's egress
+is whatever the cluster allows. No chart value sets the egress mode for
+every run.
+
+**This policy and the sandbox proxy do not compose.** With
+`networkPolicy.enabled` on a CNI that enforces NetworkPolicy, the
+policy's Ingress rules admit only the server port and the metrics port
+on the runner pod, while the runner's CONNECT proxy (and the per-run
+MCP listeners) bind an ephemeral port
+(`pkg/sandbox/kubernetes/driver.go` `ProxyConfig`). A sandbox pod cannot
+reach that port, so a run that needs the proxy — an allowlist or
+denylist run, a repo-defined sandbox, a Layer 2 run, a run holding a
+gateway credential — fails at its first egress. No value opens it:
+`networkPolicy.ingress.extraAllow` widens the `from:` of the server
+port's rule only. On such a cluster, either keep `networkPolicy.enabled`
+off for the release that runs sandboxes, or run the sandbox with a
+no-proxy posture (`network: open`, no inspected secret, no gateway
+credential). A fork run always needs the proxy (ADR-162 decision 7), so
+**no sandboxed fork pool works under `networkPolicy.enabled` until #2965**
+renders the pool's standing policy that admits its siblings to its runner
+pods. A pool turning its own sandbox on (`runnerPools[].sandbox.enabled`)
+is refused at render there; a pool that FOLLOWS a release-wide
+`runner.sandbox.enabled` is not — the chart cannot tell which pool is the
+fork lane's — and every fork run on it is metered, passes its start probe,
+then fails at its first egress.
+
+The server port's ingress is scoped the same way (#2804): name your
+ingress controller's namespaces in `networkPolicy.ingress.controllerNamespaces`
+(matched on the `kubernetes.io/metadata.name` label every namespace
+carries since 1.22) so the rule admits the controller's pods and the
+release's own — anything else in the cluster that can dial the server
+port directly can forge `X-Forwarded-For` (the audit IP, the
+rate-limit key). `networkPolicy.ingress.extraAllow` is the escape
+hatch (an `ipBlock` for `kubectl port-forward`'s node source, a
+controller living elsewhere). The chart ships `ingress-nginx` as the
+default `controllerNamespaces` (the common case — override it for your
+controller). The empty-config verdict is decided (#2804): emptying BOTH
+lists keeps the historical admit-all render — never a refusal, so an
+upgrade never breaks — and warns loudly: an
+`iterion.io/ingress-admit-all` annotation on the policy, a WARNING
+comment in the rendered manifest, and a note at install/upgrade.
+
+### Whose `X-Forwarded-For` the server believes
+
+The server-side half of the same question is `config.auth.trustedProxyCidrs`
+(`ITERION_AUTH_TRUSTED_PROXY_CIDRS`): the ranges whose forwarded client address
+the server reads instead of the socket address. It decides the audit IP and the
+auth rate-limit key, so it also decides whether the limiter holds one bucket
+per client or **one for the whole instance** — with no range configured every
+request behind the ingress carries the controller's own address, and login
+5/min, register 2/min and refresh 30/min become instance-wide. The server warns
+about that at boot, naming the variable; it never refuses to start.
+
+The chart defaults to the private ranges a pod network comes from
+(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), so the ingress
+in front is trusted without a gesture. **Narrow it to your controller's pod
+CIDR**: every address inside a trusted range is a proxy you vouch for, which is
+why the ingress scoping above matters — the two knobs cover one threat from
+both ends.
+
+```yaml
+config:
+  auth:
+    trustedProxyCidrs:
+      - 10.244.0.0/16   # your ingress controller's pod CIDR
+```
+
+An entry that is not a CIDR is refused at boot naming it, and so is one with
+host bits set (`10.42.0.7/16` would silently trust the whole `/16`). Emptying
+the list is honoured and warned about: the client becomes the socket address
+everywhere, unforgeable and instance-wide.
+
+The ranges say **who** may name the client and `config.auth.trustedProxyHops`
+(`ITERION_AUTH_TRUSTED_PROXY_HOPS`) says **how many** of the chain's rightmost
+entries are theirs: the chain is read right to left and stops there, one hop by
+default, which is this chart's shape. That count is what tells a proxy's entry
+from an in-range client's — with all of private space trusted, an in-cluster
+pod writes entries too — so raising it past the appending hops really in front
+makes a client's own entries the identity again. Raise it only for a chained
+front end (a CDN edge appending ahead of this chart's ingress is `2`, with the
+CDN's egress ranges added to the list above).
+
+#### The client's address has to reach the controller first
+
+`trustedProxyHops: 1` is right only when the address the ingress controller
+sees **is** the client's. With the Kubernetes-default `externalTrafficPolicy:
+Cluster` on the LoadBalancer Service, every packet is SNATed to the node that
+received it, so the controller sees a node address — and that is what lands in
+the chain. Nothing in the ranges or the count fixes it: the client is not in the
+request at all when the controller replaces the chain
+(`use-forwarded-headers: false`, ingress-nginx's default), and it is one entry
+beyond the bound when the controller appends behind a load balancer that wrote
+it. Either way the whole internet shares **one bucket per node** and one audit
+IP. The shapes that carry the client through:
+
+| shape | what reaches the server | settings |
+|---|---|---|
+| `externalTrafficPolicy: Local` on the Service, or PROXY protocol where the cloud LB speaks it (`use-proxy-protocol: "true"`) | the controller's socket peer IS the client | as shipped — `trustedProxyHops: 1` |
+| a managed L7 load balancer that writes `X-Forwarded-For` itself, the controller appending behind it: `use-forwarded-headers: "true"` **and** `compute-full-forwarded-for: "true"` | `<client>, <the controller's TCP peer>` | `trustedProxyHops: 2`, and in `trustedProxyCidrs` the range of the address the controller's TCP peer carries — the LB's egress range when the LB targets the pods directly (NEG / `ip` targets), the node range (or `externalTrafficPolicy: Local`) behind a NodePort / `instance` target |
+| the same load balancer, the controller resolving the client itself: `use-forwarded-headers: "true"` alone, with `proxy-real-ip-cidr` set to the range of the address the controller's TCP peer carries — the LB's egress range when the LB targets the pods directly, the node range (or `externalTrafficPolicy: Local`) behind a NodePort / `instance` target — never its `0.0.0.0/0` default | `<client>` | as shipped — `trustedProxyHops: 1` |
+
+`use-forwarded-headers` does two different things, and the rows differ by
+which: alone, ingress-nginx's realip module resolves the client from the
+incoming header and writes **one** entry, the resolved address; with
+`compute-full-forwarded-for` it appends its peer to the incoming header
+instead. Behind an L4 load balancer — a SNATing Service with nothing in front
+writing the header — turn it on for neither reason: nothing on that path puts
+the client into `X-Forwarded-For`, so the one entry the controller writes is
+whatever the client itself put leftmost in its own header (under the default
+`proxy-real-ip-cidr`), a fresh bucket per forged value and a chosen audit IP.
+Only `externalTrafficPolicy: Local` or the PROXY protocol carry the client
+through an L4 path; ingress-nginx's own documentation reserves
+`use-forwarded-headers` for a controller behind another L7 proxy.
+
+The server says so once per process. When it can name the cause it does — the
+declared header absent from the requests, present but naming no address, a
+chain of our own addresses shorter than the count declares, an in-range hop
+past it — and otherwise at the first request whose identity lands inside
+`trustedProxyCidrs`: *"the client of a request from … resolves to …, which is
+inside ITERION_AUTH_TRUSTED_PROXY_CIDRS"*. The lines are ambiguous on purpose
+— an in-cluster pod or a LAN client is inside those ranges too, and for them
+the identity is the right one. Nothing in a request tells the two apart, which
+is why each is a question and not a verdict.
+
+`config.auth.forwardedHeader`
+(`ITERION_AUTH_FORWARDED_HEADER`) says **where**, and the server reads that one
+header and no other. The default — `X-Forwarded-For`, which this chart's
+ingress writes — is right for the shipped shape. Name your own when the proxy
+in front computes the client into `X-Real-IP` or RFC 7239 `Forwarded` and
+leaves the client's `X-Forwarded-For` alone: without it the client's header is
+the identity, and no narrowing of the ranges changes that. The server warns
+once when the declared header is not the one its requests carry.
 
 ## NATS monitoring endpoint (KEDA)
 
@@ -308,6 +594,9 @@ populated at runtime:
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | input/output/cache_read/cache_write |
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Added per claw-priced call; unknown models leave the counter untouched |
 | `iterion_runner_heartbeat_errors_total` | runner | Each KV lease refresh failure |
+| `iterion_bot_override_shadows_newer{slug}` | server | 1 while a platform bot override shadows a newer baked bundle (polled every five minutes, platform tier) |
+| `iterion_bot_shadow_check_unavailable` | server | 1 when that check could not run — no readable bot root included; the per-slug gauges hold their last values |
+| `iterion_bot_override_unorderable_version{slug}` | server | 1 for an override whose version cannot be ordered against the bundle below it; informational, unalerted |
 
 Wire a Prometheus PodMonitor:
 
@@ -347,6 +636,46 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, spans are dropped and the
 W3C propagator-only path is installed (inbound trace context still
 respected, but no export).
 
+## Spreading the replicas: anti-affinity, spread constraints, disruption budgets
+
+Three replicas on three nodes mean nothing unless something keeps them
+apart: on ovh-prod, MongoDB and valkeyha held one replica per node by
+chance alone — no anti-affinity on one, a dead selector on the other
+(`app.kubernetes.io/name In [valkey]` against pods labelled `valkeyha`, the
+sub-chart's alias) — until a reschedule could have put two on the node the
+autoscaler drains (#2012). The chart now spreads its own workloads and
+ships the check that found the defect.
+
+- **`server.scheduling` / `runner.scheduling`** (a `runnerPools[]` entry
+  overrides them key by key): `antiAffinity: soft` (preferred, the
+  default — a one-node cluster still schedules) or `hard` (required — a
+  replica with no free node stays Pending) over `topologyKey`
+  (`kubernetes.io/hostname`), plus a `topologySpreadConstraints` entry
+  (`maxSkew: 1`, `ScheduleAnyway` by default, `DoNotSchedule` for a hard
+  spread). The selector is rendered from the workload's own labels, never
+  typed: it cannot name a label the pods do not carry. `affinity:` stays
+  the free-form block, merged over the generated one.
+- **`server.pdb` / `runner.pdb`**: the PodDisruptionBudget renders only
+  when the workload is *guaranteed* more than one replica (`replicas > 1`,
+  or the HPA / KEDA floor above one). On a single replica, `minAvailable: 1`
+  refuses every eviction and holds a node drain forever — a budget that
+  protects nothing and blocks everything — so `auto` never renders it
+  there; `enabled: true|false` forces it. `maxUnavailable` replaces
+  `minAvailable` when set.
+- **The render gate** — `task chart:check` (in `task check`) renders the
+  dev, prod and pool values and confronts every anti-affinity, spread and
+  PodDisruptionBudget selector with the labels of its own pods; a selector
+  matching none is refused with the workload and the dead key named
+  (`internal/rendergate`). The same judge reads ANY rendered stream:
+  `helm template … | task chart:gate -- -namespace <apply namespace>` —
+  the namespace the objects land in (`helm template` writes none into
+  them), so a chart's objects and its sub-charts' are judged together — run
+  it on the GitOps repository's render before pushing an affinity or a
+  budget there. The datastores of
+  the cloud deployment (MongoDB, NATS, valkey, SeaweedFS) are other charts:
+  their anti-affinity and budgets live in those values, and this gate is
+  how a dead one is caught before Argo CD applies it.
+
 ## Pod turnover & in-flight runs
 
 A runner pod goes away for three reasons, and a deploy is the *rarest* of
@@ -371,6 +700,23 @@ them:
 > keeps any parked run on the side a resume recovers first; a bump that leaves
 > `MinSchemaVersion` alone additionally allows runner-first, which rejects
 > nothing and needs neither a drained queue nor a resume of parked runs.
+
+> **Writers before birth identities.** A server compares the run's birth
+> identity: its run socket, and every run-addressed request that names the
+> birth it expects (the studio's). A released v6.0.x runner, dispatcher or CLI
+> drops `birth_id` when it rewrites a run, so during a mixed-version window a
+> newer server reads that same run as replaced: its socket answers
+> `snapshot_failed` or `run_origin_lost` and closes `scope_lost`, a request
+> answers HTTP 409 `run_origin_lost`, and a reload recovers. Roll writers no
+> later than servers, and keep no pre-birth writer on a shared store
+> ([run origin](agents/engine/run-ws-origin.md)). `ITERION_RUN_BIRTH_CHECK=0`
+> on the server admits every HTTP and body expectation unchecked — it ends the
+> 409s of such a window, not the rest: a run socket stays bound to the birth it
+> opened on and still closes `scope_lost` when a writer drops it, and the
+> studio still marks a run lost when a snapshot shows another birth. Only
+> rolling the writers ends those. Keep the Mongo URI's read preference
+> primary: the check reads through it, and the server warns at startup
+> otherwise.
 
 ### Pinning the image
 
@@ -408,13 +754,31 @@ image:
 ```
 
 ```sh
-# resolve the moving tag to the digest it currently points at
-gh api /orgs/<org>/packages/container/iterion/versions \
-  --jq '[.[]|select(.metadata.container.tags|index("edge"))][0].name'
+# resolve a tag to the digest it points at — the signed release tag for prod,
+# the moving tag for a dev install
+gh api /orgs/SocialGouv/packages/container/iterion/versions \
+  --jq '[.[]|select(.metadata.container.tags|index("v4.7.1"))][0].name'
+# the release tags are cosign-signed (keyless, SBOM attested): verify the
+# digest you are about to commit against the workflow identity that built
+# it — the identity is the reusable workflow AT a release tag ref, so a
+# signature the same workflow issued on another ref does not pass. The
+# registry path is lowercase (`socialgouv`); the identity is the repository's
+# own, case-sensitive spelling (`SocialGouv`)
+cosign verify ghcr.io/socialgouv/iterion@sha256:… \
+  --certificate-identity-regexp \
+    '^https://github\.com/SocialGouv/iterion/\.github/workflows/_build-image\.yml@refs/tags/v[0-9]' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
 The trade-off is real and yours: a digest turns each deploy into an explicit
-bump instead of a `rollout restart`.
+bump instead of a `rollout restart`. That bump is the deploy gesture of
+SocialGouv's prod: resolve the release's digest per package — `iterion` for
+the server (`image.digest`), `iterion-runner-devbox` for the runner
+(`runner.image`, a `…@sha256:…` reference) and `iterion-sandbox-full` for the
+`sandbox: auto` image (`config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE`) —
+commit the three in the GitOps values, let ArgoCD sync. Only the `:vX.Y.Z`
+tags are signed — `:edge` is amd64-only, unsigned and ephemeral, a dev
+install's tag, never a prod reference.
 
 > **Once `digest` is set in a values file, every `--set image.tag=…` becomes a
 > silent no-op** — the upgrade succeeds, no PodTemplate field changes, nothing
@@ -435,9 +799,33 @@ image keeps the hazard until it is pinned there too. That half matters more
 under the rollout epoch: a pod created from an old ReplicaSet keeps its
 literal `ITERION_RUNNER_EPOCH` while pulling whatever the tag means now.
 
-(SocialGouv's own prod values do pin the runner by digest, for a second
-reason: a moving tag rolled the runner Deployment on every merge to main and
-killed in-flight runs. That is a values-level choice, not a chart default.)
+(SocialGouv's own prod values pin the server, the runner and the `sandbox:
+auto` image by digest, the runner for a second reason: a moving tag rolled
+the runner Deployment on every merge to main and killed in-flight runs. That
+is a values-level choice, not a chart default.)
+
+**`image.requireDigest: true`** is the guard that keeps such an install
+pinned: the render then refuses — with the values path to fix — any iterion
+pod image that is not `repo@sha256:<64 hex>`: the server and runner
+(`image.digest` unset, or a tag in `runner.image`), a `runnerPools[].image`,
+and, once `runner.sandbox.enabled` is on, the `sandbox: auto` image — a
+pool's own `env.ITERION_SANDBOX_DEFAULT_IMAGE`, and
+`config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE` whenever a pod reads it there
+(the shared runner, or a pool whose `env` block does not set its own; a
+pools-only install with every pool pinned is not asked for it). The helm test pod (`busybox`) and the devStack images (dev-only)
+stay out of it. Helm has no warning channel, so the guard is a refusal and
+opt-in is its escape hatch: the default is false and an install that never
+set it renders exactly as before. Set it in the GitOps values that already
+pin by digest, so a hurried hotfix cannot slide them back to a moving tag.
+
+One sibling of that env sits outside the render guard: the platform setting
+`sandbox.default_image` (`iterion remote admin sandbox set --default-image`,
+[platform bots § sandbox](platform-bots.md)) overrides
+`ITERION_SANDBOX_DEFAULT_IMAGE` at publish time from the DB, with no chart in
+the path. The server accepts any non-blank reference there and warns — in
+its log and in the response the CLI prints — when the value is not
+`repo@sha256:…`; on a digest-pinned install keep it unset or a digest
+reference.
 
 ### Verifying that an infra-apps push landed (ArgoCD sync liveness)
 
@@ -804,6 +1192,11 @@ devbox run -- task chart:kind
 ```
 
 Renders + lints the chart, checks `appVersion` matches `package.json`.
+The install watch follows the rendered server Deployment's
+`progressDeadlineSeconds` (`values-dev.yaml` sets 1800 s; plus a 120 s margin,
+so 1920 s): a slow first pull of its one server pod exhausts the server's
+deadline budget, never a fixed client cap; the runner's longer drain deadline
+is not followed.
 For a real install + workflow exec, see the `cloud-e2e` CI job in
 [.github/workflows/tests.yml](../.github/workflows/tests.yml).
 

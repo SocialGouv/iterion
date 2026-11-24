@@ -194,7 +194,7 @@ schema recheck_verdict:
 ## ─── Nodes : Phase 0 — Input Validation (tool node) ────────────
 
 tool check_input:
-  command: "echo task_received_in_{{vars.workspace_dir}}"
+  command: `jq -n --arg output task_received_in_{{vars.workspace_dir}} '{output: $output}'`
   output: check_result
 
 ## ─── Nodes : Phase 1 — Human Gate (auto-answer via LLM) ────────
@@ -306,7 +306,7 @@ agent refiner_b:
 ## ─── Nodes : Phase 7 — Recheck (tool + judge) ──────────────────
 
 tool run_check:
-  command: "cat {{vars.workspace_dir}}/answer.txt 2>/dev/null || echo missing"
+  command: `{ cat {{vars.workspace_dir}}/answer.txt 2>/dev/null || echo missing; } | jq -Rs '{output: .}'`
   output: check_result
 
 judge recheck_judge:

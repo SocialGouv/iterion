@@ -1,9 +1,10 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"net/http"
 	"sort"
 	"strings"
@@ -250,6 +251,14 @@ func (s *Server) upsertPipelineTask(
 	if err := native.ValidateBlockers(boardStore, existing.ID, blockers); err != nil {
 		return nil, err
 	}
+	// An upsert swaps the card's bot args wholesale, so the stored ticket's
+	// reserved launch context is re-stamped off the STORED card — the same
+	// seam as the PATCH door: the payload's identity about the card's
+	// repository, credentials and integration is the server's word, and a
+	// planner re-run must not strip it (a card relaunched without its
+	// project path meters and bounds against nothing, and drops its BYOK
+	// overrides) (#2371, D33).
+	botArgs = native.KeepStoredLaunchContext(existing.BotArgs, botArgs)
 	title := strings.TrimSpace(req.Title)
 	body := strings.TrimSpace(req.Body)
 	patch := native.Patch{
@@ -296,7 +305,5 @@ func (s *Server) upsertPipelineTask(
 // open-blockers refusal ships the blocker list with it.
 func (s *Server) writeJSONError(w http.ResponseWriter, r *http.Request, code int, body map[string]any) {
 	s.reflectAllowedOrigin(w, r)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
+	httpx.WriteErrorJSON(errtrack.HTTPErrorWriter(w, r, s.logger), code, body)
 }

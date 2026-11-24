@@ -49,13 +49,13 @@ func ParseRefs(s string) ([]*Ref, error) {
 
 // parseRef parses a single template expression like "outputs.node.field".
 //
-// A leading `!` flags the reference as "unquoted" (raw substitution) for
-// tool command rendering. `{{!input.cmd}}` substitutes input.cmd verbatim
-// into the resolved shell command instead of running through shellEscape.
-// The bang prefix is stripped before namespace parsing so the rest of the
-// expression behaves exactly as without it. The flag has no effect on
-// non-shell template contexts (prompts, edge data mappings) — they always
-// render values via formatValue.
+// A leading `!` flags the reference as "unquoted" (raw substitution) where
+// a shell reads the value: in a tool command:/script:/postcondition:,
+// `{{!input.cmd}}` substitutes input.cmd verbatim into the resolved shell
+// command instead of running through shellEscape. The bang prefix is
+// stripped before namespace parsing so the rest of the expression behaves
+// exactly as without it. In a prompt the flag is inert: the value renders
+// either way (C169 warns — the raw form is a tool-body spelling there).
 func parseRef(expr, raw string) (*Ref, error) {
 	if expr == LiteralOpenExpression {
 		return &Ref{Kind: RefLiteralOpen, Raw: raw}, nil

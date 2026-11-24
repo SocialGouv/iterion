@@ -25,7 +25,11 @@ func (s *Server) handleForgeDeliveryPreflight(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusNotFound, "forge delivery preflight is unavailable")
 		return
 	}
-	grant, ok := s.forgePublishTokens.lookup(r.Header.Get("X-Iterion-Run"))
+	grant, ok, err := s.pullRequestGrant(r.Header.Get("X-Iterion-Run"))
+	if err != nil {
+		s.refuseUnboundGrant(w, r, "delivery preflight", err)
+		return
+	}
 	if !ok {
 		httpError(w, http.StatusUnauthorized, "unknown or expired run token")
 		return
@@ -53,8 +57,8 @@ func (s *Server) handleForgeDeliveryPreflight(w http.ResponseWriter, r *http.Req
 		return
 	}
 	ctx := store.WithTenant(r.Context(), grant.TeamID)
-	conn, err := s.forgeConnections.Get(ctx, grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(ctx, grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}

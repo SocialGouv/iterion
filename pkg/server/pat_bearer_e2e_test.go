@@ -72,6 +72,10 @@ func newPATE2E(t *testing.T) *patE2E {
 	ctx := context.Background()
 	seedTeam(t, s, "t1", "acme")
 	seedTeam(t, s, "t2", "other")
+	// t3 is the team the pin must hold against: one the owner IS a member
+	// of. A refusal measured on t2 — where the owner holds nothing — is the
+	// membership check answering, and says nothing about the pin.
+	seedTeam(t, s, "t3", "third")
 	if _, err := s.authStore().CreateUser(ctx, identity.User{
 		ID: "u1", Email: "u1@x", Status: identity.UserStatusActive, DefaultTeamID: "t1",
 	}); err != nil {
@@ -86,6 +90,11 @@ func newPATE2E(t *testing.T) *patE2E {
 		UserID: "u1", TeamID: "t1", Role: identity.RoleMember,
 	}); err != nil {
 		t.Fatalf("membership: %v", err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{
+		UserID: "u1", TeamID: "t3", Role: identity.RoleMember,
+	}); err != nil {
+		t.Fatalf("second membership of the token owner: %v", err)
 	}
 	if err := s.authStore().UpsertMembership(ctx, identity.Membership{
 		UserID: "u2", TeamID: "t2", Role: identity.RoleMember,
@@ -114,6 +123,14 @@ func newPATE2E(t *testing.T) *patE2E {
 // call sends a real HTTP request with the given bearer (empty = none).
 func (p *patE2E) call(t *testing.T, method, path, bearer, body string) (int, []byte) {
 	t.Helper()
+	return p.callScoped(t, method, path, bearer, body, "")
+}
+
+// callScoped is call with the cross-team scope header a caller sends to act
+// on a team other than its credential's — the cheapest request an attacker
+// holding a leaked token makes, since it needs no team in the path.
+func (p *patE2E) callScoped(t *testing.T, method, path, bearer, body, team string) (int, []byte) {
+	t.Helper()
 	var rdr io.Reader
 	if body != "" {
 		rdr = bytes.NewReader([]byte(body))
@@ -127,6 +144,9 @@ func (p *patE2E) call(t *testing.T, method, path, bearer, body string) (int, []b
 	}
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if team != "" {
+		req.Header.Set(tenantScopeHeader, team)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -212,6 +232,52 @@ func TestPATBearer_AuthenticatesProgrammaticClientsThroughTheRealServer(t *testi
 		status, body := p.call(t, http.MethodGet, "/api/teams/t2/members", minted.Token, "")
 		if status != http.StatusForbidden {
 			t.Fatalf("cross-team read = %d body=%s, want 403", status, body)
+		}
+	})
+
+	// The class #2486 names: t2 above is a team the owner holds nothing in,
+	// so its 403 is the membership check and an unpinned token gets it too.
+	// The pin is what must refuse t3, where the owner IS a member — and the
+	// unpinned arm, a token of the SAME user over the SAME route, is what
+	// isolates the pin from the membership: it must still be served.
+	t.Run("the pin refuses another team of the owner, where membership alone would admit", func(t *testing.T) {
+		status, body := p.call(t, http.MethodGet, "/api/teams/t3/members", minted.Token, "")
+		if status != http.StatusForbidden {
+			t.Fatalf("pinned token read of another team of its owner = %d body=%s, want 403", status, body)
+		}
+
+		// The control arm's row is written straight to the store: the mint
+		// route fills the minter's ACTIVE team in when the caller names
+		// none, so an ordinary account cannot ask it for an unpinned token
+		// (only a super-admin can). This is the row a super-admin's token —
+		// and any token minted before that default existed — has, and it
+		// still travels through the real middleware and the real gates.
+		plaintext, hash, last4, fingerprint, err := pat.MintToken()
+		if err != nil {
+			t.Fatalf("mint an unpinned token: %v", err)
+		}
+		if err := p.s.pats.Create(context.Background(), pat.Token{
+			ID: "pat-unpinned", UserID: "u1", Name: "ci-unpinned",
+			TokenHash: hash, TokenLast4: last4, Fingerprint: fingerprint,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("store the unpinned token: %v", err)
+		}
+		if status, body := p.call(t, http.MethodGet, "/api/auth/me", plaintext, ""); status != http.StatusOK {
+			t.Fatalf("the unpinned control token does not authenticate at all: %d body=%s", status, body)
+		}
+		if status, body := p.call(t, http.MethodGet, "/api/teams/t3/members", plaintext, ""); status != http.StatusOK {
+			t.Fatalf("unpinned token read of another team of its owner = %d body=%s, want 200 (a token with no pin binds nothing)", status, body)
+		}
+
+		// The scope HEADER is the same address by another route — no team in
+		// the path, so a per-route guard never sees it. It re-scopes through
+		// identityInTeam, which the pin now gates.
+		if status, body := p.callScoped(t, http.MethodGet, "/api/runs", minted.Token, "", "t3"); status != http.StatusForbidden {
+			t.Fatalf("pinned token scoped to another team by %s = %d body=%s, want 403", tenantScopeHeader, status, body)
+		}
+		if status, body := p.callScoped(t, http.MethodGet, "/api/runs", plaintext, "", "t3"); status != http.StatusOK {
+			t.Fatalf("unpinned token scoped to another team of its owner by %s = %d body=%s, want 200", tenantScopeHeader, status, body)
 		}
 	})
 

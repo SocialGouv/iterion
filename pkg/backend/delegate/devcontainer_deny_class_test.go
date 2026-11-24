@@ -35,8 +35,10 @@ func TestDevcontainerDenyClassCoversEveryAgentRoutingName(t *testing.T) {
 		"piResolveEnv":             slices.Sorted(maps.Keys(piResolveEnv(context.Background()))),
 	}
 	for _, proto := range []CLIAgentProtocol{kimiProtocol, grokProtocol, piProtocol, opencodeProtocol} {
-		// HOME belongs to the runtime's home pin, not to the class (#2318).
-		if hook := proto.PermissionHook; hook != nil && hook.HomeEnv != "HOME" {
+		// Every home a hook resolves its agent's settings from, HOME
+		// included: it joined the class with the gitconfig it re-enters by
+		// (#2318), so no name is excused here any more.
+		if hook := proto.PermissionHook; hook != nil {
 			sources[proto.Name+" PermissionHook.HomeEnv"] = []string{hook.HomeEnv}
 		}
 	}

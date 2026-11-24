@@ -66,7 +66,7 @@ func TestAcceptInvitation_AFailedOrgReadNeverDemotesTheOwner(t *testing.T) {
 	ctx := context.Background()
 	f := newOwnerFixture(t)
 	f.svc.SetTeamRankReconcile(func(context.Context, string, string, identity.Role) error { return nil })
-	token, _, err := f.svc.CreateInvitation(ctx, "tb", f.owner.Email, identity.RoleMember, "someone-else")
+	token, _, err := f.svc.CreateInvitation(mintVerdictCtx(ctx), "tb", f.owner.Email, identity.RoleMember, "someone-else")
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}
@@ -226,7 +226,7 @@ func newInviteFixture(t *testing.T, role identity.Role) *inviteFixture {
 	if _, err := seed.CreateTeam(ctx, identity.Team{ID: "tb", OrgID: "o1", Name: "Team B", Slug: "team-b"}); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	token, _, err := svc.CreateInvitation(ctx, "tb", "invitee@example.org", role, "inviter")
+	token, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "tb", "invitee@example.org", role, "inviter")
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}
@@ -261,12 +261,12 @@ func TestLoginWithExternalForOrg_AProviderReadFailureIsAFailure(t *testing.T) {
 func TestCreateInvitation_ATeamReadFailureIsAFailure(t *testing.T) {
 	f := newOwnerFixture(t)
 	f.ids.fail("GetTeam", 0)
-	_, _, err := f.svc.CreateInvitation(context.Background(), "tb", "x@example.org", identity.RoleMember, f.owner.ID)
+	_, _, err := f.svc.CreateInvitation(mintVerdictCtx(context.Background()), "tb", "x@example.org", identity.RoleMember, f.owner.ID)
 	if !errors.Is(err, errStoreUnreachable) || errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("an invitation whose team read failed: got %v, want the read's failure, not ErrTeamNotFound", err)
 	}
 	f.ids.disarm()
-	if _, _, err := f.svc.CreateInvitation(context.Background(), "t-missing", "x@example.org", identity.RoleMember, f.owner.ID); !errors.Is(err, ErrTeamNotFound) {
+	if _, _, err := f.svc.CreateInvitation(mintVerdictCtx(context.Background()), "t-missing", "x@example.org", identity.RoleMember, f.owner.ID); !errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("an invitation for a team that does not exist: got %v, want ErrTeamNotFound", err)
 	}
 }

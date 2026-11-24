@@ -82,7 +82,7 @@ func TestGateReconcile_AnchorIsTheTerminalInstantNotBookkeeping(t *testing.T) {
 	replica2.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
 		return gc, nil
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), "conn1")
+	conn, err := s.forgeConnections.Get(context.Background(), "team1", "conn1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestGateReconcile_NeverOverwritesAFresherVerdict(t *testing.T) {
 	replica2.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
 		return gc, nil
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), "conn1")
+	conn, err := s.forgeConnections.Get(context.Background(), "team1", "conn1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestGateReconcile_TiedClaimDoesNotSettleAndTheRepairStillLands(t *testing.T
 	}
 
 	// The twin pass claimed first, at the SAME truncated anchor.
-	conn, err := s.forgeConnections.Get(context.Background(), "conn1")
+	conn, err := s.forgeConnections.Get(context.Background(), "team1", "conn1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestGateReconcile_TiedClaimWarnsOnTheLastOffer(t *testing.T) {
 	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), "conn1")
+	conn, err := s.forgeConnections.Get(context.Background(), "team1", "conn1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestGateReconcile_StrictlyNewerIncumbentStillSettlesSuperseded(t *testing.T
 	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), "conn1")
+	conn, err := s.forgeConnections.Get(context.Background(), "team1", "conn1")
 	if err != nil {
 		t.Fatal(err)
 	}

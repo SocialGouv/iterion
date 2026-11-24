@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -277,11 +278,28 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 	return opts
 }
 
-// wirePermissionHook installs the tool-permission gate for claude_code:
-// a broad PreToolUse hook (Matcher nil = every tool) that evaluates the
-// resolved policy before the CLI runs a tool. This is claude_code's half
-// of cross-backend parity with claw's executeToolsDirect gate — both
-// honour the SAME permission.Policy.
+// permissionAskEscalation is what ONE spawn does with an `ask:` verdict. It
+// is the only thing the gate cannot answer from the task alone: whether a
+// call can be surfaced to a human depends on whether this spawn's caller has
+// a pause to offer, which is a property of the CALL SITE.
+//
+// Every other verdict is the task's and is decided once, in
+// claudePermissionGate.
+type permissionAskEscalation func(toolName string, input map[string]any, rule string) claudesdk.HookOutput
+
+// claudePermissionGate is the ONE place a claude_code spawn derives its
+// tool-permission gate from: a broad PreToolUse hook (Matcher nil = every
+// tool) that evaluates the resolved policy before the CLI runs a tool. This
+// is claude_code's half of cross-backend parity with claw's
+// executeToolsDirect gate — both honour the SAME permission.Policy.
+//
+// It is a function of the task and nothing else, so that a spawn is gated by
+// calling it and ungated by not calling it — there is no third state and no
+// per-spawn copy of the policy reading that could drift. The reason that
+// matters is measured: a claude_code node with an `output_schema:` spawns the
+// CLI TWICE on one session under the same always-on bypassPermissions, and
+// for five rounds the second spawn had no gate at all because the gate lived
+// inline in the first spawn's wiring (#1672).
 //
 // Under the always-on --permission-mode bypassPermissions, PreToolUse
 // hooks STILL run and a "deny" decision STILL blocks the tool (per the
@@ -289,21 +307,21 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 // needs no --permission-mode change:
 //   - Allow → empty HookOutput → falls through → bypass approves.
 //   - Deny  → permissionDecision "deny" with a reason the model adapts to.
-//   - Ask   → capture the approval prompt + cancel the stream so the run
-//     PAUSES for the human (reuses the ask_user pause path:
-//     pendingQuestion + buildAskUserPendingResult). On resume the operator
-//     grants and the model re-issues the now-authorized call.
+//   - Ask   → whatever this spawn can do about it (escalate).
 //
-// Infrastructure tools (ask_user, board.*) are exempt inside
-// permission.Policy.Evaluate, so this hook never blocks iterion's own
-// interaction plumbing.
-func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Option, pendingQuestion, pendingPermission *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
+// Infrastructure tools (ask_user, board.*, StructuredOutput) are exempt
+// inside permission.Policy.Evaluate, so this hook never blocks iterion's own
+// interaction plumbing nor the tool a schema'd node returns its result with.
+//
+// The gate bounds EVERY name the CLI offers, including the ones no list in
+// this package enumerates — which is what makes it a stronger bound than any
+// --disallowedTools roster (#1651: the roster is not this project's to own).
+func claudePermissionGate(task Task, escalate permissionAskEscalation) []claudesdk.Option {
 	policy := task.Permission
 	if !policy.Enabled() {
-		return opts
+		return nil
 	}
-	noContinue := false
-	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+	return []claudesdk.Option{claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
 		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 			policyToolName := claudePermissionToolName(task, in.ToolName, in.ToolInput)
 			dec, rule := policy.Evaluate(policyToolName, in.ToolInput)
@@ -314,23 +332,69 @@ func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Optio
 					DecisionReason: permission.DenyMessage(policyToolName, in.ToolInput, rule),
 				}, nil
 			case permission.Ask:
-				// Surface the approval request to the human and stop the
-				// stream — the post-session check reuses the ask_user
-				// pending path to pause the run. The marker carries the
-				// structured request so the runtime can auto-grant on resume.
-				pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(policyToolName, in.ToolInput, rule)})
-				pendingPermission.Store(permission.Marker(policyToolName, in.ToolInput, rule))
-				cancelStream()
-				return claudesdk.HookOutput{
-					Decision:      "deny",
-					Continue:      &noContinue,
-					SystemMessage: "This action requires operator approval; it has been escalated to the iterion runtime. Stop generating.",
-				}, nil
+				return escalate(policyToolName, in.ToolInput, rule), nil
 			default: // permission.Allow
 				return claudesdk.HookOutput{}, nil
 			}
 		},
-	}))
+	})}
+}
+
+// wirePermissionHook carries the gate to the WORK spawn, whose caller has a
+// pause to offer: an `ask:` verdict captures the approval prompt and cancels
+// the stream, so the run pauses for the human (it reuses the ask_user pause
+// path — pendingQuestion + buildAskUserPendingResult). On resume the operator
+// grants and the model re-issues the now-authorized call. The marker carries
+// the structured request so the runtime can auto-grant on resume.
+func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Option, pendingQuestion, pendingPermission *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
+	noContinue := false
+	return append(opts, claudePermissionGate(task, func(toolName string, input map[string]any, rule string) claudesdk.HookOutput {
+		pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(toolName, input, rule)})
+		pendingPermission.Store(permission.Marker(toolName, input, rule))
+		cancelStream()
+		return claudesdk.HookOutput{
+			Decision:      "deny",
+			Continue:      &noContinue,
+			SystemMessage: "This action requires operator approval; it has been escalated to the iterion runtime. Stop generating.",
+		}
+	})...)
+}
+
+// wireFormattingPermissionHook carries the SAME gate to the structured-output
+// spawn (formatOutput). The policy reading is identical — it is the same
+// function — and only the `ask:` arm differs: this spawn runs after the turn
+// that could pause for an operator, and its caller returns a result rather
+// than a pending question, so an approval cannot be queued here. The call is
+// refused instead, which is strictly stricter than pausing and never leaves a
+// run waiting for an answer nothing would deliver.
+//
+// The refusal does NOT stop generating (no Continue:false): this pass still
+// owes its JSON, and the work itself belonged to the pass before it.
+func wireFormattingPermissionHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
+	return append(opts, claudePermissionGate(task, func(toolName string, _ map[string]any, rule string) claudesdk.HookOutput {
+		return claudesdk.HookOutput{
+			Decision:       "deny",
+			DecisionReason: formattingPassAskRefusal(toolName, rule),
+		}
+	})...)
+}
+
+// formattingPassAskRefusal is what the model is told when a call needs
+// operator approval on the structured-output pass. It names the reason the
+// answer is a refusal rather than a pause, so the model stops retrying and
+// returns its JSON.
+//
+// It is not permission.DenyMessage: that one reports a deny RULE, and what
+// matched here is an ask rule (or the `ask` mode default). Reporting it as a
+// deny rule would send an author looking for a rule they never wrote.
+func formattingPassAskRefusal(toolName, rule string) string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "Permission refused: the `%s` tool needs operator approval", toolName)
+	if rule != "" {
+		fmt.Fprintf(b, " (ask rule: %s)", rule)
+	}
+	b.WriteString(", and this is the structured-output pass — it runs after the turn that could pause for an approval, so the call is refused rather than queued. Do not retry it here: return the JSON the output schema asks for; the work itself belongs to the pass before this one.")
+	return b.String()
 }
 
 // claudePermissionToolName is the narrow bridge between Claude Code's native
@@ -360,17 +424,21 @@ func claudePermissionToolName(task Task, toolName string, input map[string]any) 
 // the real value is spliced in here and never enters the prompt, the event
 // stream, or the run store. Matches all tools (Matcher nil); a no-op for
 // input that carries no placeholder.
+//
+// The two hooks are independent: the PreToolUse one needs a materialiser
+// (nil when no secret resolves at the agent sink), the PostToolUse one needs
+// the mirror alone — a run whose secrets are all kept off the agent
+// (`sinks: [prompt, egress]`, `[command]`) still turns the values an echoing
+// tool quotes back into placeholders, as claw does with the same closures.
 func installMaterializeSecretsHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
-	materialize := task.MaterializeSecrets
-	if materialize == nil {
-		return opts
+	if task.MaterializeSecrets != nil {
+		opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+			Handler: materializeSecretsHandler(task.MaterializeSecrets),
+		}))
 	}
-	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
-		Handler: materializeSecretsHandler(materialize),
-	}))
 	if task.UnmaterializeSecrets != nil {
 		opts = append(opts, claudesdk.WithHook(claudesdk.HookPostToolUse, claudesdk.HookMatcher{
-			Handler: unmaterializeOutputHandler(task.MaterializeSecrets, task.UnmaterializeSecrets, task.WorkDir),
+			Handler: unmaterializeOutputHandler(task.MaterializeSecrets, task.UnmaterializeSecrets, task.NamesSecret, task.WorkDir),
 		}))
 	}
 	return opts
@@ -391,12 +459,12 @@ var rawOutputTools = map[string]bool{
 // secret values a tool's output quotes back into their placeholders. It
 // replaces the output only when that changed anything: the CLI applies
 // sibling hooks' replacements last-write-wins.
-func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, workspace string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, names func(string) bool, workspace string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 	own := workspaceRef(workspace)
 	return func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 		// A workspace reader keeps what the workspace holds — unless its call
 		// carried a secret (a command using a credential may print it back).
-		if rawOutputTools[in.ToolName] && !carriesSecret(in.ToolInput, materialize, unmaterialize) && !namesTaskOutput(in.ToolInput, own) {
+		if rawOutputTools[in.ToolName] && !carriesSecret(in.ToolInput, materialize, unmaterialize, names) && !namesTaskOutput(in.ToolInput, own) {
 			return claudesdk.HookOutput{}, nil
 		}
 		out, changed := secretguard.MaterializeLeaves(in.ToolResponse, unmaterialize)
@@ -421,7 +489,22 @@ func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, 
 // carriesSecret reports whether a tool call's input named a secret — a
 // placeholder, or the value the PreToolUse hook materialised it into (the
 // CLI hands PostToolUse the input the tool ran with).
-func carriesSecret(input map[string]any, materialize, unmaterialize func(string) string) bool {
+func carriesSecret(input map[string]any, materialize, unmaterialize func(string) string, names func(string) bool) bool {
+	// A placeholder in the call names a secret whatever resolves it — the
+	// agent's materialiser, or the proxy on the wire for a secret kept off
+	// the agent: the grant-agnostic reading comes first.
+	if names != nil {
+		hit := false
+		secretguard.MaterializeLeaves(input, func(s string) string {
+			if names(s) {
+				hit = true
+			}
+			return s
+		})
+		if hit {
+			return true
+		}
+	}
 	for _, f := range []func(string) string{materialize, unmaterialize} {
 		if f == nil {
 			continue
@@ -533,11 +616,19 @@ var describedByCommand = map[string]bool{"Bash": true, "PowerShell": true, "Moni
 // gate — so it always auto-allows the rewritten command. The rewrite runs
 // host-side; the (sandboxed) CLI runs the rewritten command in-container
 // against the bind-mounted rewriter binary (the chain's run env is pinned on
-// both spawns: claudeEnvPins).
-func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
+// both spawns: claudeEnvPins). Under a sandbox the hook consults
+// rewriteSkipsSandboxedTask before installing, whose default is to stand the
+// chain down — ITERION_REWRITE_SANDBOX=host restores the previous placement
+// (#2007).
+func (b *ClaudeCodeBackend) installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 	mode := rewrite.ParseMode(task.CompressMode)
 	chain := rewrite.NewChain(task.Rewriters)
 	if !mode.Enabled() || !chain.Available() {
+		return opts
+	}
+	if rewriteSkipsSandboxedTask(task) {
+		b.Logger.Warn("[%s#%d/claude-code] sandboxed task: rewriter chain stands down (%s, default skip; =host restores the host-side chain) — Bash commands run in-container verbatim, without the chain's 60–90%% output-token saving",
+			task.NodeID, task.Iteration, rewrite.SandboxEnv)
 		return opts
 	}
 	bashMatcher := "^Bash$"
@@ -545,6 +636,15 @@ func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 		Matcher: &bashMatcher,
 		Handler: rewriteCommandHandler(chain, mode, task.MaterializeSecrets),
 	}))
+}
+
+// rewriteSkipsSandboxedTask is the delegate half of the #2007 placement
+// decision: the one predicate consulting task.Sandbox before the rewrite
+// hook is installed. A hostless task (no sandbox, or the noop passthrough
+// driver) is unaffected by ITERION_REWRITE_SANDBOX — its commands run on the
+// host either way, so the host-side rewrite costs the boundary nothing.
+func rewriteSkipsSandboxedTask(task Task) bool {
+	return rewrite.SkipsSandbox(os.Getenv(rewrite.SandboxEnv), taskSandboxed(task))
 }
 
 // rewriteCommandHandler is the PreToolUse handler that rewrites a Bash
@@ -596,19 +696,10 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; board MCP server disabled", task.NodeID, task.Iteration)
 			return opts
 		}
-		env := map[string]string{
-			"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ","),
-		}
-		if task.StoreDir != "" {
-			env["ITERION_STORE_DIR"] = task.StoreDir
-		}
-		if task.SourceIssueID != "" {
-			env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
-		}
 		opts = append(opts, claudesdk.WithMCPServer(boardMCPServerName, &claudesdk.MCPStdioServer{
 			Command: selfPath,
 			Args:    []string{boardMCPSubcommand},
-			Env:     env,
+			Env:     BoardServerEnv(task),
 		}))
 		if len(task.AllowedTools) > 0 {
 			*extras = append(*extras, BoardToolsFor(task.Capabilities)...)
@@ -633,6 +724,37 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 		return opts
 	}
 	b.Logger.Warn("[%s#%d/claude-code] board capabilities granted but workflow is sandboxed and BoardHTTPEndpoint/BoardRunToken not configured; board MCP disabled for this node", task.NodeID, task.Iteration)
+	return opts
+}
+
+// wireConnectorMCP registers the connector MCP facade (#2758) when the node
+// declares the `connectors` capability. HTTP ONLY, by design: the credential
+// a facade call spends is resolved and spent at the server (ADR-098 Q4), so
+// there is no stdio variant — one running in the agent's own process would be
+// the credential entering the sandbox. A node granted the capability with no
+// facade reachable warns loudly rather than silently no-opping (ADR-098: a
+// declared capability that cannot be brought up must say so).
+func (b *ClaudeCodeBackend) wireConnectorMCP(task Task, opts []claudesdk.Option, extras *[]string) []claudesdk.Option {
+	if !HasConnectorsCapability(task.Capabilities) {
+		return opts
+	}
+	if task.ConnectorHTTPEndpoint != "" && task.BoardRunToken != "" {
+		opts = append(opts, claudesdk.WithMCPServer(connectorMCPServerName, &claudesdk.MCPHTTPServer{
+			URL: task.ConnectorHTTPEndpoint,
+			Headers: map[string]string{
+				"X-Iterion-Run": task.BoardRunToken,
+			},
+			// Same reasoning as the board server: the facade's tools must
+			// surface without a ToolSearch hit, and an unreachable facade
+			// fails loudly at startup.
+			AlwaysLoad: true,
+		}))
+		if len(task.AllowedTools) > 0 {
+			*extras = append(*extras, ConnectorToolsFor(task.Capabilities)...)
+		}
+		return opts
+	}
+	b.Logger.Warn("[%s#%d/claude-code] connectors capability granted but no connector facade endpoint is configured (the run needs a server-wired sandbox); connector tools disabled for this node", task.NodeID, task.Iteration)
 	return opts
 }
 

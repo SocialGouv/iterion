@@ -39,7 +39,7 @@ func TestWebhookBasePatch_PersistsAndDoesNotTouchTheTokenPath(t *testing.T) {
 	if minted != 0 {
 		t.Fatalf("mint calls = %d, want 0 — pinning a hook base is not a token operation", minted)
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), "c1")
+	conn, err := s.forgeConnections.Get(context.Background(), "t1", "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestWebhookBasePatch_ClearsWithAnExplicitEmptyString(t *testing.T) {
 	if w := patchWebhookBase(t, s, "c1", `{"webhook_base_url":""}`); w.Code != http.StatusOK {
 		t.Fatalf("clear: code=%d body=%s", w.Code, w.Body.String())
 	}
-	conn, _ := s.forgeConnections.Get(context.Background(), "c1")
+	conn, _ := s.forgeConnections.Get(context.Background(), "t1", "c1")
 	if conn.WebhookBaseURL != "" {
 		t.Fatalf("WebhookBaseURL = %q, want cleared", conn.WebhookBaseURL)
 	}
@@ -87,7 +87,7 @@ func TestWebhookBasePatch_RefusesWhatCannotBeDialed(t *testing.T) {
 			if w.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("code=%d body=%s, want 422", w.Code, w.Body.String())
 			}
-			conn, _ := s.forgeConnections.Get(context.Background(), "c1")
+			conn, _ := s.forgeConnections.Get(context.Background(), "t1", "c1")
 			if conn.WebhookBaseURL != "" {
 				t.Fatalf("a refused value was still persisted: %q", conn.WebhookBaseURL)
 			}
@@ -128,7 +128,7 @@ func TestConnectionPatch_RefusesACombinedBody(t *testing.T) {
 	if minted != 0 {
 		t.Fatalf("mint calls = %d, want 0 — the refusal must happen before either side acts", minted)
 	}
-	conn, _ := s.forgeConnections.Get(context.Background(), "c1")
+	conn, _ := s.forgeConnections.Get(context.Background(), "t1", "c1")
 	if conn.WebhookBaseURL != "" || conn.SecurityReadEnabled {
 		t.Fatalf("a refused combined patch applied something: base=%q security_read=%v",
 			conn.WebhookBaseURL, conn.SecurityReadEnabled)

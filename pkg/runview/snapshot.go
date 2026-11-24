@@ -63,6 +63,13 @@ type RunHeader struct {
 	SubbotChildren map[string]string  `json:"subbot_children,omitempty"`
 	Attempts       []store.RunAttempt `json:"attempts,omitempty"`
 	ID             string             `json:"id"`
+	// BirthID is the run's store-owned birth identity (store.Run.BirthID):
+	// a run deleted and recreated under the same ID has another one. A
+	// client sends it back as the expected birth of the requests it makes
+	// about this run, and the server refuses a request whose run was
+	// replaced. Always present on the wire: "" is a historical run with no
+	// birth; an absent field is a server that predates birth exposure.
+	BirthID string `json:"birth_id"`
 	// TenantID is the team the run belongs to (ADR-103): the by-id
 	// resolution serves a run from its own team, and this field lets a
 	// caller - the studio's run console above all - disclose that the
@@ -125,8 +132,9 @@ type RunHeader struct {
 	// GRANTED log line stays the place where slot, tier and fingerprint are
 	// read together.
 	CredentialTiers []string `json:"credential_tiers,omitempty"`
-	// LLMIdleSince is set while the run executes no model-calling node —
-	// it then holds none of its credentials' concurrency slots.
+	// LLMIdleSince is set while the run executes no model-calling node.
+	// Observability: the run keeps its credentials' concurrency slots until
+	// it ends (store.Run.SpendsCredential).
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty"`
 	// SkippedCredReopensAt is when the earliest credential the launch's
 	// resolution passed over reopens — the instant a usage-window retry may
@@ -151,6 +159,8 @@ type RunHeader struct {
 	UpdatedAt  time.Time        `json:"updated_at"`
 	FinishedAt *time.Time       `json:"finished_at,omitempty"`
 	Error      string           `json:"error,omitempty"`
+	// PreEngineRefusal explains a refused delivery without inventing a failed status.
+	PreEngineRefusal *store.PreEngineRefusal `json:"pre_engine_refusal,omitempty"`
 	// FailureCode is Error's machine-readable classification (ADR-095);
 	// empty = unknown/legacy.
 	FailureCode store.FailureCode `json:"failure_code,omitempty"`
@@ -404,6 +414,21 @@ type RunSnapshot struct {
 	// additive and derived from the same run/events stream; callers may
 	// ignore it when they have not adopted the contract yet.
 	Diagnostic *DiagnosticProjection `json:"diagnostic,omitempty"`
+	// Viewer is the CALLER's effective standing for this run (ADR-148):
+	// attached by the server AFTER the deterministic build — the reducer
+	// stays a pure function of run+events, so the client's local per-seq
+	// rebuilds carry no viewer and the UI keeps the last server-set
+	// value. Nil on an auth-less (local) server: the UI keeps its
+	// unconditional affordances.
+	Viewer *RunViewer `json:"viewer,omitempty"`
+}
+
+// RunViewer is one caller's standing on one run: the role the ladder
+// judged (viewer reads, member acts) and the grant that carried it
+// (membership, org-admin-lineage, org-shared, super-admin).
+type RunViewer struct {
+	Role string `json:"role"`
+	Via  string `json:"via,omitempty"`
 }
 
 // SnapshotBuilder is a stateful incremental reducer: feed it events in
@@ -663,6 +688,7 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 		}
 	}
 	header := b.header
+	header.PreEngineRefusal = clonePreEngineRefusal(header.PreEngineRefusal)
 	header.Loops = b.buildLoopProgress()
 	header.BackendsUsed = b.buildBackendsUsed()
 	// Copied, not aliased: the clean-pass removal shifts the backing
@@ -1552,6 +1578,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Attempts:             r.Attempts,
 		SubbotChildren:       r.SubbotChildren,
 		ID:                   r.ID,
+		BirthID:              r.BirthID,
 		TenantID:             r.TenantID,
 		ExecutionContext:     r.ExecutionContext,
 		Admission:            r.Admission,
@@ -1577,6 +1604,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		UpdatedAt:            r.UpdatedAt,
 		FinishedAt:           r.FinishedAt,
 		Error:                r.Error,
+		PreEngineRefusal:     clonePreEngineRefusal(r.PreEngineRefusal),
 		FailureCode:          r.FailureCode,
 		EndReason:            r.EndReason,
 		Rewindable:           IsRewindableRun(r),
@@ -1637,8 +1665,23 @@ func worktreeAvailable(dir string) bool {
 // BuildSnapshot is the cold-read convenience: load run.json + events
 // from the store, then fold them into a RunSnapshot. Events are
 // streamed via ScanEvents to keep memory bounded for long runs.
+//
+// The scan carries the loaded run's observation — its header and the
+// tenant its store recorded (runObservation) — so a native store refuses
+// the events of a successor recreated under the same ID with a different
+// header or in another tenant instead of folding them into this run's
+// metadata. Caller intent is compared, never replaced, and nothing is
+// reloaded. A store that ignores its context gets no such guarantee.
 func BuildSnapshot(ctx context.Context, s store.RunStore, runID string) (*RunSnapshot, error) {
-	run, err := s.LoadRun(ctx, runID)
+	ctx, run, err := store.LoadRunWithValueFormat(ctx, s, runID)
+	if err != nil {
+		return nil, err
+	}
+	o, err := runObservation(run)
+	if err != nil {
+		return nil, err
+	}
+	ctx, err = store.BindRunObservation(ctx, o)
 	if err != nil {
 		return nil, err
 	}

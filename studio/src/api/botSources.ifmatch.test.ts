@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { deleteBotSourceFile, putBotSourceFile } from "./botSources";
+import { deleteBotSource, deleteBotSourceFile, putBotSourceFile } from "./botSources";
 
 // Every per-file write of a bundle presents the if-match token of the bundle
 // its caller read. Without one, `version: 0` reaches both store twins as "no
@@ -67,6 +67,29 @@ describe("deleteBotSourceFile", () => {
     const calls = mockFetch();
     await deleteBotSourceFile("team-1", "demo", "skills/a.md", "unchecked");
     expect(calls[0]!.url).toBe("/api/teams/team-1/bot-sources/demo/files/skills/a.md");
+    expect(calls[0]!.url).not.toContain("version");
+    expect(calls[0]!.url).not.toContain("bot_id");
+  });
+});
+
+describe("deleteBotSource", () => {
+  it("sends the if-match version and the bot's id, like the per-file delete", async () => {
+    const calls = mockFetch();
+    await deleteBotSource("team-1", "demo", 3, "bot-7");
+    expect(calls[0]!.init!.method).toBe("DELETE");
+    // Removing a WHOLE bot used to be the one write of the family with no
+    // if-match at all (#2689 item 4): the server read the row by slug and
+    // deleted whatever that read answered.
+    expect(calls[0]!.url).toBe(
+      "/api/teams/team-1/bot-sources/demo?version=3&bot_id=bot-7",
+    );
+    expect(calls[0]!.init!.body).toBeUndefined();
+  });
+
+  it("omits the query for an unchecked delete", async () => {
+    const calls = mockFetch();
+    await deleteBotSource("team-1", "demo", "unchecked");
+    expect(calls[0]!.url).toBe("/api/teams/team-1/bot-sources/demo");
     expect(calls[0]!.url).not.toContain("version");
     expect(calls[0]!.url).not.toContain("bot_id");
   });

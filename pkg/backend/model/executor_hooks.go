@@ -1,8 +1,10 @@
 package model
 
 import (
+	"errors"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -42,6 +44,18 @@ type DelegateInfo struct {
 	// called, OpenRouter's "anthropic/claude-sonnet-4.5" included. Empty
 	// when no element ran.
 	RouteModel string
+	// Provider is the provider of the route RouteModel names — the chain
+	// element's resolved hint, or the spec prefix's pin on claw (zai for
+	// `anthropic/glm-*`): the element that served, and on a skip, a failure
+	// or a schema re-ask the same element RouteModel names. The selected
+	// route is provider AND model bound together (#2772): published here,
+	// on the delegate_finished / delegate_error events and on NodesServed,
+	// so the run's record names whose endpoint answered (or was attempted)
+	// and never just the label it answered under — and the runner's
+	// credential-plan join reads it before any re-derivation from the model
+	// (#2288). Empty when the route deferred to the wire's default
+	// precedence.
+	Provider string
 	// ContextWindow is the effective model's context window in tokens.
 	// Zero when unknown.
 	ContextWindow int
@@ -78,8 +92,7 @@ type DelegateInfo struct {
 	Error                     error         // non-nil for OnDelegateError
 	// Attempt is the 1-based retry number on OnDelegateRetry. A schema
 	// re-ask also carries it on its own OnDelegateStarted /
-	// OnDelegateFinished / OnDelegateError (always 2: the first answer
-	// was attempt 1), beside Reask — so a reader can tell the re-ask's
+	// OnDelegateFinished / OnDelegateError (the first answer was attempt 1), beside Reask — so a reader can tell the re-ask's
 	// events from the delegation's, which fire once per node dispatch.
 	Attempt int
 	Delay   time.Duration // backoff delay (for OnDelegateRetry)
@@ -90,6 +103,9 @@ type DelegateInfo struct {
 	// itself pays (told apart from the announcement by their backoff delay
 	// and error); empty on every other delegation.
 	Reask string
+	// ReaskInChain marks a re-ask run inside the fallback chain, before the
+	// attempt's own delegate event.
+	ReaskInChain bool
 	// CostUSD is the delegation's LLM spend, read from the typed Result
 	// counters — the CLI's own figure when it
 	// reports one, else the token estimate. Zero means the price table did
@@ -106,6 +122,16 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
+	// FoldedSpend itemises the part of Tokens and CostUSD a fallback chain
+	// folded in from the routes it abandoned after they spent (chainOutcome's
+	// field of the same name), one slice per abandoned attempt, each under
+	// the labels of the route that spent it. The rest of the figure is the
+	// spend of the route this event names. A consumer that books per route
+	// or per credential books each slice on its own route: the event's
+	// labels name only where the chain ended — a claude_code primary that
+	// burned a lent subscription before a claw rung served on another
+	// provider leaves both slices in one figure.
+	FoldedSpend []SpendSlice
 	// Fingerprint is the provider fingerprint of the session behind this
 	// delegation ("anthropic-oauth", "facade:<slot>:<base url>", …), as the
 	// backend reported it. It is the ROUTING DECISION, taken before the
@@ -115,6 +141,29 @@ type DelegateInfo struct {
 	// source of the model_served_via_facade event on the FINISHED path
 	// only, which is what keeps that event's name true.
 	Fingerprint string
+	// Credential is what the route the figure ends on spent, as the process
+	// that built its call resolved it (delegate.Result.Credential, ADR-161
+	// decision 8): the event's credential keys. Zero for a backend whose arm
+	// has not landed.
+	Credential credroute.Spend
+}
+
+// SpendSlice is one abandoned chain route's spend inside a delegate event's
+// folded figure (DelegateInfo.FoldedSpend), labelled like the event's own
+// figure is: the backend that spent it, the route's model spec and the model
+// the backend reported, the provider word it served under
+// (servingProvider), and the session's credential label.
+type SpendSlice struct {
+	BackendName    string
+	RouteModel     string
+	EffectiveModel string
+	Provider       string
+	Fingerprint    string
+	// Credential is what the abandoned route spent (its result's
+	// delegate.Result.Credential): the slice's credential keys.
+	Credential credroute.Spend
+	Tokens     int
+	CostUSD    float64
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —
@@ -138,6 +187,7 @@ func delegateInfoFromResult(backendName string, result delegate.Result) Delegate
 		MaxOutputTokens:    result.MaxOutputTokens,
 		PeakInputTokens:    result.PeakInputTokens,
 		Fingerprint:        result.SessionFingerprint,
+		Credential:         result.Credential,
 	}
 }
 
@@ -231,13 +281,37 @@ type MCPServerDegradedInfo struct {
 	Err   error // why the tools were dropped
 }
 
+// TrustWithdrawalInfo is what a workspace its tenant did not write
+// (store.RunTrust) withdrew from a node — the payload of the
+// OnTrustWithdrawal hook and of store.EventWorkspaceTrustWithdrawal.
+type TrustWithdrawalInfo struct {
+	What   string   // "capabilities" | "memory" | "auto_memory" | "mcp_servers"
+	Items  []string // the names withdrawn, when there are names
+	Reason string
+}
+
+// ReasoningEffortAdjustment records a route's explicit effort substitution.
+// Source names the table that listed the route's accepted efforts —
+// `feed:<name>` (the run's feed table) or
+// compatgw.SourceReasoningEffortsEnv (the runner's env table).
+type ReasoningEffortAdjustment struct {
+	Model     string
+	Requested string
+	Applied   string
+	Source    string
+	Reason    string
+}
+
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
-	OnLLMRequest    func(nodeID string, info LLMRequestInfo)
-	OnLLMPrompt     func(nodeID string, systemPrompt string, userMessage string)
-	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
-	OnLLMRetry      func(nodeID string, info RetryInfo)
-	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
+	// OnStructuredExtraction settles a separate helper call, never node provenance.
+	OnStructuredExtraction    func(nodeID string, info StructuredExtractionInfo)
+	OnReasoningEffortAdjusted func(nodeID string, info ReasoningEffortAdjustment)
+	OnLLMRequest              func(nodeID string, info LLMRequestInfo)
+	OnLLMPrompt               func(nodeID string, systemPrompt string, userMessage string)
+	OnLLMResponse             func(nodeID string, info LLMResponseInfo)
+	OnLLMRetry                func(nodeID string, info RetryInfo)
+	OnLLMStepFinish           func(nodeID string, step LLMStepInfo)
 	// OnAssistantText fires with each chunk of assistant narration —
 	// mid-turn prose the conversation views render as the agent
 	// "talking" while it works. claude_code fires it per streamed
@@ -279,13 +353,30 @@ type EventHooks struct {
 	// (waiting → settled, or finalizing / abandoned). The store hook
 	// persists it as a delegate_background event, metered by the runner
 	// per backend/phase.
-	OnBackgroundWork func(nodeID string, info BackgroundWorkInfo)
-	OnLLMCompacted   func(nodeID string, info LLMCompactInfo)
-	OnToolStarted    func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall       func(nodeID string, info LLMToolCallInfo)
+	OnBackgroundWork     func(nodeID string, info BackgroundWorkInfo)
+	OnLLMCompacted       func(nodeID string, info LLMCompactInfo)
+	OnToolStarted        func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall           func(nodeID string, info LLMToolCallInfo)
+	toolObserversAudited bool
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
+	// OnToolNodeDeliverables fires for a direct tool node whose recipe
+	// SUCCEEDED, right after OnToolNodeResult, and hands over the files
+	// its output declared (`[iterion] attachment=`,
+	// `[iterion] preview_screenshot=`).
+	//
+	// It is the ONE hook here whose verdict reaches the node: it returns
+	// the loss of a file the author marked `required=true` (#2668), and
+	// the executor fails the node with it. Every other hook in this
+	// struct observes and cannot change an outcome — which is why this
+	// one is named for what it does rather than folded into the result
+	// hook, where a logging side effect would be able to fail a run.
+	//
+	// Composed hooks are joined, not short-circuited: both registrants
+	// deliver their files, and a non-nil verdict from EITHER fails the
+	// node.
+	OnToolNodeDeliverables func(nodeID string, output string) error
 
 	// Delegation lifecycle hooks.
 	// OnDelegateStarted fires before the backend is invoked. The payload
@@ -328,6 +419,13 @@ type EventHooks struct {
 	// execution instead, so its `fallbacks:` get their turn.
 	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
 
+	// OnTrustWithdrawal fires when a workspace its tenant did not write
+	// withdrew something the node would otherwise have been handed — a
+	// host capability, a memory space. The node runs on without it; the
+	// store hook persists it as workspace_trust_withdrawal, the one record
+	// of what an untrusted run's agent ran without.
+	OnTrustWithdrawal func(nodeID string, info TrustWithdrawalInfo)
+
 	// OnNodeFinished fires after a node's executor returns successfully.
 	// The output map carries iterion's conventional usage keys (`_tokens`,
 	// `_cost_usd`, `_model`) so observers (e.g. the Prometheus exporter)
@@ -346,6 +444,20 @@ func chainCb2[A, B any](a, b func(A, B)) func(A, B) {
 		return a
 	}
 	return func(x A, y B) { a(x, y); b(x, y) }
+}
+
+// chainCb2Err is the error-returning variant of chainCb2 (used by
+// OnToolNodeDeliverables). Both sides run — the second registrant's
+// files must still be handed over when the first lost a required one —
+// and both verdicts travel, joined rather than one chosen.
+func chainCb2Err[A, B any](a, b func(A, B) error) func(A, B) error {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	return func(x A, y B) error { return errors.Join(a(x, y), b(x, y)) }
 }
 
 // chainCb3 is the 3-argument variant of chainCb2 (used by OnLLMPrompt).
@@ -386,28 +498,38 @@ func chainCb6[A, B, C, D, E, F any](a, b func(A, B, C, D, E, F)) func(A, B, C, D
 // fails on the first field this list forgets.
 func ChainHooks(a, b EventHooks) EventHooks {
 	return EventHooks{
-		OnLLMRequest:         chainCb2(a.OnLLMRequest, b.OnLLMRequest),
-		OnLLMPrompt:          chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
-		OnLLMResponse:        chainCb2(a.OnLLMResponse, b.OnLLMResponse),
-		OnLLMRetry:           chainCb2(a.OnLLMRetry, b.OnLLMRetry),
-		OnLLMStepFinish:      chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
-		OnAssistantText:      chainCb2(a.OnAssistantText, b.OnAssistantText),
-		OnLLMTurnCapture:     chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
-		OnUsageCap:           chainCb2(a.OnUsageCap, b.OnUsageCap),
-		OnUsageProgress:      chainCb2(a.OnUsageProgress, b.OnUsageProgress),
-		OnOrchestrationStall: chainCb2(a.OnOrchestrationStall, b.OnOrchestrationStall),
-		OnBackgroundWork:     chainCb2(a.OnBackgroundWork, b.OnBackgroundWork),
-		OnLLMCompacted:       chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
-		OnToolStarted:        chainCb2(a.OnToolStarted, b.OnToolStarted),
-		OnToolCall:           chainCb2(a.OnToolCall, b.OnToolCall),
-		OnToolNodeResult:     chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
-		OnDelegateStarted:    chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished:   chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:      chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:      chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback:   chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:    chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnMCPServerDegraded:  chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
-		OnNodeFinished:       chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		toolObserversAudited:   a.auditedToolObservers() && b.auditedToolObservers(),
+		OnStructuredExtraction: chainCb2(a.OnStructuredExtraction, b.OnStructuredExtraction),
+		OnLLMRequest:           chainCb2(a.OnLLMRequest, b.OnLLMRequest),
+		OnLLMPrompt:            chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
+		OnLLMResponse:          chainCb2(a.OnLLMResponse, b.OnLLMResponse),
+		OnLLMRetry:             chainCb2(a.OnLLMRetry, b.OnLLMRetry),
+		OnLLMStepFinish:        chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
+		OnAssistantText:        chainCb2(a.OnAssistantText, b.OnAssistantText),
+		OnLLMTurnCapture:       chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
+		OnUsageCap:             chainCb2(a.OnUsageCap, b.OnUsageCap),
+		OnUsageProgress:        chainCb2(a.OnUsageProgress, b.OnUsageProgress),
+		OnOrchestrationStall:   chainCb2(a.OnOrchestrationStall, b.OnOrchestrationStall),
+		OnBackgroundWork:       chainCb2(a.OnBackgroundWork, b.OnBackgroundWork),
+		OnLLMCompacted:         chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
+		OnToolStarted:          chainCb2(a.OnToolStarted, b.OnToolStarted),
+		OnToolCall:             chainCb2(a.OnToolCall, b.OnToolCall),
+		OnToolNodeResult:       chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
+		OnToolNodeDeliverables: chainCb2Err(
+			a.OnToolNodeDeliverables, b.OnToolNodeDeliverables),
+		OnDelegateStarted:         chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:        chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:           chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:           chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:        chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnReasoningEffortAdjusted: chainCb2(a.OnReasoningEffortAdjusted, b.OnReasoningEffortAdjusted),
+		OnSessionDegraded:         chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded:       chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnTrustWithdrawal:         chainCb2(a.OnTrustWithdrawal, b.OnTrustWithdrawal),
+		OnNodeFinished:            chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
+}
+
+func (h EventHooks) auditedToolObservers() bool {
+	return h.toolObserversAudited || (h.OnToolStarted == nil && h.OnToolCall == nil)
 }

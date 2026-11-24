@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // The constructor inventory beside this test reads syntax trees, and its own
@@ -72,13 +74,18 @@ func TestEveryRawWatcherAddGoesThroughFswatch(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-test", "-export", "-deps", "-json", "./...")
 	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
+	// The inventory is go list's STDOUT; its stderr is where the toolchain
+	// reports what the environment decided — a read-only module cache, a
+	// vendor notice. Read through the combined stream, one such line lands
+	// inside the JSON and the decode below stops on "invalid character",
+	// which is a verdict on the machine, not on this module's Add calls.
+	out, stderr, err := proctest.SplitOutput(cmd)
 	if err != nil {
 		tail := out
 		if len(tail) > 2000 {
 			tail = tail[len(tail)-2000:]
 		}
-		t.Fatalf("go list -export did not answer, so no package was inventoried for raw watcher Add calls: %v\n%s", err, tail)
+		t.Fatalf("go list -export did not answer, so no package was inventoried for raw watcher Add calls: %v\nstderr: %q\nstdout tail: %s", err, stderr, tail)
 	}
 
 	type listedPackage struct {
@@ -99,7 +106,7 @@ func TestEveryRawWatcherAddGoesThroughFswatch(t *testing.T) {
 			if err == io.EOF {
 				break
 			}
-			t.Fatalf("go list answered %d bytes that did not decode, so the inventory stopped mid-tree: %v", len(out), err)
+			t.Fatalf("go list answered %d bytes of stdout that did not decode, so the inventory stopped mid-tree: %v\nstderr: %q", len(out), err, stderr)
 		}
 		pkgs = append(pkgs, p)
 		if p.Export != "" {

@@ -18,8 +18,9 @@ import (
 	"time"
 )
 
-// Share is one config-edit grant. The token is stored only as a salted hash
-// (+ last4/fingerprint for the operator UI); the plaintext is shown once at
+// Share is one config-edit grant. The token is stored only as an unsalted
+// SHA-256 hash — the token is 256 random bits, ADR-156 — (+ last4/fingerprint
+// for the operator UI); the plaintext is shown once at
 // create/rotate. Every field that shapes a write — RepoURL, RepoRef,
 // ConfigPath, AllowedPaths — is pinned here at mint time and never taken from
 // a request body, so a token holder can't retarget the file, branch or fields.
@@ -98,7 +99,17 @@ type Store interface {
 	Touch(ctx context.Context, id string, at time.Time) error
 	RecordDelivery(ctx context.Context, d *Delivery) error
 	ListDeliveries(ctx context.Context, shareID string, limit int) ([]*Delivery, error)
+	// ScrubActor clears the source IP and user agent of every delivery
+	// whose Actor is actor, in every tenant, and answers how many it
+	// changed; the rest of the row — the share, the instant, what changed
+	// — stays, under the actor's pseudonym. An account's erasure calls it
+	// with ActorUser(id). An empty actor is refused.
+	ScrubActor(ctx context.Context, actor string) (int64, error)
 }
+
+// ActorUser is the Delivery.Actor of an authenticated config-editor
+// session of the account userID.
+func ActorUser(userID string) string { return "user:" + userID }
 
 // ErrNotFound is returned by a Store when no share (or delivery) matches.
 var ErrNotFound = errors.New("configshare: not found")

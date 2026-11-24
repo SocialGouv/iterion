@@ -24,6 +24,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
+import { SecretNameField } from "@/components/shared/SecretNameField";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
 
@@ -107,7 +108,11 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         </InlineBanner>
       )}
 
-      <p className="text-caption text-fg-subtle -mb-2">
+      {/* No margin utility on this caption: under space-y the gap below a child
+          IS its bottom margin, so a margin class here replaces that gap
+          instead of trimming it — a negative one pulls the section heading
+          up over the text. */}
+      <p className="text-caption text-fg-subtle">
         Values injected into bots via{" "}
         <button
           type="button"
@@ -127,6 +132,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         />
         <SecretsTable
           caption="Team secrets"
+          scopeLabel="team"
           secrets={teamSecrets}
           loading={loading}
           emptyText={
@@ -148,6 +154,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         />
         <SecretsTable
           caption="My secrets"
+          scopeLabel="personal"
           secrets={mySecrets}
           loading={loading}
           emptyText="No personal secrets yet."
@@ -203,7 +210,17 @@ function SecretsSectionHeader({
         <p className="text-xs text-fg-subtle mt-0.5">{description}</p>
       </div>
       {onCreate && (
-        <Button size="sm" variant="primary" onClick={onCreate}>
+        // The tab renders this header twice — team secrets and personal
+        // secrets — so both buttons read "Add secret" and announce the same
+        // thing. The accessible name carries the section it adds to; the
+        // visible word stays first, so the name contains the label
+        // (SC 2.5.3) and the visible text is untouched.
+        <Button
+          size="sm"
+          variant="primary"
+          aria-label={`Add secret (${title})`}
+          onClick={onCreate}
+        >
           Add secret
         </Button>
       )}
@@ -213,6 +230,7 @@ function SecretsSectionHeader({
 
 function SecretsTable({
   caption,
+  scopeLabel,
   secrets,
   loading,
   emptyText,
@@ -221,6 +239,12 @@ function SecretsTable({
   onDelete,
 }: {
   caption: string;
+  /**
+   * The scope this table's rows belong to, for their actions' accessible
+   * names. The tab renders TWO of these tables and one secret name can
+   * exist in both, so the name alone leaves two rows announcing "Rotate".
+   */
+  scopeLabel: string;
   secrets: GenericSecretView[];
   loading: boolean;
   emptyText: string;
@@ -257,13 +281,21 @@ function SecretsTable({
             <Td align="right" className="space-x-1 whitespace-nowrap">
               {canManage && (
                 <>
-                  <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
+                  {/* Visible word first, so the name contains the label
+                      (SC 2.5.3); the visible text is untouched. */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Rotate ${s.name} (${scopeLabel})`}
+                    onClick={() => onRotate(s)}
+                  >
                     Rotate
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     className="text-danger"
+                    aria-label={`Delete ${s.name} (${scopeLabel})`}
                     onClick={() => onDelete(s)}
                   >
                     Delete
@@ -334,19 +366,7 @@ function CreateSecretDialog({
         </InlineBanner>
       )}
       <div className="space-y-3 text-sm">
-        <label className="block">
-          <div className="text-xs text-fg-muted mb-1">Name</div>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            error={name !== "" && !v.ok}
-            placeholder="GITLAB_TOKEN"
-            autoFocus
-          />
-          <div className={`text-xs mt-1 ${v.ok ? "text-fg-muted" : "text-danger"}`}>
-            {v.ok ? "OK" : v.error ?? "—"}
-          </div>
-        </label>
+        <SecretNameField value={name} onChange={setName} placeholder="GITLAB_TOKEN" />
         <label className="block">
           <div className="text-xs text-fg-muted mb-1">Secret value</div>
           <Input
@@ -354,6 +374,9 @@ function CreateSecretDialog({
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder="paste here — never shown again"
+            // "new-password", not "off": a browser ignores "off" on a password
+            // input and fills the saved login's password into it.
+            autoComplete="new-password"
           />
         </label>
       </div>
@@ -417,6 +440,9 @@ function RotateSecretDialog({
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
           placeholder="paste new value"
+          // "new-password", not "off": a browser ignores "off" on a password
+          // input and fills the saved login's password into it.
+          autoComplete="new-password"
           autoFocus
         />
       </label>

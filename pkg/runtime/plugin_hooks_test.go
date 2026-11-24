@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // writeHookyPlugin installs an enabled plugin "hooky" under ITERION_HOME that
@@ -68,7 +69,7 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 	writeHookyPlugin(t, home, true)
 
 	// First merge: user hook + plugin hook = 2.
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge 1: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 2 {
@@ -76,7 +77,7 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 	}
 
 	// Second merge (resume/re-run): must NOT duplicate — still 2.
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge 2: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 2 {
@@ -85,7 +86,7 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 
 	// Disable the plugin, merge again: plugin hook removed, user hook kept = 1.
 	writeHookyPlugin(t, home, false)
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge 3: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 1 {
@@ -109,7 +110,7 @@ func TestMergePluginHooks_MalformedSettingsRefusesRewrite(t *testing.T) {
 	}
 	writeHookyPlugin(t, home, true)
 
-	if _, err := mergePluginHooks(ws, nil); err == nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err == nil {
 		t.Fatal("want error for malformed settings.json, got nil")
 	}
 	got, err := os.ReadFile(settingsPath)
@@ -118,6 +119,110 @@ func TestMergePluginHooks_MalformedSettingsRefusesRewrite(t *testing.T) {
 	}
 	if !bytes.Equal(got, malformed) {
 		t.Fatalf("settings.json was rewritten despite parse error:\n got: %s\nwant: %s", got, malformed)
+	}
+}
+
+// A plugin registry that cannot be LOADED (here: a corrupt plugins.yaml) is
+// not an empty hook set. The merge must skip the pass entirely: no error (a
+// run never fails on ambient plugins), the previously injected hooks stay in
+// settings.json byte-exact, the sidecar keeps recording them, and the
+// returned blob is nil. Pre-fix the load failure was swallowed into a nil
+// blob and the merge proceeded: it stripped the prior injection from the
+// operator-visible file and rewrote the sidecar to null, so both backends —
+// which read the file on the trusted lane — ran without the operator's
+// hooks, guards included, until the registry healed.
+//
+// The contrast leg pins the other side of the distinction: once the registry
+// loads again and the plugin is genuinely DISABLED, the same merge strips —
+// the skip above is tied to the load error, not to a nil blob.
+//
+// Mutation: swallowing the load error back into a nil blob reddens the
+// byte-exact and sidecar assertions on their own terms.
+func TestMergePluginHooks_UnloadableRegistrySkipsWithoutStripping(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	ws := t.TempDir()
+	settingsPath := filepath.Join(ws, ".claude", "settings.json")
+	sidecarPath := filepath.Join(ws, ".claude", bundleMirrorMarkerDir, pluginHooksSidecar)
+
+	writeHookyPlugin(t, home, true)
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
+		t.Fatalf("run-start merge: %v", err)
+	}
+	if n := preToolUseLen(t, settingsPath); n != 1 {
+		t.Fatalf("after inject: PreToolUse = %d, want 1", n)
+	}
+	settingsBefore, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecarBefore, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("the first merge records its injection in the sidecar: %v", err)
+	}
+
+	// The registry breaks (a corrupt state file fails plugin.Load).
+	if err := os.WriteFile(filepath.Join(home, "plugins.yaml"), []byte("enabled: [broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blob, complete, err := mergePluginHooks(ws, testTrustedPass(t), nil)
+	if err != nil {
+		t.Fatalf("a broken registry is a soft skip, not an error: %v", err)
+	}
+	if !complete {
+		t.Error("complete = false on a registry load failure, want true (a skipped hooks merge says nothing about skill orphans)")
+	}
+	if len(blob) != 0 {
+		t.Errorf("a skipped merge hands no record, got %v", blob)
+	}
+	settingsAfter, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(settingsBefore, settingsAfter) {
+		t.Fatalf("the load failure stripped the prior injection from settings.json:\n got: %s\nwant: %s", settingsAfter, settingsBefore)
+	}
+	sidecarAfter, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("the sidecar must survive a skipped merge: %v", err)
+	}
+	if !bytes.Equal(sidecarBefore, sidecarAfter) {
+		t.Fatalf("the load failure rewrote the sidecar:\n got: %s\nwant: %s", sidecarAfter, sidecarBefore)
+	}
+
+	// Contrast: the registry loads again, the plugin is DISABLED — the same
+	// merge strips the prior injection and rewrites the sidecar.
+	writeHookyPlugin(t, home, false)
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
+		t.Fatalf("merge after disable: %v", err)
+	}
+	if n := preToolUseLen(t, settingsPath); n != 0 {
+		t.Fatalf("after disable: PreToolUse = %d, want 0 (a genuinely empty hook set strips)", n)
+	}
+}
+
+// On the untrusted lane the same load failure answers nil from memory and
+// writes nothing — the floor holds regardless of the registry's health.
+func TestMergePluginHooks_ForkLaneToleratesAnUnloadableRegistry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	writeHookyPlugin(t, home, true)
+	if err := os.WriteFile(filepath.Join(home, "plugins.yaml"), []byte("enabled: [broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	blob, complete, err := mergePluginHooks(ws, testMirrorPass(t, ws, store.RunTrustFork), nil)
+	if err != nil {
+		t.Fatalf("a broken registry is a soft skip, not an error: %v", err)
+	}
+	if !complete {
+		t.Error("complete = false on a registry load failure, want true")
+	}
+	if len(blob) != 0 {
+		t.Errorf("a skipped merge hands no record, got %v", blob)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, ".claude")); err == nil {
+		t.Error("the fork lane wrote into an untrusted checkout")
 	}
 }
 
@@ -136,7 +241,7 @@ func TestMergePluginHooks_NullSettings(t *testing.T) {
 	}
 	writeHookyPlugin(t, home, true)
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge over null settings: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 1 {
@@ -223,7 +328,7 @@ func hooksResumeFixture(t *testing.T) (home, ws, settingsPath string) {
 	}
 	addCommit(t, ws, filepath.Join(".claude", "settings.json"), "{}\n", "track the repo's own settings")
 	writeHookyPlugin(t, home, true)
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("run-start merge: %v", err)
 	}
 	return home, ws, settingsPath
@@ -241,11 +346,11 @@ func TestMergePluginHooksOnResumeKeepsAnAgentEditAsWork(t *testing.T) {
 	agentEditSettings(t, settingsPath)
 
 	// The resume: same hook set, merge replayed.
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +378,7 @@ func TestMergePluginHooksNoOpMergeDoesNotTouchTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
@@ -284,7 +389,7 @@ func TestMergePluginHooksNoOpMergeDoesNotTouchTheFile(t *testing.T) {
 	if !st1.ModTime().Equal(st2.ModTime()) {
 		t.Fatalf("a no-op merge rewrote settings.json (mtime %v → %v)", st1.ModTime(), st2.ModTime())
 	}
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +407,7 @@ func TestMergePluginHooksChangedHooksPlusAgentEditRewritesWithoutRecording(t *te
 	agentEditSettings(t, settingsPath)
 	addPostToolUseHook(t, home)
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
@@ -312,7 +417,7 @@ func TestMergePluginHooksChangedHooksPlusAgentEditRewritesWithoutRecording(t *te
 	if !settingsHasPermissions(t, settingsPath) {
 		t.Fatal("the agent's edit was clobbered by the merge")
 	}
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,14 +434,14 @@ func TestMergePluginHooksChangedHooksWithoutAgentEditRecords(t *testing.T) {
 	home, ws, settingsPath := hooksResumeFixture(t)
 	addPostToolUseHook(t, home)
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
 	if n := hookLen(t, settingsPath, "PostToolUse"); n != 1 {
 		t.Fatalf("the changed hook set was not merged: PostToolUse = %d, want 1", n)
 	}
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}

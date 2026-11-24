@@ -327,37 +327,66 @@ func verdictMissingCaps(caps []string, v *publishReviewVerdict) []string {
 // gesture records, with the mode that claimed to drive it.
 const auditActionVerdictGesture = "forge.verdict.gesture"
 
-// forgePublishCapabilitiesFor resolves the merge-gate capabilities a bot's
-// manifest declares, as grant capability names. A manifest that cannot be
-// resolved (an inline .bot, a loose bundle) declares nothing: empty is the
-// fail-closed default, and a launch that expected gestures learns it from
-// the verdict_result refusal instead of a launch failure.
-func (s *Server) forgePublishCapabilitiesFor(ctx context.Context, teamID, botID string) []string {
-	m := s.botManifestFor(ctx, teamID, strings.TrimSpace(botID))
-	if m == nil || m.Forge == nil {
+// pullRequestGrantCapabilitiesFor resolves the merge-gate gestures a
+// pull-request launch's grant carries: the ones declared by the manifest of
+// the bundle teamID's launch of botID runs (servingBotManifest — a team row
+// without a manifest declares nothing, it never inherits a same-slug
+// catalogue manifest), as grant capability names. A manifest that cannot be
+// resolved (an inline .bot, a loose bundle, a store that cannot answer)
+// declares nothing: empty is the fail-closed default, and a launch that
+// expected gestures learns it from the verdict_result refusal instead of a
+// launch failure.
+//
+// The workflow dispatch is never one of them, whatever the manifest
+// declares: it is minted at a repo-bound schedule's tick alone
+// (scheduledDispatchGrant), bound to the workflow the schedule row names. A
+// pull-request launch's vars are written by whoever launches it — a board
+// card, an API launch — so a dispatch capability there would let them name
+// any workflow of the repository.
+func (s *Server) pullRequestGrantCapabilitiesFor(ctx context.Context, teamID, botID string) []string {
+	m, err := s.servingBotManifest(ctx, teamID, strings.TrimSpace(botID))
+	if err != nil {
+		s.logWarn("forge publish: the manifest of bot %q for team %s could not be resolved — the grant carries no merge-gate gesture: %v", botID, teamID, err)
 		return nil
 	}
-	scopes := m.Forge.TokenScopes
-	atWrite := func(key string) bool {
-		switch scopes[key] {
-		case "write", "admin":
-			return true
-		default:
-			return false
-		}
+	return mergeGateCapabilitiesOf(m)
+}
+
+// manifestScopeAtWrite reports whether a manifest declares the forge scope
+// key at write (or admin) — the level that mints a grant capability.
+func manifestScopeAtWrite(m *bundle.Manifest, key string) bool {
+	if m == nil || m.Forge == nil {
+		return false
 	}
+	switch m.Forge.TokenScopes[key] {
+	case "write", "admin":
+		return true
+	default:
+		return false
+	}
+}
+
+// mergeGateCapabilitiesOf maps a manifest's merge-gate scopes onto the
+// verdict block's grant capabilities, sorted. Nil manifest, nil set.
+func mergeGateCapabilitiesOf(m *bundle.Manifest) []string {
 	var caps []string
-	if atWrite(bundle.ForgeScopeApprovals) {
+	if manifestScopeAtWrite(m, bundle.ForgeScopeApprovals) {
 		caps = append(caps, publishCapApprove)
 	}
-	if atWrite(bundle.ForgeScopeMerge) {
+	if manifestScopeAtWrite(m, bundle.ForgeScopeMerge) {
 		caps = append(caps, publishCapMerge)
 	}
-	if atWrite(bundle.ForgeScopeReviewers) {
+	if manifestScopeAtWrite(m, bundle.ForgeScopeReviewers) {
 		caps = append(caps, publishCapReviewers)
 	}
 	sort.Strings(caps)
 	return caps
+}
+
+// declaresWorkflowDispatch reports whether a manifest opts into the
+// workflow dispatch (bundle.ForgeScopeActions at write).
+func declaresWorkflowDispatch(m *bundle.Manifest) bool {
+	return manifestScopeAtWrite(m, bundle.ForgeScopeActions)
 }
 
 // publishMutationKillSwitchVar is the operator launch-var that strips every

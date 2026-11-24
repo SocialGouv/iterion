@@ -274,7 +274,9 @@ export default function UsersAdminPage() {
                     <Button size="sm" variant="ghost" onClick={() => setOpenUserID(u.id)}>
                       Access &amp; origin
                     </Button>
-                    {u.status === "disabled" ? (
+                    {/* An erased account is a pseudonym: the server refuses
+                        every write below (409 user_erased), so none is offered. */}
+                    {u.status === "erased" ? null : u.status === "disabled" ? (
                       <Button size="sm" variant="ghost" onClick={() => setConfirm({ user: u, action: "enable" })}>
                         Re-enable
                       </Button>
@@ -288,6 +290,8 @@ export default function UsersAdminPage() {
                         Disable
                       </Button>
                     )}
+                    {u.status !== "erased" && (
+                      <>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -324,6 +328,8 @@ export default function UsersAdminPage() {
                       >
                         Grant super-admin
                       </Button>
+                    )}
+                      </>
                     )}
                   </Td>
                 </Tr>
@@ -384,6 +390,7 @@ function StatusPill({ status }: { status: UserStatus }) {
     active: "success",
     disabled: "danger",
     pending_password_change: "warning",
+    erased: "neutral",
   };
   return <Badge variant={variant[status] ?? "neutral"}>{status}</Badge>;
 }

@@ -218,15 +218,6 @@ func compileSnippet(s docfences.Fence) (parseErrs, compileErrs []string, err err
 		if d.Severity != SeverityError {
 			continue
 		}
-		// C018 (`model:`/`backend:` missing) is waived when the HOST can
-		// auto-detect a credential (compile.go canAutoResolveBackend), so
-		// its verdict differs between a laptop with a Claude login and CI
-		// with none — the one compile check that reads the environment.
-		// The guard cannot judge auto-detection, and an example that
-		// relies on it is legitimate, so it never counts here.
-		if d.Code == DiagMissingModelOrBackend {
-			continue
-		}
 		compileErrs = append(compileErrs, d.Error())
 	}
 	return parseErrs, compileErrs, nil

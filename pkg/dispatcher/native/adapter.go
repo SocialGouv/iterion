@@ -335,6 +335,10 @@ func (a *Adapter) SetLastRun(id, runID, workdir string) error {
 // commands.go) resolves — without this pass-through the seam falls
 // through silently and no card ever gets its awaiting-input badge (the
 // SetLastRun regression above, avoided here).
+func (a *Adapter) SetRunOutcome(id, runID, status, errMsg, errCode string, at time.Time) error {
+	return a.store.SetRunOutcome(id, runID, status, errMsg, errCode, at)
+}
+
 func (a *Adapter) SetAwaitingInput(id string, v bool) error {
 	return a.store.SetAwaitingInput(id, v)
 }

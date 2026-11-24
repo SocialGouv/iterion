@@ -84,7 +84,7 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   before retrying. CI is unaffected: `version.yml` runs on a fresh checkout
   and nothing was committed or pushed.
 - **The cut pins its own corpus edits.** internal/mdcode's committed-reading
-  golden pins every tracked `.md`, `.yaml` and `.yml`, and the cut edits
+  golden pins every tracked `.md`, `.yaml` and `.yml` git does not mark `linguist-generated`, and the cut edits
   `CHANGELOG.md` and the chart, so the same slot then runs
   `go run ./cmd/corpus-reading --cut`
   ([internal/corpusreading](../../../internal/corpusreading)): it re-pins

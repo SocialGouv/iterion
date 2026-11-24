@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { Suspense } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Router } from "wouter";
@@ -60,6 +60,15 @@ function mountConsole(path: string): void {
     </QueryClientProvider>,
   );
 }
+
+// The screens are lazy routes: without this, the first case pays their
+// module transform inside findBy's window — a cost that measures the runner,
+// not the console. Loaded once up front (the hook's own budget, not an
+// assertion's), every case decides on its render alone.
+const adminScreens = import.meta.glob("./**/*Page.tsx");
+beforeAll(async () => {
+  await Promise.all(Object.values(adminScreens).map((load) => load()));
+}, 120_000);
 
 beforeEach(() => {
   // A request that never answers, so no screen depends on a payload shape to

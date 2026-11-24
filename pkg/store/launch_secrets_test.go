@@ -2,7 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -76,6 +79,45 @@ func TestRedactLaunchVars_ReturnsTheSameMapWhenNothingIsSecret(t *testing.T) {
 		t.Fatal("a map without a server-minted var was copied")
 	}
 	if out := RedactLaunchVars(nil); out != nil {
+		t.Fatalf("nil vars = %v, want nil", out)
+	}
+}
+
+// The string-map twin of the mask, for the vars a board card carries
+// (native.Issue.BotArgs): a card written before the write boundary dropped the
+// grant can still hold a live bearer, and every surface handing that card out
+// shows the mask instead.
+func TestRedactLaunchStringVars_MasksTheGrantAndNeverTouchesTheRecord(t *testing.T) {
+	record := map[string]string{"loop_cap": "5", ForgePublishTokenVar: publishTokenSentinel}
+	out := RedactLaunchStringVars(record)
+
+	if got := out[ForgePublishTokenVar]; got != RedactedLaunchVar {
+		t.Fatalf("masked %s = %q, want %q", ForgePublishTokenVar, got, RedactedLaunchVar)
+	}
+	if out["loop_cap"] != "5" {
+		t.Fatalf("masking changed the other vars: %v", out)
+	}
+	if record[ForgePublishTokenVar] != publishTokenSentinel {
+		t.Fatalf("the record's grant became %q — the launch lane refusing a crossing reads it there", record[ForgePublishTokenVar])
+	}
+	out["decorated"] = "yes"
+	if _, ok := record["decorated"]; ok {
+		t.Fatal("the masked map aliases the record")
+	}
+
+	// An empty value grants nothing: masking it would claim a grant was
+	// minted where a card withdrew one.
+	withdrawn := map[string]string{ForgePublishTokenVar: ""}
+	if got := RedactLaunchStringVars(withdrawn)[ForgePublishTokenVar]; got != "" {
+		t.Fatalf("an empty grant var reads %q, want it empty", got)
+	}
+
+	// Nothing to mask costs nothing: the same map comes back.
+	plain := map[string]string{"loop_cap": "5"}
+	if out := RedactLaunchStringVars(plain); reflect.ValueOf(out).Pointer() != reflect.ValueOf(plain).Pointer() {
+		t.Fatal("a map without a server-minted var was copied")
+	}
+	if out := RedactLaunchStringVars(nil); out != nil {
 		t.Fatalf("nil vars = %v, want nil", out)
 	}
 }
@@ -164,6 +206,23 @@ func TestRedactCheckpoint_MasksACopyAndKeepsTheResumeState(t *testing.T) {
 	}
 }
 
+func TestRedactRunForOutputKeepsApprovalAuthorityPrivate(t *testing.T) {
+	r := &Run{
+		ToolApprovalClaim: &ToolApprovalClaim{InteractionID: "approval-1", Token: "fixture-claim"},
+		Checkpoint: &Checkpoint{
+			InteractionID:          "approval-1",
+			BackendPermissionInput: json.RawMessage(`{"label":"cyan"}`),
+		},
+	}
+	out := RedactRunForOutput(r)
+	if out.ToolApprovalClaim != nil || len(out.Checkpoint.BackendPermissionInput) != 0 {
+		t.Fatal("public copy retained internal approval authority")
+	}
+	if out.Checkpoint.InteractionID != "approval-1" || r.ToolApprovalClaim == nil || len(r.Checkpoint.BackendPermissionInput) == 0 {
+		t.Fatal("redaction removed the public interaction ID or altered the persisted record")
+	}
+}
+
 // A whole-record dump masks both places the grant lives, whichever of the
 // two holds it, and leaves the record it was given intact.
 func TestRedactRunForOutput_MasksInputsAndCheckpointOnACopy(t *testing.T) {
@@ -230,5 +289,95 @@ func TestDropServerMintedVarsKeepsAnExplicitWithdrawal(t *testing.T) {
 	pinned := map[string]string{ForgePublishTokenVar: "a-token-of-its-own", "reviewer": "alice"}
 	if _, ok := DropServerMintedVars(pinned)[ForgePublishTokenVar]; ok {
 		t.Error("DropServerMintedVars kept a token a client sent")
+	}
+}
+
+// The environment is how a server-minted secret reaches a child process
+// iterion spawns: its name reads as a credential, so every surface that
+// classifies env names by shape already treats it as one.
+func TestServerMintedSecretEnvName_ReadsAsACredential(t *testing.T) {
+	name := ServerMintedSecretEnvName(ForgePublishTokenVar)
+	if name != "ITERION_LAUNCH_SECRET_FORGE_PUBLISH_TOKEN" {
+		t.Fatalf("ServerMintedSecretEnvName = %q — the spawning and the reading side read the same name or the grant is lost", name)
+	}
+	if !IsSecretEnvName(name) {
+		t.Error("the carriage env name does not read as a secret: the guard would not redact its value")
+	}
+}
+
+// The carriage is symmetric: what a launcher puts in a child's environment is
+// what the child's launch takes back out — and taking it out REMOVES it, so
+// no tool process the run spawns inherits the grant.
+func TestServerMintedSecretEnv_CarriesTheGrantAndTheChildTakesItOut(t *testing.T) {
+	vars := map[string]string{
+		ForgePublishTokenVar: publishTokenSentinel,
+		ForgePublishURLVar:   "https://iterion.example/publish",
+		"reviewer":           "alice",
+	}
+	argv, env := ServerMintedSecretEnv(vars)
+	want := ServerMintedSecretEnvName(ForgePublishTokenVar) + "=" + publishTokenSentinel
+	if len(env) != 1 || env[0] != want {
+		t.Fatalf("ServerMintedSecretEnv env = %q, want exactly %q — an endpoint is not a credential and rides the argv", env, want)
+	}
+	if _, ok := argv[ForgePublishTokenVar]; ok {
+		t.Error("the grant is on BOTH channels: the argv half still names it")
+	}
+	for _, name := range []string{ForgePublishURLVar, "reviewer"} {
+		if argv[name] != vars[name] {
+			t.Errorf("argv half lost %s (%q): the child would re-resolve it from the workflow", name, argv[name])
+		}
+	}
+
+	envName := ServerMintedSecretEnvName(ForgePublishTokenVar)
+	t.Setenv(envName, publishTokenSentinel)
+	got := TakeServerMintedSecretVarsFromEnv()
+	if got[ForgePublishTokenVar] != publishTokenSentinel {
+		t.Fatalf("TakeServerMintedSecretVarsFromEnv = %v, want the grant under %s", got, ForgePublishTokenVar)
+	}
+	if v, ok := os.LookupEnv(envName); ok {
+		t.Errorf("%s is still set after the take (%d bytes): every tool process the run spawns would inherit the grant", envName, len(v))
+	}
+	if again := TakeServerMintedSecretVarsFromEnv(); len(again) != 0 {
+		t.Errorf("a second take returned %v, want nothing", again)
+	}
+}
+
+// An empty value is a withdrawal, not a grant: it never takes the credential
+// channel, so the child reads it as the explicit "do not publish" it is.
+func TestServerMintedSecretEnv_SkipsAWithdrawal(t *testing.T) {
+	argv, env := ServerMintedSecretEnv(map[string]string{ForgePublishTokenVar: "  "})
+	if len(env) != 0 {
+		t.Fatalf("ServerMintedSecretEnv env = %q for a withdrawal, want nothing", env)
+	}
+	if _, ok := argv[ForgePublishTokenVar]; !ok {
+		t.Error("the withdrawal left the argv: the child would inherit a live grant instead of the operator's explicit none")
+	}
+	envName := ServerMintedSecretEnvName(ForgePublishTokenVar)
+	t.Setenv(envName, "")
+	if got := TakeServerMintedSecretVarsFromEnv(); len(got) != 0 {
+		t.Fatalf("TakeServerMintedSecretVarsFromEnv = %v for an empty value, want nothing", got)
+	}
+	if _, ok := os.LookupEnv(envName); ok {
+		t.Error("an empty carriage value was left in the environment")
+	}
+}
+
+// Every server-minted launch var is either the bearer (a secret var) or an
+// endpoint it is presented to (an endpoint var), and nothing else: the run's
+// secret guard scopes the bearer to the endpoint vars' hosts, so an endpoint
+// left off that list is one the egress gate refuses the grant toward — the
+// dispatch endpoint (#3130) is the latest to join.
+func TestServerMintedLaunchVarsAreTheBearerAndItsEndpoints(t *testing.T) {
+	var union []string
+	union = append(union, ServerMintedSecretVars...)
+	union = append(union, ServerMintedEndpointVars[:]...)
+	sort.Strings(union)
+	want := append([]string(nil), ServerMintedLaunchVars[:]...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(union, want) {
+		t.Fatalf("secret vars ∪ endpoint vars = %v, want exactly the minted vars %v", union, want)
+	}
+	if !slices.Contains(ServerMintedEndpointVars[:], ForgeDispatchURLVar) {
+		t.Fatalf("%s is not an endpoint var", ForgeDispatchURLVar)
 	}
 }

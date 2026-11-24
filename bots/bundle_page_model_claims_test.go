@@ -111,11 +111,10 @@ func declaredModelsByBundle(t *testing.T) map[string]map[string]bool {
 // accusing a correct sentence would teach the opposite.
 //
 // An override example is not a claim about what the run spends: a page that
-// spells `ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol` documents the operator's
-// explicit choice, which the `.bot` need not declare (review-pr's converge is
-// `${ITERION_VIBE_MODEL_EMIT:-claude-opus-5-5}` while its README offers the
-// OpenAI route). The value of a `VAR=value` spelling is therefore masked
-// before the ids are tried; prose keeps its claim.
+// spells `NAME=value` (a launch var, a bot-var override) documents the
+// operator's explicit choice, which the `.bot` need not declare. The value of
+// a `VAR=value` spelling is therefore masked before the ids are tried; prose
+// keeps its claim.
 var envAssignedValue = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*=\S+`)
 
 func TestNoBundleReadmeNamesAModelTheBundleDoesNotDeclare(t *testing.T) {

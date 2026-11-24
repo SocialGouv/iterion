@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
 	"sort"
 	"strings"
@@ -18,11 +17,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 
+	"path/filepath"
+
+	"github.com/SocialGouv/iterion/internal/credheader"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
@@ -34,6 +38,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -59,6 +64,15 @@ type ClawBackend struct {
 	// channel for (e.g. "this node is about to spend your subscription's
 	// extra-usage balance"). nil silences them. See [WithClawLogger].
 	logger *iterlog.Logger
+	// slashCommandCeiling is the `command` tool's body/expansion ceiling to
+	// forward to a sandboxed crossing, in the registration's vocabulary (0
+	// = the built-in default, negative = unbounded). It is resolved by
+	// whoever CONSTRUCTS the backend — the host from its dial, the
+	// in-container runner from the task it was handed — never read from the
+	// env where the crossing is dispatched: the runner's environment is a
+	// repository's devcontainer, which must not get to widen a bound the
+	// operator set. See [WithSlashCommandCeiling].
+	slashCommandCeiling int
 }
 
 func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
@@ -66,6 +80,18 @@ func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
 // WithClawLogger attaches a leveled logger for operator-facing warnings.
 func WithClawLogger(l *iterlog.Logger) ClawBackendOption {
 	return func(b *ClawBackend) { b.logger = l }
+}
+
+// WithSlashCommandCeiling sets the `command` tool's ceiling this backend
+// forwards to a sandboxed crossing (delegate.IOTask.SlashCommandMaxBytes),
+// in the registration's vocabulary: the host resolves it from the dial
+// (SlashCommandMaxBytesForRegistry), and an in-container runner passes on
+// the one it received, so a nested crossing carries the operator's bound
+// rather than whatever the container's own environment says. Unset — 0 —
+// leaves the runner on the built-in default, which is what a launcher that
+// predates the field sends.
+func WithSlashCommandCeiling(maxBytes int) ClawBackendOption {
+	return func(b *ClawBackend) { b.slashCommandCeiling = maxBytes }
 }
 
 // WithMemoryStore injects a non-default workspace-memory backend
@@ -116,12 +142,17 @@ func (b *StoreInboxBinder) Bind(ctx context.Context, runID string) InboxHook {
 	if b == nil || b.Store == nil || runID == "" {
 		return nil
 	}
+	binding, bound := store.RunDataBindingFrom(ctx)
+	scoped, _ := b.Store.(store.ScopedQueuedInboxVersioner)
 	return &storeInboxHook{
-		store:      b.Store,
-		publish:    b.Publish,
-		runID:      runID,
-		activeNode: NodeIDFromContext(ctx),
-		versioner:  asInboxVersioner(b.Store),
+		binding:         binding,
+		bound:           bound,
+		scopedVersioner: scoped,
+		store:           b.Store,
+		publish:         b.Publish,
+		runID:           runID,
+		activeNode:      NodeIDFromContext(ctx),
+		versioner:       asInboxVersioner(b.Store),
 	}
 }
 
@@ -138,14 +169,17 @@ func asInboxVersioner(s store.RunStore) store.QueuedInboxVersioner {
 // stable home for the cross-iteration state (last delivered IDs +
 // last observed inbox version) so the closures stay garbage-free.
 type storeInboxHook struct {
-	store         store.RunStore
-	publish       func(store.Event)
-	runID         string
-	activeNode    string
-	versioner     store.QueuedInboxVersioner
-	lastDelivered []string
-	lastVersion   uint64
-	versionSeen   bool
+	store           store.RunStore
+	publish         func(store.Event)
+	runID           string
+	activeNode      string
+	versioner       store.QueuedInboxVersioner
+	scopedVersioner store.ScopedQueuedInboxVersioner
+	binding         store.RunDataBinding
+	bound           bool
+	lastDelivered   []string
+	lastVersion     uint64
+	versionSeen     bool
 }
 
 // Drain transitions queued→delivered and returns texts in FIFO order.
@@ -153,23 +187,59 @@ type storeInboxHook struct {
 // fast-skips loading the JSONL when the counter is unchanged — the
 // common case for a busy tool loop on a run with no queued messages.
 func (h *storeInboxHook) Drain(ctx context.Context) []string {
-	if h.versioner != nil {
-		v := h.versioner.QueuedInboxVersion(h.runID)
-		if h.versionSeen && v == h.lastVersion {
+	ctx, err := h.operationContext(ctx)
+	if err != nil {
+		return nil
+	}
+	var version uint64
+	versioned := false
+	if h.scopedVersioner != nil {
+		version, err = h.scopedVersioner.QueuedInboxVersionContext(ctx, h.runID)
+		if err != nil {
 			return nil
 		}
-		h.lastVersion = v
-		h.versionSeen = true
+		versioned = true
+	} else if _, bound := store.RunDataBindingFrom(ctx); !bound && h.versioner != nil {
+		version = h.versioner.QueuedInboxVersion(h.runID)
+		versioned = true
 	}
-	texts, ids, _ := store.DrainPendingForNode(ctx, h.store, h.publish, h.runID, h.activeNode)
+	if versioned && h.versionSeen && version == h.lastVersion {
+		return nil
+	}
+	texts, ids, err := store.DrainPendingForNode(ctx, h.store, h.publish, h.runID, h.activeNode)
+	if err != nil {
+		return nil
+	}
+	if versioned {
+		h.lastVersion, h.versionSeen = version, true
+	}
 	if len(ids) > 0 {
 		h.lastDelivered = ids
 	}
 	return texts
 }
 
+// operationContext keeps the Bind-time observation but the current operation's
+// cancellation. A different binding cannot silently retarget an existing hook.
+func (h *storeInboxHook) operationContext(ctx context.Context) (context.Context, error) {
+	if h.bound {
+		return store.WithRunDataBinding(ctx, h.binding)
+	}
+	if ctx == nil {
+		return nil, store.ErrRunDataBindingRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return ctx, nil
+}
+
 // Consume marks the previously-drained messages as consumed.
 func (h *storeInboxHook) Consume(ctx context.Context) {
+	ctx, err := h.operationContext(ctx)
+	if err != nil {
+		return
+	}
 	if len(h.lastDelivered) == 0 {
 		return
 	}
@@ -199,7 +269,15 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 	return b
 }
 
+// DefaultClawToolMaxSteps bounds the tool loop of a claw node that names no
+// `tool_max_steps:`.
+const DefaultClawToolMaxSteps = 5
+
 // Execute implements delegate.Backend.
+//
+// Tokens and CostUSD cover requests made by this invocation, including its
+// internal retries. Replaying session messages does not include earlier
+// invocations' usage, so CostIsSessionTotal remains false.
 //
 // When the run is sandboxed (task.Sandbox != nil), the call is
 // forwarded to the iterion-claw-runner sub-process inside the
@@ -215,6 +293,9 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // and an MCP server this launcher may not start for a sandboxed run).
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
 	defer func() {
+		// The one exit both placements return through (in process, and the
+		// sandboxed runner's relayed provider error).
+		err = clawUsageWindow(err, time.Now())
 		if err == nil && task.SessionSlot != "" {
 			result.SessionID = task.SessionID
 			result.SessionFingerprint = clawSessionFingerprint(task.Model)
@@ -244,6 +325,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// as every other capability an older sandbox image lacks.
 	ctx = WithProviderHint(ctx, task.ProviderHint)
 
+	// The attempt's posture (ADR-161): the pod environment captured once,
+	// pinned on ctx, so the credential resolution below and every other
+	// environment read of this attempt answer from one capture.
+	ctx = credroute.WithPosture(ctx, credroute.Capture(ctx))
+
 	// claw is an in-process Anthropic SDK consumer rather than the vendor's
 	// own CLI, which was once read as putting a Claude Pro/Max OAuth
 	// subscription out of policy here. Anthropic's API settled it: the token
@@ -252,20 +338,18 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// operator is spending a different pot than they may expect — and only
 	// refuses when ITERION_FORBID_SUBSCRIPTION_OAUTH=1. See ADR-085.
 	//
-	// It runs BEFORE the sandbox dispatch, and must: sandboxing is on by
-	// default, the in-container runner rebuilds its own registry from the
-	// forwarded env, and it is built with no logger — so a guard placed after
-	// the dispatch would neither refuse nor warn on the default path, silently
-	// spending the balance the operator just closed.
+	// The refusal is the claw arm's (resolveClawCall), launcher side in both
+	// placements, and must be: sandboxing is on by default, the in-container
+	// runner rebuilds its own registry from the forwarded env, and it is
+	// built with no logger — so a guard placed in the container would neither
+	// refuse nor warn on the default path, silently spending the balance the
+	// operator just closed. The notice is here, where the logger is.
 	//
 	// A GLM id on this provider is z.ai's (GLMOnAnthropicWire): it spends the
 	// z.ai key, never the subscription, so neither the refusal nor the notice
 	// concerns it — beside a Claude forfait it would refuse a node that was
 	// never going to touch the forfait.
-	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" && !GLMOnAnthropicWire(task.Model) {
-		if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
-			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
-		}
+	if clawSpendsAnthropicSubscription(task.Model) {
 		if b.logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
 			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
@@ -278,7 +362,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// Execute, the sandbox runner below, a continued conversation). The
 	// refusal names the variable, never a value.
 	if modelroute.Parse(task.Model).Gateway() {
-		if err := checkGatewayEnv(!secrets.LLMEndpointAllowPrivate()); err != nil {
+		if err := checkGatewaySource(ctx, task.Model, !secrets.LLMEndpointAllowPrivate()); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
 		}
 	}
@@ -288,6 +372,63 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// refused rather than forwarded to a runner that may predate the field.
 	if len(task.ContinueConversation) > 0 && task.Sandbox != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: node %q: a continued conversation runs in-process, never through the sandbox runner", task.NodeID)
+	}
+
+	// The connector MCP facade is refused for claw BY TYPE, not silently
+	// dropped (#2758, backend parity): the facade serves agents over the
+	// host's HTTP transport so the credential is resolved and spent at the
+	// server, while claw's tool loop runs IN the runner — wiring it here
+	// would resolve the credential one process too close to the model in
+	// cloud, the exact thing Q4 forbids. claude_code and pi reach the facade.
+	if delegate.HasConnectorsCapability(task.Capabilities) {
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: "connectors (the connector MCP facade)",
+			Remedy:     "route the node to claude_code or pi — the facade is served over the host's HTTP transport, and the claw tool loop has no path to it in this build",
+		}
+	}
+
+	// A capability grant the node cannot receive here is refused BY TYPE,
+	// not silently dropped (#3283 S9, backend parity: wired or
+	// typed-refused). The board / runs appends ride an already-restricted
+	// NON-EMPTY `tools:` union (buildTask's appends are gated on it), so a
+	// node whose tool surface resolves EMPTY — no `tools:` line, or a
+	// declared-but-empty `tools: []` (a declaration the appends do not
+	// read) — dispatches on claw with the grant inert: no board issue, no
+	// run read — it answers as if the grant were absent, which is exactly
+	// the silent shape review-pr's merge shipped as on its gateway route
+	// (F4: `converge` tool-less on claw, no report, no board issue). The
+	// gate reads the surface the dispatch would serve (ToolDefs and
+	// AllowedTools, both empty), never the nilness of the declaration:
+	// ToolsDeclared is nilness, and the two disagree exactly on `tools: []`
+	// — the shape this arm exists to catch when a node reaches claw through
+	// a route no catalog test names (a team routing cell, a bare-host
+	// fallback). `interaction:` is the one append that fires before the
+	// gate — an interaction node's union is never empty here — so its
+	// grants are served and stay out of this refusal. And the executor's
+	// own schema re-ask stays out of it too: planSchemaReask's claw
+	// continuation REMOVES the surface deliberately (ToolDefs and
+	// AllowedTools nilled, "tools off: the model is asked for the answer it
+	// already has") while keeping the node's capabilities — a task whose
+	// emptiness is the executor's decision, not an author's omission; a
+	// tool-less continuation needs no grant served by design. Without that
+	// exemption every granted node's standard in-place recovery refused
+	// (the refusal is non-retryable and no fallback class matches it). A
+	// non-empty surface (the way review-pr's merge twins declare theirs) is
+	// the remedy, not a route change.
+	if len(task.ToolDefs) == 0 && len(task.AllowedTools) == 0 && len(task.ContinueConversation) == 0 && !task.InteractionEnabled &&
+		(delegate.HasBoardCapability(task.Capabilities) || delegate.HasRunsReadCapability(task.Capabilities)) {
+		grants := "board"
+		if !delegate.HasBoardCapability(task.Capabilities) {
+			grants = "runs read"
+		} else if delegate.HasRunsReadCapability(task.Capabilities) {
+			grants = "board and runs read"
+		}
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: grants + " capabilities on a node whose tool surface resolves empty",
+			Remedy:     "give the node a non-empty tools: list — on claw the appends that serve a capabilities grant ride an already-restricted list, so an empty surface holds the grant inert (the capability-append sites of buildTask)",
+		}
 	}
 
 	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
@@ -312,21 +453,24 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	approval := exactClawApprovalFrom(ctx)
 	if task.Sandbox != nil {
 		// The permission gate crosses the sandbox IPC boundary as a
 		// pre-task permission_policy envelope: the in-container
 		// `iterion __claw-runner` rebuilds the policy through the same
 		// parser and enforces it in its own tool loop (see
-		// executeViaSandboxRunner). What CANNOT cross is an Ask
-		// decision — the runner has no seam to pause the parent run for
-		// a human — so a policy that can ever produce one (mode ask, or
-		// any explicit ask rule, which outranks mode deny) is refused
-		// loudly rather than silently degraded to deny; pi treats the
-		// same combination as fail-not-degrade.
-		if task.Permission.CanAsk() {
-			return delegate.Result{}, fmt.Errorf(
-				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run the workflow unsandboxed (`sandbox: none` / `--sandbox none`), or route the node to claude_code",
-				task.NodeID, task.Permission.Mode)
+		// executeViaSandboxRunner). A policy that can Ask is SERVED, not
+		// refused, since the approval channel (#3513): the launcher
+		// announces the channel pre-task, and a permission Ask crosses as
+		// permission_ask — the held claim spends and executes, or the run
+		// suspends for a human and the re-asked approval is served on
+		// resume (including an exact approval resumed across the channel:
+		// the ctx approval above is read by the ask handler, which is why
+		// the old exact-approval-in-sandbox refusal is gone). The gate is
+		// still re-checked on THIS side at every ask and every forwarded
+		// call, so the runner's verdict stays a request, never a verdict.
+		if !task.Permission.CanAsk() && approval != nil {
+			return delegate.Result{}, fmt.Errorf("claw: exact approval resumed under a policy that no longer asks — the claim cannot be served across the sandbox")
 		}
 		// The async question pair is served by the launcher, which does not
 		// bind it to the run's question channel on this path: a task wired
@@ -337,6 +481,37 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
 		}
 		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
+		// The channel's enabled scope is LAUNCHER-placed asks only: the
+		// launcher consumes the approval AND executes the call, so it
+		// cannot certify a container-executed one. A node pairing an
+		// ask-capable policy with container-executed tools is refused here,
+		// explicitly and before the spawn — not degraded to per-call
+		// denials the model silently works around.
+		if task.Permission.CanAsk() {
+			var container []string
+			for _, td := range task.ToolDefs {
+				placement, _ := tool.SandboxPlacementOf(td.Name)
+				if placement == tool.PlacementLauncher {
+					continue
+				}
+				// Only a container tool this policy could ever ask about
+				// keeps the node out of the served scope: an ask rule
+				// scoped to launcher-placed tools leaves the container
+				// tools on their mode default, and those never pause.
+				// Argument scopes count — a scoped rule can fire on SOME
+				// invocation of the tool, and that invocation would
+				// degrade to a per-call denial.
+				if task.Permission.CanAskAbout(td.Name) {
+					container = append(container, td.Name)
+				}
+			}
+			if len(container) > 0 {
+				sort.Strings(container)
+				return delegate.Result{}, fmt.Errorf(
+					"claw backend: node %q pairs an ask-capable policy with container-executed tools (%s) — the approval channel serves launcher-placed tools only (MCP, in-memory registries); scope the ask rules to launcher-placed tools, drop the container tools, or run unsandboxed (`sandbox: none` / `--sandbox none`)",
+					task.NodeID, strings.Join(container, ", "))
+			}
+		}
 		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
 			return delegate.Result{}, err
 		}
@@ -355,11 +530,24 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		defer delegate.SweepLocalNodeSession(b.logger, task, delegate.BackendClaw, token, since)
 	}
 
-	// Resolve API client. Phase C: in cloud mode the runner stamps
-	// per-tenant BYOK credentials into ctx, ResolveWithContext then
-	// builds a fresh APIClient with the override key (no cache hit
-	// across tenants). Local mode keeps the env-fallback path.
-	client, err := b.registry.ResolveWithContext(ctx, task.Model)
+	// The command narrowing (#1717): ONE scope per node execution, pinned
+	// here so every generation this execution runs — the first pass, the
+	// tool-use nudge, a retryLoop attempt — shares the bound a `command`
+	// invocation set (review MED-2). A pause carries it out through
+	// ErrAskUser's snapshot; the resume branch below re-pins the
+	// checkpointed one.
+	commandScope := &tool.CommandScope{}
+	commandScope.Restore(task.ResumeCommandNarrowing)
+	ctx = tool.WithCommandScope(ctx, commandScope)
+
+	// Resolve API client: the claw arm's resolution of this leg (ADR-161),
+	// the client it built from the walk it took. In cloud mode the runner
+	// stamps per-tenant BYOK credentials into ctx and the walk builds a fresh
+	// client with the override key (no cache hit across tenants); local mode
+	// keeps the env-fallback path. A walk that reaches no credential still
+	// hands back the client it built: the provider's refusal is the call's
+	// answer, as before.
+	client, spend, err := inProcessClaw(ctx, b.registry, clawCall(task, credroute.Sandbox{}))
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
@@ -375,11 +563,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// Build GenerationOptions.
 	opts := GenerationOptions{
 		Model:                 task.Model,
+		Provider:              servingProvider(delegate.BackendClaw, &task),
+		Credential:            spend,
 		MaxTokens:             task.MaxTokens,
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
 		MaterializeSecrets:    task.MaterializeSecrets,
 		UnmaterializeSecrets:  task.UnmaterializeSecrets,
+		NamesSecret:           task.NamesSecret,
+		ScreenModelText:       task.ScreenModelText,
+		RedactApprovalText:    task.RedactSecrets,
 	}
 
 	// Reasoning effort via ProviderOptions. Coerce against the model's
@@ -419,7 +612,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// When both tools AND output schema are present, inject schema format
 	// instruction into user text (GenerateText supports tool loop,
 	// GenerateObject does not).
-	if task.OutputSchema != nil && task.HasTools {
+	// The question, not the flag: a codemode node runs a tool loop even when
+	// it declared no tools, and this instruction is what that arm depends on
+	// to get its JSON back.
+	if task.OutputSchema != nil && task.NeedsToolLoop() {
 		schemaJSON, _ := json.MarshalIndent(task.OutputSchema, "", "  ")
 		userText += fmt.Sprintf(
 			"\n\nOUTPUT FORMAT: After completing all tool operations, your final message MUST be a raw JSON object matching this schema:\n%s\nNo markdown fences, no extra text — ONLY the JSON object.",
@@ -487,7 +683,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// suffix.
 	if len(task.ResumeConversation) > 0 {
 		var prior []api.Message
-		if err := json.Unmarshal(task.ResumeConversation, &prior); err != nil {
+		if !json.Valid(task.ResumeConversation) {
+			return delegate.Result{}, fmt.Errorf("claw backend: invalid resume conversation JSON")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(task.ResumeConversation))
+		decoder.UseNumber()
+		if err := decoder.Decode(&prior); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: decode resume conversation: %w", err)
 		}
 		if task.ResumePendingToolUseID == "" {
@@ -499,7 +700,6 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			resultText = "(no answer provided)"
 		}
 		isErr := false
-
 		// Permission-gate resume: when the pending tool_use is a real
 		// action the gate paused on (not the ask_user infra tool), the
 		// operator's answer is an authorization decision, not a question
@@ -507,25 +707,27 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// executor (from the runtime's GrantInputKey); here we just replace
 		// the tool_result with the right instruction so the agent re-issues
 		// the now-authorized call (which then runs through the normal tool
-		// loop) or adapts on denial.
+		// loop) or adapts on denial. On the approval channel's runner side
+		// the allow-once instruction is the SAME re-issue text: the text is
+		// display only — the launcher re-authorizes the re-issued call by
+		// exact bytes (the held claim spends on a match, defers to a fresh
+		// pause on any difference) — so a container that holds no claim
+		// still tells the model the truth about the operator's answer.
 		if name, _, ok := findPendingToolUse(prior, task.ResumePendingToolUseID); ok &&
 			!permission.IsInfrastructureTool(name) && task.Permission.Enabled() {
-			if allow, _ := permission.ParseAnswer(task.ResumeAnswer); allow {
-				resultText = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
-			} else {
-				resultText = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
-				isErr = true
-			}
+			resultText, isErr = resumeAnswerToolResult(task.ResumeAnswer, sandboxApprovalForwarderFrom(ctx) != nil)
 		}
 
-		prior = append(prior, api.Message{
-			Role: "user",
-			Content: []api.ContentBlock{api.ToolResult{
-				ToolUseID: task.ResumePendingToolUseID,
-				Content:   resultText,
-				IsError:   isErr,
-			}.ToContentBlock()},
-		})
+		if approval == nil {
+			prior = append(prior, api.Message{
+				Role: "user",
+				Content: []api.ContentBlock{api.ToolResult{
+					ToolUseID: task.ResumePendingToolUseID,
+					Content:   resultText,
+					IsError:   isErr,
+				}.ToContentBlock()},
+			})
+		}
 		opts.Messages = prior
 	}
 
@@ -559,7 +761,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		applyAsyncAskExecs(task, opts.Tools)
 		maxSteps := task.ToolMaxSteps
 		if maxSteps <= 0 {
-			maxSteps = 5
+			maxSteps = DefaultClawToolMaxSteps
 		}
 		opts.MaxSteps = maxSteps
 		// A tool-equipped claw node is agentic by intent: it must ground its
@@ -573,6 +775,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 
 	// Observability hooks.
 	applyHooks(task.NodeID, task.Iteration, b.hooks, &opts)
+	// The effort each model request of the call carried on the wire
+	// (StepResult.ReasoningEffort), folded into the Result on every exit:
+	// the node's record names what reached the model — after the model's
+	// matrix, the client's own rule, a reduced-effort re-ask or recovery —
+	// not only what the executor handed this backend.
+	efforts := &wireEffortTrail{}
+	opts.OnStepFinish = efforts.observe(opts.OnStepFinish)
+	defer func() { efforts.fold(&result) }()
 
 	// In-process lifecycle hooks (audit, safety, compaction
 	// observability). Nil-safe at call sites in generation.go.
@@ -590,9 +800,23 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	if task.WorkDir != "" || len(task.SettingsHooks) > 0 {
 		merged := NewDefaultLifecycleHooks(b.hooks)
 		wired := 0
-		if len(task.SettingsHooks) > 0 {
+		switch {
+		case !task.WorkspaceTrust.Trusted():
+			// The hooks document is READ FROM THE WORKSPACE — on a checkout
+			// the tenant did not write, wiring it hands the fork command
+			// execution under the operator's hooks runner, whatever form the
+			// document arrived in (the wire carries the same file's bytes).
+			// The checkout's own hooks are REFUSED, and iterion's own
+			// plugin-contributed groups wire from the in-memory record
+			// instead: the file is neither their authority nor allowed to
+			// veto them (registerInjectedHooks).
+			if b.logger != nil {
+				b.logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED; iterion's own hook groups wire from memory", task.NodeID, task.Iteration)
+			}
+			wired = registerInjectedHooks(merged, task.InjectedHooks, b.logger)
+		case len(task.SettingsHooks) > 0:
 			wired = registerSettingsHooksJSON(merged, task.SettingsHooks, b.logger)
-		} else {
+		default:
 			wired = registerSettingsHooks(merged, task.WorkDir, b.logger)
 		}
 		if wired > 0 {
@@ -608,6 +832,28 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// subagent runner gates a child conversation with the policy this loop
 	// answers to — a deny row must stop at the delegation, not before it.
 	ctx = WithParentPermission(ctx, task.Permission)
+	// And the loop's own shape, for the same reader: a child conversation
+	// runs on this node's model, within this node's effective tools, under
+	// this node's step budget. Set once, here, for every strategy below —
+	// and in the sandboxed runner's own process, which re-enters this
+	// function with the forwarded task, so an in-container child is bounded
+	// by the same node.
+	ctx = WithParentLoop(ctx, ParentLoop{
+		Model:    task.Model,
+		Tools:    opts.Tools,
+		MaxSteps: opts.MaxSteps,
+		// WorkDir is where a file-backed subagent resolves from (#1714); the
+		// sandboxed runner's re-entry fills it from the forwarded task, so an
+		// in-container child reads the same workspace.
+		WorkDir: task.WorkDir,
+	})
+	// A child conversation spends inside a tool call, after this node's own
+	// usage is counted: without this accumulator the run's budget would
+	// never see it. Armed before any tool can run, folded into the result on
+	// every exit path (subagentSpendFold).
+	subagentSpend := &SubagentSpend{}
+	ctx = WithSubagentSpend(ctx, subagentSpend)
+	defer func() { subagentSpendFold(&result, task.Model, subagentSpend) }()
 
 	// Wire the operator-chatbox inbox if the runtime configured one.
 	// Resolved per-call so a backend shared across runs picks up the
@@ -618,7 +864,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
-	if m := task.Memory; m != nil {
+	// The bot's `memory:` space is the tenant's, like auto-memory's: its index
+	// and autoload go into the system prompt, its tools read and write it. On
+	// a workspace the tenant did not write, the reading hands the fork's agent
+	// the tenant's notes and the writing plants the fork's text where later
+	// trusted runs read it. Withdrawn out loud; the node runs without it.
+	if m := task.Memory; m != nil && !task.WorkspaceTrust.Trusted() {
+		if b.logger != nil {
+			b.logger.Warn("[%s] memory: withdrawn — this run's workspace was not written by its tenant, and the memory space is the tenant's (neither its notes nor its tools are handed to this agent)", task.NodeID)
+		}
+	} else if m := task.Memory; m != nil {
 		// Resolve the memory base path: project_root re-roots the scope
 		// under the run's RepoRoot so dispatcher worktrees + Nexie share
 		// the same tree; falls back to WorkDir when RepoRoot is empty
@@ -653,6 +908,61 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	// Codemode (ADR-165): the node's extra tool, whose input is a program.
+	// The decision is the executor's — it walked the precedence and refused a
+	// declared `on` this backend could not serve before building the task —
+	// so the only question left here is whether the task says so.
+	if task.Codemode {
+		opts.codemodeState = codemodeStateFrom(ctx)
+		if err := installCodemode(&opts, task.CodemodeDefer, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
+			if b.logger != nil {
+				// Both directions travel this seam (#3290): the ceiling REDUCES
+				// an over-reaching bound, the floor RAISES one the child could
+				// not work under. Either way the applied bounds are not what
+				// was declared, and the operator owes the why.
+				b.logger.Warn("[%s] codemode: the platform adjusted this node's script bounds to what a child can work under (requested %+v, applied %+v)", task.NodeID, requested, applied)
+			}
+		}, func(msg string) {
+			if b.logger != nil {
+				b.logger.Warn("[%s] %s", task.NodeID, msg)
+			}
+		}); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
+	}
+
+	if approval != nil {
+		pending, err := pendingClawApproval(task.ResumeConversation, task.ResumePendingToolUseID)
+		if err != nil || pending.Name != approval.toolName || len(opts.Messages) == 0 {
+			return delegate.Result{}, fmt.Errorf("claw: exact approval has no matching pending conversation")
+		}
+		dispatcher, dispatchCtx := newToolDispatcher(WithoutExactClawApproval(ctx), buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		call := toolUseBlock{ID: task.ResumePendingToolUseID, Name: pending.Name, PartialJSON: string(pending.Input)}
+		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval)
+		if err != nil {
+			return delegate.Result{}, err
+		}
+		blocks := []api.ContentBlock{block}
+		unmaterializeEchoingResults(blocks, []toolUseBlock{call}, opts.MaterializeSecrets, opts.UnmaterializeSecrets, opts.NamesSecret)
+		opts.Messages = append(opts.Messages, api.Message{Role: "user", Content: blocks})
+		// The approved call is dispatched and its real result appended: the
+		// transcript already carries it, so later retries, usage-window
+		// parking and session fallback cannot replay it — restore them.
+		ctx = WithoutExactClawApproval(ctx)
+	}
+
+	// The tool-step budget the node execution shares (claw_step_budget.go):
+	// pinned once the loop's tools are final — codemode adds its own — so the
+	// first pass, every retryLoop attempt and the tool-use nudge are each
+	// charged the turns their conversation holds after the anchor the
+	// execution started from, carried here by a retry of the execution.
+	var stepBudget *toolStepBudget
+	if len(opts.Tools) > 0 {
+		stepBudget = newToolStepBudget(opts.MaxSteps, task.ToolTurnsAnchor)
+		stepBudget.sessKey = taskSessionKey(task)
+		ctx = withToolStepBudget(ctx, stepBudget)
+	}
+
 	// Dispatch to the appropriate generation strategy. A gateway route's
 	// catalog record is resolved ONCE, HERE, before anything runs, and
 	// carried immutable on everything the invocation produces (ADR-122
@@ -663,7 +973,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	gwRoute := modelroute.Parse(task.Model)
 	var gwResolved compatgw.Resolved
 	if gwRoute.Gateway() {
-		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv)
+		// The closure idiom (#2808): the seam's reader bound to the
+		// dispatch's ctx, handed as a value — a carried environment is what
+		// the catalog answers from.
+		getenv := func(name string) string { return envGetenv(ctx, name) }
+		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv)
 		if budget := gatewayOutputBudget(gwResolved); opts.MaxTokens <= 0 && budget > 0 {
 			opts.MaxTokens = budget
 			opts.MaxTokensWindow = gwResolved.Spec.ContextWindow
@@ -674,20 +988,89 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		genErr error
 	)
 	switch {
-	case hasSchema && !task.HasTools:
+	case hasSchema && !task.NeedsToolLoop():
 		res, genErr = b.generateStructuredWithRetry(ctx, client, task, opts)
-	case hasSchema && task.HasTools:
+	case hasSchema && task.NeedsToolLoop():
 		res, genErr = b.generateTextWithToolsAndSchemaRetry(ctx, client, task, opts)
 	default:
 		res, genErr = b.generateTextWithRetry(ctx, client, task, opts)
 	}
 	if gwRoute.Gateway() {
+		res.GatewaySpec = gatewaySpecRecord(gwResolved)
 		res.Output = stampGatewaySpec(res.Output, gwResolved)
 		if gwResolved.Known() && gwResolved.Spec.ContextWindow > 0 && res.ContextWindow == 0 {
 			res.ContextWindow = gwResolved.Spec.ContextWindow
 		}
 	}
+	// What this call spent, as the arm resolved it here, where the client
+	// was built (ADR-161 decision 8): the delegate events' credential keys.
+	res.Credential = spend
+	// The tool turns every attempt of this invocation completed, and the
+	// anchor they were charged against: a retry of the execution hands the
+	// anchor to its next attempt.
+	res.ToolTurns = stepBudget.turnsRun()
+	res.ToolTurnsAnchor = stepBudget.anchorReport()
+	if approval != nil && genErr != nil {
+		var interrupted *approvedDispatchInterrupted
+		if !errors.As(genErr, &interrupted) {
+			genErr = &approvedDispatchInterrupted{cause: genErr}
+		}
+	}
 	return res, genErr
+}
+
+// clawUsageWindow types a provider's usage-window refusal that reached the
+// claw path as an HTTP 429 — a *api.APIError in process or relayed by the
+// sandboxed runner, or a stream error event's *APIError — into the
+// *delegate.ErrRateLimited every other backend raises for it. The z.ai facade
+// refuses its 5-hour and weekly windows that way ("[1308][Usage limit reached
+// for 5 hour. Your limit will reset at …]", "[1310][Weekly/Monthly Limit
+// Exhausted. …]"), and a bare 429 is a throttle to every reader downstream:
+// the in-node carve-out kept retrying it, the fallback walk filed it as an
+// exhausted transient, the classifier answered RATE_LIMITED, and the run never
+// parked on the window — nor did an exhausted chain holding it (#3032).
+//
+// The words are read here, at the boundary that holds them, through the
+// shared definition (delegate.RateLimitedFromRefusal); a 429 that names no
+// window — a throttle — is returned unchanged, and so is anything else. A
+// stream error frame is read when it carries no HTTP status too: an
+// OpenAI-wire frame names the facade's own code ("1308", "1310") where a
+// status would be, an Anthropic-wire frame names none, and either frame's
+// words are the provider's refusal, never model prose. The original error
+// rides as the refusal's Cause.
+func clawUsageWindow(err error, now time.Time) error {
+	if err == nil || delegate.IsUsageWindow(err) {
+		return err
+	}
+	var detail string
+	var httpErr *api.APIError
+	var streamErr *APIError
+	switch {
+	case errors.As(err, &httpErr):
+		if httpErr.StatusCode != 429 {
+			return err
+		}
+		detail = httpErr.Message
+		if strings.TrimSpace(detail) == "" {
+			detail = httpErr.Body
+		}
+	case errors.As(err, &streamErr):
+		// A frame's "status" is whatever code it named: an HTTP status, or
+		// the facade's own (1308, 1310), which no HTTP reading can hold. Only
+		// an HTTP status other than 429 is no window.
+		if s := streamErr.StatusCode; s != 429 && s >= 100 && s <= 599 {
+			return err
+		}
+		detail = streamErr.Message
+	default:
+		return err
+	}
+	refusal := delegate.RateLimitedFromRefusal(delegate.BackendClaw, strings.TrimSpace(detail), now)
+	if refusal.Kind != delegate.RateLimitKindUsageWindow {
+		return err
+	}
+	refusal.Cause = err
+	return refusal
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +1079,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 
 func (b *ClawBackend) retryLoop(ctx context.Context, nodeID string, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	result, err := fn()
-	for attempt := 1; err != nil && isRetryable(err); attempt++ {
+	// A usage window is not retried in the node: the 429 it arrives as is
+	// retryable to the transport, but the window shuts for hours, and every
+	// re-issue within seconds only meets it again. The node stops on it and
+	// the run parks (clawUsageWindow types it at Execute's exit).
+	for attempt := 1; err != nil && exactClawApprovalFrom(ctx) == nil && isRetryable(err) && !delegate.IsUsageWindow(clawUsageWindow(err, time.Now())); attempt++ {
 		// Error-adaptive budget: a connectivity failure gets the larger
 		// transient budget to ride out a brief outage.
 		maxAttempts := b.retry.effectiveMaxAttempts(err)
@@ -785,9 +1172,11 @@ func askUserResult(err error) (delegate.Result, bool) {
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},
-		BackendName:         delegate.BackendClaw,
-		PendingConversation: ask.Conversation,
-		PendingToolUseID:    ask.PendingToolUseID,
+		BackendName:             delegate.BackendClaw,
+		PendingConversation:     ask.Conversation,
+		PendingPermissionInput:  ask.PermissionInput,
+		PendingToolUseID:        ask.PendingToolUseID,
+		PendingCommandNarrowing: ask.CommandNarrowing,
 	}, true
 }
 
@@ -807,14 +1196,14 @@ func askUserResult(err error) (delegate.Result, bool) {
 // stamp would read as an output rather than as a bill, and the engine's own
 // guard already skips a spendless failure. A call whose usage went
 // unreported is no such zero: its bill is unknown, and the map says so.
-func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
+func meteredFailure(ctx context.Context, task delegate.Task, usage Usage) delegate.Result {
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.UnreportedCalls == 0 {
 		return delegate.Result{}
 	}
 	output := map[string]any{}
-	tokens := annotateUsage(output, task.Model, usage)
+	tokens := annotateUsage(ctx, output, task.Model, usage)
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, usage.InputTokens, usage.OutputTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, usage),
 		UnreportedCalls: usage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -828,9 +1217,99 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 // annotateUsage stamps a generation's usage onto its output: the `_tokens` /
 // `_model` / `_cost_usd` keys, and the count of calls whose usage the
 // provider did not report, for which those figures are a lower bound.
-func annotateUsage(output map[string]any, model string, u Usage) int {
+func annotateUsage(ctx context.Context, output map[string]any, model string, u Usage) int {
 	cost.SetUnreportedCalls(output, u.UnreportedCalls)
-	return cost.Annotate(output, model, u.InputTokens, u.OutputTokens)
+	return cost.AnnotateWithCacheInEnv(ctx, output, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
+}
+
+// estimateUsageCost prices one metered usage through the environment the
+// invocation carries — the feed-table channel (ADR-163): the CostUSD a
+// result reports and the `_cost_usd` annotateUsage stamps read the same
+// table the dispatch's `_gateway_spec` stamp resolved from.
+func estimateUsageCost(ctx context.Context, model string, u Usage) float64 {
+	return cost.EstimateUSDWithCacheInEnv(ctx, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
+}
+
+// clawCostEstimate is the backend's own price lookup, named so a test can
+// read a call's cost from the same table the result is built from. It is
+// deliberately pre-cache (no cache-share parameter): the tests using it
+// price witness calls that carry no cache read, and a cache-carrying usage
+// is priced by the EstimateUSDWithCache sites above, never cheaper than
+// this figure.
+func clawCostEstimate(modelSpec string, inputTokens, outputTokens int) float64 {
+	return cost.EstimateUSD(modelSpec, inputTokens, outputTokens)
+}
+
+// subagentSpendFold adds what this node's child conversations consumed to the
+// result the node reports, so the run's budget (pkg/runtime.SharedBudget,
+// which reads delegate.Result) counts a delegation's tokens and cost as the
+// node's own. The accounting keys on the output map carry the same figures:
+// `_tokens` is what a `.bot` reads and what the studio renders, and a total
+// that disagreed with Result.Tokens would make one of the two lie.
+//
+// Each child's cost was already estimated at ITS model's price (SubagentSpend
+// .Record) — re-pricing the sum at the parent's would overcharge a cheap
+// child of an expensive node and undercharge the reverse — so the costs are
+// summed, never recomputed. `_model` stays the node's: the node ran on it,
+// and a child's model travels in the child's own result text.
+//
+// A child that burned tokens on a model with no known price contributes its
+// tokens and no cost, exactly as an unpriced node does (cost.EstimateUSD
+// returns 0, which the budget reads as unpriced spend, never as free).
+// wireEffortTrail records, in order, the effort each model request of one
+// claw call carried (StepResult.ReasoningEffort).
+type wireEffortTrail struct {
+	mu      sync.Mutex
+	efforts []string
+}
+
+// observe wraps a step hook so every finished step is recorded first.
+func (t *wireEffortTrail) observe(next func(StepResult)) func(StepResult) {
+	return func(step StepResult) {
+		t.mu.Lock()
+		t.efforts = append(t.efforts, step.ReasoningEffort)
+		t.mu.Unlock()
+		if next != nil {
+			next(step)
+		}
+	}
+}
+
+// fold reports the first and the last recorded effort on result
+// (Result.WireReasoningEffort); a call that finished no step reports none.
+func (t *wireEffortTrail) fold(result *delegate.Result) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.efforts) == 0 {
+		return
+	}
+	result.WireReasoningEffort = t.efforts[0]
+	result.WireReasoningEffortLast = t.efforts[len(t.efforts)-1]
+	result.WireReasoningEffortReported = true
+}
+
+func subagentSpendFold(result *delegate.Result, nodeModel string, spend *SubagentSpend) {
+	usage, costUSD := spend.Total()
+	spent := usage.InputTokens + usage.OutputTokens
+	if spent == 0 && costUSD == 0 && usage.UnreportedCalls == 0 {
+		return
+	}
+	result.Tokens += spent
+	result.CostUSD += costUSD
+	result.UnreportedCalls += usage.UnreportedCalls
+	result.ThinkingTokens += usage.ReasoningTokens
+	result.ThinkingMs += usage.ThinkingMs
+	if result.Output == nil {
+		return
+	}
+	cost.SetUnreportedCalls(result.Output, result.UnreportedCalls)
+	result.Output["_tokens"] = result.Tokens
+	if _, named := result.Output["_model"]; !named {
+		result.Output["_model"] = nodeModel
+	}
+	if result.CostUSD > 0 {
+		result.Output["_cost_usd"] = result.CostUSD
+	}
 }
 
 // partialUsage reads the usage off a best-effort partial result, tolerating
@@ -864,7 +1343,21 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 			return r, nil
 		}
 		logReaskCallFailure(b.logger, task.NodeID, err)
-		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
+		var structured *StructuredOutputError
+		if errors.As(err, &structured) {
+			fallback := meteredFailure(ctx, task, objectUsage(result))
+			fallback.ParseFallback = true
+			fallback.ParseError = structured.Error()
+			if fallback.Output == nil {
+				fallback.Output = map[string]any{}
+			}
+			if result != nil {
+				fallback.Output["text"] = result.Text
+				captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
+			}
+			return fallback, nil
+		}
+		return meteredFailure(ctx, task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 	captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
 
@@ -873,10 +1366,10 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]any)
 	}
 
-	tokens := annotateUsage(output, task.Model, result.TotalUsage)
+	tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 		UnreportedCalls: result.TotalUsage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -895,20 +1388,36 @@ func (b *ClawBackend) generateTextWithRetry(ctx context.Context, client api.APIC
 
 func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	opts = applySessionMessagesForTask(ctx, task, opts)
-	result, err := GenerateTextDirect(ctx, client, opts)
+	result, ran, err := runToolLoop(ctx, client, opts, nil)
+	if !ran {
+		// The conversation this attempt replays already holds every tool
+		// turn the bound allows since the node execution's start: the loop
+		// would have ended there on its own, with the text of its last turn,
+		// and so does the retry — running the loop again would spend past
+		// the bound.
+		b.logger.Warn("[%s] the conversation this retry replays already holds the %d tool turns of tool_max_steps — the node ends as its loop ends at the bound, with the text of the last turn",
+			task.NodeID, toolStepBudgetFrom(ctx).limit)
+		output := map[string]any{"text": lastAssistantText(opts.Messages)}
+		return delegate.Result{
+			EffectiveModel: task.Model,
+			Output:         output,
+			Tokens:         annotateUsage(ctx, output, task.Model, Usage{}),
+			BackendName:    delegate.BackendClaw,
+		}, nil
+	}
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text generation: %w", err)
+		return meteredFailure(ctx, task, partialUsage(result)), fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
 	output := map[string]any{"text": result.Text}
-	tokens := annotateUsage(output, task.Model, result.TotalUsage)
+	tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 		UnreportedCalls: result.TotalUsage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -995,13 +1504,23 @@ func (b *ClawBackend) generateTextWithToolsAndSchemaRetry(ctx context.Context, c
 
 func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	opts = applySessionMessagesForTask(ctx, task, opts)
-	result, err := GenerateTextDirect(ctx, client, opts)
+	result, ran, err := runToolLoop(ctx, client, opts, nil)
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
+		return meteredFailure(ctx, task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
+	}
+	if !ran {
+		// The conversation this attempt replays already holds every tool
+		// turn the bound allows beyond the node execution's start — it
+		// retries a failure that came after the last one. The loop does not
+		// run again: the recovery pass below answers from that conversation,
+		// those turns in view.
+		b.logger.Warn("[%s] the conversation this retry replays already holds the %d tool turns of tool_max_steps — the tool loop does not run again, the recovery pass answers from it",
+			task.NodeID, toolStepBudgetFrom(ctx).limit)
+		result = &TextResult{Messages: opts.Messages}
 	}
 
 	// A tool-equipped reviewer/judge that ended the loop WITHOUT calling a
@@ -1017,23 +1536,32 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// emitted a JSON verdict (looksStructured) or that used its tools is
 	// left untouched, so a reviewer whose data is inline (e.g.
 	// whole_improve_loop's chunk_content) never pays for it.
-	if task.HasTools && countToolCalls(result) == 0 && !looksStructured(result.Text) {
+	//
+	// The nudge is charged by the node execution's tool-step budget like any
+	// other loop run (runToolLoop), and a conversation that already holds
+	// the whole bound has no turn to give it: no request is announced or
+	// made, and the recovery pass is what follows.
+	if task.NeedsToolLoop() && countToolCalls(result) == 0 && !looksStructured(result.Text) {
 		nudged := opts
 		// The nudge is the harness's re-ask, not the operator's prompt —
 		// already screened on the first pass.
 		nudged.SkipUserPromptSubmit = true
 		nudged.Messages = append(append([]api.Message(nil), result.Messages...), toolUseReminder())
-		if b.hooks.OnLLMRequest != nil {
-			b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
-				Model:        task.Model,
-				WireModel:    wireModelIfDistinct(task.Model),
-				MessageCount: len(nudged.Messages),
-				Timestamp:    time.Now(),
-			})
-		}
-		reRun, reErr := GenerateTextDirect(ctx, client, nudged)
-		switch reErr {
-		case nil:
+		reRun, nudgeRan, reErr := runToolLoop(ctx, client, nudged, func() {
+			if b.hooks.OnLLMRequest != nil {
+				b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
+					Model:        task.Model,
+					WireModel:    wireModelIfDistinct(task.Model),
+					MessageCount: len(nudged.Messages),
+					Timestamp:    time.Now(),
+				})
+			}
+		})
+		switch {
+		case !nudgeRan:
+			// Nothing left to give it: the recovery pass follows, on the
+			// first pass's result as it was.
+		case reErr == nil:
 			// Carry the wasted first-pass usage into the re-run so cost
 			// accounting reflects both turns.
 			accumulateUsage(&reRun.TotalUsage, result.TotalUsage)
@@ -1057,7 +1585,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				// if that one fails too this is the figure the node reports.
 				abandoned := result.TotalUsage
 				accumulateUsage(&abandoned, partialUsage(reRun))
-				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
+				return meteredFailure(ctx, task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
 			// Falling through to recovery: the nudge was billed too, so its
 			// partial usage rides the first pass's into every exit below.
@@ -1073,9 +1601,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text != "" {
 		var output map[string]any
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
-			tokens := annotateUsage(output, task.Model, result.TotalUsage)
+			tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+				CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 				UnreportedCalls: result.TotalUsage.UnreportedCalls,
 				EffectiveModel:  task.Model,
 				Output:          output,
@@ -1102,9 +1630,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		var output map[string]any
 		if raw != nil && json.Unmarshal(raw, &output) == nil {
 			b.logger.Warn("[%s] structured output read from the %s of the tool loop's final turn — its text held no JSON object to parse", task.NodeID, source)
-			tokens := annotateUsage(output, task.Model, result.TotalUsage)
+			tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+				CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 				UnreportedCalls: result.TotalUsage.UnreportedCalls,
 				EffectiveModel:  task.Model,
 				Output:          output,
@@ -1144,7 +1672,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// budget is the same request, cut the same way (#2651: both out=8192,
 	// text empty). It runs at a lowered effort instead, said out loud.
 	if cutWithoutAnswer(final) {
-		if lowered, to, ok := effortAfterCut(recoveryOpts); ok {
+		if lowered, to, ok := effortAfterCut(ctx, recoveryOpts); ok {
 			b.logger.Warn("[%s] the tool loop's final turn was cut at max_tokens=%d before any answer; the recovery pass runs at reasoning_effort %s instead of %s",
 				task.NodeID, stepMaxTokens(final, opts), to, reasoningEffortOf(opts))
 			recoveryOpts = lowered
@@ -1171,9 +1699,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}
 		both := result.TotalUsage
 		accumulateUsage(&both, obj.TotalUsage)
-		tokens := annotateUsage(obj.Object, task.Model, both)
+		tokens := annotateUsage(ctx, obj.Object, task.Model, both)
 		return delegate.Result{
-			CostUSD:            cost.EstimateUSD(task.Model, both.InputTokens, both.OutputTokens),
+			CostUSD:            estimateUsageCost(ctx, task.Model, both),
 			UnreportedCalls:    both.UnreportedCalls,
 			EffectiveModel:     task.Model,
 			Output:             obj.Object,
@@ -1192,7 +1720,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// One billed call against a full restart of the review. A recovery the
 	// cut remedy already lowered cannot go lower, and effortAfterCut refuses
 	// it, so the retry fires at most once.
-	if lowered, to, ok := effortAfterCut(recoveryOpts); ok {
+	if lowered, to, ok := effortAfterCut(ctx, recoveryOpts); ok {
 		if b.logger != nil {
 			b.logger.Warn("[%s] the recovery pass failed (%v); it runs once more at reasoning_effort %s instead of %s",
 				task.NodeID, recErr, to, reasoningEffortOf(recoveryOpts))
@@ -1221,9 +1749,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				prevThinkingMs = obj.TotalUsage.ThinkingMs
 			}
 			accumulateUsage(&both, obj2.TotalUsage)
-			tokens := annotateUsage(obj2.Object, task.Model, both)
+			tokens := annotateUsage(ctx, obj2.Object, task.Model, both)
 			return delegate.Result{
-				CostUSD:            cost.EstimateUSD(task.Model, both.InputTokens, both.OutputTokens),
+				CostUSD:            estimateUsageCost(ctx, task.Model, both),
 				UnreportedCalls:    both.UnreportedCalls,
 				EffectiveModel:     task.Model,
 				Output:             obj2.Object,
@@ -1271,13 +1799,17 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		// top of it, and the node has nothing to show for either. The error
 		// says what every turn came back with, so the next run is fixed at
 		// its cause rather than re-run blind.
-		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
-			describeFinalTurn(final, stepMaxTokens(final, opts), recErr), recErr)
+		finalTurn := describeFinalTurn(final, stepMaxTokens(final, opts), recErr)
+		if !ran {
+			finalTurn = fmt.Sprintf("none on this attempt, the conversation it replays already holding the %d tool turns of its tool_max_steps", toolStepBudgetFrom(ctx).limit)
+		}
+		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
+			finalTurn, recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := annotateUsage(output, task.Model, billed)
+	tokens := annotateUsage(ctx, output, task.Model, billed)
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, billed.InputTokens, billed.OutputTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, billed),
 		UnreportedCalls: billed.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -1303,6 +1835,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 // when Wait observes the child's exit or when ctx is done, so it never
 // shortens a runner still working, and it covers the final drain and every
 // early abort at once.
+//
+// This is the DEFAULT; [proc.WaitDelayEnv] is the operator's override, and
+// the applied bound is what the report names.
 const clawRunnerWaitDelay = 2 * time.Second
 
 // clawPipeDrainGrace is how long the crossing's owned pipes outlive
@@ -1376,16 +1911,17 @@ func (e *errDrainBoundCut) Unwrap() error { return e.cause }
 // wrote — put through the run's Layer-0 sink redaction before this backend
 // hands it to anything that outlives the dispatch. A relayed payload the
 // host DOES decode is not this pass's business: it re-enters as an event,
-// redacted by Layer 0 and, for the log line, at its store-hook sink.
+// redacted by Layer 0 at the emitter.
 //
-// Two such sinks, not one. The operator's log is this backend's own, so a
-// backend writing third-party text to it owes the pass. The ERROR it
-// returns owes it too: the hooks that report a failed delegation read that
-// error where it is raised — the run log's "Delegation failed" line, the
-// delegate_error event, the error tracker — and the node's own scrub
-// ([ClawExecutor.scrubNodeError]) only runs at Execute, after all of them.
-// Redacting at the crossing covers every reader at once; [redactedThrough]
-// is the same pass for an error whose Is/As chain has to survive it.
+// The LOG is no longer one of this pass's sinks: the run logger redacts
+// every record it keeps (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458), so a line that merely
+// prints third-party text owes nothing here. The ERROR this backend returns
+// still owes the pass: the hooks that report a failed delegation read that
+// error where it is raised — the delegate_error event, the error tracker —
+// and the node's own scrub ([ClawExecutor.scrubNodeError]) only runs at
+// Execute, after all of them. Redacting at the crossing covers every reader
+// at once; [redactedThrough] is the same pass for an error whose Is/As
+// chain has to survive it.
 //
 // [delegate.Task.RedactSecrets] is nil when the run's redaction kill switch
 // is set, and the text then goes through unchanged.
@@ -1396,28 +1932,15 @@ func redactedFarSide(task delegate.Task, s string) string {
 	return task.RedactSecrets(s)
 }
 
-// farSideForLog is [redactedFarSide] deferred to the moment a log record is
-// FORMATTED, for the far-side text that only ever reaches the operator's log.
-//
-// iterlog drops a record above the logger's level before it reaches
-// fmt.Sprintf (pkg/log: the level test precedes the format), so a %s argument
-// of this type costs the run's secret pass only on a line the log actually
-// keeps — the same "ask the sink before the pass" the stderr report gets from
-// an explicit IsEnabled gate. Two shapes because the logger has two: a
-// formatted line evaluates its arguments lazily, a LogBlock BODY is a plain
-// string the caller must build, so that one still owes the gate.
-//
-// Only for a sink that drops. Text that also reaches an error or an event is
-// redacted eagerly through [redactedFarSide]: those keep it whatever the log
-// level is.
-type farSideForLog struct {
-	task delegate.Task
-	text string
-}
+// sandboxScratchContainerDir is where ${PROJECT_SCRATCH_DIR} resolves
+// inside a sandbox — pkg/runtime's sandboxScratchContainerPath, duplicated
+// here because the dependency runs the other way (runtime imports model).
+// engine_resolve pins it unconditionally for a sandboxed run, whether the
+// scratch is host-backed or container-local, so the value the runner
+// registers as a read root (#2650) is the same one the bot's prompts name.
+const sandboxScratchContainerDir = "/tmp/iterion-scratch"
 
-func (f farSideForLog) String() string { return redactedFarSide(f.task, f.text) }
-
-const clawRunnerHomePrefix = "/tmp/iterion-scratch/claw-runner-home-"
+const clawRunnerHomePrefix = sandboxScratchContainerDir + "/claw-runner-home-"
 
 // clawRunnerHome scopes runner-owned state to the run or fan-out branch,
 // never to the shared project scratch or to one node. HomeScope is the
@@ -1471,14 +1994,49 @@ func clawRunnerHome(ctx context.Context, task delegate.Task) string {
 // tools become reachable across the IPC; V2-3 wires OnAskUser to the
 // engine pause path; V2-4 wires OnSessionCapture for compaction-retry.
 //
-// The error is a NAMED result because the stderr report below is a defer that
-// reads the outcome to pick its level; nothing reads the result value, hence
-// the blank name beside it.
-func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate.Task) (_ delegate.Result, err error) {
+// Both results are NAMED: the stderr report below is a defer that reads the
+// error to pick its level, and the crossing's tool-turn account is a defer
+// that writes onto the result whichever return the crossing takes.
+func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate.Task) (out delegate.Result, err error) {
 	run := task.Sandbox
 	if run == nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: executeViaSandboxRunner called without a sandbox handle")
 	}
+
+	// The env the runner reads is the claw arm's crossing for this leg
+	// (resolveClawCall, ADR-161): the switch guard, the crossing and the
+	// container's walk over what crossed, decided once on the launcher side,
+	// before the task envelope — which carries the crossing's record of that
+	// env (IOTask.CredentialFunds) for the runner to name its calls by. A leg
+	// the container would resolve on no credential still crosses, as before:
+	// the provider's refusal is the call's answer.
+	// The run's workspace trust rides the crossing's ctx (ADR-162 decision
+	// 7): under it the keys below cross as Layer 2 placeholders and the
+	// channels the egress proxy cannot hold are refused. The task carries
+	// the trust the engine stamped (stampWorkspace), never re-derived from
+	// the workspace.
+	resolution, err := resolveClawCall(credroute.WithRunTrust(ctx, task.WorkspaceTrust), b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
+	var refusal *credroute.Refusal
+	if err != nil && (!errors.As(err, &refusal) || refusal.Reason != credroute.ReasonNoCredential || resolution.env == nil) {
+		return delegate.Result{}, err
+	}
+
+	// V2-4: the host's copy of this task's session crosses BEFORE the task
+	// envelope — the runner stashes it, then loads it into its local store
+	// once the task arrives, so applySessionMessages prepends the replayed
+	// history to the LLM's first call. Resolved before the task envelope
+	// because the tool-step anchor the task carries is read from it, and
+	// before the multiplexer because the mirror in the other direction needs
+	// its outcome (see [sessionSeed]).
+	seed := b.sessionSeedForCrossing(ctx, task)
+	// The crossing's tool turns, accounted from what crosses
+	// (claw_step_budget.go): the runner is handed the node execution's
+	// anchor, and every result this crossing returns from here on — a death
+	// before the result envelope included — carries that anchor and the
+	// turns its captures show, so a retry is charged what it replays.
+	turns := newCrossingTurns(task, seed)
+	task.ToolTurnsAnchor = &turns.anchor
+	defer func() { turns.stamp(&out) }()
 
 	// The task envelope is built and SIZED before anything is spawned. It is
 	// the one launcher→runner envelope whose payload no producer bounds: a
@@ -1489,7 +2047,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// cap the channel's writer refuses it either way; refused HERE the node
 	// fails with the size named and no runner was started, where the same
 	// refusal after the spawn has to kill a process that is already reading.
-	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task))
+	ioTask := b.runnerIOTask(task, resolution.facts.funds)
+	stateRelay := codemodeStateRelay(ctx, task.Codemode)
+	ioTask.CodemodeState = stateRelay != nil
+	taskEnv, err := delegate.NewTaskEnvelope(ioTask)
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: build task envelope: %w", err)
 	}
@@ -1521,12 +2082,54 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// os.Getenv("OPENAI_API_KEY") etc. — without forwarding, it
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
-	// providers consume: anything else stays on the host.
-	runnerEnv, err := forwardableProviderEnv(ctx, task.Model)
-	if err != nil {
-		return delegate.Result{}, err
+	// providers consume: anything else stays on the host. The crossing
+	// (resolution, above) composed what passes.
+	runnerEnv, refused := resolution.env, resolution.facts
+	// Said out loud, by name: the custom-header channel has documented uses
+	// (client identity on a self-hosted gateway), so a silent drop reads as
+	// the header never having been written. The credential's VALUE is never
+	// named — the refused line is where it lives.
+	if len(refused.headers) > 0 && b.logger != nil {
+		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused %s: a header line of that name replaces the credential the engine resolved for this node on every request the container sends. Put the credential in the route's own variable (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY) if this node must spend it; the block's other lines crossed",
+			task.NodeID, task.Iteration, strings.Join(refused.headers, ", "))
+	}
+	// Said out loud too, by NAME alone (the value is the repository's): a
+	// value a workspace .env planted on the host never crosses — the
+	// repository under review does not answer for the operator. The name
+	// crosses EMPTY instead: "the operator said nothing", which a provider
+	// reads as its published default, a key as a loud refusal — so a node
+	// whose credential was planted fails by name rather than spending the
+	// repository's account.
+	if len(refused.planted) > 0 && b.logger != nil {
+		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused the host value of %s: a workspace .env planted it (the launcher had it unset), so it speaks for the repository under review, not for the operator — the name crosses empty. Export it in your own shell if it is yours",
+			task.NodeID, task.Iteration, strings.Join(refused.planted, ", "))
+	}
+	// The tool half of the crossing (#2802): the names claw's vendored tool
+	// packages read that the classification forwards — see forwardableToolEnv
+	// for which and why, claw_vendored_tool_env_test.go for the derivation
+	// that keeps the list honest.
+	for k, v := range forwardableToolEnv(ctx) {
+		runnerEnv[k] = v
 	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
+	if err := refuseUnproxiedGatewayCrossing(ctx, task); err != nil {
+		return delegate.Result{}, err
+	}
+	// The runner is this binary re-entered, and its cwd in the container is
+	// the workspace: the invocation-class marker is what stops it auto-loading
+	// the `.env` of the repository it was handed, whose endpoint names would
+	// re-route the credential that just crossed (#2844, internal/envtrust
+	// EnvEngineChild). Set here rather than forwarded: the engine spawning the
+	// runner is the fact it records.
+	runnerEnv[envtrust.EnvEngineChild] = "1"
+	// An untrusted task's trust rides the runner's environment too, so the
+	// runner's own main() never loads the workspace `.env` (the force hatch
+	// included) and every process it starts inherits the carrier. A trusted
+	// task's runner sees no such entry.
+	if entry, ok := RunTrustEnvEntry(task.WorkspaceTrust); ok {
+		k, v, _ := strings.Cut(entry, "=")
+		runnerEnv[k] = v
+	}
 	// A policy-isolated sandbox only lets egress through the run's network
 	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
 	// ambient HTTPS_PROXY by design: it dials direct unless the engine
@@ -1617,8 +2220,11 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// pipes), while the crossing's bound is the launcher's promise that THIS
 	// dispatch hands the node back. The crossing owns it, whatever the driver
 	// chose — pinned by a witness that hands this call a Cmd bounded at an
-	// hour and still expects the node back.
-	cmd.WaitDelay = clawRunnerWaitDelay
+	// hour and still expects the node back. The operator's bound
+	// (proc.WaitDelayEnv) is the one thing above it, and the applied value
+	// travels to the report below: a message quoting the default lies as
+	// soon as it is overridden.
+	drainBound := proc.SetWaitDelay(cmd, clawRunnerWaitDelay)
 
 	if err := cmd.Start(); err != nil {
 		// No reaper exists yet — ownership means releasing the ends here
@@ -1748,15 +2354,27 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			iterlog.BlockPreviewRendered(diag, maxFieldSize))
 	}()
 
-	// V2-4: the host's copy of this task's session crosses BEFORE the task
-	// envelope — the runner stashes it, then loads it into its local store
-	// once the task arrives, so applySessionMessages prepends the replayed
-	// history to the LLM's first call. Resolved before the multiplexer
-	// exists because the mirror in the other direction needs its outcome
-	// (see [sessionSeed]).
-	seed := b.sessionSeedForCrossing(ctx, task)
-
-	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, b.multiplexerHandler(ctx, task, seed))
+	// approvalSpent records that this crossing's launcher consumed an
+	// approval claim: a crossing that fails afterwards has an unknown
+	// outcome for the approved call, and the failure is typed ambiguous
+	// below so no retry replays it. The same state carries the deferred
+	// asks, which a returned pause must bind to before it checkpoints.
+	crossing := newCrossingApprovalState()
+	approvalSpent := &crossing.spent
+	handler, stranded := b.multiplexerHandler(ctx, task, seed, crossing)
+	handler.OnCodemodeState = stateRelay
+	mirror := handler.OnSessionCapture
+	handler.OnSessionCapture = func(snapshot json.RawMessage) {
+		turns.observe(snapshot)
+		mirror(snapshot)
+	}
+	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
+	// Let the post-Wait pipe reaper report a reply write cut first.
+	mux.SetReplyDrainTimeout(2 * clawPipeDrainGrace)
+	// The raw line a decode error quotes crosses the run's pass before its
+	// 256-byte cut, or a value straddling the cut publishes its head into
+	// the node's error (iterion#2822).
+	mux.SetRedactor(task.RedactSecrets)
 
 	if len(seed.replay) > 0 {
 		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {
@@ -1783,6 +2401,26 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: send permission_policy: %w", err)
 		}
+		// The approval channel (#3513), before the task with the same
+		// position guarantee: a runner too old to know the type fatals on
+		// "unexpected envelope before task", and a runner without the
+		// announcement refuses an ask-capable policy outright (its bootstrap
+		// twin). Announced only for a policy that can Ask — the runner-side
+		// twin refuses the same predicate, so the two sides cannot disagree
+		// about whether the channel exists.
+		if task.Permission.CanAsk() {
+			approvalEnv, err := delegate.NewApprovalChannelEnvelope()
+			if err != nil {
+				_ = cmd.Process.Kill()
+				_ = wait()
+				return delegate.Result{}, fmt.Errorf("claw backend: build approval_channel envelope: %w", err)
+			}
+			if err := mux.Send(approvalEnv); err != nil {
+				_ = cmd.Process.Kill()
+				_ = wait()
+				return delegate.Result{}, fmt.Errorf("claw backend: send approval_channel: %w", err)
+			}
+		}
 	}
 
 	// The gateway capability marker, before the task (F19): a runner too
@@ -1798,11 +2436,40 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		}
 	}
 
+	// An untrusted task's trust, announced before the task: a runner binary
+	// that predates IOTask.WorkspaceTrust would rebuild the task as trusted,
+	// and the unknown pre-task envelope makes it refuse instead
+	// (delegate.EnvelopeWorkspaceTrust). A trusted task sends nothing.
+	if !task.WorkspaceTrust.Trusted() {
+		trustEnv, err := delegate.NewWorkspaceTrustEnvelope(task.WorkspaceTrust)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: build workspace_trust envelope: %w", err)
+		}
+		if err := mux.Send(trustEnv); err != nil {
+			_ = cmd.Process.Kill()
+			_ = wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send workspace_trust: %w", err)
+		}
+	}
+
+	if ioTask.CodemodeState {
+		if err := mux.Send(delegate.Envelope{Type: delegate.EnvelopeCodemodeStateV1}); err != nil {
+			_ = cmd.Process.Kill()
+			_ = wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send codemode state capability: %w", err)
+		}
+	}
+
 	// Send the task envelope — built and sized before the spawn. The runner
 	// blocks on its EnvelopeReader.Read() until this arrives.
 	if err := mux.Send(taskEnv); err != nil {
 		_ = cmd.Process.Kill()
 		_ = wait()
+		if ioTask.CodemodeState {
+			return delegate.Result{}, fmt.Errorf("claw backend: send codemode state task envelope (runner must support codemode state v1): %w", err)
+		}
 		return delegate.Result{}, fmt.Errorf("claw backend: send task envelope: %w", err)
 	}
 
@@ -1815,15 +2482,15 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	_ = stdinPipe.Close()
 
 	waitErr := wait()
-	if errors.Is(waitErr, exec.ErrWaitDelay) {
+	if proc.DrainCutShort(waitErr) {
 		// The runner exited on its own and only the drain was abandoned:
 		// [exec.Cmd.Wait] returns this sentinel instead of nil when
 		// WaitDelay closed the pipes of an otherwise successful command.
 		// The node's outcome is the result envelope the multiplexer already
 		// read, so the drain is reported, never charged to the node.
 		if b.logger != nil {
-			b.logger.Warn("[%s#%d/claw] the sandbox runner exited but left its pipes held; abandoned the drain after %s",
-				task.NodeID, task.Iteration, clawRunnerWaitDelay)
+			b.logger.Warn("[%s#%d/claw] the sandbox runner exited but left its pipes held; abandoned the drain %s",
+				task.NodeID, task.Iteration, proc.WaitDelayHint(drainBound))
 		}
 		waitErr = nil
 	}
@@ -1853,8 +2520,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 				stderr: runnerStderr(),
 			}
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
-			redactedThrough(task.RedactSecrets, runErr), runnerStderr())
+		return delegate.Result{}, crossingFailureAfterSpend(fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
+			redactedThrough(task.RedactSecrets, runErr), runnerStderr()), approvalSpent)
 	}
 	if errors.Is(runErr, io.EOF) && ioRes.Error == "" && waitErr == nil {
 		// Runner closed stdout without sending a result envelope and
@@ -1865,13 +2532,72 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 
 	if waitErr != nil && ioRes.Error == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
+		return delegate.Result{}, crossingFailureAfterSpend(fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr()), approvalSpent)
 	}
+	// What the container's call spent rides the result as the runner's own
+	// walk named it through the crossing's record (ADR-161 decision 8: the
+	// keys are written by the process that built the call): relayed
+	// verbatim, never stamped here.
 	res := delegate.FromIOResult(ioRes)
+	// A runner that reports no tool turn while its own captures show some
+	// predates the shared tool-step bound: it reads no anchor from the task,
+	// so each crossing's loop runs under the node's whole bound again.
+	if res.ToolTurns == 0 && turns.counted() > 0 {
+		b.logger.Warn("[%s#%d/claw] the sandbox runner reported no tool turn while its captures show %d: it is an older iterion that does not share the node's tool_max_steps across retries — every crossing runs under the whole bound until the sandbox image is rolled",
+			task.NodeID, task.Iteration, turns.counted())
+	}
 	// The relay carries model JSON and harness counters separately. Apply
 	// the same reserved-namespace boundary on success and runner failure.
+	// A gateway route's provenance is re-resolved HERE, host-side (the
+	// crossing forwarded the host's resolution, so both ends read the same
+	// table): the in-container stamp rode the relay as output keys, which
+	// the wipe below would otherwise read as model-written.
+	if gwRoute := modelroute.Parse(task.Model); gwRoute.Gateway() {
+		getenv := func(name string) string { return envGetenv(ctx, name) }
+		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv))
+	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
+	// A permission-marked pause from the crossing is legitimate only under
+	// the approval channel (#3513): announced iff the policy can Ask — the
+	// same predicate the runner-side twin refuses on, so the two sides
+	// cannot disagree about whether a pause may exist. Under the channel
+	// the pause must bind to an ask THIS launcher deferred: its question
+	// and marker are replaced with this side's own words, and one that
+	// matches no deferred ask is refused — a hostile or stale container
+	// process never chooses what the human reads. Without the channel, a
+	// runner raising one is stripped and fails the node (the #3504
+	// boundary).
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	_, pauseMarked := questions[permission.InteractionMarkerKey]
+	switch {
+	case res.Output["_needs_interaction"] == true && pauseMarked && task.Permission.CanAsk():
+		if err := crossing.bindRelayedPause(&res); err != nil {
+			return res, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
+		}
+	case res.Output["_needs_interaction"] == true && pauseMarked:
+		if rejectSandboxedPermissionPause(&res) {
+			return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+		}
+	}
 	if ioRes.Error != "" {
+		wrappedErr := crossingFailureAfterSpend(fmt.Errorf("claw backend: runner: %s", runnerError), approvalSpent)
+		if _, ambiguous := wrappedErr.(*approvedDispatchInterrupted); ambiguous {
+			return res, wrappedErr
+		}
+		if ioRes.ProviderError != nil {
+			provider := *ioRes.ProviderError
+			provider.Message = redactedFarSide(task, provider.Message)
+			provider.Body = redactedFarSide(task, provider.Body)
+			provider.Provider = redactedFarSide(task, provider.Provider)
+			var cause error = &provider
+			if ioRes.ProviderErrorStream {
+				cause = &APIError{StatusCode: provider.StatusCode, Message: provider.Message, IsRetryable: provider.Retryable}
+			}
+			if waitErr != nil {
+				return res, fmt.Errorf("claw backend: runner: %w (exit: %w)", cause, waitErr)
+			}
+			return res, fmt.Errorf("claw backend: runner: %w", cause)
+		}
 		// Preserve waitErr for errors.Is / errors.As consumers when
 		// the runner emitted a structured error AND exited non-zero
 		// (the normal error path). Without %w on waitErr, downstream
@@ -1884,6 +2610,18 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 
 	if res.BackendName == "" {
 		res.BackendName = delegate.BackendClaw
+	}
+	// A pause produced by a stranded crossing carries the stranding WITH
+	// it: the conversation it checkpoints is this crossing's own turns,
+	// not the session's, and the resume must not let the resumed
+	// crossing's captures become the session. Read after Run, when every
+	// relayed gap has been dispatched in order — the flag the handler
+	// grew is the final verdict. Only a pause carries a conversation
+	// into a checkpoint, so only a pause carries the fact.
+	if stranded.Load() {
+		if needs, _ := res.Output["_needs_interaction"].(bool); needs {
+			res.SessionStranded = true
+		}
 	}
 	return res, nil
 }
@@ -1961,6 +2699,24 @@ func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.
 	return sessionSeed{replay: replay}
 }
 
+// legacyScratchDir is IOTask.ScratchDir for a pushed scratch scope: the
+// one root a runner that predates ScratchReadRoots registers. The shared
+// project scratch when the push carries it — the run subtree lies beneath
+// it, so the old runner reads exactly the union the new one reads, and
+// the briefs every bot still keeps under ${PROJECT_SCRATCH_DIR} stay
+// readable; the run subtree when it rides alone. A task whose push never
+// happened (a direct backend use no engine drove) keeps the legacy fixed
+// container path.
+func legacyScratchDir(anchor string, roots []string) string {
+	if len(roots) == 0 {
+		return sandboxScratchContainerDir
+	}
+	if anchor != "" && slices.Contains(roots, anchor) {
+		return anchor
+	}
+	return roots[0]
+}
+
 // runnerIOTask is the task envelope's payload for the in-container runner.
 // The workspace's .claude/settings.json hooks ride along: the launcher reads
 // them on the host and the runner registers the document instead of
@@ -1969,12 +2725,55 @@ func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.
 // the parity gap of #1715). So does this backend's retry budget: the
 // runner's loop spends the launcher's, never one read from its own env, so
 // a variable a repository's devcontainer declares cannot set how many
-// attempts are billed. An old runner ignores both unknown fields — it
-// reads its own WorkDir and keeps its defaults.
-func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
+// attempts are billed. So does the workspace-command ceiling, for the same
+// reason and in the same direction: the `command` tool's in-container
+// registration would read no dial, and the operator's is a TIGHTENING on a
+// checkout under review — and like the budget it comes from this backend's
+// own field, so the dial is read by the host that built it and never by the
+// runner dispatching a nested crossing. An old runner ignores every
+// unknown field — it reads its own WorkDir and keeps its defaults.
+func (b *ClawBackend) runnerIOTask(task delegate.Task, funds map[string]credroute.Spend) delegate.IOTask {
 	ioTask := delegate.ToIOTask(task)
-	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
+	// The crossing's record of the env it composed: the runner names what
+	// each of its calls spends through it (NewSandboxRunnerRegistry).
+	ioTask.CredentialFunds = funds
+	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, task.WorkspaceTrust, b.logger)
 	ioTask.Retry = b.retry.wire()
+	// The runner's read tools take the container's scratch as a read root
+	// (#2650): the bot's briefs live under ${PROJECT_SCRATCH_DIR}, outside
+	// the workspace bind, and claude_code's Read reaches them — without the
+	// root a sandboxed claw node reads none of them. The narrowing (#2869):
+	// the engine's SetScratchDirs push rode the task (Task.ScratchReadRoots
+	// and Task.ScratchAnchor, container paths — the push happens after the
+	// sandbox decision), so the runner's roots are the run family's subtree
+	// FIRST, with the shared project scratch behind it only while the
+	// workflow still references it.
+	ioTask.ScratchDir = legacyScratchDir(ioTask.ScratchAnchor, ioTask.ScratchReadRoots)
+	// The pinned skill set crosses workspace-RELATIVE: the host's absolute
+	// paths would not exist in the container, and the runner joins each
+	// entry against its own workspace (cmd/iterion registerSandboxLocalTools).
+	// An entry that does not relativize is an engine bug — the channel root
+	// lives inside the workspace — so it crosses absolute (the in-container
+	// read then fails loudly) rather than being silently dropped.
+	if task.SkillAllowlist != nil {
+		rel := make(map[string]string, len(task.SkillAllowlist))
+		for name, p := range task.SkillAllowlist {
+			r, err := filepath.Rel(task.WorkDir, p)
+			// The escape test names exactly "outside": ".." itself or its
+			// subtree — a legitimate "..foo" sibling is not an escape.
+			if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+				if b.logger != nil {
+					b.logger.Warn("[%s#%d/claw] skill allowlist entry %q (%q) is outside the workspace — crossing absolute, the runner cannot serve it", task.NodeID, task.Iteration, name, p)
+				}
+				rel[name] = p
+				continue
+			}
+			rel[name] = r
+		}
+		ioTask.SkillAllowlist = rel
+		ioTask.SkillAllowlistArmed = true
+	}
+	ioTask.SlashCommandMaxBytes = b.slashCommandCeiling
 	// executeViaSandboxRunner wraps the runner in the node's session and ends
 	// it: the runner draws none of its own.
 	ioTask.LauncherEndsNodeSession = true
@@ -1989,7 +2788,20 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 // there is nothing useful to ship (no document, or one claw cannot parse — a
 // document of the wrong JSON type is warned about here, never shipped in
 // silence).
-func settingsHooksForWire(workDir, nodeID string, iteration int, logger *iterlog.Logger) json.RawMessage {
+func settingsHooksForWire(workDir, nodeID string, iteration int, trust store.RunTrust, logger *iterlog.Logger) json.RawMessage {
+	if !trust.Trusted() {
+		// The document is the workspace's own: on a checkout the tenant did
+		// not write, shipping it into the sandbox crossing hands the fork the
+		// in-container hooks runner. Wire NOTHING from the file, and say so on
+		// the side that owns the refusal. Iterion's own plugin-contributed
+		// groups cross on their own field instead (IOTask.InjectedHooks) and
+		// the in-container Execute registers them from that record
+		// (registerInjectedHooks).
+		if logger != nil {
+			logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED, none cross", nodeID, iteration)
+		}
+		return nil
+	}
 	doc, err := readSettingsHooksDoc(workDir)
 	if err != nil {
 		if logger != nil {
@@ -2095,6 +2907,10 @@ var providerCredentialEnvVars = []string{
 	// (docs/backends.md § Client identity).
 	"ITERION_LLM_USER_AGENT",
 	"CLAW_USER_AGENT",
+	// A header block, so it crosses FILTERED and EXPLICIT (the
+	// headerBlockEnvName branch of forwardableProviderEnv): its identity
+	// lines are the operator's, its credential lines would authenticate the
+	// node's requests in place of the credential the engine resolved for it.
 	"ANTHROPIC_CUSTOM_HEADERS",
 	// The ChatGPT-forfait wire gates model availability on the codex-cli
 	// `version:` header. The sandbox image ships no codex binary, so the
@@ -2103,11 +2919,28 @@ var providerCredentialEnvVars = []string{
 	// refuses for newer models ("gpt-5.6-sol requires a newer codex-cli").
 	// The operator override must therefore cross the boundary.
 	"ITERION_CODEX_VERSION",
-	// The stream-silence watchdog runs where the provider call runs
-	// (callAndAggregate, every in-process call): in the container for a
-	// sandboxed node, which must wait as long as the host's would.
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
+	// The routing settings claw's own provider packages read, which no
+	// provider table carries — so the walk over the tables never saw them
+	// and the launcher's value stayed on the launcher (#1804). Each decides
+	// WHICH deployment, project, region or API contract the forwarded
+	// credential is spent on, and each is non-secret; they cross as explicit
+	// empties beside the endpoints for the same reason (providerRoutingEnvVars).
+	//
+	// foundry: the deployment is a fallback for a model id that names none,
+	// and the API version is the silent one — claw defaults it to a date,
+	// so a host talking to one API contract had a sandboxed twin talking to
+	// another with nothing said.
+	"AZURE_OPENAI_DEPLOYMENT",
+	"AZURE_OPENAI_API_VERSION",
+	// vertex: the project is refused loudly when unset, the region defaults
+	// to claw's. Both still cross: a node must spend the launcher's project,
+	// and the repository under review must not pick it.
+	"GOOGLE_CLOUD_PROJECT",
+	"GOOGLE_CLOUD_REGION",
+	// openai: the reasoning-summary kill switch, read on the runner's own
+	// provider path. Empty is claw's "auto", so the explicit empty is
+	// exactly "the launcher sets no override".
+	"CLAW_OPENAI_REASONING_SUMMARY",
 }
 
 // hostCodexVersion resolves the codex-cli version on the HOST side of the
@@ -2127,17 +2960,57 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
-// providerEndpointEnvVars is the endpoint subset of providerCredentialEnvVars
-// — the names that decide WHICH infrastructure a forwarded credential is
-// spent on. Unlike keys, an empty endpoint value is safe downstream (every
-// registry reads empty as "use the published default"), so these may cross
-// as explicit empties.
-var providerEndpointEnvVars = []string{
+// clawStreamTimeoutEnvVars are the stream-silence watchdog knobs: they cross
+// as the host's own answer (envtrust.Inherited) rather than the raw process
+// env, planted included as an explicit empty — see the crossing branch in
+// forwardableProviderEnv.
+var clawStreamTimeoutEnvVars = []string{
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
+}
+
+// providerRoutingEnvVars is the routing subset of providerCredentialEnvVars —
+// the names that decide WHICH infrastructure, deployment, project, region or
+// API contract a forwarded credential is spent on. Unlike keys, an empty
+// value is safe downstream (every provider reads empty as "use the published
+// default", or refuses by name), so these cross as explicit empties: an
+// ABSENT name is the one a workspace .env fills, which would let the
+// repository under review pick where the credential goes.
+var providerRoutingEnvVars = []string{
 	"AZURE_OPENAI_ENDPOINT",
+	"AZURE_OPENAI_DEPLOYMENT",
+	"AZURE_OPENAI_API_VERSION",
 	"MOONSHOT_BASE_URL",
 	"OPENAI_BASE_URL",
 	"XAI_BASE_URL",
 	"ANTHROPIC_BASE_URL",
+	"GOOGLE_CLOUD_PROJECT",
+	"GOOGLE_CLOUD_REGION",
+	"CLAW_OPENAI_REASONING_SUMMARY",
+}
+
+// headerBlockEnvName reports that a forwarded name's VALUE is a block of HTTP
+// header lines the CLI applies over the headers its own auth set —
+// ANTHROPIC_CUSTOM_HEADERS today. Such a value carries whatever the operator
+// (or a workspace .env) wrote in it, including a credential of its own, which
+// is why forwardableProviderEnv treats the CLASS rather than the one name: the
+// shape is in the name, so the next such variable is covered the day it joins
+// the forwarding list, not the day someone remembers this rule
+// (TestEveryHeaderBlockForwardCrossesFilteredAndExplicit derives it).
+//
+// The reading is the engine's own, on a HEADER/HEADERS segment: the same one
+// the cloud process-env policy refuses a name on, for the same stated reason —
+// "a header block carries whatever authenticates the call it rides on"
+// (platformcfg.CredentialShapedName). A segment, not a substring: it answers
+// about the name's parts, so a name that merely contains the letters is not
+// mistaken for a block of headers.
+func headerBlockEnvName(name string) bool {
+	for _, segment := range strings.Split(strings.ToUpper(name), "_") {
+		if segment == "HEADER" || segment == "HEADERS" {
+			return true
+		}
+	}
+	return false
 }
 
 // sandboxProxyEnv returns the single engine-owned entry the in-container
@@ -2165,6 +3038,39 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 	return map[string]string{compatgw.SandboxProxyEndpointEnv: endpoint}
 }
 
+// refuseUnproxiedGatewayCrossing refuses a sandboxed, gateway-routed node
+// whose run holds a sealed gateway credential but whose sandbox handle
+// carries no proxy endpoint: the credential's egress guard is the proxy's
+// pin set, and without one the key dials the gateway directly, past the
+// network policy. The host passthrough is exempt — nothing of the run
+// executes in a container, and the host's own dial guard judged the URL at
+// the dispatch seam (checkGatewaySource).
+func refuseUnproxiedGatewayCrossing(ctx context.Context, task delegate.Task) error {
+	if task.Sandbox == nil || !modelroute.Parse(task.Model).Gateway() {
+		return nil
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	key, _, err := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible)
+	if err != nil || key == "" {
+		return nil
+	}
+	if hr, isHost := task.Sandbox.(sandbox.HostRun); isHost && hr.HostExecutesCommands() {
+		return nil
+	}
+	if proxied, isProxied := task.Sandbox.(sandbox.ProxiedRun); isProxied && proxied.ProxyEndpoint() != "" {
+		return nil
+	}
+	return &delegate.ErrCapabilityUnsupported{
+		NodeID:     task.NodeID,
+		Backend:    delegate.BackendClaw,
+		Capability: "egress pinning for a sealed gateway credential",
+		Remedy:     "give the sandbox a network policy that starts the proxy, or route the node to a model the run's own keys serve",
+	}
+}
+
 // forwardableProviderEnv builds the env map ClawBackend hands to
 // sandbox.Run.Command so the in-container runner can reach the same
 // provider APIs as the host. Empty entries are skipped — we never
@@ -2179,14 +3085,152 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 // entirely while its donor's lease has already been taken. The failure is
 // invisible whenever the ambient key happens to work, which is the worst
 // possible shape for a billing boundary.
-func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, error) {
+//
+// crossingFacts is what the crossing would not carry, and what each
+// credential it carries is. The facts travel with the env rather than being
+// re-derived by the caller from a second read of the host environment: the
+// caller says the refusals out loud — both channels have documented uses, so
+// a silent drop reads as the value never having been written — and the claw
+// arm names the spend the container's walk lands on from funds.
+type crossingFacts struct {
+	// headers names, for each header-block variable, the variable and the
+	// credential header line it dropped (never a value — that value IS the
+	// credential).
+	headers []string
+	// planted names the variables whose host value a workspace .env planted
+	// (applyDotEnv fills the names the launcher had UNSET, envtrust records
+	// which): the value that crosses in their place is the explicit empty.
+	// The name is all the warning needs — the VALUE is the repository's.
+	planted []string
+	// funds names, for each credential-bearing name the crossing sets, the
+	// channel its value comes from — written where the crossing writes the
+	// value, never matched from it afterwards.
+	funds map[string]credroute.Spend
+	// withheldAmbient records that the stamp or the trust floor withheld a
+	// real credential value of the pod's environment (ADR-131 §7, ADR-162
+	// decision 7): the launcher's ambient env was a would-be channel, which
+	// the landing rewords into the floor's typed refusal where nothing else
+	// funds the leg.
+	withheldAmbient bool
+}
+
+// fund records that name crosses carrying spend's credential.
+func (f *crossingFacts) fund(name string, spend credroute.Spend) {
+	if f.funds == nil {
+		f.funds = map[string]credroute.Spend{}
+	}
+	f.funds[name] = spend
+}
+
+// Under the ambient stamp (secrets.Credentials.AmbientRefused) the crossing
+// is the in-process registry's twin: the run's own credentials are its only
+// funds, and every fallback to the pod env answers a typed refusal
+// (#2005, ADR-131 §7). The container never learns the stamp — ctx does not
+// cross — so the crossing enforces it on the launcher side: a credential of
+// the pod crosses as the explicit empty (stampWithheldEnvName), the
+// operator's env gateway does not stand in for a run that holds no pair, and
+// a node no credential of the run funds is refused here,
+// ErrAmbientCredentialRefused, before any runner starts (stampedCrossingFunds)
+// — not sent on to resolve on nothing in the container.
+func forwardableProviderEnv(ctx context.Context, model, providerHint string) (map[string]string, crossingFacts, error) {
 	env := map[string]string{}
+	var refused crossingFacts
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		creds = secrets.Credentials{}
+		ok = false
+	}
+	stamped := ok && creds.AmbientRefused
+	// ADR-162 decision 7: an untrusted run's container holds its credential
+	// as a Layer 2 placeholder, substituted by the egress proxy toward the
+	// credential's own host — the crossing below carries keys as
+	// placeholders, and every channel that is not a substitutable token
+	// toward a known host (a forfait's OAuth flow, an SDK-signed key) is
+	// refused typed. This function is the SANDBOXED crossing only, so
+	// untrusted by itself arms the floor.
+	cross := !credroute.CarriedRunTrust(ctx).Trusted()
 	for _, name := range providerCredentialEnvVars {
-		if v := os.Getenv(name); v != "" {
+		v := envGetenv(ctx, name)
+		// A value a workspace .env planted on the host is the repository
+		// under review answering for the operator — a client identity, a
+		// routing name, the key a node's requests are spent under, an
+		// operator knob (env carries defaults, never the reviewed
+		// repository's voice: D20 / ADR-132). It never crosses: not RAW, or
+		// the repository decides what a sandboxed node's requests carry —
+		// and the container's own planted check would not see it, the name
+		// arriving present; not ABSENT, or the runner's workspace .env
+		// auto-load fills it in the container. What crosses is the explicit
+		// empty, "the operator said nothing", which the routing names already
+		// cross as (providerRoutingEnvVars) and every provider reads as the
+		// published default — for a key, as a loud refusal rather than the
+		// repository's account.
+		planted := envtrust.Planted(name)
+		if planted {
+			refused.planted = append(refused.planted, name)
+			v = ""
+		} else if slices.Contains(providerRoutingEnvVars, name) {
+			// A routing name decides WHERE the credential crossing beside it
+			// is spent, and the credential that crosses here is the RUN's —
+			// a tenant's BYOK key, a lent subscription — not only the
+			// ambient one. So the value that crosses is the one the HOST
+			// inherited: a value this host's own project `.env` planted would
+			// send the run's credential to a host the repository under
+			// review chose, which is the laundering the explicit-empty rule
+			// below exists against, one hop out. A planted value therefore
+			// crosses as that same explicit empty, which every registry
+			// reads as "use the published default".
+			v = envtrust.Inherited(name)
+		}
+		if headerBlockEnvName(name) {
+			// A header block is applied LAST by the CLI, over the headers its
+			// own auth set (claw identity.go Identity.Apply), for every
+			// provider — so an ambient "Authorization: Bearer …" on the
+			// launcher authenticates the in-container runner's requests in
+			// place of the credential the engine resolved for this node, at
+			// the vendor's gateway the engine chose. #1476 closed that shape
+			// for the claude_code delegate (facadeRouteEnv clears the
+			// variable); it stayed open one backend away (#2244). The
+			// credential LINES are refused and the identity ones cross: the
+			// documented use of the channel is client identity, not auth.
+			//
+			// And the name crosses EXPLICITLY, empty included: the runner
+			// auto-loads the workspace .env, which fills names missing from
+			// the process env, so an absent name lets the repository under
+			// review write the headers of every request the node sends —
+			// including, inside the container, the very line refused here.
+			kept, refusedLines := credheader.StripCredentialLines(v)
+			for _, header := range refusedLines {
+				refused.headers = append(refused.headers, name+"/"+header)
+			}
+			env[name] = kept
+			continue
+		}
+		// The pod's credential is not a stamped run's money. It crosses as the
+		// explicit empty rather than absent, so that no value the container
+		// itself carries under that name stands in for it either; the run's
+		// own key for the node overwrites it below. ADR-162 decision 7
+		// widens the withholding to trust: an untrusted run's sandbox never
+		// carries the launcher's ambient env either, stamp or no stamp — it
+		// is one of the channels the egress proxy cannot hold.
+		withheld := (stamped || cross) && stampWithheldEnvName(name)
+		if withheld {
+			if v != "" {
+				refused.withheldAmbient = true
+			}
+			v = ""
+		}
+		// A planted name crosses as the explicit empty even when its class
+		// skips host-unset names (the keys above): the empty reads as "auth
+		// attempted, invalid" there — loud, where an absent name is the one
+		// the runner's workspace .env auto-load would fill.
+		if v != "" || planted || withheld {
 			env[name] = v
 		}
+		if v != "" && envtrust.CredentialShapedName(name) {
+			refused.fund(name, credroute.Spend{Channel: credroute.ChannelPodEnv})
+		}
 	}
-	// Endpoint names the host leaves unset cross as EXPLICIT empties, not
+	// Routing names the host leaves unset cross as EXPLICIT empties, not
 	// absent names: the runner auto-loads the workspace .env, which only
 	// fills names missing from the process env (applyDotEnv honours
 	// LookupEnv), so an absent name lets the repository under review pick
@@ -2198,11 +3242,56 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// every registry reads empty as "use the published default". Keys keep
 	// the skip above: an empty key reads as "auth attempted, invalid", not
 	// "no auth" (the endpoint twin of sandboxProxyEnv's explicit-unset).
-	for _, name := range providerEndpointEnvVars {
+	for _, name := range providerRoutingEnvVars {
 		if _, ok := env[name]; !ok {
 			env[name] = ""
 		}
 	}
+	// The stream-silence watchdog runs where the provider call runs
+	// (callAndAggregate, every in-process call): in the container for a
+	// sandboxed node, which must wait as long as the host's would. Its two
+	// knobs cross as the HOST's own answer to the question their reader
+	// asks, not as the raw process env: the reader reads planted-as-unset
+	// (the liveness family, delegate.envDurationOr's rule), and the planted
+	// marks do not cross, so a raw copy would let a project `.env` run the
+	// container's watchdog after the host refused it — or disarm the host's
+	// and not the twin's. The name crosses EXPLICITLY, an empty included:
+	// the runner auto-loads the workspace .env, which only fills names
+	// missing from the process env (applyDotEnv honours LookupEnv), so an
+	// absent name lets the repository under review set the knob in-container
+	// after the host refused it. Empty reads as the fallback on both sides;
+	// the operator's own export crosses intact.
+	for _, name := range clawStreamTimeoutEnvVars {
+		env[name] = envtrust.Inherited(name)
+	}
+	// The workspace-agent ceiling crosses ALWAYS, the routing pattern pushed
+	// one step further: the host's value when the operator set one, an
+	// explicit empty otherwise. An ABSENT name is one the runner's workspace
+	// .env auto-load fills, letting the repository under review pick the
+	// ceiling its own agent files are read under — "0" unbounds a read that
+	// becomes a billed system prompt, "1" refuses every file. And a value
+	// the HOST read as planted does not cross either: workspaceAgentMaxBytes
+	// already denies it authority host-side, and the container's own
+	// applyDotEnv never marked it (the name was present), so forwarding the
+	// raw value would launder it past the in-container twin of that check.
+	agentMaxBytes := strings.TrimSpace(envGetenv(ctx, WorkspaceAgentMaxBytesEnv))
+	if envtrust.Planted(WorkspaceAgentMaxBytesEnv) {
+		agentMaxBytes = ""
+	}
+	env[WorkspaceAgentMaxBytesEnv] = agentMaxBytes
+	// A stamped run's glm node takes z.ai's own endpoint: the pod's
+	// ANTHROPIC_BASE_URL is outside the run's trust domain — the same
+	// choice registry.go's GLM branch makes in process.
+	if ok && creds.AmbientRefused && GLMOnAnthropicWire(model) {
+		env["ANTHROPIC_BASE_URL"] = ""
+	}
+	// The gateway escape hatch crosses EXPLICITLY: an absent name lets the
+	// workspace .env inside the container lift the address-class rule
+	// (applyDotEnv fills missing names), so the empty is the base — "the
+	// operator said nothing". The lift below overwrites it for every
+	// gateway arm, the run's own pair included, at the same strictness the
+	// dial and the pin already judge that URL with.
+	env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = ""
 	// A gateway-served node carries the gateway env, and ONLY a gateway
 	// node does: the endpoint is operator infrastructure, the key to it is
 	// not a vendor credential, and no other node has business seeing
@@ -2212,43 +3301,141 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// the operator's choice explicitly rather than left to re-derive it
 	// from whatever the sandbox env happens to carry.
 	if modelroute.Parse(model).Gateway() {
-		cfg, err := compatgw.FromEnv(os.Getenv)
-		if err != nil {
-			return nil, err
+		// The run's sealed pair first: the crossing carries the RUN's money
+		// on the wire the node names, and the operator's env gateway is
+		// never read for it — the same order checkGatewaySource applies at
+		// the dispatch seam.
+		pairServed := false
+		if ok {
+			if key, baseURL, perr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); perr == nil && key != "" && baseURL != "" {
+				env[compatgw.APIKeyEnv] = clawCrossedKey(key, cross)
+				env[compatgw.BaseURLEnv] = baseURL
+				pairServed = true
+				spend := credroute.KeySpend(creds, secrets.ProviderOpenAICompatible)
+				spend.Channel, spend.BaseURL = credroute.ChannelGatewayPair, baseURL
+				refused.fund(compatgw.APIKeyEnv, spend)
+			}
 		}
-		allowPrivate := secrets.LLMEndpointAllowPrivate()
-		if err := cfg.Validate(!allowPrivate); err != nil {
-			return nil, err
+		if !pairServed && stamped {
+			// The operator's env gateway is the pod's money: a stamped run
+			// with no pair of its own is refused, as checkGatewaySource
+			// refuses it at the dispatch seam.
+			return nil, crossingFacts{}, &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: model}
 		}
-		env[compatgw.BaseURLEnv] = cfg.BaseURL
-		if cfg.APIKey != "" {
+		if !pairServed && cross && !stamped {
+			// The operator's env gateway is the launcher's ambient env
+			// (ADR-162 decision 7): a channel the fork lane's egress proxy
+			// cannot hold, refused typed where the stamp has not already
+			// refused it — the run's own sealed pair crossed above or
+			// nothing does.
+			return nil, crossingFacts{}, &credroute.ErrCrossingRefused{
+				Channel: "the launcher's ambient env",
+				Spec:    model,
+				Because: "fund the run with an API key (a BYOK key, a pinned key) or its own gateway pair — Layer 2 substitutes placeholder tokens toward the credential's own host and cannot hold this channel",
+			}
+		}
+		if !pairServed {
+			// The read is envtrust.Inherited, not os.Getenv: a gateway route a
+			// workspace .env planted on the host must not cross raw — the
+			// repository under review picking where a sandboxed node's traffic,
+			// and its key, goes (the sharp case of #2813). A planted name reads
+			// as UNSET here: ErrNotConfigured fails the node loudly, by name.
+			cfg, err := compatgw.FromEnv(envtrust.Inherited)
+			if err != nil {
+				return nil, crossingFacts{}, err
+			}
+			allowPrivate := secrets.LLMEndpointAllowPrivate()
+			if err := cfg.Validate(!allowPrivate); err != nil {
+				return nil, crossingFacts{}, err
+			}
+			env[compatgw.BaseURLEnv] = cfg.BaseURL
+			// Crosses always, never absent: FromEnv above refuses a gateway with
+			// no key (and a half-planted pair) rather than returning one, so
+			// there is no keyless crossing left to leave the name absent for —
+			// and absent is the one state the workspace `.env` of the repository
+			// under review gets to fill.
 			env[compatgw.APIKeyEnv] = cfg.APIKey
+			refused.fund(compatgw.APIKeyEnv, credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: cfg.BaseURL})
 		}
-		if allowPrivate {
+		// The operator's inherited lift crosses for EVERY gateway arm, the
+		// run's own pair included: checkGatewaySource, the host client and
+		// the netproxy pin already judge a run-held URL at the operator's
+		// strictness, and a crossing that said otherwise would have the
+		// same run pass outside the sandbox and refuse inside it (Revi
+		// #2721 R2). A PLANTED value stays "" here — the lift is the
+		// operator's, read through Inherited at LLMEndpointAllowPrivate.
+		if secrets.LLMEndpointAllowPrivate() {
 			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
 		}
-		// The host's OWN catalog resolution rides along, so the in-container
-		// catalog answers with the same record the host answered with — the
-		// image's snapshot can be older than the host's, and a window or a
-		// price quietly differing across the IPC is a lie one side tells the
-		// other. Top precedence container-side (compatgw.ResolvedEnvRecord).
-		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
-			if raw, merr := json.Marshal(struct {
-				Model            string  `json:"model"`
-				Source           string  `json:"source"`
-				ContextWindow    int     `json:"context_window,omitempty"`
-				MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-				InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-				OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
-			}{
-				Model:            modelroute.Parse(model).Wire,
-				Source:           resolved.Source,
-				ContextWindow:    resolved.Spec.ContextWindow,
-				MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
-				InputUSDPerMTok:  resolved.Spec.InputCostPerM,
-				OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
-			}); merr == nil {
-				env["ITERION_OPENAI_COMPATIBLE_RESOLVED"] = string(raw)
+		// The host's OWN catalog resolution rides along — pair-served and
+		// env-gateway alike — so the in-container catalog answers with the
+		// same record the host answered with: the image's snapshot can be
+		// older than the host's, and a window, a price or a capability flag
+		// quietly differing across the IPC is a lie one side tells the
+		// other. Top precedence container-side (compatgw.ResolvedEnvRecord,
+		// the shape both sides share).
+		//
+		// And the name crosses EXPLICITLY, an empty record included: the
+		// runner auto-loads the workspace .env, which only fills names
+		// MISSING from the process env (applyDotEnv honours LookupEnv), so
+		// an ABSENT name lets the repository under review write the record
+		// the in-container catalog answers from FIRST — its window (hence
+		// when the node compacts), its max output (hence max_tokens), its
+		// price and the provenance it all gets recorded under. An unknown
+		// answer is still an answer, and an empty value is nothing to say
+		// here: the reader takes it as no record at all and the local
+		// sources decide, as they did before this crossed (the catalog
+		// twin of providerRoutingEnvVars' explicit empties).
+		//
+		// The record is not the only road to the resolution it carries:
+		// the two LOCAL sources of the very same answer — the operator
+		// table and the models.dev qualifier — are what the in-container
+		// catalog reads when the record does not cover the id, so they
+		// cross as explicit empties beside it. Neither is a credential
+		// and empty is each one's own "the operator declared nothing", so
+		// the empty costs the container nothing the host does not answer
+		// for: its own resolution rides in the record beside them. This
+		// also closes the route that carries no
+		// provenance mark for any reader to refuse — the repository's own
+		// devcontainer.json, which becomes the env the container is
+		// STARTED with — because ExecOpts.Env outranks that environment.
+		env[compatgw.CatalogModelsEnv] = ""
+		// The accepted efforts cross as the HOST's merged answer, under
+		// the name they always crossed: the env table's valid entries
+		// overlaid by the run's feed-table efforts (normalized id, every
+		// env spelling of it, and this node's own wire spelling), read
+		// through Inherited like the feed table below — so an older
+		// sandbox image, which reads only this name, maps an effort by
+		// the table the host mapped it by; the explicit empty when
+		// neither table states anything.
+		env[compatgw.ReasoningEffortsEnv] = compatgw.CrossingReasoningEfforts(modelroute.Parse(model).Wire, func(name string) string { return credroute.Inherited(ctx, name) }, iterlog.NewFromEnv(os.Stderr).Warn)
+		env[compatgw.CatalogProviderEnv] = ""
+		env[compatgw.ResolvedEnvName] = ""
+		// The run's price-feed table crosses beside them, the same
+		// explicit-empty contract: absent, the workspace .env would fill
+		// the name and the in-container catalog would read a table no
+		// server folded (catalogEnv refuses it — but the refusal must not
+		// depend on the mark alone). Present, it answers between the
+		// record and the operator table for every id the run's feeds
+		// carry, with the record still first for THIS node's id.
+		env[compatgw.FeedTableEnv] = ""
+		// Inherited, the same reader the record's own resolution two
+		// lines below uses: the overlay answers as itself, and a value
+		// the process read as PLANTED forwards as the explicit empty —
+		// the crossing's refill must not be the one planted-accepting
+		// reader in a branch whose every other read refuses the mark.
+		if feedTable := credroute.Inherited(ctx, compatgw.FeedTableEnv); feedTable != "" {
+			env[compatgw.FeedTableEnv] = feedTable
+		}
+		// Resolved through the environment THIS context carries — the
+		// run's feed table included, so a feed-priced node crosses a
+		// record whose numbers the container's own meter agrees with.
+		// Inherited's planted-name verdict is the point (#2813): a table
+		// a workspace .env planted still reads as unset here, whatever
+		// the ctx carries — the inline closure is the #2808 idiom.
+		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), func(name string) string { return credroute.Inherited(ctx, name) }); resolved.Known() {
+			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {
+				env[compatgw.ResolvedEnvName] = string(raw)
 			}
 		}
 	}
@@ -2272,19 +3459,41 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// was handed — the run's, below, or the host's, which
 	// deliverHostCodexForfait writes at the dispatch — never as an order to
 	// spend whatever forfait the container's disk holds.
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
+	if envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") == "0" {
 		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}
-	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
-		return env, nil
+		return env, refused, nil
+	}
+	// The node-aware crossing: a run-held key rides only the nodes its
+	// provider serves — clawPinnedProvider from the spec's own prefix, the
+	// widened route hint when the model carries none (a bare chain element
+	// id). No provider to read, no narrowing: a hintless bare id would
+	// otherwise lose every key at once.
+	nodeProv := clawPinnedProvider(model)
+	if nodeProv == "" {
+		if h := strings.ToLower(strings.TrimSpace(providerHint)); h != "" && h != "auto" {
+			if p := secrets.Provider(h); p.Valid() {
+				nodeProv = p
+			}
+		}
 	}
 	for provider, key := range creds.APIKeys {
 		if key == "" {
 			continue
 		}
+		if !runKeyRidesNode(provider, nodeProv) {
+			continue
+		}
 		if name := byokEnvVar[provider]; name != "" {
-			env[name] = key
+			// The untrusted crossing hands the key as its Layer 2
+			// placeholder (ADR-162 decision 7); a value too short to carry
+			// one crosses not at all — the landing below refuses a leg that
+			// needed it, and every other leg never sees it.
+			if crossed := clawCrossedKey(key, cross); crossed != "" {
+				env[name] = crossed
+				refused.fund(name, credroute.KeySpend(creds, provider))
+			}
 		}
 	}
 	// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses only for the
@@ -2305,7 +3514,12 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	if prov := clawPinnedProvider(model); prov != "" && creds.APIKey(prov) == "" {
 		if k := creds.PinnedAPIKey(prov); k != "" {
 			if name := byokEnvVar[prov]; name != "" {
-				env[name] = k
+				// The pin crosses as its Layer 2 placeholder for an
+				// untrusted run, like every run key (ADR-162 decision 7).
+				if crossed := clawCrossedKey(k, cross); crossed != "" {
+					env[name] = crossed
+					refused.fund(name, credroute.KeySpend(creds, prov))
+				}
 			}
 		}
 	}
@@ -2317,7 +3531,13 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// is true of a machine default and false of a credential resolved FOR
 	// THIS RUN.
 	if creds.OAuthDir(string(secrets.OAuthKindCodex)) != "" {
+		// Under the fork lane's floor the forfait env still composes here
+		// so the landing can name the leg that would spend it (ADR-162
+		// decision 7): resolveClawCall refuses that leg typed, and a
+		// crossing it admits ships no forfait mount at all
+		// (stripForfaitCrossing) — the container holds placeholders only.
 		env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
+		refused.fund("CODEX_HOME", credroute.ForfaitSpend(creds, secrets.OAuthKindCodex))
 		// Forced ONLY when the run resolved no OpenAI key of its own. A
 		// tenant can hold both a BYOK key and a connected forfait, and the
 		// host resolver spends the KEY in that case — forcing here would
@@ -2332,7 +3552,7 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// on its plan — the order ResolveWithContext applies in process,
 		// under the same openAIOAuthAllowed.
 		nodeOwnKey := creds.APIKeys[secrets.ProviderOpenAI]
-		if nodeOwnKey == "" && openAIOAuthAllowed() {
+		if nodeOwnKey == "" && openAIOAuthAllowed(ctx) {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
@@ -2348,11 +3568,106 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
-		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
-			return nil, err
+		if err := applyForfaitAcrossSandbox(ctx, env, &refused, creds, model, providerHint, nodeProv); err != nil {
+			return nil, crossingFacts{}, err
 		}
 	}
-	return env, nil
+	if stamped && !stampedCrossingFunds(env, nodeProv) {
+		provider, _, _ := ParseModelSpec(model)
+		return nil, crossingFacts{}, &ErrAmbientCredentialRefused{Provider: provider, Spec: model}
+	}
+	return env, refused, nil
+}
+
+// clawCrossedKey is the value one run key crosses the sandbox with
+// (ADR-162 decision 7): itself for a trusted run; for an untrusted run, the
+// key's Layer 2 placeholder — a pure function of the value, which is how
+// the crossing here and the egress proxy's rewriter agree with no
+// coordination — or "" for a value too short to carry one, which crosses
+// not at all.
+func clawCrossedKey(key string, cross bool) string {
+	if !cross {
+		return key
+	}
+	return secrets.CredentialPlaceholder(key)
+}
+
+// clawUntrustedLandingRefusal is the fork lane's floor on the LANDED spend
+// (ADR-162 decision 7): the channels the sandbox's egress proxy cannot hold
+// — an OAuth forfait (a config dir and a refresh flow, never a header token
+// toward one host), the operator's host login, the pod's environment, a
+// provider whose credential rides an SDK signing chain and names no host to
+// substitute toward — are refused typed rather than crossed raw or crossed
+// dead. The stamp's own refusals have fired by the time a leg lands here;
+// this floor catches what no stamp refused — an unstamped fork lane, a
+// run's own forfait.
+func clawUntrustedLandingRefusal(spend credroute.Spend) error {
+	because := "fund the run with an API key (a BYOK key, a pinned key, a gateway pair) — Layer 2 substitutes placeholder tokens toward the credential's own host and cannot hold this channel"
+	switch spend.Channel {
+	case credroute.ChannelRunForfait:
+		channel := "the run's Claude forfait"
+		if spend.Slot == string(secrets.OAuthKindCodex) {
+			channel = "the run's ChatGPT forfait"
+		}
+		return &credroute.ErrCrossingRefused{Channel: channel, Because: because}
+	case credroute.ChannelPodEnv:
+		return &credroute.ErrCrossingRefused{Channel: "the launcher's ambient env", Because: because}
+	case credroute.ChannelHostLogin:
+		return &credroute.ErrCrossingRefused{Channel: "the operator's host login", Because: because}
+	case credroute.ChannelRunKey, credroute.ChannelPinnedKey:
+		if spend.Slot != "" && len(secrets.CredentialEgressHosts(secrets.Provider(spend.Slot), spend.BaseURL)) == 0 {
+			return &credroute.ErrCrossingRefused{
+				Channel: fmt.Sprintf("a %s key", spend.Slot),
+				Because: "this provider's credential rides a signing chain Layer 2 cannot substitute toward a host — fund the node with a bearer-keyed provider (anthropic, openai, zai, moonshot, xai, openrouter, a gateway pair)",
+			}
+		}
+	}
+	return nil
+}
+
+// stripForfaitCrossing removes the forfait mounts from an untrusted
+// crossing's shipping env (ADR-162 decision 7): a crossing the floor admits
+// carries placeholder tokens only. The names cross as the explicit empty,
+// never absent — an absent name is one the container's own env or the
+// runner's workspace .env auto-load fills.
+func stripForfaitCrossing(env map[string]string) {
+	env["CODEX_HOME"] = ""
+	env["CLAUDE_CONFIG_DIR"] = ""
+	delete(env, "ITERION_OPENAI_USE_OAUTH")
+}
+
+// stampWithheldEnvName reports whether the host value of a forwarded name is
+// a credential of the pod, which a stamped run's crossing never carries: every
+// credential-shaped name (envtrust.CredentialShapedName — the keys, the
+// bearer, the AWS key pair and session token) but
+// ITERION_FORBID_SUBSCRIPTION_OAUTH, a refusal that authenticates nothing and
+// that, withheld, would let the container spend a run's forfait the operator
+// closed. The header block never reaches the question: its own branch crosses
+// it without its credential lines.
+func stampWithheldEnvName(name string) bool {
+	return envtrust.CredentialShapedName(name) && name != "ITERION_FORBID_SUBSCRIPTION_OAUTH"
+}
+
+// stampedCrossingFunds reports whether a stamped run's crossing hands the node
+// a credential of the run its provider reads. Under the stamp the pod's
+// credentials crossed empty and the host's ChatGPT forfait stays home
+// (hostCodexForfait), so every channel left in env
+// (clawSandboxCredentialEnvKeys) is the run's own — the node's key and the
+// key pinned for its route, its Claude forfait's config dir, its gateway pair
+// — save CODEX_HOME, which points every node at the run's ChatGPT forfait
+// and funds an openai node alone. nodeProv is the crossing's own reading of
+// the node's provider; "" narrowed nothing, and no channel is ruled out.
+func stampedCrossingFunds(env map[string]string, nodeProv secrets.Provider) bool {
+	for _, key := range clawSandboxCredentialEnvKeys {
+		if env[key] == "" {
+			continue
+		}
+		if key == "CODEX_HOME" && nodeProv != "" && nodeProv != secrets.ProviderOpenAI {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // claw declares no forfait-first provider (delegate.RegisterForfaitFirst).
@@ -2393,8 +3708,11 @@ func clawPinnedProvider(model string) secrets.Provider {
 // Anchored on the PREFIX: every z.ai id starts with "glm" (glm-4.6, glm-5.3),
 // and a substring match misrouted ids that merely contain it
 // ("notglm", "claude-glm-experimental") onto a vendor that does not serve them.
+// The table itself lives with the delegate's facade-substitution refusal
+// (delegate.FacadeServesModelID) so the refusal and the routing can never
+// disagree on what z.ai serves.
 func modelServedByZAI(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm")
+	return delegate.FacadeServesModelID(string(secrets.ProviderZAI), model)
 }
 
 // GLMOnAnthropicWire reports whether a model spec names a GLM model on the
@@ -2421,7 +3739,7 @@ func zaiKeyReachable(ctx context.Context) bool {
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok && creds.APIKeyForRoute(secrets.ProviderZAI) != "" {
 		return true
 	}
-	return os.Getenv("ZAI_API_KEY") != ""
+	return envGetenv(ctx, "ZAI_API_KEY") != ""
 }
 
 // RouteProviderHint is the provider hint the executor hands a delegate for
@@ -2446,9 +3764,48 @@ func RouteProviderHint(ctx context.Context, backend, hint, model string) string 
 	return hint
 }
 
+// clawCall is the resolver's question for the leg task dispatches: claw,
+// the task's model under its provider hint, placed as sandbox says.
+func clawCall(task delegate.Task, sandbox credroute.Sandbox) credroute.Call {
+	return credroute.Call{
+		Backend: delegate.BackendClaw,
+		Spec:    task.Model,
+		Leg:     credroute.Leg{Provider: strings.ToLower(strings.TrimSpace(task.ProviderHint))},
+		Role:    credroute.RoleNode,
+		Sandbox: sandbox,
+	}
+}
+
+// clawSpendsAnthropicSubscription reports whether spec is one the run's Claude
+// subscription can fund: an `anthropic/…` id that is not a GLM id — a GLM id on
+// this provider is z.ai's (GLMOnAnthropicWire) and spends the z.ai key, never
+// the subscription.
+func clawSpendsAnthropicSubscription(spec string) bool {
+	providerName, _, err := ParseModelSpec(spec)
+	return err == nil && providerName == "anthropic" && !GLMOnAnthropicWire(spec)
+}
+
+// clawSubscriptionGuard is Execute's subscription switch, before the sandbox
+// dispatch and the in-process arm alike: under ITERION_FORBID_SUBSCRIPTION_OAUTH
+// a node whose run funds its Anthropic id with the Claude forfait alone is
+// refused (secrets.GuardSubscriptionOAuth), whatever the pod's env carries.
+//
+// The switch is read in its posture form (secrets.GuardSubscriptionOAuthIn
+// over the env seam): the claw arm judges it on the environment the attempt
+// captured.
+func clawSubscriptionGuard(ctx context.Context, spec string) error {
+	if !clawSpendsAnthropicSubscription(spec) {
+		return nil
+	}
+	return secrets.GuardSubscriptionOAuthIn(ctx, func(name string) string { return envGetenv(ctx, name) },
+		secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode)
+}
+
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
-// the model gate above reads as one line.
-func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials, model string) error {
+// the model gate above reads as one line. hint is the node's provider hint,
+// which the container re-stamps; nodeProv is the crossing's own reading of
+// the node's provider, the one its run keys were narrowed to.
+func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, facts *crossingFacts, creds secrets.Credentials, model, hint string, nodeProv secrets.Provider) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -2465,19 +3822,21 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials,
 	// against the platform account, and does so invisibly, because the ambient
 	// key works.
 	//
-	// Two limits, both deliberate: a BYOK key claw's anthropic provider would
-	// spend — the Anthropic one, or z.ai's, which the env factory synthesises
-	// onto z.ai's base URL — is the tenant's own explicit instrument and keeps
-	// precedence (otherwise the same run would spend a different one depending
-	// on whether it happened to be sandboxed); and a redirected wire is a
-	// destination the operator chose, so a bearer carrying the whole Claude
-	// account does not travel there. clawAnthropicProviderSlots says which keys
-	// those are.
+	// Two limits, both deliberate: a BYOK key the crossing hands this node and
+	// claw's anthropic provider spends ahead of the forfait
+	// (heldAnthropicWireAPIKey) is the tenant's own explicit instrument and
+	// keeps precedence (otherwise the same run would spend a different one
+	// depending on whether it happened to be sandboxed); and past it the
+	// forfait crosses where claw's walk reaches it (clawForfaitReached, the
+	// in-process walk's reading): a redirected wire the hint does not skip is
+	// a destination the operator chose, so a bearer carrying the whole Claude
+	// account does not travel there, and under the subscription switch an
+	// ambient credential of the pod serves in its stead.
 	// A key pinned for THIS node's own route is as held as a BYOK slot: the
 	// pinned-key block above injected it into the env, and applying the
-	// forfait here deleted it right back — the container spent the forfait
-	// while the in-process path spent the pin, and an expired forfait
-	// refused a node whose key was good. The route-less predicate below
+	// forfait here would blank it right back — the container spending the
+	// forfait while the in-process path spends the pin, and an expired forfait
+	// refusing a node whose key is good. The route-less predicate below
 	// stays pin-blind on purpose (#736): a pin for ANOTHER route must not
 	// keep the forfait out of an unpinned node.
 	for _, slot := range clawAnthropicProviderSlots {
@@ -2485,9 +3844,7 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials,
 			return nil
 		}
 	}
-	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-		!heldAnthropicWireAPIKey(creds) &&
-		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+	if !heldAnthropicWireAPIKey(creds, nodeProv) && clawForfaitReached(ctx, creds, model, hint) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
 		// the node's ONLY credential in the container, and the in-container
@@ -2500,11 +3857,58 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials,
 			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
 		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		forfait := credroute.ForfaitSpend(creds, secrets.OAuthKindClaudeCode)
+		forfait.BaseURL = runCredentialBaseURL(ctx, model, hint)
+		facts.fund("CLAUDE_CONFIG_DIR", forfait)
+		// The shadows cross as the explicit empty, never absent: an absent
+		// name is one the container's own env (the sandbox spec's, a declared
+		// secret's) or the runner's workspace .env auto-load fills, and that
+		// value would outrank the forfait the in-process twin spends — the
+		// claude_code delegate's forfait env clears the same names
+		// (claudeForfaitEnv).
 		for _, shadow := range anthropicWireShadowEnv() {
-			delete(env, shadow)
+			env[shadow] = ""
+			delete(facts.funds, shadow)
 		}
 	}
 	return nil
+}
+
+// clawForfaitReached reports whether claw's anthropic walk for spec under
+// hint, past any Anthropic key of the run's, stops at the run's Claude
+// forfait — the walk anthropicFromCtxForfaitOnWire takes in process and the
+// crossing hands the container: a forfait held, judged on the destination claw
+// sends the run's credentials to (runCredentialBaseURL: the direct wire under
+// the `provider: "anthropic"` hint, the env's ANTHROPIC_BASE_URL otherwise),
+// and not passed by under ITERION_FORBID_SUBSCRIPTION_OAUTH for an ambient
+// credential of the pod that serves in its stead. With none, the forfait is
+// the walk's sole candidate, and the switch's refusal of it is the walk's
+// answer.
+func clawForfaitReached(ctx context.Context, creds secrets.Credentials, spec, hint string) bool {
+	return creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
+		secrets.AnthropicForfaitWireOK(runCredentialBaseURL(ctx, spec, hint)) &&
+		(!forbidSubscriptionOAuth(ctx) || !ambientAnthropicCredential(ctx))
+}
+
+// ClawForfaitServes reports whether claw spends the run's Claude forfait on an
+// anthropic-wire spec under hint where the run holds no Anthropic key for it:
+// its walk reaches the forfait (clawForfaitReached) and no subscription switch
+// refuses it there. In process and sandboxed alike — the crossing reads the
+// same walk — so the spend ledger's derivation, for a route whose events
+// carry no credential keys, books the forfait where, and only where, the call
+// spends it.
+//
+// The ledger calls it with no run envelope in scope: the seam's process
+// default (#2808), the environment the registry's factories read too.
+func ClawForfaitServes(creds secrets.Credentials, spec, hint string) bool {
+	return clawForfaitReached(context.Background(), creds, spec, hint) && !secrets.ForbidSubscriptionOAuth()
+}
+
+// runKeyRidesNode reports whether the run's default key of provider crosses
+// for a node the crossing reads as nodeProv: a run-held key rides only the
+// nodes its provider serves, and "" — no provider to read — narrows nothing.
+func runKeyRidesNode(provider, nodeProv secrets.Provider) bool {
+	return nodeProv == "" || provider == nodeProv
 }
 
 // clawAnthropicProviderSlots are the BYOK slots whose key claw's `anthropic`
@@ -2529,10 +3933,15 @@ var clawAnthropicProviderSlots = []secrets.Provider{
 }
 
 // heldAnthropicWireAPIKey reports whether the run carries a BYOK key claw's
-// anthropic provider would spend (clawAnthropicProviderSlots).
-func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
+// anthropic provider would spend (clawAnthropicProviderSlots) that the
+// crossing hands a node it reads as nodeProv (runKeyRidesNode). A z.ai key
+// rides a GLM node alone: a claude node never receives it — and the env
+// factory refuses its synthesis for a claude id anyway — so it keeps no
+// forfait out of a claude node, whose in-process twin spends the forfait
+// past it.
+func heldAnthropicWireAPIKey(creds secrets.Credentials, nodeProv secrets.Provider) bool {
 	for _, slot := range clawAnthropicProviderSlots {
-		if creds.APIKeys[slot] != "" {
+		if creds.APIKeys[slot] != "" && runKeyRidesNode(slot, nodeProv) {
 			return true
 		}
 	}
@@ -2597,16 +4006,32 @@ func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[st
 // returns err. The refusal happens on the host's side of the boundary, so it
 // is logged and emitted from here — not left to the runner's event relay,
 // which whatever forged the call also controls. Its text quotes the call the
-// other side sent, argument included, so THIS log line owes the run's
-// redaction. The error itself travels to two readers that already handle it:
-// back over the IPC as the refused call's result, to the side that wrote the
-// argument, and to the OnToolCall hook, whose own sink redacts its text.
-func (b *ClawBackend) refuseForwardedCall(task delegate.Task, name string, err error) error {
+// other side sent, argument included; the run logger redacts the record
+// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458). The error itself travels to two readers that
+// already handle it: back over the IPC as the refused call's result, to the
+// side that wrote the argument, and to the OnToolCall hook, whose own sink
+// redacts its text.
+//
+// The event names the call the way the runner's own does — the tool_use id
+// and parent the runner sent with it (delegate.ForwardedToolUseFrom) — so a
+// refused nested call of a codemode program lands under its program rather
+// than as a stray top-level call. An older runner sends neither, and the
+// event stays id-less. Those two are the runner's CLAIM, from the side this
+// event exists to distrust, so the event is marked as the launcher's own
+// (EmittedBy): readers keep it apart from the runner's events, never merged
+// into or overwritten by one, and nothing keyed on the claimed id — the
+// remembered input, a payload blob — is read or written for it.
+func (b *ClawBackend) refuseForwardedCall(ctx context.Context, task delegate.Task, name string, input json.RawMessage, err error) error {
 	if b.logger != nil {
-		b.logger.Warn("[%s/claw] %s", task.NodeID, farSideForLog{task, err.Error()})
+		b.logger.Warn("[%s/claw] %s", task.NodeID, err)
 	}
 	if b.hooks.OnToolCall != nil {
-		b.hooks.OnToolCall(task.NodeID, LLMToolCallInfo{ToolName: name, Error: err})
+		id, parent := delegate.ForwardedToolUseFrom(ctx)
+		info := toolCallInfo(toolUseBlock{ID: id, Name: name, PartialJSON: string(input), Parent: parent})
+		info.Error = err
+		event := toLLMToolCallInfo(info)
+		event.EmittedBy = ToolEventEmittedByLauncher
+		b.hooks.OnToolCall(task.NodeID, event)
 	}
 	return err
 }
@@ -2647,6 +4072,23 @@ func refusedMCPServerSummary(refused map[string]delegate.MCPLauncherRefusal) str
 		quoted[i] = fmt.Sprintf("%q", name)
 	}
 	return "servers " + strings.Join(quoted, ", ")
+}
+
+// rejectSandboxedPermissionPause enforces the launcher's no-Ask contract on
+// incoming results as well as on outgoing tasks. Ordinary ask_user pauses
+// carry no permission marker and keep their resume state.
+func rejectSandboxedPermissionPause(res *delegate.Result) bool {
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	if _, marked := questions[permission.InteractionMarkerKey]; !marked {
+		return false
+	}
+	delete(res.Output, "_needs_interaction")
+	delete(res.Output, "_interaction_questions")
+	res.PendingConversation = nil
+	res.PendingToolUseID = ""
+	res.PendingCommandNarrowing = nil
+	res.PendingPermissionInput = nil
+	return true
 }
 
 // refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
@@ -2744,21 +4186,30 @@ func canonicalMCPToolName(name string) string {
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
 //     envelope from the host store (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) delegate.MultiplexerHandler {
+//
+// The returned flag is the crossing's stranding verdict, live for the
+// whole dispatch: the caller reads it after [delegate.Multiplexer.Run] to
+// stamp a pause result the crossing produced while stranded, so the fact
+// travels with the pause (see [executeViaSandboxRunner]).
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed, approvalSpent *crossingApprovalState) (delegate.MultiplexerHandler, *atomic.Bool) {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
+	toolNames := make([]string, 0, len(task.ToolDefs))
 	for _, td := range task.ToolDefs {
 		toolByName[td.Name] = td
+		toolNames = append(toolNames, td.Name)
 	}
 	hostRunID, hostStore := runtimeContextFrom(ctx)
 	// The mirror's key is the launcher's, not the wire's: a session_capture
 	// envelope carries the snapshot alone, and the host holds the task the
 	// runner is executing.
 	hostSessKey := taskSessionKey(task)
-	// Whether this crossing holds none of the session's history, from the two
-	// sides that know: the seed's own outcome, and the runner's word for a
-	// replay that did not survive the channel. Either way the crossing
+	// Whether this crossing holds none of the session's history, from the
+	// three sides that know: the seed's own outcome, the runner's word for
+	// a replay that did not survive the channel, and the pause this
+	// crossing resumes from (task.SessionStranded — the fact travelled
+	// with it). Either way the crossing
 	// answers without the conversation this host holds, and its capture must
 	// not become it. Both reach this flag before any capture can — the runner
 	// loads the replay into its local store before it runs the node, and
@@ -2766,16 +4217,19 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	// is atomic because the guard is load-bearing while the dispatch's
 	// schedule is the multiplexer's to change.
 	var stranded atomic.Bool
-	stranded.Store(seed.refused)
+	stranded.Store(seed.refused || task.SessionStranded)
 	var strandedOnce sync.Once
 	return delegate.MultiplexerHandler{
+		OnPermissionAsk: func(askCtx context.Context, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+			return b.servePermissionAsk(askCtx, task, toolByName, toolNames, approvalSpent, ask)
+		},
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
 			// A runner forwards the name the tool was advertised under — its
 			// proxy closure captures it — so any other spelling is not one an
 			// honest runner sends, and is refused rather than mapped.
 			td, ok := toolByName[name]
 			if !ok {
-				return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q was not advertised to this node", name))
+				return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf("launcher: tool %q was not advertised to this node", name))
 			}
 			// The sandbox boundary is held on THIS side. The runner is the
 			// contained process — possibly an older binary baked into the
@@ -2784,7 +4238,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// never a verdict: only a tool whose home is the launcher's own
 			// state executes here.
 			if placement, reason := tool.SandboxPlacementOf(td.Name); placement != tool.PlacementLauncher {
-				return "", b.refuseForwardedCall(task, name, fmt.Errorf(
+				return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf(
 					"launcher: refusing to execute tool %q on the host for a sandboxed node: its placement is %s (%s) — "+
 						"a current runner never forwards it: either the sandbox image carries an older iterion, or something else in the container wrote this call",
 					name, placement, reason))
@@ -2797,17 +4251,21 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 				var args map[string]any
 				if len(input) > 0 {
 					if err := json.Unmarshal(input, &args); err != nil {
-						return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q: decode input for the permission gate: %w", name, err))
+						return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf("launcher: tool %q: decode input for the permission gate: %w", name, err))
 					}
 				}
 				if dec, rule, spelling := evaluateForwardedCall(task.Permission, forwardedToolSpellings(td), args); dec != permission.Allow {
-					return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: %s", permission.DenyMessage(spelling, args, rule)))
+					return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf("launcher: %s", permission.DenyMessage(spelling, args, rule)))
 				}
 			}
 			if td.Execute == nil {
 				return "", fmt.Errorf("launcher: tool %q has no Execute closure (engine misconfiguration)", name)
 			}
-			return td.Execute(toolCtx, input)
+			// The node's own tool set rides the context so a launcher-placed
+			// tool whose answer depends on it — tool_search — reports what
+			// THIS node can execute, not the registry's whole catalogue
+			// (#2717); the in-process loop pins the same set on its side.
+			return td.Execute(tool.WithNodeExecutableTools(toolCtx, toolNames), input)
 		},
 		OnSessionCapture: func(snapshot json.RawMessage) {
 			if hostStore == nil || hostRunID == "" || hostSessKey == "" {
@@ -2866,6 +4324,8 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// anchors — re-fired through THIS process's hooks so a
 			// sandboxed claw node is persisted, priced, metered and
 			// forkable like an in-process one — see sandbox_relay.go.
+			// A step's credential keys are the container's own (each call's,
+			// the node's or a subagent's): relayed as they came.
 			handled, err := ApplyRelayedEvent(b.hooks, task.NodeID, eventType, payload)
 			if b.logger == nil {
 				return
@@ -2876,21 +4336,19 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// unknown type is the far side's own spelling, while a type
 			// that failed to decode matched a case on one of this host's
 			// constants ([ApplyRelayedEvent] raises an error from nowhere
-			// else). Both go through the run's redaction all the same,
-			// because the pass is what keeps a sink of this class honest
-			// when a new arm quotes a type the far side chose; and through
-			// [farSideForLog], this sink being the only reader, so an
-			// operator log that drops the record on its level pays no pass.
+			// else). The run logger redacts every record it keeps
+			// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458), which is what keeps a sink of this
+			// class honest when a new arm quotes a type the far side chose.
 			switch {
 			case err != nil:
 				b.logger.Warn("[%s#%d/claw] the sandbox runner relayed a %s event this host cannot decode — the node's per-step metering is incomplete: %s",
-					task.NodeID, task.Iteration, farSideForLog{task, eventType}, farSideForLog{task, err.Error()})
+					task.NodeID, task.Iteration, eventType, err)
 			case !handled:
 				b.logger.Debug("[%s#%d/claw] the sandbox runner relayed a %s event this host does not consume",
-					task.NodeID, task.Iteration, farSideForLog{task, eventType})
+					task.NodeID, task.Iteration, eventType)
 			}
 		},
-	}
+	}, &stranded
 }
 
 // ---------------------------------------------------------------------------
@@ -2902,10 +4360,15 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 	tools := make([]GenerationTool, len(defs))
 	for i, d := range defs {
 		tools[i] = GenerationTool{
-			Name:        d.Name,
-			Description: d.Description,
-			InputSchema: d.InputSchema,
-			Execute:     d.Execute,
+			Name:           d.Name,
+			Description:    d.Description,
+			InputSchema:    d.InputSchema,
+			Execute:        d.Execute,
+			concurrentSafe: d.ConcurrentSafe,
+			// The authorship travels with the definition: a deferring node
+			// demotes exactly the tools the author's own `tools:` list
+			// contributed, and never one the runtime appended.
+			authorDeclared: d.AuthorDeclared,
 		}
 	}
 	return tools
@@ -2958,4 +4421,28 @@ func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
 			}
 		}
 	}
+}
+
+// resumeAnswerToolResult shapes the operator's resume answer into the
+// tool_result the pending permission-gated call gets. With the approval
+// channel live (the runner side, which holds no claim), an allow-once
+// answer carries the same re-issue instruction an allow-always does: the
+// authorization is not in the text — the launcher re-authorizes the
+// re-issued call by exact bytes, spending the held claim on a match and
+// deferring to a fresh pause on any difference. Without the channel the
+// legacy split stands: allow-always re-issues under the applied grant,
+// every other answer is a denial the model adapts to.
+func resumeAnswerToolResult(answer string, channelLive bool) (string, bool) {
+	text := answer
+	if text == "" {
+		text = "(no answer provided)"
+	}
+	isErr := false
+	if allow, always := permission.ParseExactApprovalAnswer(text); allow && (always || channelLive) {
+		text = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
+	} else {
+		text = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
+		isErr = true
+	}
+	return text, isErr
 }

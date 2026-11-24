@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
@@ -121,12 +122,15 @@ func (r *run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		return exec.CommandContext(ctx, "")
 	}
 	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-	if opts.WorkDir != "" {
-		c.Dir = opts.WorkDir
-	} else if r.info.WorkspacePath != "" {
-		c.Dir = r.info.WorkspacePath
-	}
 	c.Env = os.Environ()
+	// A HOST spawn: the child's PWD must agree with its working directory
+	// (proc.SetWorkDir). This driver has no image whose own PWD could — left
+	// alone, the variable names the engine's checkout.
+	workDir := opts.WorkDir
+	if workDir == "" {
+		workDir = r.info.WorkspacePath
+	}
+	proc.SetWorkDir(c, workDir)
 	// The spec's seeded env (default locale, ITERION_TREE_NOISE pathspecs)
 	// reaches deliberately-pinned noop commands too — a pinned driver still
 	// runs engine-compiled tool scripts whose scope gates read those

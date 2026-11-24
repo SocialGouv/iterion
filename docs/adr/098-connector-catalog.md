@@ -155,8 +155,11 @@ contracts prerequisites rather than details, and each is a P1 deliverable:
   handler's own invariant says its grant model is safe *only* because its
   store is single-tenant
   ([mcp_board_handler.go:204](../../pkg/server/mcp_board_handler.go)), and
-  `ConnectionStore.Get` filters by `_id` alone
-  ([connection_store.go:141](../../pkg/forge/connection_store.go)). Copying
+  the forge connection store's `Get` filtered by `_id` alone until the
+  contract phase closed it
+  ([#2760](https://github.com/SocialGouv/iterion/issues/2760): the store is
+  [pkg/connection's ForgeStore](../../pkg/connection/forge_store.go), the
+  tenant in its filter). Copying
   the board grant would let any valid run token resolve any tenant's
   connection. A connector grant carries tenant, run/attempt, node, the
   authorized alias→connection mapping, the package digest, the permitted
@@ -200,6 +203,78 @@ resumable run references them, with connector-specific blob offload beside
 the IR's (ADR-075). And an image `COPY` serves the server and runner but
 gives a standalone release binary nothing — CLI and desktop need their own
 asset delivery.
+
+**The baked floor is in the binary, and nothing resolves through it yet**
+(#2757, slice S1). [`connectors/embed.go`](../../connectors/embed.go) carries
+the shipped packages WHOLE (`//go:embed all:forgejo` — the generated half, the
+overlay, the schemas, the contracts, the triggers and the identity lock), and
+`connection.BakedCatalog` serves them through the SAME loader a directory tier
+uses: the package loaders now read `io/fs`
+([`spec.LoadFS`](../../pkg/connector/spec/io.go),
+[`overlay.LoadPackageFS`](../../pkg/connector/overlay/overlay.go)) with the
+directory form an `os.DirFS` wrapper, so the only way to serve an embedded
+package — a SECOND loader — never has to be written. That matters precisely
+because of the defect recorded below: two loaders of one format is how
+validation came to report on the merged package while execution ran the
+generated one, two auth schemes against five.
+
+It is deliberately NOT part of `LocalCatalogs`. A tier that always answers
+makes `LocalResolver` never return nil, which makes the refusal "this process
+has no connector catalog wired" unreachable — and that refusal, with its
+greppable `ITERION_CONNECTOR_ADMISSION` override, is what keeps a `.bot` from
+spending an operator's credential on a resolution nobody configured. Its real
+question becomes "no CONNECTION bound for this connector", which is a
+tenant-scoped read of the store at admission: a product decision, not a
+rename. Composing the floor and re-aiming every "no catalog" surface is
+therefore ONE change (slice S2), not a side effect of the seam.
+
+**The git source exists, and it fetches at INSTALL time only** (#2757):
+`iterion connectors install <git url | repository path> --ref <sha>
+[--path <dir>]` materializes the source at that commit
+([`pkg/git.MaterializePin`](../../pkg/git/pinned.go)), loads it with the
+overlay-applying loader a run uses, hashes the bytes that passed, and copies
+them into `<iterion home>/connectors/<id>` — the tier `LocalCatalogPaths`
+names, asked rather than re-spelled, because an install that writes where
+resolution does not read is the one failure the command cannot report. The
+record lands beside the packages (`<root>/.pins/<id>.json`: source, commit,
+content hash, version), never inside one: inside, it would change the very
+hash it certifies and `FSCatalog.Connectors` would read its directory as a
+connector id.
+
+Three properties are load-bearing, and each is a refusal rather than a
+convention. The ref must be a COMMIT: a branch or a tag is a pointer whose
+publisher can move it, so the same command run twice would install different
+operations under the same connector id and the only word on which ones a run
+got would be the minute it ran — the fetch asks for the object id and proves
+`HEAD` against it, so a host that serves something else is an error, not a
+silent substitution. Nothing is fetched while a run RESOLVES: a tier that
+dialled out per node would make every action depend on a remote host, and the
+fetched package is what decides what an operation does and where a
+connection's credential goes on the wire. And the fetched tree is validated
+BEFORE it can serve — which needs no ordering discipline to enforce, since
+the load is what says which id the package installs under; a refusal
+therefore leaves the previous install serving, instead of emptying a tier of
+a connector nobody asked to remove.
+
+What a git source still does NOT do: there is no lockfile for connector
+packages and no `connectors update` — the install is an operator's deliberate
+act on one machine, and the pin record is what a later update story will read.
+
+**The durable tiers landed** (#2757.3/.4): `connection.PackageStore` holds a
+published package as a validated file map (publish loads it through the same
+loader a run resolves with — validated before it can serve), with memory and
+Mongo (`connector_packages`) twins. `TeamCatalog` and `PlatformCatalog` are
+the tier implementations, composed by `CloudCatalogs` as **team → platform →
+baked**, the bot distribution's own precedence. Every cloud site that knows
+the tenant resolves through that composition: the facade per grant, the
+connection CRUD and the connector webhook lane. A package that cannot be
+served as MCP tools fails its publish; one whose tool collides with another
+package's is left out of the facade rather than taking it down. The *writer*
+of those tiers — the publication route, with the platform tier's super-admin
+gate — is the route lot this ADR keeps separate; the seam, the stores and the
+precedence are what this lot owed. The size limit the P0 measurement owed is
+decided here: `MaxPackageBytes` = 12 MiB, above the largest measured package
+(GitHub, ~4.7 MiB), under the 16 MiB BSON document cap.
 
 ### 6. `tool` gains a third recipe rather than a new node type
 
@@ -430,6 +505,60 @@ reproducible; a generated package nobody can regenerate is a blob, and the
 whole split rests on the generated half being disposable. It is also the
 install-time lane, which is why `--license` and `--redistributable` are
 explicit inputs recorded in the provenance rather than inferred.
+
+## What a triggers file carries
+
+The inbound half is declared by the package, like the outbound one:
+`triggers.yaml` lists the events a connector can receive, and the engine
+believes an event because a package says it exists rather than because a
+`switch` in `pkg/server` has an arm for it. The file was named in
+`pkg/connector/spec`'s own package layout before anything read it, which is the
+worst of the two positions — a format announced to package authors and ignored
+by the loader — so the minimum it needs to be true is settled here.
+
+A document carries `schema_version` (its OWN, starting at `1`, REQUIRED — the
+overlay's precedent: a curated file borrowing the package's constant lets a
+package-format bump silently widen what it may declare), the `connector` it
+belongs to, and a list of triggers. A trigger carries exactly three things: an
+`id` addressable by the same rule as an operation id
+(`<connector>.<resource>.<verb>`, first segment the package's own), the
+vendor's `event` name as a delivery carries it (`issue_comment` in Forgejo's
+`X-Forgejo-Event`), and an optional one-line `description`. The version is read
+by a tolerant pre-pass BEFORE the strict decode, so a file from a newer iterion
+is diagnosed as one instead of as an unknown field. `Validate` refuses a
+trigger that names no event, one whose id is not addressable or sits in another
+package's namespace, two sharing an id, and an id that is also an operation's —
+one id is one thing, and a collision this format allowed could never be removed
+afterwards.
+
+`triggers.yaml` is CURATED, on the overlay's side of the generated/authored
+line: no vendor description states which of its webhooks an engine will
+believe. So `spec.Write` does not emit it and `iterion connectors gen` does not
+scaffold one, which is also what makes a declaration survive a regeneration —
+only `ops/` is rewritten. An absent file is a valid package: most connectors
+have no inbound half.
+
+What is deliberately NOT in the format, and stays with the trigger-ingress
+family this ADR defers to a later lot of #1072: event FILTERS (an action, a
+branch, a label), payload MAPPING onto a run's vars, durable POLLING cursors,
+and the studio surfaces. Each would be a field invented before its reader, and
+a format grows by adding optional fields at a constant version — not by
+re-deciding what an existing one meant. The cloud twin owes nothing: a
+declaration is read from the package at load time and never persisted, so there
+is no durable state here to ship a Mongo half for.
+
+**The first inbound lane landed** (#2761): a webhook config bound to a
+connection (`connector_connection_id`) is served by the connector lane
+(`pkg/server/webhooks_connector.go`) — the delivery is verified by the
+webhook's own HMAC secret, believed on the connection's `trigger` grant, and
+matched against the package's declared events, reaching a bot run with the
+declared trigger's id. A connection that is not usable (revoked, needs
+reauth) vouches for nothing — refused at bind time and at read time, the
+same refusal the action/agent chokepoint applies — and the webhook's own
+project/author allowlists and hold-label veto narrow what the package
+declared, as on the legacy lanes. One connector (Forgejo), one event: the
+vertical proof and the seam the second one implements, not the framework.
+Filters, payload mapping and polling cursors stay deferred as stated above.
 
 ## The execution profile — what schema v1 actually promises
 
@@ -965,6 +1094,7 @@ treated the site the report named.
 | Effective package at runtime | **Shipped** (F2) — generated + overlay, one loader for validation and execution |
 | Fenced refresh claim / revision CAS | Not implemented (F8) |
 | A cloud (Mongo) `connection.Store` | Not implemented — connectors remain LOCAL-ONLY |
+| Forge connections under this contract | **Shipped** ([#2760](https://github.com/SocialGouv/iterion/issues/2760)) — the record, the tenant-scoped `ForgeStore` (memory + Mongo twins) and the credential sealer live in pkg/connection; ids, the `forge_conn:` AAD, the `forge_connections` collection and the OAuth callback URLs are preserved, so no data migration exists to run. The refresh worker and orchestrator stay in pkg/forge (moving them would import the forge clients back into pkg/connection — a cycle) and read the contract like every other caller |
 
 **The single most dangerous thing**, in the reviewer's framing and accepted
 here: nothing yet binds a run to the connections it may use. The tenant check
@@ -1408,6 +1538,23 @@ generated a connector into their own project (`connectors gen` writes
 `connectors/<id>` by default) says so once. The tier is skipped in
 `LocalCatalogs` — the one place that decides which roots are catalogs — so
 `connections add` and a run still refuse identically.
+
+The grant is one of **two** conditions on that tier, and both are answered in
+`LocalCatalogs` for the same reason. The second is the RUN's trust: a
+deployment that grants the project tier *and* serves the fork review lane
+would let the reviewed tree ship `connectors/<id>/` declaring `effect: read`
+on a `DELETE`, and that package's own word is what the lane's refusal reads —
+the guard would consult the thing it guards against. Pinning the tier onto the
+resolved package is not available (`spec.Package` carries no provenance), and
+the tier the layered catalog hands back since #2757 names the winner only once
+it has WON — a name for the operator reading a refusal, never a licence a rule
+may branch on — so the tier that must not win is still not BUILT for that run. The two reasons are worded apart where the tier reports
+itself: an operator whose tier is merely ungranted keeps reading the variable
+that opens it, while a run over code the tenant does not control is told the
+tier was not consulted for it and is not handed the sentence that would serve
+it. `connections add` states the operator's own trust explicitly rather than
+defaulting: it has no run to read one from, and answering "unstated" there
+would close the tier for the grant's only legitimate use.
 
 A tier that is present and ungranted does **not** vanish, because a silently
 inert capability is this repo's own definition of a defect: it becomes a tier

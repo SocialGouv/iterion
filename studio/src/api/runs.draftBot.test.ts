@@ -211,6 +211,7 @@ describe("lookupEditorProposal", () => {
       revision: 7,
       applyIntent: "explicit",
       saveIntent: "explicit",
+      file: null,
     });
   });
 
@@ -236,6 +237,7 @@ describe("lookupEditorProposal", () => {
       revision: 11,
       applyIntent: "none",
       saveIntent: "explicit",
+      file: null,
     });
   });
 
@@ -260,6 +262,7 @@ describe("lookupEditorProposal", () => {
       revision: null,
       applyIntent: "none",
       saveIntent: "none",
+      file: null,
     });
   });
 
@@ -285,6 +288,7 @@ describe("lookupEditorProposal", () => {
       revision: null,
       applyIntent: "none",
       saveIntent: "none",
+      file: null,
     });
   });
 
@@ -304,6 +308,50 @@ describe("lookupEditorProposal", () => {
     await expect(lookupEditorProposal("run1")).resolves.toMatchObject({
       applyIntent: "none",
       saveIntent: "none",
+    });
+  });
+
+  it("carries editor_file as a hint beside the draft, and only beside one", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 2, written_at: "2026-08-23T12:00:00Z" }],
+      {
+        "copi/2": {
+          mode: "design",
+          draft_bot: "agent worker:\n  model: \"m\"\n",
+          editor_session_id: "opaque-session",
+          editor_revision: 7,
+          editor_apply_intent: "explicit",
+          editor_file: "lib/nodes.bot",
+        },
+      },
+    );
+    // The hint is read through, verbatim: which file of a bot in several
+    // files the draft holds the text of. What the studio DOES with it —
+    // refuse a mismatch with the Source view's picker, never redirect the
+    // write — is the offer's, not this lookup's (#1647).
+    await expect(lookupEditorProposal("run1")).resolves.toMatchObject({
+      file: "lib/nodes.bot",
+    });
+  });
+
+  it("lets no save-only artifact carry a file hint", async () => {
+    stubApi(
+      [{ node_id: "assistant", version: 3, written_at: "2026-09-08T12:00:00Z" }],
+      {
+        "assistant/3": {
+          mode: "design",
+          draft_bot: "",
+          editor_session_id: "host-session",
+          editor_revision: 11,
+          editor_save_intent: "explicit",
+          editor_file: "lib/nodes.bot",
+        },
+      },
+    );
+    // A save-only turn writes the host's own buffer: no model-named file is
+    // about it, so none may ride along.
+    await expect(lookupEditorProposal("run1")).resolves.toMatchObject({
+      file: null,
     });
   });
 });
@@ -652,6 +700,7 @@ describe("lookupFileChangeProposal", () => {
       revision: 4,
       applyIntent: "explicit",
       saveIntent: "suggested",
+      file: null,
     });
   });
 });

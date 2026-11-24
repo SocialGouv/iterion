@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -142,7 +143,7 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 	if conn.Kind == forge.KindGitHubApp {
 		return s.githubAppClientFor(ctx, conn)
 	}
-	token, err := forge.AdminTokenFor(s.sealer, conn)
+	token, err := connection.ForgeAdminToken(s.sealer, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +287,7 @@ func (s *Server) recordForgeAppSlug(conn forge.Connection, slug string) {
 		return
 	}
 	ctx := store.WithTenant(context.Background(), conn.TenantID)
-	fresh, err := s.forgeConnections.Get(ctx, conn.ID)
+	fresh, err := s.forgeConnections.Get(ctx, conn.TenantID, conn.ID)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge: record app slug %q for connection %s: %v", slug, conn.ID, err)
@@ -761,21 +762,28 @@ func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connec
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	// A known-narrow grant fails BEFORE the mint with the remediation named,
-	// instead of surfacing GitHub's generic 422. An unknown grant set
-	// (pre-dates GrantedPermissions) still attempts the mint — the 422 path
-	// classifies it as forge.ErrPermissionsNotGranted with GitHub's message.
-	if len(conn.GrantedPermissions) > 0 {
-		if _, ok := conn.GrantedPermissions["vulnerability_alerts"]; !ok {
-			// The ORG, not the App's bot handle: this string tells an
-			// operator where to click.
-			org := conn.InstallationAccount
-			if org == "" {
-				org = conn.AccountLogin
-			}
-			return "", time.Time{}, fmt.Errorf("%w: the installation for %q lacks 'Dependabot alerts: read' — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
-				forge.ErrPermissionsNotGranted, org)
+	// A known-narrow grant — the stored one, and the live one re-read when
+	// the stored one lacks it (installationGrants) — fails BEFORE the mint
+	// with the remediation named, instead of surfacing GitHub's generic 422.
+	// An unknown grant set (pre-dates GrantedPermissions) still attempts the
+	// mint — the 422 path classifies it as forge.ErrPermissionsNotGranted
+	// with GitHub's message.
+	granted, err := s.installationGrants(ctx, conn, func(g map[string]string) bool {
+		_, ok := g["vulnerability_alerts"]
+		return ok
+	})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if !granted {
+		// The ORG, not the App's bot handle: this string tells an operator
+		// where to click.
+		org := conn.InstallationAccount
+		if org == "" {
+			org = conn.AccountLogin
 		}
+		return "", time.Time{}, fmt.Errorf("%w: the installation for %q lacks 'Dependabot alerts: read' (its live grant was re-read) — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
+			forge.ErrPermissionsNotGranted, org)
 	}
 	tok, expiresAt, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),

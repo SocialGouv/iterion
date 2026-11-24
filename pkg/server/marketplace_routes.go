@@ -86,18 +86,22 @@ func (s *Server) handleMarketplaceList(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
+	viewer := s.marketplaceViewer(r)
 	q := marketplace.Query{
 		Text:   r.URL.Query().Get("q"),
 		Tag:    r.URL.Query().Get("tag"),
 		Kind:   kind,
 		Sort:   sortBy,
-		Viewer: s.marketplaceViewer(r),
+		Viewer: viewer,
 	}
 	entries, err := s.marketplace.List(r.Context(), q)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "marketplace: list: %v", err)
 		return
 	}
+	// The wire carries the viewer's projection: account ids and
+	// moderation metadata only reach the submitter and super-admins.
+	entries = marketplace.ForViewerAll(entries, viewer)
 	if entries == nil {
 		entries = []marketplace.Entry{}
 	}
@@ -125,20 +129,25 @@ func (s *Server) handleMarketplaceGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return 404 (not 403) when the entry exists but the viewer may not
 	// see it — never leak the existence of a scoped/pending slug.
-	if !marketplace.Visible(*e, s.marketplaceViewer(r)) {
+	viewer := s.marketplaceViewer(r)
+	if !marketplace.Visible(*e, viewer) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "marketplace: %q not found", slug)
 		return
 	}
-	s.writeJSONFor(w, r, e)
+	// Same projection as the listing: no account ids for a public or
+	// non-owner read.
+	s.writeJSONFor(w, r, marketplace.ForViewer(*e, viewer))
 }
 
-// handleMarketplaceSubmit answers POST /api/v1/marketplace/submit. Like
-// /api/v1/bots/install it clones an arbitrary URL server-side and so is
-// LOCAL-MODE ONLY — cloud deployments must go through their own vetted
-// submission path. marketplace.InspectSource validates the source
-// without writing anything to the workspace and detects its kind (bot
-// bundle or plugin); on success we derive the registry slug + persist
-// the entry.
+// handleMarketplaceSubmit answers POST /api/v1/marketplace/submit. It
+// clones an arbitrary URL server-side, so in local mode it is the sole
+// operator's action and auto-approves; in cloud mode it requires an
+// authenticated identity and lands the entry pending moderation
+// (approve/reject under /api/v1/marketplace/moderation). Only the
+// install and uninstall paths stay local-only. marketplace.InspectSource
+// validates the source without writing anything to the workspace and
+// detects its kind (bot bundle or plugin); on success we derive the
+// registry slug + persist the entry.
 func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMarketplace(w, r) {
 		return
@@ -253,7 +262,10 @@ func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request)
 		// back to the entry we wrote so the client still sees something.
 		stored = &entry
 	}
-	s.writeJSONFor(w, r, stored)
+	// The submitter is the viewer here, so the projection keeps the
+	// entry whole; routing through ForViewer keeps every browse-facing
+	// response on the same wire rule.
+	s.writeJSONFor(w, r, marketplace.ForViewer(*stored, s.marketplaceViewer(r)))
 }
 
 // handleMarketplaceInstall answers
@@ -316,13 +328,26 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 		// path sends it so re-installing a drifted version succeeds instead
 		// of erroring "already exists".
 		force := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true")
-		res, err := botinstall.Install(r.Context(), botinstall.Options{
+		// The clone runs before the bot tree's lock is taken, the install of
+		// the checkout under it.
+		opts, cleanup, err := botinstall.Checkout(r.Context(), botinstall.Options{
 			Source:  entry.RepoURL,
 			Ref:     entry.Ref,
 			Path:    entry.Subpath,
 			Force:   force,
 			Workdir: s.cfg.WorkDir,
 		})
+		defer cleanup()
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install: %v", err)
+			return
+		}
+		release, ok := s.lockBotTree(w, r, botTreeWriterMarketplace)
+		if !ok {
+			return
+		}
+		defer release()
+		res, err := botinstall.Install(r.Context(), opts)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install: %v", err)
 			return
@@ -340,7 +365,8 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 	if refreshed == nil {
 		refreshed = entry
 	}
-	resp.Entry = refreshed
+	projected := marketplace.ForViewer(*refreshed, s.marketplaceViewer(r))
+	resp.Entry = &projected
 	s.writeJSONFor(w, r, resp)
 }
 
@@ -409,13 +435,19 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: uninstall plugin: %v", err)
 			return
 		}
-		s.writeJSONFor(w, r, entry)
+		projected := marketplace.ForViewer(*entry, s.marketplaceViewer(r))
+		s.writeJSONFor(w, r, &projected)
 		return
 	}
 	if s.cfg.WorkDir == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: no workspace configured to uninstall from")
 		return
 	}
+	release, ok := s.lockBotTree(w, r, botTreeWriterMarketplaceRemove)
+	if !ok {
+		return
+	}
+	defer release()
 	// The bundle installs under its manifest name (entry.Name), not the
 	// registry slug — Remove deletes <workdir>/.botz/<name>.
 	removed, err := botinstall.Remove(r.Context(), botinstall.Options{
@@ -426,7 +458,8 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: uninstall: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, marketplaceUninstallResponse{Entry: entry, CatalogError: removed.CatalogError})
+	projected := marketplace.ForViewer(*entry, s.marketplaceViewer(r))
+	s.writeJSONFor(w, r, marketplaceUninstallResponse{Entry: &projected, CatalogError: removed.CatalogError})
 }
 
 // normalizeTags strips empty/whitespace entries and de-dups so the

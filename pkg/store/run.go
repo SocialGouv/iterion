@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
@@ -207,9 +209,15 @@ const (
 	// the forge publish grant (no status, no review, no comment), the
 	// tenant's workflow/generic secrets (no forge_token in the run's
 	// credential bundle, hence none written into the workspace's git
-	// credential store), and any mutating bot. It does NOT withdraw the LLM
+	// credential store), the tenant's bound connector connections for any
+	// MUTATING `action:` operation (refused where the credential is produced,
+	// pkg/connection's resolution; reads still resolve, which is what a review
+	// lane needs), and any mutating bot. It does NOT withdraw the LLM
 	// credential: the lane's whole purpose is to produce a review, and its
-	// spend is bounded by the per-author budget instead.
+	// spend is bounded by the per-author budget instead. And it withdraws
+	// every host capability the workflow declares (HostCapabilities): no
+	// board, no run store, no watch — said per node
+	// (workspace_trust_withdrawal).
 	RunTrustFork RunTrust = "fork"
 )
 
@@ -221,6 +229,95 @@ const (
 // for "fork" AND for anything this binary does not recognise, which is the
 // only safe answer to "I do not know who wrote this code".
 func (t RunTrust) Trusted() bool { return t == RunTrustDefault }
+
+// AmbientLLMRefused reports whether a run of this trust refuses the
+// launcher's ambient LLM credentials — the pod environment's vendor keys and
+// gateway, which are the deployment's money (ADR-162 decision 7): every
+// untrusted run, an unrecognised trust included, spends only the credentials
+// sealed for it. It is the ONE predicate both carriers of the refusal read:
+// the publisher's stamp on the sealed bundle (RunBundle.AmbientLLMRefused)
+// and the runner's derivation from the queue message's trust, which holds
+// when the publisher sealed no bundle at all.
+func (t RunTrust) AmbientLLMRefused() bool { return !t.Trusted() }
+
+// HostCapabilities is the one answer to "which of the host capabilities a
+// workflow declares (`capabilities:`) does a run of this trust hold".
+//
+// A capability reaches the TENANT's state beyond the workspace — its board, its
+// run store, the watch fan-out — and a card or a run is where a prompt injected
+// into an outsider's code would go to outlive the run: a board card names a bot
+// and the bot args it launches with. So a workspace its tenant did not write
+// holds none of them. The refusal is the whole declared list, not a family: a
+// capability this binary does not know yet is withdrawn with the rest, until
+// someone decides it is safe to hand an outsider's code.
+//
+// held is never nil on the untrusted side, so a caller that reads nil as
+// "inherit the workflow's list" cannot mistake the refusal for an absence.
+func (t RunTrust) HostCapabilities(declared []string) (held, withdrawn []string) {
+	if t.Trusted() {
+		return declared, nil
+	}
+	return []string{}, append([]string(nil), declared...)
+}
+
+// Lowest is the less trusted of two provenances: the untrusted one when either
+// is (t first), the trusted default only when both are. A run that learns its
+// provenance from two sources — its own launch and the run it was launched
+// from — holds the lower.
+func (t RunTrust) Lowest(other RunTrust) RunTrust {
+	if !t.Trusted() {
+		return t
+	}
+	return other
+}
+
+// ErrChildParentUnreadable refuses a run launched from another whose document
+// cannot be read: CreateChildRun's parent, a launch's parent_run_id.
+//
+// Typed because it is a refusal with a policy behind it, not an I/O accident.
+// A child executes in what its parent produced — the parent's workspace, a
+// shard of its files — so its provenance is the parent's; an unreadable parent
+// is an UNKNOWN provenance, and unknown never resolves to trusted. The wrapped
+// error says which case it was: a parent that does not exist, one in another
+// tenant (the read is tenant-scoped), a store failure.
+var ErrChildParentUnreadable = errors.New("store: the parent run cannot be read, so the child cannot inherit its workspace provenance")
+
+// ChildTrustFromParent gives a child run the workspace provenance of the run
+// that spawned it: its Trust, and the commit its admission pinned.
+//
+// A sub-bot executes in its parent's workspace — every local runner hands the
+// child the parent's WorkDir — so a child born with an empty Trust under an
+// untrusted parent would run the parent's checkout with every floor off. The
+// stores stamp it at creation (CreateChildRun) because the store is the one
+// place every launcher of a child crosses.
+func ChildTrustFromParent(child, parent *Run) {
+	if child == nil || parent == nil {
+		return
+	}
+	InheritTrustAndAuthor(child, parent)
+	child.RepoSHAExpected = parent.RepoSHAExpected
+}
+
+// InheritTrustAndAuthor gives a run built from another the two facts it
+// inherits whatever workspace it lands in: who wrote the code it executes
+// (Trust) and whose per-contributor bound pays for it (ForkAuthorSubject,
+// ADR-162 decision 5). It is the ONE carrier of both, so neither travels
+// without the other: a child reading untrusted with no subject is refused on
+// every gated resume (no author to meter) and skips the runner's second
+// charge on every ungated one. Every constructor of a run from a parent run
+// calls it — CreateChildRun through ChildTrustFromParent, and runview's Fork,
+// which places the commit pin itself (only the arm that re-clones has a fetch
+// for the pin to certify).
+func InheritTrustAndAuthor(child, parent *Run) {
+	if child == nil || parent == nil {
+		return
+	}
+	child.Trust = parent.Trust
+	// The child's spend is its author's spend: a sub-bot or a fork of a fork
+	// run charges the SAME per-contributor bound (decision 5's subject rides
+	// the document), not a fresh one the child would meter on nothing.
+	child.ForkAuthorSubject = parent.ForkAuthorSubject
+}
 
 // IsFork names the one untrusted class this binary knows, for the sites that
 // must WORD a refusal or pick a lane rather than withhold a capability.
@@ -476,9 +573,18 @@ func (f *RunFallback) UnmarshalBSONValue(typ byte, data []byte) error {
 // backend did not report one — DeclaredModel is then the only hint,
 // not a substitute for what ran.
 type NodeServed struct {
-	Backend         string `json:"backend" bson:"backend"`
-	Model           string `json:"model,omitempty" bson:"model,omitempty"`
-	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
+	Backend       string `json:"backend" bson:"backend"`
+	Model         string `json:"model,omitempty" bson:"model,omitempty"`
+	DeclaredModel string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
+	// Provider is the provider of the route that SERVED — the chain
+	// element's resolved hint, or the spec prefix's pin on claw ("zai" for
+	// `anthropic/glm-*`). The selected route is provider AND model bound
+	// together (#2772): the model alone cannot say whose endpoint answered
+	// (a claude id and a glm id are both anthropic-wire), and the route is
+	// the unit a `fallbacks:` entry declares. Empty when the route deferred
+	// to the wire's default precedence — the fingerprint then names what
+	// held it, for the backends that report one.
+	Provider        string `json:"provider,omitempty" bson:"provider,omitempty"`
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
 	// Fingerprint is the provider fingerprint the backend reported for the
@@ -607,12 +713,76 @@ type RunLLMRoutePolicy struct {
 	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
 }
 
+// RunPoolAttachment is the launch-time snapshot of the resolved pool
+// attachment (ADR-164) — a wire twin of credpool.Strategy, for the same
+// reason RunLLMRouteOverride mirrors llmroute.Override: this package must
+// stay importable from pkg/credpool's own tests, which reach pkg/store.
+//
+// NIL on the run doc = no attachment resolved anywhere in the fold — the
+// run keeps today's behavior byte for byte (the legacy audience pools, the
+// empty-bundle tier, the door). NON-NIL with an empty PoolID is the
+// resolved-DISABLED answer: a level wrote Enabled=false and the fold stops
+// there — no pool serves this run, attached or legacy. NON-NIL with a
+// PoolID names the one pool that serves it, under the frozen strategy; the
+// ENTRY choice re-resolves per attempt (the broker's supersede machinery
+// arbitrates per-attempt leases inside the same frozen pool).
+type RunPoolAttachment struct {
+	PoolID string `json:"pool_id" bson:"pool_id"`
+	// ScopeID is the scope whose attachment resolved ("platform",
+	// "org:<id>", "team:<id>", "bot:<team>/<bot>", "binding:<source>") —
+	// the provenance the borrower-side draw caps book against (the att:
+	// ledger row names it). Empty for the disabled answer.
+	ScopeID  string          `json:"scope_id,omitempty" bson:"scope_id,omitempty"`
+	Strategy RunPoolStrategy `json:"strategy" bson:"strategy"`
+	// Limits are the attachment's borrower-side draw caps, frozen so the
+	// walk enforces exactly what the scope's record said at launch. Zero
+	// fields = uncapped axes.
+	Limits RunPoolDrawLimits `json:"limits" bson:"limits"`
+}
+
+// RunPoolDrawLimits is the frozen borrower-cap pair (credpool.DrawLimits's
+// wire twin).
+type RunPoolDrawLimits struct {
+	MaxRunsPerDay int     `json:"max_runs_per_day,omitempty" bson:"max_runs_per_day,omitempty"`
+	MaxUSDPerDay  float64 `json:"max_usd_per_day,omitempty" bson:"max_usd_per_day,omitempty"`
+}
+
+// RunPoolStrategy is the frozen fallback policy. Triggers is never
+// omitempty: the frozen list is the EFFECTIVE one (defaults and the
+// platform ceiling applied) — an empty list is the answer "never
+// pre-empt", not an absence.
+type RunPoolStrategy struct {
+	Mode      string   `json:"mode,omitempty" bson:"mode,omitempty"`
+	MarginPct *float64 `json:"margin_pct,omitempty" bson:"margin_pct,omitempty"`
+	Triggers  []string `json:"triggers" bson:"triggers"`
+	ResetHold bool     `json:"reset_hold,omitempty" bson:"reset_hold,omitempty"`
+}
+
+// ProviderAllowlist is the run's frozen providers list (ADR-129 §5) exactly
+// as the launch stamped it — nil on a nil policy or one that named no list:
+// no allowlist is in force. Nil-safe, so every lane (the cloud publisher,
+// the cloud runner, the in-process lane and its resume) reads it through
+// the one method.
+func (p *RunLLMRoutePolicy) ProviderAllowlist() []string {
+	if p == nil {
+		return nil
+	}
+	return p.Providers
+}
+
 // RetryReasonUsageWindow is the failure class a usage-window park writes to
 // RunRetryState.Reason. One constant because it is a FILTER term in both
 // stores' probe scans and the discriminator every reader of a usage park
 // keys on (UsageParkWall): a second spelling would silently make a parked
 // run invisible to the pass that probes it.
 const RetryReasonUsageWindow = "usage_window"
+
+// RetryReasonCredSlot is the failure class of a park on a credential's hard
+// concurrency cap (FailureCredSlotWait). The wait ends when a run holding a
+// slot ends, which names no instant: the sweeper asks again on a cadence of
+// its own, and the probe pass — keyed on RetryReasonUsageWindow — never
+// pulls such a row forward for a provider wall it is not waiting on.
+const RetryReasonCredSlot = "cred_slot"
 
 // RunRetryState is the live retry bookkeeping for a run whose failure is
 // waiting on a provider quota window to reopen.
@@ -695,6 +865,77 @@ type RunRetryState struct {
 	// predates this field, so a spent budget is reachable) belongs to the
 	// wait it is already on.
 	Wall *time.Time `json:"wall,omitempty" bson:"wall,omitempty"`
+	// WallCredentials are the credentials the attempt that met this wait's
+	// wall sealed (Run.CredFingerprints as the PAID arming read it): the
+	// credential window the wait belongs to (CredentialWindow), which the
+	// sweeper probes once for every run parked on it.
+	//
+	// Copied by the paid arming, in the arming's own update, and written by
+	// nothing else: a pull, a free re-arm, a delay and a clear all keep it.
+	// Run.CredFingerprints itself cannot be the key — every resume re-stamps
+	// it, so a probe's canary whose re-resolution sealed another set (the
+	// next pool slot, an empty resolution) left its own window, which then
+	// lost its pace, its outstanding probe and its probe budget and pulled a
+	// second canary within the hour. Absent on a row armed before this
+	// field: such a wait names no credential window, and waits for its own.
+	WallCredentials []string `json:"wall_credentials,omitempty" bson:"wall_credentials,omitempty"`
+	// ReleasedBy names the run whose probe of this wait's credential window
+	// got past the wall, when THAT answer is what pulled this row forward
+	// (RunRetryStore.ReleaseRunRetry) — empty on a probe's own pull. It
+	// qualifies the marker: written beside ProbeFrom by the release and
+	// consumed with it by every write that consumes the marker, so it says
+	// nothing once ProbeFrom is gone. Read it through Released.
+	//
+	// A release is not a probe. A probe is a guess the preflight is expected
+	// to refuse, so a resume that never reached the provider stands down to
+	// the announced instant and its admission is handed back; a release
+	// follows an answer that the wall fell, so it is expected to succeed — a
+	// transient refusal of its resume comes back on the ordinary backoff,
+	// free, and the window no longer holds it. Only the runner's
+	// meets-the-wall-again path treats both alike: either re-arms free on the
+	// announced instant (ProbeInFlight).
+	ReleasedBy string `json:"released_by,omitempty" bson:"released_by,omitempty"`
+	// ProbeAnsweredAt is the instant the runner saw the wall this row's
+	// marker sets aside fall: in an attempt that followed the pull, a model
+	// call booked on one of the wall's credentials (WallCredentials) was
+	// served — it spent tokens or money on that credential
+	// (RunProbeAnswerStore.AnswerRunProbe). It is the answer a probe of the
+	// credential window gives — the canary's, or a released run's — and the
+	// one the sweeper releases the window's other waits on: a fact the
+	// runner records, never one inferred from the run's status or from how
+	// long ago it was pulled. A run that started late, ran on another
+	// credential or was held behind a cap answers nothing.
+	//
+	// It qualifies the marker like ReleasedBy: written only while ProbeFrom
+	// is held, consumed with it by every write that consumes it.
+	ProbeAnsweredAt *time.Time `json:"probe_answered_at,omitempty" bson:"probe_answered_at,omitempty"`
+}
+
+// Released reports a row pulled forward on its credential window's answer
+// (ReleasedBy) whose set-aside wall is still ahead — the wait the window no
+// longer holds (retrypolicy.UsageWindowNotBefore), whose transient refusal
+// comes back on the ordinary backoff instead of the announced instant, and
+// whose resume is metered like any launch. Nil-safe.
+func (s *RunRetryState) Released(now time.Time) bool {
+	return s.AnnouncedProbeFrom(now) != nil && s.ReleasedBy != ""
+}
+
+// SpeculativeProbeInFlight is ProbeInFlight for a probe's OWN pull: the
+// resume the preflight is expected to refuse, which nobody meters. A
+// release's resume is in flight too (its re-park is free), but it is expected
+// to succeed and is metered like any launch. Nil-safe.
+func (s *RunRetryState) SpeculativeProbeInFlight(now time.Time) bool {
+	return s.ProbeInFlight(now) && s.ReleasedBy == ""
+}
+
+// CredentialWindow is the credential-window key of the wait this row is on
+// (UsageWindowCredential of WallCredentials), empty when the row names none.
+// Nil-safe.
+func (s *RunRetryState) CredentialWindow() string {
+	if s == nil {
+		return ""
+	}
+	return UsageWindowCredential(s.WallCredentials)
 }
 
 // UsageWall is the instant the wait this row is on ends, or the zero time when
@@ -824,20 +1065,27 @@ func (s *RunRetryState) ProbeInFlight(now time.Time) bool {
 // raises the run budget; it does not consume another correction attempt by
 // itself.
 type OutputCorrectionEpisode struct {
-	EpisodeID                string     `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
-	InvocationID             string     `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
-	NodeID                   string     `json:"node_id,omitempty" bson:"node_id,omitempty"`
-	Budget                   int        `json:"budget,omitempty" bson:"budget,omitempty"`
-	Attempts                 int        `json:"attempts,omitempty" bson:"attempts,omitempty"`
-	Status                   string     `json:"status,omitempty" bson:"status,omitempty"`
-	InputFingerprint         string     `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
-	LastOutputFingerprint    string     `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
-	LastViolationFingerprint string     `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
-	LastError                string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
-	StartedAt                time.Time  `json:"started_at,omitempty" bson:"started_at,omitempty"`
-	UpdatedAt                time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
-	RetiredAt                *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
-	RetiredReason            string     `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
+	Generation               string                        `json:"generation,omitempty" bson:"generation,omitempty"`
+	Revision                 int64                         `json:"revision,omitempty" bson:"revision,omitempty"`
+	LedgerKey                string                        `json:"ledger_key,omitempty" bson:"ledger_key,omitempty"`
+	Reservations             []OutputCorrectionReservation `json:"reservations,omitempty" bson:"reservations,omitempty"`
+	Usage                    OutputCorrectionUsage         `json:"usage,omitempty" bson:"usage,omitempty"`
+	TerminalKind             string                        `json:"terminal_kind,omitempty" bson:"terminal_kind,omitempty"`
+	Cause                    *OutputCorrectionCause        `json:"cause,omitempty" bson:"cause,omitempty"`
+	EpisodeID                string                        `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string                        `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
+	NodeID                   string                        `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int                           `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int                           `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string                        `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string                        `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string                        `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string                        `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string                        `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time                     `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time                     `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	RetiredAt                *time.Time                    `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
+	RetiredReason            string                        `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
 }
 
 // WatcherCursor is the durable anti-loop cursor for a supervisor/watch
@@ -871,23 +1119,89 @@ type WatcherCursor struct {
 }
 
 // RunCredStamp is what one credential resolution leaves on the run
-// document: the audit identities of the credentials it sealed, and when the
-// earliest credential it passed over reopens. Written as a unit — at launch
-// on the in-memory document, at resume through RunStore.SetRunCredStamp —
-// so the two facts always describe the same resolution.
+// document: the audit identities of the credentials it sealed, the capacity
+// subjects those credentials draw on, and when the earliest credential it
+// passed over reopens. Written as a unit — at launch on the in-memory
+// document, at resume through RunStore.SetRunCredStamp — so the facts always
+// describe the same resolution.
 type RunCredStamp struct {
 	// Fingerprints replaces Run.CredFingerprints wholesale; nil or empty
 	// clears it (a re-resolution that sealed nothing holds no slot).
 	Fingerprints []string
+	// CapacitySubjects replaces Run.CapacitySubjects wholesale, on the same
+	// terms: a re-resolution that sealed no gateway key holds no gateway
+	// slot.
+	CapacitySubjects []string
 	// Tiers replaces Run.CredentialTiers wholesale, on the same terms.
 	Tiers []string
 	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
 	SkippedReopensAt *time.Time
 }
 
+// Apply writes the stamp on an in-memory run document, every field of the
+// unit at once, and clears the model-idle marker (a re-stamp is a fresh
+// attempt). The launch path and the filesystem twin of SetRunCredStamp both
+// write through it, so a field added to the stamp reaches both or neither;
+// the Mongo twin writes the same fields as one update.
+func (s RunCredStamp) Apply(r *Run) {
+	r.CredFingerprints = s.Fingerprints
+	r.CapacitySubjects = s.CapacitySubjects
+	r.CredentialTiers = s.Tiers
+	r.SkippedCredReopensAt = s.SkippedReopensAt
+	r.LLMIdleSince = nil
+}
+
+// RunContentBoundary identifies the tenant gateway credential a run is
+// funded through (ADR-131). Frozen on the run at launch and replayed by
+// every resume/fork lane exactly as frozen, never re-derived.
+type RunContentBoundary struct {
+	// Kind names the credential class that funds the run.
+	Kind string `json:"kind" bson:"kind"`
+	// KeyID is the id of the gateway key row the launch sealed: under
+	// team_gateway the key that answered, under own_keys a key sealed for a
+	// route the launch could not decide. Empty when the launch sealed no
+	// gateway key — a replay then seals none.
+	KeyID string `json:"key_id,omitempty" bson:"key_id,omitempty"`
+	// GatewayHost is the canonical host of the tenant gateway serving
+	// the key, recorded beside KeyID.
+	GatewayHost string `json:"gateway_host,omitempty" bson:"gateway_host,omitempty"`
+}
+
+// TeamGateway reports whether the boundary holds the run to its team's
+// gateway (ContentBoundaryTeamGateway). Nil-safe: an unstamped run is not.
+func (b *RunContentBoundary) TeamGateway() bool {
+	return b != nil && b.Kind == ContentBoundaryTeamGateway
+}
+
+// The content boundary kinds.
+const (
+	// ContentBoundaryTeamGateway stamps a run whose LLM spend is funded by
+	// the tenant team's gateway credential.
+	ContentBoundaryTeamGateway = "team_gateway"
+	// ContentBoundaryOwnKeys stamps a run funded by keys of its own.
+	ContentBoundaryOwnKeys = "own_keys"
+)
+
 type Run struct {
-	FormatVersion int    `json:"format_version" bson:"format_version"`
-	ID            string `json:"id" bson:"_id"`
+	InitialUsageReservations map[string]OutputCorrectionReservation `json:"initial_usage_reservations,omitempty" bson:"initial_usage_reservations,omitempty"`
+	UsageSessionMarks        map[string]float64                     `json:"usage_session_marks,omitempty" bson:"usage_session_marks,omitempty"`
+
+	// BirthID identifies one durable birth, independently of execution claims.
+	// The store assigns it once; metadata and pause/resume preserve it. Empty
+	// means a historical row without an established birth identity.
+	BirthID string `json:"birth_id,omitempty" bson:"birth_id,omitempty"`
+
+	// DataProtocol selects payload ownership independently of numeric format.
+	// Zero is historical; incarnation storage remains unavailable until all
+	// backend payload domains have qualified the new protocol.
+	DataProtocol RunDataProtocol `json:"data_protocol,omitempty" bson:"data_protocol,omitempty"`
+
+	// ExecutionEpoch is store-owned and assigned at birth. Empty is legacy,
+	// never a grant. Claims, status changes and queue publications renew it;
+	// metadata preserves it, including an existing legacy absence.
+	ExecutionEpoch string `json:"execution_epoch,omitempty" bson:"execution_epoch,omitempty"`
+	FormatVersion  int    `json:"format_version" bson:"format_version"`
+	ID             string `json:"id" bson:"_id"`
 	// ExecutionContext is the versioned launch contract. It is optional so
 	// runs written before the reliability contract remain readable and keep
 	// their legacy behaviour on resume.
@@ -941,6 +1255,21 @@ type Run struct {
 	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
 	// runs through this field.
 	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
+	// CapacitySubjects name the shared capacities the run's sealed
+	// credentials draw on, beyond each credential's own: `gw:<host>` for a
+	// gateway every team's key reaches (GatewayCapacitySubject). Written
+	// only through RunCredStamp, with CredFingerprints, as one unit, and
+	// counted by the same predicate (SpendsCredential), so the run-admission
+	// ledger (CredSlotStore) holds, adopts and evicts a subject's holders on
+	// the rules it applies to a key's. The ledger reads it as a set: the
+	// stores keep the order the stamp gives. No resolution stamps a subject
+	// yet (ADR-167 slice T2 does): until then the field is empty on every
+	// run and changes no count.
+	//
+	// A field of its own, never folded into CredFingerprints: the run
+	// snapshot, a usage wait's wall credentials and the credential walk
+	// read those as the identities of credentials, and a subject is none.
+	CapacitySubjects []string `json:"capacity_subjects,omitempty" bson:"capacity_subjects,omitempty"`
 	// CredentialTiers names which resolution tiers funded this run
 	// (CredentialTier* above), sorted and deduplicated. Stamped with
 	// CredFingerprints, as one unit, at launch and at every resume —
@@ -967,12 +1296,22 @@ type Run struct {
 	// LLMIdleSince is set while the run executes NO model-calling node —
 	// the last one finished at this instant and none has started since —
 	// and nil while one is running, while the run is queued, or before its
-	// first model call (a run about to spend counts). The per-key
-	// concurrency ceiling counts alive runs whose marker is nil: a run in a
-	// sixty-minute tool-only verify gate holds its key's slot for nobody.
-	// Cleared by every credential re-stamp (a resumed attempt starts over)
-	// and toggled by the runner at each model node's start and finish.
+	// first model call. Observability (the run views show it): the per-key
+	// concurrency cap counts an idle run like a spending one, because a
+	// slot lent out during tool-only work has no path back when the next
+	// model node starts (SpendsCredential). Cleared by every credential
+	// re-stamp (a resumed attempt starts over) and toggled by the runner at
+	// each model node's start and finish.
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty" bson:"llm_idle_since,omitempty"`
+	// CredAdmissionPending is set by a resume's flip to queued
+	// (QueuedFlipper.FlipToQueued) and cleared once that resume's
+	// credential-slot admission has decided (CredSlotStore.
+	// SettleCredSlotAdmission) or its flip is reverted. Read only on a
+	// queued run (AwaitsCredSlotAdmission): the resume claims the run before
+	// it resolves and asks the ledger, so for that window the document
+	// spends the keys its stamp names while the run's own admission is still
+	// to come.
+	CredAdmissionPending bool `json:"cred_admission_pending,omitempty" bson:"cred_admission_pending,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and
 	// non-subbot children.
@@ -1078,6 +1417,20 @@ type Run struct {
 	// separately because it outranks node and workflow declarations and must
 	// be replayed verbatim on every local or cloud resume.
 	PermissionOverride string `json:"permission_override,omitempty" bson:"permission_override,omitempty"`
+	// CodemodeOverride is the operator's launch-time codemode choice
+	// (ADR-165, CM-5e) — the same doctrine as PermissionOverride: the
+	// override is authoritative run intent, stamped at launch and replayed
+	// by every resume that does not re-state it. A resume that said nothing
+	// would otherwise fall back to the authored DSL and RE-ARM a capability
+	// the operator killed at launch. CodemodeBoundsOverride carries the
+	// launch's field-by-field raise; nil, and zero fields inside it, mean
+	// the launch did not choose.
+	CodemodeOverride       string             `json:"codemode_override,omitempty" bson:"codemode_override,omitempty"`
+	CodemodeBoundsOverride *scripthost.Limits `json:"codemode_bounds_override,omitempty" bson:"codemode_bounds_override,omitempty"`
+	// CodemodeQuotaClaimedAt is the publication whose queued quota claim won.
+	// A parked delivery with the same QueuedAt may not have claimed at all.
+	CodemodeQuotaClaimedAt *time.Time          `json:"codemode_quota_claimed_at,omitempty" bson:"codemode_quota_claimed_at,omitempty"`
+	ResumePauseHandoff     *ResumePauseHandoff `json:"resume_pause_handoff,omitempty" bson:"resume_pause_handoff,omitempty"`
 	// SandboxOverride is the operator's launch-time --sandbox choice
 	// ("none", "auto", explicit driver name). Persisted verbatim so
 	// resume/rewind replay the isolation decision the launch took: a run
@@ -1116,6 +1469,15 @@ type Run struct {
 	// re-read it instead of re-deriving the pins from a policy that may
 	// have changed since, and the studio Overview shows what it says.
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// LaunchModelOverrides holds the launch's own override rows as the
+	// launch body (or the CLI's flags) wrote them, before the routing
+	// policy's cells folded in — bot-free (llmroute.ValidateLaunchRow). A
+	// subbot child of this run's tree folds them again on top of the
+	// policy's cells for its own bot (runview.FoldForSubbotChild), so a
+	// launch row reaches every child while a cell folded for the parent's
+	// bot never does. Stamped once at launch, carried by a fork, and never
+	// re-derived: a resume leaves it as the launch wrote it.
+	LaunchModelOverrides []RunModelOverride `json:"launch_model_overrides,omitempty" bson:"launch_model_overrides,omitempty"`
 	// Fallback captures the launch-time run-level fallback chain (CLI
 	// `--fallback` / HTTP `fallback`) — the resume path's replay source,
 	// same doctrine as the budget ask: cloud resumes are often unattended
@@ -1166,6 +1528,15 @@ type Run struct {
 	// `permission: deny` made the gate a hard block, so an approval given
 	// on a permissive node would silently unlock a strict one.
 	PermissionGrants map[string][]string `json:"permission_grants,omitempty" bson:"permission_grants,omitempty"`
+
+	// SpentToolApprovals records interaction IDs consumed before dispatch.
+	// Only SpendToolApproval can append; metadata saves preserve the ledger.
+	SpentToolApprovals []string `json:"spent_tool_approvals,omitempty" bson:"spent_tool_approvals,omitempty"`
+	// ToolApprovalClaim binds one paused interaction to its active resume.
+	ToolApprovalClaim *ToolApprovalClaim `json:"tool_approval_claim,omitempty" bson:"tool_approval_claim,omitempty"`
+	// UnresolvedToolApproval survives attempt loss until a durable continuation
+	// proves the approved invocation does not need to be replayed.
+	UnresolvedToolApproval string `json:"unresolved_tool_approval,omitempty" bson:"unresolved_tool_approval,omitempty"`
 	// RetryPolicy is the retry contract RESOLVED AT LAUNCH from every
 	// layer that can own one (per-run override → launch surface → bot
 	// manifest → machine default, then clamped by the platform ceiling).
@@ -1185,6 +1556,11 @@ type Run struct {
 	// the audit line the policy owes. Nil for runs launched before this
 	// existed; treat nil as the package defaults.
 	LLMRoutePolicy *RunLLMRoutePolicy `json:"llm_route_policy,omitempty" bson:"llm_route_policy,omitempty"`
+	// PoolAttachment is the launch-frozen pool attachment (ADR-164) — see
+	// RunPoolAttachment for the three readings (nil / disabled / named).
+	// The resume replays it: the pool and the strategy freeze, the entry
+	// choice re-resolves per attempt.
+	PoolAttachment *RunPoolAttachment `json:"pool_attachment,omitempty" bson:"pool_attachment,omitempty"`
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
@@ -1256,6 +1632,9 @@ type Run struct {
 	// rollback message. See lifecycle.go (ADR-095) for the vocabulary
 	// and the open-world contract.
 	FailureCode FailureCode `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+
+	// PreEngineRefusal belongs to the recorder, never to full-document savers.
+	PreEngineRefusal *PreEngineRefusal `json:"pre_engine_refusal,omitempty" bson:"pre_engine_refusal,omitempty"`
 	// EndReason is the typed WHY the run ended — the protocol half of
 	// Error, whose prose it derives (RunEndReason.Message). It carries on
 	// the same statuses as FailureCode and is cleared by the same
@@ -1405,6 +1784,13 @@ type Run struct {
 	// CreateRun time; zero in local mode. Used to compute
 	// queue-position aggregates and queue-wait duration metrics.
 	QueuedAt *time.Time `json:"queued_at,omitempty" bson:"queued_at,omitempty"`
+	// SubmissionAttemptAt is the QueuedAt of the queue attempt the launch
+	// path itself made for an idempotent submission — its first launch, or a
+	// completion (runview/submission.go). While QueuedAt still equals it and
+	// the run is queued, no runner claimed that attempt and nothing re-queued
+	// the run since (a resume's flip stamps a QueuedAt of its own). Nil on
+	// every other run.
+	SubmissionAttemptAt *time.Time `json:"submission_attempt_at,omitempty" bson:"submission_attempt_at,omitempty"`
 	// StartedAt is set by a runner pod the first time it picks up the
 	// run (transitioning queued → running). Distinct from CreatedAt.
 	StartedAt *time.Time `json:"started_at,omitempty" bson:"started_at,omitempty"`
@@ -1430,12 +1816,24 @@ type Run struct {
 	// this one. Empty disables the comparison — every lane whose ref no
 	// untrusted party can move.
 	RepoSHAExpected string `json:"repo_sha_expected,omitempty" bson:"repo_sha_expected,omitempty"`
+	// ForkAuthorSubject is the per-contributor metering subject the fork
+	// review lane's launch composed and metered (ADR-162 decision 5):
+	// orgusage.ForkAuthorSubject's exact spelling, built on the same id the
+	// org budget metered on. Empty on every trusted run and every run that
+	// predates the fork lane. Read by the resume/retry surfaces — which
+	// re-meter the bound on the SAME subject rather than re-deriving it —
+	// and mirrored onto the queue message so the runner's recordOrgSpend
+	// charges the author's dollars beside the org's.
+	ForkAuthorSubject string `json:"fork_author_subject,omitempty" bson:"fork_author_subject,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project" on GitLab,
 	// "owner/repo" on GitHub/Forgejo) the run targets. Distinct from the
 	// raw RepoURL clone URL: it is the normalized, human-meaningful
-	// identifier used to filter/group runs by repository in the studio.
-	// Set by inbound-webhook launches (the repo-scoped cloud case);
-	// empty for local runs and non-webhook cloud launches.
+	// identifier used to filter/group runs by repository in the studio, and
+	// the key pkg/credusage meters the run's spend against — the per-repo
+	// quota reads exactly this value (#2371). Set by every repo-targeted
+	// cloud launch surface (inbound webhooks, a repo-targeted POST
+	// /api/runs, the board dispatcher); empty for local runs and
+	// non-repo-targeted cloud launches.
 	ProjectPath string `json:"project_path,omitempty" bson:"project_path,omitempty"`
 	// BotID is the bot bundle name (for example, "review-pr") that
 	// launched this run. It is persisted so cloud resume/retry can
@@ -1492,6 +1890,19 @@ type Run struct {
 	// compares it against the team's CURRENT mapping and refuses the
 	// difference; a deliberate move is a new launch, never a re-stamp.
 	RunnerPool string `json:"runner_pool,omitempty" bson:"runner_pool,omitempty"`
+	// ContentBoundary records WHICH tenant gateway credential funds this
+	// run (ADR-131): the credential's kind, the id of the key that
+	// answered, and the canonical gateway host it serves. A frozen
+	// credential fact under the PinnedProviders doctrine: it travels with
+	// the run, is replayed by every resume/fork lane exactly as frozen,
+	// and is never re-derived — a lane that re-derived it would silently
+	// move a running run onto whichever key answers today. The cloud
+	// publisher writes it at launch from its credential walk: team_gateway
+	// when the walk attributes a gateway route to the team's key and seals
+	// it, own_keys otherwise. Nil on a run launched before that producer,
+	// on a launch whose resolution never walked (a deployment that seals
+	// nothing), and on every local run.
+	ContentBoundary *RunContentBoundary `json:"content_boundary,omitempty" bson:"content_boundary,omitempty"`
 
 	// Attachments holds the metadata for binary inputs declared in
 	// the workflow's `attachments:` block and uploaded at launch.
@@ -1689,12 +2100,23 @@ const (
 	RunSourceKindDispatcher = "dispatcher"
 	RunSourceKindSchedule   = "schedule"
 	RunSourceKindStudioChat = "studio_chat"
+	// RunSourceKindWebhook is an inbound forge delivery (GitHub, GitLab,
+	// Forgejo). It names the same classification the run list already
+	// derived STRUCTURALLY from the "webhook:" owner prefix, so no reader
+	// learns a new word; what the typed form adds is DeliveryID, the
+	// run->delivery back-reference the run-outcome spine needs.
+	RunSourceKindWebhook = "webhook"
+	// RunSourceKindConnector is a connector event's matched pair (ADR-168
+	// §8): ScheduleID names the subscription (the back-reference the
+	// run-outcome spine stamps), PairID and IntakeID the pair and the event.
+	RunSourceKindConnector = "connector"
 )
 
 // RunSource captures who originated this run. Populated by the
 // dispatcher when an issue is claimed, by scheduled-launch paths
-// (host-cron, trigger spine, cloudsched), and by typed Studio chat launches;
-// empty for ordinary CLI / Studio Launch / fork-spawned runs.
+// (host-cron, trigger spine, cloudsched), by typed Studio chat launches and
+// by inbound webhook deliveries; empty for ordinary CLI / Studio Launch /
+// fork-spawned runs.
 type RunSource struct {
 	// Kind is the producer of this run (see RunSourceKind* consts).
 	Kind string `json:"kind,omitempty" bson:"kind,omitempty"`
@@ -1726,6 +2148,17 @@ type RunSource struct {
 	// missing tab→run link and cancel runs whose owning tab disappeared.
 	ClientID       string `json:"client_id,omitempty" bson:"client_id,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty" bson:"conversation_id,omitempty"`
+	// DeliveryID is the inbound webhook delivery that launched this run
+	// (webhooks.Delivery._id) when Kind == webhook. It is the run->delivery
+	// direction: the delivery's own RunID points the other way, and every
+	// consumer of this class is keyed by RUN (the run-outcome spine loads
+	// the terminal run, then asks each record kind "is this yours"). One
+	// direction of provenance, never a second way to find a record.
+	DeliveryID string `json:"delivery_id,omitempty" bson:"delivery_id,omitempty"`
+	// PairID and IntakeID name the connector pair a RunSourceKindConnector
+	// run launched for, and the stored event it was matched from.
+	PairID   string `json:"pair_id,omitempty" bson:"pair_id,omitempty"`
+	IntakeID string `json:"intake_id,omitempty" bson:"intake_id,omitempty"`
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's
@@ -1749,6 +2182,19 @@ const (
 	MergeStrategySquash MergeStrategy = "squash"
 	MergeStrategyMerge  MergeStrategy = "merge"
 )
+
+// MergeIntoOptOut reports whether a run's merge_into value is the
+// operator's explicit opt-out a launch intent must not override. This is
+// the ONE folded reading — case-insensitive, whitespace-trimmed, the way
+// the runtime's finalize reads the same field — shared by the intent
+// evaluator (routing.EvaluateAutoMerge) and the filesystem sweep net, and
+// mirrored in the mongo sweep net's $expr: readers of one run doc must
+// answer the same question, or a doc one net admits and the router
+// declines rides the oldest-first sweep page for its whole lookback and
+// starves newer landable runs behind the cap.
+func MergeIntoOptOut(mergeInto string) bool {
+	return strings.EqualFold(strings.TrimSpace(mergeInto), "none")
+}
 
 // RoutingPolicy is a run's launch-frozen outcome contract. The
 // expressions speak the SAME language as the bot DSL's edge conditions
@@ -1842,8 +2288,11 @@ const (
 // persist code only (continuation stays unknown until the runner
 // promotes it at the actual NAK / retry-arm / park).
 type RunOutcomeMeta struct {
-	Code         FailureCode
-	Continuation ContinuationState
+	// ExactQueuedAt optionally fences the transition to a publication's
+	// marker (also on statuses past queued). It is not outcome data.
+	ExactQueuedAt time.Time
+	Code          FailureCode
+	Continuation  ContinuationState
 	// EndReason is the typed WHY the run ended. It follows the FailureCode
 	// discipline exactly — persisted only on the statuses that carry an
 	// outcome (RunStatus.CarriesFailureCode), cleared by every transition
@@ -1901,6 +2350,34 @@ type RunMergeUpdate struct {
 	// took over. Zero skips the check (exits from non-merging states,
 	// which carry no claim).
 	ExpectClaimedAt time.Time
+	// ExpectBirth anchors the exit to the run its caller loaded: a
+	// successor recreated under the same ID answers
+	// ErrRunDataIdentityChanged instead of receiving the original's
+	// outcome. Zero skips the check.
+	ExpectBirth ExpectedBirth
+}
+
+// ExpectedBirth is the birth a merge compare-and-set expects to find. When
+// Check, the CAS also requires the stored birth to equal ID — "" is the
+// historical empty birth, not "unset"; a different birth answers
+// ErrRunDataIdentityChanged. The zero value skips the check.
+type ExpectedBirth struct {
+	ID    string
+	Check bool
+}
+
+// ExpectBirthOf is the expectation of r's own birth; r must be non-nil.
+func ExpectBirthOf(r *Run) ExpectedBirth {
+	return ExpectedBirth{ID: r.BirthID, Check: true}
+}
+
+// Verify answers ErrRunDataIdentityChanged when e checks and the birth
+// stored under runID differs from the expected one.
+func (e ExpectedBirth) Verify(runID, stored string) error {
+	if !e.Check || stored == e.ID {
+		return nil
+	}
+	return fmt.Errorf("store: run %s holds birth %q, expected %q: %w", runID, stored, e.ID, ErrRunDataIdentityChanged)
 }
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
@@ -1918,6 +2395,17 @@ type NodeSessionSlot struct {
 type SessionLedgerEntry struct {
 	SessionID string   `json:"session_id" bson:"session_id"`
 	Tasks     []string `json:"tasks" bson:"tasks"`
+}
+
+// NodeFailureStreak is one node's entry of Checkpoint.NodeFailureStreaks.
+//
+// Fingerprint is a digest, never the failure's text: a checkpoint holds no
+// command output. It is salted with the run and the node, so two runs that
+// failed alike do not carry the same value.
+type NodeFailureStreak struct {
+	Fingerprint string `json:"fingerprint" bson:"fingerprint"`
+	// Count is how many executions in a row ended on Fingerprint.
+	Count int `json:"count" bson:"count"`
 }
 
 // Checkpoint captures the runtime state at a pause point (human node or
@@ -1949,6 +2437,12 @@ type Checkpoint struct {
 	// pass the budget cannot fund, which is exactly the stranding the
 	// affordability guard exists to prevent.
 	LoopBudgetMarks map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	// LoopBudgetSizes preserves, per loop with a sized_by clause (#2677),
+	// the work signal's reading at the loop's last mark — the denominator
+	// of the scale the next crossing's pricing applies. Without it a
+	// resumed run would price the crossing it lands on unscaled: the
+	// pessimistic first-pass pricing the clause exists to lift.
+	LoopBudgetSizes map[string]float64 `json:"loop_budget_sizes,omitempty" bson:"loop_budget_sizes,omitempty"`
 	// LoopBudgetMarksV is the format version of LoopBudgetMarks. Version 2
 	// marks are measured at a loop's entry or back-edge; earlier engines also
 	// wrote the run-start baseline for loops never entered at their head, a
@@ -2031,10 +2525,29 @@ type Checkpoint struct {
 	// and appends a tool_result block answering BackendPendingToolUseID,
 	// avoiding a stateless restart from system+user prompts.
 	BackendConversation json.RawMessage `json:"backend_conversation,omitempty" bson:"backend_conversation,omitempty"`
+	// BackendPermissionInput carries the validated argument object from the gate.
+	BackendPermissionInput json.RawMessage `json:"backend_permission_input,omitempty" bson:"backend_permission_input,omitempty"`
 	// BackendPendingToolUseID is the ID of the tool_use block awaiting
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.
 	BackendPendingToolUseID string `json:"backend_pending_tool_use_id,omitempty" bson:"backend_pending_tool_use_id,omitempty"`
+	// BackendCommandNarrowing is the workspace-command `allowed-tools:`
+	// narrowing the paused generation held (#1717), marshalled
+	// delegate.CommandNarrowingState kept opaque here like the
+	// conversation. The resumed generation re-pins the bound: the
+	// operator's answer approved one call, not the restriction's lifting.
+	// Absent on checkpoints written before the field existed — the
+	// pre-field behaviour, a resumed generation that restarts unbounded.
+	BackendCommandNarrowing json.RawMessage `json:"backend_command_narrowing,omitempty" bson:"backend_command_narrowing,omitempty"`
+	// BackendSessionStranded records that BackendConversation is the turns
+	// of a crossing that held none of its session's history (a relayed
+	// mirror gap, or a seed the sandbox channel refused — #2461). The
+	// stranding travels WITH the pause so a resumed crossing keeps its own
+	// captures out of the session store instead of replacing it. Absent on
+	// checkpoints written before the field existed — the pre-field
+	// behaviour, which is exactly the residual it closes, so only a pause
+	// written by a runner that knows the fact can carry it.
+	BackendSessionStranded bool `json:"backend_session_stranded,omitempty" bson:"backend_session_stranded,omitempty"`
 	// NodeSessions holds persist slots (ADR-089). Keyed by session_slot when
 	// authored, otherwise by node id for backward compatibility.
 	NodeSessions map[string]NodeSessionSlot `json:"node_sessions,omitempty" bson:"node_sessions,omitempty"`
@@ -2045,6 +2558,16 @@ type Checkpoint struct {
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).
 	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty" bson:"node_attempts,omitempty"`
+	// NodeFailureStreaks records, per tool node, the last failure of its
+	// command and how many executions in a row ended on it, so the count a
+	// permanent verdict is taken on (TOOL_FAILED_PERMANENT on an identical
+	// repeat) survives the engine that started it: a resume on another
+	// replica continues it. Keyed by node ID. A node's entry leaves with its
+	// success, with a failure of another kind, and with a rewind that replays
+	// it. Absent on checkpoints written before the field existed, and on
+	// those of an engine whose limit is off: no streak, the pre-field
+	// behaviour.
+	NodeFailureStreaks map[string]NodeFailureStreak `json:"node_failure_streaks,omitempty" bson:"node_failure_streaks,omitempty"`
 	// RecoveryPause marks a pause written by the recovery dispatcher
 	// (RecoveryPauseForHuman) for a node whose execution FAILED. The node
 	// still owes its work: the answer that resumes the run is the
@@ -2064,8 +2587,9 @@ type Checkpoint struct {
 	// failure) could spend an unbounded multiple of its declared budget, and
 	// the max_iterations runaway-loop guard would reset on every resume.
 	// Zero/omitted on legacy checkpoints (a fresh budget — the prior behaviour).
-	BudgetTokensUsed int     `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
-	BudgetCostUSD    float64 `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
+	ResumePauseCostReadings []ResumePauseCostReading `json:"resume_pause_cost_readings,omitempty" bson:"resume_pause_cost_readings,omitempty"`
+	BudgetTokensUsed        int                      `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
+	BudgetCostUSD           float64                  `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
 	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
 	// axis could not price. Absent from checkpoints written before they
 	// existed, which restores as zero — the prior behaviour.
@@ -2082,7 +2606,8 @@ type Checkpoint struct {
 	// the per-run cumulative) keeps climbing after a resume instead of
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
-	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	CostUSDTotal         float64               `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	CorrectionAccounting *CorrectionAccounting `json:"correction_accounting,omitempty" bson:"correction_accounting,omitempty"`
 	// FiredEvents is the sticky run-scoped emit/wait registry. Persisting it
 	// prevents a resumed branch from waiting forever on an event emitted by a
 	// sibling whose durable cursor is already Completed and will not replay.
@@ -2143,6 +2668,7 @@ type BranchCheckpoint struct {
 	LoopPreviousOutput map[string]map[string]any      `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
 	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
 	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	LoopBudgetSizes    map[string]float64             `json:"loop_budget_sizes,omitempty" bson:"loop_budget_sizes,omitempty"`
 	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
 	// SettledIncoming is the branch-private twin of Checkpoint.SettledIncoming:
 	// the floor a NESTED fan-out left on a convergence inside this branch.

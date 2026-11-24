@@ -237,7 +237,7 @@ func ConvertManifest(ctx context.Context, httpClient *http.Client, webBase, code
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := httpClient.Do(req)
+	resp, err := forge.DoHTTP(httpClient, req, code)
 	if err != nil {
 		return ManifestConversion{}, err
 	}

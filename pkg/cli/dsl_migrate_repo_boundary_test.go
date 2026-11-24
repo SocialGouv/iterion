@@ -32,8 +32,15 @@ func TestMigrateDSLStopsAtTheRepositoryRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The repository, with a loose workflow under its bots/ and no bundle.
+	// Its .git carries the shape git's is_git_directory requires — an empty
+	// .git directory is no repository, to git and to the boundary walk.
 	repo := filepath.Join(opDir, "lab", "repo")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+	for _, sub := range []string{".git/objects", ".git/refs"} {
+		if err := os.MkdirAll(filepath.Join(repo, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	loose := filepath.Join(repo, "bots", "smoke", "board_smoke.bot")
@@ -45,7 +52,7 @@ func TestMigrateDSLStopsAtTheRepositoryRoot(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{filepath.Join(repo, "bots")}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{filepath.Join(repo, "bots")}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
 	if err != nil {
 		t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 	}
@@ -76,7 +83,7 @@ func TestMigrateDSLStopsAtTheRepositoryRoot(t *testing.T) {
 	if err := os.WriteFile(other, []byte("## a loose workflow\nagent b:\n  description: \"y\"\n\nworkflow w:\n  entry: b\n  b -> done\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = MigrateDSL(MigrateDSLOptions{Paths: []string{other}, Floor: "3.200.0"})
+	res, err = MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{other}, Floor: "3.200.0"})
 	if err != nil {
 		t.Fatal(err)
 	}

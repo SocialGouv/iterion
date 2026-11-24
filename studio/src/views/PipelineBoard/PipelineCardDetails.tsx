@@ -5,7 +5,14 @@ import {
   Cross2Icon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { Link } from "wouter";
 
@@ -24,6 +31,8 @@ import { trapTabKey } from "@/lib/a11y";
 
 import {
   DRAWER_WIDTH_DEFAULT,
+  DRAWER_WIDTH_STEP,
+  DRAWER_WIDTH_STEP_LARGE,
   clampDrawerWidth,
   drawerWidthBounds,
   readDrawerWidth,
@@ -275,8 +284,16 @@ function MetaRow({ card }: { card: PipelineBoardCard }) {
   );
 }
 
+// The body is shared by both presentations, which open at different levels:
+// the page's own title is an h1, the overlay's an h2. A section is the child
+// of whichever one is above it, so the level travels with the presentation
+// instead of being hardcoded 11 times (RGAA 9.1 / axe heading-order).
+const SectionHeadingLevel = createContext<2 | 3>(3);
+
 function SectionHeading({ children }: { children: React.ReactNode }) {
-  return <h3 className="text-xs font-semibold text-fg-default">{children}</h3>;
+  const level = useContext(SectionHeadingLevel);
+  const Tag = level === 2 ? "h2" : "h3";
+  return <Tag className="text-xs font-semibold text-fg-default">{children}</Tag>;
 }
 
 // ContractSection shows stable bot_args (request file + correlation) above
@@ -643,7 +660,7 @@ export default function PipelineCardDetails({
   // a JSON blob in a 28rem column meant leaving the board.
   const [width, setWidth] = useState(() => readDrawerWidth());
   const bounds = drawerWidthBounds(viewportWidth());
-  const panelRef = useRef<HTMLElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   const commitWidth = useCallback((next: number) => {
     const clamped = clampDrawerWidth(next, viewportWidth());
@@ -811,11 +828,16 @@ export default function PipelineCardDetails({
   if (presentation === "page") {
     return (
       <div
+        // The page presentation is a named region, not a dialog: aria-label
+        // on a roleless div is prohibited ARIA (axe aria-prohibited-attr).
+        role="region"
         className="flex h-full min-h-0 w-full flex-col"
         aria-label={`Details for ${card.title}`}
       >
-        {header}
-        {body}
+        <SectionHeadingLevel.Provider value={2}>
+          {header}
+          {body}
+        </SectionHeadingLevel.Provider>
       </div>
     );
   }
@@ -832,7 +854,10 @@ export default function PipelineCardDetails({
         aria-hidden={!scrimArmed}
         onClick={scrimArmed ? onClose : undefined}
       />
-      <aside
+      {/* A div, not an <aside>: role="dialog" is not an allowed role for
+          <aside> (its implicit complementary landmark conflicts with it),
+          which axe reports as aria-allowed-role. */}
+      <div
         ref={panelRef}
         // tabIndex -1 so focus can rest on the panel itself before the first
         // Tab — the announcement point for the dialog's label.
@@ -861,6 +886,8 @@ export default function PipelineCardDetails({
               onResize: commitWidth,
             },
           }}
+          step={DRAWER_WIDTH_STEP}
+          bigStep={DRAWER_WIDTH_STEP_LARGE}
           onPointerResizeStart={startResize}
           onReset={() => commitWidth(DRAWER_WIDTH_DEFAULT)}
           title="Drag to resize — ←/→ to adjust, double-click to reset"
@@ -868,7 +895,7 @@ export default function PipelineCardDetails({
         />
         {header}
         {body}
-      </aside>
+      </div>
     </>,
     document.body,
   );

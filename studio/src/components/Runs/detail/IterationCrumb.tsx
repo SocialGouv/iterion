@@ -77,12 +77,12 @@ export function IterationCrumb({
                 }`}
               >
                 <span className="font-mono w-6 shrink-0">#{i + 1}</span>
-                <span className="text-fg-subtle shrink-0">
+                <span className="text-fg-muted shrink-0">
                   iter {e.loop_iteration}
                 </span>
                 <StatusBadge status={e.status} />
                 {duration && (
-                  <span className="text-fg-subtle ml-auto">{duration}</span>
+                  <span className="text-fg-muted ml-auto">{duration}</span>
                 )}
               </button>
             </li>

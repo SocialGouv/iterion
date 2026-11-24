@@ -45,7 +45,7 @@ func newAcceptFixture(t *testing.T) *acceptFixture {
 // token.
 func (f *acceptFixture) invite(t *testing.T) string {
 	t.Helper()
-	token, _, err := f.svc.CreateInvitation(context.Background(), "tb", f.user.Email, identity.RoleMember, "someone-else")
+	token, _, err := f.svc.CreateInvitation(mintVerdictCtx(context.Background()), "tb", f.user.Email, identity.RoleMember, "someone-else")
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}

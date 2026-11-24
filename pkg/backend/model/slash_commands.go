@@ -1,13 +1,13 @@
 package model
 
 import (
+	"context"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 
-	clawcmds "github.com/SocialGouv/claw-code-go/pkg/api/commands"
+	clawcmds "github.com/SocialGouv/iterion/pkg/claw/pkg/api/commands"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -16,11 +16,27 @@ import (
 // SlashCommandsEnv turns the workspace slash-command expansion off for
 // `claw` nodes, restoring the raw `/name` text the backend sent before the
 // capability existed. "off", "0" and "false" disable it; anything else
-// (including unset) leaves it on.
+// (including unset) leaves it on. The same answer gates the `command`
+// tool's registration (tool.ClawDefaults.DisableWorkspaceCommands): a host
+// that turns the capability off takes BOTH of its surfaces away.
 const SlashCommandsEnv = "ITERION_CLAW_SLASH_COMMANDS"
 
+// SlashCommandsDisabled reads the kill switch (SlashCommandsEnv). The one
+// reader, shared by the prompt path below and the host that builds the
+// tool registry — the two surfaces of one capability cannot disagree.
+func SlashCommandsDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(envGetenv(context.Background(), SlashCommandsEnv))) {
+	case "off", "0", "false":
+		return true
+	}
+	return false
+}
+
 // SlashCommandMaxBytesEnv overrides the ceiling on a workspace command's
-// body, in bytes. "0" removes the ceiling.
+// body, in bytes. "0" removes the ceiling. The one ceiling serves both
+// surfaces of the capability: this prompt path reads it directly, the
+// `command` tool receives the host's answer at registration
+// (tool.ClawDefaults.CommandMaxBytes).
 const SlashCommandMaxBytesEnv = "ITERION_CLAW_SLASH_COMMAND_MAX_BYTES"
 
 // defaultSlashCommandMaxBytes bounds the body a workspace command may
@@ -31,7 +47,9 @@ const SlashCommandMaxBytesEnv = "ITERION_CLAW_SLASH_COMMAND_MAX_BYTES"
 // orders of magnitude above any real command body (the largest in this
 // repo's own catalog is a few KB), so it bounds the abuse without bounding
 // the use — and it is an abstention, never a truncation, because half a
-// command body is an instruction nobody wrote.
+// command body is an instruction nobody wrote. tool.DefaultWorkspaceCommandMaxBytes
+// is the same number, for the `command` tool's registration where this
+// package cannot be imported.
 const defaultSlashCommandMaxBytes = 256 << 10
 
 // slashCommandArgsPrefix introduces the arguments appended to a command
@@ -62,12 +80,18 @@ const slashCommandArgsPrefix = "\n\nARGUMENTS: "
 // full, clean it up"). Every abstention is logged with its reason and the
 // text travels unchanged, which is also what the backend did before this
 // existed: degraded, never silent.
-func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, iteration int, logger *iterlog.Logger, once *slashWarnOnce, sess *nodeBuildSession) (string, bool) {
+//
+// A METHOD on the executor, not a free function taking a workDir: the trust
+// that governs this loader is the executor's own (the field stampWorkspace
+// reads, pushed once per run by the engine), so a new call site cannot
+// construct the call without it — or pair one workspace's directory with
+// another's trust.
+func (e *ClawExecutor) expandWorkspaceSlashCommand(userText, backendName, nodeID string, iteration int, sess *nodeBuildSession) (string, bool) {
+	workDir, logger, once := e.WorkDir(), e.logger, &e.slashWarnedOnce
 	if backendName != delegate.BackendClaw || workDir == "" || userText == "" {
 		return userText, false
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(SlashCommandsEnv))) {
-	case "off", "0", "false":
+	if SlashCommandsDisabled() {
 		return userText, false
 	}
 	// The overwhelming majority of workspaces contribute no command at all;
@@ -77,6 +101,25 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	}
 	name, args, ok := clawcmds.ParseInvocation(userText)
 	if !ok {
+		return userText, false
+	}
+	// FLOOR (ADR-162 U3): a workspace its tenant did not write does not write
+	// this node's prompt. The body substituted here is a file the CHECKOUT
+	// authored, read into the text a reviewing agent acts on — the same
+	// surface as a planted skill or hook, reached through the prompt instead
+	// of the settings.
+	//
+	// Placed after the invocation is parsed and the directory is known to
+	// exist, so the diagnostic fires only where something would really have
+	// been loaded — and the untrusted tree is never read past the directory
+	// listing. Claw's own loader already roots at the workspace and refuses a
+	// symlinked `.claude/commands`, so what is withdrawn here is provenance,
+	// not escape. Abstention in the shape every refusal here takes — the
+	// reason is logged and the text travels unchanged; nothing fails a node.
+	if !e.WorkspaceTrust().Trusted() {
+		warnSlashCommand(logger, nodeID, iteration,
+			"prompt opens with /%s, and this run's workspace was not written by its tenant — a command it authored is not loaded into the prompt (sending the text unchanged)",
+			safeDiag(name))
 		return userText, false
 	}
 	// The ceiling reaches the READ, not just the write: a large command file
@@ -157,22 +200,25 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 		warnSlashCommand(logger, nodeID, iteration, "/%s uses %s — those mean something else here than in claude_code; see docs/backends.md#workspace-slash-commands",
 			safeDiag(name), strings.Join(forms, ", "))
 	}
-	// The frontmatter is the divergence that carries a SECURITY consequence
-	// and it was the only one that expanded in silence: a command narrowing
-	// itself with `allowed-tools:` is bounded on claude_code and keeps the
-	// node's whole tool set here, so the operator reads a restriction that
-	// nothing enforces. Same channel as the body divergences — documenting
-	// it in bold and saying nothing at runtime is the "one file means two
-	// things silently" outcome this warning exists to prevent. Enforcement
-	// is #1717; this is the diagnostic that stops it being invisible.
+	// The command's `allowed-tools:` frontmatter is HONOURED on this surface
+	// (#1717): recorded on the build session so the build intersects the
+	// node's resolved ToolDefs with it — intersect, never widen. The
+	// model-invoked surface (the `command` tool) narrows mid-loop instead,
+	// dispatch-side; both surfaces read the same folded set
+	// (tool.CommandNarrowedSet).
+	sess.noteCommandNarrowing(name, cmd.AllowedTools, cmd.AllowedTools != nil)
+	// The rest of the frontmatter is the divergence that stays: `model:` and
+	// its siblings are honoured by claude_code and ignored here, and a file
+	// that configures itself must not mean one thing there and another here
+	// in silence. Same channel as the body divergences.
 	// Keyed per NODE, through the build session, not per command file: a
-	// second node invoking the same command with a broader `tools:` set is a
-	// different exposure and has to be told. The session also carries the
-	// keys onto delegate_finished, so a deterministic gate reading
-	// events.jsonl sees what a log line cannot be asserted on.
+	// second node invoking the same command is a different exposure and has
+	// to be told. The session also carries the keys onto delegate_finished,
+	// so a deterministic gate reading events.jsonl sees what a log line
+	// cannot be asserted on.
 	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 && sess.noteIgnoredFrontmatter(keys) {
 		warnSlashCommand(logger, nodeID, iteration,
-			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so a command that narrows itself keeps this node's full tool set (#1717)",
+			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them (#1717)",
 			safeDiag(name), cmd.Path, safeDiag(strings.Join(keys, ", ")))
 	}
 	return expanded, true
@@ -205,7 +251,7 @@ func slashCommandUserContent(blocks []delegate.ContentBlock, expanded string) []
 // when it parses, the built-in default otherwise. A non-numeric value is
 // ignored rather than obeyed — a typo must not silently remove a bound.
 func slashCommandMaxBytes() int {
-	raw := strings.TrimSpace(os.Getenv(SlashCommandMaxBytesEnv))
+	raw := strings.TrimSpace(envGetenv(context.Background(), SlashCommandMaxBytesEnv))
 	if raw == "" {
 		return defaultSlashCommandMaxBytes
 	}
@@ -214,6 +260,36 @@ func slashCommandMaxBytes() int {
 		return defaultSlashCommandMaxBytes
 	}
 	return n
+}
+
+// SlashCommandMaxBytes is the ceiling's host-side answer for the host that
+// builds the tool registry (runview → tool.ClawDefaults.CommandMaxBytes):
+// the `command` tool's exec reads no environment — the runner's would not
+// carry the dial — so the value crosses as a registration parameter. The
+// dial's documented "0" (no ceiling) arrives as 0 here;
+// SlashCommandMaxBytesForRegistry maps it to the registration's spelling.
+func SlashCommandMaxBytes() int { return slashCommandMaxBytes() }
+
+// SlashCommandMaxBytesForRegistry is that answer in the REGISTRATION's
+// vocabulary (tool.RegisterClawCommand's maxBytes, which reads 0 as "the
+// built-in default" and a negative value as unbounded): the dial's
+// documented "0" — no ceiling — becomes -1, so an operator who REMOVES the
+// bound is obeyed rather than silently given 256 KiB back.
+//
+// The one mapping, read by both registrations the capability has: the
+// host's registry (runview.BuildExecutor) and, across the sandbox envelope,
+// the in-container one (delegate.IOTask.SlashCommandMaxBytes →
+// cmd/iterion's registerSandboxLocalTools). `command` is PlacementSandbox,
+// so in a sandboxed run the SECOND is the registration that executes: a
+// dial read only on the host would leave every sandboxed run on the
+// built-in default, which is philosophy #1's "never silently replace an
+// operator's explicit choice" — and the tightening direction is the one a
+// review run needs.
+func SlashCommandMaxBytesForRegistry() int {
+	if max := slashCommandMaxBytes(); max > 0 {
+		return max
+	}
+	return -1
 }
 
 // slashWarnOnce keeps the `$N` divergence notice to one line per command

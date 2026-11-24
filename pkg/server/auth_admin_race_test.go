@@ -337,6 +337,9 @@ func TestAdminDisableRevokesSessionsEvenWhenTheReadIsStale(t *testing.T) {
 	if after.Status != identity.UserStatusDisabled {
 		t.Fatalf("premise broken: the disable did not land, status=%q", after.Status)
 	}
+	// The revocation record commits before the response; its detached pass
+	// materializes RevokedAt on the rows this assertion reads.
+	p.s.authSvc.WaitRevocationPasses()
 	sess, err := p.sessions.GetSessionByTokenHash(ctx, auth.HashRefreshToken(refresh))
 	if err != nil {
 		t.Fatalf("read the session the sign-in created: %v", err)
@@ -459,6 +462,9 @@ func TestAdminPasswordResetRevokesTheLiveSessions(t *testing.T) {
 	if status, body := p.call(t, http.MethodPost, "/api/admin/users/reset1/reset-password", root, ""); status != http.StatusOK {
 		t.Fatalf("reset = %d body=%s, want 200", status, body)
 	}
+	// Wait for the detached row update, not for the revocation's commit:
+	// the account generation already fences the session when reset returns.
+	p.s.authSvc.WaitRevocationPasses()
 	sess, err := p.sessions.GetSessionByTokenHash(t.Context(), auth.HashRefreshToken(refresh))
 	if err != nil {
 		t.Fatalf("read the session the sign-in created: %v", err)

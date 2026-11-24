@@ -53,6 +53,29 @@ The studio's Board view surfaces these as a "Last run" panel on the
 issue modal with a link back to `/runs/<id>` and a
 `vscode://file/<path>` shortcut to open the worktree.
 
+**The pointer is the dispatch; the outcome is a second fact.** A card also
+carries what the run in `last_run_id` turned out to be —
+`last_run_status` (the terminal run status), `last_run_error`,
+`last_run_error_code` (a stable `store.FailureCode`) and `last_run_at` —
+written by the run-outcome spine
+([pkg/server/outcome_spine.go](../pkg/server/outcome_spine.go)) and only
+while `last_run_id` still names that run, so a late terminal from a run the
+card was re-dispatched past is dropped. Both error fields are cleared by a
+successful run: this is a health signal, not an audit trail (`runs` is the
+audit). Without it a card whose run died reads exactly like a card that was
+dispatched and worked. Where it shows:
+
+| surface | what it says |
+|---|---|
+| `iterion issue show` | `Last run` / `Last run result` (status · code · instant) / `Last run error` |
+| `iterion remote issues list` | a `LAST RUN` column (status · code · instant) |
+| studio board grid | the `↪ last run` chip names the status and turns to the warning tone; the cause rides its title |
+| `GET /api/v1/native/issues`, the pipeline-board routes | the fields themselves (the `Issue` schema in [openapi.json](../openapi.json)) |
+
+The same tuple is on a cloud schedule ([scheduling](scheduling.md)) and on a
+trigger subscription ([cloud REST API](cloud-rest-api.md#triggers-event-driven-runs)):
+one spine writes it, one studio component renders it.
+
 ## Board
 
 `board.json` defines what columns exist on the kanban and what custom
@@ -255,6 +278,43 @@ workflow selection, and the bot file is resolved and route-checked
 before dispatch. `assignee_workflows:` in the dispatcher config is the
 routing table consulted under whichever key won. See
 [docs/dispatcher.md §Per-ticket bot + args fields](dispatcher.md).
+
+A card never carries the launch vars a server mints for one run — the forge
+publish grant's bearer and the three endpoints it is presented to
+(`pkg/store.ServerMintedLaunchVars`). The store drops them from `bot_args` at
+its write boundary, on BOTH twins (`native.BotArgsForWrite`, called by Create
+and Update), so the drop answers for every writer at once: the REST routes
+above, the board MCP tools, `iterion issue`, trigger promote. **A `bot_args`
+holding one of those names does not round-trip** — the write answers with the
+card it stored, which no longer has it. An EMPTY value is kept: it withdraws a
+grant instead of granting one, and dropping it would hand the launch a fresh
+grant instead.
+
+A card written before that boundary existed can still hold a LIVE bearer, so
+every surface that hands a card out shows the mask (`[redacted]`,
+`native.IssueForRead`): the REST reads above, the board tool results an LLM
+reads, `iterion issue --json`, and the pipeline-board task responses. The
+record keeps its bearer — the launch lane reads it to refuse a card carrying a
+live grant of another team (`withoutCardGrant`), which a mask under the store
+would answer "no crossing" to.
+
+The reserved `__iterion_*` launch-context keys (`native.ReservedLaunchArgs`: a
+webhook-carried card's clone URL and ref, forge slug, BYOK credential
+overrides, integration id) are the server's stamp about what the card's run
+targets — the board dispatcher meters, bounds and debits the run by it — and
+they never ride a client write either: the native REST create/PATCH/comments
+routes, the pipeline-board create/upsert/patch routes, and the board tools'
+`create_issue` drop the class at the door. The tools' funnel is
+`boardops.create_issue`, one chokepoint all five tool transports cross (stdio
+`__mcp-board`, HTTP `/api/v1/mcp/board`, claw in-process, delegate MCP, the
+operator MCP), so the filter lands once for them all. The store does NOT drop
+this class — the webhook lane's own stamp (`ensureBoardCard`) writes through
+the same `Create`, so the funnel cannot tell a stamp from client input; the
+doors filter, not the store, and a dropped key shows in the write's answer,
+which is the card as stored. The operator stamps by hand through the CLI door,
+which keeps the class:
+`iterion issue create --bot-arg __iterion_project_path=acme/widgets` cards a
+run the operator launches without a webhook.
 
 The SPA's Board view (`/board` in the studio) is a thin React shell on
 top of the REST surface. The table below covers the issue/board CRUD;

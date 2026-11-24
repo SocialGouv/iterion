@@ -45,14 +45,14 @@ func fieldToJSONSchema(f *ir.SchemaField) map[string]any {
 	case ir.FieldTypeFloat:
 		prop["type"] = "number"
 	case ir.FieldTypeJSON:
-		// JSON fields accept any value. JSON Schema's canonical "any" is
+		// JSON fields accept any value, including null; ValidateOutput keeps
+		// the field required while accepting that value. JSON Schema's "any" is
 		// the empty schema {}, but that has no "type" key — and some
 		// structured-output providers (OpenAI/codex's formatting pass)
 		// reject a type-less property with `invalid_json_schema: schema
 		// must have a 'type' key`, failing the whole node. Emitting a
 		// single "type" (e.g. "object") is the opposite failure: it
-		// silently rejects the other JSON shapes (the earlier live bug
-		// stripped an array-valued `ecosystems: json` to nothing).
+		// silently rejects the other JSON shapes, such as arrays.
 		// A "type" *union* over every JSON kind satisfies the type-key
 		// requirement while still accepting arrays/objects/strings/
 		// numbers/booleans/nulls — the true "any" contract of FieldTypeJSON.

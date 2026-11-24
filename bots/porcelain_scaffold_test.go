@@ -74,6 +74,11 @@ func TestScopeChecksLeaveTheScaffoldOut(t *testing.T) {
 				s := strings.ReplaceAll(tpl, "{{vars.workspace_dir}}", ws)
 				s = strings.ReplaceAll(s, "{{vars.adr_dir}}", "docs/adr")
 				s = strings.ReplaceAll(s, "{{vars.audit_cache_path}}", "")
+				// docs-refresh's scope_check measures in the window the entry
+				// node recorded: the HEAD the run started from, which is the
+				// tree's HEAD at every call here (no step below is a pass's
+				// commit — the settings commit is the repository's own).
+				s = strings.ReplaceAll(s, "{{input.base_sha}}", strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD")))
 				return s
 			}
 			ws := scaffoldRepo(t)

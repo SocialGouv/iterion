@@ -18,6 +18,7 @@ import (
 // These two tests are the durable guards for both failure classes:
 //   - TestDiagCodesAreUnique — no code string is bound to two different consts.
 //   - TestDiagCodesAreDocumented — every defined code appears in the reference.
+//   - TestDiagRowsAreDefinedOnce — no code heads two rows in the reference.
 //
 // They scan source rather than reflect because Go consts are not enumerable at
 // runtime. The scan deliberately reads the package's own *.go files (relative
@@ -120,5 +121,38 @@ func TestDiagCodesAreDocumented(t *testing.T) {
 		t.Errorf("%d diagnostic code(s) defined in source but undocumented in docs/references/diagnostics.md: %s\n"+
 			"add a row for each (severity + one-line check) so the predictability surface stays accurate",
 			len(missing), strings.Join(missing, ", "))
+	}
+}
+
+// diagRowRe matches a table row header in the reference catalogue
+// (`| **C270** | warning | …`). Group 1 is the code.
+var diagRowRe = regexp.MustCompile(`(?m)^\| \*\*(C[0-9]{3})\*\* \|`)
+
+// TestDiagRowsAreDefinedOnce fails if a code heads more than one row in the
+// reference catalogue. This is the regression guard for the class that
+// defined C270/C271 twice (#2861): a renumbered pair left a stale copy in the
+// Bundle Consistency section, so the page answered one code with two
+// unrelated checks. TestDiagCodesAreDocumented only proves presence; a code
+// in compiler output must read as exactly one row.
+func TestDiagRowsAreDefinedOnce(t *testing.T) {
+	const docPath = "../../../docs/references/diagnostics.md"
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", docPath, err)
+	}
+	seen := map[string]int{}
+	var dupes []string
+	for _, m := range diagRowRe.FindAllStringSubmatch(string(data), -1) {
+		code := m[1]
+		seen[code]++
+		if seen[code] == 2 {
+			dupes = append(dupes, code)
+		}
+	}
+	if len(dupes) > 0 {
+		sort.Strings(dupes)
+		t.Errorf("%d diagnostic code(s) head more than one row in docs/references/diagnostics.md: %s\n"+
+			"a Cnnn in compiler output must answer to exactly one row — delete the stale copy or merge the rows",
+			len(dupes), strings.Join(dupes, ", "))
 	}
 }

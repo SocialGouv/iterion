@@ -112,6 +112,20 @@ func (op Operation) PrimaryResult() ResultCase {
 	return op.Results[0]
 }
 
+// AddressesBaseURL reports whether an operation of the package is sent to
+// the connection's base URL itself (HTTPBinding.AtBaseURL): such a URL is
+// the operator's, byte for byte, and its trailing slash is part of it.
+func (p *Package) AddressesBaseURL() bool {
+	for _, f := range p.Ops {
+		for _, op := range f.Operations {
+			if op.HTTP.AtBaseURL {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HTTPBinding is where the call goes on the wire.
 type HTTPBinding struct {
 	// Method is upper-case ("GET", "POST", …).
@@ -119,6 +133,13 @@ type HTTPBinding struct {
 	// Path is the templated path under the connector's base URL and path
 	// prefix, with `{name}` placeholders matching Params of In "path".
 	Path string `yaml:"path" json:"path"`
+	// AtBaseURL sends the request to the connection's base URL itself — its
+	// path, trailing slash and query exactly as the operator wrote them —
+	// for a vendor whose address IS the resource: a feed URL. Path is empty
+	// then, and neither a path prefix nor a path or query parameter may
+	// reshape what the operator wrote. A flag rather than an empty path, so
+	// a path left out by mistake stays a load error.
+	AtBaseURL bool `yaml:"at_base_url,omitempty" json:"at_base_url,omitempty"`
 	// RequestBody is how the body params are encoded; empty when there are
 	// none. It is REQUIRED as soon as an operation has body/form params,
 	// because "which encoding" is not a detail the executor may guess: the
@@ -142,7 +163,21 @@ type HTTPBinding struct {
 	// Accept overrides the response media type when the vendor answers
 	// something other than JSON.
 	Accept string `yaml:"accept,omitempty" json:"accept,omitempty"`
+	// ResponseFormat is how the answer is decoded: json (empty) or feed —
+	// an RSS 2.0 or Atom 1.0 document read into one normalized shape
+	// (pkg/connector/exec/feed.go), so a feed is polled like any other list.
+	ResponseFormat ResponseFormat `yaml:"response_format,omitempty" json:"response_format,omitempty"`
 }
+
+// ResponseFormat is the decoding of an operation's answer.
+type ResponseFormat string
+
+const (
+	// ResponseJSON is the default: the body is JSON.
+	ResponseJSON ResponseFormat = "json"
+	// ResponseFeed is an RSS 2.0 or Atom 1.0 document.
+	ResponseFeed ResponseFormat = "feed"
+)
 
 // RequestContentType is the header value to send: the vendor's own media type
 // when it named a specific one, else the canonical type for the encoding.
@@ -599,6 +634,22 @@ func (op Operation) HasBodyParams() bool {
 		}
 	}
 	return false
+}
+
+// ParamKeyForWire maps a parameter's WIRE name onto the public key a caller
+// writes, since an overlay may have renamed it, falling back to the wire name
+// itself. The pagination walk and the poll validation read pagination
+// parameters through it, so both name the same parameter.
+func ParamKeyForWire(op Operation, wire string) string {
+	if wire == "" {
+		return ""
+	}
+	for _, p := range op.Params {
+		if p.Name == wire {
+			return p.Key
+		}
+	}
+	return wire
 }
 
 // ValidBodyEncoding reports whether e is one iterion can actually build.

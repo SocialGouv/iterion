@@ -65,7 +65,10 @@ type podDriver struct {
 func (d *podDriver) Name() string { return "docker" }
 
 func (d *podDriver) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+	// SupportsNetworkPolicy: this fixture stands for a host that holds the
+	// fork lane's floors (ADR-162 decision 7) — an untrusted run must start
+	// here, not be refused at the network admission.
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsNetworkPolicy: true}
 }
 
 func (d *podDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {
@@ -1232,11 +1235,12 @@ func TestBankScratchOnCleanup_retriesItsRecordThroughAFailover(t *testing.T) {
 }
 
 // TestSandboxTeardownBudget_coversTheScratchBank: the lease the runner holds
-// past a cancellation covers every step of the teardown, the scratch's bank
-// included — its archive and upload, its record, the resume of what its
-// quiesce stopped — or a sibling takes the run while its bank still lands.
+// past a cancellation covers every step of the teardown, the run-files
+// drain and the scratch's bank included — its archive and upload, its
+// record, the resume of what its quiesce stopped — or a sibling takes the
+// run while its bank still lands.
 func TestSandboxTeardownBudget_coversTheScratchBank(t *testing.T) {
-	steps := sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
+	steps := sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxRunFilesDrainTimeout + sandboxShutdownTimeout
 	bank := scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget
 	if SandboxTeardownBudget < steps+bank {
 		t.Fatalf("SandboxTeardownBudget = %s, want at least %s: the teardown's steps (%s) and the scratch bank's (%s)", SandboxTeardownBudget, steps+bank, steps, bank)

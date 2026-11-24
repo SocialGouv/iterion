@@ -2,6 +2,10 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"maps"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -35,11 +39,10 @@ func mergeOutputStub() map[string]any {
 	}
 }
 
-// wireReviewPRStubs wires the deterministic diff_precheck tool, all four
-// reviewer node variants (only one or two of which ever fire per run), and
-// both merge twins (one per run) — enough to reach `done` via the no-pr_url
-// path (pr_gate -> done when not has_pr) without needing
-// publish_review/publish_health.
+// wireReviewPRStubs wires the deterministic diff_precheck tool, the three
+// reviewer slots (only one or two of which ever fire per run), and the merge
+// step — enough to reach `done` via the no-pr_url path (pr_gate -> done when
+// not has_pr) without needing publish_review/publish_health.
 func wireReviewPRStubs(exec *scenarioExecutor) {
 	exec.on("diff_precheck", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{
@@ -47,21 +50,19 @@ func wireReviewPRStubs(exec *scenarioExecutor) {
 			"_tokens": 1, "_cost_usd": 0,
 		}, nil
 	})
-	for _, id := range []string{"reviewer_claude", "reviewer_claude_glance"} {
+	for _, id := range []string{"reviewer_alternate"} {
 		exec.on(id, func(_ map[string]any) (map[string]any, error) {
 			return reviewOutputStub("claude"), nil
 		})
 	}
-	for _, id := range []string{"reviewer_gpt", "reviewer_gpt_glance"} {
+	for _, id := range []string{"reviewer", "reviewer_glance"} {
 		exec.on(id, func(_ map[string]any) (map[string]any, error) {
 			return reviewOutputStub("gpt"), nil
 		})
 	}
-	for _, id := range []string{"converge", "converge_gpt"} {
-		exec.on(id, func(_ map[string]any) (map[string]any, error) {
-			return mergeOutputStub(), nil
-		})
-	}
+	exec.on("converge", func(_ map[string]any) (map[string]any, error) {
+		return mergeOutputStub(), nil
+	})
 }
 
 func runReviewPRTier(t *testing.T, runID string, inputs map[string]any) *scenarioExecutor {
@@ -82,58 +83,37 @@ func runReviewPRTier(t *testing.T, runID string, inputs map[string]any) *scenari
 	return exec
 }
 
-// Glance/claude: routes to the cheaper glance variant, never the
-// full-strength reviewer, and never the second family.
+// Glance: routes to the cheaper `reviewer_glance`, never the full-strength
+// reviewer, and never the alternate reviewer (only a paired launch reaches
+// it).
 func TestReviewPRTier_GlanceRoutesToCheapReviewer(t *testing.T) {
 	t.Parallel()
-	exec := runReviewPRTier(t, "e2e-tier-glance-claude", map[string]any{
-		"review_tier": "glance", "mono_family": "claude",
+	exec := runReviewPRTier(t, "e2e-tier-glance", map[string]any{
+		"review_tier": "glance", "review_mode": "single",
 	})
-	if !exec.wasCalled("reviewer_claude_glance") {
-		t.Error("glance: reviewer_claude_glance never ran")
+	if !exec.wasCalled("reviewer_glance") {
+		t.Error("glance: reviewer_glance never ran")
 	}
-	if exec.wasCalled("reviewer_claude") {
-		t.Error("glance: the full-strength reviewer_claude ran instead of the glance variant")
+	if exec.wasCalled("reviewer") {
+		t.Error("glance: the full-strength reviewer ran instead of the glance variant")
 	}
-	if exec.wasCalled("reviewer_gpt") || exec.wasCalled("reviewer_gpt_glance") {
-		t.Error("glance/mono: the second family must never fire")
+	if exec.wasCalled("reviewer_alternate") {
+		t.Error("glance/single: the alternate reviewer must never fire")
 	}
 }
 
-// Glance/gpt: symmetric — the gpt glance variant, never the full-strength
-// reviewer_gpt.
-func TestReviewPRTier_GlanceRoutesToCheapReviewerGPT(t *testing.T) {
+// One merge step, on every topology: a single review and a paired one reach
+// the same node.
+func TestReviewPRTier_TheMergeStepRunsOnEveryTopology(t *testing.T) {
 	t.Parallel()
-	exec := runReviewPRTier(t, "e2e-tier-glance-gpt", map[string]any{
-		"review_tier": "glance", "mono_family": "gpt",
-	})
-	if !exec.wasCalled("reviewer_gpt_glance") {
-		t.Error("glance/gpt: reviewer_gpt_glance never ran")
-	}
-	if exec.wasCalled("reviewer_gpt") {
-		t.Error("glance/gpt: the full-strength reviewer_gpt ran instead of the glance variant")
-	}
-	// #2467: the family decides the MERGE step too, on the same guard.
-	if !exec.wasCalled("converge_gpt") {
-		t.Error("mono-gpt: converge_gpt never ran — `mono_family=gpt` is the family of the whole review, merge included")
-	}
-	if exec.wasCalled("converge") {
-		t.Error("mono-gpt: the Anthropic merge step ran — on a GPT-only tenant it has no credential, and the run dies before the gate posts a verdict")
-	}
-}
-
-// The claude family keeps the merge step it had: the GPT twin is behind the
-// gpt guard, and nothing else moved.
-func TestReviewPRTier_MonoClaudeKeepsItsMergeStep(t *testing.T) {
-	t.Parallel()
-	exec := runReviewPRTier(t, "e2e-tier-mono-claude-merge", map[string]any{
-		"mono_family": "claude",
-	})
-	if !exec.wasCalled("converge") {
-		t.Error("mono-claude: converge never ran — it is still the merge step of every family but gpt")
-	}
-	if exec.wasCalled("converge_gpt") {
-		t.Error("mono-claude: the gpt merge twin ran — it is behind `vars.mono_family == 'gpt'`")
+	for _, inputs := range []map[string]any{
+		{"review_mode": "single"},
+		{"review_mode": "paired"},
+	} {
+		exec := runReviewPRTier(t, "e2e-tier-merge-"+strings.ReplaceAll(fmt.Sprint(inputs["review_mode"]), " ", "-"), inputs)
+		if !exec.wasCalled("converge") {
+			t.Errorf("%v: converge never ran — it is the merge step of every topology", inputs)
+		}
 	}
 }
 
@@ -142,13 +122,11 @@ func TestReviewPRTier_MonoClaudeKeepsItsMergeStep(t *testing.T) {
 // variant.
 func TestReviewPRTier_GuardMatchesHistoricalDefaults(t *testing.T) {
 	t.Parallel()
-	exec := runReviewPRTier(t, "e2e-tier-guard", map[string]any{
-		"mono_family": "claude",
-	})
-	if !exec.wasCalled("reviewer_claude") {
-		t.Error("guard: the full-strength reviewer_claude never ran")
+	exec := runReviewPRTier(t, "e2e-tier-guard", map[string]any{})
+	if !exec.wasCalled("reviewer") {
+		t.Error("guard: the full-strength reviewer never ran")
 	}
-	if exec.wasCalled("reviewer_claude_glance") {
+	if exec.wasCalled("reviewer_glance") {
 		t.Error("guard: the glance variant must not run under the default tier")
 	}
 }
@@ -162,13 +140,13 @@ func TestReviewPRTier_GuardMatchesHistoricalDefaults(t *testing.T) {
 func TestReviewPRTier_AuditForcesDual(t *testing.T) {
 	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-audit", map[string]any{
-		"review_tier": "audit", "mono_family": "claude",
+		"review_tier": "audit", "review_mode": "single",
 	})
-	if !exec.wasCalled("reviewer_claude") || !exec.wasCalled("reviewer_gpt") {
-		t.Error("audit: both full-strength families must run (the dual fan-out)")
+	if !exec.wasCalled("reviewer") || !exec.wasCalled("reviewer_alternate") {
+		t.Error("audit: both full-strength reviewers must run (the paired fan-out)")
 	}
-	if exec.wasCalled("reviewer_claude_glance") || exec.wasCalled("reviewer_gpt_glance") {
-		t.Error("audit: never routes through the glance variants")
+	if exec.wasCalled("reviewer_glance") {
+		t.Error("audit: never routes through the glance variant")
 	}
 }
 
@@ -179,9 +157,74 @@ func TestReviewPRTier_AuditForcesDual(t *testing.T) {
 func TestReviewPRTier_ExplicitReviewModeWinsOverGlance(t *testing.T) {
 	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-explicit-override", map[string]any{
-		"review_tier": "glance", "review_mode": "dual", "mono_family": "claude",
+		"review_tier": "glance", "review_mode": "paired",
 	})
-	if !exec.wasCalled("reviewer_claude") || !exec.wasCalled("reviewer_gpt") {
-		t.Error("an explicit --var review_mode=dual must still force the fan-out under glance")
+	if !exec.wasCalled("reviewer") || !exec.wasCalled("reviewer_alternate") {
+		t.Error("an explicit --var review_mode=paired must still force the fan-out under glance")
+	}
+}
+
+// The merge floor in publish_review restores a finding converge dropped only
+// when converge's own contract could not have dropped it, so it must read the
+// threshold and the cap converge was handed — tier_expand's RESOLVED values,
+// carried on the pr_gate -> publish_review edge. A tool node's command
+// substitutes input/vars only, so an edge that stops mapping them leaves the
+// floor reading an unrendered ref (it then restores at every severity,
+// uncapped): this drives the real bot through the engine and reads what the
+// publish node was actually handed, for a tier preset and an explicit pin.
+func TestReviewPRTier_PublishReceivesTheMergeBounds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		inputs     map[string]any
+		wantThresh string
+		wantCap    int
+	}{
+		{"glance preset", map[string]any{"review_tier": "glance"}, "high", 5},
+		{"explicit pins win over the tier", map[string]any{"severity_threshold": "low", "max_findings": 7}, "low", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixtureStubSafe(t, "review-pr/main.bot")
+			exec := newScenarioExecutor()
+			wireReviewPRStubs(exec)
+			var mu sync.Mutex
+			var got map[string]any
+			exec.on("publish_review", func(in map[string]any) (map[string]any, error) {
+				mu.Lock()
+				got = maps.Clone(in)
+				mu.Unlock()
+				return map[string]any{
+					"published": true, "forge": "github", "review_url": "https://forge/review/1",
+					"comments_posted": 0, "suggestions_posted": 0, "body_missing": false,
+					"skipped_reason": "", "summary": "ok", "gate_requested": false,
+					"gate_posted": false, "gate_skipped_reason": "",
+				}, nil
+			})
+			exec.on("publish_health", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"degraded": false, "banner": "ok"}, nil
+			})
+			inputs := map[string]any{"review_mode": "single", "pr_url": "https://github.com/acme/widgets/pull/7"}
+			maps.Copy(inputs, tc.inputs)
+			s := tmpStore(t)
+			runID := "e2e-merge-bounds-" + strings.ReplaceAll(tc.name, " ", "-")
+			if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, inputs); err != nil {
+				t.Fatalf("run error: %v", err)
+			}
+			if r, _ := s.LoadRun(context.Background(), runID); r.Status != store.RunStatusFinished {
+				t.Fatalf("status = %s, want finished", r.Status)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if got == nil {
+				t.Fatal("publish_review never ran — the run did not take the has_pr branch, and this test proves nothing")
+			}
+			if th := fmt.Sprint(got["severity_threshold"]); th != tc.wantThresh {
+				t.Errorf("publish_review got severity_threshold %q, want %q (tier_expand's resolved value)", th, tc.wantThresh)
+			}
+			if mf := fmt.Sprint(got["max_findings"]); mf != fmt.Sprint(tc.wantCap) {
+				t.Errorf("publish_review got max_findings %q, want %d (tier_expand's resolved value)", mf, tc.wantCap)
+			}
+		})
 	}
 }

@@ -136,12 +136,17 @@ type Spec struct {
 // defaultEngineFloor is the floor a generated manifest declares: this
 // build's version when it can be ordered (`v3.141.0+abc` → `3.141.0`) —
 // or, for a dev build, the release that reads the newest profile — raised
-// to the release the RENDERED sources need when that is later (a shape
-// that imports needs the release that reads `import`, whatever build
-// scaffolds it), so a fresh scaffold never draws C252 on its own floor —
-// and to category/tags' strict-decoding release when the manifest
-// declares a category.
-func defaultEngineFloor(sources map[string]string, category string) (string, error) {
+// to the release the rendered bundle needs when that is later, so a fresh
+// scaffold never draws C252 on its own floor and is never refused at the
+// push admission.
+//
+// What the bundle needs is asked of the ONE floors table
+// (bundle.RequiredReleaseOf) over both halves of the subject: the RENDERED
+// sources (a shape that imports needs the release that reads `import`,
+// whatever build scaffolds it) and the keys the rendered manifest declares
+// (`category`). A floor of its own here would be a fourth reading of the
+// same question.
+func defaultEngineFloor(sources map[string]string, keys bundle.ManifestKeys) (string, error) {
 	floor := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
 	if _, ok := bundle.CompareVersions(floor, "0"); !ok {
 		floor = parser.ProfileSince[parser.MaxProfile]
@@ -152,18 +157,26 @@ func defaultEngineFloor(sources map[string]string, category string) (string, err
 		// told by nothing, and no manifest is written with one.
 		return "", fmt.Errorf("botscaffold: the floor of the rendered sources cannot be told — not read whole (C256): %s", strings.Join(syntax.Short, "; "))
 	}
-	if need, _ := bundle.RequiredRelease(syntax); need != "" {
+	if need, _ := bundle.RequiredReleaseOf(bundle.FloorSubject{Syntax: syntax, Keys: keys}); need != "" {
 		if c, ok := bundle.CompareVersions(need, floor); !ok || c > 0 {
 			floor = need
 		}
 	}
-	if category != "" {
-		const categorySince = "3.225.0"
-		if c, ok := bundle.CompareVersions(categorySince, floor); !ok || c > 0 {
-			floor = categorySince
-		}
-	}
 	return floor, nil
+}
+
+// manifestKeys are the floor-bearing keys the rendered manifest will
+// declare: the template writes `category:` only for a spec that carries
+// one (templates/manifest.yaml.tmpl). The day a template writes another key
+// a floor is asked for by, the scaffold's own floor test reddens — it
+// derives the keys from the rendered manifest and holds the two readings
+// against each other.
+func (s Spec) manifestKeys() bundle.ManifestKeys {
+	keys := bundle.ManifestKeys{}
+	if s.Category != "" {
+		keys["category"] = true
+	}
+	return keys
 }
 
 // WorkflowName is the Slug as a DSL identifier — the DSL grammar has no
@@ -401,7 +414,7 @@ func Scaffold(dir string, s Spec) (Result, error) {
 				sources[rel] = string(body)
 			}
 		}
-		floor, err := defaultEngineFloor(sources, s.Category)
+		floor, err := defaultEngineFloor(sources, s.manifestKeys())
 		if err != nil {
 			return Result{}, err
 		}

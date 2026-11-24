@@ -19,14 +19,14 @@ import { createBot, type BotCreateResult } from "@/api/bots";
 import { botSourceEditorPath } from "@/api/client";
 import TestRunPane from "@/components/Runs/TestRunPane";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
-import { useAuth } from "@/auth/AuthContext";
-import { Button, InlineBanner } from "@/components/ui";
+import { useAuth, useMaybeAuth } from "@/auth/AuthContext";
+import { Button, InlineBanner, StatusMessage } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { useAssistantPageContext } from "@/lib/chatDock/pageContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 
-import { botLaunchFile } from "../botPaths";
+import { useBotLaunch } from "../useBotLaunch";
 import AdvancedCard from "./AdvancedCard";
 import CreatedBotBanner from "./CreatedBotBanner";
 import {
@@ -51,6 +51,7 @@ import VarsEditorCard from "./VarsEditorCard";
 
 export default function BotBuilderView() {
   const serverInfo = useServerInfoStore((s) => s.info);
+  const auth = useMaybeAuth();
 
   useHeaderSlot({
     left: (
@@ -99,7 +100,8 @@ export default function BotBuilderView() {
     );
   }
 
-  return <Builder />;
+  // A created bot belongs to the account and team that created it.
+  return <Builder key={JSON.stringify([auth?.user?.id, auth?.activeTeamID])} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +241,9 @@ function BuilderForm({
     }
   };
 
-  const createdFile = created ? botLaunchFile(created) : null;
+  // The created bot is tested the way this session launches a bot: by its
+  // id in cloud, where it lives in the team's store and has no path.
+  const { launch: createdLaunch } = useBotLaunch(created);
 
   return (
     <div className="mx-auto w-full max-w-7xl p-4">
@@ -259,12 +263,10 @@ function BuilderForm({
                 ← Templates
               </button>
             )}
-            <span
-              aria-live="polite"
+            <StatusMessage
+              message={draftSaved ? "Draft saved" : ""}
               className={`ml-auto text-caption text-fg-subtle transition-opacity ${draftSaved ? "opacity-100" : "opacity-0"}`}
-            >
-              Draft saved
-            </span>
+            />
           </div>
 
           {created && <CreatedBotBanner created={created} isCloud={isCloud} />}
@@ -323,8 +325,8 @@ function BuilderForm({
                   Open in editor
                 </Button>
               )}
-              {createdFile ? (
-                <TestRunPane file={createdFile} vars={created.vars?.fields ?? []} />
+              {createdLaunch ? (
+                <TestRunPane launch={createdLaunch} vars={created.vars?.fields ?? []} />
               ) : (
                 <InlineBanner tone="warning" title="Test pane unavailable">
                   The server couldn&apos;t relativise the new bot&apos;s path to the workspace —

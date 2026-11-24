@@ -120,7 +120,7 @@ func TestLangScannersReadTheEngineOwnedCopy(t *testing.T) {
 				files["lang-python.md"] = bundleScannersBlock(shippedWitness)
 			}
 			b := newSkillsBundle(t, files)
-			if _, err := mirrorBundleSkills(ws, b, nil); err != nil {
+			if _, err := mirrorBundleSkills(ws, b, testTrustedPass(t), nil); err != nil {
 				t.Fatalf("mirror: %v", err)
 			}
 
@@ -336,7 +336,7 @@ func TestFamilyNodesReadTheEngineOwnedCatalogue(t *testing.T) {
 			writeCheckoutFile(t, ws, ".claude/iterion-skills/package-managers.md", hostile)
 
 			b := newSkillsBundle(t, map[string]string{"package-managers.md": familyCatalogueBlock("true")})
-			if _, err := mirrorBundleSkills(ws, b, nil); err != nil {
+			if _, err := mirrorBundleSkills(ws, b, testTrustedPass(t), nil); err != nil {
 				t.Fatalf("mirror: %v", err)
 			}
 

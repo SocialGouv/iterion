@@ -407,6 +407,15 @@ schema notify_input:
   max_message_chars: int
   ## Ceiling on the messages one digest may occupy (0 = none).
   max_messages: int
+  ## AI provenance of the synthesize step, for the run footer the node
+  ## appends (docs/agents/bots/run-link.md). All json, not typed scalars:
+  ## the engine's per-node `_` keys may be absent (an engine that predates
+  ## them), and a typed field would turn that absence into a run failure.
+  ai_model: json
+  ai_backend: json
+  ai_tokens: json
+  ai_fallback_used: json
+  ai_served_by: json
 
 schema silence_input:
   category: string
@@ -468,20 +477,17 @@ schema commit_output:
 ## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
 ## on the OpenAI family instead (a metered key, or the ChatGPT-forfait
 ## via claw's codex OAuth path). No board capabilities: the digest's
-## sink is the chat webhook, and declaring board.* would require the
-## iterion_board MCP server active on every run (it is not on a cloud
-## runner), failing the node at setup even when unused.
+## sink is the chat webhook, and on the claw route a cloud run's board
+## tools write the runner pod's own store rather than the team board, so
+## a board.* grant would buy a card nobody reads. The grant alone opens
+## them — iterion's own MCP servers sit outside a node's `mcp:` scope.
 ##
-## The gpt_forfait fallback keeps the digest deliverable when the
-## Anthropic subscription window (or iterion's own usage cap on it) is
-## exhausted: usage_window routes the SAME prompt to the OpenAI family
-## through claw, billed on the codex OAuth forfait when no metered key
-## is present. The deny gate survives the route — a sandboxed claw run
-## receives the policy over the IPC and enforces it in-container. The
-## crossing is loud (`model_fallback` event, `_fallback_used` /
-## `_served_by: gpt_forfait` on the output), and the deterministic
-## verify_message firewall downstream judges the digest the same way
-## whoever served it.
+## No model fallback: the route the launch resolves (the node defaults, or
+## a schedule's routing pin onto a team gateway key) is the only one the
+## digest spends. A digest that route cannot serve fails loudly, and
+## nothing is lost — the queue is cleared only after publication
+## (commit_state), so the next digest of the category picks up every
+## unsent item and its window note says how far back it reaches.
 agent synthesize:
   model: "${FEED_WATCH_MODEL:-}"
   backend: "${FEED_WATCH_BACKEND:-claude_code}"
@@ -492,11 +498,6 @@ agent synthesize:
   tools: [web_fetch, todo_write]
   tool_max_steps: 30
   reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
-  fallbacks:
-    gpt_forfait:
-      backend: "claw"
-      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-6-sol}"
-      on: [usage_window]
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -648,9 +649,12 @@ tool fetch_feeds:
     def _validate_host(host):
         # Strict SSRF check on a URL host (the attacker-controlled input):
         # resolve it and reject if ANY resolved address is non-public. Holds
-        # whether we connect directly or via the egress proxy. A host that IS
-        # the proxy is exempt — we route through it deliberately.
-        if allow_private or not host or host in _proxy_hosts:
+        # whether we connect directly or via the egress proxy. No proxy
+        # exemption: the TARGET host is what is validated here — routing
+        # through the proxy happens at the socket, never in the URL, and a
+        # proxy on a loopback or private address would otherwise exempt every
+        # target on that same address.
+        if allow_private or not host:
             return
         try:
             infos = _real_getaddrinfo(host, None)
@@ -794,7 +798,7 @@ tool fetch_feeds:
 ## digest can fire concurrently from cron.
 tool dedup_queue:
   script: |
-    import json, os, fcntl, subprocess
+    import json, os, fcntl, subprocess, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     entries_file = {{input.entries_file}}
     fetch_errors = {{input.errors}}
@@ -811,22 +815,31 @@ tool dedup_queue:
         # losing push (non-fast-forward) left unhandled would drop this run's
         # state — and for a digest, an uncleared queue re-posts next run. So
         # push, and on rejection rebase + retry.
-        subprocess.run(['git', 'add', sdir], check=True)
-        # Guard: the bot may ONLY ever commit the state dir. `git add sdir`
-        # stages just that subtree, but verify it — a staged path outside the
-        # state dir (feed-watch.json, .github/**, a .bot) would be a bug or an
-        # injection, and this hard-fails before the push rather than persisting
-        # it under the bot's identity.
+        # DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may carry,
+        # and the reason it owes no delivery-permission preflight: a
+        # .github/workflows/** path cannot be inside the state dir, so the
+        # App-token restriction that refuses such a push is never reached.
+        # The staging and the refusal below read this tuple and nothing else,
+        # so narrowing it narrows the delivery, and dropping it breaks the
+        # push rather than the prose (bots/forge_delivery_class_test.go).
+        DELIVERY_OWNED_PATHS = (sdir,)
+        subprocess.run(['git', 'add'] + list(DELIVERY_OWNED_PATHS), check=True)
+        # `git add` stages just those subtrees, but verify the index — a
+        # staged path outside them (feed-watch.json, .github/**, a .bot) would
+        # be a bug or an injection, and this hard-fails before the push rather
+        # than persisting it under the bot's identity.
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir.rstrip('/') + '/'
-        outside = [p for p in staged if p.strip() and p != sdir and not p.startswith(pfx)]
+        owned = [q.rstrip('/') for q in DELIVERY_OWNED_PATHS]
+        outside = [p for p in staged if p.strip()
+                   and not any(p == o or p.startswith(o + '/') for o in owned)]
         if outside:
-            raise SystemExit('feed-watch: refusing to commit path(s) outside the state dir ' +
-                             repr(sdir) + ': ' + ', '.join(outside[:10]))
+            raise SystemExit('feed-watch: refusing to commit path(s) outside the paths it owns ' +
+                             repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        # git's summary goes to stderr: this node's stdout is its JSON answer.
+        subprocess.run(['git', 'commit', '-m', msg], check=True, stdout=sys.stderr)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
@@ -1250,7 +1263,7 @@ tool verify_message:
 ## consecutive posts, ordered by sequential (blocking) POSTs.
 tool notify:
   script: |
-    import json, os, sys, time, urllib.request
+    import json, os, re, sys, time, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     message = {{input.message_markdown}}
     sinks = {{input.sinks}} or []
@@ -1272,6 +1285,94 @@ tool notify:
     # the marker it reserves for puts the last message OVER the budget the
     # budget exists to respect.
     MARK_RESERVE = len(chr(10) + chr(10) + mark_for(999, 999, True))
+
+    ## ── The run footer (docs/agents/bots/run-link.md) ──────────────
+    ## Anything this bot posts outside the deployment names the run that
+    ## wrote it: the steps, the model and the cost behind the digest, and
+    ## the way into the platform. The provenance rides a Mattermost Blocks
+    ## `collapsible` attached to the LAST message of every sink (a
+    ## <details> fold is not an option: Mattermost sanitizes it,
+    ## mattermost/mattermost#38480). The block is layout-only — no
+    ## mm_blocks_actions — so a deployment with Blocks disabled drops it at
+    ## render time and the digest still lands whole; Slack sinks ignore
+    ## `props` and carry no provenance. The split reserves the footer's
+    ## text room (FOOTER_RESERVE) instead of clipping it.
+    run_url = str({{run.url}} or '').strip()
+    run_id = str({{run.id}} or '').strip()
+    run_tokens = int({{run.tokens}} or 0)
+    ai_model = str({{input.ai_model}} or '').strip()
+    ai_backend = str({{input.ai_backend}} or '').strip()
+    ai_tokens = int({{input.ai_tokens}} or 0)
+    ai_fallback = {{input.ai_fallback_used}} is True
+    ai_served_by = str({{input.ai_served_by}} or '').strip()
+    ## The effort the synthesize node ASKS for. Keep the default in sync
+    ## with that node's `reasoning_effort` declaration below — the dial is
+    ## declared there and read here, same file on purpose.
+    effort = (os.environ.get('FEED_WATCH_EFFORT', 'medium').strip() or 'medium')
+
+    def resolved(v):
+        # An engine that predates the run.* members leaves the reference
+        # unresolved; a value still carrying a template delimiter is no
+        # address and no id (same rule the forge footers apply).
+        return '' if v.startswith(chr(123) * 2) else v
+
+    run_url = resolved(run_url)
+    run_id = resolved(run_id)
+
+    bt = chr(96)
+    nl2 = chr(10) + chr(10)
+    # A run id is CALLER-CHOSEN at launch and screened only for path
+    # traversal, so it may carry markdown: an id like 'x](https://evil'
+    # would close the label early and publish a foreign link under Vigie's
+    # name. Only a plain id becomes a label; anything else is named in a
+    # code span (backticks stripped, so it cannot close the span either).
+    raw_id = run_id
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]*', run_id):
+        run_id = ''
+    sig = '\U0001F916 [iterion](https://iterion.cloud)'
+    if run_url and run_id:
+        sig = sig + ' · run [' + bt + run_id + bt + '](' + run_url + ')'
+    elif run_url:
+        sig = sig + ' · run [this run](' + run_url + ')'
+    elif run_id:
+        sig = sig + ' · run ' + bt + run_id + bt
+    elif raw_id:
+        sig = sig + ' · run ' + bt + raw_id.replace(bt, '') + bt
+
+    def fmt_tokens(n):
+        return str(n) if n < 1000 else '{:.1f}k'.format(n / 1000.0)
+
+    def cell(v):
+        # A provenance value is operator-configured, never caller-chosen,
+        # so plain stripping keeps a stray pipe or newline from breaking
+        # the table it lands in.
+        return str(v or '').strip().replace('|', '\\|').replace(chr(10), ' ')
+
+    step_label = 'Synthèse'
+    if ai_fallback and ai_served_by:
+        step_label = step_label + ' (repli : ' + cell(ai_served_by) + ')'
+    provenance_blocks = None
+    if ai_model or ai_backend or ai_tokens:
+        provenance_blocks = [{
+            'type': 'collapsible',
+            'collapsed': True,
+            'header': [{'type': 'text', 'text': 'Détails du run IA · Iterion',
+                        'is_subtle': True, 'size': 'small'}],
+            'content': [{'type': 'text', 'text': nl2.join([
+                chr(10).join([
+                    '| Étape | Modèle | Harness | Effort demandé | Tokens |',
+                    '|---|---|---|---|---:|',
+                    '| ' + step_label + ' | ' + cell(ai_model) + ' | ' + cell(ai_backend) +
+                    ' | ' + cell(effort) + ' | ' + fmt_tokens(ai_tokens) + ' |']),
+                'Tokens du run au moment de publier : **' + fmt_tokens(run_tokens) + '**.',
+            ])}],
+        }]
+    # The sig alone stays in the message text: the run link is load-bearing
+    # and must be readable without expanding anything. No provenance
+    # reached the node, there is no block either — no empty table that
+    # claims a step nobody served.
+    footer = sig
+    FOOTER_RESERVE = len(nl2 + footer)
 
     def out(o):
         print(json.dumps(o, ensure_ascii=False))
@@ -1341,26 +1442,27 @@ tool notify:
     def messages_for(limit):
         """The digest as it will be posted to a sink of budget `limit`:
         one entry when it fits, else numbered parts, the last one carrying
-        the truncation notice if the ceiling cut the tail off."""
-        parts = split_text(message or '', max(limit - MARK_RESERVE, 1))
+        the truncation notice if the ceiling cut the tail off — and the
+        run footer always, whole on the last part."""
+        # One split for the whole body, every part sized for the worst
+        # tail (marker + footer) so the LAST part always has their room.
+        # The reserve is paid on every part — a footer only one message
+        # carries is cheaper than a second, tail-only split that re-cuts
+        # block boundaries the first pass had already chosen.
+        parts = split_text(message or '', max(limit - MARK_RESERVE - FOOTER_RESERVE, 1))
         cut = max_messages > 0 and len(parts) > max_messages
         if cut:
             truncated_limits.add(limit)
             parts = parts[:max_messages]
-            # Every part was sized against MARK_RESERVE, which covers the
-            # plain `_(i/n)_` marker — not the 62-char truncation notice the
-            # LAST part now carries. Re-trim that one part rather than
-            # reserving 64 chars on EVERY part, which would shrink the whole
-            # digest to pay for a marker only one message ever gets.
-            room = limit - len(mark_for(len(parts), len(parts), True)) - 2
-            if room > 0 and len(parts[-1]) > room:
-                parts[-1] = parts[-1][:room].rstrip()
         if len(parts) == 1 and not cut:
-            return parts
+            return [parts[0] + nl2 + footer]
         n = len(parts)
         msgs = []
         for i, part in enumerate(parts, 1):
-            msgs.append(part + chr(10) + chr(10) + mark_for(i, n, cut and i == n))
+            tail_txt = mark_for(i, n, cut and i == n)
+            if i == n:
+                tail_txt = tail_txt + nl2 + footer
+            msgs.append(part + nl2 + tail_txt)
         return msgs
 
     if not sinks:
@@ -1388,6 +1490,11 @@ tool notify:
             for i, text in enumerate(msgs, 1):
                 print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] +
                       ' part=' + str(i) + '/' + str(len(msgs)) + ' chars=' + str(len(text)), file=sys.stderr)
+        if provenance_blocks:
+            print('DRY-RUN provenance: the last part of every sink carries a props.mm_blocks collapsible ('
+                  + str(len(json.dumps(provenance_blocks))) + ' bytes of blocks)', file=sys.stderr)
+        else:
+            print('DRY-RUN provenance: none reached this run — no blocks attached', file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0, 'targets': [n for n, _, _ in plans],
              'parts': parts_max, 'posts': 0,
              'summary': 'dry-run: ' + str(len(plans)) + ' sink(s) x up to ' + str(parts_max) +
@@ -1405,6 +1512,8 @@ tool notify:
         for i, text in enumerate(msgs, 1):
             body = dict(p)
             body['text'] = text
+            if provenance_blocks and i == len(msgs):
+                body['props'] = {'mm_blocks': provenance_blocks}
             req = urllib.request.Request(whmap[name], data=json.dumps(body).encode('utf-8'),
                                          headers={'Content-Type': 'application/json',
                                                   'User-Agent': 'feed-watch (iterion)'}, method='POST')
@@ -1487,7 +1596,7 @@ tool notify:
 ## nobody. `finished` is not `delivered`.
 tool notify_silence:
   script: |
-    import json, os, sys, datetime, subprocess, urllib.request
+    import json, os, re, sys, datetime, subprocess, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     digest_title = {{input.digest_title}}
@@ -1518,6 +1627,28 @@ tool notify_silence:
     for k, v in (('{title}', title), ('{category}', category),
                  ('{days}', str(silence_days)), ('{window}', str(silence_window))):
         text = text.replace(k, v)
+    # The run signature the digest carries (docs/agents/bots/run-link.md),
+    # minus the AI block: a silence alert has no LLM step behind it — the
+    # link names the run that checked. Same id rules as the forge footers:
+    # an unresolved reference is no id, a caller-chosen id may carry
+    # markdown, so only a plain one becomes a link label and any other is
+    # named in a backtick-stripped code span.
+    sil_url = str({{run.url}} or '').strip()
+    raw_id = str({{run.id}} or '').strip()
+    if raw_id.startswith(chr(123) * 2):
+        raw_id = ''
+    sil_id = raw_id if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]*', raw_id) else ''
+    bt = chr(96)
+    sig = '\U0001F916 [iterion](https://iterion.cloud)'
+    if sil_url and sil_id:
+        sig = sig + ' · run [' + bt + sil_id + bt + '](' + sil_url + ')'
+    elif sil_url:
+        sig = sig + ' · run [this run](' + sil_url + ')'
+    elif sil_id:
+        sig = sig + ' · run ' + bt + sil_id + bt
+    elif raw_id:
+        sig = sig + ' · run ' + bt + raw_id.replace(bt, '') + bt
+    text = text + chr(10) + chr(10) + sig
     if not sinks:
         out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'targets': [],
              'parts': 1, 'posts': 0,
@@ -1583,16 +1714,18 @@ tool notify_silence:
                 print('feed-watch: not stamping silence.json -- staged path(s) outside ' +
                       repr(state_dir) + ': ' + ', '.join(outside[:5]), file=sys.stderr)
             elif subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
+                # git's own lines go to stderr, here and below: this
+                # node's stdout is its JSON answer.
                 subprocess.run(['git', '-C', ws, 'commit', '-m',
                                 'chore(feed-watch): silence alert ' + category +
-                                ' (' + str(silence_days) + 'd)'], check=True)
+                                ' (' + str(silence_days) + 'd)'], check=True, stdout=sys.stderr)
                 br = subprocess.run(['git', '-C', ws, 'rev-parse', '--abbrev-ref', 'HEAD'],
                                     capture_output=True, text=True).stdout.strip() or 'HEAD'
                 for _ in range(5):
-                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD']).returncode == 0:
+                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD'], stdout=sys.stderr).returncode == 0:
                         break
                     if subprocess.run(['git', '-C', ws, 'pull', '--rebase', '--autostash',
-                                       'origin', br]).returncode != 0:
+                                       'origin', br], stdout=sys.stderr).returncode != 0:
                         subprocess.run(['git', '-C', ws, 'rebase', '--abort'])
                         print('feed-watch: could not push silence.json (rebase conflict)', file=sys.stderr)
                         break
@@ -1629,7 +1762,7 @@ tool notify_silence:
 ## dedup, and optionally commit+push the state.
 tool commit_state:
   script: |
-    import json, os, fcntl, subprocess, datetime
+    import json, os, fcntl, subprocess, datetime, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     snapshot_ids = set({{input.snapshot_ids}} or [])
@@ -1644,22 +1777,31 @@ tool commit_state:
         # See dedup_queue for the rationale: concurrent cloud runs push to the
         # same branch touching disjoint per-category subdirs; rebase + retry so
         # a non-fast-forward push never drops this digest's cleared queue.
-        subprocess.run(['git', 'add', sdir], check=True)
-        # Guard: the bot may ONLY ever commit the state dir. `git add sdir`
-        # stages just that subtree, but verify it — a staged path outside the
-        # state dir (feed-watch.json, .github/**, a .bot) would be a bug or an
-        # injection, and this hard-fails before the push rather than persisting
-        # it under the bot's identity.
+        # DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may carry,
+        # and the reason it owes no delivery-permission preflight: a
+        # .github/workflows/** path cannot be inside the state dir, so the
+        # App-token restriction that refuses such a push is never reached.
+        # The staging and the refusal below read this tuple and nothing else,
+        # so narrowing it narrows the delivery, and dropping it breaks the
+        # push rather than the prose (bots/forge_delivery_class_test.go).
+        DELIVERY_OWNED_PATHS = (sdir,)
+        subprocess.run(['git', 'add'] + list(DELIVERY_OWNED_PATHS), check=True)
+        # `git add` stages just those subtrees, but verify the index — a
+        # staged path outside them (feed-watch.json, .github/**, a .bot) would
+        # be a bug or an injection, and this hard-fails before the push rather
+        # than persisting it under the bot's identity.
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir.rstrip('/') + '/'
-        outside = [p for p in staged if p.strip() and p != sdir and not p.startswith(pfx)]
+        owned = [q.rstrip('/') for q in DELIVERY_OWNED_PATHS]
+        outside = [p for p in staged if p.strip()
+                   and not any(p == o or p.startswith(o + '/') for o in owned)]
         if outside:
-            raise SystemExit('feed-watch: refusing to commit path(s) outside the state dir ' +
-                             repr(sdir) + ': ' + ', '.join(outside[:10]))
+            raise SystemExit('feed-watch: refusing to commit path(s) outside the paths it owns ' +
+                             repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        # git's summary goes to stderr: this node's stdout is its JSON answer.
+        subprocess.run(['git', 'commit', '-m', msg], check=True, stdout=sys.stderr)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
@@ -1848,6 +1990,11 @@ workflow feed_watch:
     digest_title: "{{outputs.load_pending.digest_title}}",
     max_message_chars: "{{vars.max_message_chars}}",
     max_messages: "{{vars.max_messages}}",
+    ai_model: "{{outputs.synthesize._model}}",
+    ai_backend: "{{outputs.synthesize._backend}}",
+    ai_tokens: "{{outputs.synthesize._tokens}}",
+    ai_fallback_used: "{{outputs.synthesize._fallback_used}}",
+    ai_served_by: "{{outputs.synthesize._served_by}}",
   }
 
   ## Only a DELIVERED digest consumes the queue: dry-run and

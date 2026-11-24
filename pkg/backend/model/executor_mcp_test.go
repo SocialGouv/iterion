@@ -8,6 +8,7 @@ import (
 )
 
 func TestCheckNodeToolAccessRejectsInactiveMCPServer(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry()
 	wf := &ir.Workflow{
 		Prompts: map[string]*ir.Prompt{},

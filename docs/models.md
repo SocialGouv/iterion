@@ -86,7 +86,11 @@ Each row carries `reachability`:
 Cloud **never** treats a control-plane env key as tenant reachability, and
 **never** treats a tenant BYOK/OAuth that the server process lacks as
 unreachable. The pool is not probed (proving it would acquire a grant), so
-those models stay `unknown` rather than a false yes or a false no.
+those models stay `unknown` rather than a false yes or a false no. A key
+restricted to bots or repositories (its `bots` / `repos` audience) proves
+nothing here either: the catalog request names neither, and a launch outside
+the audience never receives the key, so the models only it would fund read
+`unknown`.
 
 The catalog envelope also stamps `reachability: "local"|"cloud"` for the
 surface that was evaluated.

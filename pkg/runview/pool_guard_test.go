@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
@@ -29,25 +31,39 @@ import (
 // its past runs' content.
 func TestPoolContentRefusalTable(t *testing.T) {
 	const pool = "honorabilite"
+	teamGW := &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, GatewayHost: "gw.example"}
+	ownKeys := &store.RunContentBoundary{Kind: store.ContentBoundaryOwnKeys}
 	cases := []struct {
-		name   string
-		pool   string
-		spec   string
-		refuse bool
+		name     string
+		boundary *store.RunContentBoundary
+		pool     string
+		spec     string
+		refuse   bool
 	}{
-		{"no stamp, any spec passes", "", "anthropic/claude-opus-4-8", false},
-		{"gateway pin escapes", pool, "openai_compatible/glm-5.2", false},
-		{"vendor pin refused", pool, "anthropic/claude-opus-4-8", true},
-		{"auto-detect (empty spec) refused", pool, "", true},
+		{"no stamp, any spec passes", nil, "", "anthropic/claude-opus-4-8", false},
+		{"gateway pin escapes", nil, pool, "openai_compatible/glm-5.2", false},
+		{"vendor pin refused", nil, pool, "anthropic/claude-opus-4-8", true},
+		{"auto-detect (empty spec) refused", nil, pool, "", true},
+		{"team_gateway refuses a vendor spec", teamGW, "", "anthropic/claude-opus-4-8", true},
+		{"team_gateway refuses a gateway spec — no escape", teamGW, "", "openai_compatible/glm-5.2", true},
+		{"team_gateway refuses without any pool stamp", teamGW, "", "openai_compatible/glm-5.2", true},
+		{"own_keys keeps the pool gateway escape", ownKeys, pool, "openai_compatible/glm-5.2", false},
+		{"own_keys keeps the pool vendor refusal", ownKeys, pool, "anthropic/claude-opus-4-8", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := poolContentRefusal(tc.pool, tc.spec)
+			err := contentRefusal(tc.boundary, tc.pool, tc.spec)
 			if tc.refuse && !errors.Is(err, ErrPoolContentRefused) {
-				t.Fatalf("poolContentRefusal(%q, %q) = %v, want ErrPoolContentRefused", tc.pool, tc.spec, err)
+				t.Fatalf("contentRefusal(%v, %q, %q) = %v, want ErrPoolContentRefused", tc.boundary, tc.pool, tc.spec, err)
 			}
 			if !tc.refuse && err != nil {
-				t.Fatalf("poolContentRefusal(%q, %q) = %v, want nil", tc.pool, tc.spec, err)
+				t.Fatalf("contentRefusal(%v, %q, %q) = %v, want nil", tc.boundary, tc.pool, tc.spec, err)
+			}
+			if tc.refuse && tc.boundary != nil && tc.boundary.Kind == store.ContentBoundaryTeamGateway {
+				if !strings.Contains(err.Error(), tc.boundary.GatewayHost) {
+					t.Fatalf("refusal %q does not name the boundary's gateway %q", err, tc.boundary.GatewayHost)
+				}
+				return
 			}
 			if tc.refuse && !strings.Contains(err.Error(), pool) {
 				t.Fatalf("refusal %q does not name the pool %q", err, pool)
@@ -56,28 +72,38 @@ func TestPoolContentRefusalTable(t *testing.T) {
 	}
 }
 
-// poolSurvivingSpecs: on a pool-stamped run, vendor-pinned and auto
-// (unpinned) supervisors are refused; a gateway-pinned supervisor keeps
-// running; with no stamp every spec survives.
-func TestPoolSurvivingSpecs(t *testing.T) {
+// supervisorContentRefusal: on a pool-stamped run, vendor-pinned and auto
+// (unpinned) supervisors are refused — typed, content-boundary, unwrapping to
+// ErrPoolContentRefused; a gateway-pinned supervisor, in either spelling,
+// keeps running; with no stamp every spec passes the boundary.
+func TestSupervisorContentRefusal(t *testing.T) {
 	// The filter consults host env exactly like eval time; a host that
-	// exports either var must not flip these verdicts.
-	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	// exports the var must not flip these verdicts.
 	t.Setenv("ITERION_GLM", "")
-	logger := iterlog.Nop()
 	all := []supervise.Spec{
 		{Name: "vendor-pinned", Model: "anthropic/claude-opus-4-8"},
 		{Name: "gateway-pinned", Model: "openai_compatible/glm-5.2"},
 		{Name: "env-form gateway", Model: "${ITERION_GLM:-openai_compatible/glm-5.2}"},
 		{Name: "auto", Model: ""},
 	}
-	kept := PoolSurvivingSpecs(all, "", logger)
-	if len(kept) != 4 {
-		t.Fatalf("no stamp: %d specs kept, want 4", len(kept))
+	for _, spec := range all {
+		if r := supervisorContentRefusal(spec, nil, "", ""); r != nil {
+			t.Errorf("no stamp: %q refused (%v)", spec.Name, r)
+		}
 	}
-	kept = PoolSurvivingSpecs(all, "honorabilite", logger)
-	if len(kept) != 2 || kept[0].Name != "gateway-pinned" || kept[1].Name != "env-form gateway" {
-		t.Fatalf("pool run: %v kept, want both gateway forms", kept)
+	refused := map[string]bool{}
+	for _, spec := range all {
+		r := supervisorContentRefusal(spec, nil, "honorabilite", "")
+		if r == nil {
+			continue
+		}
+		refused[spec.Name] = true
+		if r.Reason != credroute.ReasonContentBoundary || !errors.Is(r, ErrPoolContentRefused) {
+			t.Errorf("%q: refusal %+v is not the content-boundary refusal unwrapping to ErrPoolContentRefused", spec.Name, r)
+		}
+	}
+	if len(refused) != 2 || !refused["vendor-pinned"] || !refused["auto"] {
+		t.Fatalf("pool run: refused %v, want the vendor-pinned and the auto spec", refused)
 	}
 }
 
@@ -213,7 +239,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agent), "poolContentRefusal(r.RunnerPool, spec)") {
+	if !strings.Contains(string(agent), "contentRefusal(r.ContentBoundary, r.RunnerPool, spec)") {
 		t.Fatal("the conflict resolver no longer consults the run's frozen pool stamp")
 	}
 	observe, err := os.ReadFile("service_observe.go")
@@ -221,8 +247,8 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pin := range []string{
-		"specs = PoolSurvivingSpecs(specs, pool, logger)",
-		"poolContentRefusal(pool, sessionboard.ModelFromEnv())",
+		"specs = FundedSupervisorSpecs(ctx, specs, boundary, pool, logger)",
+		"contentRefusal(boundary, pool, sessionboard.ModelFromEnv())",
 	} {
 		if !strings.Contains(string(observe), pin) {
 			t.Fatalf("service_observe.go lost its D12 guard pin: %q", pin)
@@ -232,7 +258,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)") {
+	if !strings.Contains(string(loop), "runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), modelOverridesFromMsg(msg.ModelOverrides), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)") {
 		t.Fatal("the runner pod no longer filters declared supervisors by the frozen pool stamp (D12)")
 	}
 }
@@ -247,6 +273,13 @@ func TestStartDeclaredSupervisorsRefusePoolRunContent(t *testing.T) {
 	// feed the filter: a host exporting either must not flip the verdicts.
 	t.Setenv("ITERION_SUPERVISORS", "")
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	// Every spec funded on this host: past the boundary the spawn keeps the
+	// specs a credential funds (FundedSupervisorSpecs), and this test is
+	// about the boundary.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-host")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.test/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-key")
 	logger := iterlog.Nop()
 	st, svc, ctx := newGuardTestService(t)
 	runID := "run-sup-site"
@@ -264,14 +297,14 @@ func TestStartDeclaredSupervisorsRefusePoolRunContent(t *testing.T) {
 		{Name: "gateway", Model: "openai_compatible/glm-5.2"},
 		{Name: "auto"},
 	}}
-	svc.startDeclaredSupervisors(ctx, runID, wf, nil, logger, "")
+	svc.startDeclaredSupervisors(ctx, runID, wf, nil, model.ModelOverrides{}, logger, "")
 	if len(captured) != 1 || captured[0].Name != "gateway" {
 		t.Fatalf("pool run: %d specs reached StartDeclared (%v), want only gateway", len(captured), captured)
 	}
 
 	// Control: the same workflow on an unstamped run starts all three.
 	seedGuardRun(t, st, ctx, "run-sup-site-unstamped", "")
-	svc.startDeclaredSupervisors(ctx, "run-sup-site-unstamped", wf, nil, logger, "")
+	svc.startDeclaredSupervisors(ctx, "run-sup-site-unstamped", wf, nil, model.ModelOverrides{}, logger, "")
 	if len(captured) != 3 {
 		t.Fatalf("unstamped control: %d specs reached StartDeclared, want 3", len(captured))
 	}
@@ -292,13 +325,13 @@ func TestStartSessionBoardRefusesPoolRunContent(t *testing.T) {
 	t.Setenv("ITERION_SESSION_BOARD", "on")
 	t.Setenv("ITERION_DEFAULT_SESSIONBOARD_MODEL", "")
 	svc.sbStore = guardStubSBStore{}
-	svc.startSessionBoard(ctx, "run-sb-site", "bot", logger)
+	svc.startSessionBoard(ctx, "run-sb-site", "bot", false, logger)
 	if started != 0 {
 		t.Fatal("session board started on a pool-stamped run")
 	}
 
 	seedGuardRun(t, st, ctx, "run-sb-site-unstamped", "")
-	svc.startSessionBoard(ctx, "run-sb-site-unstamped", "bot", logger)
+	svc.startSessionBoard(ctx, "run-sb-site-unstamped", "bot", false, logger)
 	if started != 1 {
 		t.Fatal("unstamped control: the seam never constructed the coordinator")
 	}
@@ -414,3 +447,38 @@ type guardStubSBStore struct{}
 
 func (guardStubSBStore) Load(string) (sessionboard.Spec, error) { return sessionboard.Spec{}, nil }
 func (guardStubSBStore) Save(string, sessionboard.Spec) error   { return nil }
+
+// The sessionboard gateway pin (#2099) rides startSessionBoard's
+// gatewayWatched parameter into the coordinator's config: a gateway-served
+// run's curation must refuse a vendor default, and that refusal only exists
+// if the flag survives the seam.
+func TestStartSessionBoardCarriesGatewayWatched(t *testing.T) {
+	logger := iterlog.Nop()
+	st, svc, ctx := newGuardTestService(t)
+	seedGuardRun(t, st, ctx, "run-sb-gw", "")
+	t.Setenv("ITERION_SESSION_BOARD", "on")
+	t.Setenv("ITERION_DEFAULT_SESSIONBOARD_MODEL", "")
+	svc.sbStore = guardStubSBStore{}
+
+	var got sessionboard.Config
+	started := 0
+	restore := swapSessionBoardCoordinator(func(obs sessionboard.Observer, emit sessionboard.Emitter, id string, cfg sessionboard.Config, eval sessionboard.Evaluator, l *iterlog.Logger) *sessionboard.Coordinator {
+		started++
+		got = cfg
+		return nil
+	})
+	defer restore()
+
+	svc.startSessionBoard(ctx, "run-sb-gw", "bot", true, logger)
+	if started != 1 {
+		t.Fatalf("the seam constructed %d coordinators, want 1", started)
+	}
+	if !got.GatewayWatched {
+		t.Error("gatewayWatched=true did not reach the sessionboard config — the pin refusal would never fire")
+	}
+
+	svc.startSessionBoard(ctx, "run-sb-gw", "bot", false, logger)
+	if got.GatewayWatched {
+		t.Error("gatewayWatched=false reached the config as true")
+	}
+}

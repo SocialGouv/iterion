@@ -60,7 +60,7 @@ export default function RunChildrenPanel({ run }: { run: RunHeaderType }) {
   if (children.length === 0) return null;
   return (
     <div className="shrink-0 border-b border-info/30 bg-info-soft/40 px-4 py-1.5">
-      <div className="mb-1 text-micro uppercase tracking-wide text-fg-subtle">
+      <div className="mb-1 text-micro uppercase tracking-wide text-fg-muted">
         ⑃ Children ({children.length})
       </div>
       <ul className="space-y-1 text-micro">

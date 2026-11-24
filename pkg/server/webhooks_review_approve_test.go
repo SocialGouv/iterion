@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	fforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	fgithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -148,7 +149,7 @@ func TestReviewApprove_ThroughConnectionAdmin_NotForgeTokenBinding(t *testing.T)
 	// filters "no forge token to post the approval status" at this point
 	// and never reaches SetCommitStatus. The fix uses the connection
 	// instead — this test's gate-client seam is what proves it.
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "conn-app", TenantID: "t1", Provider: forge.ProviderGitHub,
 	}); err != nil {
@@ -205,7 +206,7 @@ func TestReviewApprove_ThroughConnectionAdmin_NotForgeTokenBinding(t *testing.T)
 // maintainer sees why, and answer 200 to keep the hook alive.
 func TestReviewApprove_WriteFailure_RepliesOnPRAnd200(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "conn-app", TenantID: "t1", Provider: forge.ProviderGitHub,
 	}); err != nil {
@@ -277,7 +278,7 @@ var errInsufficientScope = &sentinelErr{msg: "forge: insufficient scope"}
 // the command gate so the maintainer sees a specific reason on the PR.
 func TestReviewApprove_AuthorCannotApproveOwnPR(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +326,7 @@ func (a *authoredGateClient) GetPullRequest(_ context.Context, _ string, number 
 // receives it directly.
 func TestReviewApprove_DefaultsFloorToMaintainerWhenUnpinned(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +371,7 @@ func TestReviewApprove_PinRaisesTheFloorNeverLowersIt(t *testing.T) {
 	for _, c := range cases {
 		t.Run("pin="+c.pin, func(t *testing.T) {
 			s := newWebhookTestServer(t)
-			conns := forge.NewMemoryConnectionStore()
+			conns := connection.NewMemoryForgeStore()
 			if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 				t.Fatal(err)
 			}
@@ -398,7 +399,7 @@ func TestReviewApprove_PinRaisesTheFloorNeverLowersIt(t *testing.T) {
 // is the class forges answer by disabling the hook.
 func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +443,7 @@ func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 // retry after a 5xx) must not run the approve flow twice.
 func TestReviewApprove_IdempotentOnRedelivery(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +520,7 @@ func TestResolveGateContextFollowsTheRepoPin(t *testing.T) {
 func approveWorld(t *testing.T) (*Server, *fakeGateClient, *stubCommenter, webhooks.Config, string) {
 	t.Helper()
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -914,7 +915,7 @@ func seedForgeToken(t *testing.T, s *Server, cfg *webhooks.Config, plaintext str
 func approveTokenWorld(t *testing.T) (*Server, *fakeGitHubForge, webhooks.Config, string) {
 	t.Helper()
 	s := newWebhookTestServer(t)
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	f := newFakeGitHubForge(t)
 	cfg, pt := ghConfig(t, s)
 	cfg.ForgeBaseURL = f.srv.URL
@@ -1118,7 +1119,7 @@ func TestReviewApprove_DisabledReviewBotIsSilentForAnUnauthorizedCommenter(t *te
 // the provider does have.
 func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 	s := newWebhookTestServer(t)
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
 		return gateAuthorized, "authorized", nil
 	}
@@ -1240,12 +1241,12 @@ func TestReviewApprove_ConnectionOnlyIntegrationAuthorizesWithoutToken(t *testin
 		ID: "c-pat", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
 		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
 	}
-	sealed, err := forge.SealPAT(s.sealer, conn.ID, "ghp_connection_token")
+	sealed, err := connection.SealForgePAT(s.sealer, conn.ID, "ghp_connection_token")
 	if err != nil {
 		t.Fatal(err)
 	}
 	conn.SealedPayload = sealed
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), conn); err != nil {
 		t.Fatal(err)
 	}
@@ -1282,12 +1283,12 @@ func approveStaleBindingWorld(t *testing.T) (*Server, *fakeGitHubForge, webhooks
 		ID: "c-pat", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
 		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
 	}
-	sealed, err := forge.SealPAT(s.sealer, conn.ID, "ghp_connection_token")
+	sealed, err := connection.SealForgePAT(s.sealer, conn.ID, "ghp_connection_token")
 	if err != nil {
 		t.Fatal(err)
 	}
 	conn.SealedPayload = sealed
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), conn); err != nil {
 		t.Fatal(err)
 	}

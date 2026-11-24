@@ -300,7 +300,9 @@ func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(dir, botsource.MainBotFile), []byte(testBotMain), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("name: [unterminated\n"), 0o644); err != nil {
+	// A broken ITERION manifest: schema_version is a key only ours have,
+	// so the shape verdict claims the bundle and the loader fails loudly.
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("schema_version: 1\nname: [unterminated\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.cfg.Bots.Paths = []string{broken}

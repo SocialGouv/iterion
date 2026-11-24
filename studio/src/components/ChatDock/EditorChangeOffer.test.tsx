@@ -6,15 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   unparse: vi.fn(),
   parseSource: vi.fn(),
+  parseUnitFile: vi.fn(),
   validate: vi.fn(),
   saveFile: vi.fn(),
   parseBotSourceEditorPath: vi.fn(() => null),
 }));
 const proposal = vi.hoisted(() => ({
-  current: { source: null, sessionId: null, revision: null } as {
+  current: { source: null, sessionId: null, revision: null, file: null } as {
     source: string | null;
     sessionId: string | null;
     revision: number | null;
+    file: string | null;
     applyIntent: "none" | "suggested" | "explicit";
     saveIntent: "none" | "suggested" | "explicit";
   },
@@ -28,7 +30,7 @@ vi.mock("@/hooks/useEditorProposal", () => ({
 import { createEmptyDocument } from "@/lib/defaults";
 import { writeAssistantActionPolicy } from "@/lib/chatDock/assistantActions";
 import { captureActiveEditorDocument } from "@/lib/chatDock/editorSession";
-import { getOrCreateDocumentStore } from "@/store/document";
+import { getOrCreateDocumentStore, SOURCE_MERGED } from "@/store/document";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 
@@ -49,6 +51,7 @@ async function liveProposal(path: string | null = "bots/demo/main.bot") {
     source: "workflow changed:\n  entry: b\n",
     sessionId: snapshot.sessionId,
     revision: snapshot.revision,
+    file: null,
     applyIntent: "explicit",
     saveIntent: "none",
   };
@@ -63,6 +66,7 @@ beforeEach(() => {
     source: null,
     sessionId: null,
     revision: null,
+    file: null,
     applyIntent: "none",
     saveIntent: "none",
   };
@@ -72,6 +76,11 @@ beforeEach(() => {
     document: { ...createEmptyDocument(), workflows: [{ name: "changed", entry: "b", edges: [] }] },
     diagnostics: [],
     issues: [],
+  });
+  api.parseUnitFile.mockResolvedValue({
+    document: { ...createEmptyDocument(), workflows: [{ name: "changed", entry: "b", edges: [] }] },
+    diagnostics: [],
+    bindable: true,
   });
   api.validate.mockResolvedValue({ diagnostics: [], warnings: [], issues: [] });
   api.saveFile.mockResolvedValue({
@@ -147,7 +156,36 @@ describe("EditorChangeOffer", () => {
     expect(api.parseSource).not.toHaveBeenCalled();
   });
 
-  it("refuses to apply a proposal to a bot in several files", async () => {
+  // #1647: the proposal targets ONE file of the unit — the Source view
+  // picker's selection — applied through the unit's re-parse, never through
+  // the whole-program parse that would fold every file into the main.
+  it("applies a proposal to the file the Source view's picker names", async () => {
+    const { store } = await liveProposal();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().setSourceFile("lib/nodes.bot");
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(apply);
+
+    await screen.findByText(/nothing has been written to disk/i);
+    expect(api.parseUnitFile).toHaveBeenCalledWith(
+      "bots/demo/main.bot",
+      "lib/nodes.bot",
+      proposal.current.source,
+    );
+    expect(api.parseSource).not.toHaveBeenCalled();
+    expect(store.getState().document?.workflows[0]?.name).toBe("changed");
+  });
+
+  it("defaults the target to the main, as the picker does before it renders", async () => {
     const { store } = await liveProposal();
     store.getState().setUnit({
       root: "bots/demo",
@@ -159,9 +197,90 @@ describe("EditorChangeOffer", () => {
     render(<EditorChangeOffer runId="run-1" revision={1} />);
 
     const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(apply);
+
+    await waitFor(() =>
+      expect(api.parseUnitFile).toHaveBeenCalledWith(
+        "bots/demo/main.bot",
+        "main.bot",
+        proposal.current.source,
+      ),
+    );
+  });
+
+  it("disables Apply while the editor_file hint names another file than the picker", async () => {
+    const { store } = await liveProposal();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().setSourceFile("main.bot");
+    proposal.current.file = "lib/nodes.bot";
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
     expect((apply as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/in several files/i)).toBeTruthy();
-    expect(api.parseSource).not.toHaveBeenCalled();
+    expect(screen.getByText(/switch the picker to lib\/nodes\.bot/i)).toBeTruthy();
+    expect(api.parseUnitFile).not.toHaveBeenCalled();
+
+    // The author clicks to switch, and the offer goes live on THAT file.
+    act(() => store.getState().setSourceFile("lib/nodes.bot"));
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("disables Apply while the picker is on the merged program", async () => {
+    const { store } = await liveProposal();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().setSourceFile(SOURCE_MERGED);
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    expect((apply as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/merged program/i)).toBeTruthy();
+    expect(api.parseUnitFile).not.toHaveBeenCalled();
+  });
+
+  it("saves a unit with the revision it was opened at, and keeps the one the save answers", async () => {
+    const { store } = await liveProposal();
+    const files = [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }];
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files,
+    });
+    api.saveFile.mockResolvedValue({
+      path: "bots/demo/main.bot",
+      source: "workflow changed:\n  entry: b\n",
+      revision: "r2",
+    });
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(apply);
+    await screen.findByText(/nothing has been written to disk/i);
+    fireEvent.click(screen.getByRole("button", { name: "Save current file" }));
+    await screen.findByText("Editor change saved");
+
+    // Without the revision this save lands on saveUnit's "names no revision"
+    // branch, which tells the author to reopen a file that is already open.
+    expect(api.saveFile).toHaveBeenCalledWith("bots/demo/main.bot", expect.anything(), {
+      revision: "r1",
+      unitFiles: files,
+    });
+    expect(store.getState().unit?.revision).toBe("r2");
   });
 
   it("follows a unit that arrives after the proposal rendered", async () => {
@@ -174,8 +293,16 @@ describe("EditorChangeOffer", () => {
       store.getState().setUnit({ root: "bots/demo", main: "main.bot", revision: "r1", files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }] });
     });
 
-    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(true));
-    expect(screen.getByText(/in several files/i)).toBeTruthy();
+    // Still applicable — the target defaults to the main, as the picker does.
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(apply);
+    await waitFor(() =>
+      expect(api.parseUnitFile).toHaveBeenCalledWith(
+        "bots/demo/main.bot",
+        "main.bot",
+        proposal.current.source,
+      ),
+    );
     expect(api.parseSource).not.toHaveBeenCalled();
   });
 
@@ -234,6 +361,7 @@ describe("EditorChangeOffer", () => {
       source: null,
       sessionId: snapshot.sessionId,
       revision: snapshot.revision,
+      file: null,
       applyIntent: "explicit",
       saveIntent: "explicit",
     };

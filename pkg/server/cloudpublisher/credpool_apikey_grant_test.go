@@ -52,7 +52,7 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai", keyID), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "xai", KeyID: keyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {
@@ -72,7 +72,7 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "xai", Model: "xai/grok-4"},
 	}}}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-xai", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-xai", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -95,7 +95,8 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	if !found {
 		t.Fatalf("run-doc fingerprints = %v, want the lent key's %s", creds.fingerprints, wantFP)
 	}
-	rec, err := rs.Get(ctx, creds.secretsRef)
+	// The read is scoped by the owning team, like the runner's fetch.
+	rec, err := rs.Get(store.WithTenant(ctx, poolTeam), creds.secretsRef)
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
@@ -136,7 +137,7 @@ func zaiDonorPublisher(t *testing.T, buf *bytes.Buffer) (*Publisher, string) {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "zai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "zai", keyID), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai", KeyID: keyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {
@@ -178,7 +179,7 @@ func TestPoolTier_zaiHintUnderAnAnthropicPrefixTakesTheZaiDonor(t *testing.T) {
 		t.Run(sh.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			p, fp := zaiDonorPublisher(t, &buf)
-			creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), poolTeam), "run-zai", poolOrg, poolTeam, "requester", "bot", "", sh.wf, nil, nil, model.RouteView{Workflow: sh.wf}, nil, store.RunTrustDefault, nil, nil)
+			creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), poolTeam), "run-zai", poolOrg, poolTeam, "requester", "bot", "", sh.wf, nil, nil, model.RouteView{Workflow: sh.wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -220,7 +221,7 @@ func TestPoolTier_isNotAskedForAProviderARouteKeyFunds(t *testing.T) {
 	}}}
 	pinned := derivePinnedProviders(model.RouteView{Workflow: wf})
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-glm", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-glm", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

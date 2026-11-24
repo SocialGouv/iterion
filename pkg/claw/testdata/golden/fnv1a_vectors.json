@@ -1,0 +1,7 @@
+[
+  {"input": "", "hash": 14695981039346656037},
+  {"input": "a", "hash": 12638187200555641996},
+  {"input": "foobar", "hash": 9625390261332436968},
+  {"input": "hello world", "hash": 8618312879776256743},
+  {"input": "The quick brown fox jumps over the lazy dog", "hash": 17580284887202820368}
+]

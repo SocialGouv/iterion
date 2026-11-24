@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	clawmcp "github.com/SocialGouv/claw-code-go/pkg/api/mcp"
-	clawoauth "github.com/SocialGouv/claw-code-go/pkg/api/mcp/oauth"
+	clawmcp "github.com/SocialGouv/iterion/pkg/claw/pkg/api/mcp"
+	clawoauth "github.com/SocialGouv/iterion/pkg/claw/pkg/api/mcp/oauth"
 )
 
 // AuthFunc is the closure shape SSE/HTTP transports invoke on every

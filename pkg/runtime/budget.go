@@ -71,12 +71,30 @@ type SharedBudget struct {
 	// report in full. Their tokens and cost reached the counters above as a
 	// lower bound at most, so neither ceiling sees all of them.
 	unreportedCalls int
+
+	// bookedElapsed is the elapsed reading at the last instant the run's work
+	// was accounted for — a booking (a node's spend, a noted call), the end of
+	// an executor-less node's body (markWorked), or the start of this attempt
+	// (Restore). What follows it is what a stop on a provider usage window
+	// may hand back (refundSpanSinceBooking).
+	bookedElapsed time.Duration
 }
 
 const (
 	budgetWarningThreshold = 0.8
 	budgetHardThreshold    = 0.9 // refuse new node executions at 90% to limit concurrent overage
 )
+
+// BudgetHardThreshold is the share of a cap from which, up to the cap, the
+// engine refuses to start a node it checks before running — an agent, a
+// judge, a tool (a compute, a subbot or a human node takes no such check) —
+// and at which the loop guard declines a back-edge whose next iteration would
+// land. Past the cap the exit grace admits a checked node again, up to the
+// cap times (1 + the grace ratio): a node reached after an unchecked one —
+// a subbot child — that ran past the cap. A workflow that sizes its own
+// bounds — a gate that starts work only where it can finish, a cap meant to
+// fund N passes — sizes them against this share, not against the cap.
+const BudgetHardThreshold = budgetHardThreshold
 
 // newSharedBudget creates a SharedBudget from an IR Budget definition.
 // Returns nil if budget is nil or has no enforceable limits.
@@ -303,6 +321,60 @@ func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed
 	if elapsed > 0 {
 		b.startedAt = b.clockNow().Add(-elapsed)
 	}
+	b.markBookedLocked()
+}
+
+// markBookedLocked records that the run's work is accounted for up to now:
+// the attempt's start, a booking that just landed.
+func (b *SharedBudget) markBookedLocked() {
+	b.bookedElapsed = b.elapsed()
+}
+
+// markWorked records that the span up to now did work no counter prices: the
+// body of an executor-less node — a subbot's child run (its nodes book in
+// the CHILD's budget), a compute, a wait. Such a span is the run's active
+// minutes whatever ends it, so a stop on a usage window that follows hands
+// back nothing of it — the node's own failure included, which is how a
+// subbot whose child worked fifty minutes before meeting the wall reaches
+// the parent's max_duration. Nil-safe.
+func (b *SharedBudget) markWorked() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.markBookedLocked()
+}
+
+// refundSpanSinceBooking hands back to the duration budget the span since the
+// run's work was last accounted for (bookedElapsed) — the time the run spent
+// meeting a provider usage window and nothing else — and reports it.
+//
+// Every writer of a counter (recordUsage, noteUnreported, Restore) and every
+// executor-less node body (markWorked) moves that reading, so the span is
+// the walled node's own approach to the wall: a node that spent tokens before
+// it met the wall booked them first (recordFailedNodeSpend), and its span
+// then starts at that booking.
+//
+// Called on a stop on a usage window only. Such a run parks and is resumed
+// once the window reopens; a resume that re-hits the wall spends no token and
+// finishes no node, so without the refund every one of those attempts burnt
+// the run's active minutes — twelve zero-token attempts took a review to
+// "budget hard limit reached: duration at 90%" days before its window
+// reopened (#3127). The wait between attempts was never counted; this is the
+// part of each attempt that only re-met the wall.
+func (b *SharedBudget) refundSpanSinceBooking() time.Duration {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	span := b.elapsed() - b.bookedElapsed
+	if span <= 0 {
+		return 0
+	}
+	b.startedAt = b.startedAt.Add(span)
+	return span
 }
 
 // budgetCheckResult holds the outcome of a single dimension check.
@@ -360,12 +432,18 @@ func (b *SharedBudget) takeExceeded() *budgetCheckResult {
 }
 
 func (b *SharedBudget) RecordUsage(spend nodeSpend) []budgetCheckResult {
+	return b.recordUsage(spend, true)
+}
+
+func (b *SharedBudget) recordUsage(spend nodeSpend, countIteration bool) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	tokens, costUSD := spend.tokens, spend.costUSD
 	b.unreportedCalls += spend.unreportedCalls
-	b.iterationsUsed++
+	if countIteration {
+		b.iterationsUsed++
+	}
 	b.tokensUsed += tokens
 	if costUSD > 0 {
 		b.costUsed += costUSD
@@ -376,6 +454,7 @@ func (b *SharedBudget) RecordUsage(spend nodeSpend) []budgetCheckResult {
 		b.unpricedTokens += tokens
 		b.unpricedNodes++
 	}
+	b.markBookedLocked()
 
 	checks := b.checkLocked()
 	if w, ok := b.unpricedWarningLocked(); ok {
@@ -411,6 +490,7 @@ func (b *SharedBudget) noteUnreported(n int) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.unreportedCalls += n
+	b.markBookedLocked()
 	if w, ok := b.unreportedWarningLocked(); ok {
 		return []budgetCheckResult{w}
 	}
@@ -883,6 +963,27 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 // overrun, and the note is taken at a success boundary no failure exit
 // reaches.
 func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[string]any) {
+	e.recordAttemptSpend(rs, nodeID, output, true)
+}
+
+// recordRetryNodeSpend books a paid retry without advancing the graph's fuel.
+func (e *Engine) recordRetryNodeSpend(rs *runState, nodeID string, output map[string]any) {
+	e.recordAttemptSpend(rs, nodeID, output, false)
+}
+
+func (e *Engine) recordAttemptSpend(rs *runState, nodeID string, output map[string]any, countIteration bool) {
+	if accountedInvocation(rs, nodeID) {
+		return
+	}
+	e.recordUnsettledAttemptSpend(rs, nodeID, output, countIteration)
+}
+
+// recordUnsettledNodeSpend books an auxiliary invocation outside the receipt.
+func (e *Engine) recordUnsettledNodeSpend(rs *runState, nodeID string, output map[string]any) {
+	e.recordUnsettledAttemptSpend(rs, nodeID, output, true)
+}
+
+func (e *Engine) recordUnsettledAttemptSpend(rs *runState, nodeID string, output map[string]any, countIteration bool) {
 	spend := extractSpend(output)
 	if spend.empty() {
 		return
@@ -913,7 +1014,7 @@ func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[s
 		e.noteUnreportedCalls(ctx, rs, nodeID, spend.unreportedCalls)
 		return
 	}
-	if err := e.recordBudgetOn(ctx, rs, nodeID, output, true); err != nil {
+	if err := e.recordUnsettledBudgetOn(ctx, rs, nodeID, output, true, countIteration); err != nil {
 		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
 	}
 }
@@ -951,22 +1052,56 @@ func (e *Engine) recordAndDeferBudget(rs *runState, nodeID string, output map[st
 }
 
 func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
-	return e.recordBudgetOn(rs.ctx, rs, nodeID, output, deferExceeded)
+	return e.recordBudgetOn(rs.ctx, rs, nodeID, output, deferExceeded, true)
 }
 
 // recordBudgetOn is recordBudget with the context its two persistence writes
 // use made explicit, so a caller that is reached ON a cancelled run can still
 // land the ledger entry (see recordFailedNodeSpend). Everything else — the
 // in-memory totals, the exceeded decision — is context-free.
-func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
-	spend := extractSpend(output)
+func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded, countIteration bool) error {
+	if accountedInvocation(rs, nodeID) {
+		checks := rs.budget.Check()
+		for _, w := range findWarnings(checks) {
+			_ = e.emit(ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
+		}
+		if exc := findExceeded(checks); exc != nil {
+			if !deferExceeded {
+				return e.graceOrFailBudget(rs, nodeID, exc)
+			}
+			rs.budget.noteExceeded(exc)
+		}
+		return nil
+	}
+	return e.recordUnsettledBudgetOn(ctx, rs, nodeID, output, deferExceeded, countIteration)
+}
+
+func (e *Engine) recordUnsettledBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded, countIteration bool) error {
+	spend := unbookedNodeSpend(rs, nodeID, output)
+	if readings := rs.retrySessionCosts[nodeID]; readings != nil {
+		if key, isTotal := retrySessionCost(output); isTotal {
+			_, reportedUSD := extractUsage(output)
+			readings[key] = max(readings[key], reportedUSD)
+			if parent, _ := output["_session_forked_from"].(string); parent != "" {
+				parentKey := retrySessionCostKey{backend: key.backend, session: parent}
+				readings[parentKey] = max(readings[parentKey], reportedUSD)
+			}
+		}
+	}
 	costUSD := spend.costUSD
 
 	// Daily spend cap accounting (independent of the per-run budget so it
 	// works for workflows with no budget: block). We only record — the
 	// pause decision happens on the pre-exec path so we anchor the
 	// checkpoint at a not-yet-executed node.
-	if e.dailyCap != nil && costUSD > 0 {
+	if rs.correctionAccounts != nil {
+		if err := rs.correctionAccounts.book(rs.runID, store.OutputCorrectionUsage{Tokens: spend.tokens, CostUSD: spend.costUSD, UnreportedCalls: spend.unreportedCalls}, countIteration); err != nil {
+			return err
+		}
+		if err := rs.correctionAccounts.flushDaily(ctx, e.dailyCap); err != nil {
+			return err
+		}
+	} else if e.dailyCap != nil && costUSD > 0 {
 		rs.costUSDTotal += costUSD
 		if _, err := e.dailyCap.Record(ctx, rs.runID, rs.costUSDTotal); err != nil {
 			e.logger.Warn("daily spend cap: record failed: %v", err)
@@ -977,7 +1112,12 @@ func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string
 		return nil
 	}
 
-	checks := rs.budget.RecordUsage(spend)
+	var checks []budgetCheckResult
+	if rs.correctionAccounts != nil {
+		checks = rs.budget.Check()
+	} else {
+		checks = rs.budget.recordUsage(spend, countIteration)
+	}
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {
@@ -1007,6 +1147,39 @@ func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string
 	}
 
 	return nil
+}
+
+type retrySessionCostKey struct {
+	backend string
+	session string
+}
+
+func retrySessionCost(output map[string]any) (retrySessionCostKey, bool) {
+	isTotal, _ := output["_cost_is_session_total"].(bool)
+	backend, _ := output["_backend"].(string)
+	session, _ := output["_session_id"].(string)
+	return retrySessionCostKey{backend: backend, session: session}, isTotal && session != ""
+}
+
+// unbookedNodeSpend gives preflight checks and booking the same cost delta.
+// Only session-total costs with matching identities overlap across retries;
+// per-call costs and tokens always add. Reading never advances the baseline
+// or changes the provider reading kept in output for events.
+func unbookedNodeSpend(rs *runState, nodeID string, output map[string]any) nodeSpend {
+	spend := extractSpend(output)
+	if key, isTotal := retrySessionCost(output); isTotal && rs != nil {
+		baseline := rs.retrySessionCosts[nodeID][key]
+		if parent, _ := output["_session_forked_from"].(string); parent != "" {
+			parentKey := retrySessionCostKey{backend: key.backend, session: parent}
+			parentTotal, found := bookedSessionReading(rs, parentKey)
+			if !found {
+				parentTotal = rs.retrySessionCosts[nodeID][parentKey]
+			}
+			baseline = max(baseline, parentTotal)
+		}
+		spend.costUSD = max(0, spend.costUSD-baseline)
+	}
+	return spend
 }
 
 // graceOrFailBudget decides what a hard overrun does at a node boundary:
@@ -1096,4 +1269,20 @@ func (e *Engine) newRunBudget() *SharedBudget {
 		b.useClock(e.budgetClock)
 	}
 	return b
+}
+
+// bookedSessionReading finds the restored parent total in committed node
+// outputs, which checkpoints also restore. Unknown external parents use the
+// retry sequence's high-water mark, without charging that total on each fork.
+func bookedSessionReading(rs *runState, wanted retrySessionCostKey) (float64, bool) {
+	var total float64
+	found := false
+	for _, output := range rs.outputs {
+		if key, ok := retrySessionCost(output); ok && key == wanted {
+			_, usd := extractUsage(output)
+			total = max(total, usd)
+			found = true
+		}
+	}
+	return total, found
 }

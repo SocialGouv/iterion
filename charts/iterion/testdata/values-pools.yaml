@@ -1,0 +1,16 @@
+# Render fixture for the chart tests: two sovereign pools on top of
+# values-prod — one with two replicas (a spread of its own and a budget), one
+# with a single replica (no budget) and a hard anti-affinity of its own.
+runnerPools:
+  - name: alpha
+    replicas: 2
+    gateway:
+      baseUrl: "https://gateway.alpha.example"
+      existingSecret: "iterion-pool-alpha-gateway"
+  - name: solo
+    replicas: 1
+    scheduling:
+      antiAffinity: hard
+    gateway:
+      baseUrl: "https://gateway.solo.example"
+      existingSecret: "iterion-pool-solo-gateway"

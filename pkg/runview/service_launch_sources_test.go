@@ -16,9 +16,9 @@ type sourceCapturingPublisher struct {
 	lastCompiled *CompiledSource
 }
 
-func (p *sourceCapturingPublisher) SubmitLaunch(_ context.Context, _ string, _ LaunchSpec, _ *ir.Workflow, cs *CompiledSource) (int, error) {
+func (p *sourceCapturingPublisher) SubmitLaunch(_ context.Context, _ string, _ LaunchSpec, _ *ir.Workflow, cs *CompiledSource) (LaunchSubmission, error) {
 	p.lastCompiled = cs
-	return 1, nil
+	return LaunchSubmission{QueuePosition: 1}, nil
 }
 func (p *sourceCapturingPublisher) CancelRun(context.Context, string) error { return nil }
 func (p *sourceCapturingPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {

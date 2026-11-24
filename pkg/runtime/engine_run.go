@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -178,22 +179,59 @@ func (e *Engine) inferredBotOrigin() *store.BotOrigin {
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
+	return e.runPreparedEntry(ctx, runID, inputs, nil, PreparedStopOptions{})
+}
+func (e *Engine) runPreparedEntry(ctx context.Context, runID string, inputs map[string]any, prepared *store.PreparedRunInvocation, stopOptions PreparedStopOptions) (err error) {
+	// Mask inherited execution authority before any cancellable entry check:
+	// a child cancelled during preparation must retire its own birth, never
+	// interpret the parent's grant as a competing acquisition of that child.
+	ctx = e.beginCorrectionEntry(ctx, nil)
+	ctx = e.withPreparedQueuedStart(ctx, prepared)
+	if _, err := store.ValueFormatForWrite(ctx, runID); err != nil {
+		return e.stopPreparedEntry(ctx, runID, prepared, err, stopOptions)
+	}
 	if e.botOrigin == nil {
 		e.botOrigin = e.inferredBotOrigin()
 	}
-	run, err := e.runResolveDoc(ctx, runID, inputs)
+	entryCtx := ctx
+	ctx, run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
-		return err
+		return e.stopPreparedEntry(entryCtx, runID, prepared, err, stopOptions)
 	}
+	// The run's trust is settled here, once, before anything reads it: the
+	// document a pickup or a sub-bot child was built from may carry what no
+	// engine option said (adoptRunTrust).
+	e.adoptRunTrust(run)
+
+	// The operator isolation floor (#1959): a non-operator bot source's
+	// `sandbox: none` is neutralized HERE — once, before admission and
+	// sandbox start, so the admission probe, the mount plan and every
+	// downstream pickMode judge the workflow the run actually executes
+	// under. Loud: warn + sandbox_floor_applied, never a silent upgrade.
+	e.applySandboxFloor(ctx, runID, run)
 
 	// Admission is deliberately before attachment promotion, workspace
 	// setup, sandbox startup and the first model call. A denied context is
 	// therefore a durable, actionable failure without external side effects.
 	if err := e.admitRun(ctx, runID, run); err != nil {
-		e.markFailedBestEffort(ctx, runID, "execution context admission", err)
-		return e.setupErr(ctx, err)
+		if errors.Is(err, ErrAdmissionStopped) || errors.Is(err, ErrResumeSuperseded) || isRunValueFormatRefusal(err) {
+			return err
+		}
+		if prepared != nil && preparedCancellation(ctx, err) {
+			return e.stopPreparedEntry(ctx, runID, prepared, err, stopOptions)
+		}
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "execution context admission", err)
+		return setupErrFrom(st, stCode, err)
 	}
 
+	if err := e.prepareCorrectionAccounting(ctx, run); err != nil {
+		return err
+	}
+	if e.correctionProtocolCapable() {
+		if err := e.failSpentBudgetBeforeResume(ctx, run); err != nil {
+			return err
+		}
+	}
 	run, err = e.runPromoteAttachments(ctx, runID, run)
 	if err != nil {
 		return err
@@ -221,8 +259,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// already admitted at launch, and re-judging it would make a run
 	// unresumable because its declaration was tightened afterwards.
 	if err := e.validateVarConstraints(run.Inputs); err != nil {
-		e.markFailedBestEffort(ctx, runID, "var validation", err)
-		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "var validation", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: var validation: %w", err))
 	}
 
 	// Engine contract: the attached bundle may declare the build it needs.
@@ -231,8 +269,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// is spun up for it. The RuntimeError's code rides through
 	// setupFailureCode, so the run is terminal and typed.
 	if err := e.refuseBundleRequiringNewerEngine(); err != nil {
-		e.markFailedBestEffort(ctx, runID, "engine requirement", err)
-		return e.setupErr(ctx, err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "engine requirement", err)
+		return setupErrFrom(st, stCode, err)
 	}
 
 	// Worktree setup stays inline: the finalizeOnExit defer must
@@ -289,8 +327,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.worktreeBaseCommit, e.logger)
 			if wtErr != nil {
-				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
-				return e.setupErr(ctx, fmt.Errorf("runtime: worktree setup: %w", wtErr))
+				st, stCode, wtErr := e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
+				return setupErrFrom(st, stCode, fmt.Errorf("runtime: worktree setup: %w", wtErr))
 			}
 			e.workDir = wtc.wtPath
 			worktreeCleanup = cleanup
@@ -310,8 +348,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, e.parentRunID != "" && !worktreeActive)
 	if resourceErr != nil {
-		e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
-		return resourceErr
+		st, stCode, resourceErr := e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
+		return setupErrFrom(st, stCode, resourceErr)
 	}
 	defer func() {
 		if cleanupErr := resourceCleanup(); cleanupErr != nil {
@@ -325,10 +363,12 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	// Sandbox lifecycle: when the workflow opts in, start a long-lived
 	// container that hosts every delegate invocation for this run.
-	repoRoot := wtCtx.repoRoot
-	if repoRoot == "" {
-		repoRoot = EngineRepoRoot(e.workDir)
-	}
+	// The repo root comes from the ONE resolver: runPersistWorkspace
+	// already wrote `run.RepoRoot` for a worktree run (== wtCtx.repoRoot),
+	// and a non-worktree run's record keeps it empty — the resolver then
+	// re-derives the root from the workspace, exactly the reading
+	// restoreRunEnv will give it on a resume (#2867).
+	repoRoot := runRepoRoot(run, e.workDir)
 	// Persist on the engine so resolveVars's `${PROJECT_MEMORY_DIR}`
 	// expansion (and any other repo-rooted lookup) doesn't have to
 	// re-derive it. runPersistWorkspace already wrote `run.RepoRoot`
@@ -336,8 +376,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	e.repoRoot = repoRoot
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, wtCtx.gitDir, inputs)
 	if sbErr != nil {
-		e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
-		return e.setupErr(ctx, fmt.Errorf("runtime: sandbox: %w", sbErr))
+		st, stCode, sbErr := e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: sandbox: %w", sbErr))
 	}
 	defer sandboxCleanup()
 	e.resourcesReady()
@@ -348,11 +388,22 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// node_started's iteration_path, the bound (max) from here. Literal
 	// caps only; expression / unbounded caps emit 0 (max unknown).
 	if err := e.emit(ctx, runID, store.EventRunStarted, "", runStartedPayload(e.workflow, run)); err != nil {
-		e.markFailedBestEffort(ctx, runID, "emit run_started", err)
-		return e.setupErr(ctx, fmt.Errorf("runtime: emit run_started: %w", err))
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "emit run_started", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: emit run_started: %w", err))
 	}
 
-	rs := e.runInitState(ctx, runID, inputs)
+	if err := e.prepareCorrectionAccounting(ctx, run); err != nil {
+		return err
+	}
+	rs, initErr := e.runInitState(ctx, run, inputs)
+	if initErr != nil {
+		return initErr
+	}
+	if e.correctionProtocolCapable() {
+		if err := e.restoreCheckpointBudget(rs, run.Checkpoint); err != nil {
+			return err
+		}
+	}
 
 	loopErr := e.execLoop(ctx, rs, e.workflow.Entry)
 	e.evictRunSessions(runID, loopErr)
@@ -365,9 +416,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 // run, then stamps any engine-level metadata (workflow hash, file
 // path, parent run, run name, merge strategy, auto-merge, preset, bundle hash)
 // onto the persisted record.
-func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (*store.Run, error) {
+func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (context.Context, *store.Run, error) {
 	var run *store.Run
-	if existing, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
+	bound, existing, loadErr := store.LoadRunWithValueFormat(ctx, e.store, runID)
+	if loadErr == nil {
+		ctx = bound
+		// A prepared queued birth must still enter through its own acquisition.
+		// A peer already running must not select the historical running path.
+		if start, _ := ctx.Value(preparedQueuedStartKey{}).(*preparedQueuedStart); start != nil && existing.Status != start.original.Status {
+			return nil, nil, ErrAdmissionStopped
+		}
 		// Pickup path: the doc already exists.
 		//   - queued: cloudpublisher pre-created the row before
 		//     publishing on JetStream; transition to running here.
@@ -381,20 +439,40 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		switch existing.Status {
 		case store.RunStatusQueued:
 			var err error
-			existing, err = e.runStartQueued(ctx, runID)
+			if e.correctionProtocolCapable() {
+				existing, err = e.acquireEntryExecution(ctx, existing, store.ExecutionStart)
+			} else if start, _ := ctx.Value(preparedQueuedStartKey{}).(*preparedQueuedStart); start != nil {
+				existing, err = e.acquirePreparedQueuedStart(ctx, existing, start)
+			} else {
+				existing, err = e.runStartQueued(ctx, runID)
+			}
 			if err != nil {
-				return nil, fmt.Errorf("runtime: pickup transition: %w", err)
+				return nil, nil, fmt.Errorf("runtime: pickup transition: %w", err)
 			}
 		case store.RunStatusRunning:
-			// Already running — assume legitimate claim.
+			if e.correctionProtocolCapable() {
+				var err error
+				existing, err = e.acquireEntryExecution(ctx, existing, store.ExecutionStart)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
 		default:
-			return nil, fmt.Errorf("runtime: run %s already in status %s, refusing to restart", runID, existing.Status)
+			return nil, nil, fmt.Errorf("runtime: run %s already in status %s, refusing to restart", runID, existing.Status)
 		}
 		if len(inputs) > 0 {
 			existing.Inputs = inputs
 		}
 		run = existing
+	} else if !errors.Is(loadErr, store.ErrRunNotFound) {
+		return nil, nil, fmt.Errorf("runtime: load run: %w", loadErr)
 	} else {
+		// A prepared existing invocation must not resurrect a row that
+		// disappeared after its first read. Only the unbound historical
+		// Engine.Run API retains its direct legacy-birth behavior.
+		if store.RequireRunValueFormat(ctx, runID) == nil {
+			return nil, nil, loadErr
+		}
 		// Direct path: no doc yet, create one. CreateRun is strict
 		// (InsertOne) so a parallel pickup would lose this race —
 		// acceptable: the only callers here are the CLI and tests, both
@@ -408,16 +486,21 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// through here (the runtime spawns them; only Service.Launch
 		// pre-creates its own rows), so the window was reachable on every
 		// `subbot` node. Service.Launch already closed it the same way.
-		var created *store.Run
-		var err error
-		if pc := store.AsParentedRunCreator(e.store); pc != nil && e.parentRunID != "" {
-			created, err = pc.CreateChildRun(ctx, runID, e.workflow.Name, e.parentRunID, inputs)
-		} else {
-			created, err = e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
+		// Runtime direct births remain legacy until the complete birth port is
+		// composed. An explicit exact intent must never degrade to CreateRun.
+		format, formatErr := store.ValueFormatForWrite(ctx, runID)
+		if formatErr != nil {
+			return nil, nil, formatErr
 		}
+		if format != store.LegacyValueFormat {
+			return nil, nil, store.ErrValueFormatCapability
+		}
+		invocation, err := store.PrepareRunInvocation(ctx, e.store, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: runID, WorkflowName: e.workflow.Name, ParentRunID: e.parentRunID, Inputs: inputs}})
 		if err != nil {
-			return nil, fmt.Errorf("runtime: create run: %w", err)
+			return nil, nil, fmt.Errorf("runtime: create run: %w", err)
 		}
+		ctx = invocation.Context
+		created := invocation.Run
 		// A store may insert a fresh row as `queued` (the cloud store does —
 		// CreateChildRun mirrors the publisher's shape). This engine is about
 		// to execute it, so the row must read `running` now, as the pickup
@@ -425,17 +508,28 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// `queued` for its whole life — judged by the queued-row cutoff,
 		// shown queued in the studio, never given a started_at — and ends
 		// `finished` without ever having been running.
-		if created.Status == store.RunStatusQueued {
+		if e.correctionProtocolCapable() {
+			created, err = e.acquireEntryExecution(ctx, created, store.ExecutionStart)
+			if err != nil {
+				return nil, nil, err
+			}
+		} else if created.Status == store.RunStatusQueued {
 			created, err = e.runStartQueued(ctx, runID)
 			if err != nil {
-				return nil, fmt.Errorf("runtime: created-run transition: %w", err)
+				return nil, nil, fmt.Errorf("runtime: created-run transition: %w", err)
 			}
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.runnerPool != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.botSourceTier != "" || e.runnerPool != "" || e.contentBoundary != nil || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || len(e.launchModelOverrides) > 0 || e.llmRoutePolicy != nil || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
-		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 {
+		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 ||
+		// The launch-time override choices are durable run intent on their
+		// own: an engine carrying ONLY an override (a resume re-statement
+		// is exactly that) must still reach this stamp and save, or the
+		// re-state lived for one attempt and the next silent resume
+		// replayed the previous decision (found by tour 2, executed).
+		e.permissionOverride != "" || e.codemodeOverride != "" || e.codemodeBoundsOverride != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -457,8 +551,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.repoSHAExpected != "" {
 			run.RepoSHAExpected = e.repoSHAExpected
 		}
+		// Same write-once doctrine as Trust: a launch fact the floor (#1959)
+		// and the studio read off the document; an engine that says nothing
+		// must not clear what the publisher stamped.
+		if e.botSourceTier != "" {
+			run.BotSourceTier = e.botSourceTier
+		}
 		if e.runnerPool != "" {
 			run.RunnerPool = e.runnerPool
+		}
+		if e.contentBoundary != nil {
+			run.ContentBoundary = e.contentBoundary
 		}
 		if e.parentNodeID != "" {
 			run.ParentNodeID = e.parentNodeID
@@ -503,6 +606,18 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.permissionOverride != "" {
 			run.PermissionOverride = e.permissionOverride
 		}
+		// Same doctrine for the codemode launch choice (ADR-165): durable on
+		// the doc, replayed by every resume that does not re-state it. The
+		// guard mirrors the one above — a resume never re-supplies the
+		// override, and must not clobber the launch's persisted value. The
+		// bounds ride beside the mode: a non-nil pointer stamps, an absent
+		// one preserves whatever a previous attempt stamped.
+		if e.codemodeOverride != "" {
+			run.CodemodeOverride = e.codemodeOverride
+		}
+		if e.codemodeBoundsOverride != nil {
+			run.CodemodeBoundsOverride = e.codemodeBoundsOverride
+		}
 		if run.PermissionOverride != "" {
 			run.PermissionMode = run.PermissionOverride
 		} else {
@@ -513,6 +628,15 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// clobbering it with nil.
 		if len(e.modelOverrides) > 0 {
 			run.ModelOverrides = e.modelOverrides
+		}
+		// Same resume-preserving guard: the launch's raw rows are stamped
+		// once and never re-derived.
+		if len(e.launchModelOverrides) > 0 {
+			run.LaunchModelOverrides = e.launchModelOverrides
+		}
+		if e.llmRoutePolicy != nil {
+			lp := *e.llmRoutePolicy // copy: never share the caller's pointer
+			run.LLMRoutePolicy = &lp
 		}
 		// Same resume-preserving guard: the contract is immutable after
 		// launch, a resume never re-supplies it.
@@ -575,7 +699,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.executionContext != nil {
 			ctxContract := e.executionContext.Clone()
 			if err := ctxContract.Normalize(); err != nil {
-				return nil, fmt.Errorf("runtime: invalid execution context: %w", err)
+				return nil, nil, fmt.Errorf("runtime: invalid execution context: %w", err)
 			}
 			// A queued/resumed run already has an authority-owned context
 			// stamped by its launcher. Preserve it; the admission gate compares
@@ -594,17 +718,20 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.workflow.Contract != nil {
 			raw, err := json.Marshal(e.workflow.Contract)
 			if err != nil {
-				return nil, fmt.Errorf("runtime: encode run public contract: %w", err)
+				return nil, nil, fmt.Errorf("runtime: encode run public contract: %w", err)
 			}
 			run.PublicContract = raw
 		} else {
 			run.PublicContract = nil
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
-			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
+			return nil, nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
 	}
-	return run, nil
+	if err := e.seedSubbotCorrections(ctx, run); err != nil {
+		return nil, nil, fmt.Errorf("seed child correction ledger: %w", err)
+	}
+	return ctx, run, nil
 }
 
 // effectiveBudgetSnapshot projects the caps THIS engine enforces onto the
@@ -654,7 +781,7 @@ func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, 
 	if !changed {
 		return nil, store.ErrRunConflict
 	}
-	run, err := e.store.LoadRun(ctx, runID)
+	_, run, err := store.LoadRunWithValueFormat(ctx, e.store, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -671,17 +798,25 @@ func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, 
 // stale). On error, marks the run failed best-effort before returning.
 func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *store.Run) (*store.Run, error) {
 	if err := promoteBundleAttachmentDefaults(ctx, e.store, runID, e.workflow, e.bundle, e.logger); err != nil {
-		e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
-		return nil, e.setupErr(ctx, fmt.Errorf("runtime: bundle attachment defaults: %w", err))
+		if isRunValueFormatRefusal(err) {
+			return nil, err
+		}
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
+		return nil, setupErrFrom(st, stCode, fmt.Errorf("runtime: bundle attachment defaults: %w", err))
 	}
 	if e.attachmentPromote != nil {
 		if err := e.attachmentPromote(ctx, runID); err != nil {
-			e.markFailedBestEffort(ctx, runID, "attachment promote", err)
-			return nil, e.setupErr(ctx, fmt.Errorf("runtime: promote attachments: %w", err))
+			if isRunValueFormatRefusal(err) {
+				return nil, err
+			}
+			st, stCode, err := e.markFailedBestEffort(ctx, runID, "attachment promote", err)
+			return nil, setupErrFrom(st, stCode, fmt.Errorf("runtime: promote attachments: %w", err))
 		}
 	}
-	if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
+	if _, reloaded, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil {
 		return reloaded, nil
+	} else if isRunValueFormatRefusal(err) {
+		return nil, err
 	}
 	return run, nil
 }
@@ -747,12 +882,12 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			}
 		}
 		if err := e.reconcileExecutionWorkspace(runID, run); err != nil {
-			e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
-			return e.setupErr(ctx, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
+			st, stCode, err := e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
+			return setupErrFrom(st, stCode, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
-			e.markFailedBestEffort(ctx, runID, "save work dir", err)
-			return e.setupErr(ctx, fmt.Errorf("runtime: save work dir: %w", err))
+			st, stCode, err := e.markFailedBestEffort(ctx, runID, "save work dir", err)
+			return setupErrFrom(st, stCode, fmt.Errorf("runtime: save work dir: %w", err))
 		}
 	}
 	// Push workDir into the executor so backend subprocesses (claude_code,
@@ -761,12 +896,17 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
 	}
+	e.pushWorkspaceTrust()
 	// Push repoRoot (when known) so memory specs with `project_root: true`
 	// resolve against the operator's main checkout instead of the per-run
 	// workspace. Same minimal-interface pattern as SetWorkDir.
 	if s, ok := e.executor.(repoRootSetter); ok {
 		s.SetRepoRoot(run.RepoRoot)
 	}
+	// The scratch read root (#2650) is NOT pushed here: this runs before
+	// `e.repoRoot = repoRoot` and before startSandbox, the two facts
+	// ${PROJECT_SCRATCH_DIR} keys on. pushExecutorVars owns it, once per
+	// path, after both are settled.
 	// Refresh the orchestrator-facing bot catalog from the live manifests
 	// (display_name / description / when_to_use / triggers / enabled +
 	// the workspace overlay) BEFORE mirroring, so an edited bot or a
@@ -776,11 +916,25 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// run OWNS (regenerateBotCatalog); best-effort and a no-op for a run
 	// that owns none — a failure must never abort the run (the mirror
 	// falls back to the on-disk catalog).
-	if _, err := e.regenerateBotCatalog(run.BotID); err != nil {
+	if _, catalogErr := e.regenerateBotCatalog(ctx, run.BotID); catalogErr != nil {
 		if e.logger != nil {
-			e.logger.Warn("bot catalog regen: %v", err)
+			e.logger.Warn("bot catalog regen: %v", catalogErr)
 		}
 	}
+	// The mirror pass: the tier bookkeeping every skill mirror shares, and the
+	// carrier of the workspace handle every write below goes through. Opened
+	// from the run's trust ONCE, here, and handed down — a pass re-opened
+	// downstream with a forgotten trust argument is the defect class the
+	// handle exists against, so there is exactly one open per sequence.
+	// LOCAL, never an Engine field: a field nil'd at sequence end answers
+	// "trusted" for a later reader that forgot to re-open, and a nil pass
+	// must answer the refusal instead.
+	pass, perr := newMirrorPass(e.workDir, e.trust)
+	if perr != nil {
+		st, stCode, perr := e.markFailedBestEffort(ctx, runID, "open workspace handle", perr)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: open workspace handle: %w", perr))
+	}
+	defer pass.Close()
 	// Bundle skill mirroring: when a .botz backs this run, copy the
 	// bundle's skills/ entries into <workDir>/.claude/skills/ so both
 	// claude_code's native skill lookup and the claw `skill` tool
@@ -788,11 +942,11 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// collision (see runtime/bundle.go for the rule). Tier sidecars from a
 	// PREVIOUS run are wiped first: precedence arbitrates within this
 	// pass, never across runs.
-	ClearMirroredTierMarkers(e.workDir, e.logger)
-	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	ClearMirroredTierMarkers(e.workDir, pass, e.logger)
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, pass, e.logger)
 	if err != nil {
-		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
-		return fmt.Errorf("runtime: bundle skills: %w", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "bundle skills", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: bundle skills: %w", err))
 	}
 	// Mirror markdown contributions (skills / commands / agents) from enabled
 	// plugins after the bundle skills so a same-named bundle/workspace file
@@ -807,19 +961,20 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// per-plugin MirrorFiles failed, a skipped entry, or an unresolved
 	// ambient declaration) — the pruner must be skipped, or it treats last
 	// pass's plugin files as orphans (#1500 R2-F1 HIGH, R6 medium).
-	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, pass, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions: %v", err)
 		}
-		e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
-		return fmt.Errorf("runtime: plugin contributions: %w", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: plugin contributions: %w", err))
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	injectedHooks, hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
 	if hooksErr != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", hooksErr)
 	}
+	e.pushInjectedHooks(injectedHooks)
 	// Skill-library skills referenced by the workflow (DSL `skills:`), mirrored
 	// LAST so a same-named bundle/plugin/workspace file wins on collision
 	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
@@ -828,12 +983,12 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// once, after the last of them has run. I/O errors here are FATAL for the
 	// same reason as the plugin mirror — the DSL `skills:` list is exactly
 	// "declared and load-bearing".
-	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
+	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills(pass)
 	if libraryErr != nil {
-		e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
-		return fmt.Errorf("runtime: library skills: %w", libraryErr)
+		st, stCode, libraryErr := e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: library skills: %w", libraryErr))
 	}
-	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...), pass)
 	// Prune orphans left by earlier passes on this worktree — a skill
 	// renamed or removed upstream keeps its copy and marker on disk
 	// forever otherwise, and claw's resolver keeps offering the flat form
@@ -868,7 +1023,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// r.Worktree — the pruner must see the SAME state whichever entry
 	// point it runs from.
 	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
-		pruneWorkspaceMirror(e.workDir, run.Worktree, e.logger)
+		pruneWorkspaceMirror(e.workDir, pass, run.Worktree, e.logger)
 	} else if e.logger != nil {
 		reason := ""
 		switch {
@@ -925,15 +1080,44 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // cannot read. A launch surface persisting no id (today every one but
 // the cloud — see runview.BotIDForRun) keeps the former, the operator's
 // own workspace behaviour.
-func (e *Engine) regenerateBotCatalog(botID string) (string, error) {
-	if e.bundle != nil {
-		return botregistry.RegenerateCatalogForBundle(e.workDir, e.bundle.Dir)
+// A generated catalog is written under its authoring lock, so this can
+// wait on an editor's save of the same file. The wait is bounded HERE:
+// a run's context carries no deadline, and a run start must not sit
+// behind an editor — where the server's wait is its request's and the
+// operator's is their command's, both of which end on their own.
+func (e *Engine) regenerateBotCatalog(ctx context.Context, botID string) (string, error) {
+	// The refresh writes into a bundle the WORKSPACE carries, folding in
+	// the workspace overlay: on a checkout the operator did not write,
+	// regenerating rewrites checkout-shipped content under the run's
+	// authority and renders attacker text into a catalog other runs read.
+	// An untrusted run regenerates NOTHING — the refusal is typed so the
+	// caller warns with the reason, and the on-disk catalog is served as
+	// found (the mirror reads it, never writes it).
+	if !e.trust.Trusted() {
+		return "", fmt.Errorf("%w (workspace %s)", ErrUntrustedWorkspaceCatalog, e.workDir)
 	}
-	if botID != "" {
+	if e.bundle == nil && botID != "" {
 		return "", nil
 	}
-	return botregistry.RegenerateWhatsNextCatalog(e.workDir)
+	ctx, cancel := context.WithTimeout(ctx, catalogLockWait)
+	defer cancel()
+	if e.bundle != nil {
+		return botregistry.RegenerateCatalogForBundle(ctx, e.workDir, e.bundle.Dir)
+	}
+	return botregistry.RegenerateWhatsNextCatalog(ctx, e.workDir)
 }
+
+// ErrUntrustedWorkspaceCatalog refuses the run-start bot-catalog
+// regeneration on a workspace the operator does not control: the write
+// would land in a bundle the checkout ships, under the run's authority.
+var ErrUntrustedWorkspaceCatalog = errors.New("runtime: bot catalog regeneration refused on an untrusted workspace")
+
+// catalogLockWait is how long a run start waits for a save that holds a
+// generated catalog's authoring lock. A save takes milliseconds; a wait
+// that outlives this one is warned about and the run goes on with the
+// catalog on disk, which is what makes the refresh best effort rather
+// than a gate on starting.
+var catalogLockWait = 15 * time.Second
 
 // reconcileExecutionWorkspace stamps the effective workspace identity only
 // after worktree setup/adoption has made the isolation decision authoritative.
@@ -980,8 +1164,8 @@ func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error
 // mirrored by bundle/plugin); the pruner is skipped in that case, per the
 // #1500 R2-HIGH fix — a phase that could not mirror what it was ASKED to
 // mirror must not signal "everything not-touched is orphan".
-func (e *Engine) applyLibrarySkills() (owned []string, complete bool, err error) {
-	hints, owned, complete, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
+func (e *Engine) applyLibrarySkills(pass *mirrorPass) (owned []string, complete bool, err error) {
+	hints, owned, complete, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, pass, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)
@@ -1000,7 +1184,9 @@ func (e *Engine) applyLibrarySkills() (owned []string, complete bool, err error)
 
 // applyMirroredSkills hands the executor the skill directories iterion OWNS in
 // this workspace, so a backend can tell them from whatever the target
-// repository ships under the same .claude/skills/ path.
+// repository ships under the same .claude/skills/ path. On an untrusted run it
+// also arms the pinned skill channel (#1719): the allowlist the `skill` tool
+// serves and the --add-dir root a directory-discovering backend reads.
 //
 // The workspace is an untrusted checkout, so this cannot be rediscovered by
 // reading it back — a repo can write any file, including one that looks like
@@ -1008,25 +1194,57 @@ func (e *Engine) applyLibrarySkills() (owned []string, complete bool, err error)
 // An empty list is pushed too, rather than skipped: the setter is authoritative
 // for the run, and returning early would leave a reused executor advertising the
 // previous run's skills — paths in another workspace entirely.
-func (e *Engine) applyMirroredSkills(owned []string) {
+func (e *Engine) applyMirroredSkills(owned []string, pass *mirrorPass) {
 	e.rememberResourceSkills(owned)
 	type mirroredSkillSetter interface{ SetMirroredSkills([]string) }
 	if s, ok := e.executor.(mirroredSkillSetter); ok {
 		s.SetMirroredSkills(owned)
 	}
+	// The untrusted-workspace skill channel (#1719): on a checkout the
+	// operator does not control, the walked skill roots answer with what
+	// the repository planted, so the run serves ONLY the owned set — the
+	// claw `skill` tool pins it (ExecuteSkillPinned) and claude_code
+	// discovers the channel root through --add-dir. A trusted run keeps the
+	// walk, unchanged. A channel that cannot be built arms the EMPTY set:
+	// falling back to the walk on error is exactly the hole.
+	type skillChannelSetter interface {
+		SetSkillAllowlist(map[string]string)
+		SetSkillChannelRoot(string)
+	}
+	s, ok := e.executor.(skillChannelSetter)
+	if !ok {
+		return
+	}
+	if e.trust.Trusted() {
+		s.SetSkillAllowlist(nil)
+		s.SetSkillChannelRoot("")
+		return
+	}
+	root, allowlist, err := mirrorSkillChannel(e.workDir, owned, pass, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: the skill channel could not be built (%v) — the untrusted run's skill tool serves NOTHING rather than walking the checkout", err)
+		}
+		s.SetSkillAllowlist(map[string]string{})
+		s.SetSkillChannelRoot("")
+		return
+	}
+	s.SetSkillAllowlist(allowlist)
+	s.SetSkillChannelRoot(root)
 }
 
 // applyPresetFocus wires the selected preset's launch-time bias into the
 // run. It first folds the bundle's file-based presets into the workflow as
 // a backstop for paths that compiled without the bundle (studio in-process,
 // cloud runner), then pushes the selected preset's prompt fragment + skill
-// hints into the executor so every LLM node's system prompt gains a
-// "## Focus" section (see delegate.Task.BuildSystemPrompt). Var-only presets
+// hints into the executor so the system prompt of every model task the run
+// builds gains a "## Focus" section (see delegate.Task.BuildSystemPrompt).
+// Var-only presets
 // (no prompt, no skills) are a no-op here — their overrides already flowed
 // through the launch wiring. The executor focus is best-effort: only
 // ClawExecutor implements SetPresetFocus.
 func (e *Engine) applyPresetFocus() {
-	MergeBundlePresets(e.workflow, e.bundle, e.logger)
+	MergeBundlePresets(e.workflow, e.bundle, e.preset, e.logger)
 	if e.preset == "" {
 		return
 	}
@@ -1044,21 +1262,30 @@ func (e *Engine) applyPresetFocus() {
 
 // runInitState constructs the per-run runState, resolves vars,
 // loads attachments, caches the worktree flag (so per-node snapshot
-// decisions don't re-read run.json N times), and pushes the resolved
-// vars back into the executor — PROJECT_DIR-aware expansion may have
+// decisions don't re-read run.json N times), and hands the resolved
+// vars to pushExecutorVars — PROJECT_DIR-aware expansion may have
 // changed values from what the caller originally seeded.
-func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) *runState {
+//
+// This is the LAUNCH path's run-level push, and it is reached after
+// `e.repoRoot = repoRoot` and startSandbox, which is what lets
+// pushExecutorVars resolve the scratch read root the way the nodes
+// about to execute will resolve ${PROJECT_SCRATCH_DIR}.
+func (e *Engine) runInitState(ctx context.Context, run *store.Run, inputs map[string]any) (*runState, error) {
+	runID := run.ID
+	// Resolve the family root before expanding its scratch variables.
+	e.runScratchOwner = e.resolveRunScratchOwner(ctx, runID, e.parentRunID)
 	rs := e.newRunState(runID, inputs)
+	rs.codemodeState = e.bindCodemodeState(ctx, run)
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
-	if r, err := e.store.LoadRun(ctx, runID); err == nil && r != nil {
+	if _, r, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil && r != nil {
 		rs.isWorktree = r.Worktree
+	} else if isRunValueFormatRefusal(err) {
+		return nil, err
 	}
-	if sv, ok := e.executor.(varsSetter); ok {
-		sv.SetVars(rs.vars)
-	}
-	return rs
+	e.pushExecutorVars(ctx, runID, rs.vars)
+	return rs, nil
 }
 
 // finalizeOnExit applies the worktree-finalization step at the end of a
@@ -1073,6 +1300,9 @@ func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[stri
 // reachable only via reflog (eligible for `git gc` after ~30 days) —
 // see F-RT-1 in docs/reviews/codebase-2026-05-17.md.
 func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktreeContext, cleanup func(), loopErr error) {
+	if isRunValueFormatRefusal(loopErr) {
+		return
+	}
 	if wtCtx == nil {
 		return
 	}
@@ -1093,7 +1323,11 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 	// ever sets it from empty), so its presence here means the gate already
 	// owns this run's finalize. Re-running finalizeWorktree would create a
 	// duplicate storage branch and possibly re-merge — skip it, just clean up.
-	if r, err := e.store.LoadRun(ctx, runID); err == nil && r.MergeStatus != "" {
+	_, finalizedRun, loadErr := store.LoadRunWithValueFormat(ctx, e.store, runID)
+	if isRunValueFormatRefusal(loadErr) {
+		return
+	}
+	if r := finalizedRun; loadErr == nil && r.MergeStatus != "" {
 		// Staleness check: the recorded finalize (review gate, or an
 		// orphan-recovery pass) captured FinalCommit at ITS moment. If the
 		// worktree HEAD has since moved, later committed work exists that the
@@ -1120,7 +1354,7 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			// gesture (mirror-only): a tracked-and-modified devbox.lock is
 			// dependency work the action would bank, so the worktree is
 			// preserved for it (verdict 9, R8e10f0).
-			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain", "-z")
+			porcelain, _, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain", "-z")
 			if porcelainErr == nil && len(commitWorkPaths(wtCtx.wtPath, porcelain)) != 0 {
 				if e.logger != nil {
 					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
@@ -1142,7 +1376,7 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		autoMerge:     e.autoMerge,
 	}, e.logger)
 	if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" || finRes.FinalBranchError != "" {
-		if r2, err := e.store.LoadRun(ctx, runID); err == nil {
+		if _, r2, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil {
 			r2.FinalCommit = finRes.FinalCommit
 			r2.FinalBranch = finRes.FinalBranch
 			r2.FinalBranchError = finRes.FinalBranchError
@@ -1153,9 +1387,16 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 				r2.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 			}
 			r2.AutoMerge = e.autoMerge
-			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil && e.logger != nil {
-				e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
+			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil {
+				if isRunValueFormatRefusal(saveErr) {
+					return
+				}
+				if e.logger != nil {
+					e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
+				}
 			}
+		} else if isRunValueFormatRefusal(err) {
+			return
 		}
 	}
 	if finRes.FinalBranchError != "" {
@@ -1228,12 +1469,19 @@ const throwAwayWorkDirPrefix = "iterion-test-workdir"
 
 // defaultWorkDir fills an engine's missing workDir with the process cwd —
 // the `iterion run` contract, at every layer including a t.Chdir'd test
-// workspace. ONE cwd is refused: the package directory itself under `go
-// test`, where a skill or plugin mirror would write into the developer's
-// checkout (pkg/runtime/.claude, seen 2026-09-24) — that engine gets a
-// throw-away directory instead, recorded in workDirTemp until
-// releaseTempWorkDir removes it (#1803). A test that wants a known workDir
-// passes runtime.WithWorkDir itself.
+// workspace. ONE family of cwd is refused: under `go test`, a working tree
+// of iterion's own repository — the checkout this binary was compiled from,
+// the main checkout, any linked worktree of it, each under any spelling —
+// where the engine would treat the developer's repository as the run's
+// workspace: a skill or plugin mirror writes into its files
+// (pkg/runtime/.claude, seen 2026-09-24, #1803) and the default `worktree:
+// auto` registers a per-run worktree in the registry they all share, which
+// nothing comes back for (#2781). Such an engine gets a throw-away directory
+// instead — verified outside every repository, so `worktree: auto` degrades
+// in place there as it does for any non-repository workspace — recorded in
+// workDirTemp until releaseTempWorkDir removes it. A test that wants a known
+// workDir passes runtime.WithWorkDir itself: a repository it owns
+// (internal/gittest.SourceRepo) when the run must have one.
 func (e *Engine) defaultWorkDir() {
 	if e.workDir != "" {
 		return
@@ -1243,17 +1491,23 @@ func (e *Engine) defaultWorkDir() {
 		return
 	}
 	e.workDir = cwd
-	if testing.Testing() && cwd == runtimePackageDir() {
-		dir, dirErr := os.MkdirTemp("", throwAwayWorkDirPrefix)
-		if dirErr != nil {
-			e.logger.Error("no workDir and the test workdir could not be created: %v — the engine keeps the package directory as its workDir, mirrors will write into the checkout", dirErr)
-			return
-		}
-		e.workDir = dir
-		e.workDirTemp = dir
-		liveThrowAwayWorkDirs.Store(dir, nil)
-		everThrowAwayWorkDirs.Store(dir, struct{}{})
+	if !testing.Testing() {
+		return
 	}
+	checkout := compiledCheckout()
+	if !checkout.refuses(cwd) {
+		return
+	}
+	dir, dirErr := checkout.throwAwayWorkDir()
+	if dirErr != nil {
+		e.logger.Error("no workDir and no throw-away workdir for the refused cwd %s: %v — the engine keeps that cwd as its workDir, so mirrors write into it and `worktree: auto` registers a worktree in its repository (pass runtime.WithWorkDir, or point TMPDIR at a directory outside every git repository)", cwd, dirErr)
+		return
+	}
+	e.logger.Info("runtime: no workDir and the cwd %s is iterion's own checkout, or a worktree of its repository, under `go test` — this engine works in the throw-away directory %s (pass runtime.WithWorkDir, e.g. internal/gittest.SourceRepo, for a workspace the test owns)", cwd, dir)
+	e.workDir = dir
+	e.workDirTemp = dir
+	liveThrowAwayWorkDirs.Store(dir, nil)
+	everThrowAwayWorkDirs.Store(dir, struct{}{})
 }
 
 // liveThrowAwayWorkDirs holds every throw-away directory defaultWorkDir
@@ -1365,12 +1619,170 @@ func reclaimThrowAwayWorkDirs(live, ever *sync.Map) (throwAwayLeaks, error) {
 }
 
 // runtimePackageDir is the directory holding this package's source, from
-// the compile-time path of this file — how an engine test's cwd (the
-// package dir under `go test`) is recognised (#1803).
+// the compile-time path of this file — the seed moduleCheckoutRoot walks up
+// from to find the checkout a test's cwd may sit in (#1803).
 func runtimePackageDir() string {
 	_, file, _, ok := goruntime.Caller(0)
 	if !ok {
 		return ""
 	}
 	return filepath.Dir(file)
+}
+
+// moduleCheckoutRoot is the root of the source checkout this binary was
+// COMPILED from: the nearest ancestor of runtimePackageDir holding a go.mod.
+// Compile-time, not cwd-derived, because that is the tree a test's mirrors
+// write into and the one whose repository a `worktree: auto` run started from
+// a test's cwd registers its worktree in. Empty when no go.mod is reachable
+// (a binary shipped without its source tree), which disables the refusal
+// rather than guessing.
+func moduleCheckoutRoot() string {
+	dir := runtimePackageDir()
+	if dir == "" {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return resolvedPath(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// sourceCheckout is a source tree and the git repository holding it. The
+// REPOSITORY is what the refusal protects: `git worktree add` registers in
+// the one registry a main checkout and all its linked worktrees share, so
+// the compiled tree — one spelling of that repository among several — is a
+// strictly smaller set than what a registration reaches. repo is empty when
+// the tree lies in no repository at all (a source shipped without `.git`),
+// where only the tree's own files are at stake.
+type sourceCheckout struct {
+	tree string
+	repo string
+}
+
+// checkoutAt describes the checkout rooted at tree, resolving its repository
+// with the resolver the engine already trusts for a run's repo root:
+// gitlib.FindMainRepoRoot, which maps a linked worktree back to the main
+// checkout whose `.git` holds the registry.
+func checkoutAt(tree string) sourceCheckout {
+	if tree == "" {
+		return sourceCheckout{}
+	}
+	c := sourceCheckout{tree: resolvedPath(tree)}
+	if repo := gitlib.FindMainRepoRoot(c.tree); repo != "" {
+		c.repo = resolvedPath(repo)
+	}
+	return c
+}
+
+// compiledCheckout is the checkout this binary was built from, resolved once:
+// both sides walk the filesystem and the repository side shells out to git
+// for a linked worktree, while defaultWorkDir runs per engine, every subbot
+// child included.
+var compiledCheckout = sync.OnceValue(func() sourceCheckout {
+	return checkoutAt(moduleCheckoutRoot())
+})
+
+// refuses reports whether dir must not become a run's workspace under `go
+// test`. Two families, each with its own harm:
+//
+//   - dir is in the compiled tree with no `.git` of its own in between: it
+//     IS the checkout — the developer's files, which a mirror would write
+//     into (#1803).
+//   - dir is a working tree of the SAME repository as the checkout: the main
+//     checkout, a sibling linked worktree, a subdirectory of either, under
+//     any symlinked spelling. `git worktree add` from there registers in the
+//     registry they share (#2781).
+//
+// A repository nested under the compiled tree — a scratch repo a test built
+// under a $TMPDIR inside the checkout — is NOT refused: it owns its own
+// registry and the test owns its files, so the run works where it stands.
+func (c sourceCheckout) refuses(dir string) bool {
+	if dir == "" || c.tree == "" {
+		return false
+	}
+	if insideTree(dir, c.tree) && !gitEntryBelow(dir, c.tree) {
+		return true
+	}
+	repo := gitlib.FindMainRepoRoot(dir)
+	return repo != "" && c.repo != "" && samePath(resolvedPath(repo), c.repo)
+}
+
+// throwAwayWorkDir creates the directory an engine whose cwd was refused
+// works in, and VERIFIES what the refusal rests on rather than assuming it
+// of $TMPDIR: the path is absolute — a relative TMPDIR resolves against the
+// very cwd just refused — and it lies in no git repository and outside the
+// checkout, so `worktree: auto` degrades in place there instead of
+// registering a per-run worktree in a repository the test does not own. A
+// candidate failing either is removed and named in the error, which
+// defaultWorkDir reports with the cure.
+func (c sourceCheckout) throwAwayWorkDir() (string, error) {
+	dir, err := os.MkdirTemp("", throwAwayWorkDirPrefix)
+	if err != nil {
+		return "", err
+	}
+	abs, absErr := filepath.Abs(dir)
+	if absErr != nil {
+		return "", errors.Join(fmt.Errorf("absolute path of the temp dir %s: %w", dir, absErr), os.RemoveAll(dir))
+	}
+	if repo := gitlib.FindMainRepoRoot(abs); repo != "" {
+		return "", errors.Join(fmt.Errorf("the temp dir %s is in the git repository %s, whose registry a `worktree: auto` run there writes into", abs, repo), os.RemoveAll(abs))
+	}
+	if insideTree(abs, c.tree) {
+		return "", errors.Join(fmt.Errorf("the temp dir %s is inside the checkout %s, where a run's mirrors write", abs, c.tree), os.RemoveAll(abs))
+	}
+	return abs, nil
+}
+
+// insideTree reports whether dir is root or lies under it. Both sides are
+// symlink-resolved: a tree reached through a symlinked path is the same
+// tree, and a dir that compared unequal would be handed to the run.
+func insideTree(dir, root string) bool {
+	if dir == "" || root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(resolvedPath(root), resolvedPath(dir))
+	if err != nil {
+		return false
+	}
+	// Rel emits ".." only as whole path elements, so a single-element ".."
+	// and a "../" prefix are the two ways out; a directory literally named
+	// "..foo" is inside.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// gitEntryBelow reports whether a `.git` entry sits at dir or at an ancestor
+// of it strictly below root — a repository, or a linked worktree, of its own
+// nested inside root. Stats only, never git: it is the cheap half of the
+// refusal, so the usual test cwd (a package directory, with nothing between
+// it and the checkout root) costs microseconds instead of the milliseconds
+// of the git call FindMainRepoRoot makes for a linked worktree.
+func gitEntryBelow(dir, root string) bool {
+	dir, root = resolvedPath(dir), resolvedPath(root)
+	for dir != root {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+	return false
+}
+
+// resolvedPath is dir with its symlinks resolved, lexically cleaned. A path
+// that cannot be resolved (it may not exist) is returned cleaned: comparing
+// the two unresolved forms is still better than comparing nothing.
+func resolvedPath(dir string) string {
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(dir)
 }

@@ -186,6 +186,10 @@ type RewindSpec struct {
 	ExpectedPivot string
 	// ReceiptID correlates this mutation with a durable assistant mission.
 	ReceiptID string
+	// ExpectOrigin is the origin a checked surface admitted for RunID: the
+	// run Rewind loads is verified against it before anything is claimed or
+	// written. The zero value is unchecked.
+	ExpectOrigin ActionOrigin
 }
 
 // RewindPivot is the non-mutating, final pivot selected for a rewind. NodeID
@@ -230,7 +234,7 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	// below and the --auto diff. They must be the same artifact: a pivot
 	// named in one program and applied to another drops the wrong nodes.
 	currentPath := currentSourcePath(spec, sourcePath)
-	wf, _, err := CompileWorkflowWithHash(currentPath)
+	wf, _, err := CompileWorkflowWithHash(currentPath, run.WorkDir, run.Trust)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w", currentPath, spec.NodeID, err)
 	}
@@ -385,6 +389,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
 	}
+	if err := spec.ExpectOrigin.Verify(run); err != nil {
+		return nil, fmt.Errorf("runview: rewind: %w", err)
+	}
 	if run.Worktree && spec.RestoreScope == RestoreScopeProduced && !spec.KeepFiles {
 		// Refused UP FRONT, before anything is claimed or written. git is
 		// the mechanism for a worktree run and it has exactly one breadth
@@ -429,7 +436,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// diverge exactly when a stored bot's current version had to be
 	// materialized somewhere else.
 	currentPath := currentSourcePath(spec, sourcePath)
-	wf, currentRevision, _, err := CompileWorkflowPath(currentPath)
+	wf, currentRevision, _, err := CompileWorkflowPath(currentPath, run.WorkDir, run.Trust)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			currentPath, spec.NodeID, err)
@@ -981,8 +988,10 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	for _, id := range invalidated {
 		// A re-executed node gets a fresh recovery budget: it is being
 		// replayed because the WORKFLOW changed, so attempts spent
-		// against the old definition should not count against it.
+		// against the old definition should not count against it — nor
+		// the streak of identical failures its old command left.
 		delete(cp.NodeAttempts, id)
+		delete(cp.NodeFailureStreaks, id)
 	}
 	// Any pending interaction belonged to the node the run was parked
 	// on, which is at or downstream of the pivot. Carrying it over would
@@ -1004,7 +1013,9 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	cp.BackendSessionID = ""
 	cp.BackendSessionFingerprint = ""
 	cp.BackendConversation = nil
+	cp.BackendPermissionInput = nil
 	cp.BackendPendingToolUseID = ""
+	cp.BackendSessionStranded = false
 	cp.BackendSessionStateRef = ""
 	if cp.NodeSessions != nil {
 		for _, id := range dropped {

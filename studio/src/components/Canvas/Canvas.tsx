@@ -88,7 +88,7 @@ export default function Canvas() {
   const { screenToFlowPosition, fitView, getNodes, getViewport, setViewport } = useReactFlow();
 
   // Groups for the context menu, from every comment the document carries.
-  const groups = useMemo(() => documentGroups(document), [document]);
+  const groups = useMemo(() => documentGroups(document).groups, [document]);
 
   // Build nodeId -> groupName lookup for context menu
   const nodeToGroup = useMemo(() => {

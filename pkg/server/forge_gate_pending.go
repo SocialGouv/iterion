@@ -68,6 +68,12 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 	if v, ok := vars["gate_enabled"]; ok && forge.GateValueDisables(v) {
 		return
 	}
+	// Evaluation mode (publish_mode=off): the bot posts no verdict at all, so
+	// the claim would be the only status the run leaves — on a pull request
+	// it was launched not to touch. Same predicate as runGateDisabled.
+	if forge.PublishModeWithholds(vars[forge.PublishModeVar]) {
+		return
+	}
 	// The revision, not the PR. A status is posted on a sha, and the head can
 	// move between this launch and the verdict; claiming the head the run was
 	// handed keeps the marker and the verdict on the same commit.

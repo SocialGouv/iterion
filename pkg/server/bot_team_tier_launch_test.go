@@ -42,14 +42,14 @@ type tierPublisher struct {
 	onLaunch func(runID string)
 }
 
-func (p *tierPublisher) SubmitLaunch(_ context.Context, runID string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (p *tierPublisher) SubmitLaunch(_ context.Context, runID string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	p.mu.Lock()
 	p.specs = append(p.specs, spec)
 	p.mu.Unlock()
 	if p.onLaunch != nil {
 		p.onLaunch(runID)
 	}
-	return 0, nil
+	return runview.LaunchSubmission{}, nil
 }
 
 func (*tierPublisher) CancelRun(context.Context, string) error { return nil }
@@ -174,8 +174,8 @@ func TestTeamForkServesTheInboundWebhook(t *testing.T) {
 	pub := &tierPublisher{}
 	s, _ := newTeamForkServer(t, pub)
 
-	if _, err := s.launchWebhookBot(boundedCtx(t), webhooks.Config{ID: "wh-1", TenantID: "t1"},
-		"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, ""); err != nil {
+	if _, err := s.launchWebhookBot(boundedCtx(t), webhookLaunch(nil, ""), webhooks.Config{ID: "wh-1", TenantID: "t1"},
+		"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
 	assertServedByTheFork(t, "inbound webhook", pub.only(t))

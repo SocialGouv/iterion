@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
@@ -91,15 +90,17 @@ func mirrorManifestPathForMarker(markerPath string) string {
 }
 
 // updateMirrorManifest applies fn to the manifest at path and persists it
-// when fn reports a change. Best-effort throughout: the mirror's own write
-// already landed, and a lost manifest downgrades to the safe direction
-// (tracked mirror paths read as work). WriteFileAtomic keeps a concurrent
-// reader from ever seeing a torn file.
-func updateMirrorManifest(path string, logger *iterlog.Logger, fn func(m *mirrorManifest) (dirty bool)) {
+// when fn reports a change, through the workspace handle: the manifest lives
+// under `.claude/.iterion-managed/`, the one tree a fork can commit as a
+// symlink. Best-effort throughout: the mirror's own write already landed, and
+// a lost manifest downgrades to the safe direction (tracked mirror paths read
+// as work). The atomic write keeps a concurrent reader from ever seeing a
+// torn file.
+func updateMirrorManifest(wr *workspaceRoot, path string, logger *iterlog.Logger, fn func(m *mirrorManifest) (dirty bool)) {
 	mirrorManifestMu.Lock()
 	defer mirrorManifestMu.Unlock()
 	m := &mirrorManifest{Files: map[string]string{}}
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := wr.ReadFile(path); err == nil {
 		if json.Unmarshal(data, m) != nil || m.Files == nil {
 			m = &mirrorManifest{Files: map[string]string{}}
 		}
@@ -111,21 +112,21 @@ func updateMirrorManifest(path string, logger *iterlog.Logger, fn func(m *mirror
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := wr.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		if logger != nil {
 			logger.Warn("runtime/mirror: manifest dir %s: %v — tracked mirror files will read as run work", filepath.Dir(path), err)
 		}
 		return
 	}
-	if err := store.WriteFileAtomic(path, data, 0o644); err != nil && logger != nil {
+	if err := wr.WriteFileAtomic(path, data, 0o644); err != nil && logger != nil {
 		logger.Warn("runtime/mirror: manifest %s: %v — tracked mirror files will read as run work", path, err)
 	}
 }
 
 // recordMirrorWrite notes that the mirror laid destPath with content
 // hashing to hash. destPath is the absolute destination the mirror wrote.
-func recordMirrorWrite(manifestPath, destPath, hash string, logger *iterlog.Logger) {
-	updateMirrorManifest(manifestPath, logger, func(m *mirrorManifest) bool {
+func recordMirrorWrite(wr *workspaceRoot, manifestPath, destPath, hash string, logger *iterlog.Logger) {
+	updateMirrorManifest(wr, manifestPath, logger, func(m *mirrorManifest) bool {
 		if m.Files[destPath] == hash {
 			return false
 		}
@@ -139,8 +140,8 @@ func recordMirrorWrite(manifestPath, destPath, hash string, logger *iterlog.Logg
 // the run's. Called only where the engine itself deletes — never where a
 // missing file is merely observed, which can equally be the agent's
 // deletion and must stay work.
-func tombstoneMirrorWrite(manifestPath, destPath string, logger *iterlog.Logger) {
-	updateMirrorManifest(manifestPath, logger, func(m *mirrorManifest) bool {
+func tombstoneMirrorWrite(wr *workspaceRoot, manifestPath, destPath string, logger *iterlog.Logger) {
+	updateMirrorManifest(wr, manifestPath, logger, func(m *mirrorManifest) bool {
 		if m.Files[destPath] == mirrorManifestDeleted {
 			return false
 		}
@@ -155,8 +156,11 @@ func tombstoneMirrorWrite(manifestPath, destPath string, logger *iterlog.Logger)
 // current hash, and every prior entry under root the tree no longer carries
 // is tombstoned (the reset removed it, so its ` D` is the engine's own). A
 // missing root is an empty tree: the reset ran, the refill did not.
-func syncMirrorManifestTree(manifestPath, root string, logger *iterlog.Logger) {
+func syncMirrorManifestTree(wr *workspaceRoot, manifestPath, root string, logger *iterlog.Logger) {
 	onDisk := map[string]string{}
+	// treeFiles and the hashFile below stay plain reads: they answer "what
+	// does the tree the mirror just wrote contain, byte for byte" — the
+	// equality oracle the workspaceRoot doc names — never "may I write".
 	files, err := treeFiles(root)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		if logger != nil {
@@ -169,7 +173,7 @@ func syncMirrorManifestTree(manifestPath, root string, logger *iterlog.Logger) {
 		}
 		onDisk[abs] = ""
 	}
-	updateMirrorManifest(manifestPath, logger, func(m *mirrorManifest) bool {
+	updateMirrorManifest(wr, manifestPath, logger, func(m *mirrorManifest) bool {
 		dirty := false
 		prefix := root + string(filepath.Separator)
 		for k, v := range m.Files {

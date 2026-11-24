@@ -54,6 +54,7 @@ func queryTokenNode(t *testing.T, base, secretValue string) (*model.ClawExecutor
 // ARGUMENT is in neither set, so it left verbatim in the node's error, which
 // travels to the run's events, the tool hooks and error tracking.
 func TestAMaterialisedSecretIsRedactedOutOfTheNodeError(t *testing.T) {
+	t.Parallel()
 	const secretValue = "gh-pat-not-a-real-token-9f2c"
 	// A server that is up long enough to hand out a URL and then refuses the
 	// connection: the request is BUILT (so the secret is in the query string)
@@ -91,6 +92,7 @@ func TestAMaterialisedSecretIsRedactedOutOfTheNodeError(t *testing.T) {
 // The same gap on the vendor's OWN words: a gateway echoing the credential it
 // rejected has that text copied into the message.
 func TestAMaterialisedSecretIsRedactedOutOfAVendorEcho(t *testing.T) {
+	t.Parallel()
 	const secretValue = "gh-pat-not-a-real-token-7b31"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -117,6 +119,7 @@ func TestAMaterialisedSecretIsRedactedOutOfAVendorEcho(t *testing.T) {
 // sentinel checks the rest of the engine makes still work. Flattening
 // unconditionally is how a redaction turns into a second defect.
 func TestAnErrorWithNoSecretIsNotRebuilt(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -150,6 +153,7 @@ func TestAnErrorWithNoSecretIsNotRebuilt(t *testing.T) {
 //
 // The oracle is the request the server received.
 func TestASecretReachesTheVendorEXACTLY(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, secret string }{
 		{"ordinary", "gh-pat-not-a-real-token-7b31"},
 		{"a backslash", `back\slash-token`},

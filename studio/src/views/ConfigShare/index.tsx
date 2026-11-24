@@ -759,13 +759,13 @@ function ConflictPane({
         highlight ? "border-accent bg-accent-soft/50" : "border-border-default bg-surface-2"
       }`}
     >
-      <h3 className="mb-2 text-caption font-semibold uppercase tracking-wider text-fg-subtle">
+      <h3 className="mb-2 text-caption font-semibold uppercase tracking-wider text-fg-muted">
         {title}
       </h3>
       <div className="mb-2">
-        <div className="text-caption text-fg-subtle">Feeds ({feeds.length})</div>
+        <div className="text-caption text-fg-muted">Feeds ({feeds.length})</div>
         {feeds.length === 0 ? (
-          <p className="text-fg-subtle italic">empty</p>
+          <p className="text-fg-muted italic">empty</p>
         ) : (
           <ul className="mt-1 space-y-0.5 font-mono">
             {feeds.map((f, i) => (
@@ -777,9 +777,9 @@ function ConflictPane({
         )}
       </div>
       <div>
-        <div className="text-caption text-fg-subtle">Editorial</div>
+        <div className="text-caption text-fg-muted">Editorial</div>
         <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-fg-default">
-          {editorial || <span className="italic text-fg-subtle">empty</span>}
+          {editorial || <span className="italic text-fg-muted">empty</span>}
         </pre>
       </div>
     </div>

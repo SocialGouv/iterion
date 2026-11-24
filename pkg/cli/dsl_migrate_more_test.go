@@ -18,7 +18,7 @@ import (
 func TestMigrateDSLRefusesAFloorItCannotOrder(t *testing.T) {
 	dir := writeMigrateBundle(t)
 	for _, flag := range []string{"latest", "banana", "3.2.0-rc1"} {
-		_, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: flag})
+		_, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: flag})
 		if err == nil || !strings.Contains(err.Error(), "--floor") || !strings.Contains(err.Error(), flag) {
 			t.Fatalf("--floor %q: err = %v", flag, err)
 		}
@@ -36,7 +36,7 @@ func TestMigrateDSLOnADevBuildWritesTheProfilesRelease(t *testing.T) {
 	t.Cleanup(func() { appinfo.Version = prev })
 	appinfo.Version = "dev"
 	dir := writeMigrateBundle(t)
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestMigrateDSLLeavesAnUnchangedBundlesFloorAlone(t *testing.T) {
 	for _, opts := range []MigrateDSLOptions{{Check: true}, {}} {
 		opts.Paths = []string{dir}
 		opts.Floor = "3.200.0"
-		res, err := MigrateDSL(opts)
+		res, err := MigrateDSL(t.Context(), opts)
 		if err != nil {
 			t.Fatalf("%+v: %v", opts, err)
 		}
@@ -81,7 +81,7 @@ func TestMigrateDSLKeepsAHigherFloor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(high), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestMigrateDSLFloorsTheOwningBundle(t *testing.T) {
 	if err := os.WriteFile(child, []byte("agent a:\n  description: \"a\\tb\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{child}, Floor: "3.200.0"})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{child}, Floor: "3.200.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +124,14 @@ func TestMigrateDSLFloorsTheOwningBundle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(noManifest, "main.bot"), []byte(migrateFixtureBot), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = MigrateDSL(MigrateDSLOptions{Paths: []string{noManifest}, Floor: "3.200.0"})
+	res, err = MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{noManifest}, Floor: "3.200.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Manifests) != 1 || res.Manifests[0].Written || !strings.Contains(res.Manifests[0].Skipped, "no manifest") {
 		t.Fatalf("a manifest-less bundle: %+v", res.Manifests)
 	}
-	if _, err := MigrateDSL(MigrateDSLOptions{Paths: []string{noManifest}, Floor: "3.200.0", Check: true}); err != nil {
+	if _, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{noManifest}, Floor: "3.200.0", Check: true}); err != nil {
 		t.Fatalf("check after migrating a manifest-less bundle: %v", err)
 	}
 }

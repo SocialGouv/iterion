@@ -115,10 +115,12 @@ func rgaaWorkProduct(res liveResult) string {
 		}
 	}
 	if final, ok := lastNodeOutput(res.events, "final_report"); ok {
-		if p, _ := final["annex_path"].(string); p != "" {
-			if raw, err := os.ReadFile(p); err == nil {
-				b.WriteString("## annexe de couverture\n")
-				b.Write(raw)
+		for _, key := range []string{"report_path", "technical_annex_path", "annex_path"} {
+			if p, _ := final[key].(string); p != "" {
+				if raw, err := os.ReadFile(p); err == nil {
+					fmt.Fprintf(&b, "## %s\n", key)
+					b.Write(raw)
+				}
 			}
 		}
 	}

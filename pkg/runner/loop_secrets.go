@@ -22,10 +22,15 @@ import (
 // repoRoot is the run's repository root as the engine will resolve it
 // (runtime.EngineRepoRoot over the run workspace): the sandbox gate's
 // mode=auto devcontainer lookup must read the same directory the
-// engine's will.
-func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow, repoRoot string) (map[string]string, func(), error) {
-	if wf == nil || len(wf.Secrets) == 0 ||
-		runtime.RunWillBeSandboxed(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault, repoRoot, r.cfg.SandboxDrivers) {
+// engine's will. botSourceTier is the wire-carried launch fact (queue
+// v28): the probe must judge the workflow the run executes under, i.e.
+// AFTER the #1959 floor neutralized a non-operator source's opt-out —
+// probing the declared mode would materialize the secrets on the pod for
+// a run the floor in fact executes inside a container.
+func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow, repoRoot, botSourceTier string) (map[string]string, func(), error) {
+	effective, _ := runtime.ApplySandboxFloor(wf, botSourceTier, r.cfg.SandboxOverride)
+	if effective == nil || len(effective.Secrets) == 0 ||
+		runtime.RunWillBeSandboxed(effective, r.cfg.SandboxOverride, r.cfg.SandboxDefault, repoRoot, r.cfg.SandboxDrivers) {
 		// No secrets, or the run will execute inside a sandbox (which mounts
 		// file secrets into the container). The RESOLVED, driver-aware
 		// decision — not wf.Sandbox, and not the resolved mode alone — is
@@ -98,7 +103,11 @@ const fileSecretRefreshInterval = 5 * time.Minute
 // so a rotation propagates to every subsequent forge push/comment without
 // touching the process environment. Failures are logged and retried next
 // tick — the file keeps its last good value; nothing is ever truncated.
-func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, refs, files map[string]string) {
+//
+// guard is the run's late-bound live secret guard: each rotated value is
+// registered on it (#2756) so the new token never lands verbatim in the
+// run's log or events — the launch-time value is all the guard knew.
+func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, refs, files map[string]string, guard *runSecretGuard) {
 	tick := time.NewTicker(fileSecretRefreshInterval)
 	defer tick.Stop()
 	last := map[string]string{}
@@ -108,7 +117,7 @@ func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, re
 			return
 		case <-tick.C:
 		}
-		r.refreshFileSecretsOnce(ctx, tenantID, refs, files, last)
+		r.refreshFileSecretsOnce(ctx, tenantID, refs, files, last, guard)
 	}
 }
 
@@ -128,7 +137,9 @@ func (r *Runner) readFreshSecret(ctx context.Context, tenantID, id string) ([]by
 
 // refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
 // ref'd file secret and atomically rewrite the ones whose store value moved.
-func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string) {
+// The fresh value is registered on the run's guard BEFORE the write, so even
+// a torn next step cannot leave it unknown to redaction.
+func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string, guard *runSecretGuard) {
 	for name, path := range files {
 		id := refs[name]
 		if id == "" {
@@ -142,6 +153,7 @@ func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, re
 		if len(val) == 0 || string(val) == last[name] {
 			continue
 		}
+		guard.registerRotated(name, string(val))
 		// Atomic replace so a concurrent `cat` never sees a torn write.
 		tmp := path + ".tmp"
 		if err := os.WriteFile(tmp, val, 0o600); err != nil {
@@ -171,7 +183,12 @@ func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, re
 //
 // Best-effort by design: a transient store error just leaves the previous
 // (still possibly valid) credential in place until the next tick.
-func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secretID, runID, dir, repoURL string) {
+//
+// guard is the run's live secret guard, registered with each rotated token
+// before the write (#2756): the value git pushes with is exactly the one a
+// bot would print by `cat .git/iterion-credentials`, and without the
+// registration it crossed the run's sinks verbatim.
+func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secretID, runID, dir, repoURL string, guard *runSecretGuard) {
 	tick := time.NewTicker(fileSecretRefreshInterval)
 	defer tick.Stop()
 	path := filepath.Join(dir, ".git", gitCredentialFile)
@@ -182,7 +199,7 @@ func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secret
 			return
 		case <-tick.C:
 		}
-		r.refreshGitCredentialsOnce(ctx, tenantID, secretID, runID, path, repoURL, &last)
+		r.refreshGitCredentialsOnce(ctx, tenantID, secretID, runID, path, repoURL, &last, guard)
 	}
 }
 
@@ -194,7 +211,7 @@ func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secret
 // away — exactly the stale-push window this loop exists to close; by
 // keeping `last` unchanged the whole rotation is retried next tick (the
 // host rewrite is idempotent).
-func (r *Runner) refreshGitCredentialsOnce(ctx context.Context, tenantID, secretID, runID, path, repoURL string, last *string) {
+func (r *Runner) refreshGitCredentialsOnce(ctx context.Context, tenantID, secretID, runID, path, repoURL string, last *string, guard *runSecretGuard) {
 	val, err := r.readFreshSecret(ctx, tenantID, secretID)
 	if err != nil {
 		r.cfg.Logger.Warn("runner: refresh git credential (ref %s): %v", secretID, err)
@@ -203,6 +220,7 @@ func (r *Runner) refreshGitCredentialsOnce(ctx context.Context, tenantID, secret
 	if len(val) == 0 || string(val) == *last {
 		return
 	}
+	guard.registerRotated("clone_git_credential", string(val))
 	if err := writeGitCredentials(path, repoURL, string(val)); err != nil {
 		r.cfg.Logger.Warn("runner: refresh git credential: %v", err)
 		return
@@ -217,7 +235,12 @@ func (r *Runner) refreshGitCredentialsOnce(ctx context.Context, tenantID, secret
 
 // gitCredentialSecretRef returns the store id backing the run's forge token,
 // or "" when the run has no refreshable one (snapshot-only, or no store).
-// Mirrors the name precedence cloneRepo uses to pick the token.
+//
+// The id is the one of the secret the clone ACTUALLY authenticated with
+// (cloneCredentialToken), never the first ref'd name of the precedence: a
+// run can carry a snapshot-only forge_token beside a ref'd gitlab_token, and
+// refreshing the other secret's record rewrites the clone's credential store
+// with a token git never cloned with, under grants nobody read.
 func (r *Runner) gitCredentialSecretRef(ctx context.Context) string {
 	if r.cfg.GenericSecrets == nil || r.cfg.Sealer == nil {
 		return ""
@@ -226,12 +249,11 @@ func (r *Runner) gitCredentialSecretRef(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	for _, name := range []string{"forge_token", "gitlab_token", "github_token"} {
-		if id := creds.GenericRefs[name]; id != "" {
-			return id
-		}
+	name, _ := cloneCredentialToken(ctx)
+	if name == "" {
+		return ""
 	}
-	return ""
+	return creds.GenericRefs[name]
 }
 
 // sandboxFileSecretRefs returns the file secrets of wf that carry a store
@@ -266,8 +288,9 @@ func (r *Runner) sandboxFileSecretRefs(ctx context.Context, wf *ir.Workflow) map
 // store record on a fixed cadence and, when the value rotated, hands it
 // to the sandbox driver's SecretFileRefresher to propagate into the
 // running container. Mirrors refreshFileSecretsLoop; failures are logged
-// (never the value) and retried next tick.
-func (r *Runner) refreshSandboxFileSecretsLoop(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher) {
+// (never the value) and retried next tick. The rotated value is registered
+// on the run's live guard first (#2756).
+func (r *Runner) refreshSandboxFileSecretsLoop(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher, guard *runSecretGuard) {
 	tick := time.NewTicker(fileSecretRefreshInterval)
 	defer tick.Stop()
 	last := map[string]string{}
@@ -277,14 +300,14 @@ func (r *Runner) refreshSandboxFileSecretsLoop(ctx context.Context, tenantID str
 			return
 		case <-tick.C:
 		}
-		r.refreshSandboxFileSecretsOnce(ctx, tenantID, refs, refresher, last)
+		r.refreshSandboxFileSecretsOnce(ctx, tenantID, refs, refresher, last, guard)
 	}
 }
 
 // refreshSandboxFileSecretsOnce is one tick of
 // refreshSandboxFileSecretsLoop: re-read every ref'd file secret and push
 // the ones whose store value moved into the sandbox.
-func (r *Runner) refreshSandboxFileSecretsOnce(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher, last map[string]string) {
+func (r *Runner) refreshSandboxFileSecretsOnce(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher, last map[string]string, guard *runSecretGuard) {
 	for name, id := range refs {
 		val, err := r.readFreshSecret(ctx, tenantID, id)
 		if err != nil {
@@ -294,6 +317,7 @@ func (r *Runner) refreshSandboxFileSecretsOnce(ctx context.Context, tenantID str
 		if len(val) == 0 || string(val) == last[name] {
 			continue
 		}
+		guard.registerRotated(name, string(val))
 		if err := refresher.RefreshSecretFile(ctx, name, val); err != nil {
 			r.cfg.Logger.Warn("runner: refresh sandboxed file secret %q: %v", name, err)
 			continue

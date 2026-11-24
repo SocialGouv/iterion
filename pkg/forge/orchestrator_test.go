@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -138,7 +140,7 @@ func newTestOrch(t *testing.T) (*Orchestrator, *fakeAdmin, secrets.Sealer) {
 	fa := newFakeAdmin()
 	var idc int
 	o := &Orchestrator{
-		Connections:  NewMemoryConnectionStore(),
+		Connections:  connection.NewMemoryForgeStore(),
 		Integrations: NewMemoryRepoIntegrationStore(),
 		Webhooks:     webhooks.NewMemoryConfigStore(),
 		Secrets:      secrets.NewMemoryGenericSecretStore(),
@@ -146,9 +148,17 @@ func newTestOrch(t *testing.T) (*Orchestrator, *fakeAdmin, secrets.Sealer) {
 		Sealer:       sealer,
 		Bots:         testBotLookup,
 		AdminFor:     func(context.Context, Connection) (Admin, error) { return fa, nil },
-		PublicURL:    "https://iterion.example.com",
-		Now:          func() time.Time { return time.Unix(1700000000, 0).UTC() },
-		NewID:        func() string { idc++; return fmt.Sprintf("id-%d", idc) },
+		// The tests run no credential, so the mint's approval is stamped
+		// here — the same verdict, through the same constructor, the
+		// derivation gate stamps after its ask (the nil-seam refusal and
+		// the refusing-seam refusal are probed in
+		// provision_mint_approval_test.go).
+		ApproveTeamTokenMint: func(ctx context.Context) (context.Context, error) {
+			return auth.ContextWithMintVerdict(ctx, auth.NewMintVerdict(auth.MintTeamToken, "forge-test")), nil
+		},
+		PublicURL: "https://iterion.example.com",
+		Now:       func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		NewID:     func() string { idc++; return fmt.Sprintf("id-%d", idc) },
 	}
 	return o, fa, sealer
 }
@@ -156,7 +166,7 @@ func newTestOrch(t *testing.T) (*Orchestrator, *fakeAdmin, secrets.Sealer) {
 func seedConn(t *testing.T, o *Orchestrator, sealer secrets.Sealer) Connection {
 	t.Helper()
 	const connID = "conn-1"
-	sealed, err := sealConnectionSecret(sealer, connID, connectionSecret{PATToken: testPATToken})
+	sealed, err := connection.SealForgeCredential(sealer, connID, connection.ForgeCredential{PATToken: testPATToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +213,7 @@ func TestNarrowGitHubAppSecret(t *testing.T) {
 	ctx := context.Background()
 
 	connID := "gh-conn"
-	sealed, err := SealOAuthTokens(sealer, connID, "ghs_broad", "", time.Time{})
+	sealed, err := connection.SealForgeOAuthTokens(sealer, connID, "ghs_broad", "", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +277,7 @@ func TestEnsureManagedSecret_RemintsGitHubAppAtUse(t *testing.T) {
 	ctx := context.Background()
 
 	connID := "gh-conn-launch"
-	sealed, err := SealOAuthTokens(sealer, connID, "ghs_stale", "", time.Time{})
+	sealed, err := connection.SealForgeOAuthTokens(sealer, connID, "ghs_stale", "", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +356,7 @@ func TestProvision_SingleBot(t *testing.T) {
 	}
 
 	// managed secret created from the connection's PAT, team-scoped.
-	conn, _ := o.Connections.Get(ctx, "conn-1")
+	conn, _ := o.Connections.Get(ctx, "t1", "conn-1")
 	if conn.ManagedSecretID == "" {
 		t.Fatal("connection ManagedSecretID not stamped")
 	}
@@ -504,7 +514,7 @@ func TestProvision_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list bindings: %v", err)
 	}
-	conn, _ := o.Connections.Get(ctx, "conn-1")
+	conn, _ := o.Connections.Get(ctx, "t1", "conn-1")
 	if len(binds) != 1 || binds[0].SecretID != conn.ManagedSecretID {
 		t.Errorf("idempotent re-provision did not reconcile the binding: %+v", binds)
 	}
@@ -552,7 +562,7 @@ func TestDeprovision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, _ := o.Connections.Get(ctx, "conn-1")
+	conn, _ := o.Connections.Get(ctx, "t1", "conn-1")
 	managedID := conn.ManagedSecretID
 
 	if err := o.Deprovision(ctx, "t1", res.IntegrationID); err != nil {
@@ -561,8 +571,8 @@ func TestDeprovision(t *testing.T) {
 	if fa.deletes != 1 || len(fa.hooks) != 0 {
 		t.Errorf("forge hook not deleted: deletes=%d hooks=%d", fa.deletes, len(fa.hooks))
 	}
-	if _, err := o.Webhooks.Get(ctx, res.WebhookID); !errors.Is(err, webhooks.ErrNotFound) {
-		t.Errorf("webhook config should be gone, got %v", err)
+	if cfg, err := o.Webhooks.Get(ctx, res.WebhookID); err != nil || cfg.Enabled {
+		t.Errorf("webhook config must remain a disabled tombstone, got %v", err)
 	}
 	if _, err := o.Integrations.Get(ctx, res.IntegrationID); !errors.Is(err, ErrIntegrationNotFound) {
 		t.Errorf("integration should be gone, got %v", err)
@@ -581,7 +591,7 @@ func TestDeprovisionConnection_Cascades(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, _ := o.Connections.Get(ctx, "conn-1")
+	conn, _ := o.Connections.Get(ctx, "t1", "conn-1")
 	managedID := conn.ManagedSecretID
 
 	if err := o.DeprovisionConnection(ctx, "t1", "conn-1"); err != nil {
@@ -593,7 +603,7 @@ func TestDeprovisionConnection_Cascades(t *testing.T) {
 	if _, err := o.Secrets.Get(ctx, managedID); !errors.Is(err, secrets.ErrGenericSecretNotFound) {
 		t.Error("managed secret should be deleted with the connection")
 	}
-	if _, err := o.Connections.Get(ctx, "conn-1"); !errors.Is(err, ErrConnectionNotFound) {
+	if _, err := o.Connections.Get(ctx, "t1", "conn-1"); !errors.Is(err, ErrConnectionNotFound) {
 		t.Error("connection should be gone")
 	}
 }

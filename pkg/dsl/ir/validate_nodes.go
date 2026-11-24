@@ -1,17 +1,23 @@
 package ir
 
 import (
+	"context"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"math"
 	"net/url"
 	"os"
+	"path"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/sandbox/imageclass"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -188,6 +194,218 @@ func (c *compiler) validateArtifactLabels(w *Workflow) {
 	}
 }
 
+// validateDeliverables refuses a `deliverables:` entry the run could never
+// collect (C317) and two entries of one node that would be served under the
+// same name (C318).
+//
+// Errors, not warnings, and judged where the declaration is written: the
+// collector reads the file from the node's workspace and stores it under
+// its base name, so an absolute path, an upward escape or a second entry
+// with the same base name is a promise no run can keep. C314's argument —
+// a collision that cannot be authored needs no runtime guard.
+//
+// A template (`{{…}}`) or an environment form (`${…}`) does not excuse the
+// shape: no rendering can make `/tmp/report.md` relative or put a trailing
+// slash back, so both rules are decided on the text as written. What a
+// template RENDERS to — a value that climbs out of the workspace — only the
+// collector can judge, and it does so where it resolves the path.
+//
+// Both rules read the declaration through NodeDeliverables and name it with
+// DeliverableName, the same chokepoint the collector uses, so the compiler
+// and the run cannot disagree about which file is served under which name.
+func (c *compiler) validateDeliverables(w *Workflow) {
+	for _, n := range w.Nodes {
+		declared := NodeDeliverables(n)
+		if len(declared) == 0 {
+			continue
+		}
+		kind, id := n.NodeKind().String(), n.NodeID()
+		// Each rule is said once per node, the entries it refuses listed as
+		// an enum's members are — enumListed of them by excerpt, the rest
+		// by count: the length of a list is the one thing the read budget
+		// does not bound, and a diagnostic per entry would grow with it
+		// (#2779).
+		var refused []string
+		firstByName := make(map[string]string, len(declared))
+		// shared is every base name a later entry is served as too, in the
+		// order of its first collision; later holds those entries per name.
+		var shared []string
+		later := map[string][]string{}
+		for _, entry := range declared {
+			if DeliverableRefusal(entry) != "" {
+				refused = append(refused, entry)
+				continue
+			}
+			name := DeliverableName(entry)
+			if _, taken := firstByName[name]; !taken {
+				firstByName[name] = entry
+				continue
+			}
+			if _, seen := later[name]; !seen {
+				shared = append(shared, name)
+			}
+			later[name] = append(later[name], entry)
+		}
+		if len(refused) > 0 {
+			c.errorfAtProperty(DiagDeliverableNotWorkspacePath, kind, id, "deliverables",
+				"%s %q declares %s not a workspace-relative file path: %s — the run collects a deliverable from the node's workspace and serves it under its base name, so none of these can be collected",
+				kind, id, countOf(len(refused), "a deliverable that is", "deliverables that are"), refusedDeliverables(refused))
+		}
+		if len(shared) > 0 {
+			cols := collisionsOf(shared, firstByName, later)
+			entries, remedy := 0, collisionRemedy(cols)
+			for _, col := range cols {
+				entries += len(col.files) + col.repeats
+			}
+			c.errorfAtProperty(DiagDeliverableNameCollision, kind, id, "deliverables",
+				"%s %q declares %d deliverables served under %s: %s — the run store refuses every one after the first rather than overwrite it; %s",
+				kind, id, entries, countOf(len(cols), "one shared name", "shared names"), collisionsText(cols), remedy)
+		}
+	}
+}
+
+// countOf words a count: the singular phrase for one, the plural with the
+// number for more.
+func countOf(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// refusedDeliverables lists the entries C317 refuses, each by excerpt with
+// its reason, the first enumListed then the count of the rest.
+func refusedDeliverables(refused []string) string {
+	named := refused
+	if len(named) > enumListed {
+		named = named[:enumListed]
+	}
+	parts := make([]string, 0, len(named)+1)
+	for _, entry := range named {
+		parts = append(parts, fmt.Sprintf("%q (%s)", expr.Excerpt(entry), DeliverableRefusal(entry)))
+	}
+	if more := len(refused) - len(named); more > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", more))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// collision is one base name several deliverables are served as: the
+// distinct files among them, the served one first and the refused ones in
+// declaration order — two spellings of one path (`r.md`, `./r.md`) are one
+// file — and how many entries repeat a file already listed.
+type collision struct {
+	name    string
+	files   []string
+	repeats int
+}
+
+// collisionsOf reads the collisions of a node in first-collision order.
+func collisionsOf(shared []string, firstByName map[string]string, later map[string][]string) []collision {
+	out := make([]collision, 0, len(shared))
+	for _, name := range shared {
+		first := firstByName[name]
+		col := collision{name: name, files: []string{first}}
+		seen := map[string]bool{deliverableFile(first): true}
+		for _, entry := range later[name] {
+			if file := deliverableFile(entry); !seen[file] {
+				seen[file] = true
+				col.files = append(col.files, entry)
+			} else {
+				col.repeats++
+			}
+		}
+		out = append(out, col)
+	}
+	return out
+}
+
+// deliverableFile is the one spelling of a declared path two entries are
+// compared by.
+func deliverableFile(entry string) string {
+	return path.Clean(strings.TrimSpace(entry))
+}
+
+// collisionRemedy words what the author does: rename where several files
+// share a name, drop where one file is listed several times, both where
+// both occur.
+func collisionRemedy(cols []collision) string {
+	rename, drop := false, false
+	for _, col := range cols {
+		if len(col.files) > 1 {
+			rename = true
+		}
+		if col.repeats > 0 {
+			drop = true
+		}
+	}
+	switch {
+	case rename && drop:
+		return "rename all but one of the files under each name, and drop the repeated entries"
+	case drop:
+		return "drop the repeated entries"
+	}
+	return "rename all but one of the files under each name"
+}
+
+// collisionsText lists the collisions for C318 within one budget of
+// enumListed quoted entries across the whole list — the names past the
+// budget and the entries of a name past it are counted, so the message
+// keeps its totals and its remedy under the diagnostic bound whatever the
+// list holds. A file listed several times under one name is said as such.
+// The entries of a name are quoted around their difference from the
+// first where their plain excerpts would read alike (excerptPair), the
+// first around the earliest of those differences.
+func collisionsText(cols []collision) string {
+	budget := enumListed
+	parts := make([]string, 0, len(cols)+1)
+	for i, col := range cols {
+		if budget <= 0 {
+			parts = append(parts, "and "+countOf(len(cols)-i, "1 more name", "more names"))
+			break
+		}
+		if len(col.files) == 1 {
+			budget--
+			parts = append(parts, fmt.Sprintf("the file %q is listed %d times", expr.Excerpt(deliverableFile(col.files[0])), 1+col.repeats))
+			continue
+		}
+		first, rest := col.files[0], col.files[1:]
+		listed := rest
+		if len(listed) > budget-1 {
+			listed = listed[:budget-1]
+		}
+		budget -= 1 + len(listed)
+		firstText, at := expr.Excerpt(first), -1
+		for _, entry := range listed {
+			if expr.Excerpt(entry) == firstText {
+				if d := differenceAt(first, entry); at < 0 || d < at {
+					at = d
+				}
+			}
+		}
+		if at >= 0 {
+			firstText = expr.ExcerptAt(first, at)
+		}
+		quoted := []string{strconv.Quote(firstText)}
+		for _, entry := range listed {
+			_, b := excerptPair(first, entry)
+			quoted = append(quoted, strconv.Quote(b))
+		}
+		if more := len(rest) - len(listed); more > 0 {
+			quoted = append(quoted, fmt.Sprintf("and %d more", more))
+		}
+		entries := strings.Join(quoted, ", ")
+		if len(quoted) == 2 {
+			entries = quoted[0] + " and " + quoted[1]
+		}
+		if col.repeats > 0 {
+			entries += fmt.Sprintf(" (%d repeated)", col.repeats)
+		}
+		parts = append(parts, fmt.Sprintf("%s served as %q", entries, expr.Excerpt(col.name)))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // validateCompress enforces that every compress value (workflow-level + every
 // agent/judge/tool node) is one of the accepted barewords. A typo
 // would silently fall back to "inherit" instead of compressing — so
@@ -207,7 +425,7 @@ func (c *compiler) validateCompress(w *Workflow) {
 		return false
 	}
 	if !valid(w.Compress) {
-		c.errorfAtSpan(DiagInvalidCompress, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidCompress, "workflow", w.Name, "compress",
 			"workflow %q has invalid compress %q; valid values are on, off, ultra",
 			w.Name, w.Compress)
 	}
@@ -216,7 +434,7 @@ func (c *compiler) validateCompress(w *Workflow) {
 		func(nn *ToolNode) string { return nn.Compress },
 		func(n Node, kind, compress string) {
 			if !valid(compress) {
-				c.errorfAt(DiagInvalidCompress, n.NodeID(), "",
+				c.errorfAtProperty(DiagInvalidCompress, kind, n.NodeID(), "compress",
 					"%s %q has invalid compress %q; valid values are on, off, ultra",
 					kind, n.NodeID(), compress)
 			}
@@ -234,7 +452,7 @@ func (c *compiler) validateLoopBudgetGuard(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorfAtSpan(DiagInvalidLoopBudgetGuard, c.workflowSpan(w.Name),
+	c.errorfAtProperty(DiagInvalidLoopBudgetGuard, "workflow", w.Name, "loop_budget_guard",
 		"workflow %q has invalid loop_budget_guard %q; valid values are on, off",
 		w.Name, w.LoopBudgetGuard)
 }
@@ -248,7 +466,7 @@ func (c *compiler) validateRepoDevbox(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorfAtSpan(DiagInvalidRepoDevbox, c.workflowSpan(w.Name),
+	c.errorfAtProperty(DiagInvalidRepoDevbox, "workflow", w.Name, "repo_devbox",
 		"workflow %q has invalid repo_devbox %q; valid values are on, off",
 		w.Name, w.RepoDevbox)
 }
@@ -263,7 +481,7 @@ func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorfAtSpan(DiagInvalidWorkspaceCheckpoint, c.workflowSpan(w.Name),
+	c.errorfAtProperty(DiagInvalidWorkspaceCheckpoint, "workflow", w.Name, "workspace_checkpoint",
 		"workflow %q has invalid workspace_checkpoint %q; valid values are on, off",
 		w.Name, w.WorkspaceCheckpoint)
 }
@@ -276,8 +494,13 @@ func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
 // and whitespace-trimmed.
 //
 // The accepted values are kept inline (pkg/backend/model would cycle), but
-// the BACKEND allowlist is not: it comes from automemory.SupportsBackend, so
-// the warning and the engine can never disagree about who honours the knob.
+// the BACKEND allowlist is not: it is the backendcaps registry's auto-memory
+// cell, the one cell automemory.SupportsBackend reads — the two readings are
+// pinned equal by model.TestBackendCapabilityConsumersConform — so the
+// warning and the engine can never disagree about who honours the knob, and
+// reading that cell here does not link the mirror's machinery (pkg/store,
+// pkg/knowledge) into the compiler, which importing pkg/backend/automemory
+// did (iterion#2857).
 func (c *compiler) validateAutoMemory(w *Workflow) {
 	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 	valid := func(v string) bool {
@@ -288,7 +511,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		return false
 	}
 	if !valid(w.AutoMemory) {
-		c.errorfAtSpan(DiagInvalidAutoMemory, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidAutoMemory, "workflow", w.Name, "auto_memory",
 			"workflow %q has invalid auto_memory %q; valid values are on, off",
 			w.Name, w.AutoMemory)
 	}
@@ -299,7 +522,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		}
 		kind, value := nn.NodeKind().String(), nn.GetAutoMemory()
 		if !valid(value) {
-			c.errorfAt(DiagInvalidAutoMemory, n.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidAutoMemory, kind, n.NodeID(), "auto_memory",
 				"%s %q has invalid auto_memory %q; valid values are on, off",
 				kind, n.NodeID(), value)
 			continue
@@ -320,8 +543,8 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		// falls through to env and host credential detection, so the compiler
 		// genuinely cannot know.
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
-		if backend != "" && !automemory.SupportsBackend(backend) {
-			c.warnfAt(DiagAutoMemoryNotSupported, n.NodeID(), "",
+		if backend != "" && !backendcaps.Offers(backend, backendcaps.AutoMemory) {
+			c.warnfAtProperty(DiagAutoMemoryNotSupported, kind, n.NodeID(), "auto_memory",
 				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
 				kind, n.NodeID(), backend)
 		}
@@ -364,7 +587,7 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 	}
 	accepted := strings.Join(ambient.Values, ", ")
 	if !valid(w.AmbientContext) {
-		c.errorfAtSpan(DiagInvalidAmbientContext, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidAmbientContext, "workflow", w.Name, "ambient_context",
 			"workflow %q has invalid ambient_context %q; valid values are %s",
 			w.Name, w.AmbientContext, accepted)
 	}
@@ -377,7 +600,7 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 		}
 		kind, value := nn.NodeKind().String(), nn.GetAmbientContext()
 		if !valid(value) {
-			c.errorfAt(DiagInvalidAmbientContext, n.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidAmbientContext, kind, n.NodeID(), "ambient_context",
 				"%s %q has invalid ambient_context %q; valid values are %s",
 				kind, n.NodeID(), value, accepted)
 			continue
@@ -413,9 +636,49 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 		}
 	}
 	if wfDeclared && ignoring > 0 && honouring == 0 {
-		c.warnfAtSpan(DiagAmbientContextNotEnforced, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAmbientContextNotEnforced, "workflow", w.Name, "ambient_context",
 			"workflow %q sets ambient_context: %s but no agent/judge node inheriting it runs on a backend that enforces it (%s)",
 			w.Name, wfPolicy, strings.Join(ambient.EnforcingBackends(wfPolicy), ", "))
+	}
+}
+
+// normCodemode is what the IR's `Codemode` field is allowed to hold. The
+// compiler ACCEPTS `ON`, `On` and a padded ` on ` (ValidCodemode lowercases
+// and trims before judging, as validateAutoMemory does), so carrying the
+// author's raw text into the IR would let a consumer compare `== "on"` and
+// read a node the compiler told its author was ON as off. The AST keeps the
+// raw text — that is what the unparser and the author writer round-trip —
+// and the IR keeps the decided value, which is the value the executor
+// resolves from.
+func normCodemode(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+
+// validateCodemode holds `codemode:` to on|off.
+//
+// It judges the VALUE and nothing else; whether the node's route can serve
+// the capability is validateCodemodeBackends (C339), which is a different
+// question with a different answer per route. Keeping them apart is what
+// lets an invalid value be reported once rather than once per fallback.
+//
+// [ValidCodemode] is the shared predicate, the same one the executor
+// resolves with: a second spelling of "on|off here" is the way a compiler
+// ends up accepting what the engine refuses.
+func (c *compiler) validateCodemode(w *Workflow) {
+	if !ValidCodemode(w.Codemode) {
+		c.errorfAtProperty(DiagInvalidCodemode, "workflow", w.Name, "codemode",
+			"workflow %q has invalid codemode %q; valid values are on, off",
+			w.Name, w.Codemode)
+	}
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		if value := nn.GetCodemode(); !ValidCodemode(value) {
+			kind := nn.NodeKind().String()
+			c.errorfAtProperty(DiagInvalidCodemode, kind, n.NodeID(), "codemode",
+				"%s %q has invalid codemode %q; valid values are on, off",
+				kind, n.NodeID(), value)
+		}
 	}
 }
 
@@ -441,19 +704,19 @@ func (c *compiler) diagnoseAmbientRoute(at ambientRoute, backend, route string) 
 	switch support, reason := ambient.SupportOf(backend, at.policy); support {
 	case ambient.Refused:
 		if at.inheritedFrom != "" {
-			c.errorfAt(DiagAmbientContextRefused, at.node, "",
+			c.errorfAtProperty(DiagAmbientContextRefused, at.kind, at.node, "ambient_context",
 				"%s %q inherits ambient_context: %s from workflow %q, which %s cannot honour: %s",
 				at.kind, at.node, at.policy, at.inheritedFrom, where, reason)
 			return
 		}
-		c.errorfAt(DiagAmbientContextRefused, at.node, "",
+		c.errorfAtProperty(DiagAmbientContextRefused, at.kind, at.node, "ambient_context",
 			"%s %q: ambient_context: %s cannot be honoured on %s: %s",
 			at.kind, at.node, at.policy, where, reason)
 	case ambient.Unmeasured:
 		if at.inheritedFrom != "" {
 			return
 		}
-		c.warnfAt(DiagAmbientContextNotEnforced, at.node, "",
+		c.warnfAtProperty(DiagAmbientContextNotEnforced, at.kind, at.node, "ambient_context",
 			"%s %q: ambient_context: %s is not enforced on %s — what it loads has not been measured, so it keeps its own conventions; %s apply the policy",
 			at.kind, at.node, at.policy, where, strings.Join(ambient.EnforcingBackends(at.policy), ", "))
 	}
@@ -495,7 +758,7 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		// Unresolved: the runtime falls through to env and host credential
 		// detection, so the compiler genuinely cannot know and must not guess.
-		supported := backend == "" || automemory.SupportsBackend(backend)
+		supported := backend == "" || backendcaps.Offers(backend, backendcaps.AutoMemory)
 		if strings.ToLower(strings.TrimSpace(nn.GetAutoMemory())) == "off" {
 			if supported {
 				optedOut++
@@ -513,15 +776,15 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		// "MEMORY.md is wired for claw only" is a strange thing to read on a
 		// workflow that HAS a claw node, and it points the author at the
 		// backends when half the answer is their own per-node `off`.
-		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAutoMemoryNotSupported, "workflow", w.Name, "auto_memory",
 			"workflow %q sets auto_memory: on but nothing honours it: %d agent/judge node(s) override it with auto_memory: off, and the remaining %d are on a backend that ignores it (MEMORY.md is wired for claude_code, claw and pi only)",
 			w.Name, optedOut, unsupported)
 	case unsupported > 0:
-		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAutoMemoryNotSupported, "workflow", w.Name, "auto_memory",
 			"workflow %q sets auto_memory: on but NO agent/judge node can honour it — MEMORY.md is wired for claude_code, claw and pi only",
 			w.Name)
 	case optedOut > 0:
-		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAutoMemoryNotSupported, "workflow", w.Name, "auto_memory",
 			"workflow %q sets auto_memory: on but every agent/judge node overrides it with auto_memory: off — the workflow default has no effect",
 			w.Name)
 	}
@@ -565,7 +828,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 		return false
 	}
 	if !valid(w.Permission) {
-		c.errorfAtSpan(DiagInvalidPermission, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidPermission, "workflow", w.Name, "permission",
 			"workflow %q has invalid permission %q; valid values are off, ask, deny",
 			w.Name, w.Permission)
 	}
@@ -574,7 +837,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 		func(nn *ToolNode) string { return nn.Permission },
 		func(n Node, kind, perm string) {
 			if !valid(perm) {
-				c.errorfAt(DiagInvalidPermission, n.NodeID(), "",
+				c.errorfAtProperty(DiagInvalidPermission, kind, n.NodeID(), "permission",
 					"%s %q has invalid permission %q; valid values are off, ask, deny",
 					kind, n.NodeID(), perm)
 				return
@@ -585,7 +848,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 			// Warn so an operator doesn't ship an inert security control.
 			if kind == "tool" {
 				if m := strings.ToLower(strings.TrimSpace(perm)); m == "ask" || m == "deny" {
-					c.warnfAt(DiagToolNodePermissionInert, n.NodeID(), "",
+					c.warnfAtProperty(DiagToolNodePermissionInert, kind, n.NodeID(), "permission",
 						"tool node %q sets permission: %s, but the gate only governs agent/judge LLM tool calls; a tool node's permission is not enforced (use goal/postcondition/policy/recovery to gate the action)",
 						n.NodeID(), m)
 				}
@@ -615,7 +878,7 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 			continue
 		}
 		if !worktreeAuto {
-			c.errorfAt(DiagReviewNeedsWorktree, h.NodeID(), "",
+			c.errorfAtProperty(DiagReviewNeedsWorktree, "human", h.NodeID(), "interaction",
 				"human %q uses interaction: review but the workflow does not declare worktree: auto — a review gate squash-merges the run's worktree, so there is nothing to merge without one",
 				h.NodeID())
 		}
@@ -625,7 +888,7 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 			}
 			id, _ := outputNodePath(w, ref.Path)
 			if _, exists := w.Nodes[id]; !exists {
-				c.warnfAt(DiagReviewURLUnknownRef, h.NodeID(), "",
+				c.warnfAtProperty(DiagReviewURLUnknownRef, "human", h.NodeID(), "review_url",
 					"human %q review_url references output of unknown node %q",
 					h.NodeID(), ref.Path[0])
 			}
@@ -642,21 +905,29 @@ func (c *compiler) validateMemory(w *Workflow) {
 			return
 		}
 		if m.Scope == "" {
-			c.errorfAtScope(DiagMemoryMissingScope, scope, id,
+			c.errorfAtProperty(DiagMemoryMissingScope, scope, id, "memory",
 				"%s %q: memory: enabled requires a scope: name", scope, id)
 		}
 		if m.Visibility != "" {
 			if !knownMemoryVisibilities[m.Visibility] {
-				c.errorfAtScope(DiagMemoryInvalidVisibility, scope, id,
+				c.errorfAtProperty(DiagMemoryInvalidVisibility, scope, id, "memory",
 					"%s %q: memory: unknown visibility %q (bot|project|cross_project|user|org|global)", scope, id, m.Visibility)
 			}
 			if m.ProjectRoot {
-				c.errorfAtScope(DiagMemoryVisibilityConflict, scope, id,
+				c.errorfAtProperty(DiagMemoryVisibilityConflict, scope, id, "memory",
 					"%s %q: memory: visibility: and the legacy project_root: are mutually exclusive", scope, id)
+			}
+			// `write:` defaults to TRUE when memory is enabled, so the
+			// combination is reached by declaring the visibility alone —
+			// which is exactly how the ungated write door was opened.
+			if m.Visibility == string(knowledge.VisibilityGlobal) && m.Write {
+				c.warnfAtProperty(DiagMemoryGlobalWriteGated, scope, id, "memory",
+					"%s %q: memory: visibility: %q is instance-wide (every team reads it), so memory_write is NOT installed for a run — a run holds no platform authority; set write: false, or pick a team-scoped visibility, and write the catalogue through the REST surface (super-admin) or `iterion memory import`",
+					scope, id, m.Visibility)
 			}
 		}
 		if backend != "" && backend != "claw" {
-			c.warnfAtScope(DiagMemoryNotSupported, scope, id,
+			c.warnfAtProperty(DiagMemoryNotSupported, scope, id, "memory",
 				"%s %q: memory: has NO effect on backend=%q — memory_read/memory_write/memory_list and autoload are claw-only; switch to backend: \"claw\" or remove the memory: block",
 				scope, id, backend)
 		}
@@ -697,8 +968,8 @@ func (c *compiler) validatePlaywrightMCP(w *Workflow) {
 			continue
 		}
 		if !sandboxHasBrowserImage(w.Sandbox) {
-			c.errorfAtSpan(
-				DiagPlaywrightNeedsBrowserImage, c.workflowSpan(w.Name),
+			c.errorfAtProperty(
+				DiagPlaywrightNeedsBrowserImage, "workflow", w.Name, "sandbox",
 				"mcp_servers.%s: Playwright MCP requires a sandbox image that bundles Chromium "+
 					"(e.g. ghcr.io/socialgouv/iterion-sandbox-browser); "+
 					"workflow.sandbox.image is %q",
@@ -737,9 +1008,11 @@ func looksLikePlaywrightMCP(srv *MCPServer) bool {
 // sandboxHasBrowserImage returns true when the sandbox image name
 // suggests a browser-capable variant. The matcher is intentionally
 // loose so internal forks (`my-corp-iterion-sandbox-browser:edge`)
-// also satisfy it. Setting `image:` empty (or omitting the sandbox
-// block entirely) yields false — Phase 0 sandbox modes (none/auto)
-// don't ship Chromium today.
+// also satisfy it; a bare class name is answered from the class
+// vocabulary (`rgaa` builds FROM the browser base, so it carries
+// Chromium too — imageclass.CarriesBrowser). Setting `image:` empty
+// (or omitting the sandbox block entirely) yields false — Phase 0
+// sandbox modes (none/auto) don't ship Chromium today.
 func sandboxHasBrowserImage(spec *SandboxSpec) bool {
 	if spec == nil {
 		return false
@@ -748,7 +1021,10 @@ func sandboxHasBrowserImage(spec *SandboxSpec) bool {
 	if img == "" {
 		return false
 	}
-	return strings.Contains(img, "sandbox-browser") || strings.Contains(img, "sandbox-full-browser")
+	if imageclass.LooksLikeClassName(img) {
+		return imageclass.CarriesBrowser(img)
+	}
+	return strings.Contains(img, "sandbox-browser") || strings.Contains(img, "sandbox-rgaa") || strings.Contains(img, "sandbox-full-browser")
 }
 
 func sandboxImageOrEmpty(spec *SandboxSpec) string {
@@ -768,10 +1044,10 @@ func (c *compiler) validateCompaction(w *Workflow) {
 			return
 		}
 		if cp.Threshold != 0 && (math.IsNaN(cp.Threshold) || math.IsInf(cp.Threshold, 0) || cp.Threshold <= 0 || cp.Threshold > 1) {
-			c.errorfAtScope(DiagInvalidCompaction, scope, id, "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
+			c.errorfAtProperty(DiagInvalidCompaction, scope, id, "compaction", "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
 		}
 		if cp.PreserveRecent < 0 {
-			c.errorfAtScope(DiagInvalidCompaction, scope, id, "%s %q: compaction.preserve_recent must be >= 1 when set (0 = inherit), got %d", scope, id, cp.PreserveRecent)
+			c.errorfAtProperty(DiagInvalidCompaction, scope, id, "compaction", "%s %q: compaction.preserve_recent must be >= 1 when set (0 = inherit), got %d", scope, id, cp.PreserveRecent)
 		}
 	}
 	check("workflow", w.Name, w.Compaction)
@@ -878,7 +1154,7 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 	cap := w.Budget.MaxTokens
 	checkLLM := func(id string, mt int) {
 		if mt > 0 && mt > cap {
-			c.warnfAt(DiagNodeMaxTokensVsBudget, id, "",
+			c.warnfAtProperty(DiagNodeMaxTokensVsBudget, "node", id, "max_tokens",
 				"node %q has max_tokens=%d which exceeds workflow.budget.max_tokens=%d", id, mt, cap)
 		}
 	}
@@ -1226,6 +1502,26 @@ func ExpandEnvWithDefault(s string) string {
 	return ExpandWithDefault(s, lookupEnv)
 }
 
+// ExpandEnvWithDefaultReport is ExpandEnvWithDefault that also reports how
+// the braced references resolved: missing lists the bare `${NAME}`
+// references whose lookup came back empty (they contribute nothing to the
+// output), and allDefaulted reports whether every reference carries an
+// explicit `:-` default — the author's "leave it unset" marker.
+func ExpandEnvWithDefaultReport(s string) (out string, missing []string, allDefaulted bool) {
+	return ExpandWithDefaultReport(s, lookupEnv)
+}
+
+// ExpandWithDefaultReport is ExpandWithDefault over an arbitrary lookup, with
+// the per-reference report ExpandEnvWithDefaultReport describes. The
+// sandbox's network-rule expansion is the reader that needs it: a rule whose
+// whole text happens to survive is not the test — a bare reference that
+// resolves to nothing must be visible to the caller that refuses on it.
+func ExpandWithDefaultReport(s string, lookup func(string) string) (out string, missing []string, allDefaulted bool) {
+	rep := &expandReport{allDefaulted: true}
+	out, _ = expandWithDefault(s, lookup, expandPolicy{report: rep})
+	return out, rep.missing, rep.sawRef && rep.allDefaulted
+}
+
 // ExpandWithDefault is ExpandEnvWithDefault over an arbitrary lookup. The
 // runtime needs it because a `vars:` default resolves against more than the
 // process environment — ${PROJECT_DIR} and ${BUNDLE_DIR} are engine-supplied
@@ -1261,6 +1557,22 @@ type expandPolicy struct {
 	// keepUnresolved leaves a reference with no value as written, rather
 	// than resolving it to the empty string.
 	keepUnresolved bool
+	// report, when non-nil, collects how each braced reference resolved, for
+	// the fail-closed readers of an expansion: a rule whose reference
+	// resolves to nothing must be SEEN, not merely come out empty.
+	report *expandReport
+}
+
+// expandReport is what an expansion's braced references did. missing lists
+// the bare `${NAME}` references whose lookup came back empty — with
+// keepUnresolved unset they contribute nothing to the output. allDefaulted
+// reports whether every reference carries an explicit `:-` default: the
+// author's own "leave it unset" marker, an explicit opt-out rather than a
+// reference someone forgot to define.
+type expandReport struct {
+	missing      []string
+	sawRef       bool
+	allDefaulted bool
 }
 
 // maxEnvExpansionDepth bounds the nesting of `${A:-${B:-c}}` that resolves.
@@ -1290,11 +1602,18 @@ const maxEnvExpansionDepth = 32
 // duration ratio would say the same thing and flake on a shared runner
 // (#1393); this is a count.
 func expandWithDefault(s string, lookup func(string) string, policy expandPolicy) (string, int) {
+	out, visited, _ := expandWithDefaultContext(context.Background(), s, lookup, policy)
+	return out, visited
+}
+func expandWithDefaultContext(ctx context.Context, s string, lookup func(string) string, policy expandPolicy) (string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	if lookup == nil {
 		lookup = lookupEnv
 	}
 	if !strings.ContainsRune(s, '$') {
-		return s, 0
+		return s, 0, ctx.Err()
 	}
 	visited := 0
 	var stack [][]byte
@@ -1303,6 +1622,9 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 	// copied out with them instead of closing a segment that is still live.
 	suppressed := 0
 	for i := 0; i < len(s); {
+		if err := ctx.Err(); err != nil {
+			return "", visited, err
+		}
 		visited++
 		opens := i+1 < len(s) && s[i] == '$' && s[i+1] == '{'
 		if suppressed > 0 {
@@ -1337,17 +1659,28 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 			inner := cur
 			cur = stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			cur = append(cur, resolveBracedSegment(string(inner), lookup, policy)...)
+			resolved := resolveBracedSegment(string(inner), lookup, policy)
+			if err := ctx.Err(); err != nil {
+				return "", visited, err
+			}
+			cur = append(cur, resolved...)
 			i++
 			continue
 		}
 		if !policy.bracedOnly && s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
 			end := i + 1
 			for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
+				if err := ctx.Err(); err != nil {
+					return "", visited, err
+				}
 				end++
 			}
 			if end > i+1 {
-				if v := lookup(s[i+1 : end]); v != "" || !policy.keepUnresolved {
+				v := lookup(s[i+1 : end])
+				if err := ctx.Err(); err != nil {
+					return "", visited, err
+				}
+				if v != "" || !policy.keepUnresolved {
 					cur = append(cur, v...)
 				} else {
 					cur = append(cur, s[i:end]...)
@@ -1368,7 +1701,7 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 		cur = append(cur, '$', '{')
 		cur = append(cur, inner...)
 	}
-	return string(cur), visited
+	return string(cur), visited, ctx.Err()
 }
 
 // resolveBracedSegment applies the `${NAME}` / `${NAME:-default}` rule to
@@ -1378,12 +1711,27 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 func resolveBracedSegment(inner string, lookup func(string) string, policy expandPolicy) string {
 	if idx := strings.Index(inner, ":-"); idx >= 0 {
 		name, fallback := inner[:idx], inner[idx+2:]
-		if v := lookup(name); v != "" {
+		v := lookup(name)
+		if policy.report != nil {
+			policy.report.sawRef = true
+		}
+		if v != "" {
 			return v
 		}
 		return fallback
 	}
-	if v := lookup(inner); v != "" || !policy.keepUnresolved {
+	v := lookup(inner)
+	if policy.report != nil {
+		policy.report.sawRef = true
+		// A defaulted reference is an explicit choice; a bare one that
+		// resolves to nothing contributes nothing to the output — the fact
+		// a fail-closed reader must refuse on.
+		policy.report.allDefaulted = false
+		if v == "" && !policy.keepUnresolved {
+			policy.report.missing = append(policy.report.missing, inner)
+		}
+	}
+	if v != "" || !policy.keepUnresolved {
 		return v
 	}
 	return "${" + inner + "}"
@@ -1416,7 +1764,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			continue
 		}
 		if !ValidReasoningEfforts[effort] {
-			c.errorfAt(DiagInvalidReasoningEffort, node.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidReasoningEffort, "node", node.NodeID(), "reasoning_effort",
 				"node %q has invalid reasoning_effort %q; valid values are none, low, medium, high, xhigh, max, ultracode",
 				node.NodeID(), effort)
 			continue
@@ -1431,7 +1779,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			if shown == "" {
 				shown = "(default)"
 			}
-			c.warnfAt(DiagUltracodeModelGate, node.NodeID(), "",
+			c.warnfAtProperty(DiagUltracodeModelGate, "node", node.NodeID(), "reasoning_effort",
 				"node %q uses reasoning_effort: ultracode but model %q is neither Opus 4.8 nor a Claude 5 model (Opus 5, Fable 5.1); ultracode's workflow-orchestration prerogative is reliable only there and will degrade to plain xhigh elsewhere",
 				node.NodeID(), shown)
 		}
@@ -1459,12 +1807,12 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 		}
 		d, err := time.ParseDuration(expanded)
 		if err != nil {
-			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidNodeTimeout, "node", node.NodeID(), "timeout",
 				"node %q has an invalid timeout %q: %s", node.NodeID(), raw, DurationParseReason(raw, expanded, err))
 			continue
 		}
 		if d <= 0 {
-			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidNodeTimeout, "node", node.NodeID(), "timeout",
 				"node %q timeout must be positive, got %q", node.NodeID(), raw)
 		}
 	}

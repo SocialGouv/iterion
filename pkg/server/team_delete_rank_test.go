@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -46,8 +45,8 @@ func seedTeamInOrg(t *testing.T, s *Server, id, orgID string) {
 	}
 }
 
-func deleteTeamAs(s *Server, ctx context.Context, teamID string) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func deleteTeamAs(s *Server, ctx context.Context, teamID string) *errorRecorder {
+	w := newErrorRecorder()
 	s.handleDeleteTeam(w, teamReq(ctx, "DELETE", "/api/teams/"+teamID, "", teamID, ""))
 	return w
 }
@@ -171,9 +170,9 @@ func TestTeamDelete_anUnreadableMemberOrgRowRefusesBeforeAnySideEffect(t *testin
 	w := deleteTeamAs(s, orgAdminCtx(), "t2")
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("delete over an unreadable member org row: code=%d body=%s, want 500",
-			w.Code, w.Body.String())
+			w.Code, w.Diagnostic(t))
 	}
-	wantBodyNames(t, w.Body.String(),
+	wantBodyNames(t, w.Diagnostic(t),
 		"resolve the org membership of "+racerID)
 	if _, err := s.authStore().GetTeam(ctx, "t2"); err != nil {
 		t.Fatalf("the team was deleted despite the unreadable read: %v", err)

@@ -237,6 +237,22 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: missing name")
 		return
 	}
+	// The body is read before the lock: a client's pace never holds it.
+	var req botUpdateRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	// The bundle the name maps to is resolved under the lock the edit holds
+	// through its write and the entry it answers: a manifest another writer
+	// has moved aside, or a rename that re-points the name, is never what
+	// the lookup sees — the edit patches the bot it was asked for, or
+	// answers that no such bot is there.
+	release, locked := s.lockBotTree(w, r, botTreeWriterBotMetadata)
+	if !locked {
+		return
+	}
+	defer release()
 	if s.refuseStoredBotEdit(w, r, name) {
 		return
 	}
@@ -275,12 +291,6 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 			"bots: %q is an installed package (.botz/): its manifest is the package's, and an update replaces it whole — set its visibility in this workspace with the Catalog manager's toggle (PUT /api/v1/bots/%s/overlay), which an update leaves alone, and edit its metadata in the package's source", name, name)
 		return
 	}
-	var req botUpdateRequest
-	if err := readJSON(r, &req); err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
-		return
-	}
-
 	manifestPath := filepath.Join(entry.Path, bundle.ManifestFile)
 	patch := bundle.ManifestPatch{
 		DisplayName: req.DisplayName,
@@ -306,7 +316,7 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: write manifest: %v", err)
 		return
 	}
-	catalogError := s.regenCatalog(name, "update")
+	catalogError := s.regenCatalog(r.Context(), name, "update")
 	s.respondBot(w, r, name, catalogError)
 }
 
@@ -367,6 +377,14 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
+	// The toggle and the entry it answers are decided under the bot tree's
+	// write lock: the entry is the one the toggle applies to, never what a
+	// manifest moved aside by another writer lets the catalog list.
+	release, locked := s.lockBotTree(w, r, botTreeWriterBotOverlay)
+	if !locked {
+		return
+	}
+	defer release()
 	// The workspace overlay is never consulted for a STORED entry (team or
 	// platform): botregistry reads it off the filesystem catalog, and a
 	// stored bundle is materialised without it. A toggle there would 200
@@ -391,7 +409,7 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: overlay: %v", err)
 		return
 	}
-	catalogError := s.regenCatalog(name, "overlay")
+	catalogError := s.regenCatalog(r.Context(), name, "overlay")
 	// respondBot re-resolves the entry; an unknown name 404s here (after a
 	// harmless no-op overlay write — ResolveEnabled ignores unknown names).
 	s.respondBot(w, r, name, catalogError)
@@ -459,11 +477,11 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name, catalo
 // landed — so it returns the rendered cause (empty when the refresh
 // succeeded or there is no workspace) for the response to carry, and warns
 // on the server log for the operators watching it.
-func (s *Server) regenCatalog(name, action string) string {
+func (s *Server) regenCatalog(ctx context.Context, name, action string) string {
 	if s.cfg.WorkDir == "" {
 		return ""
 	}
-	_, err := botregistry.RegenerateWhatsNextCatalog(s.cfg.WorkDir)
+	_, err := botregistry.RegenerateWhatsNextCatalog(ctx, s.cfg.WorkDir)
 	if err == nil {
 		return ""
 	}
@@ -508,7 +526,10 @@ func (s *Server) handleBotInstall(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: url is required")
 		return
 	}
-	res, err := botinstall.Install(r.Context(), botinstall.Options{
+	// The clone is the network and writes nothing of the workspace: it runs
+	// before the bot tree's lock is taken, and the install of the checkout
+	// under it.
+	opts, cleanup, err := botinstall.Checkout(r.Context(), botinstall.Options{
 		Source:  req.URL,
 		Ref:     req.Ref,
 		Path:    req.Path,
@@ -516,6 +537,17 @@ func (s *Server) handleBotInstall(w http.ResponseWriter, r *http.Request) {
 		Force:   req.Force,
 		Workdir: s.cfg.WorkDir,
 	})
+	defer cleanup()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: install: %v", err)
+		return
+	}
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotInstall)
+	if !ok {
+		return
+	}
+	defer release()
+	res, err := botinstall.Install(r.Context(), opts)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: install: %v", err)
 		return
@@ -565,6 +597,11 @@ func (s *Server) handleBotUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	force := strings.EqualFold(strings.TrimSpace(r.FormValue("force")), "true")
 	name := strings.TrimSpace(r.FormValue("name"))
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotUpload)
+	if !ok {
+		return
+	}
+	defer release()
 	// Bundle extraction enforces its own traversal/size/entry guards; the
 	// LimitReader is defence-in-depth so a lying Content-Length can't make
 	// the extractor read past the cap.

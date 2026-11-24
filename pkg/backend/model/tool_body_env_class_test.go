@@ -69,7 +69,7 @@ var chokepointCallers = map[string]string{
 // that a new door does not have to join — renderCommand and renderScript are
 // reached today by four names, two unexported and two exported, and the
 // exported pair is what a preview in another package calls.
-var renderRoots = []string{"renderCommand", "renderScript"}
+var renderRoots = []string{"renderCommand", "renderScript", "renderShellScript"}
 
 // renderPassThrough lists the functions that only FORWARD a body to a
 // renderer, with the reason: the body reached them already read, so the
@@ -79,8 +79,12 @@ var renderRoots = []string{"renderCommand", "renderScript"}
 // environment itself — the derived set is what makes the unenumerated shape
 // fail.
 var renderPassThrough = map[string]string{
+	"renderCommandBody":      "the run's `command:`/`postcondition:` renderer, marking the author's secret references: its callers are the body preparers this sweep holds",
+	"renderScriptBody":       "the run's `script:` renderer, marking the author's secret references: its callers are the body preparers this sweep holds",
 	"resolveCommandTemplate": "the `command:` renderer wrapper: its callers are the body preparers this sweep holds",
 	"resolveScriptTemplate":  "the `script:` renderer wrapper: its callers are the body preparers this sweep holds",
+	"renderScriptIn":         "the `script:` renderer by language — renderShellScript for sh/bash, renderScript otherwise: its callers are the body preparers this sweep holds",
+	"renderScriptBodyIn":     "the run's `script:` renderer by language, marking the author's secret references: its callers are the body preparers this sweep holds",
 	"RenderCommand":          "the exported `command:` renderer a preview calls: its caller reads the environment, and a caller outside this package is held by the module-wide sweep in pkg/dryrun",
 	"RenderScript":           "the exported `script:` renderer a preview calls: its caller reads the environment, and a caller outside this package is held by the module-wide sweep in pkg/dryrun",
 }
@@ -329,6 +333,7 @@ func (pc *packageCalls) requireDeclared(t *testing.T, names ...string) {
 // not only a call — a package-level `var f = expandBracedEnv` is a second
 // reader whose call site names nothing.
 func TestToolBodyEnvIsTheOnlyExpander(t *testing.T) {
+	t.Parallel()
 	pc := readPackageCalls(t)
 	pc.requireDeclared(t, append([]string{"ToolBodyEnv"}, toolBodyEnvFamily...)...)
 	mentioners := pc.mentionersOf(toolBodyEnvFamily...)
@@ -364,6 +369,7 @@ func TestToolBodyEnvIsTheOnlyExpander(t *testing.T) {
 // function body is attributed to packageLevel, which has no caller to climb
 // to and is refused where it names a renderer.
 func TestEveryToolBodyPreparerGoesThroughTheChokepoint(t *testing.T) {
+	t.Parallel()
 	pc := readPackageCalls(t)
 	pc.requireDeclared(t, append([]string{"ToolBodyEnv"}, renderRoots...)...)
 	pc.requireDeclared(t, sortedKeys(renderPassThrough)...)
@@ -426,6 +432,7 @@ func TestEveryToolBodyPreparerGoesThroughTheChokepoint(t *testing.T) {
 // an LLM-proposed command (rung 3) and is expanded by nobody — the property
 // is about the author's text, and a model's answer is not it.
 func TestSelfRepairCommandIsNotEnvExpanded(t *testing.T) {
+	t.Parallel()
 	pc := readPackageCalls(t)
 	pc.requireDeclared(t, "ToolBodyEnv", "ClawExecutor.selfRepair")
 	callers := pc.callersOf("ToolBodyEnv")

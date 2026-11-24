@@ -17,13 +17,12 @@ logs on first boot:
   kubectl logs deploy/{{ include "iterion.fullname" . }} | grep -i bootstrap
 {{- end }}
 
-{{- if and .Values.mongodb.enabled (not .Values.mongodb.auth.enabled) }}
+{{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
 
-!! WARNING: the bundled MongoDB is running WITHOUT authentication
-   (mongodb.auth.enabled=false). That is acceptable for a throwaway
-   dev cluster ONLY. For anything reachable by other workloads, set
-   mongodb.auth.enabled=true (or point config.mongo.uri at an
-   externally-managed, authenticated MongoDB as values-prod.yaml does).
+!! WARNING: the dev datastores are running (devStack.*): a single replica,
+   no authentication on MongoDB, a fixed S3 identity. That is acceptable
+   for a throwaway dev cluster ONLY. Production brings its own stores and
+   leaves devStack off, as values-prod.yaml does.
 {{- end }}
 
 {{- if not .Values.config.smtp.host }}
@@ -31,6 +30,19 @@ logs on first boot:
 Email is DISABLED (config.smtp.host is empty): invitation tokens are
 returned in-band only and self-service password reset is hidden in the
 UI. Set config.smtp.* + secrets.smtp to enable transactional email.
+{{- end }}
+
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingress.controllerNamespaces) (not .Values.networkPolicy.ingress.extraAllow) }}
+
+!! WARNING (#2804): networkPolicy.enabled=true with BOTH
+   networkPolicy.ingress.controllerNamespaces and
+   networkPolicy.ingress.extraAllow empty: the server port's rule renders
+   with NO from: selector and admits EVERY in-cluster pod — any of them
+   can forge X-Forwarded-For (the audit IP, the rate-limit key). The
+   render is kept, never refused, for upgrade compatibility; the policy
+   carries the iterion.io/ingress-admit-all annotation. Set
+   networkPolicy.ingress.controllerNamespaces to your controller's
+   namespaces.
 {{- end }}
 
 Docs: https://github.com/SocialGouv/iterion/blob/main/docs/cloud-deployment.md

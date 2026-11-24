@@ -116,12 +116,13 @@ func (doc *authorDocument) noWrittenForm() *parser.Diagnostic {
 	if doc.verifyErr == nil {
 		return nil
 	}
-	return &parser.Diagnostic{
+	d := parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagAuthorNoWrittenForm, Severity: parser.SeverityError,
 		File: doc.parsePath, Line: 1, Column: 1,
 		Message: "the document has no written .bot form: " + doc.verifyErr.Error(),
 		Hint:    parser.HintFor(parser.DiagAuthorNoWrittenForm),
-	}
+	})
+	return &d
 }
 
 // twinAnotherProgram is E056 when the .bot beside the document is there and
@@ -380,12 +381,13 @@ const noProgramBeside = " is there and is no program this document could describ
 // beside the document — named as the document was named, the sentence's
 // subject — what it is.
 func (doc *authorDocument) twinWarning(said string) *parser.Diagnostic {
-	return &parser.Diagnostic{
+	d := parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagAuthorTwinProgram, Severity: parser.SeverityWarning,
 		File: doc.parsePath, Line: 1, Column: 1,
 		Message: doc.botNamed + said,
 		Hint:    parser.HintFor(parser.DiagAuthorTwinProgram),
-	}
+	})
+	return &d
 }
 
 // compileAuthorDocument compiles the program an author document describes
@@ -421,8 +423,9 @@ func compileAuthorDocument(path string) (*ir.Workflow, *authorDocument, error) {
 	}
 	// The .bot named as the caller named the document (doc.botNamed): the
 	// MCP stage reads its configuration beside it, and names it as
-	// `diagram x.bot` does.
-	wf, err := runview.CompileLoadedUnit(u, doc.botNamed, doc.parsePath, b)
+	// `diagram x.bot` does. The document analysis runs nothing: no
+	// workspace, no {{workspace}} resolution.
+	wf, err := runview.CompileLoadedUnit(u, doc.botNamed, doc.parsePath, b, "", runview.AnalysisTrust)
 	if err != nil {
 		return nil, nil, err
 	}

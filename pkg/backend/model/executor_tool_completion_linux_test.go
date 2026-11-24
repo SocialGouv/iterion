@@ -155,6 +155,7 @@ func sandboxedToolExecutor(t *testing.T, client string) (*ClawExecutor, string) 
 // proven by its completion line, or the node fails — and what it left running
 // is stopped.
 func TestSandboxedToolNodeLostStreamFailsLoudAndStopsTheCommand(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []struct {
 		name string
 		node func(heart string) *ir.ToolNode
@@ -189,6 +190,7 @@ func TestSandboxedToolNodeLostStreamFailsLoudAndStopsTheCommand(t *testing.T) {
 // A healthy stream: the completion is invisible — the output is the
 // command's, byte for byte, and a failing command fails on its own status.
 func TestSandboxedToolNodeCompletionIsTransparent(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "waits")
 	out, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "ok"},
@@ -227,6 +229,7 @@ func TestSandboxedToolNodeCompletionIsTransparent(t *testing.T) {
 // The exec client's status is not the verdict: a client that reports 0 for a
 // command that exited 3 does not make the node succeed.
 func TestSandboxedToolNodeClientStatusIsNotTheVerdict(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "lies")
 	_, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "fails"},
@@ -244,6 +247,7 @@ func TestSandboxedToolNodeClientStatusIsNotTheVerdict(t *testing.T) {
 // as kubectl does, and the command's session is swept. The node keeps the
 // error of its cancel: the cancel explains the missing completion line.
 func TestSandboxedToolNodeCancelStopsTheCommand(t *testing.T) {
+	t.Parallel()
 	e, heart := sandboxedToolExecutor(t, "waits")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -276,6 +280,7 @@ func TestSandboxedToolNodeCancelStopsTheCommand(t *testing.T) {
 // method value — is a new site, and a new site is a review question, not a
 // silent route around the proof.
 func TestSandboxToolCommandIsTheOnlyRouteIntoTheSandbox(t *testing.T) {
+	t.Parallel()
 	allowed := map[string]string{
 		"sandboxToolCommand.Command":      "tool nodes: proven by their completion line",
 		"executeViaSandboxRunner.Command": "an agent node's claw runner: ended by its ADR-127 session sweep",
@@ -349,6 +354,7 @@ func TestSandboxToolCommandIsTheOnlyRouteIntoTheSandbox(t *testing.T) {
 // group, as an exec'd command does, and its `kill 0` does not end the
 // wrapper that reports its end.
 func TestSandboxedToolNodeKillZeroInTheRecipe(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "waits")
 	out, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "cleans-up"},
@@ -383,6 +389,7 @@ var _ sandbox.HostRun = (*hostRun)(nil)
 // A driver that runs the command on this host hands back the process itself:
 // the command runs as it is, unwrapped, and its status is its own.
 func TestSandboxedToolNodeOnTheHostRunsTheCommandAsItIs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
 	host := &hostRun{execClientRun: execClientRun{dir: dir}}
@@ -399,6 +406,7 @@ func TestSandboxedToolNodeOnTheHostRunsTheCommandAsItIs(t *testing.T) {
 // A cancel that lands after the client reported success leaves the line to
 // decide: no line, or a line with another status, is no success.
 func TestSettleJudgesTheLineAfterACancel(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "waits")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -430,6 +438,7 @@ func TestSettleJudgesTheLineAfterACancel(t *testing.T) {
 // A recipe streamed to the container whose stream is cut short fails: a
 // prefix of it never runs as if it were the whole.
 func TestSandboxedToolNodeTruncatedStreamedRecipeFails(t *testing.T) {
+	t.Parallel()
 	recipe := ": " + strings.Repeat("x", 150_000) + "\nexit 3\n"
 	e, _ := sandboxedToolExecutor(t, "truncates")
 	out, err := e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "big"}, Command: recipe}, map[string]any{})
@@ -455,6 +464,7 @@ func TestSandboxedToolNodeTruncatedStreamedRecipeFails(t *testing.T) {
 // A proven end sweeps nothing: a command may leave a service running for the
 // nodes after it, and it keeps running.
 func TestSandboxedToolNodeProvenEndSweepsNothing(t *testing.T) {
+	t.Parallel()
 	e, heart := sandboxedToolExecutor(t, "waits")
 	out, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "starts-a-service"},
@@ -492,6 +502,7 @@ func waitHeartbeatStill(t *testing.T, path string) {
 // command may still be running, and the runtime must not start a second copy
 // beside it. A sweep that finished leaves an ordinary failure.
 func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
+	t.Parallel()
 	// A failing sweep is tried until its budget runs out, so its budget is
 	// short; a finishing sweep gets one it cannot outrun on a loaded machine,
 	// since a sweep its budget kills is an undecided end too.
@@ -539,6 +550,7 @@ func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
 // still be running, and its postcondition cannot judge a world it may still
 // be changing — a met postcondition beside a running recipe is no success.
 func TestVerifiedToolNodeStopsOnAnAmbiguousRecipeEnd(t *testing.T) {
+	t.Parallel()
 	requireSetsid(t)
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
@@ -566,6 +578,7 @@ func TestVerifiedToolNodeStopsOnAnAmbiguousRecipeEnd(t *testing.T) {
 // A client that never started ran nothing in the container: its own error is
 // the failure, and there is no session to sweep.
 func TestSandboxedToolNodeClientThatNeverStartedSweepsNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
 	run := &execClientRun{client: "unstartable", dir: dir}
@@ -588,6 +601,7 @@ func TestSandboxedToolNodeClientThatNeverStartedSweepsNothing(t *testing.T) {
 // A cancel that lands after a proven end sweeps nothing: the command ended,
 // and what it left running is legitimately its own.
 func TestSandboxedToolNodeCancelAfterAProvenEndSweepsNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
 	run := &execClientRun{client: "waits", dir: dir}
@@ -610,6 +624,7 @@ func TestSandboxedToolNodeCancelAfterAProvenEndSweepsNothing(t *testing.T) {
 // the recipe it would let run must not start beside a check that may still
 // be running.
 func TestVerifiedToolNodeStopsOnAnAmbiguousPostcondition(t *testing.T) {
+	t.Parallel()
 	requireSetsid(t)
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
@@ -636,6 +651,7 @@ func TestVerifiedToolNodeStopsOnAnAmbiguousPostcondition(t *testing.T) {
 // which recovery may retry — never a run parked for a human because the first
 // attempt fell in the same outage as the stream.
 func TestSandboxedToolNodeSweepOutlivesAShortOutage(t *testing.T) {
+	t.Parallel()
 	requireSetsid(t)
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
@@ -661,6 +677,7 @@ func TestSandboxedToolNodeSweepOutlivesAShortOutage(t *testing.T) {
 // unterminated heredoc runs to the end of the file, as bash reads one — and
 // it keeps leading its own session, as an exec'd command does.
 func TestSandboxedToolNodeStreamedRecipeMeansWhatBashMakesOfIt(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "waits")
 	out, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "big"},
@@ -679,6 +696,7 @@ func TestSandboxedToolNodeStreamedRecipeMeansWhatBashMakesOfIt(t *testing.T) {
 // A Verified Action whose recipe's end was never proven succeeds on its
 // postcondition alone: the partial output the recipe left is not its result.
 func TestVerifiedToolNodeDropsThePartialOutputOfAnUnprovenRecipe(t *testing.T) {
+	t.Parallel()
 	requireSetsid(t)
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
@@ -702,6 +720,7 @@ func TestVerifiedToolNodeDropsThePartialOutputOfAnUnprovenRecipe(t *testing.T) {
 // A cancelled Verified Action ends with its cancel — never with a best_effort
 // success built on what the cancel cut short.
 func TestVerifiedToolNodeCancelledEndsWithItsCancel(t *testing.T) {
+	t.Parallel()
 	e, heart := sandboxedToolExecutor(t, "waits")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -731,6 +750,7 @@ func TestVerifiedToolNodeCancelledEndsWithItsCancel(t *testing.T) {
 // A cancel during the recipe runs nothing after it: no postcondition, no
 // recovery rung starts on a context that is gone.
 func TestVerifiedToolNodeRunsNothingAfterACancel(t *testing.T) {
+	t.Parallel()
 	requireSetsid(t)
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
@@ -765,6 +785,7 @@ func TestVerifiedToolNodeRunsNothingAfterACancel(t *testing.T) {
 // A cancel during the postcondition that follows the recipe ends the node with
 // its cancel, not with a best_effort success.
 func TestVerifiedToolNodeCancelledDuringItsPostconditionEndsWithItsCancel(t *testing.T) {
+	t.Parallel()
 	requireSetsid(t)
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
@@ -800,6 +821,7 @@ func TestVerifiedToolNodeCancelledDuringItsPostconditionEndsWithItsCancel(t *tes
 // A streamed recipe that reads its stdin reads its own next lines, as under
 // `bash -s`: the line it reads is data, never a command.
 func TestSandboxedToolNodeStreamedRecipeReadsItsNextLines(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "waits")
 	out, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "big"},
@@ -815,6 +837,7 @@ func TestSandboxedToolNodeStreamedRecipeReadsItsNextLines(t *testing.T) {
 
 // A container without mktemp still runs a streamed recipe.
 func TestSandboxedToolNodeStreamedRecipeWithoutMktemp(t *testing.T) {
+	t.Parallel()
 	e, _ := sandboxedToolExecutor(t, "waits")
 	bin := t.TempDir()
 	for _, tool := range []string{"sh", "bash", "setsid", "cat", "wc", "rm", "sleep"} {

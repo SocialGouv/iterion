@@ -1,0 +1,1 @@
+{"type":"http_request_failed","session_id":"sess-1","attempt":2,"method":"POST","path":"/v1/messages","error":"timeout","retryable":true}

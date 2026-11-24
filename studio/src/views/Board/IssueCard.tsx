@@ -3,7 +3,7 @@ import { GitBranch } from "lucide-react";
 
 import { Badge } from "@/components/ui/Badge";
 import { formatRelative } from "@/lib/format";
-import { clickableRowProps } from "@/lib/a11y";
+import { runOutcomeFailed } from "@/components/shared/LastRunOutcome";
 import type { DispatchSkipView, RetryView, RunningView } from "@/api/dispatcher";
 import type { NativeIssue } from "@/api/native";
 
@@ -88,9 +88,14 @@ export function IssueCard({
   const hoverTitle = previewLines.length > 0 ? previewLines.join("\n\n") : undefined;
   const [dragging, setDragging] = useState(false);
   const pinnedFields = iss.fields ? pickPinnedFields(iss.fields) : [];
+  // The card carries no widget role: it holds the label chips, the run
+  // links and the banner buttons, so a role="button" around them is
+  // `nested-interactive` (WCAG 4.1.2) — and a role whose Enter opened the
+  // modal while a click selected the card made the two paths disagree.
+  // The click selects (modified: multi-select), the double-click opens,
+  // and the title button below is the keyboard path to the modal.
   return (
     <div
-      {...clickableRowProps(onOpen)}
       draggable
       data-issue-card
       title={hoverTitle}
@@ -110,11 +115,15 @@ export function IssueCard({
       }`}
     >
       <div className="flex items-start gap-2">
-        <span
-          // GitHub-style: the title text is the affordance that opens
-          // the modal. A plain click here opens; a modified click falls
-          // through to the card's selection handler for multi-select.
-          className="text-fg-default flex-1 cursor-pointer hover:underline"
+        <button
+          type="button"
+          // GitHub-style: the title text is the affordance that opens the
+          // modal — a real control, so Enter and Space reach the modal too
+          // and the card itself needs no role. A plain click opens; a
+          // modified click falls through to the card's selection handler
+          // for multi-select. Its accessible name is the title it renders,
+          // which is also the card's only unique text.
+          className="text-fg-default flex-1 text-left cursor-pointer hover:underline focus-visible:underline"
           onClick={(e) => {
             if (e.ctrlKey || e.metaKey || e.shiftKey) return;
             e.stopPropagation();
@@ -122,7 +131,7 @@ export function IssueCard({
           }}
         >
           {iss.title}
-        </span>
+        </button>
         {iss.priority && iss.priority > 0 ? (
           <Badge
             variant="warning"
@@ -212,6 +221,15 @@ export function IssueCard({
           // dispatcher's running view (which has its own chip below) is
           // absent on the cloud board, where in_progress is the signal.
           const live = iss.state === "in_progress";
+          // The run's RESULT, not just the pointer to it (#1501). A card
+          // whose run died otherwise reads exactly like one that was
+          // dispatched and worked — on the grid, where the operator looks
+          // first. The detail (code, message) rides the title: the card has
+          // room for a word, the modal renders the rest.
+          const status = iss.last_run_status?.trim();
+          const failed = !live && runOutcomeFailed(iss);
+          const outcome = !live && status ? ` · ${status}` : "";
+          const detail = [iss.last_run_error_code, iss.last_run_error].filter(Boolean).join(" — ");
           return (
             <button
               type="button"
@@ -219,14 +237,14 @@ export function IssueCard({
                 e.stopPropagation();
                 onOpenRun(lastRunId);
               }}
-              className="font-mono text-info hover:underline"
+              className={`font-mono hover:underline ${failed ? "text-warning-fg" : "text-info"}`}
               title={
                 live
                   ? `Open the live run on this issue (run ${lastRunId})`
-                  : `Open the last run on this issue (run ${lastRunId})`
+                  : `Open the last run on this issue (run ${lastRunId})${status ? ` — ${status}` : ""}${detail ? `: ${detail}` : ""}`
               }
             >
-              {live ? "▶ live run" : "↪ last run"}
+              {live ? "▶ live run" : `↪ last run${outcome}`}
             </button>
           );
         })()}

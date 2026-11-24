@@ -5,6 +5,13 @@ in a bounded loop, judging progress in git, and executing the golden-master
 ledger's announced re-records between runs. Not one LLM node of its own.
 See [bots/campaign/](../../bots/campaign/).
 
+A recipe below replayed on campaign 0.1.4 or later under a wall of 16h40m or
+less (`--max-duration 30m`, say) starts no lot at the default `lot_room_s`,
+and the handoff opens on that. A wall that short also leaves the steward no
+room to act and finalize little to judge in: the bot's README
+("Configuration") sizes a short validation run — its wall, `lot_room_s`, and
+`max_lots`, which counts the loop's crossings (`max_lots=1` allows two lots).
+
 ## 2026-09-17 — profile 2: a one-lot programme through the whole loop, parked on the handoff review whose instructions carry their paragraphs (run 01a0af0c-cb11)
 
 - Status: **validated** — preflight, one `modernize` lot through the subbot,

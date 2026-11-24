@@ -9,6 +9,7 @@ description: A starter sous-bot — adapt or delete this file
 # skills: [my-skill]
 ---
 Replace this body with the launch-time bias for this preset. It is appended to
-every LLM node's system prompt under a "## Focus" section, so describe the lens
+the system prompt of every model task the run builds (an agent's, a judge's)
+under a "## Focus" section, so describe the lens
 the bot should adopt when an operator selects `--preset example` (or picks it in
 the studio Launch dialog).

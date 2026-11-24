@@ -23,8 +23,8 @@ flowchart LR
 
   subgraph "Data plane"
     NATS[("NATS JetStream<br/>iterion.queue.runs<br/>iterion.queue.runs.dlq<br/>KV iterion-run-locks<br/>pkg/queue/nats")]
-    RUN["iterion runner pool<br/>KEDA-scaled<br/>(pkg/runner)"]
-    SBX["Per-run sandbox pod<br/>(pkg/sandbox<br/>kubernetes driver)"]
+    RUN["iterion runner pool<br/>KEDA-scaled when enabled<br/>(pkg/runner)"]
+    SBX["Per-run sandbox pod,<br/>where the chart enables it:<br/>runner.sandbox.enabled<br/>or a pool's sandbox.enabled<br/>(pkg/sandbox<br/>kubernetes driver)"]
     S3[("S3-compatible blob<br/>artifacts<br/>pkg/store")]
   end
 
@@ -37,7 +37,7 @@ flowchart LR
 
   NATS -- "pull (durable<br/>iterion-runners,<br/>MaxAckPending=256)" --> RUN
   RUN -- "claim KV lease<br/>+ heartbeat (~20s)" --> NATS
-  RUN -- "execute" --> SBX
+  RUN -.->|"execute, when enabled"| SBX
   RUN -- "write events / status" --> MONGO
   RUN -- "write artifact bodies" --> S3
 ```
@@ -46,8 +46,10 @@ The two halves are kept deliberately separate:
 
 - The **control plane** (server + Mongo) is the source of truth for
   identity, multi-tenancy, secrets, audit, and run metadata.
-- The **data plane** (NATS + runner pods + sandbox pods + S3) does the
-  expensive work — LLM calls, tool execution, file mutation.
+- The **data plane** (NATS + runner pods + S3, plus a sandbox pod per run
+  where the chart enables the sandbox) does the expensive work — LLM
+  calls, tool execution, file mutation. On the chart's default
+  (`runner.sandbox.enabled: false`) runs execute in the runner pod.
 
 A failure in the data plane (a runner OOMs, NATS reboots, S3 is slow)
 must not lose the run; the control plane keeps the canonical state and
@@ -197,15 +199,15 @@ the retry either finds the run free or meets a live owner. One that finds the
 lease held by another runner backs off towards the longest a lease is held
 once its run can be resumed: the engine's teardown, cancelled or parked, then
 the runner's post-engine steps — the git snapshot, the bank, the artifact
-upload — within the runner's lease ceiling (about 56 minutes, most of it the
+upload — within the runner's lease ceiling (about 58 minutes, most of it the
 bank's own budget), then the lease's lapse. Its retries double from one lease
-interval to a last one that waits that whole hold (1 min, 1 min 48, 3 min 35
-… 57 min with the defaults), so a resume delivered while the previous
+interval to a last one that waits that whole hold (1 min, 1 min 51, 3 min 43
+… 59 min with the defaults), so a resume delivered while the previous
 execution still unwinds outlives it, whichever delivery first met the lock —
 unless no retry is left. The queue's worst-case redelivery window counts each
 of the `MaxDeliver` deliveries at the longest delay its rank can take —
 `AckWait`, the schema and epoch delays, the lease TTL, or that back-off —
-about 2 h 30 with the defaults, and the orphan sweeper's queued-staleness
+about 2 h 34 with the defaults, and the orphan sweeper's queued-staleness
 cutoff tracks it. On its last allowed attempt the original message is archived on
 the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
 the run itself is untouched — without the lock no writer may change its
@@ -282,7 +284,8 @@ Four boundaries:
    and not where a row is reached by another key — `api_keys` and
    `generic_secrets` index `scope_team` first, a run's children (`interactions`,
    `user_messages`, `run_gitmeta`, `run_tags`) and `memory_docs` index
-   from their parent's id instead, and `org_usage` keys its
+   from their parent's id instead, `staged_uploads` is reached by its
+   `_id` (the upload id) under the tenant filter, and `org_usage` keys its
    (subject, month) in `_id` with no `tenant_id` at all.
    The credential lookups are the deliberate exception: for example
    `password_resets` and `personal_access_tokens` hold no `tenant_id`
@@ -317,6 +320,9 @@ FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_launch_denied_total{reason}` | server | Launch gate refusals |
 | `iterion_runs_orphan_recovered_total` | server | Sweeper flips |
 | `iterion_dlq_depth` | server | Sweeper poll of NATS state |
+| `iterion_bot_override_shadows_newer{slug}` | server | The five-minute shadow poll over the platform bot rows, per slug |
+| `iterion_bot_shadow_check_unavailable` | server | The same poll, when the catalog or the platform rows could not be read — a bot root that is not there included |
+| `iterion_bot_override_unorderable_version{slug}` | server | The same poll, for a pair whose versions do not order |
 
 All from a shared registry in
 [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) so the

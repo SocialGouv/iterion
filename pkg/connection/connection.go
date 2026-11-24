@@ -5,19 +5,22 @@
 // It is the generalization `pkg/forge`'s connection model becomes (ADR-098):
 // the provider enum opens into a connector id, the auth scheme comes from the
 // package rather than a hardcoded list, and the forges become connectors #1-3.
-// This package is the NEW half of that expand-and-contract; `pkg/forge` still
-// owns the forge connections and keeps its ids, its `forge_conn:` sealing AAD
-// and its callback URLs until the contract phase moves them.
+// The contract half has landed (#2760): this package owns the forge connection
+// model — the record, the tenant-scoped store and the credential sealer in
+// forge_connection.go / forge_store.go / forge_credential.go — and pkg/forge
+// keeps only the behaviour built on it (connect flows, refresh worker,
+// orchestrator), reading the model through aliases.
 //
 // # Four properties held by construction, not by discipline
 //
 // Each one is a defect the existing code demonstrates, so each is designed
 // out rather than documented against.
 //
-//  1. EVERY read is tenant-scoped, in the SIGNATURE. `forge.ConnectionStore.Get`
-//     filters by `_id` alone, so any caller holding an id reaches any tenant's
-//     connection; the tenant here is a positional argument, so the hole cannot
-//     be reintroduced by forgetting a filter.
+//  1. EVERY read is tenant-scoped, in the SIGNATURE. The forge store this
+//     package contracted in (#2760) used to filter `Get` by `_id` alone, so
+//     any caller holding an id reached any tenant's connection; the tenant
+//     here is a positional argument, so the hole cannot be reintroduced by
+//     forgetting a filter.
 //  2. Capabilities are EXPLICIT. A connection is eligible for a use only if it
 //     says so, which is what keeps a connection that merely shares a host from
 //     being picked up by a resolver looking for something else.
@@ -46,6 +49,16 @@ import (
 var (
 	ErrNotFound = errors.New("connection: not found")
 	ErrExists   = errors.New("connection: already exists")
+	// ErrConflict is an Update whose record moved since it was read: the
+	// UpdatedAt the caller carries is no longer the stored one.
+	//
+	// Typed, and separate from ErrExists, because the two send an operator
+	// somewhere different: a colliding alias is a name to change, a conflict
+	// is "read it again and re-apply". And it must not read as success, which
+	// is what a last-write-wins replace did — a revocation, a rotation and a
+	// capability narrowing were each reverted by a concurrent cosmetic edit,
+	// both answering 200.
+	ErrConflict = errors.New("connection: changed since it was read")
 )
 
 // Status is a connection's usability.
@@ -87,16 +100,41 @@ const (
 	// credential that automation may spend and an agent may not, and the two
 	// differ in who decides what is called.
 	CapAgent Capability = "agent"
+	// CapTrigger lets the connection be BELIEVED about an inbound delivery:
+	// an event this connector's package declares, vouched for by the secret
+	// the connection was entrusted with (trigger.go).
+	//
+	// Separate from the two above because it is the only one that is not a
+	// use of the credential: an operator may accept a vendor's events without
+	// granting anything the right to spend their token, and the reverse.
+	CapTrigger Capability = "trigger"
 )
+
+// knownCapabilities is the set, in the order every surface lists it.
+//
+// ONE list, so a capability cannot be understood by ValidCapability and
+// missing from the sentence that enumerates what this build understands —
+// which is what an operator reads when their record is refused.
+var knownCapabilities = []Capability{CapAction, CapAgent, CapTrigger}
+
+// CapabilityNames renders the known set for a message or a flag's help.
+func CapabilityNames() []string {
+	out := make([]string, 0, len(knownCapabilities))
+	for _, c := range knownCapabilities {
+		out = append(out, string(c))
+	}
+	return out
+}
 
 // ValidCapability reports whether c is one this build understands. An unknown
 // capability on a stored record is REFUSED rather than ignored: ignoring it
 // would silently narrow a connection an operator widened, and on a mixed-version
 // fleet the older replica would be the one deciding.
 func ValidCapability(c Capability) bool {
-	switch c {
-	case CapAction, CapAgent:
-		return true
+	for _, known := range knownCapabilities {
+		if c == known {
+			return true
+		}
 	}
 	return false
 }
@@ -249,12 +287,12 @@ func (c Connection) Validate() error {
 		return err
 	}
 	if len(c.Capabilities) == 0 {
-		return fmt.Errorf("connection %q: declares no capability, so nothing may use it — say `action`, `agent`, or both", c.ID)
+		return fmt.Errorf("connection %q: declares no capability, so nothing may use it — say one or more of %s", c.ID, strings.Join(CapabilityNames(), ", "))
 	}
 	seen := make(map[Capability]bool, len(c.Capabilities))
 	for _, cap := range c.Capabilities {
 		if !ValidCapability(cap) {
-			return fmt.Errorf("connection %q: unknown capability %q — this build understands %q and %q", c.ID, cap, CapAction, CapAgent)
+			return fmt.Errorf("connection %q: unknown capability %q — this build understands %s", c.ID, cap, strings.Join(CapabilityNames(), ", "))
 		}
 		if seen[cap] {
 			return fmt.Errorf("connection %q: capability %q is listed twice", c.ID, cap)
@@ -264,7 +302,7 @@ func (c Connection) Validate() error {
 	if c.Status == "" {
 		return fmt.Errorf("connection %q: missing status", c.ID)
 	}
-	if !c.Status.Usable() && c.Status != StatusRevoked {
+	if !c.Status.Usable() && c.Status != StatusRevoked && c.Status != StatusNeedsReauth {
 		return fmt.Errorf("connection %q: unknown status %q", c.ID, c.Status)
 	}
 	if len(c.GrantedScopes) > 0 && !c.ScopesKnown {
@@ -296,6 +334,11 @@ func validateBaseURL(id, baseURL string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("connection %q: instance URL %q names no host", id, trimmed)
+	}
+	if u.User != nil {
+		// The record's URL is plaintext and readable by every member: a
+		// credential belongs in the sealed payload, under a basic scheme.
+		return fmt.Errorf("connection %q: instance URL names a user and password — a credential goes in the sealed payload (a basic scheme), never in the URL", id)
 	}
 	return nil
 }

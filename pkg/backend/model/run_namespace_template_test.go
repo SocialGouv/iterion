@@ -13,6 +13,7 @@ import (
 // runtime resolves but these do not renders as a literal `{{run.x}}` in a
 // shell command, which is worse than an error because it is silent.
 func TestRunNamespaceReachesPromptsAndToolCommands(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{
 		RunID: "run-abc",
 		Run: map[string]any{

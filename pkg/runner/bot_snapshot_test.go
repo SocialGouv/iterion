@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 func TestSnapshotRunnerIgnoresDivergentCatalog(t *testing.T) {
@@ -40,8 +41,9 @@ func TestSnapshotRunnerIgnoresDivergentCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, b.Dir, t.TempDir(), iterlog.Nop(), filepath.Dir(b.Dir))
-	out, err := run(context.Background(), runtime.SubbotRequest{Source: "../child/main.bot", Vars: map[string]any{"ticket": "snapshot"}, ParentRunID: msg.RunID, NodeID: "child", ReattachKey: "child"})
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{Source: "../child/main.bot", Vars: map[string]any{"ticket": "snapshot"}, ParentRunID: msg.RunID, NodeID: "child", ReattachKey: "child"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +54,7 @@ func TestSnapshotRunnerIgnoresDivergentCatalog(t *testing.T) {
 	if err := os.Remove(filepath.Join(b.Dir, "../child/main.bot")); err != nil {
 		t.Fatal(err)
 	}
-	_, err = run(context.Background(), runtime.SubbotRequest{Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "missing", ReattachKey: "missing"})
+	_, err = run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "missing", ReattachKey: "missing"})
 	if err == nil || !strings.Contains(err.Error(), "snapshot") {
 		t.Fatalf("fell back to runner catalog: %v", err)
 	}
@@ -84,5 +86,29 @@ func TestSnapshotRunnerFetchesAndChecksStoredBytes(t *testing.T) {
 	blobs.blobs["ir/frozen.json"] = append(body, ' ')
 	if _, _, err := r.materializeBotBundle(context.Background(), ref); err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("corrupted snapshot accepted: %v", err)
+	}
+}
+
+// #1896: a snapshot frozen from a loose catalogue entry — no main.bot, the
+// entry named — materializes and opens for the runner: the entry is the
+// bundle's main, and no phantom main.bot is required.
+func TestSnapshotRunnerOpensALooseEntry(t *testing.T) {
+	r, _ := subbotTestRunner(t)
+	snap := &bundle.Snapshot{Root: "smoke", Entry: "smoke/board_smoke.bot", Files: map[string]bundle.SnapshotFile{
+		"smoke/board_smoke.bot": {Content: []byte(subbotTestChild)},
+		"smoke/lib/frag.bot":    {Content: []byte("agent frag:\n  description: \"x\"\n")},
+	}}
+	body, digest, err := snap.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := &queue.BotBundleRef{Slug: "board_smoke", Snapshot: body, SnapshotDigest: digest}
+	b, cleanup, err := r.materializeBotBundle(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if filepath.Base(b.IterPath) != "board_smoke.bot" {
+		t.Fatalf("the loose entry is not the main: %q", b.IterPath)
 	}
 }

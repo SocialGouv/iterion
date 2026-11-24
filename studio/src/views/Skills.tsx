@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { MixIcon } from "@radix-ui/react-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -198,10 +198,25 @@ function SkillsTable({
             </Td>
             <Td className="text-fg-muted">{s.description || "—"}</Td>
             <Td align="right" className="space-x-1 whitespace-nowrap">
-              <Button size="sm" variant="ghost" onClick={() => onEdit(s)}>
+              {/* Name AND scope, the pair this table's key is built from: a
+                  skill name can exist both globally and per project, so the
+                  name alone leaves two rows announcing "Edit". Visible text
+                  untouched, visible word first (SC 2.5.3). */}
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Edit ${s.name} (${s.scope})`}
+                onClick={() => onEdit(s)}
+              >
                 Edit
               </Button>
-              <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-danger"
+                aria-label={`Delete ${s.name} (${s.scope})`}
+                onClick={() => onDelete(s)}
+              >
                 Delete
               </Button>
             </Td>
@@ -225,6 +240,13 @@ function UpsertSkillDialog({
   onDone: () => void;
 }) {
   const edit = rec !== undefined;
+  // The three fields' visible labels pointed at nothing: a <label> with no
+  // htmlFor names no control, and a placeholder is not a name — axe's
+  // `label` rule accepts one outright (#2591).
+  const ids = useId();
+  const nameId = `${ids}-name`;
+  const scopeId = `${ids}-scope`;
+  const bodyId = `${ids}-body`;
   const [name, setName] = useState(rec?.name ?? "");
   const [scope, setScope] = useState<"global" | "project">(rec?.scope ?? "global");
   const [body, setBody] = useState(edit ? "" : NEW_SKILL_TEMPLATE);
@@ -289,8 +311,11 @@ function UpsertSkillDialog({
         {!edit && (
           <div className="flex gap-3">
             <div className="flex-1">
-              <label className="mb-1 block text-xs text-fg-muted">Name</label>
+              <label htmlFor={nameId} className="mb-1 block text-xs text-fg-muted">
+                Name
+              </label>
               <Input
+                id={nameId}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="changelog-writer"
@@ -303,8 +328,11 @@ function UpsertSkillDialog({
               )}
             </div>
             <div className="w-32">
-              <label className="mb-1 block text-xs text-fg-muted">Scope</label>
+              <label htmlFor={scopeId} className="mb-1 block text-xs text-fg-muted">
+                Scope
+              </label>
               <Select
+                id={scopeId}
                 size="md"
                 value={scope}
                 onChange={(e) => setScope(e.target.value as "global" | "project")}
@@ -316,8 +344,11 @@ function UpsertSkillDialog({
           </div>
         )}
         <div>
-          <label className="mb-1 block text-xs text-fg-muted">SKILL.md</label>
+          <label htmlFor={bodyId} className="mb-1 block text-xs text-fg-muted">
+            SKILL.md
+          </label>
           <Textarea
+            id={bodyId}
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={16}

@@ -1,4 +1,13 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, ReadRefusal, UnitInfo, UnitFileInfo } from "./types";
+import {
+  assertRunReachable,
+  expectedBirthHeaders,
+  LostRunError,
+  lostRunStore,
+  markRunLost,
+  RUN_ORIGIN_LOST,
+  runAddressedBy,
+} from "@/lib/lostRuns";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 import { isWorkflowFile } from "@/lib/workflowFile";
 import {
@@ -120,6 +129,27 @@ export {
 // (sessionDelivered): a request sent under an older generation belongs to a
 // session the tab has left, so its 401 renews nothing and signs nothing out —
 // the session it would renew, or sign out, is the one that replaced it.
+// explicitTeam is the team THIS TAB last adopted and displays (#2662): the
+// access cookie is browser-wide — the last switch in ANY tab re-scopes it —
+// so tenant-scoped requests carry the tab's own team and the server
+// validates it against the session's grants. Absent (nothing adopted yet),
+// no header goes out and the request scopes exactly as before.
+let explicitTeam: string | null = null;
+let teamGeneration = 0;
+
+export function currentRequestTeamGeneration(): number {
+  return teamGeneration;
+}
+
+// publishExplicitTeam is called by the auth context at every adoption point
+// (bootstrap, switch, identity re-read) and cleared on sign-out: what a tab
+// displays is what its requests scope to.
+export function publishExplicitTeam(teamID: string | null): void {
+  if (explicitTeam === teamID) return;
+  explicitTeam = teamID;
+  teamGeneration++;
+}
+
 let sessionGeneration = 0;
 
 export function currentSessionGeneration(): number {
@@ -512,11 +542,23 @@ export class ApiError extends Error {
   // The server's own message, without the "API error <status>: " prefix the
   // transport puts on `message` — for a surface that quotes the reason.
   detail?: string;
-  constructor(status: number, message: string, errorCode?: string, detail?: string) {
+  // The decoded JSON envelope, when the refusal had one. A coded refusal
+  // whose remedy needs STRUCTURED facts beside the code (the launch_vars keys
+  // to echo, a blocker list) reads them here; reconstructing them from
+  // `detail` means parsing prose the server is free to reword.
+  body?: Record<string, unknown>;
+  constructor(
+    status: number,
+    message: string,
+    errorCode?: string,
+    detail?: string,
+    body?: Record<string, unknown>,
+  ) {
     super(message);
     this.status = status;
     this.errorCode = errorCode;
     this.detail = detail;
+    this.body = body;
     this.name = "ApiError";
   }
 }
@@ -541,7 +583,7 @@ export class SessionRenewalUnavailableError extends ApiError {
 // apiErrorFrom is the error every non-2xx response throws. Exported so a test
 // can hand a caller the exact shape production produces, prefix included.
 export function apiErrorFrom(status: number, detail: ExtractedErrorDetail): ApiError {
-  return new ApiError(status, `API error ${status}: ${detail.message}`, detail.errorCode, detail.message);
+  return new ApiError(status, `API error ${status}: ${detail.message}`, detail.errorCode, detail.message, detail.body);
 }
 
 // is404 reports whether a thrown value represents an HTTP 404. Prefers
@@ -616,14 +658,38 @@ export async function apiRequest<T>(
 // ("replayed"), or had the session renewed for it ("refreshed").
 type RenewalStage = "fresh" | "replayed" | "refreshed";
 
+// requestHeaders composes a request's headers: the JSON content type (not
+// for a body the browser types itself), the tab's explicit team, then the
+// caller's own headers, which win, then the expected birth of the run the
+// path addresses when the page knows it and the caller set none. Composed
+// AFTER spreading init, so a caller's headers add to these instead of
+// replacing them — the same on every replay after a renewal.
+function requestHeaders(fullPath: string, init: RequestInit | undefined): Headers {
+  const headers = new Headers();
+  const body = init?.body;
+  const typedByBrowser =
+    (typeof FormData !== "undefined" && body instanceof FormData) ||
+    (typeof Blob !== "undefined" && body instanceof Blob) ||
+    (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams);
+  if (!typedByBrowser) headers.set("Content-Type", "application/json");
+  if (explicitTeam) headers.set("X-Iterion-Team", explicitTeam);
+  new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+  for (const [name, value] of Object.entries(expectedBirthHeaders(fullPath))) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return headers;
+}
+
 async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, stage: RenewalStage): Promise<T> {
+  // Every request of both `request` wrappers, and every replay after a
+  // renewal, passes here: one addressing a run this page lost (scope_lost)
+  // is refused before it leaves, and one addressing a run whose birth the
+  // page knows carries it as the expected birth (@/lib/lostRuns).
+  assertRunReachable(fullPath);
   const generation = sessionGeneration;
+  const sentTeamGeneration = teamGeneration;
   const sentAt = Date.now();
-  const res = await fetch(fullPath, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    ...init,
-  });
+  const res = await fetch(fullPath, { credentials: "include", ...init, headers: requestHeaders(fullPath, init) });
   // 401 → the access JWT likely just expired. Renew the session and replay
   // the request: without that the first call after the 15-minute access-token
   // TTL bounces the user to login even though their refresh token is valid
@@ -649,10 +715,10 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
   // reaching the pane means the desktop's refresh already failed, and recovery
   // is driven from the shell (cloud:auth-expired → re-login → reload). We still
   // fire onUnauthorized so the pane's AuthGate can surface the expired state.
-  if (res.status === 401 && generation === sessionGeneration) {
+  if (res.status === 401 && generation === sessionGeneration && sentTeamGeneration === teamGeneration) {
     if (stage !== "refreshed" && !isScopedPane() && !fullPath.endsWith("/auth/refresh")) {
       const renewal = stage === "replayed" ? await presentRefreshToken("request") : await renewAfterRefusal(sentAt, "request");
-      if (generation === sessionGeneration) {
+      if (generation === sessionGeneration && sentTeamGeneration === teamGeneration) {
         if (renewal.kind === "superseded") return sendRequest<T>(fullPath, init, "replayed");
         if (renewal.kind === "renewed") return sendRequest<T>(fullPath, init, "refreshed");
         if (renewal.kind === "unavailable") throw new SessionRenewalUnavailableError(renewal.status);
@@ -663,7 +729,18 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
     }
   }
   if (!res.ok) {
-    throw apiErrorFrom(res.status, await extractErrorDetail(res));
+    const detail = await extractErrorDetail(res);
+    // The server refused a run whose birth no longer matches the one this
+    // request expected: the run is lost to the page, whoever sent it.
+    if (res.status === 409 && detail.errorCode === RUN_ORIGIN_LOST) {
+      const named = detail.body?.run_id;
+      const lostRun = (typeof named === "string" && named) || runAddressedBy(fullPath);
+      if (lostRun) {
+        markRunLost(lostRunStore(fullPath, lostRun), lostRun);
+        throw new LostRunError(lostRun);
+      }
+    }
+    throw apiErrorFrom(res.status, detail);
   }
   // 204 No Content (e.g. DELETE endpoints) has an empty body. Don't
   // try to parse it — return undefined and let the typed caller cast.
@@ -687,6 +764,9 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
 interface ExtractedErrorDetail {
   message: string;
   errorCode?: string;
+  // The decoded envelope, kept whole for a caller whose remedy needs more
+  // than the code (see ApiError.body).
+  body?: Record<string, unknown>;
 }
 
 // extractErrorDetail decodes both the human-facing message and the optional
@@ -709,6 +789,7 @@ async function extractErrorDetail(res: Response): Promise<ExtractedErrorDetail> 
         typeof env.error_code === "string" && env.error_code
           ? env.error_code
           : undefined;
+      const envelope = body as Record<string, unknown>;
       // Quota/launch denial envelopes carry the human-readable copy in
       // `detail`; prefer it (with the short `error` token as a prefix)
       // so toasts read "monthly_run_quota_exceeded: 1000/1000 — resets …".
@@ -718,13 +799,14 @@ async function extractErrorDetail(res: Response): Promise<ExtractedErrorDetail> 
         return {
           message: token ? `${token}: ${env.detail}${tail}` : `${env.detail}${tail}`,
           errorCode,
+          body: envelope,
         };
       }
       if (typeof env.error === "string" && env.error) {
-        return { message: env.error, errorCode };
+        return { message: env.error, errorCode, body: envelope };
       }
       if (typeof env.message === "string" && env.message) {
-        return { message: env.message, errorCode };
+        return { message: env.message, errorCode, body: envelope };
       }
     }
   } catch {
@@ -865,7 +947,7 @@ export async function unparseUnitFile(
     );
     return request("/unparse", {
       method: "POST",
-      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
+      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel, path: editorPath, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
     });
   }
   return request("/unparse", {
@@ -895,7 +977,10 @@ export async function parseUnitFile(
     );
     return request("/parse", {
       method: "POST",
-      body: JSON.stringify({ files: bundle.files ?? {}, main: bs.rel, file: rel, source }),
+      // `path` is the bot's own editor path, which carries its team: the
+      // server resolves this bundle's declared `dependencies.fragments`
+      // through that team's tiers, and refuses to without it (ADR-145).
+      body: JSON.stringify({ files: bundle.files ?? {}, main: bs.rel, file: rel, source, path: editorPath }),
     });
   }
   return request("/parse", {
@@ -916,7 +1001,7 @@ export function importsFragments(source: string): boolean {
 export async function parseUnit(
   files: Record<string, string>,
   main: string,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; path?: string },
 ): Promise<{
   document: IterDocument;
   diagnostics: string[];
@@ -932,7 +1017,12 @@ export async function parseUnit(
 }> {
   return request("/parse", {
     method: "POST",
-    body: JSON.stringify({ files, main }),
+    // `path` is the bot's own editor path when it has one, which carries
+    // its team: the server resolves this bundle's declared
+    // `dependencies.fragments` through that team's tiers, and refuses to
+    // without it (ADR-145) — so the opened document holds what a declared
+    // fragment declares instead of blaming the author's own nodes for it.
+    body: JSON.stringify(options?.path ? { files, main, path: options.path } : { files, main }),
     signal: options?.signal,
   });
 }
@@ -949,10 +1039,14 @@ export async function unparseUnit(
   main: string,
   revision: string,
   unitFiles?: UnitFileInfo[],
+  path?: string,
 ): Promise<{ source: string; files: Record<string, string>; revision?: string }> {
   const res = await request<{ source: string; files?: Record<string, string>; revision?: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document, files, main, revision, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
+    // The save reads the bundle the OPEN read — declared dependencies
+    // resolved in — so it compares the revision the open issued and
+    // refuses, by name, any write to a file a dependency provides.
+    body: JSON.stringify({ document, files, main, revision, ...(path ? { path } : {}), ...(unitFiles ? { unit_files: unitFiles } : {}) }),
   });
   return { source: res.source, files: res.files ?? {}, revision: res.revision };
 }
@@ -1154,7 +1248,7 @@ export async function openFile(
       // workflow of its own: the unit is parsed from the whole files map
       // with that file as its main, so the fragments its imports reach
       // are in the document.
-      const parsed = await parseUnit(bundle.files ?? {}, bs.rel, options);
+      const parsed = await parseUnit(bundle.files ?? {}, bs.rel, { ...options, path });
       // The server's verdict, not a hardcoded true: a unit that does not
       // LOAD stays writable — its write back is refused there, naming the
       // fragment — but a main that did not PARSE makes the merged document a
@@ -1224,7 +1318,7 @@ export async function saveFile(
       // silent overwrite. The file list the client holds (unit.files) goes
       // with it: a per-file edit may have changed a file's `import` lines
       // or its `dsl:` profile, which the document does not carry.
-      const rewritten = await unparseUnit(document, opened.files, bs.rel, options.revision, options.unitFiles);
+      const rewritten = await unparseUnit(document, opened.files, bs.rel, options.revision, options.unitFiles, path);
       const files = { ...opened.files, ...rewritten.files };
       const digests: Record<string, string> = {};
       for (const rel of Object.keys(rewritten.files)) {
@@ -1339,10 +1433,23 @@ export interface ModelCapabilities {
   spec: string;
   provider?: string;
   model: string;
+  // The table that had an ENTRY for the model — record-level, never
+  // per-field: with "aggregator", whatever the aggregator left zero or
+  // unsaid (the context window included) is still the curated table's.
   // "aggregator" is a settled answer; "curated" is what a cold lookup
   // returns while the background spec refresh is still in flight, so it
-  // can still improve and must not be cached for the whole session.
-  source: "aggregator" | "curated";
+  // can still improve and must not be cached for the whole session. A
+  // gateway id (openai_compatible/…) answers with its catalog tier
+  // instead — the operator's table, the live models.dev registry, the
+  // embedded snapshot — or "unknown" when no table carries it, in which
+  // case the flags are absent and read as unknown.
+  source:
+    | "aggregator"
+    | "curated"
+    | "operator"
+    | "catalog-live"
+    | "catalog-snapshot"
+    | "unknown";
   context_window: number;
   max_output_tokens: number;
   // Per-million-token prices. Zero means the aggregator had no price —

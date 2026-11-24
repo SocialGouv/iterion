@@ -1,6 +1,8 @@
+import { shortcutsEnabled } from "@/lib/shortcuts";
 import { useEffect } from "react";
 
 import type { ExecutionState } from "@/api/runs";
+import { useHiddenSubtree } from "@/components/ui/hiddenSubtree";
 import { isTypingTarget } from "@/lib/keyboard";
 
 interface Args {
@@ -24,6 +26,12 @@ interface Args {
 //
 // Listens at window level so it works regardless of focus, but skips
 // inputs and contenteditable elements so users can still type.
+//
+// A run tab behind another stays MOUNTED (RunsTabsView), so the listener
+// is not installed at all while its subtree is marked hidden: j/k, the
+// arrows, Escape and the g-chords would otherwise move a console nobody
+// is looking at (#1812 — the #1788 class, on the run console). Outside a
+// tab host the flag defaults to "shown".
 export function useRunKeyboard({
   selectedNodeId,
   executions,
@@ -33,7 +41,9 @@ export function useRunKeyboard({
   onScrubLive,
   onJumpToFailed,
 }: Args): void {
+  const hidden = useHiddenSubtree();
   useEffect(() => {
+    if (hidden) return;
     let chord: "g" | null = null;
     let chordTimer: ReturnType<typeof setTimeout> | null = null;
     let failedCursor = -1;
@@ -95,7 +105,7 @@ export function useRunKeyboard({
         }
         clearChord();
       }
-      if (e.key === "g") {
+      if (e.key === "g" && shortcutsEnabled()) {
         chord = "g";
         if (chordTimer) clearTimeout(chordTimer);
         chordTimer = setTimeout(clearChord, 750);
@@ -105,6 +115,7 @@ export function useRunKeyboard({
       // j / k step between nodes by start order (vim-idiom: j=down, k=up).
       // The "down" axis is "later in the run"; "up" is "earlier".
       if (e.key === "j" || e.key === "k") {
+        if (!shortcutsEnabled()) return;
         const ordered = uniqueNodesByStart(executions);
         if (ordered.length === 0) return;
         e.preventDefault();
@@ -157,6 +168,7 @@ export function useRunKeyboard({
       window.removeEventListener("keydown", handler);
     };
   }, [
+    hidden,
     selectedNodeId,
     executions,
     iterationByNode,

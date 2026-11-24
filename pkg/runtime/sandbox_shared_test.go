@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
 	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // sharedFakeRun is a live sandbox handle a PARENT run would own: commands
@@ -208,7 +209,9 @@ workflow parent:
 				share = &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: t.TempDir()}
 				opts = append(opts, WithSharedSandbox(share), WithParentRunID("run-grandparent"))
 			}
-			e := New(wf, tmpStore(t), newStubExecutor(), opts...)
+			st := tmpStore(t)
+			storetest.SeedParentRun(t, st, "run-grandparent")
+			e := New(wf, st, newStubExecutor(), opts...)
 			if err := e.Run(context.Background(), "run-"+tc.name, nil); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -243,6 +246,7 @@ func sharedTestEngine(t *testing.T, wf *ir.Workflow, workDir string, share *Shar
 	share.WorkspaceFolder = t.TempDir()
 	t.Helper()
 	st := tmpStore(t)
+	storetest.SeedParentRun(t, st, "run-parent")
 	exec := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
 	opts := append([]EngineOption{WithWorkDir(workDir), WithSandboxOverride("none"), WithParentRunID("run-parent"), WithSharedSandbox(share)}, extra...)
 	return New(wf, st, exec, opts...), exec, st
@@ -353,6 +357,7 @@ func TestRefuseResumeOfSharedChild(t *testing.T) {
 	mk := func(t *testing.T, id string, data map[string]any, share *SharedSandbox) (*Engine, *store.Run) {
 		t.Helper()
 		st := tmpStore(t)
+		storetest.SeedParentRun(t, st, "run-parent")
 		opts := []EngineOption{WithSandboxOverride("none")}
 		if share != nil {
 			opts = append(opts, WithSharedSandbox(share))
@@ -458,6 +463,7 @@ workflow child:
   step -> done
 `).Workflow
 		st := tmpStore(t)
+		storetest.SeedParentRun(t, st, "run-parent")
 		pc := store.AsParentedRunCreator(st)
 		if _, err := pc.CreateChildRun(ctx, "run-c5", "child", "run-parent", nil); err != nil {
 			t.Fatal(err)
@@ -494,6 +500,7 @@ workflow child:
   step -> done
 `).Workflow
 		st := tmpStore(t)
+		storetest.SeedParentRun(t, st, "run-parent")
 		pc := store.AsParentedRunCreator(st)
 		if _, err := pc.CreateChildRun(ctx, "run-c7", "child", "run-parent", nil); err != nil {
 			t.Fatal(err)
@@ -537,6 +544,7 @@ workflow child:
   gate -> done
 `).Workflow
 		st := tmpStore(t)
+		storetest.SeedParentRun(t, st, "run-parent")
 		pc := store.AsParentedRunCreator(st)
 		if _, err := pc.CreateChildRun(ctx, "run-c6", "child", "run-parent", nil); err != nil {
 			t.Fatal(err)

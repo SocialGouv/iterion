@@ -52,6 +52,7 @@ export function NodeFormHeader({ color, icon, label }: NodeFormHeaderProps) {
 }
 
 interface FieldRowChildArgs {
+  required?: boolean;
   /** id to apply to the primary control inside the row. */
   inputId: string;
   /** Space-separated ids to feed `aria-describedby` (help + error). */
@@ -59,6 +60,8 @@ interface FieldRowChildArgs {
 }
 
 interface FieldRowProps {
+  /** RGAA 11.10: a visible mention on the label and aria-required on the control. */
+  required?: boolean;
   label: string;
   help?: string;
   error?: string;
@@ -78,6 +81,7 @@ export function FieldRow({
   label,
   help,
   error,
+  required,
   className = "mb-2",
   children,
 }: FieldRowProps) {
@@ -88,9 +92,17 @@ export function FieldRow({
   const describedBy = [helpId, errorId].filter(Boolean).join(" ") || undefined;
   return (
     <div className={className}>
-      <FieldLabel htmlFor={inputId} help={help} helpId={helpId}>{label}</FieldLabel>
+      <FieldLabel htmlFor={inputId} help={help} helpId={helpId}>
+        {label}
+        {required && (
+          <>
+            <span className="ml-1 text-danger-fg" aria-hidden="true">*</span>
+            <span className="sr-only">(required)</span>
+          </>
+        )}
+      </FieldLabel>
       {typeof children === "function"
-        ? children({ inputId, describedBy })
+        ? children({ inputId, describedBy, required })
         : children}
       {error && (
         <p
@@ -168,6 +180,8 @@ export function TextField({ label, value, onChange, placeholder, multiline, rows
 }
 
 interface CommittedTextFieldProps {
+  /** RGAA 11.10: mentioned on the label and aria-required on the input. */
+  required?: boolean;
   label: string;
   value: string;
   onChange: (v: string) => void;
@@ -178,7 +192,7 @@ interface CommittedTextFieldProps {
 }
 
 /** TextField that only commits on blur or Enter, not on every keystroke. Used for name/rename fields. */
-export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder, help }: CommittedTextFieldProps) {
+export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder, help, required }: CommittedTextFieldProps) {
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState<string | null>(null);
   const focusedRef = useRef(false);
@@ -232,12 +246,13 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
   const isDirty = draft.trim() !== value;
 
   return (
-    <FieldRow label={label} help={help} error={error ?? undefined}>
-      {({ inputId, describedBy }) => (
+    <FieldRow label={label} help={help} error={error ?? undefined} required={required}>
+      {({ inputId, describedBy, required }) => (
         <div className="flex gap-1">
           <Input
             id={inputId}
             aria-describedby={describedBy}
+            aria-required={required || undefined}
             aria-invalid={error ? true : undefined}
             error={!!error}
             className="flex-1"
@@ -253,7 +268,7 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
             <IconButton
               variant="primary"
               size="sm"
-              label="Confirm edit"
+              label={`Confirm ${label} edit`}
               tooltip="Confirm"
               className="shrink-0 text-xs"
               onMouseDown={(e) => {
@@ -509,7 +524,7 @@ export function PromptPickerField({
             <IconButton
               variant="secondary"
               size="sm"
-              label={value ? `Edit prompt ${value}` : "Edit prompt"}
+              label={value ? `Edit prompt ${value}` : `Edit ${label.toLowerCase()}`}
               tooltip={value ? `Edit prompt "${value}"` : "Select a prompt to edit"}
               className="shrink-0"
               onClick={() => value && onEdit(value)}
@@ -533,11 +548,18 @@ export function PromptPickerField({
             </Button>
           </div>
           {value && body && (
+            /* PromptOverlayHighlight hides its visible text (aria-hidden:
+               the component pairs with a transparent textarea in overlay
+               mode), so aria-labelledby cannot reach a visible name source
+               here. The name carries the preview inline — label in name
+               (RGAA 11.1 / WCAG 2.5.3) — plus the prompt name to keep each
+               slot's button distinct. */
             <button
               type="button"
               className="mt-1 w-full text-left rounded border border-border-default bg-surface-0 hover:border-accent transition-colors"
               onClick={() => onEdit(value)}
               title="Click to edit in large editor"
+              aria-label={`Preview of prompt ${value}: ${previewLines} — click to edit in large editor`}
             >
               <PromptOverlayHighlight
                 value={previewLines}

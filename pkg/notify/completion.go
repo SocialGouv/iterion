@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -120,7 +121,10 @@ func New(logger *iterlog.Logger, timeout time.Duration, opts ...Option) *Notifie
 //
 // Paused states (paused_waiting_human / paused_operator) are skipped:
 // the run is not done, it is waiting. Resume will call FireForRun again
-// when the run actually terminates.
+// when the run actually terminates. A usage park is the same shape:
+// failed_resumable with a retry armed on a provider wall is a WAIT, so it
+// delivers nothing; the run speaks at settlement — resumed and finished,
+// or its retry retired (abandonRetry is the path that fires then).
 func (n *Notifier) FireForRun(ctx context.Context, st store.RunStore, runID string) {
 	if n == nil || st == nil {
 		return
@@ -135,7 +139,7 @@ func (n *Notifier) FireForRun(ctx context.Context, st store.RunStore, runID stri
 	if run.CallbackURL == "" {
 		return // no callback requested — the common case
 	}
-	if !shouldNotify(run.Status) {
+	if !shouldNotify(run) {
 		return
 	}
 
@@ -153,13 +157,28 @@ func (n *Notifier) FireForRun(ctx context.Context, st store.RunStore, runID stri
 	n.deliver(ctx, run.CallbackURL, payload)
 }
 
-// shouldNotify reports whether a status warrants a completion callback.
-// It deliberately BORROWS IsTerminal (the stop-polling contract):
-// delivery-finality and polling share the same set today, and this
-// comment is the tripwire — if IsTerminal ever moves for a polling
+// shouldNotify reports whether a run warrants a completion callback.
+// It deliberately BORROWS IsTerminal (the stop-polling contract) for the
+// first half: delivery-finality and polling share the same set today, and
+// this comment is the tripwire — if IsTerminal ever moves for a polling
 // reason, delivery needs its own predicate, not a silent ride-along.
-func shouldNotify(s store.RunStatus) bool {
-	return s.IsTerminal()
+//
+// The second half keys on the persisted wall (store.UsageParkWall —
+// RetryState.Wall, the unit of a usage park every other reader dedups
+// on): a failed_resumable run whose retry is ARMED on a provider wall is
+// terminal for polling but not done — it is waiting out the window and
+// will resume. Firing there delivered one callback per park (and per
+// probe re-park) to a receiver that had asked to be told once, when the
+// run is done. The wall is present exactly while the run waits: the
+// resume that succeeds, and the settlement that retires the retry, both
+// find it gone and deliver then. A row from before the wall was persisted
+// carries none and keeps the per-transition behaviour, like every other
+// reader of UsageParkWall.
+func shouldNotify(run *store.Run) bool {
+	if !run.Status.IsTerminal() {
+		return false
+	}
+	return run.UsageParkWall().IsZero()
 }
 
 // resolveFinalAnswer extracts the run's user-facing answer string.
@@ -167,7 +186,14 @@ func shouldNotify(s store.RunStatus) bool {
 //   - When the run names CallbackAnswerNode, the latest artifact for
 //     that node is read and its DefaultAnswerField returned.
 //   - Otherwise every node in Run.ArtifactIndex is probed (latest
-//     version) and the first DefaultAnswerField string wins.
+//     version) and the answer written LAST wins, node id breaking a tie.
+//
+// Run.ArtifactIndex is a map, so the scan needs a key of its own: the
+// node that "wins" cannot be the one a map range happens to yield first,
+// or the same finished run posts a different answer to the same receiver
+// on a redelivery. WrittenAt is the key the promise already implies — a
+// receiver is told the run's final answer — and the node id breaks a tie
+// so two artifacts stamped in the same instant still resolve alike.
 //
 // Returns ("", "") when no answer artifact is present — a legitimate
 // outcome (e.g. a facilitator bot that chose to stay silent), which the
@@ -180,35 +206,48 @@ func (n *Notifier) resolveFinalAnswer(ctx context.Context, st store.RunStore, ru
 		// post an answer the caller never intended (e.g. an internal
 		// reasoning artifact), so a named-but-empty node correctly
 		// yields silence.
-		if s, ok := n.answerFromNode(ctx, st, run.ID, run.CallbackAnswerNode); ok {
+		if s, _, ok := n.answerFromNode(ctx, st, run.ID, run.CallbackAnswerNode); ok {
 			return s, run.CallbackAnswerNode
 		}
 		return "", ""
 	}
+	nodeIDs := make([]string, 0, len(run.ArtifactIndex))
 	for nodeID := range run.ArtifactIndex {
-		if s, ok := n.answerFromNode(ctx, st, run.ID, nodeID); ok {
-			return s, nodeID
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	var bestAt time.Time
+	for _, nodeID := range nodeIDs {
+		s, at, ok := n.answerFromNode(ctx, st, run.ID, nodeID)
+		if !ok {
+			continue
+		}
+		// Strictly after, over ids walked in sorted order: the earliest
+		// id keeps a tie, so the verdict does not depend on the walk.
+		if node == "" || at.After(bestAt) {
+			answer, node, bestAt = s, nodeID, at
 		}
 	}
-	return "", ""
+	return answer, node
 }
 
 // answerFromNode reads the node's latest artifact and returns its
-// DefaultAnswerField as a string when present and non-empty.
-func (n *Notifier) answerFromNode(ctx context.Context, st store.RunStore, runID, nodeID string) (string, bool) {
+// DefaultAnswerField as a string when present and non-empty, with the
+// instant it was written — the scan's ordering key.
+func (n *Notifier) answerFromNode(ctx context.Context, st store.RunStore, runID, nodeID string) (string, time.Time, bool) {
 	art, err := st.LoadLatestArtifact(ctx, runID, nodeID)
 	if err != nil || art == nil || art.Data == nil {
-		return "", false
+		return "", time.Time{}, false
 	}
 	raw, ok := art.Data[DefaultAnswerField]
 	if !ok {
-		return "", false
+		return "", time.Time{}, false
 	}
 	s, ok := raw.(string)
 	if !ok || s == "" {
-		return "", false
+		return "", time.Time{}, false
 	}
-	return s, true
+	return s, art.WrittenAt, true
 }
 
 // deliver POSTs the payload after vetting the URL. All paths are
@@ -279,20 +318,16 @@ func (n *Notifier) deliver(ctx context.Context, rawURL string, payload Completio
 	// Per-delivery client: dial only the pinned IP (so the TLS handshake
 	// still uses the URL's host for SNI/verification while the TCP target
 	// is fixed) and never auto-follow redirects — a 3xx to a fresh host
-	// would re-open the rebinding window.
+	// would re-open the rebinding window. The transport never consults an
+	// ambient proxy (#2337): behind a credentialed HTTP_PROXY a proxy-form
+	// request would carry the operator's Proxy-Authorization to the
+	// run-chosen receiver.
 	client := &http.Client{
 		Timeout: n.client.Timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
-				return d.DialContext(ctx, network, pinnedAddr)
-			},
-			TLSHandshakeTimeout: 10 * time.Second,
-		},
+		Transport: httpdial.PinnedTransport(pinnedAddr),
 	}
 
 	resp, err := client.Do(req)

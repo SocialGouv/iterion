@@ -14,12 +14,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -461,6 +463,10 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 		Outputs:             map[string]map[string]any{"step_a": {"result": "ok"}},
 		BackendConversation: conversation,
 		BackendSessionID:    "sess-42",
+		// The stranding fact rides the same carriage (#2461): a conversation
+		// the pause marked as a stranded crossing's own turns keeps the
+		// resumed crossing's captures out of the session store.
+		BackendSessionStranded: true,
 	}
 	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
@@ -516,6 +522,9 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 	if got := bIn[delegate.SessionIDKey]; got != "sess-42" {
 		t.Errorf("restart node session id = %v, want sess-42", got)
 	}
+	if got := bIn[delegate.ResumeSessionStrandedKey]; got != true {
+		t.Errorf("restart node input missing the stranding fact: input[%q] = %v, want true", delegate.ResumeSessionStrandedKey, got)
+	}
 
 	cIn := inputs["step_c"]
 	if cIn == nil {
@@ -527,14 +536,18 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 	if _, has := cIn[delegate.SessionIDKey]; has {
 		t.Error("downstream node received the resume session id — injection must be one-shot")
 	}
+	if _, has := cIn[delegate.ResumeSessionStrandedKey]; has {
+		t.Error("downstream node received the stranding fact — injection must be one-shot")
+	}
 }
 
 // charEnvSpyExecutor records the env-restore calls resumeFromFailure makes
 // on an executor that implements the optional setter seams.
 type charEnvSpyExecutor struct {
-	workDirs  []string
-	repoRoots []string
-	varsCalls int
+	workDirs    []string
+	repoRoots   []string
+	scratchDirs []string
+	varsCalls   int
 }
 
 func (x *charEnvSpyExecutor) Execute(_ context.Context, _ ir.Node, _ map[string]any) (map[string]any, error) {
@@ -543,6 +556,12 @@ func (x *charEnvSpyExecutor) Execute(_ context.Context, _ ir.Node, _ map[string]
 func (x *charEnvSpyExecutor) SetWorkDir(d string)      { x.workDirs = append(x.workDirs, d) }
 func (x *charEnvSpyExecutor) SetRepoRoot(r string)     { x.repoRoots = append(x.repoRoots, r) }
 func (x *charEnvSpyExecutor) SetVars(_ map[string]any) { x.varsCalls++ }
+
+// SetScratchDirs records the push as "base\x00run\x00shared" so the
+// assertion reads every part of the narrowed push (#2869).
+func (x *charEnvSpyExecutor) SetScratchDirs(base, run string, shared bool) {
+	x.scratchDirs = append(x.scratchDirs, fmt.Sprintf("%s\x00%s\x00%t", base, run, shared))
+}
 
 // TestResumeFromFailure_ExecutorEnvRestored pins restoreRunEnv +
 // pushExecutorVars: the persisted WorkDir/RepoRoot are pushed onto an
@@ -596,6 +615,16 @@ func TestResumeFromFailure_ExecutorEnvRestored(t *testing.T) {
 	}
 	if spy.varsCalls == 0 {
 		t.Error("SetVars never called — resolved vars must be pushed on resume")
+	}
+	// The scratch read roots (#2650) are pushed on resume too, keyed off the
+	// restored repo root — the resumed run's agents must read the banked
+	// scratch the teardown preserved. Narrowed (#2869): the run family's
+	// own subtree first; this workflow declares no var referencing
+	// ${PROJECT_SCRATCH_DIR}, so the shared root does not ride along.
+	base := memory.WorkspaceScratchDir(repoRoot)
+	wantScratch := base + "\x00" + filepath.Join(base, "runs", runID) + "\x00false"
+	if len(spy.scratchDirs) == 0 || spy.scratchDirs[len(spy.scratchDirs)-1] != wantScratch {
+		t.Errorf("SetScratchDirs calls = %v, want last == run subtree %q with no shared root", spy.scratchDirs, wantScratch)
 	}
 }
 

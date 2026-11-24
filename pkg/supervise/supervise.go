@@ -52,6 +52,12 @@ type Spec struct {
 	// A pin (after expansion) or ITERION_DEFAULT_SUPERVISOR_MODEL is the
 	// operator's way out. SpecsFromWorkflow sets it.
 	GatewayWatched bool
+	// OnUsage, when set, receives every evaluation's token cost — including
+	// a FAILED evaluation's partial usage (the tokens were spent whether the
+	// decision landed or not). The runner wires it to the run's spend
+	// accounting; nil leaves the usage on the coordinator's own counters,
+	// which nothing reads (today's shape).
+	OnUsage func(in, out int)
 	// ProviderHint names the provider family the SUPERVISED nodes run
 	// on (derived from their provider:/model:/backend: by
 	// SpecsFromWorkflow). With no Model pin and no env override, the

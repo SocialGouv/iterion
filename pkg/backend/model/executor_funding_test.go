@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -66,7 +68,7 @@ func TestVerifiedAction_AnUnfundedDefaultRecoveryIsRefused(t *testing.T) {
 	exec := NewClawExecutor(NewRegistry(), &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}})
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "v"}, Goal: "g", Recovery: &ir.RecoverySpec{MaxAgentAttempts: 1}}
 
-	if _, _, err := exec.selfRepair(context.Background(), node, "out", "err", "cmd"); err == nil || !strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
+	if _, _, err := exec.selfRepair(context.Background(), node, "out", "err", "cmd", repairData{}, new(string)); err == nil || !strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
 		t.Fatalf("selfRepair err = %v, want the default-model refusal", err)
 	}
 	if err := exec.agentRecovery(context.Background(), node, map[string]any{}, "recipe"); err == nil || !strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
@@ -84,7 +86,7 @@ func TestVerifiedAction_AnUnfundedDefaultRecoveryIsRefused(t *testing.T) {
 		return newMockClient(textEvents("fixed", 10, 5)), nil
 	})
 	execFunded := NewClawExecutor(reg, &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}})
-	if _, _, err := execFunded.selfRepair(context.Background(), node, "out", "err", "cmd"); err != nil && strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
+	if _, _, err := execFunded.selfRepair(context.Background(), node, "out", "err", "cmd", repairData{}, new(string)); err != nil && strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
 		t.Fatalf("a funded wire must pass the guard, got: %v", err)
 	}
 }
@@ -167,5 +169,69 @@ func TestAnthropicFunding_ReadsWhatTheFactoryReads(t *testing.T) {
 	}
 	if got := anthropicFunding(secrets.WithCredentials(context.Background(), forfaitCreds)); got != "the run's Claude forfait" {
 		t.Errorf("a real ctx forfait token read %q, want it funding", got)
+	}
+}
+
+// Dispatch's rung-3 gate is the predicate the launch walks read
+// (ir.ToolRecoverySelfRepairRung), so the two cannot disagree about which
+// recipes HAVE a self-repair rung: rung 3 asks a model for a corrected
+// COMMAND and re-runs it, which a registry recipe — a bare registered tool
+// name — gives it nothing to do. Measured on the ladder itself, because
+// that is where the gate lives: unfunded, entering the rung aborts with the
+// named reason and the ladder logs the attempt. Mutant: gate rung 3 on
+// node.Recovery.MaxRepairAttempts > 0 alone → the registry reading reddens,
+// and a bare tool name spends a repair generation nothing can use (the
+// over-read the launch walks were refusing launches for, #2783).
+func TestVerifiedAction_OnlyARepairableRecipeEntersTheSelfRepairRung(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		command  string
+		wantRung bool
+	}{
+		{"a registry recipe (a bare tool name)", "noop_tool", false},
+		{"a shell recipe", "/bin/false", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearAnthropicFunding(t)
+			t.Setenv("ITERION_PERMISSION", "")
+			var buf bytes.Buffer
+			exec := NewClawExecutor(NewRegistry(),
+				&ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}},
+				WithLogger(iterlog.New(iterlog.LevelInfo, &buf)), WithWorkDir(t.TempDir()))
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "heal"}, Command: tc.command,
+				Goal: "the build succeeds", Postcondition: "false", Policy: ir.PolicyRecover,
+				Recovery: &ir.RecoverySpec{MaxRepairAttempts: 1},
+			}
+			// The run's own error is the ladder's verdict on an unmet
+			// postcondition; what is under test is how far it escalated.
+			_, err := exec.executeToolNode(context.Background(), node, map[string]any{})
+			entered := strings.Contains(buf.String(), "self-repair attempt 1 aborted")
+			if entered != tc.wantRung {
+				t.Errorf("%s: rung 3 entered = %v, want %v (run err: %v)\nrun log:\n%s",
+					tc.name, entered, tc.wantRung, err, buf.String())
+			}
+		})
+	}
+}
+
+// Under the AmbientRefused stamp the env pair is not the run's money: the
+// probe answers "" so the default-model guards refuse by name instead of
+// blessing a dispatch the pod env would fund.
+func TestAnthropicFunding_AmbientRefusedIgnoresTheEnvPair(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ambient")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "oat-ambient")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	if got := anthropicFunding(ctx); got != "" {
+		t.Fatalf("anthropicFunding = %q under the stamp, want \"\"", got)
+	}
+	// A sealed credential still counts: the probe exists to name it.
+	ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-sealed"},
+	})
+	if got := anthropicFunding(ctx); got == "" {
+		t.Fatal("a sealed anthropic key must count as funding under the stamp")
 	}
 }

@@ -428,8 +428,9 @@ func TestRunValidate_BundlePresetsResolve(t *testing.T) {
 	if err == nil || !strings.Contains(bad.ExecError, `preset "stale" sets "old_key", which names no var`) {
 		t.Fatalf("a stale preset key is not attributed to the preset: err=%v exec_error=%q", err, bad.ExecError)
 	}
-	// A preset file the bundle cannot read is the dry run's error, named,
-	// where run logs it and goes on.
+	// A preset file the bundle cannot read is the dry run's error, where
+	// run logs it and goes on; the file and the reason are the bundle
+	// warning's, which the dry run's sentence points at by count.
 	if err := os.MkdirAll("bnd2/presets", 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -445,8 +446,11 @@ func TestRunValidate_BundlePresetsResolve(t *testing.T) {
 	if derr := json.Unmarshal(out.Bytes(), &bad); derr != nil {
 		t.Fatalf("the JSON result does not decode: %v\n%s", derr, out.String())
 	}
-	if err == nil || !bad.Valid || !strings.Contains(bad.ExecError, "bundle presets:") || !strings.Contains(bad.ExecError, "bad.md") {
+	if err == nil || !bad.Valid || !strings.Contains(bad.ExecError, "bundle presets: 1 preset file the loader could not read") {
 		t.Fatalf("a preset file the bundle cannot read is not the dry run's error: err=%v exec_error=%q", err, bad.ExecError)
+	}
+	if !strings.Contains(out.String(), "bad.md") {
+		t.Fatalf("the preset file the dry run refused to run over is unnamed:\n%s", out.String())
 	}
 }
 

@@ -558,6 +558,11 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	defer c.persistCursor()
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
+	// The sink fires before the error check: a FAILED evaluation was billed
+	// for the turns it made (the usage rides beside the error).
+	if c.spec.OnUsage != nil {
+		c.spec.OnUsage(usage.InputTokens, usage.OutputTokens)
+	}
 	if err != nil {
 		// An eval in flight when the run tears down is cancelled with it
 		// — a normal shutdown, not a supervisor malfunction: no warn
@@ -829,7 +834,11 @@ func (c *Coordinator) inject(text, triggerFP string) error {
 		c.warn("supervise[%s]: enqueue to run %s failed: %v", c.spec.Name, c.runID, err)
 		return err
 	}
-	c.info("supervise[%s]: 📨 steered run %s (node=%q): %s", c.spec.Name, c.runID, scopeNode, truncate(text, 120))
+	// The steer is model-derived text on the RUN's logger, and this line
+	// CUTS it: the pass runs first, because a cut hands the run's matcher
+	// half a secret, which no matcher recognises (iterlog.WithRedactor's
+	// own trap). The record's own pass is then a no-op.
+	c.info("supervise[%s]: 📨 steered run %s (node=%q): %s", c.spec.Name, c.runID, scopeNode, truncate(c.logger.Redact(text), 120))
 	return nil
 }
 

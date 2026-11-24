@@ -60,7 +60,7 @@ func runWithRecipe(t *testing.T, runID, recipePath, file string, vars map[string
 		StoreDir:      storeDir,
 		RunID:         runID,
 		Vars:          vars,
-		Executor:      newScenarioExecutor(),
+		Executor:      newBudgetScenarioExecutor(),
 		NoInteractive: true,
 		MergeInto:     "none",
 	}, &cli.Printer{W: io.Discard, Format: cli.OutputJSON})

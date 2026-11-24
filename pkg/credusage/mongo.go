@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -180,12 +181,18 @@ func (c *MongoCounter) ListByTier(ctx context.Context, when time.Time, tier Tier
 
 // ListByRepo keeps the per-repository rows apart — it is the one listing
 // scoped to a single repo, so summing them would collapse the very dimension
-// asked for.
+// asked for. The repo is matched case-insensitively (memory twin folds the
+// same way, and the per-repo quota reads through this listing): a forge
+// resolves case-variant slugs to ONE repository, so the fold is an anchored,
+// quoted regex — never a substring match.
 func (c *MongoCounter) ListByRepo(ctx context.Context, when time.Time, repoID string) ([]MonthlyUsage, error) {
 	if repoID == "" {
 		return nil, nil
 	}
-	rows, err := c.find(ctx, bson.M{"repo_id": repoID, "month": monthKey(when)})
+	rows, err := c.find(ctx, bson.M{
+		"repo_id": bson.M{"$regex": "^" + regexp.QuoteMeta(repoID) + "$", "$options": "i"},
+		"month":   monthKey(when),
+	})
 	if err != nil {
 		return nil, err
 	}

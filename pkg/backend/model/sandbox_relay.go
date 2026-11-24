@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -57,6 +59,9 @@ type relayedLLMRequest struct {
 	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
 	Iteration       int       `json:"iteration"`
+	// CatalogueOnlyCount sits where LLMRequestInfo holds it: the two types
+	// convert into each other, field for field.
+	CatalogueOnlyCount int `json:"catalogue_only_count,omitempty"`
 }
 
 // relayedLLMStep is the wire form of LLMStepInfo.
@@ -74,6 +79,16 @@ type relayedLLMStep struct {
 	UsageUnreported  bool              `json:"usage_unreported,omitempty"`
 	Thinking         string            `json:"thinking,omitempty"`
 	Iteration        int               `json:"iteration"`
+	// Provider is the slot word the loop stamped (LLMStepInfo.Provider).
+	// An older container predating the field leaves it absent, which
+	// decodes to "" — the host falls back to its own derivation, the same
+	// skew tolerance as every capability an older sandbox image lacks.
+	Provider string `json:"provider,omitempty"`
+	// Credential is what the step's client spent, as the container's own
+	// walk named it through the crossing's record (LLMStepInfo.Credential) —
+	// the node's call or a subagent's, each its own. The launcher relays it
+	// verbatim. Absent from an older container: the step carries no keys.
+	Credential *credroute.Spend `json:"credential,omitempty"`
 }
 
 // relayedToolCall is the wire form of ToolCallEntry.
@@ -85,12 +100,21 @@ type relayedToolCall struct {
 // relayedToolStarted is the wire form of LLMToolStartedInfo. InputSize is
 // the size the container measured, kept whole even when Input itself is
 // clamped: the studio reads it as "how big was this call".
+//
+// A codemode program is that Input — its source — so a program over
+// relayFieldBudget crosses as the omitted-bytes marker object, not as text:
+// the run view then shows the marker and the size, never half a program.
+// ParentToolUseID and Batch place a program's nested call under the
+// program's call; a field missing here is dropped at the boundary in
+// silence, which TestRelayCarriesCodemodeLineageAndReport holds.
 type relayedToolStarted struct {
-	ToolName  string          `json:"tool"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	InputSize int             `json:"input_size"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	Iteration int             `json:"iteration"`
+	ToolName        string                `json:"tool"`
+	ToolUseID       string                `json:"tool_use_id,omitempty"`
+	ParentToolUseID string                `json:"parent_tool_use_id,omitempty"`
+	Batch           *scripthost.BatchSlot `json:"batch,omitempty"`
+	InputSize       int                   `json:"input_size"`
+	Input           json.RawMessage       `json:"input,omitempty"`
+	Iteration       int                   `json:"iteration"`
 }
 
 // relayedToolFinished is the wire form of LLMToolCallInfo. Error crosses
@@ -98,13 +122,22 @@ type relayedToolStarted struct {
 // routes the event to tool_error and makes an in-container permission
 // denial auditable. Duration crosses in milliseconds, the only precision
 // the persisted event keeps.
+//
+// Codemode is the program's report (bounds, verdict, counts): numbers and
+// codes only, so it crosses whole without a budget of its own. There is no
+// EmittedBy field, on purpose: the launcher marks its OWN events
+// (ToolEventEmittedByLauncher), and a relayed one must not be able to claim
+// that mark — TestARelayedEventCannotClaimTheLaunchersMark holds it.
 type relayedToolFinished struct {
-	ToolName   string `json:"tool"`
-	ToolUseID  string `json:"tool_use_id,omitempty"`
-	InputSize  int    `json:"input_size"`
-	Output     string `json:"output,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
-	Error      string `json:"error,omitempty"`
+	ToolName        string                `json:"tool"`
+	ToolUseID       string                `json:"tool_use_id,omitempty"`
+	ParentToolUseID string                `json:"parent_tool_use_id,omitempty"`
+	Batch           *scripthost.BatchSlot `json:"batch,omitempty"`
+	InputSize       int                   `json:"input_size"`
+	Output          string                `json:"output,omitempty"`
+	DurationMs      int64                 `json:"duration_ms"`
+	Error           string                `json:"error,omitempty"`
+	Codemode        *CodemodeReport       `json:"codemode,omitempty"`
 }
 
 // relayedRetry is the wire form of RetryInfo.
@@ -284,11 +317,25 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 		}
 	}
 	return EventHooks{
+		// The tool observers are attested concurrent-safe: send is a pure
+		// marshal of already-clamped payloads into write, and the runner's
+		// IPC writer (delegate.EnvelopeWriter) holds its own mutex, so every
+		// event crosses as one whole NDJSON line however call.parallel
+		// interleaves the nested calls. The closures hold no state across
+		// calls (parallel_observer_routes_test.go fires them concurrently in
+		// both completion orders as its witness).
+		toolObserversAudited: true,
 		OnLLMRequest: func(_ string, info LLMRequestInfo) {
 			send(string(store.EventLLMRequest), relayedLLMRequest(info))
 		},
 		OnLLMStepFinish: func(_ string, step LLMStepInfo) {
+			var credential *credroute.Spend
+			if step.Credential != (credroute.Spend{}) {
+				c := step.Credential
+				credential = &c
+			}
 			send(string(store.EventLLMStepFinished), relayedLLMStep{
+				Credential:       credential,
 				Number:           step.Number,
 				Text:             relayClampText(step.Text),
 				ToolCalls:        relayClampToolCalls(step.ToolCalls),
@@ -302,15 +349,18 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 				UsageUnreported:  step.UsageUnreported,
 				Thinking:         relayClampText(step.Thinking),
 				Iteration:        step.Iteration,
+				Provider:         step.Provider,
 			})
 		},
 		OnToolStarted: func(_ string, info LLMToolStartedInfo) {
 			send(string(store.EventToolStarted), relayedToolStarted{
-				ToolName:  info.ToolName,
-				ToolUseID: info.ToolUseID,
-				InputSize: info.InputSize,
-				Input:     relayClampJSON(info.Input),
-				Iteration: info.Iteration,
+				ToolName:        info.ToolName,
+				ToolUseID:       info.ToolUseID,
+				ParentToolUseID: info.ParentToolUseID,
+				Batch:           info.Batch,
+				InputSize:       info.InputSize,
+				Input:           relayClampJSON(info.Input),
+				Iteration:       info.Iteration,
 			})
 		},
 		OnToolCall: func(_ string, info LLMToolCallInfo) {
@@ -319,12 +369,15 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 				errMsg = relayClampText(info.Error.Error())
 			}
 			send(string(store.EventToolCalled), relayedToolFinished{
-				ToolName:   info.ToolName,
-				ToolUseID:  info.ToolUseID,
-				InputSize:  info.InputSize,
-				Output:     relayClampText(info.Output),
-				DurationMs: info.Duration.Milliseconds(),
-				Error:      errMsg,
+				ToolName:        info.ToolName,
+				ToolUseID:       info.ToolUseID,
+				ParentToolUseID: info.ParentToolUseID,
+				Batch:           info.Batch,
+				InputSize:       info.InputSize,
+				Output:          relayClampText(info.Output),
+				DurationMs:      info.Duration.Milliseconds(),
+				Error:           errMsg,
+				Codemode:        info.Codemode,
 			})
 		},
 		OnLLMRetry: func(_ string, info RetryInfo) {
@@ -440,7 +493,12 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 					calls[i] = ToolCallEntry(tc)
 				}
 			}
+			var credential credroute.Spend
+			if s.Credential != nil {
+				credential = *s.Credential
+			}
 			h.OnLLMStepFinish(nodeID, LLMStepInfo{
+				Credential:       credential,
 				Number:           s.Number,
 				Text:             s.Text,
 				ToolCalls:        calls,
@@ -454,6 +512,7 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 				UsageUnreported:  s.UsageUnreported,
 				Thinking:         s.Thinking,
 				Iteration:        s.Iteration,
+				Provider:         s.Provider,
 			})
 		}
 		return true, nil
@@ -464,11 +523,13 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 		}
 		if h.OnToolStarted != nil {
 			h.OnToolStarted(nodeID, LLMToolStartedInfo{
-				ToolName:  ts.ToolName,
-				ToolUseID: ts.ToolUseID,
-				InputSize: ts.InputSize,
-				Input:     ts.Input,
-				Iteration: ts.Iteration,
+				ToolName:        ts.ToolName,
+				ToolUseID:       ts.ToolUseID,
+				ParentToolUseID: ts.ParentToolUseID,
+				Batch:           ts.Batch,
+				InputSize:       ts.InputSize,
+				Input:           ts.Input,
+				Iteration:       ts.Iteration,
 			})
 		}
 		return true, nil
@@ -479,11 +540,14 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 		}
 		if h.OnToolCall != nil {
 			info := LLMToolCallInfo{
-				ToolName:  tc.ToolName,
-				ToolUseID: tc.ToolUseID,
-				InputSize: tc.InputSize,
-				Output:    tc.Output,
-				Duration:  time.Duration(tc.DurationMs) * time.Millisecond,
+				ToolName:        tc.ToolName,
+				ToolUseID:       tc.ToolUseID,
+				ParentToolUseID: tc.ParentToolUseID,
+				Batch:           tc.Batch,
+				InputSize:       tc.InputSize,
+				Output:          tc.Output,
+				Duration:        time.Duration(tc.DurationMs) * time.Millisecond,
+				Codemode:        tc.Codemode,
 			}
 			// A failed call is a tool_error host-side — the shape a
 			// permission denial or a tool crash is audited under.

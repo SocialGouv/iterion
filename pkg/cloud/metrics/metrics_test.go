@@ -24,11 +24,20 @@ func TestNew_registersAllMetrics(t *testing.T) {
 	r.LLMTokensTotal.WithLabelValues("claw", "x", "input").Add(10)
 	r.LLMCostUSDTotal.WithLabelValues("claw", "x").Add(0.001)
 	r.RunnerHeartbeatErrors.Inc()
+	r.BotOverrideShadowsNewer.WithLabelValues("review-pr").Set(1)
+	r.BotShadowCheckUnavailable.Set(0)
+	r.BotOverrideUnorderableVersion.WithLabelValues("review-pr").Set(1)
 }
 
 func TestHandler_servesPrometheusText(t *testing.T) {
 	r := New()
 	r.RunsCreatedTotal.WithLabelValues("finished").Inc()
+	// The override-shadow series an alert rule names: a gauge left out of
+	// the MustRegister list is set happily and scraped by nobody, so the
+	// alert stays silent forever on a deployment that looks instrumented.
+	r.BotOverrideShadowsNewer.WithLabelValues("review-pr").Set(1)
+	r.BotShadowCheckUnavailable.Set(1)
+	r.BotOverrideUnorderableVersion.WithLabelValues("review-pr").Set(1)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -40,6 +49,15 @@ func TestHandler_servesPrometheusText(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if !strings.Contains(string(body), "iterion_runs_created_total") {
 		t.Errorf("/metrics body missing counter:\n%s", string(body))
+	}
+	for _, name := range []string{
+		"iterion_bot_override_shadows_newer",
+		"iterion_bot_shadow_check_unavailable",
+		"iterion_bot_override_unorderable_version",
+	} {
+		if !strings.Contains(string(body), name) {
+			t.Errorf("/metrics body missing %s (registered?):\n%s", name, string(body))
+		}
 	}
 }
 

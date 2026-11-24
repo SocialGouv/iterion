@@ -107,3 +107,46 @@ func TestForgeRequirements_SecretNameDefault(t *testing.T) {
 		t.Errorf("explicit secret: want gl_pat, got %q", got)
 	}
 }
+
+// The actions scope is the workflow-dispatch opt-in (#3130): accepted at
+// every level like the other scopes, and named — with every other scope —
+// in the refusal an unknown one draws, so the message cannot lag the set
+// validation accepts.
+func TestLoadManifest_AcceptsTheActionsScopeAndNamesEveryScopeOnARefusal(t *testing.T) {
+	m, err := LoadManifest(writeManifestForTest(t, "name: kick\nschema_version: 1\nforge:\n  token_scopes:\n    actions: write\n"))
+	if err != nil {
+		t.Fatalf("a manifest declaring actions: write = %v, want accepted", err)
+	}
+	if got := m.Forge.TokenScopes[ForgeScopeActions]; got != "write" {
+		t.Fatalf("token_scopes[%s] = %q, want write", ForgeScopeActions, got)
+	}
+	_, err = LoadManifest(writeManifestForTest(t, "name: bad\nschema_version: 1\nforge:\n  token_scopes:\n    deploy: write\n"))
+	for _, scope := range knownForgeScopeNames() {
+		errContains(t, err, scope)
+	}
+}
+
+// A manifest declaring the actions scope never chooses the workflow its
+// schedule dispatches: an invocation default_vars naming it — schedule or
+// keepalive — is refused at decode, naming the var; the same default is
+// accepted where the scope is not declared, and the operator's own row stays
+// the only source.
+//
+// Mutation witnessed: the validateDispatchWorkflowDefault call removed from
+// decodeManifest → the schedule default decodes → red.
+func TestLoadManifest_TheActionsScopeRefusesAWorkflowDefault(t *testing.T) {
+	const scope = "forge:\n  token_scopes:\n    actions: write\n"
+	for name, inv := range map[string]string{
+		"schedule":  "invocations:\n  - kind: schedule\n    mode: direct\n    schedule: { suggested_cron: \"7 * * * *\", default_vars: { workflow: deploy-prod.yml } }\n",
+		"keepalive": "invocations:\n  - kind: keepalive\n    mode: direct\n    keepalive: { interval: 5m, default_vars: { workflow: deploy-prod.yml } }\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadManifest(writeManifestForTest(t, "name: kick\nschema_version: 1\n"+scope+inv))
+			errContains(t, err, DispatchWorkflowVar)
+			errContains(t, err, "never supplies it")
+			if _, err := LoadManifest(writeManifestForTest(t, "name: kick\nschema_version: 1\n"+inv)); err != nil {
+				t.Fatalf("the same default without the actions scope = %v, want accepted (it binds nothing)", err)
+			}
+		})
+	}
+}

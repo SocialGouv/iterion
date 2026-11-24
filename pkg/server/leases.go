@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strconv"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -18,6 +19,10 @@ const (
 	leaseBoardIssueSync      = "board-issue-sync"
 	leaseAssistantWatchSweep = "assistant-watch-sweep"
 	leaseForgeTokenRefresh   = "forge-token-refresh"
+	leaseOrgPurgeSweeper     = "org-purge-sweeper"
+	leasePriceFeedSync       = "price-feed-sync"
+	leasePoolSignalSync      = "pool-signal-sync"
+	leaseConnectorPollers    = "connector-pollers"
 )
 
 // leasedNets is every name above, with what runs on every replica while that
@@ -46,6 +51,25 @@ var leasedNets = []struct {
 	{leaseAssistantWatchSweep, "the assistant run-watch sweep, whose every pass loads each run watching a card, walks its targets and delivers the due episodes once per replica", (*Server).assistantWatchStarts},
 	{leaseBoardIssueSync, "the forge→board issue sync, whose every pass then lists EVERY sync-enabled repo's issue window once per replica", (*Server).boardIssueSyncStarts},
 	{leaseForgeTokenRefresh, "the forge token refresh sweep, whose every pass refreshes each due OAuth token once per replica — on a forge that rotates refresh tokens the loser ends needs_reauth and writes its stale copy over the winner's", (*Server).forgeTokenRefreshStarts},
+	{leaseOrgPurgeSweeper, "the nightly org purge, whose every pass lists and deletes the S3 objects of each run of every org past its grace once per replica — the run batch bounds one replica's pass, not the deployment's", (*Server).orgPurgeStarts},
+	{leasePriceFeedSync, "the price-feed refresh sweep, whose every pass re-fetches every due feed's tariff table once per replica and last-write-wins the durable state (ADR-163)", (*Server).priceFeedSyncStarts},
+	{leasePoolSignalSync, "the pool-signal sweep, whose every pass probes each attached pool's OAuth entries' usage windows once per replica and last-write-wins the shared readings (ADR-164)", (*Server).poolSignalSyncStarts},
+	{leaseConnectorPollers, "the connector pollers, whose every pass calls each due poller's vendor once per replica — the generation fence keeps one tick's writes, but every replica spends the connection's rate limit", (*Server).connectorPollersStart},
+}
+
+// priceFeedSyncStarts is the price-feed sweep's start condition: both
+// tenant stores wired — the cloud shape. Same two readers as
+// gateSweepStart.
+func (s *Server) priceFeedSyncStarts() bool {
+	return s.priceFeedConfigs != nil && s.priceFeedStates != nil
+}
+
+// poolSignalSyncStarts is the pool-signal sweep's start condition
+// (server_lifecycle.go): the attachment store, the broker, the readings
+// ledger, the probe and the oauth store wired — the cloud shape whose
+// readings the margin predicate consumes.
+func (s *Server) poolSignalSyncStarts() bool {
+	return s.credPoolAttachments != nil && s.credPool != nil && s.usageCaps != nil && s.poolUsageProbe != nil && s.oauthStore != nil
 }
 
 // forgeTokenRefreshStarts is the forge token refresh sweep's start condition
@@ -86,6 +110,50 @@ func (s *Server) gateSweepStarts() bool {
 // read. Same two readers as gateSweepStart.
 func (s *Server) boardIssueSyncStarts() bool {
 	return s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil
+}
+
+// leaseHandoverEnv is the operator's override over the handover: a term that
+// ends on the work failing gives work up, so the mechanism keeps a greppable
+// escape hatch rather than an implicit one. It takes "off" (or "0", "false",
+// "no") to disarm it on every net, or a pass count to replace K.
+const leaseHandoverEnv = "ITERION_LEASE_HANDOVER"
+
+// leaseHandoverFromEnv reads leaseHandoverEnv. A value that is neither a
+// disarming word nor a positive pass count keeps the default and warns naming
+// the variable: an operator's explicit choice is never replaced in silence,
+// and a typo must not silently disarm a net's cover.
+func leaseHandoverFromEnv(getenv func(string) string, warnf func(format string, args ...any)) (off bool, passes int) {
+	raw := strings.TrimSpace(getenv(leaseHandoverEnv))
+	if raw == "" {
+		return false, 0
+	}
+	switch strings.ToLower(raw) {
+	case "off", "0", "false", "no":
+		if warnf != nil {
+			warnf("leases: %s=%s — no leased net will hand its term over on the work failing; a replica whose egress is broken keeps renewing while every pass fails", leaseHandoverEnv, raw)
+		}
+		return true, 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		if warnf != nil {
+			warnf("leases: %s=%q is neither off nor a positive pass count — keeping the default of %d consecutive failing passes", leaseHandoverEnv, raw, lease.DefaultHandoverPasses)
+		}
+		return false, 0
+	}
+	return false, n
+}
+
+// newLeaseHealth is the handover policy of ONE leased net: K consecutive
+// passes that attempted work and reached nothing end its term, this replica
+// backs off so a peer takes the lease, and the fleet circuit breaker stops the
+// churn when every peer gives it back just as sick.
+//
+// One per net, never shared: what it keeps is this replica's reach through
+// THAT net's far side, and one policy behind two nets would let a broken forge
+// end the board sync's term on the gate sweep's failures.
+func (s *Server) newLeaseHealth() *lease.Health {
+	return &lease.Health{Passes: s.leaseHandoverPasses, Off: s.leaseHandoverOff}
 }
 
 // newReplicaID names this process as a lease owner: the host — the pod name

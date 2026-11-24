@@ -25,7 +25,10 @@ an EXISTING one, and a resume driven by an existing run's own machinery
 assistant mission and watch coordinators) re-enters the engine on a run
 that already exists. Both are authorized by the run-by-id ladder
 (ADR-103) — a member of the run's team — and neither is metered; that is
-a known follow-up, not a property of the gate.
+a known follow-up, not a property of the gate. That holds for a TRUSTED
+run only: an untrusted (fork review lane) run is never resumed by a
+surface that crossed no gate — see the fork lane paragraph under
+[Limits, fields and platform defaults](#limits-fields-and-platform-defaults).
 
 ## The launch-admission order
 
@@ -42,14 +45,16 @@ schedule tick, trigger spine, retry sweeper). The rung is fail-closed: an
 identity carrying neither a `member` role nor one of those kinds is
 refused.
 
-The same rung guards the surfaces that FILL a queue a machine principal
-drains. The board's Ready column is one: the dispatcher drains it under a
-principal the gate exempts, so a card written ready is a launch its author
-asked the platform to perform. A trigger subscription is the other: the
-spine evaluates it against every matching event and launches under the
-same kind of exempt principal, so a stored subscription is a standing
-launch order. The rung is therefore taken at the mount, by every
-state-changing method of:
+The same rung guards the surfaces a machine principal CONSUMES. The
+board's Ready column is one: the dispatcher drains it under a principal
+the gate exempts, so a card written ready is a launch its author asked
+the platform to perform. A trigger subscription is another: the spine
+evaluates it against every matching event and launches under the same
+kind of exempt principal, so a stored subscription is a standing launch
+order. A team's memory space is the third: the engine reads its documents
+back into every agent run that opens the space, so a document written
+there is instruction the platform will follow. The rung is therefore
+taken at the mount, by every state-changing method of:
 
 - the three board registrars — `registerPipelineBoardRoutes`
   (`/api/v1/pipeline-board/…`), `registerCloudBoardRoutes` (the
@@ -57,7 +62,10 @@ state-changing method of:
   `registerBoardForgeRoutes` (the per-card push / pull-request / merge
   endpoints under the same `/api/v1/native/` prefix);
 - `registerTriggerRoutes` — `/api/v1/triggers` and
-  `/api/v1/bots/{name}/triggers/from-invocation`.
+  `/api/v1/bots/{name}/triggers/from-invocation`;
+- `registerMemoryRoutes` — the seven `/api/memory/*` routes, where the
+  write, the delete and the import take it (a global-space mutation then
+  takes platform authority on top, `requireMemoryWriteAuth`).
 
 Each answers the same `member_role_required` (403), with a detail naming
 what the caller was changing; `GET`/`HEAD` stay readable by a `viewer`.
@@ -107,7 +115,9 @@ is unaffected by one — including a wiring whose run store cannot count active
 runs, where step 3 is inert and the slot reserve is inert with it.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
-scoping). Local mode (no identity store) has no gate. The gate
+scoping). Local mode (no identity store) has no gate. Neither bypass
+admits an untrusted subject: a fork run is refused there instead (see
+[the fork lane's bound](#limits-fields-and-platform-defaults) below). The gate
 **fail-opens** on a Mongo / store error so a transient blip doesn't
 wedge every launch — quotas are an operator policy, not a hard security
 boundary. The one nuance: when `AllowRun` errors at step 5 the launch
@@ -137,7 +147,7 @@ prevent (#1725, `runview.RunMayHaveStarted`):
 | `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
 | Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
 | `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
-| `POST /api/runs/{id}/fork` and `/rewind` (a run created from an existing one), and the resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team | **no** — known follow-up |
+| `POST /api/runs/{id}/fork` and `/rewind` (a run created from an existing one), and the resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team; on an untrusted run the resumes are refused instead (`resume_not_admitted`) | **no** — known follow-up |
 | Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
 
 On the board dispatcher a denial is a **launch refusal** of the
@@ -186,6 +196,89 @@ to a team and by the caller's role in it.
 | Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
 | Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
 | Per-repository quota | `budget_floor` platform settings (`repo_quotas`) | n/a — runtime-mutable, no env default | `repo_quota_exceeded` | 402 |
+| Fork review lane: one contributor's monthly run quota (ADR-162) | `Org.ForkAuthorRunQuota` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA` (default **20**) | `fork_author_run_quota_exceeded` | 402 |
+| Fork review lane: one contributor's monthly LLM cost cap (ADR-162) | `Org.ForkAuthorCostCapUSD` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD` (default **$20**) | `fork_author_cost_cap_exceeded` | 402 |
+| Fork review lane: the run is unfunded — the team holds no vendor API key of its own for a provider the bot pins, or a route rides the gateway, is decided on the runner, names no provider the server can read, or may spend an anthropic-wire default the team holds no slot of | n/a — the team's BYOK keys | n/a — not configurable | `fork_run_unfunded` | 422 |
+| Fork review lane: the lane's pool is refused by the fork lane's pool rule | n/a — the team's pool mapping | n/a — not configurable | `fork_lane_pool_refused` | 422 |
+
+The two fork review lane rows are the one place this table's "zero means no
+limit" convention is inverted, deliberately (ADR-162 Q4): that bound is the
+perimeter against an OUTSIDE party — a pull request author who owes the
+tenant nothing — so its unset value is a number, not an opening. The ladder
+for both rows: a **negative** org field (`-1`) is the explicit `unbounded`
+escape hatch; `0` inherits the platform default (20 runs / $20); positive
+is the cap; and the platform env var accepts the literal `unbounded` to
+ship the deployment with no default bound at all. On the env var the hatch
+has that ONE spelling: unset ships the default, a positive number is the
+cap, and anything else — `0` included, which the neighbouring
+`ITERION_ORG_DEFAULT_*` knobs read as "no limit" — refuses the server boot
+(`invalid fork-author bound`) rather than opening the perimeter or being
+silently replaced by the default. Both are metered on
+`orgusage.ForkAuthorSubject` — the author's NUMERIC forge id, keyed beside
+the org's own budget — by the same launch-gate round trip that meters the
+org, and charged per run by the runner (`recordOrgSpend`'s second charge).
+
+The fork lane also closes every fail-open arm the rows above keep for
+ordinary work (ADR-162 decision 5, amending ADR-033): an untrusted launch
+is refused — not admitted unmetered — when the team or org cannot be read
+(`fork_team_unreadable`, `fork_org_unreadable`), when no usage counter is
+wired, the subject names no author, or the launch would ride the
+super-admin or local-mode bypass (`fork_metering_unavailable`), or when
+the metering itself errors (`fork_metering_error`); all four are 503s a
+surface may retry, on whichever surface entered (delivery, debounce flush,
+retry sweeper).
+
+Before it meters anything, the gate also asks whether the fork run can be
+funded at all: a fork run is pool-stamped, so it spends only its team's own
+API keys — its vendor keys, and its `openai_compatible` gateway key on the
+literal gateway routes it serves — on routes decided before the run (no
+shared tier, no runner env, no forfait, no route riding the runner's gateway,
+no `${…}` dial the pool's runner
+expands, no route the server cannot attribute to a provider, no anthropic-wire
+default read the team holds no slot of —
+[webhooks.md](webhooks.md#fork-lane-funding)). A run those keys
+cannot fund is refused `fork_run_unfunded` (422, the publisher's sentence
+naming each refused route site as `detail`) with neither the org's counter
+nor the author's bound charged — on the gesture's delivery, the debounce
+flush, the durable retry and every gated resume; the retry sweeper abandons
+it. The same judge answers the fork lane's pool rule first
+(`fork_lane_pool_refused`, 422) and a program that cannot be built
+(`fork_funding_unjudgeable`, 422 — the bot is gone, its source no longer
+compiles), both abandoned by the retry sweeper; a judge that cannot answer
+is `fork_funding_unreadable`, a 503 the surface may retry.
+
+A run built FROM a fork run is that author's spend too: a sub-bot child
+(`CreateChildRun`), a fork of the run (`POST /api/runs/{id}/fork`) and a
+launch naming it as `parent_run_id` or delegation source all inherit its
+author subject with its trust (`store.InheritTrustAndAuthor`), so the
+child's resume re-enters the same bound instead of being refused for want
+of an author. The launch is judged as what it inherits: `POST /api/runs`
+reads the trust and author subject its `parent_run_id` and `source_run_id`
+hand it (`runview.Service.LaunchSourceAdmission`) BEFORE the gate, so a
+launch built from a fork run meets every arm above — metered on the
+author's bound, refused at its ceilings, refused on the super-admin and
+local-mode bypasses. The run service holds every launch to the admission
+its surface's gate stamped (`runview.CheckLaunchAdmitted`, the launch twin
+of the resume's choke point below): an untrusted launch with no admission,
+or one judged on another trust or author than its source runs hand it, is
+refused — **409 `launch_not_admitted`** on the run launch API — nothing
+compiled or published.
+
+A fork run's RESUME owes the same bound, whichever surface asks. The gated
+resumes (`POST /api/runs/{id}/resume`, the WS answer, the retry sweeper)
+build their subject from the run document (`resumeLaunchSubject`), so its
+trust and the author subject its launch metered re-enter the gate, and a
+run document the gate could not read is an unknown trust, refused as a
+transient 503 (`resume_run_unreadable` — the sweeper re-arms, never resumes
+on the retry row alone). What the gate admitted rides the resume to the run
+service, the one choke point every resume crosses
+(`runview.CheckResumeAdmitted`, judged again by the cloud publisher on the
+document it republishes from): a resume whose admission does not name the
+run's own trust and author subject is refused, nothing claimed or
+published. The ungated resumes (`/answer-human`, an async answer's
+auto-resume, an assistant mission's `run.resume`) carry no admission, so on
+an untrusted run they answer **409 `resume_not_admitted`** — the gated
+resume, answers in its body, is the way to continue it.
 
 `Status`, `MonthlyCostCapUSD`, and `MonthlyRunQuota` are **Org**-document
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org
@@ -201,7 +294,13 @@ is a separate question with its own two gates — the org's
 platform tier's `platform_credentials` audience (which tenants may draw on
 the deployment's). Both are documented in
 [cloud-llm-credentials.md](cloud-llm-credentials.md); neither denies a
-launch, they decide what the run is handed.
+launch, they decide what the run is handed. A third, per-credential limit
+lives on the key itself: `max_concurrent_runs`
+([byok.md](byok.md#concurrency-ceiling--what-counts)) is a hard cap held by an
+atomic reservation at launch and resume, and a full key **parks** a launch
+(`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes)
+rather than denying it — an operator's resume on a full key answers 429
+(`credential_at_capacity`), whichever surface resumes it.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
@@ -341,6 +440,13 @@ node's route from three events, in order: `delegate_started.declared_model`
   another model (an `ANTHROPIC_MODEL` override), never re-routed by the
   reported id's spelling — OpenRouter reports `anthropic/claude-sonnet-4.5`
   for the model it served.
+- A fallback chain books the routes it abandoned after they spent on the one
+  `delegate_finished` / `delegate_error` that ends it, and itemises them in
+  `folded_spend` (each slice's `backend`, `route_model`, `provider`,
+  `fingerprint`, `tokens`, `cost_usd`): the meter keys each slice on its own
+  route and the rest of the figure on the event's. A claw slice whose loop
+  the meter already priced step by step is not counted again, whichever
+  route ended the chain.
 - Without either fact (an older runner, a backend reporting a bare id), the
   route is rebuilt from the declaration: a report equal to the declared
   model's wire id keeps the declared route; a report whose prefix is a
@@ -440,6 +546,14 @@ numbers:
 - **A repository's spend spans tenants.** Two teams can serve one repo with
   their own credentials, so the admin view sums both; the team view returns
   only that team's share.
+- **The slug's case does not split a bill.** A forge resolves case-variant
+  slugs to one repository — GitHub serves `O/Hungry` and `o/hungry`
+  identically — so the reads fold the case instead of keying on a spelling:
+  the per-repo quota match, and every `--repo` / `?repo=` listing, answer for
+  every spelling a run was stamped under. A URL's `.git` suffix — any case,
+  doubled, trailing slashes — folds to a fixed point at the derivation
+  (`forge.CanonicalRepoSlug`). The rows keep the spelling their run arrived
+  with; the reads count them together.
 - **A run whose repository cannot be read meters without one.** Same rule as
   the route attribution: charged to the credential, attributed to nobody —
   never guessed.
@@ -466,7 +580,11 @@ gates already enforce.
 >
 > A real guarantee needs durable allocation — reserve at admission, settle
 > against actual spend when the attempt ends, reconcile on crash — tracked on
-> [#950](https://github.com/SocialGouv/iterion/issues/950) and not built.
+> [#950](https://github.com/SocialGouv/iterion/issues/950) and **not built**.
+> Its design is
+> [ADR-155](adr/155-reserved-capacity-is-a-durable-allocation.md): what this
+> deployment enforces is what is documented above, not what that record
+> decides.
 
 The difference is not academic. On 2026-09-08 campaign bots and the PR
 reviewer shared one Anthropic subscription; when its five-hour window closed
@@ -647,7 +765,8 @@ expect: a launch judged as ordinary work faces the ceiling its OWN reservation
 lowered, so a *missing* subject makes a reservation refuse the very workload it
 protects. Every automated surface names its bot — the webhook launches, the
 trigger spine, the cloud scheduler, the board dispatcher, the retry sweeper —
-and so does `POST /api/runs` (from the request's `bot_id`).
+and so does `POST /api/runs` (from the request's `bot_id` — the studio's
+launch of a bot posts one in cloud, pinned to the program its form rendered).
 
 A resume names its bot too — `POST /api/runs/{id}/resume` and the WS answer
 that resumes a run both read it off the RUN, which is the only place it is
@@ -674,9 +793,15 @@ reachability probe and the managed-secret mint, so an over-quota repository
 costs neither. Only the repo half — the monthly arm meters, and the launch has
 already charged its run slot by then.
 
-The one surface that knows a repository and deliberately passes none is the
-**board dispatcher**: a card carries a clone URL, and this quota keys on the
-forge slug the meter writes, never on a second identity derived from a URL.
+The **board dispatcher** is inside the perimeter too (#2371, D33): the card
+carries the forge slug beside its clone URL (the webhook payload's own project
+path, stamped at carding; the stamp is honored only where no clone URL
+contradicts it, and a URL that is present is canonicalised back to the slug
+against the card's integration), and `processBoardCard` both stamps it on the
+run — so the
+meter charges the card's spend to its repository — and passes it to the gate.
+The sanctioned consequence: a board card whose repository sits at its ceiling
+is *refused* like any other launch, where it previously launched uncounted.
 
 ## Reading usage
 
@@ -771,10 +896,13 @@ accounting lives in the Mongo counters above.
 | `iterion_runs_orphan_recovered_total` | — | The orphan sweeper's flips to `failed_resumable` |
 | `iterion_runs_usage_window_blocked_total` | — | Runs stopped by an exhausted provider quota window |
 | `iterion_runs_retry_scheduled_total` | — | Durable automatic retries armed for a provider reset |
-| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total` |
+| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed` / `slot_wait` / `window_wait` / `release_deferred`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total`; `window_wait` is a due row held until the usage window its record names, spending no attempt; `release_deferred` is a run released on its credential window's answer whose resume was refused for a transient reason, re-armed on the ordinary backoff without spending an attempt ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)) |
 | `iterion_runs_retry_pending` | — | Due-retry rows observed in the latest bounded sweep (sampled gauge); probe-pulled rows are due rows, so a parked fleet keeps a floor under it |
 | `iterion_runs_retry_sweeps_total` | — | Retry-sweeper passes; flat at zero in cloud means the sweeper is not running, not merely idle |
-| `iterion_runs_retry_probes_total` | `result` (`pulled` / `still_blocked` / `stood_down`) | Pull-forward probes of a not-yet-due wait, by what the probe FOUND: `pulled` is the pod spent, `still_blocked` the preflight refusing again, `stood_down` a pull whose resume never reached the runner — `pulled` minus the other two found the window reopened, which is how a wasted pod is told from a useful one. A probe spends no attempt and no monthly run-quota unit, unless the due pass reaches its resume more than the marker's TTL (1 h) after the pull: that resume IS metered and the park it causes charges an attempt, up to `max_attempts` of each per run — while the probes themselves stay bounded by `budget` per provider wall, because the ledger belongs to the wall ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)) |
+| `iterion_bot_override_shadows_newer` | `slug` | 1 while a **platform** bot override is strictly older than the bundle this deployment would otherwise serve — the override wins by design, so the newer baked bundle does not run until it is re-pushed or dropped ([platform-bots.md](platform-bots.md#an-override-outlives-the-release-that-made-it-necessary)). Sampled every five minutes — twelve readings inside the hour its alert waits — with every row rewritten per pass and the vanished slugs retired after those writes, so a dropped override loses its series rather than paging forever, while no scrape reads an empty inventory for one that is still shadowing |
+| `iterion_bot_shadow_check_unavailable` | — | 1 when a leg of that check could not be read (the catalog walk, or the platform rows), including a deployment with no bot root on disk at all. The per-slug gauges then HOLD their last values: a check that could not run must not publish the same zero as a clean inventory |
+| `iterion_bot_override_unorderable_version` | `slug` | 1 when the override and the bundle below it cannot be ordered (`Manifest.version` is free-form, so a suffixed pin parses as nothing; and a manifest is optional on both sides, so either may declare no version), and no staleness verdict is made either way. Never the clean 0 of a row with nothing to report: the override still outranks what sits below it. Informational: no alert rule reads this series, because a page on a version iterion cannot order is one nobody can clear |
+| `iterion_runs_retry_probes_total` | `result` (`pulled` / `still_blocked` / `stood_down`) | Pull-forward probes of a not-yet-due wait, by what the probe FOUND: `pulled` is the pod spent — a credential window's canary, a run released on its answer, or a wait probed on its own — `still_blocked` the preflight refusing again, `stood_down` a pull whose resume never reached the runner — `pulled` minus the other two found the window reopened, which is how a wasted pod is told from a useful one. A probe spends no attempt and no monthly run-quota unit, unless the due pass reaches its resume more than the marker's TTL (1 h) after the pull: that resume IS metered and the park it causes charges an attempt, up to `max_attempts` of each per run — while the probes themselves stay bounded by `budget` per provider wall, because the ledger belongs to the wall ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)) |
 
 The starter alert pack
 ([charts/iterion/templates/prometheus-rule.yaml](../charts/iterion/templates/prometheus-rule.yaml))
@@ -785,6 +913,8 @@ fires:
 - **IterionDLQNotEmpty** when `iterion_dlq_depth > 0` for 10 minutes.
 - **IterionRunnerHeartbeatErrors** on `increase(iterion_runner_heartbeat_errors_total[5m]) > 3`.
 - **IterionOrphanRunsRecovered** on `increase(iterion_runs_orphan_recovered_total[30m]) > 0`.
+- **IterionBotOverrideShadowsNewer** at `max by (slug) (iterion_bot_override_shadows_newer) > 0` for an hour — aggregated across replicas because each pod measures its OWN baked image against the shared platform rows, so an un-aggregated expression is one page per pod.
+- **IterionBotShadowCheckUnavailable** when `max(iterion_bot_shadow_check_unavailable) == 1` for 30 minutes: while it fires, no override can be certified current.
 
 The thresholds are deliberately conservative starting points — tune
 them per deployment.

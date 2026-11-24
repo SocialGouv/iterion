@@ -7,6 +7,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func newTestRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
@@ -76,26 +78,32 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
-	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", ""); err != nil {
+	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", "", store.RunTrustFork, true, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	g, ok := s.lookup("tok1")
+	g, ok := s.Lookup("tok1")
 	if !ok || !g.Capabilities["board.read"] || !g.Capabilities["board.move"] {
 		t.Fatalf("lookup = %+v ok=%v", g.Capabilities, ok)
 	}
 	if g.Capabilities["board.create"] {
 		t.Errorf("ungranted cap leaked")
 	}
+	// The trust round-trips: the connector facade's credential resolution
+	// (#2758) fails closed on a grant whose trust did not survive the move
+	// between replicas.
+	if !g.TrustStated || g.Trust != string(store.RunTrustFork) {
+		t.Errorf("trust = %q stated=%v, want fork stated — a fork grant must survive the round trip", g.Trust, g.TrustStated)
+	}
 	s.Revoke("tok1")
-	if _, ok := s.lookup("tok1"); ok {
+	if _, ok := s.Lookup("tok1"); ok {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
-	if err := s.Register("tok2", []string{"board.read"}, "", ""); err != nil {
+	if err := s.Register("tok2", []string{"board.read"}, "", "", store.RunTrustDefault, true, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
-	if _, ok := s.lookup("tok2"); ok {
+	if _, ok := s.Lookup("tok2"); ok {
 		t.Errorf("token should have expired via TTL")
 	}
 }
@@ -107,7 +115,7 @@ func TestValkeyBoardMCPTokenStore_RegisterSurfacesSetFailure(t *testing.T) {
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
 	mr.SetError("valkey down")
-	err := s.Register("secret-token", []string{"board.read"}, "", "")
+	err := s.Register("secret-token", []string{"board.read"}, "", "", store.RunTrustDefault, true, "")
 	if err == nil {
 		t.Fatal("Register should surface the Set failure")
 	}
@@ -147,4 +155,44 @@ func TestValkeyAuthRateLimiter_AllowDenyRefill(t *testing.T) {
 	if ok, _ := rl.allow("other", cfg); !ok {
 		t.Errorf("independent key should be allowed")
 	}
+}
+
+// The run's WORKSPACE rides the grant like its trust does: the facade's
+// project tier is rooted at THE RUN'S working directory, whichever replica
+// serves the call. And a payload written before the field existed reads as
+// "none" — a rolling replica must not invent a workspace for a token that
+// never carried one.
+//
+// Mutation that reddens this: drop WorkDir from boardTokenPayload or from
+// Register's marshal.
+func TestABoardTokenCarriesTheRunsWorkspace(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	s := newValkeyBoardMCPTokenStore(rdb, nil)
+
+	if err := s.Register("tok-ws", []string{"board.read"}, "", "t1", store.RunTrustDefault, true, "/srv/worktrees/issue-42"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	g, ok := s.Lookup("tok-ws")
+	if !ok {
+		t.Fatal("lookup missed")
+	}
+	if g.WorkDir != "/srv/worktrees/issue-42" {
+		t.Errorf("workDir = %q, want the run's own workspace", g.WorkDir)
+	}
+
+	// Legacy shape: a payload with no work_dir at all.
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	if err := rdb.Set(ctx, boardTokenKeyPrefix+"tok-legacy",
+		[]byte(`{"caps":["board.read"],"trust":"fork","trust_stated":true}`), 0).Err(); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	g, ok = s.Lookup("tok-legacy")
+	if !ok {
+		t.Fatal("legacy lookup missed")
+	}
+	if g.WorkDir != "" {
+		t.Errorf("legacy payload workDir = %q, want empty — the facade must not guess a workspace", g.WorkDir)
+	}
+	_ = mr
 }

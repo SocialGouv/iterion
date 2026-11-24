@@ -117,6 +117,10 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
 	if err != nil || run == nil {
+		// Same accounting as the reconciler's offer: an unreadable run is an
+		// attempt that did none of its work, and the cause is the store's
+		// (recordGateRunUnreadable).
+		recordGateRunUnreadable(ctx, err)
 		return nil
 	}
 	// The sweep net offers every run in the notifiable window, cancelled and
@@ -130,11 +134,11 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	}
 	// A run that will resume is still expected to post its own verdict; acting
 	// on the interim state would fire on a gate that is about to change. Only
-	// an ARMED retry makes that true (same distinction as the reconciler): a
-	// failed_resumable with nothing coming back for it is final, and a red
-	// verdict it did post before dying deserves its fix pass.
-	if run.Status == store.RunStatusFailedResumable &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+	// something coming back for it makes that true — the reconciler's own
+	// reading (runWillResume): a failed_resumable with nothing coming back for
+	// it is final, and a red verdict it did post before dying deserves its
+	// fix pass.
+	if runWillResume(run, false, time.Now().UTC()) {
 		return nil
 	}
 	// A DECLINED run is an ANSWER, not a failure to repair (#706): the bot
@@ -168,7 +172,14 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if token == "" || prURL == "" || gateCtx == "" || reviewed == "" || runGateDisabled(run) {
 		return nil
 	}
-	grant, ok := s.forgePublishTokens.lookup(token)
+	// The fixer is launched onto the pull request the run names: a grant bound
+	// to none (a scheduled run's, whatever pr_url its vars carry) bounds no
+	// launch onto one.
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		s.logWarn("gate auto-fix: run %s: %v — refusing", runID, err)
+		return nil
+	}
 	if !ok {
 		return nil
 	}
@@ -224,7 +235,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		// Escalated at the failure that spent the budget; re-filing is a
 		// deduped no-op that only exists so a board outage at that moment
 		// does not lose the notice.
-		if conn, cerr := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID); cerr == nil && conn.TenantID == grant.TeamID {
+		if conn, cerr := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID); cerr == nil {
 			s.escalateExhaustedAutofix(ctx, conn, grant.TeamID, repo, number, prURL, reviewed, gateCtx, prior.BotID, prior.Attempts, prior.Error)
 		}
 		return nil
@@ -244,8 +255,8 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		return nil
 	}
 
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		return nil
 	}
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
@@ -255,7 +266,13 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if err != nil || gc == nil {
 		return nil
 	}
+	// This lane's first forge round-trip, reported for the same reason the
+	// reconciler's is (recordGateForgeReach): every guard above declined on a
+	// local read, so what accounts into the sweep's pass is an offer that
+	// actually went to the forge. A head the forge answered with but left
+	// empty is an answer, not a reach failure.
 	pr, err := gc.GetPullRequest(ctx, repo, number)
+	recordGateForgeReach(ctx, err)
 	if err != nil || strings.TrimSpace(pr.HeadSHA) == "" {
 		return nil
 	}
@@ -355,7 +372,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	vars := applyWebhookVarLayers(fixerPRVars(
 		pr.TargetBranch, pr.SourceBranch, prURL,
 		fmt.Sprintf("The merge gate %q is red on this pull request. Address the findings of the review that set it, then push.", gateCtx),
-		cfg.BranchImproveAsPR, nil), cfg)
+		cfg.BranchImproveAsPR, nil), cfg, store.RunTrustDefault)
 	vars["head_sha"] = pr.HeadSHA
 
 	// The shared launch tail, not a copy of it. It owns the claim (atomically,

@@ -164,9 +164,9 @@ type stubLaunchPublisher struct {
 	lastSpec *LaunchSpec
 }
 
-func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ *CompiledSource) (int, error) {
+func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ *CompiledSource) (LaunchSubmission, error) {
 	p.lastSpec = &spec
-	return 1, nil
+	return LaunchSubmission{QueuePosition: 1}, nil
 }
 func (p *stubLaunchPublisher) CancelRun(context.Context, string) error { return nil }
 func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {

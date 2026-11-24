@@ -1,15 +1,17 @@
 name: 🏃 Runner Image
 
 # The cloud runner image (`iterion-runner-devbox`), amd64, on its OWN signal.
-# Prod's runner pods track `iterion-runner-devbox:edge` (a rolling main tag),
-# so the runner's deploy-critical path is main pushes — decoupled here from the
-# server image (image.yml) so neither waits on the other.
+# `iterion-runner-devbox:edge` is the rolling main tag a dev install tracks,
+# so that install's runner deploy path is main pushes — decoupled here from
+# the server image (image.yml) so neither waits on the other. Prod pins the
+# runner by the digest of the release tag (`:vX.Y.Z`, multi-arch, signed,
+# built by release-images.yml) committed in its GitOps values: it never
+# tracks `:edge`.
 #
 # It bakes the iterion binary via COPY --from=iterion:edge, so it MUST run
 # AFTER the server image is published: triggered by image.yml's completion
-# (workflow_run) on main. Its own completion = the "runner ready to redeploy"
-# signal. Release (`:vX.Y.Z`, multi-arch, signed) is produced off the critical
-# path by release-images.yml — prod's runner doesn't track the release tag.
+# (workflow_run) on main. Its own completion = the "`:edge` runner ready to
+# redeploy" signal.
 
 on:
   # Fires when image.yml finishes; guarded below to a successful main build.
@@ -28,9 +30,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # NEVER cancel: this workflow builds the artifact prod actually deploys, and
-  # a cancelled build leaves `:edge` silently pointing at an older commit while
-  # both runs report "completed".
+  # NEVER cancel: this workflow builds the artifact a `:edge` install deploys,
+  # and a cancelled build leaves `:edge` silently pointing at an older commit
+  # while both runs report "completed".
   #
   # Cancelling looked safe — only the latest binary matters for a rolling tag —
   # but GitHub evaluates `concurrency:` BEFORE a job's `if:`, so a run that is
@@ -53,7 +55,7 @@ permissions:
 jobs:
   prep:
     # workflow_run fires for every image.yml run (main, tags, PRs). Only build
-    # the runner for a SUCCESSFUL MAIN build (the rolling :edge the prod runner
+    # the runner for a SUCCESSFUL MAIN build (the rolling :edge a dev install
     # tracks); tags go through release-images.yml, PRs never publish.
     if: >-
       ${{ github.event_name != 'workflow_run' ||
@@ -77,7 +79,7 @@ jobs:
       routing-name: iterion-runner-devbox
       context: .
       file: Dockerfile.runner-devbox
-      # :edge — the tag image.yml just published on main, and the tag prod runs.
+      # :edge — the tag image.yml just published on main.
       build-args: ITERION_IMAGE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion:edge
       is-pr: ${{ github.event_name == 'pull_request' }}
       multiarch: false

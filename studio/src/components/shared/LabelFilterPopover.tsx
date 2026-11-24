@@ -68,7 +68,7 @@ export function LabelFilter({
         {count > 0 && (
           <span className="px-1 rounded bg-accent text-fg-onAccent text-caption">{count}</span>
         )}
-        <span className="text-fg-subtle text-caption">▾</span>
+        <span className="text-fg-muted text-caption">▾</span>
       </button>
 
       {open && (

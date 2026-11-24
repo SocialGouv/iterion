@@ -1,6 +1,6 @@
 # The complete ERD — every collection, one diagram
 
-The whole Mongo data model in a single entity-relationship diagram: all 80 collections plus the four marked non-Mongo participants, and every relationship the per-page diagrams draw — consolidated, no attributes. The per-entity detail (keys, value sets, indexes, twins) lives in the six data-model pages; this page answers "what relates to what" at a glance, and its Mermaid source, `erd-complete.mmd` next to this page, is kept in step with them by hand.
+The whole Mongo data model in a single entity-relationship diagram: every collection plus the marked non-Mongo participants, and every relationship the per-page diagrams draw — consolidated, no attributes. The per-entity detail (keys, value sets, indexes, twins) lives in the six data-model pages; this page answers "what relates to what" at a glance, and its Mermaid source, `erd-complete.mmd` next to this page, is kept in step with them by hand.
 
 The rendered SVG lives next to this page: [erd-complete.svg](erd-complete.svg).
 Open it in a browser tab of its own for the full size — it is a vector image,

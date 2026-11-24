@@ -133,7 +133,7 @@ export function ShareBrowser({
   const botTotal = new Set(shares.map((s) => s.bot_id ?? "")).size;
 
   return (
-    <div className="flex flex-col gap-2" aria-label="Config-shares">
+    <div className="flex flex-col gap-2" role="region" aria-label="Config-shares">
       <label className="relative block">
         <MagnifyingGlassIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle" />
         <input
@@ -288,11 +288,11 @@ function ShareLeaf({
           <Icon
             icon={LockClosedIcon}
             label="read-only"
-            className="h-3 w-3 shrink-0 text-fg-subtle"
+            className="h-3 w-3 shrink-0 text-fg-muted"
           />
         )}
       </span>
-      <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-fg-subtle">
+      <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-fg-muted">
         {s.category && <span className="truncate">{s.category}</span>}
         {s.config_path && (
           <>

@@ -3,14 +3,13 @@ package compatgw
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	openaiprovider "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/openai"
 
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )
@@ -66,16 +65,16 @@ func NewClient(cfg Config, modelID string, strict bool) (api.APIClient, error) {
 
 // guardedTransport is httpdial.SafeTransport: by default it dials only the
 // host the operator's env named, pinned to an address validated at every
-// new connection (DNS-rebinding-proof), and uses no proxy — an ambient
-// HTTPS_PROXY is never trusted for the gateway. The ONE exception is
-// engine-owned — a policy-isolated sandbox only lets egress through the
-// run's network proxy, and the engine hands that endpoint to the
-// in-container runner under SandboxProxyEndpointEnv (a name only the engine
-// sets; the container image and the operator's shell never speak for it).
-// With it, every request crosses that proxy once its gateway host has
-// passed the guard, and the proxy pins the gateway's name in turn
-// (sandboxProxyFunc), so the proxy is a path, never an authority that
-// bypasses the guard. The proxy road is SafeTransport too, every bound
+// new connection (DNS-rebinding-proof), and uses no proxy — SafeTransport
+// pins none (#2338), an ambient HTTPS_PROXY is never trusted for the
+// gateway. The ONE exception is engine-owned — a policy-isolated sandbox
+// only lets egress through the run's network proxy, and the engine hands
+// that endpoint to the in-container runner under SandboxProxyEndpointEnv (a
+// name only the engine sets; the container image and the operator's shell
+// never speak for it). With it, every request crosses that proxy once its
+// gateway host has passed the guard, and the proxy pins the gateway's name
+// in turn (sandboxProxyFunc), so the proxy is a path, never an authority
+// that bypasses the guard. The proxy road is SafeTransport too, every bound
 // included (connect timeout, TLS handshake, idle reap), save the guard on
 // its dial: the proxy's own address is private by nature — the runner pod
 // IP, the docker host gateway — so it is dialed through SafeTransport's
@@ -93,10 +92,6 @@ func guardedTransport(strict bool) (*http.Transport, error) {
 	t.ResponseHeaderTimeout = 60 * time.Second
 	endpoint := os.Getenv(SandboxProxyEndpointEnv)
 	if endpoint == "" {
-		// The SafeTransport ships http.ProxyFromEnvironment: an ambient
-		// HTTPS_PROXY would reach the gateway through it. Never: the
-		// gateway trusts the engine's variable only.
-		t.Proxy = nil
 		return t, nil
 	}
 	proxyURL, err := url.Parse(endpoint)
@@ -143,14 +138,17 @@ func sandboxProxyFunc(strict bool, proxyURL *url.URL) func(*http.Request) (*url.
 	}
 }
 
-// resolveHost validates a gateway HOST the same way the dial will: through
-// httpdial, so Validate cannot accept what the transport would refuse.
-func resolveHost(host string) (net.IP, error) {
+// judgeHost judges a gateway HOST as the strict dial does — through httpdial
+// at strict: the names no public host carries in any spelling, then every
+// address the name resolves to — so Validate cannot pass a host the
+// transport refuses on the same answer. A refusal wraps httpdial.ErrNotPublic,
+// on which Validate names the escape hatch; a failed lookup or a malformed
+// name does not, and gets no such advice.
+func judgeHost(host string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// Non-strict: the ADDRESS judgement is Validate's job (with the
-	// remedy attached), not the resolver's.
-	return httpdial.ResolvePublicHost(ctx, host, false)
+	_, err := httpdial.ResolvePublicHost(ctx, host, true)
+	return err
 }
 
 // redirectRefusedPolicy is the client's redirect policy: a gateway that

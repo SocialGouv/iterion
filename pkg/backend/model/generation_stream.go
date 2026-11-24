@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 const (
@@ -42,26 +43,42 @@ var ErrToolInputTooLarge = errors.New("aggregateStream: tool_use input exceeded 
 // accumulated content exceeded maxTextBlockSize.
 var ErrTextBlockTooLarge = errors.New("aggregateStream: text/thinking block exceeded max size")
 
-// StreamIdlePhase identifies whether a provider fell silent before or after
-// sending at least one event. It makes operational failures actionable without
-// confusing them with a parent node/run deadline.
+// StreamIdlePhase identifies where a provider's silence was measured:
+// before or after its first event here, or on the wire by the wire's own
+// watchdog. It makes operational failures actionable without confusing them
+// with a parent node/run deadline.
 type StreamIdlePhase string
 
 const (
 	StreamIdleCold StreamIdlePhase = "cold"
 	StreamIdleHot  StreamIdlePhase = "hot"
+	// StreamIdleWire marks a silence a provider wire's OWN watchdog
+	// measured and reported on the stream (claw's sseutil.IdleWatchdog).
+	// Whether the provider had begun serving is the wire's to know, not
+	// this aggregator's, so such a stall is neither cold nor hot.
+	StreamIdleWire StreamIdlePhase = "wire"
 )
 
-// StreamIdleError is emitted only by Iterion's Claw stream watchdog. It is
-// intentionally distinct from context.DeadlineExceeded: the former is safe to
-// retry with a fresh provider request, whereas a parent run/node deadline is
-// not.
+// StreamIdleError is the verdict on a provider stream that went silent:
+// iterion's own watchdog measures the silence (cold and hot phases), and a
+// provider wire's watchdog reports its own in a stream error event
+// (StreamIdleWire). It is intentionally distinct from
+// context.DeadlineExceeded: a silent stream is safe to retry with a fresh
+// provider request, whereas a parent run/node deadline is not.
 type StreamIdleError struct {
 	Phase StreamIdlePhase
 	Idle  time.Duration
+	// Reported is the stall message the wire's own watchdog put on the
+	// stream. It names the wire and the window it was configured with,
+	// which the fields above do not, and is empty when iterion's
+	// aggregator measured the silence itself.
+	Reported string
 }
 
 func (e *StreamIdleError) Error() string {
+	if e.Reported != "" {
+		return e.Reported
+	}
 	return fmt.Sprintf("claw stream idle for %s in %s phase", e.Idle, e.Phase)
 }
 
@@ -74,11 +91,18 @@ func isStreamIdleError(err error) bool {
 // Stream aggregation
 // ---------------------------------------------------------------------------
 
-// toolUseBlock is a collected tool_use block from a streamed response.
+// toolUseBlock is a collected tool_use block from a streamed response, or a
+// call a codemode program made through the node's door.
 type toolUseBlock struct {
 	ID          string
 	Name        string
 	PartialJSON string // concatenated input_json_delta fragments
+
+	// Parent is the tool_use id of the call whose Execute made this one; empty
+	// on a block the model streamed. Batch is the call's `call.parallel` slot.
+	// Both reach the run's events through [toolCallInfo].
+	Parent string
+	Batch  *scripthost.BatchSlot
 }
 
 // aggregatedResponse is the result of consuming a StreamEvent channel.
@@ -90,6 +114,7 @@ type aggregatedResponse struct {
 	thinkingText string // concatenated extended-thinking content (all thinking blocks)
 	thinkingMs   int    // wall-clock spent inside thinking blocks (start→stop)
 	maxTokens    int    // the max_tokens the request carried (set by callAndAggregate)
+	effort       string // the reasoning effort the request carried on the wire (set by callAndAggregate)
 	err          error
 }
 
@@ -318,6 +343,15 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				if event.Usage.InputTokens > 0 {
 					res.usage.InputTokens = event.Usage.InputTokens
 				}
+				// The chat-completions hosts report their prompt cache
+				// read in the same terminal payload as the prompt count,
+				// so it arrives here too. Taken only when non-zero, the
+				// way the prompt count above is: Anthropic answers on
+				// message_start and sends a delta carrying nothing, which
+				// an unconditional read would erase.
+				if event.Usage.InputTokensDetails.CachedTokens > 0 {
+					res.usage.CacheReadTokens = event.Usage.InputTokensDetails.CachedTokens
+				}
 				// Exact billed thinking tokens (raw internal reasoning,
 				// independent of thinking.display); 0 when the provider
 				// omits the breakdown.
@@ -334,6 +368,7 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				// the provider's own account reports the call.
 				res.usage.InputTokens = max(res.usage.InputTokens, event.Usage.InputTokens)
 				res.usage.OutputTokens = max(res.usage.OutputTokens, event.Usage.OutputTokens)
+				res.usage.CacheReadTokens = max(res.usage.CacheReadTokens, event.Usage.InputTokensDetails.CachedTokens)
 				res.usage.ReasoningTokens = max(res.usage.ReasoningTokens, event.Usage.OutputTokensDetails.ThinkingTokens)
 				served = served || res.usage.InputTokens > 0 || res.usage.OutputTokens > 0
 				switch {

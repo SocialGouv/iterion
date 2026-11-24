@@ -2,6 +2,7 @@ package connection_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // probePackage is a two-operation connector: one anonymous-ish read and one
@@ -53,13 +55,21 @@ func probePackage() *spec.Package {
 	}
 }
 
-func resolver(t *testing.T, store connection.Store) *connection.Resolver {
+// The parameter is `st` rather than `store` so the body can name the pkg/store
+// package the trust value comes from.
+func resolver(t *testing.T, st connection.Store) *connection.Resolver {
 	t.Helper()
 	return &connection.Resolver{
 		Catalog:  connection.NewMemoryCatalog(probePackage()),
-		Store:    store,
+		Store:    st,
 		Sealer:   sealer(t),
 		TenantID: "tenant-a",
+		// A resolver that states nothing refuses every mutating action
+		// (trust.go), and these cases are about scopes, schemes, origins and
+		// expiry — so the fixture bears the term the real builders bear: a run
+		// over the operator's own checkout. The trust-specific cases live in
+		// trust_test.go.
+		Trust: connection.TrustOfRun(store.RunTrustDefault),
 	}
 }
 
@@ -498,4 +508,122 @@ func TestTheDiagnosticsNameTheFIX(t *testing.T) {
 // it here means a change to either side fails in the package that changed.
 func TestResolverSatisfiesTheExecutorSeam(t *testing.T) {
 	var _ model.ConnectorResolver = (*connection.Resolver)(nil)
+}
+
+// TestAnOperationAtAnInertMaturityIsRefusedAtTheChokepoint — BOTH doors.
+//
+// Maturity is "DATA THE SERVER ENFORCES, not a display category", and
+// `Attachable` is written "may be bound to a bot OR USED BY A NODE". The node
+// path enforced it (checkOperationUsable); the resolver did not, so the same
+// package served an agent through the facade what a node was refused by name
+// — one rule, two answers, and the agent's answer was the permissive one.
+// The chokepoint is where the rule holds for every door at once.
+//
+// Both shapes are pinned: an operation that DECLARES the inert floor, and the
+// package-level typo — an unknown level ranks below spotted, so
+// `maturity: qualifed` clamps every operation down and must refuse the same
+// way rather than read as qualified.
+//
+// Mutation that reddens this: delete the EffectiveMaturity guard from
+// Resolver.checkUsable (pkg/connection/resolve.go).
+func TestAnOperationAtAnInertMaturityIsRefusedAtTheChokepoint(t *testing.T) {
+	cases := []struct {
+		name string
+		pkg  *spec.Package
+	}{
+		{
+			name: "an operation at the inert floor",
+			pkg: func() *spec.Package {
+				pkg := probePackage()
+				pkg.Ops[0].Operations[0].Maturity = spec.MaturitySpotted
+				return pkg
+			}(),
+		},
+		{
+			name: "a package-level typo that reads as spotted",
+			pkg: func() *spec.Package {
+				pkg := probePackage()
+				pkg.Connector.Maturity = "qualifed"
+				return pkg
+			}(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := connection.NewMemoryStore()
+			r := resolver(t, store)
+			r.Catalog = connection.NewMemoryCatalog(tc.pkg)
+			seed(t, r, store, conn("c1", "tenant-a", "main"))
+
+			for _, door := range []struct {
+				name string
+				call func() error
+			}{
+				{"a deterministic node", func() error {
+					_, _, _, _, err := r.ResolveAction(context.Background(), "probe.issue.get", "main")
+					return err
+				}},
+				{"an agent through the facade", func() error {
+					_, _, _, _, err := r.ResolveAgent(context.Background(), "probe.issue.get", "main")
+					return err
+				}},
+			} {
+				got := door.call()
+				var matErr *connection.MaturityError
+				if !errors.As(got, &matErr) {
+					t.Errorf("%s: err = %v, want a MaturityError — the inert operation resolved and would have been served", door.name, got)
+				}
+				if got != nil && !strings.Contains(got.Error(), "promises nothing") {
+					t.Errorf("%s: the refusal must name the maturity: %v", door.name, got)
+				}
+			}
+		})
+	}
+}
+
+// A poller resolves its connection by id, under the tenant's-configuration
+// trust, through the one path: the action grant, the connection's connector
+// and its tenant are judged as for an action node, and an unstated trust
+// still refuses.
+func TestAPollerResolvesItsConnectionByID(t *testing.T) {
+	ctx := context.Background()
+	st := connection.NewMemoryStore()
+	r := resolver(t, st)
+	r.Trust = connection.TrustOfTenantConfiguration()
+	c := conn("c1", "tenant-a", "main")
+	c.BaseURL = "https://probe.internal"
+	c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+	seed(t, r, st, c)
+	agentOnly := conn("c2", "tenant-a", "agent")
+	agentOnly.Capabilities = []connection.Capability{connection.CapAgent}
+	agentOnly.GrantedScopes, agentOnly.ScopesKnown = []string{"read:issue"}, true
+	seed(t, r, st, agentOnly)
+	other := conn("c3", "tenant-b", "main")
+	seed(t, r, st, other)
+	foreign := conn("c4", "tenant-a", "forge")
+	foreign.Connector = "forgejo"
+	seed(t, r, st, foreign)
+
+	_, op, cred, baseURL, err := r.ResolveActionByConnection(ctx, "probe.issue.get", "c1")
+	if err != nil || op.ID != "probe.issue.get" || cred.Value != "the-token" || baseURL != "https://probe.internal" {
+		t.Fatalf("resolve by id = (%s, %+v, %q, %v), want the connection's credential and origin", op.ID, cred, baseURL, err)
+	}
+	for name, tc := range map[string]struct {
+		id, want string
+		trust    connection.ActionTrust
+	}{
+		"no action grant":     {"c2", "action", connection.TrustOfTenantConfiguration()},
+		"another tenant's id": {"c3", "no connection", connection.TrustOfTenantConfiguration()},
+		"an unknown id":       {"c9", "no connection", connection.TrustOfTenantConfiguration()},
+		"another connector's": {"c4", `is a "forgejo" connection`, connection.TrustOfTenantConfiguration()},
+		"an unstated trust":   {"c1", "nobody stated", connection.TrustUnknown()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r.Trust = tc.trust
+			if _, _, _, _, err := r.ResolveActionByConnection(ctx, "probe.issue.get", tc.id); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("resolve %s = %v, want a refusal naming %q", tc.id, err, tc.want)
+			}
+		})
+	}
 }

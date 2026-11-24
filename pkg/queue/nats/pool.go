@@ -109,7 +109,7 @@ func (c *Conn) PreparePoolConsumer(ctx context.Context, pool string) (*Consumer,
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: pool consumer %s: %w", PoolConsumerName(pool), err)
 	}
-	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
+	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger, pool: pool}, nil
 }
 
 // poolConsumerConfig is the pool consumer's shape, extracted so the naming
@@ -180,7 +180,7 @@ func (c *Conn) AttachPoolConsumer(ctx context.Context, pool string) (*Consumer, 
 	if err := verifyPoolConsumerAttachment(info.Config, pool, c.cfg.MaxDeliver); err != nil {
 		return nil, err
 	}
-	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
+	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger, pool: pool}, nil
 }
 
 // verifyPoolConsumerAttachment is the pure half: the attached consumer must

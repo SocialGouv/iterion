@@ -498,10 +498,8 @@ func TestSetAvatar_Errors(t *testing.T) {
 	}
 }
 
-// A 404 is either the missing route (GitLab < 17.0) or a base URL that
-// redirects — the client follows a 301/302 as a body-less GET, which GitLab
-// answers 404. The error must keep ErrAvatarUnsupported AND quote the
-// instance so the operator can tell the two apart; and any 2xx is a success.
+// Avatar writes refuse redirects before a method downgrade. Any 2xx remains
+// a success; a redirect is distinct from an unsupported avatar endpoint.
 func TestSetAvatar_RedirectAndOther2xx(t *testing.T) {
 	var methods []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -515,7 +513,8 @@ func TestSetAvatar_RedirectAndOther2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), []byte("png"))
-	if !errors.Is(err, forge.ErrAvatarUnsupported) || !strings.Contains(err.Error(), "redirect") || !strings.Contains(err.Error(), "404 Not Found") {
+	var redirect *forge.RedirectError
+	if !errors.As(err, &redirect) || redirect.Code != http.StatusFound || redirect.Location != "/api/v4/user/avatar" || len(methods) != 1 || methods[0] != "PUT" {
 		t.Errorf("err = %v; methods seen %v", err, methods)
 	}
 

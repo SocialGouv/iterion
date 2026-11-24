@@ -37,7 +37,7 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 			{"timeout", t.Timeout != ""},
 		} {
 			if orphan.set {
-				c.warnfAt(DiagActionOnlyProperty, t.Name, "",
+				c.warnfAtProperty(DiagActionOnlyProperty, "tool", t.Name, orphan.name,
 					"tool %q: `%s:` has no effect without `action:` — it is read only by the connector recipe", t.Name, orphan.name)
 			}
 		}
@@ -48,9 +48,18 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 		c.errorfAt(DiagActionMalformedID, t.Name, "",
 			"tool %q: `action: %s` is not an operation id — it must read `connector.resource.verb`, e.g. `forgejo.issue.comment`", t.Name, t.Action)
 	}
+	connector, _, _ := strings.Cut(t.Action, ".")
+	native := NativeConnectorIDs[connector]
 	if strings.TrimSpace(t.Connection) == "" {
-		c.errorfAt(DiagActionNoConnection, t.Name, "",
-			"tool %q: `action:` needs a `connection:` — a connector call with no credential is not a call iterion can make", t.Name)
+		// A NATIVE connector (board.*, ADR-151) holds no credential: the
+		// transport executes in the engine against the instance's own store,
+		// so `connection:` has nothing to name and stays optional for it
+		// alone. Every HTTP connector keeps the requirement — a call with no
+		// credential is not a call iterion can make.
+		if !native {
+			c.errorfAt(DiagActionNoConnection, t.Name, "",
+				"tool %q: `action:` needs a `connection:` — a connector call with no credential is not a call iterion can make", t.Name)
+		}
 	} else if strings.Contains(t.Connection, "{{") {
 		// A `{{…}}` alias is neither rendered nor ref-checked: collectAllRefs
 		// covers only the params, so C029 never inspects it, and the executor
@@ -65,6 +74,14 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 		// connector call that is not the workflow's to compute.
 		c.errorfAt(DiagActionNoConnection, t.Name, "",
 			"tool %q: `connection: %s` is not rendered — a connection is named by the alias `iterion connections add --alias` stored, not by a template", t.Name, t.Connection)
+	} else if native {
+		// A native connector resolves no credential, so the alias is read by
+		// nothing — and a property nothing reads is one that reads as
+		// configured. Warn rather than refuse: the line is harmless, and an
+		// author flipping a node's connector between an HTTP package and the
+		// native facade should not hit a hard error for a leftover alias.
+		c.warnfAtProperty(DiagActionConnectionOnNative, "tool", t.Name, "connection",
+			"tool %q: `connection: %s` has no effect on `action: %s` — %s is a native connector and holds no credential (ADR-151)", t.Name, t.Connection, t.Action, connector)
 	}
 
 	// ADR-044's ladder ends in an LLM repairing the recipe. On a deterministic
@@ -86,7 +103,7 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 
 	if t.Timeout != "" {
 		if _, err := time.ParseDuration(t.Timeout); err != nil {
-			c.errorfAt(DiagActionBadTimeout, t.Name, "",
+			c.errorfAtProperty(DiagActionBadTimeout, "tool", t.Name, "timeout",
 				"tool %q: `timeout: %s` is not a duration (want e.g. 30s, 2m)", t.Name, t.Timeout)
 		}
 	}
@@ -96,9 +113,18 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 	// attempts, and the delay is not iterion's to choose anyway: a vendor
 	// that wants one says so in `Retry-After`.
 	if t.Retry != "" && !isPositiveInteger(t.Retry) {
-		c.errorfAt(DiagActionBadTimeout, t.Name, "",
+		c.errorfAtProperty(DiagActionBadTimeout, "tool", t.Name, "retry",
 			"tool %q: `retry: %s` must be a number of extra attempts (e.g. `retry: 3`); "+
 				"the delay between them comes from the vendor's Retry-After, not from the workflow", t.Name, t.Retry)
+	}
+	if t.Retry != "" && native {
+		// The retry ladder's guards (Retry-After, idempotency keys, ambiguous
+		// effects) are HTTP-answer semantics; a native action's failure is a
+		// local refusal or a store error, never re-issued in a sleep loop
+		// (ADR-151). The property is therefore INERT here, and an inert
+		// property reads as configured — warn, don't refuse.
+		c.warnfAtProperty(DiagActionRetryOnNative, "tool", t.Name, "retry",
+			"tool %q: `retry: %s` has no effect on `action: %s` — the retry ladder is the HTTP transport's; a native action fails once", t.Name, t.Retry, t.Action)
 	}
 
 	seen := make(map[string]bool, len(t.Params))

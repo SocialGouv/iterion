@@ -199,6 +199,10 @@ func scrubHookSecret(err error, secret string) error {
 	if errors.As(err, &se) && se.Detail != "" {
 		se.Detail = scrubSecretFromLine(se.Detail, secret)
 	}
+	var redirect *RedirectError
+	if errors.As(err, &redirect) {
+		redirect.Location = scrubSecretFromLine(redirect.Location, secret)
+	}
 	if text := err.Error(); scrubSecretFromLine(text, secret) != text {
 		return &scrubbedError{msg: scrubSecretFromLine(text, secret), err: err}
 	}
@@ -211,6 +215,9 @@ func scrubHookSecret(err error, secret string) error {
 // ellipsis. A run shorter than hookSecretPartialMin is left alone — it is not
 // credential material, and eating it would take the forge's words with it.
 func scrubSecretFromLine(line, secret string) string {
+	if secret == "" {
+		return line
+	}
 	line = strings.ReplaceAll(line, secret, hookSecretRedaction)
 	for n := len(secret) - 1; n >= hookSecretPartialMin; n-- {
 		if cut := secret[:n] + cappedLineEllipsis; strings.Contains(line, cut) {
@@ -320,18 +327,15 @@ type ConfigRestoreError struct {
 }
 
 func (e *ConfigRestoreError) Error() string {
-	return fmt.Sprintf("forge: restore webhook config %s after the hook upsert failed: %v — the forge still delivers to the previous hook, whose secret no longer matches the stored config; re-run the same request", e.WebhookID, e.Err)
+	return fmt.Sprintf("forge: restore webhook config %s after the hook upsert failed: %v — previous settings could not be restored; the webhook keeps its immutable secret; re-run the same request", e.WebhookID, e.Err)
 }
 
 // Unwrap exposes the store's own failure.
 func (e *ConfigRestoreError) Unwrap() error { return e.Err }
 
 // HookWriteIndeterminateError is a hook write whose outcome the forge never
-// stated: a transport error, a timeout, a cancellation or a 5xx. The write
-// may have landed — the forge-side hook then carries the new URL and the new
-// secret — so the re-provision's stored config (which matches that hook) is
-// KEPT, and the operator re-runs the same request: provisioning is
-// idempotent and converges on whichever state the forge really holds.
+// stated: a transport error, timeout, cancellation, redirect or 5xx. Durable
+// identity and attempted settings stay available for the operator's retry.
 //
 // Typed so the answer says that instead of implying a settled failure, and
 // so the error still unwraps to the forge's own (a 5xx stays a 502).
@@ -341,7 +345,7 @@ type HookWriteIndeterminateError struct {
 }
 
 func (e *HookWriteIndeterminateError) Error() string {
-	return fmt.Sprintf("forge: the webhook %s hook write failed without the forge saying whether it applied it: %v — the stored config keeps the secret this attempt minted, since the forge may now hold it; re-run the same request, provisioning converges", e.WebhookID, e.Err)
+	return fmt.Sprintf("forge: the webhook %s hook write failed without the forge saying whether it applied it: %v — the stored config and durable reservation keep this webhook identity; re-run the same request, provisioning converges", e.WebhookID, e.Err)
 }
 
 // Unwrap exposes the forge's own failure, so every caller that classified on

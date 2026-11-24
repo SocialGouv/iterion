@@ -16,6 +16,8 @@ import {
   disableForgeIntegration,
   forgeTeamRepoKey,
   listForgeIntegrationHooks,
+  reauthorizeForgeConnection,
+  replaceForgeConnectionToken,
   syncForgeIntegration,
   updateForgeIntegration,
 } from "@/api/forgeConnections";
@@ -23,8 +25,10 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Input } from "@/components/ui/Input";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { formatDate } from "@/lib/format";
+import { storedLabelFilter } from "@/lib/labelFilter";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
@@ -128,13 +132,19 @@ export function ConnectionCard({
           )}
         </div>
         {canManage && (
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={disconnect}
-          >
-            Disconnect
-          </Button>
+          <span className="flex shrink-0 items-center gap-1.5">
+            {conn.kind === "oauth_app" &&
+              (conn.status === "needs_reauth" || conn.status === "degraded") && (
+                <ReauthorizeButton teamID={teamID} connID={conn.id} onError={onError} />
+              )}
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={disconnect}
+            >
+              Disconnect
+            </Button>
+          </span>
         )}
       </div>
 
@@ -149,6 +159,14 @@ export function ConnectionCard({
       />
 
       <WebhookBaseRow
+        teamID={teamID}
+        conn={conn}
+        canManage={canManage}
+        onChanged={onChanged}
+        onError={onError}
+      />
+
+      <ReplaceTokenRow
         teamID={teamID}
         conn={conn}
         canManage={canManage}
@@ -357,6 +375,143 @@ function AvatarRow({
   );
 }
 
+// ReauthorizeButton is the in-place repair of a dead OAuth grant
+// (#2698): the same OAuth flow with the connection pinned, so the fresh token
+// pair is sealed INTO the existing row and the enabled repos, hooks and
+// minted bots stay put — where re-running the connect wizard would mint a
+// second connection next to the dead one. On success the browser leaves for
+// the forge; busy stays on because the page is being replaced.
+function ReauthorizeButton({
+  teamID,
+  connID,
+  onError,
+}: {
+  teamID: string;
+  connID: string;
+  onError: (m: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const start = async () => {
+    onError("");
+    setBusy(true);
+    try {
+      const res = await reauthorizeForgeConnection(teamID, connID, window.location.pathname);
+      window.location.href = res.authorize_url;
+    } catch (e) {
+      setBusy(false);
+      onError(errorMessage(e));
+    }
+  };
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => void start()}
+      loading={busy}
+      disabled={busy}
+      title="Re-run the OAuth grant for this exact connection — the enabled repos, hooks and bots stay put"
+    >
+      Re-authorise
+    </Button>
+  );
+}
+
+// ReplaceTokenRow is the in-place renewal of a PAT connection's token
+// (#2488): a GitLab project/group access token must expire, and without this
+// its expiry ended the connection. The operator rotates the token on the
+// forge, then pastes the new value here; the server refuses a token of
+// another account, so the hooks and enabled repos survive the swap. The value
+// is write-only — it is never read back or shown.
+function ReplaceTokenRow({
+  teamID,
+  conn,
+  canManage,
+  onChanged,
+  onError,
+}: {
+  teamID: string;
+  conn: ForgeConnection;
+  canManage: boolean;
+  onChanged: () => void;
+  onError: (m: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (conn.kind !== "pat") return null;
+  const inputID = `replace-token-${conn.id}`;
+
+  const save = async () => {
+    onError("");
+    setBusy(true);
+    try {
+      await replaceForgeConnectionToken(teamID, conn.id, draft.trim());
+      setDraft("");
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      {!editing && canManage && (
+        <div className="flex flex-wrap items-center gap-2 text-caption text-fg-muted">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setEditing(true)}
+            disabled={busy}
+            title="Paste a replacement personal access token (rotate it on the forge first)"
+          >
+            Replace token
+          </Button>
+        </div>
+      )}
+      {canManage && editing && (
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-0 flex-1 max-w-sm">
+            <label htmlFor={inputID} className="block text-caption text-fg-muted">
+              New personal access token
+            </label>
+            <Input
+              id={inputID}
+              type="password"
+              value={draft}
+              placeholder="glpat-…"
+              // "new-password", not "off": a browser ignores "off" on a
+              // password input and fills the saved login's password into it.
+              autoComplete="new-password"
+              onChange={(e) => setDraft(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void save()}
+            loading={busy}
+            disabled={busy || draft.trim() === ""}
+          >
+            Replace
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      <div className="text-micro text-fg-subtle">
+        The token must belong to @{conn.account_login ?? "the connected account"} — rotate it on the
+        forge, then paste the new value here.
+      </div>
+    </div>
+  );
+}
+
 // RepoRow renders one enabled repo with its issue-sync toggle ("Sync issues
 // to board", forge→board mirroring) and a "Sync now" ghost button that fires
 // a one-shot sync and surfaces the returned counts inline. Local optimistic
@@ -380,6 +535,7 @@ function RepoRow({
   const [lastSync, setLastSync] = useState<ForgeSyncResult | null>(null);
   const toggleAction = useAsyncAction();
   const syncAction = useAsyncAction();
+  const labelFilter = storedLabelFilter(integration);
 
   const onToggle = async (next: boolean) => {
     // Optimistic: flip immediately, revert on error so the checkbox never
@@ -432,6 +588,19 @@ function RepoRow({
             {integration.repo_full_name}
           </Link>{" "}
           <span className="text-fg-muted">· {integration.bot_ids.join(", ")}</span>
+          {labelFilter.length > 0 && (
+            // The filter narrows which issue label starts the bots named just
+            // before it: a repo whose bots stay silent on a label is read
+            // here, without opening the Enable panel.
+            <span
+              className="text-fg-muted"
+              title="Only these freshly applied issue labels start this repo's bots — pull requests and commands are not filtered"
+            >
+              {" "}
+              · starts only on issue labels:{" "}
+              <span className="font-mono">{labelFilter.join(", ")}</span>
+            </span>
+          )}
           {integration.project_bot?.login && (
             <span
               className="text-fg-muted"

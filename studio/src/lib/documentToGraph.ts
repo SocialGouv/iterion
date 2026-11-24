@@ -84,6 +84,23 @@ export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): 
 export function documentToGraph(doc: IterDocument, activeWorkflowName?: string): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
   const nodeMap = new Map<string, { kind: NodeKind; decl: unknown }>();
 
+  // Resolve target workflows early: the virtual start node inserts from the
+  // workflow's entry, and the edge-reference checks below read the same list.
+  const targetWorkflows = activeWorkflowName
+    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
+    : doc.workflows ?? [];
+
+  // The virtual start node inserts FIRST: the canvas renders nodes in
+  // insertion (DOM) order, and the workflow's entry point must read before
+  // the terminal nodes, not after them — with stylesheets disabled the DOM
+  // order IS the reading order (RGAA 10.3, #2521). Whether the entry node
+  // exists is only decidable once every declaration is in the map, so a
+  // dangling entry drops the virtual node again after the fills below.
+  const entryNode = targetWorkflows.length > 0 ? targetWorkflows[0]!.entry : undefined;
+  if (entryNode) {
+    nodeMap.set("__start__", { kind: "start", decl: null });
+  }
+
   for (const a of doc.agents ?? []) nodeMap.set(a.name, { kind: "agent", decl: a });
   for (const j of doc.judges ?? []) nodeMap.set(j.name, { kind: "judge", decl: j });
   for (const r of doc.routers ?? []) nodeMap.set(r.name, { kind: "router", decl: r });
@@ -97,11 +114,6 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   // `fail` target but carries its declaration (code / message / resumable).
   for (const f of doc.fails ?? []) nodeMap.set(f.name, { kind: "fail", decl: f });
 
-  // Resolve target workflows early so we can check edge references
-  const targetWorkflows = activeWorkflowName
-    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
-    : doc.workflows ?? [];
-
   // Only show done/fail terminal nodes when actually referenced by an edge
   const referencedNodes = new Set<string>();
   for (const wf of targetWorkflows) {
@@ -113,11 +125,10 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   if (!nodeMap.has("done") && referencedNodes.has("done")) nodeMap.set("done", { kind: "done", decl: null });
   if (!nodeMap.has("fail") && referencedNodes.has("fail")) nodeMap.set("fail", { kind: "fail", decl: null });
 
-  // Add virtual start node pointing to the workflow entry
-  const entryNode = targetWorkflows.length > 0 ? targetWorkflows[0]!.entry : undefined;
-  if (entryNode && nodeMap.has(entryNode)) {
-    nodeMap.set("__start__", { kind: "start", decl: null });
-  }
+  // The entry node is only known once every declaration is in the map: a
+  // dangling entry (a mid-edit document) drops the virtual start node again
+  // rather than point an edge at nothing.
+  if (entryNode && !nodeMap.has(entryNode)) nodeMap.delete("__start__");
 
   // Position nodes in a grid
   const COLS = 4;

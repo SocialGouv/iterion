@@ -396,6 +396,7 @@ dispatcher routes on it), never the persona.
 | Nexie | `whats-next` (this bot) | steer |
 | Willy | `whole-improve-loop` | harden |
 | Wikky | `wiki-gen` | document |
+| Kicky | `workflow-kick` | operate |
 
 ## Bot reference
 
@@ -615,7 +616,7 @@ instead.
   board.
 - **Triggers**: revi-converse, ask, converse
 - **Tags**: code-review, conversational, read-only
-- **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `pr_url` (string), `replier` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `forge_base_url` (string), `pr_url` (string), `publish_mode` (string), `replier` (string), `thread_anchor_commit` (string), `thread_anchor_line` (string), `thread_anchor_old_line` (string), `thread_anchor_old_path` (string), `thread_anchor_path` (string), `thread_anchor_side` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
 - **Path**: `bots/revi-converse/main.bot`
 
 ### `review-pr` — Revi
@@ -647,7 +648,7 @@ the demand — per-ticket verdicts in the review, gaps as
   tracker ticket(s) it references.
 - **Triggers**: review-pr, pr-review, review
 - **Tags**: code-review, read-only
-- **Vars**: `base_ref` (string), `fixer_hint` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `mono_family` (string), `post_to_board` (string), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `report_path` (string), `review_mode` (string), `review_tier` (string), `scope_notes` (string), `severity_threshold` (string), `source_branch` (string), `ticket_context` (string), `ticket_refs` (string), `tracker_api_base` (string), `tracker_user` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `fixer_hint` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `mono_family` (string), `post_to_board` (string), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `publish_mode` (string), `report_path` (string), `review_mode` (string), `review_tier` (string), `scope_notes` (string), `severity_threshold` (string), `source_branch` (string), `ticket_context` (string), `ticket_refs` (string), `tracker_api_base` (string), `tracker_user` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`
 
 ### `rgaa-audit` — Acci
@@ -682,8 +683,8 @@ re-grounds every entry and the stale ones go back to the agents.
   preset on the issues this bot files.
 - **Triggers**: rgaa, wcag, accessibilité, accessibility, a11y, ultra11y
 - **Tags**: a11y, read-only
-- **Vars**: `batch_size` (int), `board_epic_label` (string), `board_state` (string), `engine_sha256` (string), `engine_size` (int), `engine_version` (string), `exclude_globs` (string), `findings_cap` (int), `force_jsx` (bool), `html_report` (bool), `human_review` (bool), `ledger_path` (string), `max_files` (int), `max_reask` (int), `post_to_board` (bool), `refute_batch_size` (int), `refute_enabled` (bool), `refuter_budget_share` (float), `rendered` (string), `report_dir` (string), `require_complete` (bool), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `serve_command` (string), `serve_ready_url` (string), `serve_timeout_seconds` (int), `standard` (string), `undecidable_path` (string), `workspace_dir` (string)
-- **Capabilities**: board.create, board.label, board.read
+- **Vars**: `batch_size` (int), `board_epic_label` (string), `board_state` (string), `browser_path` (string), `engine_sha256` (string), `engine_size` (int), `engine_version` (string), `exclude_globs` (string), `findings_cap` (int), `force_jsx` (bool), `html_report` (bool), `human_review` (bool), `ledger_path` (string), `max_files` (int), `max_reask` (int), `post_to_board` (bool), `refute_batch_size` (int), `refute_enabled` (bool), `refuter_budget_share` (float), `rendered` (string), `report_dir` (string), `require_complete` (bool), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `serve_command` (string), `serve_ready_url` (string), `serve_timeout_seconds` (int), `standard` (string), `undecidable_path` (string), `workspace_dir` (string)
+- **Capabilities**: board.create, board.read
 - **Path**: `bots/rgaa-audit/main.bot`
 
 ### `sec-audit-deps` — Depsy
@@ -878,8 +879,8 @@ breaking change (a JS/TS lib API, Helm chart values, a Go module,
 commit); (4) commits the alignment back onto the PR branch and posts
 a complete review comment with the verdict and evidence; and (5)
 escalates to a human when a structuring architectural decision is
-required. It never merges past a check: unless auto-merge arming is
-explicitly enabled, the merge stays a human call.
+required. It never merges past a required check: unless auto-merge
+arming is explicitly enabled, the merge stays a human call.
 
 Stack-agnostic by construction: the per-ecosystem scanner and
 build/test knowledge lives in the skills (package-managers,
@@ -896,7 +897,7 @@ audit ran and the build is green before anything is committed.
   review-pr), and not for proactively opening update PRs (that is
   Renovacy / secured-renovacy).
 - **Tags**: deps, security, ships-code
-- **Vars**: `arm_automerge` (bool), `automerge_method` (string), `base_ref` (string), `forge_delivery_preflight_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `verify_timeout_s` (int), `workspace_dir` (string)
+- **Vars**: `arm_automerge` (bool), `automerge_method` (string), `automerge_on_unstable` (string), `automerge_settle_s` (int), `base_ref` (string), `carry_max_age_h` (int), `continuity` (bool), `forge_delivery_preflight_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `respect_human_arming` (bool), `scope_notes` (string), `scratch_dir` (string), `verify_timeout_s` (int), `workspace_dir` (string)
 - **Path**: `bots/dep-update-guard/main.bot`
 
 ### `e2e-coverage` — Endy
@@ -1043,7 +1044,7 @@ redefine what judges it, because a golden master dies by re-baselining. The
   decision recorded in the contract, and the lot DAG in particular encodes
   compatibility knowledge that cannot be re-derived from the tree.
 - **Tags**: ships-code, upgrade
-- **Vars**: `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `campaign_elapsed_s` (float), `campaign_lot_room_s` (int), `campaign_wall_s` (float), `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/modernize/main.bot`
 
 ### `secured-renovacy` — Renovacy
@@ -1415,11 +1416,16 @@ Auto-fires via the trigger spine on cards carrying triage:auto
 
 ### `prod-watch` — Argus
 
-Production watchdog for ONE deployed application (a scheduled tick,
+Production watchdog for ONE deployed application (scheduled ticks,
 zero LLM in this slice — the compiled workflow contains no agent or
 judge node, so a tick can neither spend a token nor show a log line to
-a model). One deterministic run mode over a git-versioned state in the
-target workspace (an ops repository, never the application's own):
+a model). Three deterministic run modes over a git-versioned state in
+the target workspace (an ops repository, never the application's own):
+`watch`, the idle-profile tick; `digest`, the daily digest that always
+posts (the watchdog's own health, the window's signals, the ranges);
+`session`, a dense tick inside a declared usage window with immediate
+escalation, a heartbeat of positive numbers and a summary. The watch
+tick:
 
 - Loki through the Grafana datasource proxy: the configured error query
   and a full leak sweep, paged FORWARD over a frozen window with an
@@ -1454,7 +1460,8 @@ target workspace (an ops repository, never the application's own):
   absence of observation.
 - Deterministic delivery to Mattermost incoming webhooks with
   per-sink severity thresholds and required/optional sinks; the state
-  advances only after delivery (at-least-once, never a silent loss).
+  advances only after delivery (at-least-once, never a silent loss);
+  every message ends with the run that wrote it.
 
 Universal by design: no host, namespace, metric name, language or
 channel is baked in — everything comes from the workspace config
@@ -1472,7 +1479,7 @@ Requires python3 (stdlib only) on the execution host.
   vulnerability watch (use vuln-watch), not an editorial digest (use
   feed-watch), not the instrumentation of the application itself (use
   instrument); it never edits code.
-- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_analyses_per_session` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `session_heartbeat_minutes` (int), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/prod-watch/main.bot`
 
 ### `review-env` — Envy
@@ -1554,6 +1561,38 @@ the run, a source silent for too long is announced on the sinks.
 - **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `max_version_lookups` (int), `max_version_seconds` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/vuln-watch/main.bot`
 
+### `workflow-kick` — Kicky
+
+Dispatches one GitHub Actions workflow of the target repository on a
+schedule — the external trigger for a workflow whose own `schedule:`
+cron GitHub fires late or not at all. One deterministic tool node, zero
+LLM: it asks the iterion server to dispatch the named workflow file
+(`workflow_dispatch`) on the repository's default branch and reports
+what the forge answered, with a link to its run.
+
+The bot holds no forge credential for this: its manifest declares the
+`actions` scope, which mints the dispatch capability into the run's
+publish grant, and the server dispatches with a GitHub App installation
+token minted for that one call ({actions: write, metadata: read},
+narrowed to the one repository). The grant is minted at the schedule
+tick only, bound to the workflow the schedule row names, and dispatches
+it once. Refused, typed, before any forge call: another workflow or
+repository than the grant's, a file name that is not a plain
+`*.yml`/`*.yaml`, an untrusted or ended run, a non-GitHub-App connection,
+and a second dispatch on the same grant.
+
+- **Use when**:
+  Enable on a repository integration whose CI workflow must run on a
+  dependable cadence — typically a self-hosted Renovate (`renovate.yml`)
+  whose security updates must reach a pull request within the hour.
+  Requires the workflow to declare `workflow_dispatch`, and the GitHub App
+  behind the connection to hold `Actions: Read and write` (an org owner
+  approves it). Set the schedule's `workflow` var to the file name. It
+  edits nothing and posts nothing; it only starts the workflow.
+- **Tags**: scheduled, deps, tooling
+- **Vars**: `forge_dispatch_url` (string), `forge_publish_token` (string), `repo` (string), `workflow` (string)
+- **Path**: `bots/workflow-kick/main.bot`
+
 ### Steer — judge the direction, converse
 
 ### `adr-rechallenge` — ReArchi
@@ -1625,8 +1664,10 @@ added or reshaped in the plan) fall under a configured governance:
 accepted in flight and listed at the head of the final handoff (default),
 or paused for human approval every time. Other escalations either pause
 the run (interactive) or accumulate into the handoff (default) — and the
-campaign always ends on a committed handoff plus a human review node,
-with blocked lots requalified against the final tree.
+campaign ends on a committed handoff plus a human review node, with
+blocked lots requalified against the final tree. A lot whose child fails
+fails the campaign at that lot, resumable; its resume runs a lot only
+where one can still finish, and hands off otherwise.
 
 - **Use when**:
   Use to carry a WHOLE programme unattended once its two prerequisites
@@ -1641,7 +1682,7 @@ with blocked lots requalified against the final tree.
   is a human decision recorded in the contract, and this bot's whole
   authority over it is measuring whether it advances.
 - **Tags**: programme
-- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
+- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `lot_room_s` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
 
 ### `copilot` — Copi
@@ -1752,7 +1793,8 @@ board capabilities, bundled skills) in a standing chat loop: the
 operator talks, Nexie analyses the board and the repo, recommends
 (recommendation-first, never raw dumps), creates/curates/dispatches
 tickets, verifies whether issues are still relevant against the
-code and git history, and keeps a cross-session CONTEXT_BRIEF.
+code and git history — with the board, never a memory file, as the
+durable record between sessions.
 On roadmap-scale asks she leads the full study cycle end-to-end:
 parallel audit fan-out → chantiers with now/next/later tiering +
 quick-wins + blind spots → grouped operator arbitrage → framed

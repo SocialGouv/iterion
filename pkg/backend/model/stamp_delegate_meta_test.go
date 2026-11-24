@@ -13,6 +13,7 @@ import (
 // so leaking zero-valued keys would mislead the UI (e.g. a 0/0 ratio
 // rendering as 100% or NaN).
 func TestStampDelegateOutputMeta(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		result   delegate.Result

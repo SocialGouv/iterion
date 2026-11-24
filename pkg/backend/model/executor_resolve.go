@@ -3,11 +3,11 @@ package model
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -21,8 +21,9 @@ import (
 //     A field that resolves to nothing, and the explicit `auto`, fall through
 //     to step 2 — one rule (ir.BackendFallsThrough), shared with the pre-run
 //     readings that must answer for the route this one takes.
-//  2. workflow-level default (e.defaultBackend, from `default_backend:` or
-//     IR Preferences.BackendOrder[0])
+//  2. workflow-level default (e.defaultBackend — the workflow's
+//     `default_backend:`, or the run-level RunSpec.Backend a studio/CLI launch
+//     sets for THIS run only, model.WithDefaultBackend), same fall-through rule
 //  3. ITERION_DEFAULT_BACKEND env var (legacy explicit override)
 //  4. detect.Resolve over ITERION_BACKEND_PREFERENCE (auto-selection based
 //     on credentials present on the host)
@@ -52,7 +53,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	// The workflow's `default_backend:` is a routing field like a node's:
 	// the same template-then-env reading, or `{{vars.b}}` there became the
 	// backend NAME at dispatch.
-	if d := e.resolveRoutingField(e.defaultBackend); d != "" {
+	if d := e.resolveRoutingField(e.defaultBackend); !ir.BackendFallsThrough(d) {
 		return d
 	}
 	// A PROGRAM-ONLY executor stops here. Past this point the answer comes
@@ -64,13 +65,97 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	if e.staticProgramOnly {
 		return ""
 	}
-	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
+	if env := envGetenv(context.Background(), "ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}
 	if resolved := e.detectorResolve(); resolved != "" {
-		return resolved
+		return e.gatewayCapableDetection(node, resolved)
 	}
 	return delegate.BackendClaw
+}
+
+// gatewayCapableDetection keeps host auto-detection from naming a backend
+// the node's chain cannot run on. A node whose chain carries an
+// OpenAI-compatible gateway route — a gateway `model:`, a gateway provider
+// hint, in any position — can only be served by claw, which is exactly what
+// GatewayCrossingRefusal refuses every other backend for at task build.
+// Detection that ignores it concretises claude_code on any machine with the
+// `claude` CLI (the common operator machine), and a chain whose gateway
+// element sits in SECOND position is worse than the head case: the head
+// fails on its own merits, the gateway fallback is refused at its own build,
+// and the rescue route the author declared never fires — the one case a
+// fallback exists for (#2785). Detection answers for the HOST — the
+// credentials present, in the operator's ITERION_BACKEND_PREFERENCE order —
+// and never reads the node's route, which is the one input this answer
+// needs. Correcting it toward the one backend that can serve the chain
+// therefore overrides no operator choice: the preference order says nothing
+// about routes, and the node's own `backend:`, the workflow's
+// `default_backend:`, ITERION_DEFAULT_BACKEND and a launch override all keep
+// their answer and their build-time refusal.
+//
+// The reading is the WHOLE chain's, taken over the walk dispatch itself
+// would take under the detected backend (resolveChainUnder), so the question
+// and the walk cannot drift.
+func (e *ClawExecutor) gatewayCapableDetection(node ir.Node, detected string) string {
+	if backendServesGatewayRoute(detected) || !e.chainNeedsGateway(node, detected) {
+		return detected
+	}
+	if e.logger != nil && e.noteGatewayReroute(node.NodeID(), detected) {
+		e.logger.Warn("[%s] auto-detection picked %q, which cannot serve this node's OpenAI-compatible gateway route — selecting claw, the only backend that serves one (set `backend: claw` to make the choice explicit)",
+			node.NodeID(), detected)
+	}
+	return delegate.BackendClaw
+}
+
+// noteGatewayReroute dedupes the redirect warn: the seams ask
+// resolveBackendName several times for one node (admission, the route walk,
+// dispatch), and one redirect is one fact. Returns true once per
+// (node, detected) pair.
+func (e *ClawExecutor) noteGatewayReroute(nodeID, detected string) bool {
+	e.rerouteWarnMu.Lock()
+	defer e.rerouteWarnMu.Unlock()
+	if e.rerouteWarned == nil {
+		e.rerouteWarned = map[string]bool{}
+	}
+	key := nodeID + "\x00" + detected
+	if e.rerouteWarned[key] {
+		return false
+	}
+	e.rerouteWarned[key] = true
+	return true
+}
+
+// chainNeedsGateway reports whether any element of the chain the node would
+// walk under `detected` is a gateway route: a gateway model of its own, or
+// the node's baseline it inherits, or the gateway provider hint. Only
+// elements that INHERIT the node's resolved backend count — an element
+// pinning its own `backend:` is served by it and judged at its own build
+// whatever detection answers, and an `action: skip` element runs no model.
+func (e *ClawExecutor) chainNeedsGateway(node ir.Node, detected string) bool {
+	base := e.baselineModel(node)
+	for _, el := range e.resolveChainUnder(node, detected) {
+		if el.Skip || el.Backend != "" {
+			continue
+		}
+		if elementNamesGateway(el, base) {
+			return true
+		}
+	}
+	return false
+}
+
+// elementNamesGateway reports whether one chain element is a gateway route:
+// its own model, or the node's baseline it inherits, routes to the gateway,
+// or its provider hint is the gateway's. The model is read the way dispatch
+// serves it (modelroute.Parse), since detection picks the backend that can
+// serve the route; the content boundary's hold reads generously instead
+// (ir.RouteNamesGateway, ownRouteNamesGateway).
+func elementNamesGateway(el chainElement, base string) bool {
+	m := el.Model
+	if m == "" {
+		m = base
+	}
+	return modelroute.Parse(m).Gateway() || strings.EqualFold(strings.TrimSpace(el.Provider), modelroute.OpenAICompatible)
 }
 
 // EffectiveBackendName exposes the exact runtime resolution to safety checks.
@@ -158,15 +243,36 @@ var defaultFallbackTriggers = []delegate.FallbackCategory{
 // silently change the first's semantics and invalidate C088, which two
 // catalog bots document in their own comments.
 func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
+	return e.resolveChainUnder(node, e.resolveBackendName(node))
+}
+
+// resolveChainUnder is resolveChain with the node's resolved backend handed
+// in — the one reading auto-selection can take without recursing into its
+// own resolution (resolveBackendName → gatewayCapableDetection → the chain
+// → resolveBackendName would be a cycle; the detected backend IS the answer
+// the chain read needs).
+func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []chainElement {
 	chain := e.resolveProviderChain(node)
-	for _, fb := range nodeFallbacks(node) {
+	heldOnGateway := e.teamGateway && e.ownRouteNamesGateway(node)
+	for i, fb := range nodeFallbacks(node) {
+		// A route-scoped rule pins the route's own fields (ADR-132 §2,
+		// D21) — the reading the launch walk certified.
+		fb = e.modelOverrides.EffectiveFallback(node.NodeID(), i, fb)
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
 			continue
 		}
+		if fb.Policy && heldOnGateway {
+			e.warnBoundaryDrop(node.NodeID())
+			continue
+		}
+		// The route joins the chain in the folded form parseProviderChain
+		// folds the legacy field to: one vocabulary reaches dispatch, the
+		// dedupe and the serving-provider stamp, whatever case the author
+		// — or a ${VAR} expansion — wrote.
 		el := chainElement{
 			Label:    fb.Name,
 			Backend:  e.resolveRoutingField(fb.Backend),
-			Provider: e.resolveRoutingField(fb.Provider),
+			Provider: strings.ToLower(e.resolveRoutingField(fb.Provider)),
 			Model:    e.resolveRoutingField(fb.Model),
 			Skip:     fb.Action == ir.FallbackActionSkip,
 		}
@@ -181,7 +287,45 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		el.On = resolveTriggers(fb.On)
 		chain = append(chain, el)
 	}
-	return dedupeChain(e.dropForbidden(node, chain), e.resolveBackendName(node), e.baselineModel(node))
+	return dedupeChain(e.dropForbidden(node, chain), nodeBackend, e.baselineModel(node))
+}
+
+// ownRouteNamesGateway reports whether the node's own route goes to the
+// team's gateway, judged by the policy-ladder screen's predicate
+// (ir.RouteNamesGateway) over the two fields the screen reads — the node's
+// model and its `provider:` field, each with the launch override first
+// (ModelOverrides.LadderRoute) — each resolved over the vars dispatch
+// resolves. The model override is resolved here as the screen resolves it
+// (vars, environment, trim): baselineModel hands it on as written, the spec
+// dispatch builds, and a `{{vars.model}}` override read raw names no gateway
+// while the screen's reading of the same override does. The screen's
+// undecided arm stays the screen's: a `{{…}}` span left here is an admission
+// reading ahead of the engine's vars push (EffectiveFallbackBackends), which
+// keeps the rungs so it judges every backend dispatch may reach.
+func (e *ClawExecutor) ownRouteNamesGateway(node ir.Node) bool {
+	c := e.chainReading()
+	model := c.baselineModel(node)
+	if ov := c.overrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
+		model = c.field(ov.Model)
+	}
+	return ir.RouteNamesGateway(model, c.providerField(node))
+}
+
+// warnBoundaryDrop names, once per node, the policy rungs the content
+// boundary keeps off a gateway-routed node at dispatch.
+func (e *ClawExecutor) warnBoundaryDrop(nodeID string) {
+	e.rerouteWarnMu.Lock()
+	defer e.rerouteWarnMu.Unlock()
+	if e.boundaryWarned[nodeID] {
+		return
+	}
+	if e.boundaryWarned == nil {
+		e.boundaryWarned = map[string]bool{}
+	}
+	e.boundaryWarned[nodeID] = true
+	if e.logger != nil {
+		e.logger.Warn("[%s] policy ladder rungs dropped at dispatch: the node's route goes to the team's gateway and the run's content boundary (team_gateway) holds its content there", nodeID)
+	}
 }
 
 // EffectiveFallbackBackends reports the backends a node's `fallbacks:` routes
@@ -330,7 +474,8 @@ func lookupPath(m map[string]any, path []string) any {
 
 // baselineModel is the model an element that pins none of its own runs:
 // the launch override if the operator set one, else the node's `model:`
-// with env refs expanded.
+// with env refs expanded — an llm router's default where it names neither
+// (chainReading.routerModel, the model its dispatch sends).
 //
 // It deliberately stops short of claw's detector-suggested default
 // (buildTask applies that when the model is still empty at dispatch):
@@ -338,19 +483,7 @@ func lookupPath(m map[string]any, path []string) any {
 // empty baseline compares equal to another unresolved empty one, which
 // is the right answer.
 func (e *ClawExecutor) baselineModel(node ir.Node) string {
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
-		return ov.Model
-	}
-	var m string
-	switch n := node.(type) {
-	case *ir.AgentNode:
-		m = n.Model
-	case *ir.JudgeNode:
-		m = n.Model
-	case *ir.RouterNode:
-		m = n.Model
-	}
-	return e.resolveRoutingField(m)
+	return e.chainReading().baselineModel(node)
 }
 
 // resolveRoutingVars resolves a routing field's `{{vars.*}}` spans against
@@ -546,26 +679,7 @@ func (e *ClawExecutor) resolveProvider(node ir.Node) (string, error) {
 // same parse a launch-time override goes through, so both spellings of
 // one pin reach dispatch identically.
 func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
-	// A launch-time provider override (a routing-policy cell or the
-	// launch's own rows) carries the same vocabulary as the node's own
-	// field — a validated cell may name a multi-step chain or a
-	// `provider:model` step — so it is read through the ONE parse below.
-	// Returning the raw string as a single element handed dispatch a
-	// provider name no credential family matches, while the write gate
-	// and the credential preview certified each step of the chain.
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
-		return e.dropForbidden(node, parseProviderChain(e.resolveRoutingField(ov.Provider)))
-	}
-	var raw string
-	switch n := node.(type) {
-	case *ir.AgentNode:
-		raw = n.Provider
-	case *ir.JudgeNode:
-		raw = n.Provider
-	case *ir.RouterNode:
-		raw = n.Provider
-	}
-	return e.dropForbidden(node, parseProviderChain(e.resolveRoutingField(raw)))
+	return e.chainReading().providerChain(node)
 }
 
 // dropForbidden drops every chain element whose resolved provider is
@@ -583,31 +697,7 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 // rather than silently re-filling it with a defer-to-process element,
 // which would spend a forbidden provider in silence.
 func (e *ClawExecutor) dropForbidden(node ir.Node, chain []chainElement) []chainElement {
-	if e.allowedProviders == nil {
-		return chain
-	}
-	base := e.baselineModel(node)
-	out := make([]chainElement, 0, len(chain))
-	dropped := false
-	for _, el := range chain {
-		p := strings.ToLower(strings.TrimSpace(el.Provider))
-		if p == "" {
-			m := el.Model
-			if m == "" {
-				m = base
-			}
-			p = providerOfModelSpec(m)
-		}
-		if p != "" && !e.allowedProviders[p] {
-			dropped = true
-			continue
-		}
-		out = append(out, el)
-	}
-	if !dropped {
-		return chain
-	}
-	return out
+	return e.chainReading().dropForbidden(node, chain)
 }
 
 // parseProviderChain splits a resolved provider field into the ordered

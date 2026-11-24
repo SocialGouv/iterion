@@ -19,17 +19,31 @@ import (
 )
 
 // Isolate switches both live tiers off for the whole process — claw's
-// registry by its own switch, the aggregator by an empty registry that never
-// fetches — and returns the function restoring the aggregator. Call it from
-// TestMain, around m.Run.
+// registry by its own switch, the aggregator by an empty registry with no
+// disk or network tier — and returns the function restoring the aggregator.
+// Call it from TestMain, around m.Run.
 func Isolate() (restore func()) {
 	if err := os.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1"); err != nil {
 		panic(err)
 	}
-	return modelspecs.SetDefault(modelspecs.New(modelspecs.Options{
-		CachePath:   filepath.Join(os.TempDir(), "iterion-modelspecs-test-absent.json"),
-		NoAutoFetch: true,
-	}))
+	return modelspecs.SetDefault(modelspecs.NewSeeded(nil))
+}
+
+// Run isolates the process (Isolate) for the rest of its life and runs the
+// tests: the whole TestMain of a package with nothing else to set up is
+//
+//	func TestMain(m *testing.M) { os.Exit(pricingtest.Run(m.Run)) }
+//
+// It does not restore: a goroutine a test leaves running past m.Run would
+// otherwise rebuild the default registry from the environment, live.
+// Every package whose test binary links a live tier calls Isolate or Run from
+// its TestMain — save pricingtest itself and the two live-tier packages it
+// imports (cost, modelspecs), which isolate on their own, and pkg/claw's, under
+// testutil.IsolateLiveRegistry. TestEveryTestBinaryLinkingALivePricingTierIsIsolated
+// reads the dependency graph and refuses one that does not.
+func Run(run func() int) int {
+	Isolate()
+	return run()
 }
 
 // RequireIsolated fails the test unless this process prices from the static

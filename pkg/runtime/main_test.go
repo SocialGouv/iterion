@@ -2,13 +2,14 @@ package runtime
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/internal/detecttest"
+	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
+	"github.com/SocialGouv/iterion/internal/proctest"
 	"io"
 	"os"
 	"sync"
 	"testing"
-
-	"github.com/SocialGouv/iterion/internal/hometest"
-	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // Tool nodes and the fake shared sandboxes here start real shells, and a
@@ -21,11 +22,15 @@ import (
 // released, unremovable, or re-created after its release, wherever it lies —
 // fails the package too, reclaimed by its recorded path.
 func TestMain(m *testing.M) {
-	os.Exit(hometest.Isolate(func() int {
+	pricingtest.Isolate() // for the rest of the process: no restore before os.Exit
+	restoreProviders := detecttest.IsolateProviders()
+	code := hometest.Isolate(func() int {
 		return proctest.NoProcessLeaks(func() int {
 			return noThrowAwayWorkDirLeaks(&liveThrowAwayWorkDirs, &everThrowAwayWorkDirs, m.Run(), os.Stderr)
 		})
-	}))
+	})
+	restoreProviders()
+	os.Exit(code)
 }
 
 // noThrowAwayWorkDirLeaks turns a clean run into a failure when a throw-away
@@ -49,3 +54,7 @@ func noThrowAwayWorkDirLeaks(live, ever *sync.Map, code int, w io.Writer) int {
 	}
 	return code
 }
+
+// The provider isolation TestMain installs, witnessed: a fixture whose answer
+// falls to the last-resort extraction must not reach a host provider.
+func TestThisPackageDetectsNoProvider(t *testing.T) { detecttest.RequireNoProvider(t) }

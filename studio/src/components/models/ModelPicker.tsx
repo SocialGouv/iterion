@@ -43,6 +43,14 @@ export interface ModelPickerProps {
   id?: string;
 }
 
+// flagLabel words a capability flag: the capability, its absence, or
+// "unknown" when the catalog stated nothing — never "no" for a flag nobody
+// answered.
+function flagLabel(flag: boolean | undefined, what: string): string {
+  if (flag === undefined) return `${what} unknown`;
+  return flag ? what : `no ${what}`;
+}
+
 // optionLabel packs the decision into one line: the spec, whether it is
 // reachable, its context window and its price.
 function optionLabel(m: ModelEntry): string {
@@ -51,7 +59,8 @@ function optionLabel(m: ModelEntry): string {
   if ((m.max_output_tokens ?? 0) > 0)
     bits.push(`${formatContextWindow(m.max_output_tokens ?? 0)} max output`);
   if (m.price_known) bits.push(formatModelPrice(m).replace(" per Mtok", "/Mtok"));
-  if (!m.tool_call) bits.push("no tools");
+  if (m.tool_call === false) bits.push("no tools");
+  else if (m.tool_call === undefined) bits.push("tools unknown");
   if (m.reachability === "unknown") bits.push("unproven");
   else if (!m.usable) bits.push("no credential");
   return bits.length > 0 ? `${m.spec} — ${bits.join(" · ")}` : m.spec;
@@ -197,8 +206,8 @@ export default function ModelPicker({
           {(selected.max_output_tokens ?? 0) > 0 && (
             <>{formatContextWindow(selected.max_output_tokens ?? 0)} max output · </>
           )}
-          {selected.tool_call ? "tools" : "no tools"} ·{" "}
-          {selected.reasoning ? "reasoning" : "no reasoning"} ·{" "}
+          {flagLabel(selected.tool_call, "tools")} ·{" "}
+          {flagLabel(selected.reasoning, "reasoning")} ·{" "}
           {formatModelPrice(selected)}
           {selected.backends && selected.backends.length > 0
             ? ` · via ${selected.backends.join(", ")}`

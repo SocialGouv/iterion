@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -50,7 +50,7 @@ func TestRegistry_MoonshotProviderRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	if !caps.ToolCall {
+	if !yes(caps.ToolCall) {
 		t.Error("kimi-k2 must be usable for tool calling — an agent node on a model without it is broken, not degraded")
 	}
 }
@@ -75,6 +75,11 @@ func TestRegistry_MoonshotKeepsSlashedAlias(t *testing.T) {
 // loop, where nothing in the failure says which variable was expected.
 func TestRegistry_MoonshotWithoutKeyRefusesByName(t *testing.T) {
 	t.Setenv("MOONSHOT_API_KEY", "")
+	// Every other provider's credential is set: none of them may fund the
+	// Moonshot wire (claw's own resolver used to pin the same rule).
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-pod")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-pod")
+	t.Setenv("ZAI_API_KEY", "zai-pod")
 	_, err := NewRegistry().Resolve("moonshot/kimi-k2")
 	if err == nil {
 		t.Fatal("Resolve without a Moonshot key must fail, not build a credential-less client")
@@ -90,19 +95,14 @@ func TestRegistry_MoonshotProviderWithKey(t *testing.T) {
 	t.Setenv("MOONSHOT_API_KEY", "")
 	r := NewRegistry()
 
-	SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
 		return func(provider string) string {
 			if provider == "moonshot" {
 				return "byok-moonshot-key"
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
-			return nil, false
-		})
-	})
+	}))
 
 	client, err := r.ResolveWithContext(context.Background(), "moonshot/kimi-k2")
 	if err != nil {
@@ -147,9 +147,16 @@ func TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends(t *testing.T) {
 			key := "key-for-" + slot
 			t.Setenv(envVar, key)
 
-			client, err := NewRegistry().Resolve("anthropic/claude-haiku-4-5")
+			// The z.ai key serves GLM ids; asked for a claude id the factory
+			// REFUSES (the facade would substitute under the label, #2772) —
+			// so the spend question is posed with the id each route serves.
+			spec := "anthropic/claude-haiku-4-5"
+			if slot == string(secrets.ProviderZAI) {
+				spec = "anthropic/glm-5.3"
+			}
+			client, err := NewRegistry().Resolve(spec)
 			if err != nil {
-				t.Fatalf("Resolve(anthropic/…): %v", err)
+				t.Fatalf("Resolve(%s): %v", spec, err)
 			}
 			cc, ok := client.(*api.Client)
 			if !ok {
@@ -166,7 +173,7 @@ func TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends(t *testing.T) {
 			}
 		})
 	}
-	if heldAnthropicWireAPIKey(secrets.Credentials{}) {
+	if heldAnthropicWireAPIKey(secrets.Credentials{}, "") {
 		t.Error("heldAnthropicWireAPIKey reported a key on empty credentials")
 	}
 }

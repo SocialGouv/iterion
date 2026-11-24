@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -32,7 +33,7 @@ func TestWriteTurnConcurrentIndexNoLostUpdates(t *testing.T) {
 	}
 	wg.Wait()
 
-	data, err := os.ReadFile(s.turnIndexPath("run-x", node))
+	data, err := os.ReadFile(filepath.Join(s.runDir("run-x"), "turns", node, "index.json"))
 	if err != nil {
 		t.Fatalf("read index: %v", err)
 	}

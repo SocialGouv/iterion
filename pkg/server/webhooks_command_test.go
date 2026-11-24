@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -523,6 +524,43 @@ func TestGitLabNoteHook_BoardModeCreatesCard(t *testing.T) {
 	}
 }
 
+// A stored route whose mode no lane honours — deliver before #3136, or a
+// value no build knows — is refused typed: no card, no launch, never read
+// as direct.
+func TestGitLabNoteHook_AModeNoLaneHonoursLaunchesNothing(t *testing.T) {
+	for _, mode := range []string{"deliver", "launch"} {
+		t.Run(mode, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			boardStore, err := native.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+			s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+				return gateAuthorized, "authorized", nil
+			}
+			var launches int
+			s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+				launches++
+				return "run-x", nil
+			}
+			cfg := featurlyConfig()
+			cfg.CommandMap["featurly"][0].Mode = mode
+			w := httptest.NewRecorder()
+			s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), glNoteFeaturly))
+			if launches != 0 {
+				t.Fatalf("a %s-mode route launched %d run(s)", mode, launches)
+			}
+			if cards, _ := boardStore.List(native.ListFilter{}); len(cards) != 0 {
+				t.Fatalf("a %s-mode route carded %d card(s)", mode, len(cards))
+			}
+			if !strings.Contains(w.Body.String(), "unsupported") {
+				t.Fatalf("answer = %d %s, want the typed refusal", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // glNoteFeaturlyIssue is a /featurly command on an OPEN ISSUE note (no
 // merge_request block) — the open-MR-and-back-link surface. The project carries
 // a default_branch (the MR base) and the issue its own url (the back-link).
@@ -713,7 +751,7 @@ func TestPriorReviewSkipsABotThatDidNotAskForIt(t *testing.T) {
 		return "a review"
 	}
 	vars := map[string]string{}
-	s.stampHandoffs(context.Background(), webhooks.Config{}, "some-bot", vars, handoffQuery{PRURL: "https://f/o/r/pull/1"})
+	s.stampHandoffs(context.Background(), webhooks.Config{}, "some-bot", vars, handoffQuery{PRURL: "https://f/o/r/pull/1"}, store.RunTrustDefault)
 	if called {
 		t.Error("looked up a review for a bot that never declared it consumes one")
 	}

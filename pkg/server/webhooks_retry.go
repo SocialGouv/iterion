@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -25,7 +26,12 @@ const (
 )
 
 func webhookMaxAttempts() int {
-	if n, err := strconv.Atoi(os.Getenv("ITERION_WEBHOOK_MAX_ATTEMPTS")); err == nil && n > 0 {
+	// The belt, not the raw env: the name is credential-shaped
+	// (envtrust.CredentialShapedName), so a project `.env` cannot plant it
+	// and a plant that slipped past an older loader answers nothing here —
+	// the operator's own export is the whole answer, as the bot-var gate
+	// already treats it.
+	if n, err := strconv.Atoi(strings.TrimSpace(envOperator("ITERION_WEBHOOK_MAX_ATTEMPTS"))); err == nil && n > 0 {
 		return n
 	}
 	return 8
@@ -76,15 +82,16 @@ func (s *Server) acknowledgeWebhookLaunch(next http.Handler) http.Handler {
 			completed := false
 			defer func() {
 				if !completed && !reply.sent {
-					reply.code = http.StatusInternalServerError
+					reply.code = 0
 					reply.body.Reset()
-					reply.body.WriteString(`{"error":"webhook_handler_failed"}`)
+					s.httpErrorFor(reply, r, http.StatusInternalServerError, "webhook_handler_failed")
 				}
 				reply.Flush()
 			}()
 			ctx, cancel := launchBookingContext(r.Context())
 			defer cancel()
-			next.ServeHTTP(reply, r.WithContext(ctx))
+			request := r.WithContext(ctx)
+			next.ServeHTTP(errtrack.HTTPErrorWriter(reply, request, s.logger), request)
 			completed = true
 		}) {
 			httpError(w, http.StatusServiceUnavailable, "server_draining")
@@ -156,14 +163,18 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 	ctx, cancel := launchBookingContext(ctx)
 	defer cancel()
 	results := make([]webhookLaunchResult, 0, len(targets))
-	var launches []func(context.Context) webhookLaunchResult
+	type pendingLaunch struct {
+		idx int
+		fn  func(context.Context) webhookLaunchResult
+	}
+	var launches []pendingLaunch
 	var firstID string
-	for _, t := range targets {
+	for i, t := range targets {
 		t.durableRetry = true
 		result, launch := s.prepareWebhookTarget(ctx, r, cfg, meta, t, hash, ip)
 		results = append(results, result)
 		if launch != nil {
-			launches = append(launches, launch)
+			launches = append(launches, pendingLaunch{idx: i, fn: launch})
 			if firstID == "" {
 				firstID = result.DeliveryID
 			}
@@ -195,12 +206,23 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 		response["launches"] = results
 	}
 	writeWebhookAccepted(w, response)
-	for _, launch := range launches {
+	// The post-launch observer (the fork gesture's Q1 note) needs the run
+	// id, which exists only once a launch returns — so the tail runs the
+	// launches and the observers in ONE bounded pass, pairing each target
+	// with its own result. Skipped for every target that carries no
+	// observer — i.e. every lane but the fork gesture's.
+	for _, pl := range launches {
 		launchCtx, cancelLaunch := launchBookingContext(ctx)
-		result := launch(launchCtx)
+		result := pl.fn(launchCtx)
 		cancelLaunch()
+		results[pl.idx] = result
 		if result.Status == webhooks.StatusLaunched {
 			s.scheduleForgeBoardProjection(meta.ProjectPath)
+		}
+	}
+	for i, t := range targets {
+		if t.onLaunched != nil && i < len(results) {
+			t.onLaunched(results[i])
 		}
 	}
 }
@@ -278,8 +300,7 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 		}
 		return s.failWebhookRetry(ctx, d, "webhook_retry_disabled", true), nil
 	}
-	if (cfg.ForkLane && !d.RetryTarget.Trust.IsFork()) || (!cfg.ForkLane && !d.RetryTarget.Trust.Trusted()) ||
-		(!d.RetryTarget.Trust.Trusted() && d.RetryTarget.ExpectedSHA == "") {
+	if webhookProvenanceRefusal(cfg, d.RetryTarget.Trust, d.RetryTarget.ExpectedSHA) != "" {
 		return s.failWebhookRetry(ctx, d, "webhook_retry_provenance_refused", true), nil
 	}
 	if d.Attempts >= webhookMaxAttempts() {
@@ -287,15 +308,17 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 	}
 	// The operator authorizes the retry, but the webhook's own tenant pays
 	// and passes admission. A super-admin request must not bypass its quotas.
-	actor := "webhook:" + cfg.ID
+	actor := webhookActor(cfg.ID)
 	ctx = auth.WithIdentity(ctx, auth.Identity{UserID: actor, TeamID: cfg.TenantID, Role: identity.RoleMember, Kind: auth.KindWebhook})
 	ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
 	t := d.RetryTarget
+	// DeliveryID rides along: the retry rewrites the row, and a trigger lane
+	// knows the event's later redeliveries by it (laneEvent.claimedBy).
 	meta := webhookEventMeta{Kind: d.EventKind, Action: d.EventAction, ProjectPath: d.ProjectPath,
-		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA}
+		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA, DeliveryID: d.ForgeDeliveryID}
 	out, launch := s.prepareWebhookTarget(ctx, syntheticRequestForBase(d.PublicBase), cfg, meta, forgeLaunchTarget{
 		durableRetry: true, retryAttempt: &d.Attempts, BotID: d.BotID, IdemKey: d.IdempotencyKey, Vars: cloneWebhookVars(t.Vars), RepoURL: t.RepoURL,
-		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
+		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA, ForkAuthor: t.ForkAuthor,
 	}, d.PayloadHash, d.SourceIP)
 	if launch == nil {
 		return out, nil

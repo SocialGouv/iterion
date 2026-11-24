@@ -4,6 +4,19 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-11-23 — five silent mornings, a deleted team key, and a move to PLIAGE deepseek (canary 01a2075c, catch-up runs 01a20768 / 01a2076d / 01a20771 / 01a20776 / 01a2077a)
+
+- Status: **recovered** — the five Monday digests delivered the same morning; bot 1.8.0 drops the codex fallback.
+- Symptom: every digest failed with `MODEL_UNAVAILABLE` from 2026-11-19 07:00Z, while the collects stayed green.
+- Cause: the team's z.ai key (`revi-zai-glm-2`), which the nine digest schedules spent through their `zai/glm-5.3` routing pin, was deleted on 2026-11-18 by a credential cleanup. That cleanup listed it as a legacy key and missed that the schedules depended on it. Without it, the hint-less `zai/glm-5.3` route on claude_code fell to the Claude forfait. That forfait answered "glm-5.3 does not exist". The `gpt_forfait` fallback never fired, because its trigger is `usage_window` only, and the platform codex token had expired as well.
+- Fix (operator decision): Vigie runs on the team's own PLIAGE gateway keys, with deepseek and not glm. It uses two keys, `services/iterion.vigie/studio-tech` and `services/iterion.vigie/studio-design`. The nine digest schedules pin `synthesize` to `claw` + `openai_compatible/scaleway/deepseek-v4.1-flash` with `effort: high`, because deepseek answers `medium` with HTTP 400 (ADR-166). The codex fallback is removed (1.8.0): the PLIAGE route is the only one.
+- Proof: dry-run canary `01a2075c` served by claw + deepseek on the team key (0.52 $, 9.5 min, a 16.8k-character cyber digest). The five catch-up digests were then delivered for real: 301 items in total, about 1.02 $, queues emptied. Today's cyber digest covers the window since 11-18.
+- Engine gaps found:
+  - A scheduled launch carried no repository, so a key restricted to the cloned repo never funded it.
+  - A schedule had no key pin, so the oldest of two keys paid for every schedule.
+  - Both are fixed by #3241 / PR #3522.
+- Lessons for next run: before deleting a credential, read its consumers (`credentials/usage`, then the runs' `cred_fingerprints`), not only its name. A digest that fails loses nothing, because the queue is cleared only after publication, so recovery is one digest per category. On iterion.cloud, a run can only be launched in another team through a route scoped to that team's path: a temporary schedule, deleted once it has fired.
+
 ## 2026-09-17 — profile 2: a zero-LLM collect and a dry-run digest whose synthesis prompt reaches the model with its paragraphs (runs 01a0af56-04dd, 01a0af56-922b)
 
 - Status: **validated** — both modes end to end on a one-feed fixture, nothing delivered.
@@ -538,10 +551,14 @@ kubectl --context ovh-prod -n iterion exec <a runner or server pod> -- \
     queue → a duplicate digest next run. Each run touches a disjoint per-category
     subdir, so rebase auto-merges.
   - **#221** — dropped `capabilities: [board.create, board.read]` from
-    `synthesize`: a declared capability forces the `iterion_board` MCP server
-    active on every run; it is NOT active on a cloud runner, so the node failed
-    at setup even with `post_to_board=false`. The digest's sink is the chat
-    webhook; the speculative board-card path is removed.
+    `synthesize`: the node failed at setup on a cloud runner. The mechanism
+    believed at the time — that a declared capability forces the `iterion_board`
+    MCP server active — is wrong: the grant alone opens those tools, and
+    iterion's own MCP servers sit outside a node's `mcp:` scope. What makes the
+    grant worthless here is the transport: on the claw route a cloud run's board
+    tools write the runner pod's own dispatcher store, not the team board. The
+    digest's sink is the chat webhook; the speculative board-card path is
+    removed.
   - **#222** — pinned `backend: claude_code` (was auto-detected): on a cloud
     runner with a Claude Code OAuth-forfait credential, auto-detect picked
     `claw`, which refuses the forfait as a third-party-SDK CGU violation.

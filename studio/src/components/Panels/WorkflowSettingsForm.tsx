@@ -19,6 +19,7 @@ import {
   WORKTREE_OPTIONS,
   WORKTREE_HELP,
 } from "@/lib/dslOptions";
+import { IconButton } from "@/components/ui";
 import CompactionFields from "./forms/CompactionFields";
 import MCPConfigFields from "./forms/MCPConfigFields";
 
@@ -77,6 +78,7 @@ export default function WorkflowSettingsForm() {
 
       <CommittedTextField
         label="Workflow Name"
+        required
         value={workflow.name}
         onChange={(v) => { updateWorkflow(workflow.name, { name: v }); setActiveWorkflowName(v); }}
         validate={(v) => {
@@ -238,11 +240,12 @@ export default function WorkflowSettingsForm() {
         {Object.entries(resources).length === 0 && (
           <p className="text-caption text-fg-subtle mb-2">No resources defined.</p>
         )}
-        {Object.entries(resources).map(([name, cap]) => (
+        {Object.entries(resources).map(([name, cap], i) => (
           <div key={name} className="flex items-end gap-2 mb-1">
             <div className="flex-1">
               <CommittedTextField
                 label="Name"
+                required
                 value={name}
                 onChange={(v) => renameResource(name, v)}
                 validate={(v) => (!v.trim() ? "Name required" : null)}
@@ -256,18 +259,21 @@ export default function WorkflowSettingsForm() {
                 min={1}
               />
             </div>
-            <button
-              type="button"
+            <IconButton
+              variant="danger"
+              size="sm"
+              // Sibling rows repeat the visible ✕; the resource name is
+              // what a screen reader needs to tell them apart.
+              label={`Remove resource ${name || i + 1}`}
               onClick={() => {
                 const next = { ...resources };
                 delete next[name];
                 setResources(next);
               }}
-              className="text-xs text-danger-fg px-2 py-1.5 mb-0.5 hover:bg-danger-soft rounded"
-              title="Remove resource"
+              className="mb-0.5"
             >
               ✕
-            </button>
+            </IconButton>
           </div>
         ))}
         <button

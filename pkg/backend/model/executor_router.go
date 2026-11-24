@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -15,6 +15,37 @@ import (
 // ---------------------------------------------------------------------------
 // Generation with retry
 // ---------------------------------------------------------------------------
+
+// adoptJSONObjectText keeps a parse-fallback text that IS a JSON object as
+// the structured answer: the parsed map becomes the output and the result
+// stops being a fallback. Any other text stays a parse fallback.
+//
+// Every key of that map is model-written, so the `_`-prefixed ones are
+// dropped: they name what the executor and the backend stamp on a result,
+// and `_needs_interaction` / `_interaction_questions` raise a pause, a
+// permission prompt included. This covers the text this adoption reads; a
+// JSON text the backend's own parse already took as the answer (claw's
+// shaped-object harvest, claude_code's structuredObject) keeps those keys
+// (#3055).
+func adoptJSONObjectText(result *delegate.Result) {
+	if !result.ParseFallback {
+		return
+	}
+	text, ok := result.Output["text"].(string)
+	if !ok {
+		return
+	}
+	var parsed map[string]any
+	if json.Unmarshal([]byte(text), &parsed) == nil && parsed != nil {
+		for key := range parsed {
+			if strings.HasPrefix(key, "_") {
+				delete(parsed, key)
+			}
+		}
+		result.Output = parsed
+		result.ParseFallback = false
+	}
+}
 
 // extractJSON extracts a JSON object from text that may contain markdown
 // fences or surrounding commentary. Returns the raw JSON string.
@@ -115,6 +146,8 @@ func routerRoutingInstruction(candidates []string) string {
 
 // executeLLMRouterUnified is the unified LLM router path that works with any backend.
 func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]any) (map[string]any, error) {
+	// Routers retain their local policy and cannot inherit an agent correction owner.
+	ctx = WithoutOutputCorrectionOwnership(ctx)
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {
@@ -176,23 +209,17 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
 	}
 
-	// Resolve model for the router (with fallback chain): a routing field,
-	// `{{vars.…}}` then `${VAR:-default}` (the default applies when VAR is
-	// unset, instead of the stdlib's silent collapse to "").
-	expanded := e.resolveRoutingField(node.Model)
-	if expanded == "" {
-		expanded = ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
-	}
-	if expanded == "" {
-		expanded = defaultRouterModel
-		// A DEFAULT the wire cannot serve is refused up front: a router
-		// dispatching on an unfunded default is a 401 loop with the knob
-		// invisible. Named, terminal, now. Claw-scoped: a claude_code-serving
-		// router funds itself on the CLI's own login (FORBID's documented
-		// escape is exactly that backend).
-		if backendName == delegate.BackendClaw && anthropicFunding(ctx) == "" {
-			return nil, fmt.Errorf("model: llm router %q: no model is set and the default (%s) has no anthropic credential to serve it — set the router's model, or fund the anthropic wire", node.ID, defaultRouterModel)
-		}
+	// The router's model, read the way every reader of its call reads it
+	// (chainReading.routerModel): the launch override, its `model:` as a
+	// routing field, ITERION_DEFAULT_SUPERVISOR_MODEL, the package default.
+	expanded, packaged := e.chainReading().routerModel(node)
+	// A DEFAULT the wire cannot serve is refused up front: a router
+	// dispatching on an unfunded default is a 401 loop with the knob
+	// invisible. Named, terminal, now. Claw-scoped: a claude_code-serving
+	// router funds itself on the CLI's own login (FORBID's documented
+	// escape is exactly that backend).
+	if packaged && backendName == delegate.BackendClaw && anthropicFunding(ctx) == "" {
+		return nil, fmt.Errorf("model: llm router %q: no model is set and the default (%s) has no anthropic credential to serve it — set the router's model, or fund the anthropic wire", node.ID, defaultRouterModel)
 	}
 
 	// Assembled per backend rather than once: SystemPromptMode is a pure
@@ -214,7 +241,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		// A router prompt may invoke a workspace `.claude/commands/`
 		// command too. Resolved per backend, inside assemble, because the
 		// substitution is claw's alone — claude_code expands it natively.
-		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+		routerText, _ := e.expandWorkspaceSlashCommand(userText, bn, node.ID, LoopIterationFromContext(ctx), sess)
 		// ONE prompt event, emitted here rather than before the chain, and
 		// carrying the text this backend actually receives. Before the
 		// chain it could only carry the invocation; emitting a second,
@@ -227,7 +254,8 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		if sess.claimPrompt(routerText, bn) && e.hooks.OnLLMPrompt != nil {
 			e.hooks.OnLLMPrompt(node.ID, systemText, routerText)
 		}
-		return &delegate.Task{
+		routerEffort, routerEffortSource := e.requestedEffort(node, node.ReasoningEffort, input)
+		t := &delegate.Task{
 			NodeID:           node.ID,
 			Iteration:        LoopIterationFromContext(ctx),
 			SystemPrompt:     systemText,
@@ -235,12 +263,12 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			UserPrompt:       routerText,
 			OutputSchema:     jsonSchema,
 			Model:            expanded,
-			WorkDir:          e.workDir,
 			// wireEffort collapses the "ultracode" mode to xhigh so the raw token
 			// never reaches the provider; identity for every other level. Routers
 			// don't get the orchestration prerogative (they route, not orchestrate).
-			ReasoningEffort: wireEffort(e.effortForNode(node, node.ReasoningEffort, input)),
-			Sandbox:         e.sandbox,
+			ReasoningEffort:       wireEffort(routerEffort),
+			ReasoningEffortSource: routerEffortSource,
+			Sandbox:               e.sandbox,
 			// ProviderHint is set per-attempt by the chain walker.
 			InboxDrain: e.bindInboxDrain(ctx),
 			// A claude_code router keeps the CLI's native tools, background
@@ -249,15 +277,20 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			RedactSecrets:        e.secretRedactor(),
 			RedactSecretsSpan:    e.secretGuard.LongestLiteral(),
 			UnmaterializeSecrets: e.secretUnmaterializer(),
+			NamesSecret:          e.secretNamer(),
 			// What the router's spawn left and its end stopped reaches the run
 			// as the agent path's does (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
 			Hooks: delegate.TaskHooks{OnBackgroundWork: e.delegateHooksFor(node.ID, bn, LoopIterationFromContext(ctx)).OnBackgroundWork},
-		}, nil
+		}
+		// The router's task names the workspace too, so it takes the same
+		// stamp as the agent task: the directory and who wrote it.
+		e.stampWorkspace(t)
+		return t, nil
 	}
 
 	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
-		e.newElementBuilder(node.ID, backendName, backend, assemble), sess)
+		e.newElementBuilder(node.ID, backendName, backend, assemble), sess, schema)
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before
@@ -269,19 +302,10 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 	result := out.Result
 
-	// A text answer that IS a JSON object is the structured answer: keep
-	// the parsed map as the output. Anything else stays a parse fallback,
-	// which the schema re-ask below treats as one more ask before the
-	// router fails — routers must produce structured output.
-	if result.ParseFallback {
-		if textVal, ok := result.Output["text"].(string); ok {
-			var parsed map[string]any
-			if json.Unmarshal([]byte(textVal), &parsed) == nil {
-				result.Output = parsed
-				result.ParseFallback = false
-			}
-		}
-	}
+	// dispatchChain already kept a text answer that IS a JSON object as the
+	// structured answer (adoptJSONObjectText); anything else is still a
+	// parse fallback, which the schema re-ask below treats as one more ask
+	// before the router fails — routers must produce structured output.
 
 	// Everything below acts on the element that SERVED, which is the
 	// router's own backend unless the chain fell through — the reading
@@ -301,10 +325,8 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		servingTask = built
 	}
 
-	// Strict validation against the router schema — with the same single
-	// re-ask an agent's schema failure gets: a run lost to a missing field
-	// the model could have supplied in one more turn is the same loss on a
-	// router as on an agent.
+	// Router outputs use the same validation and bounded correction loop
+	// as agent outputs.
 	validated, err := e.validateAndRetry(ctx, backendFields{id: node.ID, kind: "llm router"}, servingBackendName, servingBackend, servingTask, result, schema)
 	if err != nil {
 		// The generation SUCCEEDED and was paid for — only its shape is
@@ -317,7 +339,9 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
+	stampServingRoute(result.Output, out)
 
+	stampForkOrigin(result.Output, servingTask)
 	return result.Output, nil
 }
 
@@ -339,13 +363,77 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 // Valid values are defined in ir.ValidReasoningEfforts: none, low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
 func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
+	effort, _ := sourcedReasoningEffort(nodeEffort, input)
+	return effort
+}
+
+// sourcedReasoningEffort is resolveReasoningEffort with the provenance of its
+// answer (EffortSourceEdge, EffortSourceNode; "" with an empty effort).
+func sourcedReasoningEffort(nodeEffort string, input map[string]any) (effort, source string) {
 	if v, ok := input["_reasoning_effort"]; ok {
 		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
-			return s
+			return s, EffortSourceEdge
 		}
 	}
-	return ir.ResolveEffortLiteral(nodeEffort)
+	effort = ir.ResolveEffortLiteral(nodeEffort)
+	if effort == "" {
+		return "", ""
+	}
+	if dial := effortDial(nodeEffort); dial != "" {
+		return effort, EffortSourceDialPrefix + dial
+	}
+	return effort, EffortSourceNode
 }
+
+// effortDial names the variable that supplied an env-substituted effort —
+// `${VAR:-default}` whose VAR the environment or the bot-vars overlay sets —
+// read through the lookup ir.ResolveEffortLiteral expands with; "" when the
+// literal is not substituted or every variable it reads is unset, so the
+// level is the author's default.
+func effortDial(nodeEffort string) string {
+	if !ir.IsEnvSubstitutedEffort(nodeEffort) {
+		return ""
+	}
+	dial := ""
+	ir.ExpandWithDefault(nodeEffort, func(name string) string {
+		v := ir.LookupEnv(name)
+		if v != "" && dial == "" {
+			dial = name
+		}
+		return v
+	})
+	return dial
+}
+
+// The provenance of the reasoning effort a node requests: who decided the
+// level effortForNode answers. The model boundary records it on the call's
+// Result (executeDelegate), and the node's output carries it as
+// `_reasoning_effort_source` (stampDelegateOutputMeta).
+const (
+	// EffortSourceCell is a routing-policy cell (ADR-129): the run's
+	// overrides gave the effort and the launch's own rows did not.
+	EffortSourceCell = "cell"
+	// EffortSourceLaunch is the launch's own override row (`--effort-for`,
+	// the studio's launch form, a remote launch's model_overrides).
+	EffortSourceLaunch = "launch"
+	// EffortSourceOverride is the run's overrides when the executor was not
+	// told which of their rows the launch carried (WithLaunchModelOverrides).
+	EffortSourceOverride = "override"
+	// EffortSourceEdge is an upstream edge's `_reasoning_effort` mapping.
+	EffortSourceEdge = "edge"
+	// EffortSourceNode is the node's own `reasoning_effort:` as written: a
+	// literal level, or the default of its `${VAR:-default}` dial.
+	EffortSourceNode = "node"
+	// EffortSourceDialPrefix opens the source of a level an operator dial
+	// supplied: the variable the node's `${VAR:-default}` read, set in the
+	// environment or the platform's bot-vars (`dial:ITERION_RENOVACY_EFFORT_CLAUDE`).
+	EffortSourceDialPrefix = "dial:"
+	// EffortSourceBackend is the harness, below the model boundary: it sent
+	// another level than it was handed (a model's accepted set), none at all
+	// (a client that drops the parameter for the model), or its own default
+	// when it was handed none (delegate.Result.WireReasoningEffort).
+	EffortSourceBackend = "backend"
+)
 
 // effortForNode is resolveReasoningEffort with the launch-time override on
 // top. The override wins over BOTH the node's static `reasoning_effort:` and a
@@ -356,10 +444,30 @@ func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 // A bot that escalates effort per branch is therefore flattened by a run-wide
 // `*` override — which is what asking for one means.
 func (e *ClawExecutor) effortForNode(node ir.Node, nodeEffort string, input map[string]any) string {
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Effort != "" {
-		return ov.Effort
+	effort, _ := e.requestedEffort(node, nodeEffort, input)
+	return effort
+}
+
+// requestedEffort is effortForNode with the provenance of its answer
+// (EffortSource*): "" with an empty effort.
+//
+// The override's layer is read off the RULE that won, not its level: the
+// launch's own rows resolve the node to the same rule (the same selector,
+// the same level) only when the launch row is what decided. A routing cell
+// that wins on a more specific selector at the level a launch row also
+// names stays the cell's.
+func (e *ClawExecutor) requestedEffort(node ir.Node, nodeEffort string, input map[string]any) (effort, source string) {
+	if ov, won := e.modelOverrides.ForNodeFieldSources(node.NodeID(), node.NodeKind()); ov.Effort != "" {
+		if e.launchOverrides == nil {
+			return ov.Effort, EffortSourceOverride
+		}
+		lov, lwon := e.launchOverrides.ForNodeFieldSources(node.NodeID(), node.NodeKind())
+		if lov.Effort == ov.Effort && lwon.Effort == won.Effort {
+			return ov.Effort, EffortSourceLaunch
+		}
+		return ov.Effort, EffortSourceCell
 	}
-	return resolveReasoningEffort(nodeEffort, input)
+	return sourcedReasoningEffort(nodeEffort, input)
 }
 
 // providerOptsForNode builds the ProviderOptions map from the resolved
@@ -371,11 +479,27 @@ func providerOptsForNode(effort string) map[string]any {
 	return map[string]any{"reasoning_effort": effort}
 }
 
+// The deployment-wide compaction defaults, the env layer of the cascade
+// below. Named constants because the provenance question is asked about
+// them: a workflow that sets neither falls through to here, so these two
+// decide when a node's context is compacted and how much of the recent turn
+// survives it.
+const (
+	EnvCompactThresholdRatio = "ITERION_CLAW_COMPACT_THRESHOLD_RATIO"
+	EnvCompactPreserveRecent = "ITERION_CLAW_COMPACT_PRESERVE_RECENT"
+)
+
 // resolveCompaction returns the effective compaction threshold ratio and
 // preserve_recent count for a node, walking the cascade
 // node → workflow → env → built-in (0 falls through). The backend treats 0
 // as "use default", so callers can pass the result straight through to
 // delegate.Task.
+//
+// The env layer is the INHERITED environment: a value a project `.env`
+// planted is read as nothing said, and the cascade falls through to the
+// built-in. The repository a run is reviewing would otherwise choose the
+// window its reviewer compacts at — the same effect class as the window its
+// catalog answers with, decided in the same words (internal/envtrust).
 func resolveCompaction(node, workflow *ir.Compaction) (ratio float64, preserveRecent int) {
 	if node != nil {
 		ratio = node.Threshold
@@ -390,14 +514,14 @@ func resolveCompaction(node, workflow *ir.Compaction) (ratio float64, preserveRe
 		}
 	}
 	if ratio == 0 {
-		if env := os.Getenv("ITERION_CLAW_COMPACT_THRESHOLD_RATIO"); env != "" {
+		if env := envtrust.Inherited(EnvCompactThresholdRatio); env != "" {
 			if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 && v <= 1 {
 				ratio = v
 			}
 		}
 	}
 	if preserveRecent == 0 {
-		if env := os.Getenv("ITERION_CLAW_COMPACT_PRESERVE_RECENT"); env != "" {
+		if env := envtrust.Inherited(EnvCompactPreserveRecent); env != "" {
 			if v, err := strconv.Atoi(env); err == nil && v > 0 {
 				preserveRecent = v
 			}

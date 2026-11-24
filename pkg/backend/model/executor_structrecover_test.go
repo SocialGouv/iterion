@@ -6,6 +6,7 @@ import "testing"
 // wraps under "text" — the input the claw structured-output recovery converts
 // back into schema-valid JSON.
 func TestFallbackText(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   map[string]any

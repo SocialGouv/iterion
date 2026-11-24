@@ -11,7 +11,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 )
+
+// InternalServerError is the public message for every server-side failure.
+const InternalServerError = "internal server error"
 
 // maxBody bounds request bodies read by DecodeJSON (10 MB).
 const maxBody = 10 << 20
@@ -24,6 +29,52 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// WriteError is the shared boundary for HTTP error messages. Safe operational
+// payloads (such as a readiness probe's state) use WriteJSON independently.
+func WriteError(w http.ResponseWriter, status int, code, message string) {
+	body := map[string]string{"error": message}
+	if code != "" {
+		body["error_code"] = code
+	}
+	WriteErrorJSON(w, status, body)
+}
+
+// WriteErrorJSON handles structured error responses too. On a server failure
+// only the stable error code and retryability survive alongside correlation;
+// nested diagnostics and other driver-controlled values stay in the log.
+// A 4xx response keeps its actionable payload (for example a blocker list).
+func WriteErrorJSON(w http.ResponseWriter, status int, payload any) {
+	if status < 500 || status > 599 {
+		WriteJSON(w, status, payload)
+		return
+	}
+	// Encode the original payload so nested diagnostics are logged by value,
+	// including fields behind pointers in structured operation results.
+	detail, err := json.Marshal(payload)
+	if err != nil {
+		detail = []byte(fmt.Sprintf("%+v (encode failure: %v)", payload, err))
+	}
+	ids := errtrack.HTTPFailure(w, status, string(detail))
+	body := map[string]any{"error": InternalServerError}
+	for name, id := range ids {
+		body[name] = id
+	}
+	switch p := payload.(type) {
+	case map[string]string:
+		if code := p["error_code"]; code != "" {
+			body["error_code"] = code
+		}
+	case map[string]any:
+		if code, ok := p["error_code"].(string); ok && code != "" {
+			body["error_code"] = code
+		}
+		if retryable, ok := p["retryable"].(bool); ok {
+			body["retryable"] = retryable
+		}
+	}
+	WriteJSON(w, status, body)
 }
 
 // EncodeJSON writes v as an application/json body WITHOUT touching the status

@@ -746,11 +746,29 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 			"content too large (%d bytes; limit %d)", len(req.Content), maxRunFileEditBytes)
 		return
 	}
-	run, err := s.runs.LoadRunCtx(r.Context(), id)
+	// Under an admitted expectation the run whose worktree is written is the
+	// run the request expected: its load is bound to that origin.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	run, err := s.runs.LoadRunCtx(ctx, id)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
+	// A run that executed in place has the operator's workspace for its
+	// worktree, bots included: the file is resolved and written under the
+	// bot tree's write lock, as every other writer of those files.
+	release, locked := s.lockBotTree(w, r, botTreeWriterRunFileSave)
+	if !locked {
+		return
+	}
+	defer release()
 	abs, ok := s.resolveRunWorktreePath(w, r, run, req.Path)
 	if !ok {
 		return

@@ -73,6 +73,7 @@ export function triggerChips(b: BotEntry): string[] {
     else if (inv.kind === "schedule" && inv.schedule?.suggested_cron)
       chips.push(`⏱ ${inv.schedule.suggested_cron}`);
     else if (inv.kind === "board") chips.push("board");
+    else if (inv.kind === "connector" && inv.connector) chips.push(inv.connector.trigger);
   }
   if (chips.length === 0 && b.forge?.events) chips.push(...b.forge.events);
   return chips;

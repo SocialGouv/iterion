@@ -23,6 +23,7 @@ erDiagram
         string status
         string runner_pool UK "a platform_settings runner_pools name"
         string llm_fallback "empty or 'platform'; 'none'"
+        string run_visibility "empty or 'org' (ADR-148)"
     }
     users {
         string _id PK
@@ -132,10 +133,11 @@ erDiagram
         datetime expires_at
     }
     desktop_sso_tickets {
-        string _id PK "the random ticket"
-        object result.user "the whole identity.User - INCLUDING password_hash"
-        string result.accesstoken "a LIVE access JWT"
-        string result.refreshtoken "a LIVE refresh token"
+        string _id PK "SHA-256 of the random ticket - never the ticket"
+        string pending.user_id FK "users._id"
+        string pending.root.id "the lineage the session will be born under"
+        int pending.root.generation "the account session generation the callback read"
+        string pending.preferred_team FK "teams._id - the landing team the login resolved"
         datetime expires_at
     }
     ws_tickets {
@@ -162,7 +164,7 @@ erDiagram
 - The access JWT is not a document and is absent here on purpose. `sessions` holds refresh tokens only.
 - Untagged Go structs are stored LOWERCASED with no underscores — so the embedded names above are the real query keys.
 - Single use is a store primitive, not a flag. `oidc_states`, `desktop_sso_tickets` and `ws_tickets` redeem through `FindOneAndDelete`. `sessions` and `password_resets` instead compare-and-set `revoked_at` / `consumed_at`.
-- A refresh retires its session in the compare-and-set that records the rotation — `rotation_nonce`, `rotation_kid`, `successor_hash`, `rotation_ua`, `rotation_ip` — with `revoked_at` stamped by the database's clock (`$$NOW`), and the successor names it in `rotated_from` and copies its `lineage` and `generation`. `revoked_at` is written once: a sign-out or a revoke-all never moves it — their pass writes only the live sessions it covers, and a retired session keeps its rotation record, whose successor the revocation's record refuses at its delivery — so a session revoked with no rotation record was signed out, or revoked with its lineage or its account, while it was live. A successor is handed out once the refresh that writes it has checked it and claimed it (`delivered_at`, stamped once and only on a session not revoked); no refresh deletes a session it wrote, and a successor never claimed was handed to nobody, so its predecessor's next presentation completes it. `sessions` stores no refresh token, only hashes: the successor is re-derived from the token a client presents. A plaintext refresh token does rest in `desktop_sso_tickets` (above): a ticket carries the minted login, refresh token included, readable until the desktop redeems it or two minutes pass; an unredeemed ticket stays in the collection until Mongo's TTL monitor reaps it (a pass every 60 seconds, later under load), its insert rests in the oplog for the oplog's retention window, every backup taken meanwhile holds it, and its expiry does not end the session it carries ([cloud-admin.md](../cloud-admin.md) §2, [#2635](https://github.com/SocialGouv/iterion/issues/2635)).
+- A refresh retires its session in the compare-and-set that records the rotation — `rotation_nonce`, `rotation_kid`, `successor_hash`, `rotation_ua`, `rotation_ip` — with `revoked_at` stamped by the database's clock (`$$NOW`), and the successor names it in `rotated_from` and copies its `lineage` and `generation`. `revoked_at` is written once: a sign-out or a revoke-all never moves it — their pass writes only the live sessions it covers, and a retired session keeps its rotation record, whose successor the revocation's record refuses at its delivery — so a session revoked with no rotation record was signed out, or revoked with its lineage or its account, while it was live. A successor is handed out once the refresh that writes it has checked it and claimed it (`delivered_at`, stamped once and only on a session not revoked); no refresh deletes a session it wrote, and a successor never claimed was handed to nobody, so its predecessor's next presentation completes it. `sessions` stores no refresh token, only hashes: the successor is re-derived from the token a client presents. `desktop_sso_tickets` rests no credential either ([#2635](https://github.com/SocialGouv/iterion/issues/2635)): the callback DEFERS the login — the ticket's payload is the account, the lineage the session will be born under and the landing team, keyed by the ticket's SHA-256 — and the session is minted at redemption, so no refresh token exists while a ticket waits and an unredeemed one leaves no session behind.
 - A lineage is one login's sessions: the root `IssueSession` writes and every successor rotated from it, all naming the root's id in `lineage`. A sign-out and reuse detection revoke one lineage (`RecordLineageRevocation`, then `RevokeLineageSessions`), "sign out everywhere" every session of the account (`RecordAccountRevocation`, then `RevokeAccountSessions`). Each first records itself in `session_revocations` — the lineage row, or the account row's `generation` raised — which is its commit point; its pass then revokes the live sessions it covers, after the answer, reading them through the `user_live` and `user_lineage_live` indexes, never the retired history; and every successor is checked against those rows before it is delivered and again once it is claimed (`SessionRevoked`): a successor written after the pass ran is covered by the row written before it. No row of `session_revocations` is ever reaped — a lineage's row covers a session its pass did not reach for as long as that session lives, whatever refresh TTL it was written under — so a restore of `sessions` brings `session_revocations` with it. A row with no `lineage` was written before lineages were recorded: it is its own root, every write that touches it stamps one, and a retired one presented again names no family, so its reuse revokes the account.
 - `personal_access_tokens` has no TTL index and no `tenant_id`: rows survive expiry and revocation for audit, and the hash IS the credential.
 - An `oidc_links` row linked from the account settings records the lineage of the session that linked it (`session_lineage`); a row an SSO sign-in wrote itself — the account's sign-up through the IdP, its first SSO sign-in — and a row written before links recorded it carry none. "Sign out everywhere" and an admin disable delete every row that carries one (`DeleteSessionOIDCLinks`), a reuse detection the rows of the reused lineage; a sign-out deletes none, and the rows with no `session_lineage` stay.
@@ -205,7 +207,7 @@ erDiagram
         string scope "tenant or platform"
         string tenant_id "POLYMORPHIC: team id | org id or empty"
         string actor_id "POLYMORPHIC: e.g. a users._id, a subsystem name, or empty"
-        string actor_kind "e.g. user, super_admin, webhook or system"
+        string actor_kind "e.g. user, super_admin, webhook, system or anonymous"
         string action "a dotted token: e.g. org.status_changed, member.added, pat.revoked"
         string target
         string ip
@@ -225,7 +227,7 @@ erDiagram
 ```
 
 - `tenant_id` on both org SSO collections is a TEAM id — the org's primary team — not an org id. Reading these rows by org id finds nothing.
-- `audit_events.tenant_id` is polymorphic and nothing in the document says which kind it holds: `auditTenant` and `auditSystem` write a team id (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), `auditOrg` an org id, all with `scope: tenant`. The partition is only "which id was written", which is why two dotted edges leave the SAME field for different collections — the store never joins it.
+- `audit_events.tenant_id` is polymorphic and nothing in the document says which kind it holds: `auditTenant` and `auditSystem` write a team id (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), `auditOrg` an org id, all with `scope: tenant`. The partition is only "which id was written", which is why two dotted edges leave the SAME field for different collections — the store never joins it. The sign-in rows (`auth.login.*`, ADR-157) key on the ORG: an accepted sign-in is a tenant row on the org the session is active in, a refused one a platform row with no tenant at all.
 - An unverified GitHub grant is stored but inert: it shows in `grants` and never in `github_team_keys`.
 - `verified_at` carries the whole value of `org_verified_domains`: an unproven row exists so the operator can read the TXT challenge. A verified domain is not enough to auto-link onto an existing account.
 
@@ -245,11 +247,11 @@ erDiagram
 | `password_resets` | `pkg/auth` | `auth.PasswordReset` | none — the hash is the credential | `token_hash` unique; TTL `expires_at` at 0s | none (cloud-only) |
 | `personal_access_tokens` | `pkg/pat` | `pat.Token` | none — `team_id` is an optional pin to a team | `token_hash` unique; `{user_id, created_at}`; no TTL | none (cloud-only) |
 | `oidc_states` | `pkg/auth/oidc` | `oidc.mongoStateDoc` wrapping `oidc.PendingAuth` | none; `pending.tenantid` is the org's primary team | TTL `expires_at` at 0s, 10 min as wired | memory-only |
-| `desktop_sso_tickets` | `pkg/auth/desktopsso` | none — `{_id, result, expires_at}` built by `storekit.TicketMongo.Mint`; the payload is `auth.LoginResult` | none; `result.activeteamid` is a team | TTL `expires_at` at 0s, 2 min as wired | memory-only |
+| `desktop_sso_tickets` | `pkg/auth/desktopsso` | `{_id, pending, expires_at}` — `_id` is the ticket's SHA-256, the payload is `auth.DesktopLogin` (the deferred login: account, lineage, landing team — no token) | none; `pending.preferred_team` is a team | TTL `expires_at` at 0s, 2 min as wired | memory-only |
 | `ws_tickets` | `pkg/auth/wsticket` | none — `{_id, identity, expires_at}` built by `storekit.TicketMongo.Mint`; the payload is `auth.Identity` | none; `identity.teamid` is the minter's team, re-scoped to the run's team on a run-addressed WS path | TTL `expires_at` at 0s, 1 min as wired | memory-only |
 | `org_sso_providers` | `pkg/auth/orgsso` | `orgsso.OrgSSOProvider` | `tenant_id` — the org's primary TEAM id | `tenant_id` unique partial on `kind: github`; `{tenant_id, kind}`; `github_team_keys` partial on enabled github rows | none (cloud-only) |
 | `org_verified_domains` | `pkg/auth/orgsso` | `orgsso.VerifiedDomain` | `tenant_id` — the org's primary TEAM id | `{tenant_id, domain}` unique | none (cloud-only) |
-| `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a TEAM id on `auditTenant` and `auditSystem` rows (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), an ORG id on `auditOrg` rows, empty or either on `scope: platform` rows | TTL `created_at` at 400 days; `{tenant_id, created_at}`, `{scope, created_at}`, `{action, created_at}` | none (cloud-only) |
+| `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a TEAM id on `auditTenant` and `auditSystem` rows (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), an ORG id on `auditOrg` and `auth.login.succeeded` rows, empty or either on `scope: platform` rows (always empty on `auth.login.failed`) | TTL `created_at` at 400 days; `{tenant_id, created_at}`, `{scope, created_at}`, `{action, created_at}` | none (cloud-only) |
 | `"external: GitHub teams"` | not a collection — GitHub's own roster | — | — | — | n/a (external) |
 
 ## Related

@@ -177,6 +177,7 @@ func newWorkspaceProjectServer(opts StudioOptions, project projects.Project, log
 		ExamplesDir:             examplesDir,
 		WorkDir:                 project.Dir,
 		StoreDir:                project.StoreDir,
+		Legal:                   opts.Legal,
 		RunEnv:                  runEnv,
 		Mode:                    opts.Mode,
 		DisableAuth:             true,
@@ -190,6 +191,9 @@ func newWorkspaceProjectServer(opts StudioOptions, project projects.Project, log
 		MaxUploadsPerRun:        opts.MaxUploadsPerRun,
 		AllowedUploadMIMEs:      opts.AllowUploadMime,
 		MaxConcurrentPipelines:  opts.MaxConcurrentPipelines,
+		TrustedProxyCIDRs:       opts.TrustedProxyCIDRs,
+		TrustedProxyHops:        opts.TrustedProxyHops,
+		ForwardedHeader:         opts.ForwardedHeader,
 		ShutdownDelay:           shutdownDelay,
 	}
 	if opts.DesktopAlertSink != nil && desktopAlertsEnabled() && cfg.Alerts != nil {
@@ -230,7 +234,7 @@ func newWorkspaceProjectServer(opts StudioOptions, project projects.Project, log
 			} else {
 				cfg.Dispatcher = manager
 			}
-			cfg.TriggerStore = buildLocalTriggerStore(botsPaths, logger)
+			cfg.TriggerStore = openLocalTriggerStore(project.StoreDir, botsPaths, logger)
 		}
 	}
 	if !opts.RecoveryPassive {

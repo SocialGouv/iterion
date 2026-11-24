@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Cloud MemoryStore: shared-knowledge spaces persisted in Mongo, with
@@ -23,11 +24,12 @@ import (
 // blob storage; for V1 inline keeps the adapter self-contained and the
 // quota accounting transactional within Mongo.
 //
-// Quota is enforced at two levels before bytes land: the per-org
-// aggregate ceiling (memory_tenant_usage) and the per-space sub-cap
-// (memory_spaces.used_bytes). Both use conditional ($expr) updates so an
-// over-quota write is denied atomically; a denied/failed write rolls the
-// other counter back.
+// Quota is enforced at two levels before bytes land: the aggregate
+// ceilings (memory_tenant_usage — the writing org's row, plus the
+// tenant-less instance row that bounds the global space) and the per-space
+// sub-cap (memory_spaces.used_bytes). All use conditional ($expr) updates so
+// an over-quota write is denied atomically; a denied/failed write rolls the
+// counters it already moved back.
 
 const (
 	colMemorySpaces      = "memory_spaces"
@@ -103,7 +105,7 @@ func (s *MongoMemoryStore) WithLogger(l *iterlog.Logger) *MongoMemoryStore {
 // itself stays best-effort — the primary operation already succeeded or
 // already has its error — but a FAILED compensation permanently skews
 // used_bytes for the space/org, so it must at least be visible.
-func (s *MongoMemoryStore) compensate(ctx context.Context, spaceID, tenantID string, delta int64, why string) {
+func (s *MongoMemoryStore) compensate(ctx context.Context, spaceID string, aggregates []string, delta int64, why string) {
 	if delta == 0 {
 		return
 	}
@@ -116,9 +118,12 @@ func (s *MongoMemoryStore) compensate(ctx context.Context, spaceID, tenantID str
 			s.logger.Warn("memory: %s: space %s quota compensation (%+d bytes) failed: %v — used_bytes now drifts by that amount", why, spaceID, delta, err)
 		}
 	}
-	if tenantID != "" {
-		if _, err := s.bumpTenant(ctx, tenantID, delta); err != nil {
-			s.logger.Warn("memory: %s: org %s quota compensation (%+d bytes) failed: %v — used_bytes now drifts by that amount", why, tenantID, delta, err)
+	for _, agg := range aggregates {
+		if agg == "" {
+			continue
+		}
+		if _, err := s.bumpTenant(ctx, agg, delta); err != nil {
+			s.logger.Warn("memory: %s: aggregate %s quota compensation (%+d bytes) failed: %v — used_bytes now drifts by that amount", why, agg, delta, err)
 		}
 	}
 }
@@ -140,6 +145,21 @@ func (s *MongoMemoryStore) EnsureSchema(ctx context.Context) error {
 
 func docFilter(spaceID, path string) bson.M {
 	return bson.M{"_id": memDocID{SpaceID: spaceID, Path: path}}
+}
+
+// spaceDocFilter addresses every document of one space. The composite
+// space_id already carries the tenant (SpaceRef.ID), so the tenant clause
+// cannot widen the result — it refuses a document whose stamped tenant
+// disagrees with the ref that asked for it, which is the clause the tenant
+// isolation docs claimed and the store did not have. It is skipped for the
+// global space, whose documents carry no tenant at all: the field is
+// bson-omitempty, so an equality on "" would match nothing.
+func spaceDocFilter(ref knowledge.SpaceRef) bson.M {
+	f := bson.M{"space_id": ref.ID()}
+	if ref.TenantID != "" {
+		f["tenant_id"] = ref.TenantID
+	}
+	return f
 }
 
 // validateCloudTenant layers the cloud adapter's tenancy contract on top of
@@ -172,12 +192,12 @@ func (s *MongoMemoryStore) Root(ref knowledge.SpaceRef) (string, error) {
 // allDocs lists a space's docs sorted by path. withBody=false excludes
 // the (up to 2 MiB) markdown body — metadata-only callers (index, list)
 // must not pull every body off Mongo just to render a few KB of labels.
-func (s *MongoMemoryStore) allDocs(ctx context.Context, spaceID string, withBody bool) ([]memDoc, error) {
+func (s *MongoMemoryStore) allDocs(ctx context.Context, ref knowledge.SpaceRef, withBody bool) ([]memDoc, error) {
 	opt := options.Find().SetSort(bson.M{"path": 1})
 	if !withBody {
 		opt.SetProjection(bson.M{"content": 0})
 	}
-	cur, err := s.docs.Find(ctx, bson.M{"space_id": spaceID}, opt)
+	cur, err := s.docs.Find(ctx, spaceDocFilter(ref), opt)
 	if err != nil {
 		return nil, fmt.Errorf("memory: list docs: %w", err)
 	}
@@ -193,7 +213,7 @@ func (s *MongoMemoryStore) BuildIndex(ctx context.Context, ref knowledge.SpaceRe
 	if err := validateCloudTenant(ref); err != nil {
 		return nil, err
 	}
-	docs, err := s.allDocs(ctx, ref.ID(), false)
+	docs, err := s.allDocs(ctx, ref, false)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +235,7 @@ func (s *MongoMemoryStore) Autoload(ctx context.Context, ref knowledge.SpaceRef,
 	if err := validateCloudTenant(ref); err != nil {
 		return nil, err
 	}
-	docs, err := s.allDocs(ctx, ref.ID(), true)
+	docs, err := s.allDocs(ctx, ref, true)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +257,7 @@ func (s *MongoMemoryStore) ListDocuments(ctx context.Context, ref knowledge.Spac
 	if err := validateCloudTenant(ref); err != nil {
 		return nil, err
 	}
-	docs, err := s.allDocs(ctx, ref.ID(), false)
+	docs, err := s.allDocs(ctx, ref, false)
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +314,9 @@ func (s *MongoMemoryStore) UsageBytes(ctx context.Context, ref knowledge.SpaceRe
 }
 
 func (s *MongoMemoryStore) DeleteDocument(ctx context.Context, ref knowledge.SpaceRef, path string) error {
+	if err := knowledge.AuthorizeSpaceWrite(ctx, ref); err != nil {
+		return err
+	}
 	if err := validateCloudTenant(ref); err != nil {
 		return err
 	}
@@ -313,13 +336,19 @@ func (s *MongoMemoryStore) DeleteDocument(ctx context.Context, ref knowledge.Spa
 		return fmt.Errorf("memory: delete doc: %w", err)
 	}
 	if d.Size > 0 {
-		s.compensate(ctx, ref.ID(), ref.TenantID, -d.Size, "delete doc")
+		s.compensate(ctx, ref.ID(), s.aggregateIDs(ctx, ref), -d.Size, "delete doc")
 	}
 	return nil
 }
 
 // WriteDocument is the transactional path. See package comment.
 func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.SpaceRef, in knowledge.DocumentInput) (knowledge.DocumentMeta, error) {
+	// The SHARED gate on a mutation, before any IO: the instance-wide
+	// `global` space answers to platform authority on the context, whichever
+	// adapter hosts it (knowledge.AuthorizeSpaceWrite).
+	if err := knowledge.AuthorizeSpaceWrite(ctx, ref); err != nil {
+		return knowledge.DocumentMeta{}, err
+	}
 	if err := validateCloudTenant(ref); err != nil {
 		return knowledge.DocumentMeta{}, err
 	}
@@ -331,7 +360,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 		return knowledge.DocumentMeta{}, &knowledge.QuotaError{Aggregate: false, Used: 0, Delta: newSize, Quota: knowledge.DefaultMaxDocumentSize}
 	}
 	spaceID := ref.ID()
-	tenantID := ref.TenantID
+	aggregates := s.aggregateIDs(ctx, ref)
 
 	if err := s.ensureSpace(ctx, ref); err != nil {
 		return knowledge.DocumentMeta{}, err
@@ -365,18 +394,28 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 		}
 		delta := newSize - oldSize
 
-		// 1) org aggregate ceiling.
-		if tenantID != "" && delta > 0 {
-			if err := s.ensureTenant(ctx, tenantID); err != nil {
-				return knowledge.DocumentMeta{}, err
-			}
-			ok, err := s.bumpTenant(ctx, tenantID, delta)
-			if err != nil {
-				return knowledge.DocumentMeta{}, err
-			}
-			if !ok {
-				used, quota := s.readUsage(ctx, s.tenant, tenantID, knowledge.DefaultOrgAggregateQuota)
-				return knowledge.DocumentMeta{}, &knowledge.QuotaError{Aggregate: true, Used: used, Delta: delta, Quota: quota}
+		// 1) aggregate ceilings — the writing org's, and the tenant-less
+		// instance row when the space is the instance-wide `global` one.
+		// Each is its own conditional bump; a denial or an error rolls back
+		// the ones already applied, so a refused write charges nothing.
+		if delta > 0 {
+			applied := make([]string, 0, len(aggregates))
+			for _, agg := range aggregates {
+				if err := s.ensureTenant(ctx, agg); err != nil {
+					s.compensate(ctx, "", applied, -delta, "aggregate row ensure failed")
+					return knowledge.DocumentMeta{}, err
+				}
+				ok, err := s.bumpTenant(ctx, agg, delta)
+				if err != nil {
+					s.compensate(ctx, "", applied, -delta, "aggregate bump failed")
+					return knowledge.DocumentMeta{}, err
+				}
+				if !ok {
+					s.compensate(ctx, "", applied, -delta, "aggregate cap denied")
+					used, quota := s.readUsage(ctx, s.tenant, agg, knowledge.DefaultOrgAggregateQuota)
+					return knowledge.DocumentMeta{}, &knowledge.QuotaError{Aggregate: true, Used: used, Delta: delta, Quota: quota, Counter: agg}
+				}
+				applied = append(applied, agg)
 			}
 		}
 
@@ -384,7 +423,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 		if delta > 0 {
 			ok, err := s.bumpSpace(ctx, spaceID, delta)
 			if err != nil || !ok {
-				s.compensate(ctx, "", tenantID, -delta, "space cap denied") // rollback aggregate
+				s.compensate(ctx, "", aggregates, -delta, "space cap denied") // rollback the aggregates
 				if err != nil {
 					return knowledge.DocumentMeta{}, err
 				}
@@ -392,7 +431,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 				return knowledge.DocumentMeta{}, &knowledge.QuotaError{Aggregate: false, Used: used, Delta: delta, Quota: quota}
 			}
 		} else if delta < 0 {
-			s.compensate(ctx, spaceID, tenantID, delta, "shrinking write")
+			s.compensate(ctx, spaceID, aggregates, delta, "shrinking write")
 		}
 
 		// 3) compare-and-swap upsert: matches (and replaces) only if the on-disk
@@ -402,7 +441,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 		title, desc, tags := knowledge.ParseMarkdownMeta(in.Content)
 		now := time.Now().UTC()
 		doc := memDoc{
-			ID: memDocID{SpaceID: spaceID, Path: in.Path}, TenantID: tenantID, SpaceID: spaceID,
+			ID: memDocID{SpaceID: spaceID, Path: in.Path}, TenantID: ref.TenantID, SpaceID: spaceID,
 			Path: in.Path, Title: title, Description: desc, Tags: tags,
 			Size: newSize, Checksum: knowledge.ChecksumHex(in.Content), Revision: prevRev + 1,
 			Content: in.Content, UpdatedBy: in.UpdatedBy, UpdatedAt: now,
@@ -415,7 +454,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 
 		// Failed write — roll this attempt's counter bumps back so a retry (or
 		// the returned error) leaves the counters consistent with what is on disk.
-		s.compensate(ctx, spaceID, tenantID, -delta, "lost CAS write")
+		s.compensate(ctx, spaceID, aggregates, -delta, "lost CAS write")
 		if mongo.IsDuplicateKeyError(err) {
 			// Lost the CAS: another writer advanced the revision between our
 			// FindOne and our ReplaceOne.
@@ -434,6 +473,36 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 }
 
 // ---- quota helpers ----
+
+// aggregateIDs returns the aggregate counters a mutation of ref must pass,
+// in the order they are charged. A tenant-scoped space charges its own org
+// and nothing else — the ref's tenant IS that org (validateCloudTenant has
+// already refused an empty one).
+//
+// The instance-wide `global` space carries no tenant, which is why its bytes
+// used to meet no aggregate at all here while the FS adapter charged its
+// whole-tree aggregate for the same write. It now charges the tenant-less
+// instance row — the ceiling that makes a global write metered — AND, when
+// the context names one, the org doing the writing, so the bytes are
+// attributed rather than anonymous.
+//
+// The per-org share is attribution, not accounting: a credit lands on
+// whoever SHRINKS a document rather than on whoever grew it, and a counter
+// driven negative clamps to zero. The instance row is the authoritative
+// ceiling; the org row is the bill.
+func (s *MongoMemoryStore) aggregateIDs(ctx context.Context, ref knowledge.SpaceRef) []string {
+	if ref.Visibility != knowledge.VisibilityGlobal {
+		if ref.TenantID == "" {
+			return nil
+		}
+		return []string{ref.TenantID}
+	}
+	out := []string{knowledge.InstanceUsageID}
+	if writer, ok := store.TenantFromContext(ctx); ok && writer != knowledge.InstanceUsageID {
+		out = append(out, writer)
+	}
+	return out
+}
 
 func (s *MongoMemoryStore) ensureTenant(ctx context.Context, tenant string) error {
 	_, err := s.tenant.UpdateOne(ctx, bson.M{"_id": tenant},

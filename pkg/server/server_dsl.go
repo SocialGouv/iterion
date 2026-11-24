@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/bots"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -181,11 +183,11 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.File != "" {
-		s.parseUnitWithFile(w, req)
+		s.parseUnitWithFile(w, r, req)
 		return
 	}
 	if len(req.Files) > 0 {
-		s.parseUnitFiles(w, req)
+		s.parseUnitFiles(w, r, req)
 		return
 	}
 
@@ -194,6 +196,11 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 	// of it (the empty one), bindable false, the refusal said
 	// (read_refusal): the studio writes none of it, and applies none of it
 	// over a document it holds (applyParsedSource).
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Source)))
+	if !ok {
+		return
+	}
+	defer release()
 	pr, err := parser.Parse("studio.bot", req.Source)
 	var refused *parser.ReadRefusal
 	if errors.As(err, &refused) {
@@ -244,13 +251,22 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The aggregate bound (#2693) is taken BEFORE the document unmarshal:
+	// the document is the reading's input, and it dominates the unit's
+	// files and the on-disk before-text beside it.
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Document))+mapBytes(req.Files)+s.diskUnitBytes(req.Path))
+	if !ok {
+		return
+	}
+	defer release()
+
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
 		return
 	}
 	if req.File != "" {
-		s.unparseUnitPart(w, req, f)
+		s.unparseUnitPart(w, r, req, f)
 		return
 	}
 	if req.Flatten {
@@ -264,11 +280,11 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusUnprocessableEntity, "the document cannot be rendered as .bot source without changing it: %v", err)
 			return
 		}
-		writeJSON(w, unparseResponse{Source: source, Refused: s.unitFoldReason(source, req.Files, req.Main, req.Path)})
+		writeJSON(w, unparseResponse{Source: source, Refused: s.unitFoldReason(r, source, req.Files, req.Main, req.Path)})
 		return
 	}
 	if len(req.Files) > 0 {
-		s.unparseUnitFiles(w, req, f)
+		s.unparseUnitFiles(w, r, req, f)
 		return
 	}
 	if hasProvenance(f) {
@@ -309,6 +325,12 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Document)))
+	if !ok {
+		return
+	}
+	defer release()
+
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
@@ -328,8 +350,13 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(req.Path, botSourceScheme):
 		// The cloud editor's bundle, `botsource://<team>/<slug>/<rel>`: its
 		// files are in the tenant store, and the caller must be in that
-		// team — any other team's path is a hint the server ignores.
-		s.mergeBotSourcePrompts(r, f, req.Path)
+		// team — any other team's path is a hint the server ignores. A
+		// store read that fails for any other reason is the server's: 500,
+		// never a silent validate-alone.
+		if err := s.mergeBotSourcePrompts(r, f, req.Path); err != nil {
+			httpError(w, http.StatusInternalServerError, "stored bot %s: %v", req.Path, err)
+			return
+		}
 	case req.Path != "" && !strings.Contains(req.Path, "://"):
 		if abs, perr := s.safePath(req.Path); perr == nil {
 			b, oerr := runview.ResolveBundleFromFilePath(abs)
@@ -419,34 +446,45 @@ const botSourceScheme = "botsource://"
 // document when the validate request names the bot the editor has open —
 // through the one rule every surface merges bundle prompts by. The
 // caller's active team must be the path's and the store must know the
-// slug; otherwise the path is a hint the server ignores and the document
-// is validated alone.
-func (s *Server) mergeBotSourcePrompts(r *http.Request, f *ast.File, editorPath string) {
+// slug; an unknown slug — or another team's, reported as not found — is a
+// hint the server ignores and the document is validated alone. A store
+// read that fails for any other reason is the server's, and surfaces.
+func (s *Server) mergeBotSourcePrompts(r *http.Request, f *ast.File, editorPath string) error {
 	if s.botSources == nil {
-		return
+		return nil
 	}
 	parts := strings.SplitN(strings.TrimPrefix(editorPath, botSourceScheme), "/", 3)
 	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
-		return
+		return nil
 	}
-	// Only the bundle's entrypoint gets its prompts: a DB-stored bot's
-	// launch rides the stored bundle (launchLB), where validating a child
-	// .bot with the parent's prompts in scope would be a green the run
-	// does not deliver. On DISK a sibling .bot now promotes to its bundle
-	// (bundle.DirForEntry, #1367) — whether stored-bot siblings should get
-	// the same parity is an open question, tracked separately.
-	if parts[2] != "main.bot" {
-		return
+	// The bundle's entrypoint AND its root entries get the bundle's
+	// prompts — the rule bundle.DirForEntry applies on disk (#1367): a
+	// root-level sibling .bot is an entry of the bundle, and a stored
+	// sibling DOES run with them (storedLaunchBot materialises the whole
+	// row, compileForLaunch merges the bundle's prompts), so the editor's
+	// validate must see the same program. A file under lib/ or prompts/ is
+	// a fragment and validates alone.
+	if parts[2] != bundle.MainBotFile && !bundle.IsRootEntry(parts[2]) {
+		return nil
 	}
 	id, ok := auth.FromContext(r.Context())
 	if !ok || id.TeamID != parts[0] {
-		return
+		return nil
 	}
 	bs, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), parts[0]), parts[0], parts[1])
 	if err != nil {
-		return
+		if errors.Is(err, botsource.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read stored bot %s/%s: %w", parts[0], parts[1], err)
+	}
+	// DirForEntry requires an existing main.bot beside the entry on disk;
+	// a row without one is no bundle, and the document validates alone.
+	if bs.Files[botsource.MainBotFile] == "" {
+		return nil
 	}
 	runview.MergePromptFiles(f, bs.Files, "")
+	return nil
 }
 
 func (s *Server) handleListExamples(w http.ResponseWriter, _ *http.Request) {
@@ -792,7 +830,7 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 				httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 				return
 			}
-			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel), Bindable: bindable, ReadRefusal: unitReadRefusal(view)})
+			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel, declaredFragments(nil, view.Root()).asDiskLoadOf(view.Main())), Bindable: bindable, ReadRefusal: unitReadRefusal(view)})
 			return
 		}
 		// Outside the working directory there is no path to open it by and
@@ -819,7 +857,7 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel), Bindable: true})
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel, declaredFragments(nil, view.Root()).asDiskLoadOf(view.Main())), Bindable: true})
 		return
 	}
 	// Read whole and loading without error: the unit the strict loader

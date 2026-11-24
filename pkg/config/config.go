@@ -8,10 +8,13 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/mail"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/legal"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -60,6 +63,46 @@ type Config struct {
 	Auth    AuthConfig    `yaml:"auth"`
 	Alerts  AlertsConfig  `yaml:"alerts"`
 	WebPush WebPushConfig `yaml:"webpush"`
+	Legal   LegalConfig   `yaml:"legal"`
+}
+
+// LegalConfig is the operator's legal surface — the published legal notice,
+// privacy policy, terms of use and accessibility statement, the contact
+// address and the accessibility status. It is deployment configuration like
+// Auth.PublicURL and the SMTP sender (ADR-160): the same bundle serves every
+// deployment, so an operator's identity never lives in the code, and a legal
+// text changes through a reviewed commit, so it never lives in the database.
+// Everything is optional; a document that is not configured has no page and
+// no link.
+type LegalConfig struct {
+	// DocumentsDir holds the documents as markdown files named by slug:
+	// mentions-legales.md, confidentialite.md, cgu.md, accessibilite.md
+	// (pkg/legal.Slugs). The chart mounts a ConfigMap there. Read once at
+	// startup: a change reaches the server only through a rollout (the
+	// chart's checksum/legal annotation does it for the documents it
+	// renders; an existingConfigMap needs its own).
+	DocumentsDir string `yaml:"documents_dir"`
+	// ContactEmail is the address the pages offer for legal, privacy and
+	// accessibility feedback (a mailto: link).
+	ContactEmail string `yaml:"contact_email"`
+	// AccessibilityStatus is the published conformance status:
+	// non_compliant | partially_compliant | compliant. Empty = not published.
+	AccessibilityStatus string `yaml:"accessibility_status"`
+	// AccessibilityDate is the date the statement was established
+	// (YYYY-MM-DD); optional.
+	AccessibilityDate string `yaml:"accessibility_date"`
+	// AccessibilityRate is the conformance rate in percent a full audit
+	// produced; optional, and meaningless without a status.
+	AccessibilityRate string `yaml:"accessibility_rate"`
+}
+
+// Accessibility is the declaration in pkg/legal's terms.
+func (l LegalConfig) Accessibility() legal.Accessibility {
+	return legal.Accessibility{
+		Status: legal.Status(strings.ToLower(strings.TrimSpace(l.AccessibilityStatus))),
+		Date:   strings.TrimSpace(l.AccessibilityDate),
+		Rate:   strings.TrimSpace(l.AccessibilityRate),
+	}
 }
 
 // WebPushConfig holds the VAPID identity for browser push notifications
@@ -235,11 +278,61 @@ type AuthConfig struct {
 	// (CSV).
 	TrustedAutoLinkProviders []string `yaml:"trusted_auto_link_providers"`
 
+	// TrustedProxyCIDRs is the operator allowlist of CIDR ranges whose
+	// forwarded client address the server believes: X-Forwarded-For,
+	// RFC 7239 Forwarded and X-Real-IP are read only when the immediate
+	// peer falls inside one of them. Empty (the default) = no forwarded
+	// header is ever trusted, so the client is the socket address.
+	//
+	// It is what makes the auth rate limiter per-client behind a proxy:
+	// without it every request carries the proxy's own address and the
+	// whole instance shares one bucket. Set it to the range of the
+	// proxy/ingress actually in front — never wider, since any workload
+	// inside the range can then name any client it likes. Set via
+	// ITERION_AUTH_TRUSTED_PROXY_CIDRS (CSV).
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs"`
+
+	// TrustedProxyHops is how many APPENDING proxies of the operator's own
+	// sit between a client and the server — the number of rightmost
+	// entries of the forwarded chain our infrastructure wrote. 0 (the
+	// default) is one: the shape the chart ships, a single ingress
+	// controller.
+	//
+	// It bounds how far right-to-left the reader may walk, which is also
+	// how far a client's own forgeries reach: a client holding an address
+	// inside a trusted range (with the chart's private-range default,
+	// every LAN client and every in-cluster pod) writes entries of its
+	// own, and only the count tells them apart from a proxy's. Declaring
+	// MORE hops than are really in front hands those entries the
+	// identity, so raise it only for a chained front end — a CDN edge
+	// that appends and an ingress that appends behind it is 2. Set via
+	// ITERION_AUTH_TRUSTED_PROXY_HOPS.
+	TrustedProxyHops int `yaml:"trusted_proxy_hops"`
+
+	// ForwardedHeader is the ONE header a trusted proxy names the client
+	// with. Empty (the default) is X-Forwarded-For, what every ingress
+	// controller writes; "Forwarded" is read with the RFC 7239 grammar,
+	// and any other field name — X-Real-IP, a CDN's CF-Connecting-IP or
+	// True-Client-IP — as a comma-separated address list.
+	//
+	// Declaring it is what keeps the CHOICE of mechanism away from the
+	// client: a server that read whichever header a request carried would
+	// let a client's own X-Forwarded-For beat the X-Real-IP its proxy
+	// computed. Name the header the proxy in front REWRITES or APPENDS on
+	// every request; the ranges above only make the identity unforgeable
+	// for that one. Set via ITERION_AUTH_FORWARDED_HEADER.
+	ForwardedHeader string `yaml:"forwarded_header"`
+
 	OIDC OIDCConfig `yaml:"oidc"`
 
-	// OAuthForfait carries the per-deployment OAuth client ids used
-	// to refresh user-provided Claude Code / Codex subscription
-	// tokens. Empty disables refresh of the corresponding kind.
+	// OAuthForfait carries the per-deployment OAuth client ids used to
+	// connect (Anthropic) and refresh user-provided Claude Code / Codex
+	// subscription tokens. Both are overrides: an unset Anthropic id
+	// defaults to the public Claude Code client (an explicit empty YAML
+	// value clears it, which refuses the connect route and skips the
+	// claude_code refresh); an empty Codex id defers to the id the
+	// uploaded credential carries. With both ids empty the periodic
+	// refresh sweep does not start for either kind.
 	OAuthForfait OAuthForfaitConfig `yaml:"oauth_forfait"`
 }
 
@@ -315,6 +408,13 @@ type SandboxConfig struct {
 	// a sibling sandbox pod there. Default (lower-precedence) knobs
 	// cannot express this because a workflow block outranks them.
 	Override string `yaml:"override"`
+
+	// PlantedIgnored names the isolation variables a project `.env` set and
+	// loadEnv therefore IGNORED (internal/isolationenv: a repository does not
+	// choose the deployment's isolation posture). Not a configured value, so
+	// it carries no yaml key — it is the fact that travels with the config to
+	// whoever has a logger, so an ignored plant is never silent.
+	PlantedIgnored []string `yaml:"-"`
 }
 
 // NATSConfig holds the NATS JetStream connection + stream/bucket names,
@@ -382,6 +482,13 @@ type RunnerConfig struct {
 	// the run on the DLQ for an operator's resume (issue #481). Fleets with a
 	// slow lame-duck turnover (long DrainTimeout) should raise it.
 	SchemaMismatchDelay time.Duration `yaml:"schema_mismatch_delay"`
+	// DisableStallSelfHeal turns off the runner's stall-onset consumer
+	// recreate: once per frozen-stall episode the runs consumer is
+	// deleted and re-created, and held deliveries a still-executing run
+	// owns redeliver onto the run lock (parking on the DLQ for replay,
+	// never double-executing). Operators who gate that deletion by hand
+	// set this.
+	DisableStallSelfHeal bool `yaml:"disable_stall_self_heal"`
 }
 
 // RolloutConfig is the shared generation fence used by both the cloud
@@ -582,6 +689,52 @@ func (c *Config) Validate() error {
 	if c.NATS.StreamReplicas < 0 {
 		return fmt.Errorf("ITERION_NATS_STREAM_REPLICAS %d invalid (want >= 0)", c.NATS.StreamReplicas)
 	}
+	// A range that parses nowhere is a trust entry that silently never
+	// matches, which reads at a glance like a configured proxy and is
+	// not one. Refused here, where the operator sees the name, rather
+	// than skipped per request.
+	for _, cidr := range c.Auth.TrustedProxyCIDRs {
+		ip, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS entry %q invalid (want a CIDR range like 10.42.0.0/16 or 2001:db8::/32; a single address is /32 or /128): %w", cidr, err)
+		}
+		// ParseCIDR accepts host bits and hands back the masked network, so
+		// 10.42.0.7/16 would silently trust all of 10.42.0.0/16 — the "never
+		// wider" outcome, from the one typo the message above invites.
+		if !ip.Equal(network.IP) {
+			host := 128
+			if ip.To4() != nil {
+				host = 32
+			}
+			return fmt.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS entry %q has host bits set, so it would trust the whole of %s: write %s for that range, or %s/%d for the single address", cidr, network, network, ip, host)
+		}
+	}
+
+	// A negative count is not a shorter walk, it is no walk: the reader
+	// would answer with the proxy's own address on every request and the
+	// auth limiter would hold one bucket for the whole instance — the
+	// outcome the ranges exist to prevent, from a typo.
+	if c.Auth.TrustedProxyHops < 0 {
+		return fmt.Errorf("ITERION_AUTH_TRUSTED_PROXY_HOPS %d invalid (want >= 0; 0 or 1 is a single appending proxy such as an ingress controller, 2 a CDN edge appending in front of it)", c.Auth.TrustedProxyHops)
+	}
+
+	// Header.Values canonicalises a field name but looks up a list or a
+	// value as itself, finding nothing: the one outcome here — a client
+	// address silently never read — is what the declaration exists to
+	// prevent, so it is refused at boot where the operator sees the name.
+	if h := strings.TrimSpace(c.Auth.ForwardedHeader); h != "" && !isHTTPFieldName(h) {
+		return fmt.Errorf("ITERION_AUTH_FORWARDED_HEADER %q is not a single HTTP header name (want one field name like X-Forwarded-For, X-Real-IP, Forwarded or CF-Connecting-IP; no list, no spaces, no value)", c.Auth.ForwardedHeader)
+	}
+
+	// A credential-bearing header never carries an address list, so
+	// naming one reads no client — and the server's own diagnosis for
+	// that case quotes the value it could not parse, which would write
+	// the bearer token or the session cookie of every request that
+	// carries it into the log. Refused at boot, where the operator sees
+	// the name, rather than leaked once at runtime.
+	if h := strings.TrimSpace(c.Auth.ForwardedHeader); isCredentialFieldName(h) {
+		return fmt.Errorf("ITERION_AUTH_FORWARDED_HEADER %q names a credential-bearing header: it carries no client address, so no client would be read, and the server logs the value it could not parse — that credential. Name the header the proxy in front writes the client address into (X-Forwarded-For, X-Real-IP, Forwarded, or a CDN's CF-Connecting-IP)", c.Auth.ForwardedHeader)
+	}
 
 	if c.Mode == ModeCloud {
 		if c.NATS.URL == "" {
@@ -692,6 +845,24 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// The legal surface is honoured in every mode, so its validation lives
+	// outside the cloud block too.
+	if err := c.Legal.Accessibility().Validate(); err != nil {
+		return fmt.Errorf("ITERION_LEGAL_ACCESSIBILITY_*: %w", err)
+	}
+	if email := strings.TrimSpace(c.Legal.ContactEmail); email != "" {
+		// A bare address only: the value is published verbatim as a mailto:
+		// link, so "Iterion <contact@…>" (a display-name form ParseAddress
+		// accepts) would print its angle brackets in the link.
+		addr, err := mail.ParseAddress(email)
+		if err != nil {
+			return fmt.Errorf("ITERION_LEGAL_CONTACT_EMAIL %q invalid (want a bare email address, e.g. contact@example.org): %w", email, err)
+		}
+		if addr.Address != email {
+			return fmt.Errorf("ITERION_LEGAL_CONTACT_EMAIL %q invalid (want a bare email address, e.g. %s, without a display name)", email, addr.Address)
+		}
+	}
+
 	if c.Runner.Concurrency < 1 {
 		return fmt.Errorf("ITERION_RUNNER_CONCURRENCY %d invalid (want >= 1)", c.Runner.Concurrency)
 	}
@@ -735,4 +906,41 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// credentialFieldNames are the request headers whose value IS a secret.
+// None of them can hold an address list, so one named as the forwarded
+// header is always an operator error — and the one the server would
+// report by quoting the value.
+var credentialFieldNames = []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"}
+
+// isCredentialFieldName answers whether s names one of them, case-
+// insensitively the way an HTTP field name compares.
+func isCredentialFieldName(s string) bool {
+	for _, name := range credentialFieldNames {
+		if strings.EqualFold(s, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// isHTTPFieldName answers whether s is ONE HTTP field name — the RFC 9110
+// token grammar. A space, a comma, a colon or a quote means a list or a
+// value crept into ITERION_AUTH_FORWARDED_HEADER, and a header lookup for
+// that name matches no request.
+func isHTTPFieldName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }

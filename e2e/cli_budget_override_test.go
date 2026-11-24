@@ -27,6 +27,16 @@ import (
 
 // runFixture executes a testdata `.bot` through the real CLI entry point
 // with the scenario stub as executor, and returns the engine error.
+func newBudgetScenarioExecutor() *scenarioExecutor {
+	exec := newScenarioExecutor()
+	for _, id := range []string{"survey", "plan", "implement", "wrap_up", "burn"} {
+		exec.on(id, func(map[string]any) (map[string]any, error) {
+			return map[string]any{"value": "note", "_tokens": 10, "_cost_usd": 0.001}, nil
+		})
+	}
+	return exec
+}
+
 func runFixture(t *testing.T, storeDir, runID string, budget ir.BudgetOverrides) error {
 	t.Helper()
 	return cli.RunRun(context.Background(), cli.RunOptions{
@@ -34,10 +44,25 @@ func runFixture(t *testing.T, storeDir, runID string, budget ir.BudgetOverrides)
 		StoreDir:      storeDir,
 		RunID:         runID,
 		Budget:        budget,
-		Executor:      newScenarioExecutor(),
+		Executor:      newBudgetScenarioExecutor(),
 		NoInteractive: true,
 		MergeInto:     "none",
 	}, &cli.Printer{W: io.Discard, Format: cli.OutputJSON})
+}
+
+func TestStrictRunValidatesCustomExecutorSchema(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(runtime.EnvOutputValidation, "true")
+	err := cli.RunRun(context.Background(), cli.RunOptions{
+		File:     filepath.Join("testdata", "budget_override_mini.bot"),
+		StoreDir: t.TempDir(), RunID: "invalid-custom-executor",
+		Executor: newScenarioExecutor(), NoInteractive: true, MergeInto: "none",
+	}, &cli.Printer{W: io.Discard, Format: cli.OutputJSON})
+	var re *runtime.RuntimeError
+	if !errors.As(err, &re) || re.Code != runtime.ErrCodeSchemaValidation {
+		t.Fatalf("custom executor bypassed CLI output validation: %v", err)
+	}
 }
 
 func loadRun(t *testing.T, storeDir, runID string) *store.Run {

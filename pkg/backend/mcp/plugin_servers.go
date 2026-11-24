@@ -56,7 +56,9 @@ func PluginServersUnavailable() error {
 	return nil
 }
 
-func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*ServerConfig {
+// loadPluginServers returns the servers and, alongside, contributedBy: which
+// plugin each server came from, so a withdrawal can name its source.
+func loadPluginServers(workspace string, logger *iterlog.Logger) (map[string]*ServerConfig, map[string]string) {
 	reg, err := plugin.Load()
 	if err != nil {
 		// Every plugin's MCP servers disappear from every node of the run.
@@ -64,7 +66,7 @@ func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*Ser
 		// and the file that most often breaks the load, <home>/plugins.yaml,
 		// is the repository's own whenever a project `.env` selected the home.
 		logger.Warn("mcp: plugin registry failed to load — NO plugin MCP server is available to this run: %v", err)
-		return map[string]*ServerConfig{}
+		return map[string]*ServerConfig{}, map[string]string{}
 	}
 	// A registry that loaded but skipped a plugin is the common half of the
 	// same silence: that plugin's servers are gone from every node of the
@@ -74,6 +76,7 @@ func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*Ser
 			"NOT available to this run: %s", len(skips), strings.Join(skips, "; "))
 	}
 	out := map[string]*ServerConfig{}
+	contributedBy := map[string]string{}
 	for _, p := range reg.Enabled() {
 		exp := reg.ExpandContextFor(p.Name(), workspace)
 		origin := OriginUnknown
@@ -103,7 +106,8 @@ func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*Ser
 				Headers:   s.Headers,
 				Env:       env,
 			}
+			contributedBy[s.Name] = p.Name()
 		}
 	}
-	return out
+	return out, contributedBy
 }

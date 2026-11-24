@@ -1,4 +1,10 @@
-{{- if and (eq .Values.mode "cloud") (gt (int .Values.server.replicas) 1) -}}
+{{- /* The replica count each workload is GUARANTEED: the autoscaler's floor
+     when one owns the count, the static value otherwise. iterion.pdbWanted
+     renders a budget only above one replica (or when pdb.enabled forces it):
+     minAvailable 1 on a single replica refuses every eviction and holds a
+     node drain forever. */ -}}
+{{- $serverCount := ternary .Values.server.hpa.minReplicas .Values.server.replicas .Values.server.hpa.enabled -}}
+{{- if and (eq .Values.mode "cloud") (include "iterion.pdbWanted" (dict "enabled" .Values.server.pdb.enabled "replicas" $serverCount)) -}}
 # Keep at least one server pod through voluntary disruptions (node
 # drains, cluster upgrades) — without this a drain can take every
 # replica down simultaneously and drop the API + webhook intake.
@@ -9,15 +15,14 @@ metadata:
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
 spec:
-  minAvailable: 1
+  {{- include "iterion.pdbBudget" .Values.server.pdb | nindent 2 }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: server
 {{- end }}
-{{- /* Render the runner PDB when the pool can exceed one pod: a static
-     replicas>1, or KEDA (which scales past the static count). */ -}}
-{{- if and (eq .Values.mode "cloud") .Values.runner.enabled (or (gt (int .Values.runner.replicas) 1) .Values.runner.keda.enabled) }}
+{{- $runnerCount := ternary .Values.runner.keda.minReplicas .Values.runner.replicas .Values.runner.keda.enabled -}}
+{{- if and (eq .Values.mode "cloud") .Values.runner.enabled (include "iterion.pdbWanted" (dict "enabled" .Values.runner.pdb.enabled "replicas" $runnerCount)) }}
 ---
 # Same guard for the runner pool. A PDB gates the Eviction API only, so it
 # covers a node drain or a cluster upgrade — keeping at least one runner
@@ -32,7 +37,7 @@ metadata:
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
 spec:
-  minAvailable: 1
+  {{- include "iterion.pdbBudget" .Values.runner.pdb | nindent 2 }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" . | nindent 6 }}

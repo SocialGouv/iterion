@@ -456,7 +456,11 @@ func stringsToAny(values []string) []any {
 func (b *schemaBuilder) entries(k Kind, e *Entries) obj {
 	description := strings.TrimSpace(k.Doc + " " + e.Doc)
 	if e.SequenceKey != "" {
-		item := b.entryObject(e, obj{e.SequenceKey: obj{"type": "string", "pattern": identPattern, "description": "The entry's name"}}, []string{e.SequenceKey})
+		name := obj{"type": "string", "description": "The entry's name"}
+		if e.Key == Ident || e.Key == "" {
+			name["pattern"] = identPattern
+		}
+		item := b.entryObject(e, obj{e.SequenceKey: name}, []string{e.SequenceKey})
 		return obj{"type": "array", "items": item, "description": description}
 	}
 	o := obj{"type": "object", "additionalProperties": b.entryValue(e), "description": description}

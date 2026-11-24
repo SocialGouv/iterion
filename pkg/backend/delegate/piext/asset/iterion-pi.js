@@ -1,4 +1,5 @@
 // src/config.ts
+import { readFileSync } from "node:fs";
 var CONTRACT_VERSION = "1";
 function env(name) {
   const v = process.env[name];
@@ -29,10 +30,10 @@ function usableMcpServer(s) {
   if (typeof c?.name !== "string" || c.name === "") return false;
   return mcpTransport(c.transport) === "stdio" ? typeof c.command === "string" && c.command !== "" : typeof c.url === "string" && c.url !== "";
 }
-function parseMcpServers(raw) {
+function parseMcpServersFile(raw) {
   if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(readFileSync(raw, "utf8"));
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(usableMcpServer).map((s) => ({ ...s, transport: mcpTransport(s.transport) }));
   } catch {
@@ -53,7 +54,7 @@ function loadConfig() {
     iteration: Number.isFinite(iteration) ? iteration : void 0,
     permission: permissionMode(env("ITERION_PI_PERMISSION")),
     interaction: interactionMode(env("ITERION_PI_INTERACTION")),
-    mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
+    mcpServers: parseMcpServersFile(env("ITERION_PI_MCP_SERVERS_FILE")),
     mcpConnectTimeoutMs: positiveInt(env("ITERION_PI_MCP_CONNECT_TIMEOUT_MS"), 1e4),
     ctrlEnabled: env("ITERION_PI_CTRL") !== "off"
   };

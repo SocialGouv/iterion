@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -44,6 +45,40 @@ import (
 
 var rgaaScriptRef = regexp.MustCompile(`\{\{\s*(input|vars|run)\.([A-Za-z0-9_.]+)\s*\}\}`)
 
+func rgaaAssertDraftReaders(t *testing.T, draft map[string]any) {
+	t.Helper()
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	td := &model.TemplateData{Outputs: map[string]map[string]any{"draft_report": draft}}
+	for _, c := range []struct{ from, to, prompt string }{
+		{"refute_dispatch", "refute", "refute_user"},
+		{"review_gate", "human_review", "human_review_instructions"},
+	} {
+		input := map[string]any{}
+		for _, edge := range wf.Edges {
+			if edge.From != c.from || edge.To != c.to {
+				continue
+			}
+			for _, m := range edge.With {
+				if m.Key == "draft_path" || m.Key == "technical_annex_path" {
+					resolver := &model.TemplateResolver{Unresolved: func(ref string) { t.Errorf("unresolved edge: %s", ref) }}
+					input[m.Key] = resolver.Resolve(m.Raw, nil, td)
+				}
+			}
+		}
+		prompt := wf.Prompts[c.prompt]
+		rendered := (&model.TemplateResolver{}).Resolve(prompt.Body, input, nil)
+		for _, key := range []string{"draft_path", "technical_annex_path"} {
+			p := fmt.Sprint(input[key])
+			if input[key] != draft[key] || !strings.Contains(rendered, p) {
+				t.Fatalf("%s lost %s: %v", c.to, key, input)
+			}
+			if _, err := os.ReadFile(p); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 // rgaaBotScripts returns the script body of every tool node of the bot.
 func rgaaBotScripts(t *testing.T) map[string]string {
 	t.Helper()
@@ -52,6 +87,11 @@ func rgaaBotScripts(t *testing.T) map[string]string {
 	for id, n := range wf.Nodes {
 		tn, ok := n.(*ir.ToolNode)
 		if !ok {
+			continue
+		}
+		// An action node has no script: the native board transport executes
+		// it in the engine (ADR-151), and there is no js to extract.
+		if tn.Action != "" {
 			continue
 		}
 		if strings.TrimSpace(tn.Script) == "" || tn.Language != "js" {
@@ -259,7 +299,7 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 			"input.run_dir": base, "input.workspace_dir": site, "input.standard": std, "run.id": runID,
 			"input.engine_version": pin.Version, "input.engine_sha256": pin.SHA256, "input.engine_size": fmt.Sprint(pin.Size),
 			"input.scope_globs": "", "input.exclude_globs": "**/node_modules/**,**/*.test.*", "input.max_files": "4000",
-			"input.force_jsx": "true", "input.rendered": "off", "input.ledger_path": "", "input.undecidable_path": "", "input.report_dir": "",
+			"input.force_jsx": "true", "input.rendered": "off", "input.browser_path": "", "input.ledger_path": "", "input.undecidable_path": "", "input.report_dir": "",
 		}
 		maps.Copy(v, extra)
 		return v
@@ -479,6 +519,34 @@ L.out({ ok: true, cases: out });
 		}
 	})
 
+	t.Run("static_audit_purges_the_page_captures_a_previous_run_left_in_the_workspace", func(t *testing.T) {
+		// The engine's audit ingests the captures already under
+		// .ultra11y/pages/ — a previous run's stale probes.json would anchor
+		// findings the fresh audit no longer produces (#2623). Nothing durable
+		// lives there (gitignored): the node purges the directory before
+		// auditing, and the coverage layer says how much it swept.
+		ws := rgaaCopyFixtureSite(t)
+		stale := filepath.Join(ws, ".ultra11y", "pages", "previous-run")
+		if err := os.MkdirAll(stale, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"dom.html", "probes.json"} {
+			if err := os.WriteFile(filepath.Join(stale, f), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := rgaaRunCopy(t, run)
+		rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": dir, "input.workspace_dir": ws, "input.max_files": 4000, "input.audit_args": prep["audit_args"]})))
+		if _, err := os.Stat(filepath.Join(ws, ".ultra11y", "pages")); !os.IsNotExist(err) {
+			t.Fatalf("static_audit left a previous run's captures under %s: the audit ingested them", filepath.Join(ws, ".ultra11y", "pages"))
+		}
+		var layer map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, "layers", "static.json"), &layer)
+		if rgaaInt(layer["pages_purged"]) != 1 {
+			t.Fatalf("the static layer records pages_purged=%v, want 1 (one stale page directory swept)", layer["pages_purged"])
+		}
+	})
+
 	t.Run("bank_static_publishes_the_findings", func(t *testing.T) {
 		out := rgaaOK(t, "bank_static", rgaaRunNode(t, scripts, "bank_static", site, env, in(nil)))
 		if out["banked"] != true || len(rgaaStrings(out["findings"])) != rgaaInt(auditOut["findings"]) {
@@ -489,6 +557,42 @@ L.out({ ok: true, cases: out });
 		}
 	})
 
+	t.Run("prepare_hands_the_configured_browser_to_the_engine_probe_which_names_it", func(t *testing.T) {
+		// The rendered layer's browser is the operator's choice first (`browser_path`),
+		// the run's environment second ($ULTRA11Y_BROWSER_PATH), the engine's own
+		// Playwright last. The probe must answer about THAT executable: a path that is
+		// not on disk is refused by the engine naming it — never a silent fall-back on
+		// the Playwright binary the operator did not choose. Asserted on the engine's
+		// answer, not on the arguments the node built: the pinned engine has to honour
+		// `--browser-path` for this to hold.
+		for _, c := range []struct {
+			name string
+			env  func(missing string) []string
+			vars func(dir, missing string) map[string]any
+		}{
+			{"var", func(string) []string { return env }, func(dir, missing string) map[string]any {
+				return map[string]any{"input.run_dir": dir, "input.rendered": "auto", "input.browser_path": missing}
+			}},
+			{"env", func(missing string) []string {
+				return append(append([]string{}, env...), "ULTRA11Y_BROWSER_PATH="+missing)
+			}, func(dir, missing string) map[string]any {
+				return map[string]any{"input.run_dir": dir, "input.rendered": "auto"}
+			}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				missing := filepath.Join(t.TempDir(), "no-such-chromium")
+				dir := filepath.Join(t.TempDir(), "scratch")
+				out := rgaaOK(t, "prepare", rgaaRunNode(t, scripts, "prepare", site, c.env(missing), prepareIn(c.vars(dir, missing))))
+				if out["browser_path"] != missing {
+					t.Fatalf("prepare resolved browser_path=%v, want the configured %s", out["browser_path"], missing)
+				}
+				if out["browser_ok"] != false || !strings.Contains(fmt.Sprint(out["browser_reason"]), missing) {
+					t.Fatalf("the probe answered ok=%v (%q): want the engine's refusal naming the configured executable %s", out["browser_ok"], out["browser_reason"], missing)
+				}
+			})
+		}
+	})
+
 	t.Run("render_fails_the_layer_on_a_refused_sample_lint_before_any_scan", func(t *testing.T) {
 		// A sample-less rc: the engine's lint refuses it. The layer is failed
 		// (required) or degraded (auto) on THAT refusal — never read as an
@@ -496,7 +600,7 @@ L.out({ ok: true, cases: out });
 		ws := rgaaCopyFixtureSite(t)
 		rgaaWriteJSON(t, filepath.Join(ws, ".ultra11yrc.json"), map[string]any{"standard": "rgaa"})
 		renderIn := func(dir, mode string) map[string]any {
-			return in(map[string]any{"input.run_dir": dir, "input.workspace_dir": ws, "input.rendered": mode, "input.engine_pkg_dir": prep["engine_pkg_dir"], "input.serve_command": "", "input.serve_ready_url": "", "input.serve_timeout_seconds": 5})
+			return in(map[string]any{"input.run_dir": dir, "input.workspace_dir": ws, "input.rendered": mode, "input.engine_pkg_dir": prep["engine_pkg_dir"], "input.browser_path": "", "input.serve_command": "", "input.serve_ready_url": "", "input.serve_timeout_seconds": 5})
 		}
 		req := rgaaRefused(t, "render", rgaaRunNode(t, scripts, "render", ws, env, renderIn(rgaaRunCopy(t, run), "required")), "RENDER_UNAVAILABLE")
 		if !strings.HasPrefix(fmt.Sprint(req["reason"]), "sample check exit 2") {
@@ -573,10 +677,8 @@ L.out({ ok: true, cases: out });
 	}
 	itemsDir := fmt.Sprint(wl["items_dir"])
 
-	// The engine's own "no subject" set, measured by folding a C-only
-	// adjudication on a copy (the shape TestRgaaAuditEngineContract pins).
-	var flagged []string
-	t.Run("the_engine_flags_subject_less_criteria_only_after_a_fold", func(t *testing.T) {
+	// A partial fold must leave coverage gaps open without marking them NA.
+	t.Run("partial_fold_does_not_mark_open_criteria_inapplicable", func(t *testing.T) {
 		dir := t.TempDir()
 		copyPath := filepath.Join(dir, "audit-latest.json")
 		rgaaCopyFile(t, audit, copyPath)
@@ -595,9 +697,8 @@ L.out({ ok: true, cases: out });
 		rgaaEngineJSON(t, bin, site, nil, &f, "verify", "--apply", filepath.Join(dir, "adj.json"), "--in", copyPath, "--out", dir, "--json", "--standard", std, "--lang", "fr")
 		var doc packAuditDoc
 		rgaaReadJSON(t, copyPath, &doc)
-		flagged = rgaaFlagged(doc)
-		if len(flagged) == 0 {
-			t.Fatal("no flagged criterion on the fixture")
+		if flagged := rgaaFlagged(doc); len(flagged) != 0 {
+			t.Fatalf("coverage gaps incorrectly marked inapplicable: %v", flagged)
 		}
 	})
 	if t.Failed() {
@@ -610,6 +711,8 @@ L.out({ ok: true, cases: out });
 		Theme       string            `json:"theme"`
 		IDs         []string          `json:"ids"`
 		PriorIssues map[string]string `json:"prior_issues"`
+		ItemPaths   []string          `json:"item_paths"`
+		BriefPaths  []string          `json:"brief_paths"`
 	}
 	planBatches := func(t *testing.T, dir string) []batch {
 		t.Helper()
@@ -654,7 +757,7 @@ L.out({ ok: true, cases: out });
 	var round0 []batch
 	var deadBatch string
 	// The hostile first round, one case per guard.
-	var strayID, uncitedID, bareNAID, dupID, malformedID, flaggedID, crossID string
+	var strayID, uncitedID, bareNAID, dupID, malformedID, crossID string
 	t.Run("plan_batches_groups_the_pending_criteria_by_theme_in_bounded_batches", func(t *testing.T) {
 		round0 = planBatches(t, run)
 		seen := map[string]bool{}
@@ -675,11 +778,89 @@ L.out({ ok: true, cases: out });
 		if len(round0) < 3 {
 			t.Fatalf("the fixture yields %d batches, the hostile round needs three", len(round0))
 		}
+		// The agent opens the batch's own files, spelled out: one item and one
+		// brief path per criterion, in the ids' order, absolute and present —
+		// never a path it reconstructs from a directory and an id (#2675).
+		briefsDir := fmt.Sprint(wl["briefs_dir"])
+		for _, b := range round0 {
+			if len(b.ItemPaths) != len(b.IDs) || len(b.BriefPaths) != len(b.IDs) {
+				t.Fatalf("batch %s: %d ids, item_paths %v, brief_paths %v", b.ID, len(b.IDs), b.ItemPaths, b.BriefPaths)
+			}
+			for i, id := range b.IDs {
+				if b.ItemPaths[i] != filepath.Join(itemsDir, id+".json") || b.BriefPaths[i] != filepath.Join(briefsDir, id+".md") {
+					t.Fatalf("batch %s criterion %s: item %s, brief %s", b.ID, id, b.ItemPaths[i], b.BriefPaths[i])
+				}
+				for _, p := range []string{b.ItemPaths[i], b.BriefPaths[i]} {
+					if !filepath.IsAbs(p) {
+						t.Fatalf("batch %s carries the relative path %s", b.ID, p)
+					}
+					if _, err := os.Stat(p); err != nil {
+						t.Fatalf("batch %s names %s: %v", b.ID, p, err)
+					}
+				}
+			}
+		}
 		// A zero or negative batch size falls back to the default, never to
 		// one agent per criterion.
 		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.batch_size": 0}))
 		if r.Code != 0 || rgaaInt(r.Out["count"]) != len(round0) {
 			t.Fatalf("batch_size 0 planned %v batches, the default plans %d", r.Out["count"], len(round0))
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("merge_verdicts_names_a_partial_batch_apart_from_a_lost_one", func(t *testing.T) {
+		// #2675: a batch whose fragment answers only part of its criteria is
+		// PARTIAL, not lost — reported apart from the dead branches, and each
+		// unanswered criterion is re-asked with the reason (answer every
+		// criteriaId, manual with its reason when undecidable).
+		dir := rgaaRunCopy(t, run)
+		var b batch
+		for _, cand := range planBatches(t, dir) {
+			if len(cand.IDs) >= 2 {
+				b = cand
+				break
+			}
+		}
+		if len(b.IDs) < 2 {
+			t.Fatal("no round-0 batch carries two criteria")
+		}
+		omitted := b.IDs[len(b.IDs)-1]
+		var verdicts []any
+		for _, id := range b.IDs {
+			if id == omitted {
+				continue
+			}
+			verdicts = append(verdicts, rgaaFixtureVerdict(t, itemsDir, id))
+		}
+		frag := writeFragment(t, dir, b, verdicts)
+		if rgaaInt(frag["missing"]) != 1 {
+			t.Fatalf("fragment: %v (want 1 missing)", frag)
+		}
+		merged := mergeVerdicts(t, dir, 0)
+		raw, _ := json.Marshal(merged["partial_batches"])
+		var partial []struct {
+			ID      string   `json:"id"`
+			Missing []string `json:"missing"`
+		}
+		if err := json.Unmarshal(raw, &partial); err != nil {
+			t.Fatal(err)
+		}
+		if len(partial) != 1 || partial[0].ID != b.ID || len(partial[0].Missing) != 1 || partial[0].Missing[0] != omitted {
+			t.Fatalf("partial_batches: %v (want exactly %s missing %s)", merged["partial_batches"], b.ID, omitted)
+		}
+		if rgaaContains(rgaaStrings(merged["failed_batches"]), b.ID) {
+			t.Fatalf("the partial batch %s reads as lost: %v", b.ID, merged["failed_batches"])
+		}
+		if !strings.Contains(fmt.Sprint(merged["reason"]), "no verdict for "+omitted) {
+			t.Fatalf("the merge's reason does not name the unanswered criterion: %v", merged["reason"])
+		}
+		var issues map[string]string
+		rgaaReadJSON(t, filepath.Join(dir, "issues.json"), &issues)
+		if !strings.Contains(issues[omitted], "answer EVERY criteriaId") {
+			t.Fatalf("the re-ask issue for %s: %q", omitted, issues[omitted])
 		}
 	})
 	if t.Failed() {
@@ -910,11 +1091,7 @@ L.out({ ok: true, cases: out });
 		strayID, uncitedID, bareNAID, malformedID = ev[0], ev[1], ev[2], ev[3]
 		dupID = first.IDs[len(first.IDs)-1]
 		crossID = round0[1].IDs[0]
-		flaggedID = flagged[0]
 		deadBatch = round0[len(round0)-1].ID
-		if rgaaContains(round0[len(round0)-1].IDs, flaggedID) {
-			flaggedID = flagged[len(flagged)-1]
-		}
 		for i, b := range round0 {
 			if b.ID == deadBatch {
 				continue // this branch "died": no fragment
@@ -932,8 +1109,6 @@ L.out({ ok: true, cases: out });
 				case i == 0 && id == malformedID:
 					e := rgaaEvidenceOf(t, itemsDir, id)[0]
 					v = map[string]any{"criteriaId": id, "verdict": "C", "justification": "citations malformées (fixture)", "citations": []any{nil, map[string]any{"file": []any{"index.html"}, "line": e["line"]}, map[string]any{"line": e["line"]}}}
-				case id == flaggedID:
-					v = map[string]any{"criteriaId": id, "verdict": "manual", "reason": "undecidable", "justification": "manual sur un critère sans sujet (fixture)"}
 				}
 				verdicts = append(verdicts, v)
 			}
@@ -983,7 +1158,7 @@ L.out({ ok: true, cases: out });
 		if len(pIDs) != len(pending) {
 			t.Fatalf("pending.json carries %d ids, the probe reported %d", len(pIDs), len(pending))
 		}
-		for id, want := range map[string]string{strayID: "outside this criterion's own evidence", uncitedID: "cite", bareNAID: "must cite that evidence", dupID: "two verdicts", malformedID: "cite", flaggedID: "no subject"} {
+		for id, want := range map[string]string{strayID: "outside this criterion's own evidence", uncitedID: "cite", bareNAID: "must cite that evidence", dupID: "two verdicts", malformedID: "cite"} {
 			if !rgaaContains(pending, id) {
 				t.Fatalf("pending %v lacks %s", pending, id)
 			}
@@ -996,7 +1171,7 @@ L.out({ ok: true, cases: out });
 				t.Fatalf("the dead batch's %s is not pending", id)
 			}
 		}
-		if rgaaInt(probe["flagged_open"]) < 1 || rgaaInt(probe["rejected"]) < 2 {
+		if rgaaInt(probe["flagged_open"]) != 0 || rgaaInt(probe["rejected"]) < 2 {
 			t.Fatalf("probe counters: %v", probe)
 		}
 	})
@@ -1143,6 +1318,122 @@ L.out({ ok: true, cases: out });
 		again := rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.require_complete": true})))
 		if again["audit_sha256"] != fold["audit_sha256"] || rgaaInt(again["applied"]) != rgaaInt(fold["applied"]) || sha() != fold["audit_sha256"] {
 			t.Fatalf("re-entry: %v", again)
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("a_rewind_to_ledger_replay_on_a_folded_run_keeps_the_copy_and_re_emits_the_replay", func(t *testing.T) {
+		// #2438 case 1: a run with a committed ledger, folded, rewound to a
+		// node before fold_final. The audit stays folded, so a fresh replay
+		// would read every landed entry as obsolete and rewrite the copy with
+		// 0 entries. The copy found at the node's entry belongs to THIS audit:
+		// the node keeps it and re-emits the replay's recorded output.
+		var ledger map[string]any
+		rgaaReadJSON(t, fmt.Sprint(fold["ledger_path"]), &ledger)
+		entries, _ := ledger["entries"].([]any)
+		// Two entries stay out of the committed ledger: the run adjudicates
+		// and folds them itself, so the audit moves PAST the replay and the
+		// node's own once-record no longer covers the rewind.
+		var dropped []string
+		var kept []any
+		for _, e := range entries {
+			if len(dropped) < 2 {
+				dropped = append(dropped, fmt.Sprint(e.(map[string]any)["criteriaId"]))
+				continue
+			}
+			kept = append(kept, e)
+		}
+		ledger["entries"] = kept
+		path := filepath.Join(t.TempDir(), "rgaa.json")
+		rgaaWriteJSON(t, path, ledger)
+		base6 := filepath.Join(t.TempDir(), "scratch")
+		p6 := rgaaOK(t, "prepare", rgaaRunNode(t, scripts, "prepare", site, env, prepareIn(map[string]any{"input.run_dir": base6})))
+		run6 := fmt.Sprint(p6["run_dir"])
+		rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": run6, "input.max_files": 4000, "input.audit_args": p6["audit_args"]})))
+		rep := rgaaOK(t, "ledger_replay", rgaaRunNode(t, scripts, "ledger_replay", site, env, in(map[string]any{"input.run_dir": run6, "input.ledger_present": true, "input.ledger_path": path})))
+		if rgaaInt(rep["replayed"]) != len(kept) {
+			t.Fatalf("replay: %v (want %d replayed)", rep, len(kept))
+		}
+		w6 := rgaaOK(t, "worklist", rgaaRunNode(t, scripts, "worklist", site, env, in(map[string]any{"input.run_dir": run6})))
+		if got := rgaaStrings(w6["pending_ids"]); len(got) != len(dropped) {
+			t.Fatalf("after the partial replay %v is open, want %v", got, dropped)
+		}
+		items6 := fmt.Sprint(w6["items_dir"])
+		for _, b := range planBatches(t, run6) {
+			var verdicts []any
+			for _, id := range b.IDs {
+				verdicts = append(verdicts, rgaaFixtureVerdict(t, items6, id))
+			}
+			writeFragment(t, run6, b, verdicts)
+		}
+		mergeVerdicts(t, run6, 0)
+		rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.run_dir": run6, "input.require_complete": true})))
+		// The fold moved the audit past the replay: a resume keyed on the
+		// audit hash cannot see this rewind — only the copy can.
+		var onceRec struct {
+			PostSHA string `json:"post_sha256"`
+		}
+		rgaaReadJSON(t, filepath.Join(run6, "state", "node-ledger_replay.json"), &onceRec)
+		if onceRec.PostSHA == rgaaFileSHA(t, filepath.Join(run6, "audit-latest.json")) {
+			t.Fatal("the fold did not move the audit past the replay: the once-record would cover the rewind and this test would exercise nothing")
+		}
+		copyPath := filepath.Join(run6, "ledger", "rgaa.json")
+		var copyDoc struct {
+			Entries []map[string]any `json:"entries"`
+		}
+		rgaaReadJSON(t, copyPath, &copyDoc)
+		if len(copyDoc.Entries) != len(entries) {
+			t.Fatalf("the fold's ledger copy carries %d entries, want %d", len(copyDoc.Entries), len(entries))
+		}
+		copySHA := rgaaFileSHA(t, copyPath)
+		out := rgaaOK(t, "ledger_replay", rgaaRunNode(t, scripts, "ledger_replay", site, env, in(map[string]any{"input.run_dir": run6, "input.ledger_present": true, "input.ledger_path": path})))
+		if rgaaFileSHA(t, copyPath) != copySHA {
+			t.Fatal("a rewind to ledger_replay over a folded audit rewrote the fold's ledger copy")
+		}
+		if rgaaInt(out["replayed"]) != rgaaInt(rep["replayed"]) || out["audit_sha256"] != rep["audit_sha256"] {
+			t.Fatalf("the rewind re-emitted %v, want the replay's recorded output %v", out, rep)
+		}
+	})
+
+	t.Run("a_rewind_to_static_audit_cannot_report_the_old_folded_audit_as_fresh", func(t *testing.T) {
+		// #2438 case 2: the engine's audit swallows a failed write of
+		// audit-latest.json, so the old folded document must be removed BEFORE
+		// the engine runs — else the node's existence check passes on it and
+		// the fold's ledger copy is dropped over an audit nothing replaced.
+		// A directory where the file should be (the write is swallowed the
+		// same way): the node dies untyped and the copy SURVIVES.
+		left := rgaaRunCopy(t, run)
+		if err := os.Remove(filepath.Join(left, "audit-latest.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(left, "audit-latest.json"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r := rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": left, "input.max_files": 4000, "input.audit_args": prep["audit_args"]}))
+		if r.Code == 0 {
+			t.Fatalf("static_audit reported %v over an audit path that is a directory", r.Out)
+		}
+		if _, err := os.Stat(filepath.Join(left, "ledger", "rgaa.json")); err != nil {
+			t.Fatalf("a static_audit that could not write its audit dropped the fold's ledger copy: %v", err)
+		}
+		// The ticket's own proof, a read-only audit-latest.json: the node
+		// removes the old document first, so the audit it reports is the one
+		// the engine just wrote — never the folded one (root writes through
+		// the mode bits, so this half needs a user).
+		if os.Geteuid() != 0 {
+			left2 := rgaaRunCopy(t, run)
+			audit2 := filepath.Join(left2, "audit-latest.json")
+			foldedSHA := rgaaFileSHA(t, audit2)
+			if err := os.Chmod(audit2, 0o444); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(audit2, 0o644) // let the cleanup remove it
+			out := rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": left2, "input.max_files": 4000, "input.audit_args": prep["audit_args"]})))
+			if out["audit_sha256"] == foldedSHA || rgaaFileSHA(t, audit2) == foldedSHA {
+				t.Fatal("static_audit reported the OLD folded audit as the fresh one — the engine's swallowed write went unseen")
+			}
 		}
 	})
 	if t.Failed() {
@@ -1522,7 +1813,12 @@ L.out({ ok: true, cases: out });
 			t.Fatal("the ledger copy carries no cited conformity to drop or relative citation to write another way")
 		}
 		dr := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, env, in(map[string]any{"input.run_dir": dir})))
-		// What goes on trial is exactly what the audit says agents landed.
+		// What goes on trial is what the audit says agents landed as a CLEARING
+		// claim: every conformity, and the non-applicabilities (a pack
+		// adjudication keeps an agent's NA as `NA`) except the ones the engine's
+		// own absence fold proves — so every agent C is on trial, and nothing is
+		// on trial that an agent did not clear. Measured on ultra11y 5.49.0: an
+		// NA without a citation stands trial at the scope level (`uncited`).
 		var doc struct {
 			Core struct {
 				PackAdjudication struct {
@@ -1535,10 +1831,16 @@ L.out({ ok: true, cases: out });
 			} `json:"core"`
 		}
 		rgaaReadJSON(t, filepath.Join(dir, "audit-latest.json"), &doc)
-		var landed []string
+		var conformities, cleared []string
 		for _, c := range doc.Core.PackAdjudication.Criteria {
-			if c.DecidedBy == "agent" && c.Status == "C" {
-				landed = append(landed, c.ID)
+			if c.DecidedBy != "agent" {
+				continue
+			}
+			if c.Status == "C" {
+				conformities = append(conformities, c.ID)
+			}
+			if c.Status == "C" || c.Status == "NA" {
+				cleared = append(cleared, c.ID)
 			}
 		}
 		var todo []map[string]any
@@ -1549,10 +1851,21 @@ L.out({ ok: true, cases: out });
 				onTrial = append(onTrial, fmt.Sprint(it["criteriaId"]))
 			}
 		}
-		sort.Strings(landed)
+		sort.Strings(conformities)
+		sort.Strings(cleared)
 		sort.Strings(onTrial)
-		if len(landed) == 0 || strings.Join(onTrial, ",") != strings.Join(landed, ",") || !rgaaContains(onTrial, dropped) {
-			t.Fatalf("on trial %v, landed in the audit %v (the ledger copy lacks %s)", onTrial, landed, dropped)
+		if len(conformities) == 0 || !rgaaContains(onTrial, dropped) {
+			t.Fatalf("on trial %v, conformities landed in the audit %v (the ledger copy lacks %s)", onTrial, conformities, dropped)
+		}
+		for _, id := range conformities {
+			if !rgaaContains(onTrial, id) {
+				t.Fatalf("conformity %s landed in the audit is not on trial: on trial %v", id, onTrial)
+			}
+		}
+		for _, id := range onTrial {
+			if !rgaaContains(cleared, id) {
+				t.Fatalf("%s is on trial but no agent cleared it (C or NA) in the audit: cleared %v", id, cleared)
+			}
 		}
 		for _, it := range todo {
 			it["verdict"] = "supported"
@@ -1598,16 +1911,135 @@ L.out({ ok: true, cases: out });
 		if _, err := os.Stat(fmt.Sprint(draft["todo_path"])); err != nil {
 			t.Fatal(err)
 		}
+		var metadata map[string]any
+		rgaaReadJSON(t, filepath.Join(run, "draft", "draft.json"), &metadata)
+		for _, key := range []string{"draft_path", "technical_annex_path"} {
+			if metadata[key] != draft[key] {
+				t.Fatalf("draft metadata %s = %v, output = %v", key, metadata[key], draft[key])
+			}
+			if _, err := os.ReadFile(fmt.Sprint(draft[key])); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rgaaAssertDraftReaders(t, draft)
 	})
 	if t.Failed() {
 		return
 	}
 
+	t.Run("split_report_requires_a_readable_valid_annex", func(t *testing.T) {
+		for _, fault := range []string{"missing", "directory", "invalid", "outside", "counts_missing"} {
+			t.Run(fault, func(t *testing.T) {
+				dir := t.TempDir()
+				main := filepath.Join(dir, filepath.Base(fmt.Sprint(draft["draft_path"])))
+				annex := filepath.Join(dir, filepath.Base(fmt.Sprint(draft["technical_annex_path"])))
+				rgaaCopyFile(t, fmt.Sprint(draft["draft_path"]), main)
+				switch fault {
+				case "directory":
+					if err := os.Mkdir(annex, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				case "invalid":
+					if err := os.WriteFile(annex, []byte("invalid annex"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				case "outside":
+					annex = fmt.Sprint(draft["technical_annex_path"])
+				case "counts_missing":
+					var lines []string
+					for _, line := range strings.Split(mustRead(t, fmt.Sprint(draft["technical_annex_path"])), "\n") {
+						if !strings.HasPrefix(line, "- **Décidés** : ") {
+							lines = append(lines, line)
+						}
+					}
+					if err := os.WriteFile(annex, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					// A counter-shaped finding in the business report cannot
+					// replace missing metadata in the technical annex.
+					fake := "\n- **Décidés** : 0/106 — 0 conforme(s), 0 non conforme(s), 0 conforme(s) faute de sujet, 106 à évaluer\n"
+					if err := os.WriteFile(main, []byte(mustRead(t, main)+fake), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				script := `const L=require(process.argv[1]).init(process.argv[2]); L.reportParts({path:process.argv[3],annexPath:process.argv[4]},process.argv[5],false);`
+				cmd := exec.Command("node", "-e", script, filepath.Join(run, "bin", "lib.js"), run, main, annex, dir)
+				if output, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("accepted %s annex: %s", fault, output)
+				}
+			})
+		}
+		for _, fault := range []string{"missing_asset", "outside_asset"} {
+			t.Run(fault, func(t *testing.T) {
+				root := t.TempDir()
+				file := filepath.Join(root, "assets", "missing.png")
+				if fault == "outside_asset" {
+					file = fmt.Sprint(draft["technical_annex_path"])
+				}
+				script := `const L=require(process.argv[1]).init(process.argv[2]); L.copyReportFiles([process.argv[3]],process.argv[4],process.argv[5]);`
+				cmd := exec.Command("node", "-e", script, filepath.Join(run, "bin", "lib.js"), run, file, root, t.TempDir())
+				if output, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("accepted invalid generation manifest %s: %s", fault, output)
+				}
+			})
+		}
+		for _, fault := range []string{"file_symlink", "dangling_symlink", "directory_symlink"} {
+			t.Run(fault, func(t *testing.T) {
+				root, destination, outside := t.TempDir(), t.TempDir(), t.TempDir()
+				file := filepath.Join(root, "assets", "report.md")
+				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				rgaaCopyFile(t, fmt.Sprint(draft["technical_annex_path"]), file)
+				target := filepath.Join(outside, "report.md")
+				link := filepath.Join(destination, "assets", "report.md")
+				switch fault {
+				case "directory_symlink":
+					link, target = filepath.Dir(link), outside
+				case "file_symlink":
+					if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, link); err != nil {
+					t.Fatal(err)
+				}
+				script := `const L=require(process.argv[1]).init(process.argv[2]); L.copyReportFiles([process.argv[3]],process.argv[4],process.argv[5]);`
+				cmd := exec.Command("node", "-e", script, filepath.Join(run, "bin", "lib.js"), run, file, root, destination)
+				if output, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("accepted destination %s: %s", fault, output)
+				}
+				if fault == "file_symlink" && mustRead(t, target) != "untouched" {
+					t.Fatal("export changed the symlink target")
+				}
+			})
+		}
+		// A real report generation failure must stop draft_report before
+		// producing either its trial worklist or the reader metadata.
+		copyRun := rgaaRunCopy(t, preFold)
+		draftDir := filepath.Join(copyRun, "draft")
+		blocked := filepath.Join(draftDir, filepath.Base(fmt.Sprint(draft["technical_annex_path"])))
+		if err := os.MkdirAll(blocked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := rgaaRunNode(t, scripts, "draft_report", site, env, in(map[string]any{"input.run_dir": copyRun}))
+		if out.Code == 0 || !strings.Contains(out.Stderr, "EISDIR") {
+			t.Fatalf("draft did not fail on unreadable annex: %+v", out)
+		}
+		if _, err := os.Stat(filepath.Join(draftDir, "draft.json")); !os.IsNotExist(err) {
+			t.Fatal("failed draft published reader metadata")
+		}
+	})
+
 	type rbatch struct {
-		ID    string           `json:"id"`
-		Round int              `json:"round"`
-		Ns    []int            `json:"ns"`
-		Items []map[string]any `json:"items"`
+		ID         string           `json:"id"`
+		Round      int              `json:"round"`
+		Ns         []int            `json:"ns"`
+		Items      []map[string]any `json:"items"`
+		BriefPaths []string         `json:"brief_paths"`
 	}
 	planRefute := func(t *testing.T) []rbatch {
 		t.Helper()
@@ -1619,6 +2051,32 @@ L.out({ ok: true, cases: out });
 		var batches []rbatch
 		if err := json.Unmarshal(raw, &batches); err != nil {
 			t.Fatal(err)
+		}
+		// The second reader opens each claim criterion's brief by the path the
+		// batch spells, in the claims' order — never one it reconstructs
+		// (#2675). A criterion the engine decided statically carries no brief:
+		// the batch says null there, never a path that does not exist.
+		briefsDir := fmt.Sprint(wl["briefs_dir"])
+		for _, b := range batches {
+			if len(b.BriefPaths) != len(b.Items) {
+				t.Fatalf("refute batch %s: %d claims, brief_paths %v", b.ID, len(b.Items), b.BriefPaths)
+			}
+			for i, it := range b.Items {
+				want := filepath.Join(briefsDir, fmt.Sprint(it["criteriaId"])+".md")
+				bp := b.BriefPaths[i]
+				if bp == "" {
+					if _, err := os.Stat(want); !os.IsNotExist(err) {
+						t.Fatalf("refute batch %s claim %v: brief path empty but %s exists", b.ID, it["n"], want)
+					}
+					continue
+				}
+				if bp != want {
+					t.Fatalf("refute batch %s claim %v: brief %s, want %s", b.ID, it["n"], bp, want)
+				}
+				if _, err := os.Stat(bp); err != nil {
+					t.Fatalf("refute batch %s names %s: %v", b.ID, bp, err)
+				}
+			}
 		}
 		return batches
 	}
@@ -1644,6 +2102,40 @@ L.out({ ok: true, cases: out });
 		batches := planRefute(t)
 		if len(batches) < 2 {
 			t.Fatalf("%d refutation batches, the dead-branch case needs two", len(batches))
+		}
+		// An uncited clearing claim (an agent NA on an empty harvest) has no file
+		// to open: the refuter must be told so, or it reads `file: "", line: 0`
+		// as a citation. The flag travels from the engine's todo to the batch.
+		var draft struct {
+			TodoPath string `json:"todo_path"`
+		}
+		rgaaReadJSON(t, filepath.Join(run, "draft", "draft.json"), &draft)
+		var todo []map[string]any
+		rgaaReadJSON(t, draft.TodoPath, &todo)
+		uncited := map[int]bool{}
+		for _, it := range todo {
+			if it["uncited"] == true {
+				uncited[rgaaInt(it["n"])] = true
+			}
+		}
+		if len(uncited) == 0 {
+			t.Fatal("the engine put no uncited clearing claim on trial — the fixture's agent NA verdicts should stand trial at the scope level")
+		}
+		seen := 0
+		for _, b := range batches {
+			for _, it := range b.Items {
+				if uncited[rgaaInt(it["n"])] {
+					seen++
+					if it["uncited"] != true || it["file"] != "" {
+						t.Fatalf("uncited claim n=%v dispatched as %v: want uncited=true and no file", it["n"], it)
+					}
+				} else if it["uncited"] == true {
+					t.Fatalf("claim n=%v dispatched as uncited, the engine cited it", it["n"])
+				}
+			}
+		}
+		if seen != len(uncited) {
+			t.Fatalf("%d uncited claims on trial, %d dispatched", len(uncited), seen)
 		}
 		for i, b := range batches {
 			if i == len(batches)-1 {
@@ -2487,7 +2979,13 @@ L.out({ ok: true, cases: out });
 	var final map[string]any
 	t.Run("final_report_cross_checks_the_report_writes_the_annex_and_copies_the_deliverables", func(t *testing.T) {
 		reportDir := filepath.Join(t.TempDir(), "audits")
-		final = rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, in(map[string]any{"input.html_report": false, "input.report_dir": reportDir, "input.require_complete": true, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": "fixture scope"})))
+		if err := os.MkdirAll(filepath.Join(run, "out"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(run, "out", "stale-report.md"), []byte("previous attempt"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		final = rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, in(map[string]any{"input.html_report": true, "input.report_dir": reportDir, "input.require_complete": true, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": "fixture scope"})))
 		if final["complete"] != true || rgaaInt(final["undecided"]) != 0 || final["provisional"] != true {
 			t.Fatalf("final: complete=%v undecided=%v provisional=%v", final["complete"], final["undecided"], final["provisional"])
 		}
@@ -2513,10 +3011,24 @@ L.out({ ok: true, cases: out });
 				t.Fatalf("annex lacks %q:\n%s", want, annex)
 			}
 		}
-		for _, f := range []string{filepath.Base(fmt.Sprint(final["report_path"])), filepath.Base(fmt.Sprint(final["annex_path"])), filepath.Join("ledger", "rgaa.json")} {
+		for _, f := range []string{filepath.Base(fmt.Sprint(final["report_path"])), filepath.Base(fmt.Sprint(final["technical_annex_path"])), filepath.Base(fmt.Sprint(final["html_path"])), filepath.Base(fmt.Sprint(final["html_single_path"])), filepath.Base(fmt.Sprint(final["annex_path"])), filepath.Join("ledger", "rgaa.json")} {
 			if _, err := os.Stat(filepath.Join(reportDir, f)); err != nil {
 				t.Fatalf("report_dir lacks %s", f)
 			}
+		}
+		if _, err := os.Stat(filepath.Join(reportDir, "stale-report.md")); !os.IsNotExist(err) {
+			t.Fatal("export included an unrelated previous output")
+		}
+		exported := filepath.Join(reportDir, filepath.Base(fmt.Sprint(final["report_path"])))
+		if got := rgaaReadReportLines(t, exported); got != lines {
+			t.Fatalf("exported report differs: %+v / %+v", got, lines)
+		}
+		var checked checkOut
+		if code := rgaaEngineJSON(t, bin, site, nil, &checked, "check", "--report", exported, "--in", audit, "--standard", std, "--json"); code != 0 || !checked.OK {
+			t.Fatalf("exported report integrity: %d %+v", code, checked)
+		}
+		if len(rgaaStrings(final["report_files"])) != 6 {
+			t.Fatalf("report_files: %v", final["report_files"])
 		}
 	})
 	if t.Failed() {
@@ -2597,10 +3109,9 @@ L.out({ ok: true, cases: out });
 		}
 	})
 
-	t.Run("final_report_degrades_the_integrity_layer_when_engine_flagged_criteria_stay_open", func(t *testing.T) {
-		// The known upstream double count: a C-only fold leaves the flagged
-		// criteria open and the report disagrees with the document. The bot
-		// reports the layer as degraded and goes on (require_complete off).
+	t.Run("final_report_keeps_coverage_gaps_open_without_double_counting", func(t *testing.T) {
+		// The old double count is fixed: coverage gaps remain open, and the
+		// split report and engine integrity check must agree with the audit.
 		copyRun := rgaaRunCopy(t, run)
 		raw := filepath.Join(copyRun, "audit-latest.json")
 		rgaaCopyFile(t, filepath.Join(run, "bank", "audit-static.json"), raw)
@@ -2616,14 +3127,12 @@ L.out({ ok: true, cases: out });
 		}
 		out := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, in(map[string]any{"input.run_dir": copyRun, "input.html_report": false, "input.report_dir": "", "input.require_complete": false, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": ""})))
 		d, _ := out["degraded"].(map[string]any)
-		// The « Décidés » cross-check itself must fire — not only the engine's
-		// own refusal, which covers the same case and would hide a dropped check.
-		if d["decided_line"] == nil || out["complete"] != false {
-			t.Fatalf("a left-open flagged set did not degrade the integrity layer through the « Décidés » cross-check: %v", out)
+		if len(d) != 0 || out["complete"] != false {
+			t.Fatalf("partial fold must remain incomplete with consistent report counts: %v", out)
 		}
 		annex, _ := os.ReadFile(fmt.Sprint(out["annex_path"]))
-		if !strings.Contains(string(annex), "| Intégrité du rapport | dégradée |") {
-			t.Fatalf("annex does not say the integrity is degraded:\n%s", annex)
+		if !strings.Contains(string(annex), "| Intégrité du rapport | ok |") {
+			t.Fatalf("annex does not say the integrity is consistent:\n%s", annex)
 		}
 	})
 
@@ -2656,19 +3165,23 @@ L.out({ ok: true, cases: out });
 		return
 	}
 
-	t.Run("publish_verify_holds_the_judge_s_report_to_the_plan", func(t *testing.T) {
+	t.Run("publish_verify_reads_the_board_not_a_report", func(t *testing.T) {
 		issues, _ := plan["issues"].([]any)
-		var titles []string
+		var board []any
 		for _, i := range issues {
-			titles = append(titles, fmt.Sprint(i.(map[string]any)["title"]))
+			board = append(board, map[string]any{"title": fmt.Sprint(i.(map[string]any)["title"])})
 		}
-		out := rgaaOK(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.issues": issues, "input.created": titles[:1], "input.existing": titles[1:], "input.failed": []string{}})))
-		if rgaaInt(out["created"]) != 1 || rgaaInt(out["existing"]) != 1 {
+		out := rgaaOK(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.issues": issues, "input.board": board})))
+		if rgaaInt(out["present"]) != len(board) || rgaaInt(out["planned"]) != len(board) {
 			t.Fatalf("verify: %v", out)
 		}
 		probe := rgaaRunCopy(t, run)
-		rgaaRefused(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.created": titles[:1], "input.existing": []string{}, "input.failed": []string{}})), "BOARD_PUBLISH_INCOMPLETE")
-		rgaaRefused(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.created": titles, "input.existing": []string{}, "input.failed": []string{"something"}})), "BOARD_PUBLISH_INCOMPLETE")
+		rgaaRefused(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.board": board[:1]})), "BOARD_PUBLISH_INCOMPLETE")
+		// A shared board legitimately carries cards the plan does not
+		// (earlier runs, a cap's held-back titles): the verifier reads
+		// coverage, not possession.
+		wider := append(append([]any{}, board...), map[string]any{"title": "[a11y] RGAA 9.9 — un titre que le plan ne contient pas"})
+		rgaaOK(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.board": wider})))
 	})
 
 	t.Run("every_node_that_reads_the_audit_refuses_a_document_edited_outside_the_engine", func(t *testing.T) {
@@ -2754,13 +3267,9 @@ L.out({ ok: true, cases: out });
 	})
 }
 
-// KNOWN UPSTREAM DEFECT (ultra11y 5.42.1): the contract says a NA on a
-// criterion with harvested evidence must cite it, and the fold accepts a
-// bare one — the criterion lands as « conforme faute de sujet » with nothing
-// on trial. The bot's merge sends such a NA back by name
-// (TestRgaaAuditEngineDrivenNodes). When this test FAILS, upstream enforces
-// its own contract and the bot-side check can go.
-func TestRgaaAuditKnownUpstreamDefectBareNAOnEvidenceIsAccepted(t *testing.T) {
+// A NA with harvested evidence must cite it. Both the engine and the bot
+// enforce this boundary; a bare NA must not become a conformity.
+func TestRgaaAuditEngineBareNAOnEvidenceIsRefused(t *testing.T) {
 	bin, _ := rgaaResolveEngine(t)
 	site := rgaaCopyFixtureSite(t)
 	run := filepath.Join(t.TempDir(), "run")
@@ -2794,22 +3303,14 @@ func TestRgaaAuditKnownUpstreamDefectBareNAOnEvidenceIsAccepted(t *testing.T) {
 	rgaaWriteJSON(t, filepath.Join(run, "adj.json"), skeleton)
 	var f foldOut
 	rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", filepath.Join(run, "adj.json"), "--in", audit, "--out", run, "--json"}, std...)...)
-	if f.Applied != 1 || rgaaContains(f.RejectedCriteria, target) {
-		t.Fatalf("the fold now refuses a bare NA on %s (applied=%d rejected=%v): upstream enforces its contract — lift the bot-side check in merge_verdicts", target, f.Applied, f.RejectedCriteria)
+	if f.Applied != 0 || !rgaaContains(f.RejectedCriteria, target) {
+		t.Fatalf("bare NA on %s must be refused (applied=%d rejected=%v)", target, f.Applied, f.RejectedCriteria)
 	}
 }
 
-// KNOWN UPSTREAM DEFECT (ultra11y 5.42.1, SocialGouv/ultra11y#50): the fold
-// grounds a citation whose snippet the adjudicator retyped through its
-// fallback to the evidence anchor and lands the verdict; the trial grounds
-// every retained claim as stored, with no fallback, and refuses it — a
-// conformity the fold accepted fails every later trial. The bot's
-// fold_final gives such a citation its anchor's own snippet
-// (TestRgaaAuditEngineDrivenNodes). When this test FAILS, read which side
-// moved: a trial that grounds the retyping no longer needs the restore; a
-// fold that refuses it as written leaves fold_final nothing to restore (it
-// restores only what the fold accepts as written) — the agent is re-asked.
-func TestRgaaAuditKnownUpstreamDefectTheTrialRefusesARetypedSnippetTheFoldAccepted(t *testing.T) {
+// The trial must ground the same retyped citation that the fold accepted
+// through its evidence-anchor fallback (ultra11y#50, fixed in 5.43.2).
+func TestRgaaAuditEngineTrialGroundsARetypedSnippetTheFoldAccepted(t *testing.T) {
 	bin, _ := rgaaResolveEngine(t)
 	site := rgaaCopyFixtureSite(t)
 	run := filepath.Join(t.TempDir(), "run")
@@ -2834,7 +3335,6 @@ func TestRgaaAuditKnownUpstreamDefectTheTrialRefusesARetypedSnippetTheFoldAccept
 	// first anchor, NA where nothing was harvested), one citation retyped.
 	var items []any
 	var target string
-	var anchor map[string]any
 	for _, it := range todo.Items {
 		if len(it.Evidence) == 0 {
 			items = append(items, map[string]any{"criteriaId": it.CriteriaID, "verdict": "NA", "justification": "Aucun sujet de ce type dans le périmètre audité (fixture)."})
@@ -2843,7 +3343,7 @@ func TestRgaaAuditKnownUpstreamDefectTheTrialRefusesARetypedSnippetTheFoldAccept
 		e := it.Evidence[0]
 		snippet, _ := e["snippet"].(string)
 		if target == "" && snippet != "" {
-			target, anchor = it.CriteriaID, e
+			target = it.CriteriaID
 			snippet += "`"
 		}
 		items = append(items, map[string]any{"criteriaId": it.CriteriaID, "verdict": "C", "justification": "Conforme sur l'évidence citée (fixture).", "citations": []any{map[string]any{"file": e["file"], "line": e["line"], "snippet": snippet}}})
@@ -2878,9 +3378,8 @@ func TestRgaaAuditKnownUpstreamDefectTheTrialRefusesARetypedSnippetTheFoldAccept
 		} `json:"grounding"`
 	}
 	rgaaEngineJSON(t, bin, site, nil, &applied, append([]string{"verify", "--apply", trial.TodoPath, "--report", rep, "--in", audit, "--out", run, "--prune", "--json"}, std...)...)
-	want := fmt.Sprintf("cited snippet not found in %v:%v", anchor["file"], anchor["line"])
-	if applied.Grounding.Failed != 1 || len(applied.Grounding.Issues) != 1 || !strings.HasPrefix(applied.Grounding.Issues[0], want) {
-		t.Fatalf("the trial refused %d claim(s) %v, want exactly the retyped citation of %s (%q): when it grounds it, upstream aligned the trial with the fold (SocialGouv/ultra11y#50) and the restore in fold_final is no longer needed for the trial", applied.Grounding.Failed, applied.Grounding.Issues, target, want)
+	if applied.Grounding.Failed != 0 || len(applied.Grounding.Issues) != 0 {
+		t.Fatalf("trial rejected the citation accepted by the fold: %+v", applied.Grounding)
 	}
 }
 
@@ -2904,7 +3403,7 @@ func TestRgaaAuditDryRunWalksTheGraphOnTheFixtures(t *testing.T) {
 		t.Fatalf("the dry run is failing:\n%s", raw)
 	}
 	allowed := map[string]bool{}
-	for _, n := range []string{"adjudication_incomplete", "audit_integrity", "unexpected_refusal", "board_publish_incomplete", "empty_scope", "engine_hash_mismatch", "engine_unresolved", "grid_incomplete", "ledger_invalid", "refute_incomplete", "render", "render_unavailable", "report_integrity_failed"} {
+	for _, n := range []string{"adjudication_incomplete", "audit_integrity", "unexpected_refusal", "board_publish_incomplete", "publish_plan_duplicate", "empty_scope", "engine_hash_mismatch", "engine_unresolved", "grid_incomplete", "ledger_invalid", "refute_incomplete", "render", "render_unavailable", "report_integrity_failed"} {
 		allowed[n] = true
 	}
 	for _, n := range rep.UnvisitedNodes {
@@ -3029,6 +3528,395 @@ func TestRgaaAuditReviewGateReadsTheTrialOnBothPaths(t *testing.T) {
 			if m.Key == "run_dir" && m.Raw != "{{outputs.prepare.run_dir}}" {
 				t.Errorf("edge %s -> %s maps run_dir from %q: only prepare knows the run's directory", e.From, e.To, m.Raw)
 			}
+		}
+	}
+}
+
+// The verify's contract over the transcription judge's report, in BOTH
+// directions and with no engine in the loop: every planned title reaching
+// the board is one half, and nothing the plan never asked for is the other.
+//
+// It runs where ULTRA11Y_BIN is unset, unlike the engine-driven chain, which
+// is deliberate: the hole #2388 names is in the CONTRACT, not in the engine.
+// A tool node has no board action, so the judge's own report is all there is
+// to hold — and a report that covers the plan with rows nobody planned used
+// to pass, because only coverage was checked.
+func TestRgaaAuditPublishVerifyReadsTheBoardNotAReport(t *testing.T) {
+	scripts := rgaaBotScripts(t)
+	site := t.TempDir()
+	planned := []any{
+		map[string]any{"title": "[a11y] RGAA 1.1 — Chaque image porte-elle une alternative ?"},
+		map[string]any{"title": "[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?"},
+	}
+	titles := []string{
+		"[a11y] RGAA 1.1 — Chaque image porte-elle une alternative ?",
+		"[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?",
+	}
+	const unplanned = "[a11y] RGAA 9.9 — un titre que le plan ne contient pas"
+	boardWith := func(ts ...string) []any {
+		var out []any
+		for _, title := range ts {
+			out = append(out, map[string]any{"title": title})
+		}
+		return out
+	}
+	// One run directory per case, carrying only prepare's helpers: this node
+	// reads no audit document and never runs the engine, so the engine entry
+	// rgaaInitReportRun records is never opened.
+	verify := func(t *testing.T, values map[string]any) rgaaNodeResult {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), "run")
+		rgaaInitReportRun(t, dir, site, filepath.Join(site, "engine-never-run.mjs"), scripts)
+		v := map[string]any{
+			"input.run_dir": dir, "input.issues": planned,
+			"input.board": []any{},
+		}
+		maps.Copy(v, values)
+		return rgaaRunNode(t, scripts, "publish_verify", site, nil, v)
+	}
+
+	t.Run("the_plan_on_the_board_is_ok", func(t *testing.T) {
+		out := rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.board": boardWith(titles...)}))
+		if rgaaInt(out["planned"]) != 2 || rgaaInt(out["present"]) != 2 {
+			t.Fatalf("counts: %v", out)
+		}
+		if got := rgaaStrings(out["missing"]); len(got) != 0 {
+			t.Fatalf("missing on a covered plan: %v", got)
+		}
+	})
+
+	t.Run("a_plan_title_absent_from_the_board_is_refused_by_name", func(t *testing.T) {
+		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{"input.board": boardWith(titles[0])}), "BOARD_PUBLISH_INCOMPLETE")
+		if got := rgaaStrings(out["missing"]); len(got) != 1 || got[0] != titles[1] {
+			t.Fatalf("the refusal does not carry the missing title: %v", out["missing"])
+		}
+		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, titles[1]) {
+			t.Fatalf("the refusal does not NAME the missing title: %s", reason)
+		}
+	})
+
+	t.Run("an_untitled_plan_item_reads_as_untitled", func(t *testing.T) {
+		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{
+			"input.issues": []any{map[string]any{"id": 42}},
+			"input.board":  boardWith(titles...),
+		}), "BOARD_PUBLISH_INCOMPLETE")
+		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "(untitled)") {
+			t.Fatalf("the refusal does not name the untitled item readably: %s", reason)
+		}
+	})
+
+	t.Run("a_board_carrying_what_the_plan_does_not_is_not_a_refusal", func(t *testing.T) {
+		// The instance's board is SHARED: an earlier run's cards, a cap's
+		// held-back titles, an operator's own card all carry the label and
+		// none of them is this run's to refuse. Coverage is the verdict,
+		// possession is not.
+		rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.board": boardWith(titles[0], titles[1], unplanned)}))
+	})
+
+	t.Run("the_plan_still_verifies_when_the_mapping_carried_it_as_a_string", func(t *testing.T) {
+		// A `json` field travels either as the array its producer printed or
+		// as the string a mapping carried; reading the plan with `.map` alone
+		// made the second shape an untyped node crash where the graph routes
+		// a typed refusal.
+		raw, err := json.Marshal(planned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.issues": string(raw), "input.board": boardWith(titles...)}))
+		if rgaaInt(out["present"]) != 2 {
+			t.Fatalf("counts: %v", out)
+		}
+	})
+
+	t.Run("every_key_the_node_prints_is_declared_by_its_output_schema", func(t *testing.T) {
+		// A key the script prints and the `output:` schema omits reaches no
+		// consumer at all: `{{outputs.publish_verify.<key>}}` resolves
+		// against the DECLARATION, never against the node's stdout. So the
+		// two halves of the verdict are checked where they are READABLE,
+		// over every path the node can take.
+		wf := compilePlanPhaseBot(t, "rgaa-audit")
+		node, isTool := wf.Nodes["publish_verify"].(*ir.ToolNode)
+		if !isTool {
+			t.Fatalf("publish_verify is not a tool node: %T", wf.Nodes["publish_verify"])
+		}
+		schema := wf.Schemas[node.OutputSchema]
+		if schema == nil {
+			t.Fatalf("publish_verify declares output schema %q and the workflow holds no such schema", node.OutputSchema)
+		}
+		declared := map[string]bool{}
+		for _, f := range schema.Fields {
+			declared[f.Name] = true
+		}
+		for _, c := range []struct {
+			path   string
+			values map[string]any
+		}{
+			{"ok", map[string]any{"input.board": boardWith(titles...)}},
+			{"incomplete", map[string]any{"input.board": boardWith(titles[0])}},
+		} {
+			res := verify(t, c.values)
+			if res.Code != 0 {
+				t.Fatalf("the %s path died (exit %d):\n%s", c.path, res.Code, res.Stderr)
+			}
+			for key := range res.Out {
+				if !declared[key] {
+					t.Errorf("the %s path prints %q and %s does not declare it, so no consumer can read it", c.path, key, node.OutputSchema)
+				}
+			}
+		}
+	})
+}
+
+// A title declared TWICE in the plan is the filing key used twice: two
+// cards for one intent (review r2's probe filed both). publish_diff refuses
+// it by name — fail closed, because an under-filed plan that verifies clean
+// is the worse defect.
+func TestRgaaAuditPublishDiffRefusesADuplicatedPlanTitle(t *testing.T) {
+	scripts := rgaaBotScripts(t)
+	site := t.TempDir()
+	dup := []any{
+		map[string]any{"title": "[a11y] RGAA 1.1 — Chaque image porte-elle une alternative ?"},
+		map[string]any{"title": "[a11y] RGAA 1.1 — Chaque image porte-elle une alternative ?"},
+	}
+	dir := filepath.Join(t.TempDir(), "run")
+	rgaaInitReportRun(t, dir, site, filepath.Join(site, "engine-never-run.mjs"), scripts)
+	out := rgaaRefused(t, "publish_diff", rgaaRunNode(t, scripts, "publish_diff", site, nil, map[string]any{
+		"input.run_dir": dir, "input.issues": dup, "input.board": []any{},
+	}), "BOARD_PLAN_DUPLICATE_TITLES")
+	if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "declared twice") || !strings.Contains(reason, "[a11y] RGAA 1.1") {
+		t.Fatalf("the refusal must name the duplicated title: %s", reason)
+	}
+	if got := rgaaStrings(out["duplicates"]); len(got) != 1 {
+		t.Fatalf("the refusal must carry the duplicated titles once each: %v", got)
+	}
+	// Distinct titles file normally — the check is not a net over the plan.
+	dir2 := filepath.Join(t.TempDir(), "run")
+	rgaaInitReportRun(t, dir2, site, filepath.Join(site, "engine-never-run.mjs"), scripts)
+	ok := rgaaOK(t, "publish_diff", rgaaRunNode(t, scripts, "publish_diff", site, nil, map[string]any{
+		"input.run_dir": dir2,
+		"input.issues":  []any{map[string]any{"title": "a"}, map[string]any{"title": "b"}},
+		"input.board":   []any{map[string]any{"title": "a"}},
+	}))
+	if rgaaInt(ok["to_file"]) != 1 {
+		t.Fatalf("to_file = %v, want 1 (b is not on the board)", ok)
+	}
+}
+
+// The publication chain carries NO model (#2388): filing and verifying are
+// native board actions on tool nodes, each holding exactly the capability
+// its verb needs — the bot's opt-in is the declaration (#78=A).
+func TestRgaaAuditPublishChainIsModelFree(t *testing.T) {
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	if _, isJudge := wf.Nodes["publish"]; isJudge {
+		t.Fatal("a judge named publish survives — the transcription is deterministic now")
+	}
+	for name, want := range map[string]struct {
+		action string
+		grants []string
+	}{
+		"publish_list":        {"board.issue.list", []string{"board.read"}},
+		"publish_create":      {"board.issue.create", []string{"board.create"}},
+		"publish_verify_read": {"board.issue.list", []string{"board.read"}},
+	} {
+		node, isTool := wf.Nodes[name].(*ir.ToolNode)
+		if !isTool {
+			t.Fatalf("%s is not a tool node: %T", name, wf.Nodes[name])
+		}
+		if node.Action != want.action {
+			t.Errorf("%s: action = %q, want %q", name, node.Action, want.action)
+		}
+		for _, g := range want.grants {
+			found := false
+			for _, c := range node.Capabilities {
+				if c == g {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: capabilities %v lack %q — the verb's grant is the node's declaration", name, node.Capabilities, g)
+			}
+		}
+	}
+	// And the fan-in re-reads the board AFTER the fan-out, and tolerates a
+	// failed branch rather than blocking the verdict on it.
+	read, ok := wf.Nodes["publish_verify_read"].(*ir.ToolNode)
+	if !ok {
+		t.Fatal("publish_verify_read is not a tool node")
+	}
+	if read.AwaitMode != ir.AwaitBestEffort {
+		t.Errorf("publish_verify_read: await = %q, want best_effort — a failed create must not block the board read that names it", read.AwaitMode)
+	}
+	// publish_create runs one branch per plan item, each writing exactly one
+	// card — without parallel_safe the fan-out's workspace guard refuses the
+	// run (WORKSPACE_SAFETY), a refusal the dry run never sees (proven by the
+	// local smoke that did).
+	if create, ok := wf.Nodes["publish_create"].(*ir.ToolNode); !ok {
+		t.Fatal("publish_create is not a tool node")
+	} else if !create.ParallelSafe {
+		t.Error("publish_create must declare parallel_safe: true — one branch writes one card, disjoint by item")
+	}
+	// And the verdict's inputs are the plan and the BOARD READ — no report
+	// of either from a writer.
+	verifyNode, ok := wf.Nodes["publish_verify"].(*ir.ToolNode)
+	if !ok {
+		t.Fatal("publish_verify is not a tool node")
+	}
+	schema := wf.Schemas[verifyNode.InputSchema]
+	if schema == nil {
+		t.Fatalf("publish_verify declares input schema %q and the workflow holds no such schema", verifyNode.InputSchema)
+	}
+	fields := map[string]bool{}
+	for _, f := range schema.Fields {
+		fields[f.Name] = true
+	}
+	if !fields["board"] || !fields["issues"] {
+		t.Errorf("publish_verify_input must carry the plan (issues) and the board read (board): %v", fields)
+	}
+	for _, gone := range []string{"created", "existing", "failed"} {
+		if fields[gone] {
+			t.Errorf("publish_verify_input still carries %q — a writer's self-report field", gone)
+		}
+	}
+}
+
+// #2675: the adjudicate and refute prompts spell the batch's own absolute
+// paths and the node's exact tool set, and the read-only agents attempt no
+// MCP server of the audited repository. A prompt that leaves the model to
+// reconstruct a path from memory — or silent about a tool it does not have
+// — is what the ticket's 159 tool errors on 1 445 calls measured. This test
+// is the compile-level witness; it needs no engine.
+func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	// Prompt prose wraps; match on whitespace-collapsed text.
+	prompt := func(name string) string {
+		t.Helper()
+		p, ok := wf.Prompts[name]
+		if !ok {
+			t.Fatalf("no prompt %s", name)
+		}
+		return strings.Join(strings.Fields(p.Body), " ")
+	}
+	// The batch's files, spelled out — never a template the model completes.
+	adjUser := prompt("adjudicate_user")
+	for _, ref := range []string{"{{input.item_paths}}", "{{input.brief_paths}}"} {
+		if !strings.Contains(adjUser, ref) {
+			t.Errorf("adjudicate_user does not spell %s", ref)
+		}
+	}
+	for _, gone := range []string{"items_dir}}/<id>.json", "briefs_dir}}/<id>.md"} {
+		if strings.Contains(adjUser, gone) {
+			t.Errorf("adjudicate_user still hands the model a path template to reconstruct: %s", gone)
+		}
+	}
+	refUser := prompt("refute_user")
+	if !strings.Contains(refUser, "{{input.brief_paths}}") || strings.Contains(refUser, "briefs_dir}}/<criteriaId>.md") {
+		t.Error("refute_user does not spell the batch's brief paths")
+	}
+	// The tool set, named; a skill is not a file.
+	for _, name := range []string{"adjudicate_system", "refute_system"} {
+		body := prompt(name)
+		for _, marker := range []string{"EXACTLY `read_file`, `glob` and `grep`", "no MCP server", "a skill is a name, never a path"} {
+			if !strings.Contains(body, marker) {
+				t.Errorf("%s lacks the marker %q", name, marker)
+			}
+		}
+	}
+	// Every item answered, explicitly: the missing one is manual/unsupported,
+	// never silence.
+	if !strings.Contains(prompt("adjudicate_system"), "`manual` with its reason, never silence") {
+		t.Error("adjudicate_system does not say an unanswered criterion reads as lost")
+	}
+	if !strings.Contains(refUser, "`unsupported`, never silence") {
+		t.Error("refute_user does not say an unanswered claim reads as lost")
+	}
+	// The edges carry the batch's paths to the agents.
+	edge := func(from, to string) *ir.Edge {
+		t.Helper()
+		for _, e := range wf.Edges {
+			if e.From == from && e.To == to {
+				return e
+			}
+		}
+		t.Fatalf("no edge %s -> %s", from, to)
+		return nil
+	}
+	for _, key := range []string{"item_paths", "brief_paths"} {
+		m := mappingOf(edge("dispatch", "adjudicate"), key)
+		if m == nil || m.Raw != "{{outputs.dispatch.batch."+key+"}}" {
+			t.Errorf("dispatch -> adjudicate maps %s from %v, want the batch's own %s", key, m, key)
+		}
+	}
+	if m := mappingOf(edge("refute_dispatch", "refute"), "brief_paths"); m == nil || m.Raw != "{{outputs.refute_dispatch.rbatch.brief_paths}}" {
+		t.Errorf("refute_dispatch -> refute maps brief_paths from %v, want the batch's own brief_paths", m)
+	}
+	// No MCP server is attempted on the read-only agents: the audited repo's
+	// own .mcp.json servers are not theirs to boot.
+	for _, id := range []string{"adjudicate", "refute"} {
+		var mcp *ir.MCPConfig
+		switch n := wf.Nodes[id].(type) {
+		case *ir.AgentNode:
+			mcp = n.MCP
+		case *ir.JudgeNode:
+			mcp = n.MCP
+		default:
+			t.Fatalf("node %s is not an agent/judge", id)
+		}
+		if mcp == nil || mcp.Inherit == nil || *mcp.Inherit {
+			t.Errorf("node %s does not pin mcp.inherit: false", id)
+		}
+	}
+	// The schemas carry what the prompts reference.
+	has := func(schema, field string) bool {
+		s := wf.Schemas[schema]
+		if s == nil {
+			return false
+		}
+		for _, f := range s.Fields {
+			if f.Name == field {
+				return true
+			}
+		}
+		return false
+	}
+	for _, ref := range []struct{ schema, field string }{{"adjudicate_input", "item_paths"}, {"adjudicate_input", "brief_paths"}, {"refute_input", "brief_paths"}, {"merge_output", "partial_batches"}} {
+		if !has(ref.schema, ref.field) {
+			t.Errorf("schema %s lacks %s", ref.schema, ref.field)
+		}
+	}
+	// The bundle's skills are declared "Authoritative" by the same prompts,
+	// so they must name the same path discipline: the batch's own absolute
+	// paths, listed in the input — never a directory variable the agents no
+	// longer receive (adjudicate_input and refute_input dropped items_dir
+	// and briefs_dir with #2675), never a path reconstructed from memory.
+	for _, skill := range []string{
+		"rgaa-audit/skills/adjudication-protocol.md",
+		"rgaa-audit/skills/refutation-protocol.md",
+		"rgaa-audit/skills/ultra11y-engine.md",
+		"rgaa-audit/skills/rgaa-audit.md",
+		"rgaa-audit/skills/iterion-board.md",
+	} {
+		raw, err := os.ReadFile(skill)
+		if err != nil {
+			t.Fatalf("read %s: %v", skill, err)
+		}
+		body := string(raw)
+		for _, gone := range []string{"items_dir", "briefs_dir"} {
+			if strings.Contains(body, gone) {
+				t.Errorf("%s still names %s, a directory variable the agents do not receive", skill, gone)
+			}
+		}
+	}
+	for _, skill := range []string{
+		"rgaa-audit/skills/adjudication-protocol.md",
+		"rgaa-audit/skills/refutation-protocol.md",
+		"rgaa-audit/skills/ultra11y-engine.md",
+	} {
+		raw, err := os.ReadFile(skill)
+		if err != nil {
+			t.Fatalf("read %s: %v", skill, err)
+		}
+		if !strings.Contains(strings.Join(strings.Fields(string(raw)), " "), "never a path reconstructed from memory") {
+			t.Errorf("%s does not name the batch's listed absolute paths as the only ones to open", skill)
 		}
 	}
 }

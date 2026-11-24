@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawlsp "github.com/SocialGouv/claw-code-go/pkg/api/lsp"
-	clawmcp "github.com/SocialGouv/claw-code-go/pkg/api/mcp"
-	clawtask "github.com/SocialGouv/claw-code-go/pkg/api/task"
-	clawteam "github.com/SocialGouv/claw-code-go/pkg/api/team"
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
-	clawworker "github.com/SocialGouv/claw-code-go/pkg/api/worker"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawlsp "github.com/SocialGouv/iterion/pkg/claw/pkg/api/lsp"
+	clawmcp "github.com/SocialGouv/iterion/pkg/claw/pkg/api/mcp"
+	clawtask "github.com/SocialGouv/iterion/pkg/claw/pkg/api/task"
+	clawteam "github.com/SocialGouv/iterion/pkg/claw/pkg/api/team"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
+	clawworker "github.com/SocialGouv/iterion/pkg/claw/pkg/api/worker"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -20,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ctxKeyBashExtraEnv carries per-task env additions (KEY=value entries)
@@ -75,28 +77,52 @@ func RegisterClawBuiltins(reg *Registry, workspace string) error {
 // fixers can validate their patches in-loop. Pass nil for plain
 // inheritance.
 func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv []string) error {
+	return RegisterClawBuiltinsWithScope(reg, NewReadScope(workspace), bashExtraEnv)
+}
+
+// RegisterClawBuiltinsWithScope is RegisterClawBuiltinsWithEnv over a
+// shared ReadScope instead of a bare workspace string. The scope is the
+// host's handle for attaching extra READ-only roots after registration —
+// the engine pushes the run's ${PROJECT_SCRATCH_DIR} once it resolves
+// (#2650), which is after the registry exists. Write tools are not
+// scope-aware: relative paths rebase onto the workspace as before.
+//
+// The workspace is re-read from the scope on EVERY CALL, never captured:
+// a provider-backed scope (NewReadScopeWithProvider) is the one resolution
+// the host shares with the `command`/`skill` lookup tools, so bash's
+// shell, write_file's and file_edit's rebase, and the read tools'
+// containment all follow a `worktree: auto` run's worktree — pushed
+// through ClawExecutor.SetWorkDir after this registry exists (#2889, the
+// #2870 class). A scope built from a string keeps the static answer, which
+// is what the in-container runner wants: its cwd IS the bind-mounted
+// worktree and never moves.
+func RegisterClawBuiltinsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv []string) error {
+	workspace := func() string {
+		w, _ := scope.snapshot()
+		return w
+	}
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
-		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
+		return executeWorkspaceBash(ctx, input, workspace(), bashExtraEnv)
 	}
 
 	return registerClawSpecs(reg, []clawBuiltinSpec{
 		{tool: workspaceReadFileTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceReadFile(input, workspace)
+			return executeWorkspaceReadFile(input, scope)
 		}},
 		{tool: clawtools.WriteFileTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace, "path"))
+			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace(), "path"))
 		}},
-		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGlob(ctx, input, workspace)
+		{tool: workspaceGlobTool(), concurrentSafe: true, exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGlob(ctx, input, scope)
 		}},
 		{tool: clawtools.GrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGrep(ctx, input, workspace)
+			return executeWorkspaceGrep(ctx, input, scope)
 		}},
 		{tool: clawtools.FileEditTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return clawtools.ExecuteFileEdit(ctx, clawWorkspaceFileInput(input, workspace, "file_path"))
+			return clawtools.ExecuteFileEdit(ctx, clawWorkspaceFileInput(input, workspace(), "file_path"))
 		}},
 		{tool: clawtools.WebFetchTool(), exec: clawtools.ExecuteWebFetch},
 		{tool: clawtools.BashTool(), exec: bashExec},
@@ -126,15 +152,27 @@ func clawWorkspaceFileInput(input map[string]any, workspace, pathKey string) map
 // tool. The workflow still has to declare the aliases in its tools list and
 // permission policy.
 func RegisterClawWorkspaceDiagnostics(reg *Registry, workspace string, bashExtraEnv []string) error {
+	return RegisterClawWorkspaceDiagnosticsWithScope(reg, NewReadScope(workspace), bashExtraEnv)
+}
+
+// RegisterClawWorkspaceDiagnosticsWithScope is RegisterClawWorkspaceDiagnostics
+// over a shared ReadScope, so the workspace_grep alias honours the same extra
+// read roots as the plain read tools (#2650) and diagnostic_shell's cwd
+// follows the scope's live workspace the way bash's does (#2889).
+func RegisterClawWorkspaceDiagnosticsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv []string) error {
+	workspace := func() string {
+		w, _ := scope.snapshot()
+		return w
+	}
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
-		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
+		return executeWorkspaceBash(ctx, input, workspace(), bashExtraEnv)
 	}
 	return registerClawSpecs(reg, []clawBuiltinSpec{
-		{tool: workspaceGrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGrep(ctx, input, workspace)
+		{tool: workspaceGrepTool(), concurrentSafe: true, exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGrep(ctx, input, scope)
 		}},
 		{tool: diagnosticShellTool(), exec: bashExec},
 	})
@@ -185,7 +223,7 @@ func executeWorkspaceBash(ctx context.Context, input map[string]any, workspace s
 // extraction.
 func registerClawSpecs(reg *Registry, specs []clawBuiltinSpec) error {
 	for _, s := range specs {
-		if err := RegisterClawTool(reg, s.tool, s.exec); err != nil {
+		if err := registerClawTool(reg, s); err != nil {
 			return fmt.Errorf("register %q: %w", s.tool.Name, err)
 		}
 	}
@@ -197,11 +235,47 @@ func registerClawSpecs(reg *Registry, specs []clawBuiltinSpec) error {
 // agents can splice into their next message. Unlike screenshot /
 // computer_use this tool does not require a display, so it's safe in
 // headless workflows.
-func RegisterClawReadImage(reg *Registry) error {
+//
+// The `path` input answers to the SAME ReadScope as read_file, glob and
+// grep (#2885): contained in the workspace or a declared read root, and
+// never a credential or secret file — an image read reaches the same
+// filesystem a file read does, and a `.env` leaks its bytes whether or
+// not they sniff as PNG. The `url` input touches no filesystem and
+// keeps the underlying tool's own transport guards (https-only, no
+// redirect downgrade).
+func RegisterClawReadImage(reg *Registry, scope *ReadScope) error {
 	return RegisterClawTool(reg,
 		clawtools.ReadImageTool(),
-		clawComputerUseAdapter(clawtools.ExecuteReadImage),
+		clawComputerUseAdapter(func(ctx context.Context, input map[string]any) (clawtools.ReadImageResult, error) {
+			return executeScopedReadImage(ctx, input, scope)
+		}),
 	)
+}
+
+// executeScopedReadImage gates read_image's `path` input on the read
+// scope before claw's loader opens it — resolveReadPath's containment
+// plus the credential exclusion, the exact gate read_file passes
+// (#2885). The loader receives the RESOLVED path, so it opens what the
+// scope admitted. A missing or empty path (a URL read, or the input
+// error claw's own validation answers) passes through untouched.
+func executeScopedReadImage(ctx context.Context, input map[string]any, scope *ReadScope) (clawtools.ReadImageResult, error) {
+	raw, ok := input["path"].(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return clawtools.ExecuteReadImage(ctx, input)
+	}
+	path, err := resolveReadPath(scope, raw)
+	if err != nil {
+		return clawtools.ReadImageResult{}, fmt.Errorf("read_image: %w", err)
+	}
+	if gate := newCredentialReadGate(scope); gate.refused(raw) || gate.refused(path) {
+		return clawtools.ReadImageResult{}, fmt.Errorf("read_image: %q is excluded as a credential or secret file", raw)
+	}
+	scoped := make(map[string]any, len(input))
+	for key, value := range input {
+		scoped[key] = value
+	}
+	scoped["path"] = path
+	return clawtools.ExecuteReadImage(ctx, scoped)
 }
 
 // RegisterClawComputerUse registers the desktop-control tools that
@@ -262,7 +336,11 @@ func clawComputerUseAdapter(fn func(context.Context, map[string]any) (clawtools.
 // registry. Use this to add specialised tools that RegisterClawBuiltins
 // does not include by default.
 func RegisterClawTool(reg *Registry, t api.Tool, exec func(ctx context.Context, input map[string]any) (string, error)) error {
-	schemaJSON, err := json.Marshal(t.InputSchema)
+	return registerClawTool(reg, clawBuiltinSpec{tool: t, exec: exec})
+}
+
+func registerClawTool(reg *Registry, spec clawBuiltinSpec) error {
+	schemaJSON, err := json.Marshal(spec.tool.InputSchema)
 	if err != nil {
 		return fmt.Errorf("marshal schema: %w", err)
 	}
@@ -276,14 +354,15 @@ func RegisterClawTool(reg *Registry, t api.Tool, exec func(ctx context.Context, 
 		if args == nil {
 			args = map[string]any{}
 		}
-		return exec(ctx, args)
+		return spec.exec(ctx, args)
 	}
-	return reg.RegisterBuiltin(t.Name, t.Description, schemaJSON, wrapped)
+	return reg.registerBuiltin(spec.tool.Name, spec.tool.Description, schemaJSON, wrapped, spec.concurrentSafe)
 }
 
 type clawBuiltinSpec struct {
-	tool api.Tool
-	exec func(ctx context.Context, input map[string]any) (string, error)
+	tool           api.Tool
+	exec           func(ctx context.Context, input map[string]any) (string, error)
+	concurrentSafe bool
 }
 
 // RegisterClawSimple registers the no-dependency claw tools that don't
@@ -367,11 +446,15 @@ type SubagentRunner func(ctx context.Context, input map[string]any) (string, err
 // iterion does not drive. A node that delegated would wait on work
 // nobody began, or report on work nobody did, with no error anywhere.
 //
-// One toolcatalog lookup feeds both the description and the error, so the
-// two surfaces cannot tell the model different things. A catalog that
-// stopped refusing `agent` while nothing wires a runner is reported on
-// the CALL, explicitly: failing the registration instead would take every
-// other claw tool down with it, since RegisterClawAll is all-or-nothing.
+// iterion's own hosts wire a runner (pkg/runview in process, cmd/iterion in
+// the container), so the nil branch answers an embedding that does not —
+// which is why its sentence (toolcatalog.ClawUnwiredSubagentRefusal) blames
+// the host that built THIS registry rather than iterion, and why no
+// compile-time diagnostic predicts it: the compiler cannot know which host
+// will build the registry.
+//
+// One refusal feeds both the description and the error, so the two surfaces
+// cannot tell the model different things.
 func RegisterClawSubagents(reg *Registry, runner SubagentRunner) error {
 	t := clawtools.AgentTool()
 	if runner != nil {
@@ -379,13 +462,7 @@ func RegisterClawSubagents(reg *Registry, runner SubagentRunner) error {
 			return runner(ctx, input)
 		})
 	}
-	refusal, refused := toolcatalog.ClawRefusesBuiltin("agent")
-	if !refused {
-		return RegisterClawTool(reg, t, func(context.Context, map[string]any) (string, error) {
-			return "", fmt.Errorf("agent: no subagent runner is wired and the catalog no longer refuses " +
-				"`agent` — wire the runner through ClawDefaults.Subagent, or restore the catalog entry")
-		})
-	}
+	refusal := toolcatalog.ClawUnwiredSubagentRefusal
 	// The description and the error open on this one sentence. The ultracode
 	// grant conditions "that refusal is final, do not retry" on what the tool
 	// ANSWERS (delegate.ultracodeOrchestrationInstruction), and at retry-
@@ -422,9 +499,49 @@ func RegisterClawWebSearch(reg *Registry) error {
 // RegisterClawSkill registers the `skill` tool, looking up skills at
 // <workDir>/.claude/skills/. Pass an empty workDir to resolve against
 // the process CWD.
+//
+// workDir is CAPTURED once; hosts whose workspace can move after
+// registration — the engine replaces a run's workDir when `worktree: auto`
+// produces a per-run worktree (ClawExecutor.SetWorkDir, #2870) — register
+// through RegisterClawSkillWithProvider instead, so the lookup follows.
 func RegisterClawSkill(reg *Registry, workDir string) error {
+	return RegisterClawSkillWithProvider(reg, staticWorkspaceProvider(workDir))
+}
+
+// RegisterClawSkillWithProvider is RegisterClawSkill over a workspace
+// PROVIDER, consulted on every call, rather than a string captured at
+// registration. `skill` is the same workspace-lookup capability as
+// `command` (RegisterClawCommandWithProvider) and takes the same provider
+// shape so the two surfaces cannot diverge again (#2870). A nil provider
+// behaves as the empty workspace: resolution falls to the process CWD.
+func RegisterClawSkillWithProvider(reg *Registry, workspace func() string) error {
+	return RegisterClawSkillWithSources(reg, workspace, nil)
+}
+
+// SkillAllowlistProvider answers the skills a run may serve: (nil, false)
+// is the legacy workspace walk; a non-nil map — empty included — is the
+// PINNED mode (iterion#1719), where resolution consults only the pinned
+// name → path entries and refuses everything else. The provider is
+// consulted on every call: the engine arms it after registration, when the
+// mirror pass has decided which skill files the run owns.
+type SkillAllowlistProvider func() (map[string]string, bool)
+
+// RegisterClawSkillWithSources is RegisterClawSkillWithProvider plus the
+// allowlist a host pins for an untrusted workspace: armed, the tool serves
+// exactly the pinned files (claw-code-go's ExecuteSkillPinned) and nothing
+// the checkout planted under a walked root is reachable; disarmed, the
+// lookup walks the workspace as it always has.
+func RegisterClawSkillWithSources(reg *Registry, workspace func() string, allowlist SkillAllowlistProvider) error {
+	if workspace == nil {
+		workspace = staticWorkspaceProvider("")
+	}
 	exec := func(ctx context.Context, input map[string]any) (string, error) {
-		return clawtools.ExecuteSkill(ctx, input, workDir)
+		if allowlist != nil {
+			if allowed, armed := allowlist(); armed {
+				return clawtools.ExecuteSkillPinned(ctx, input, allowed)
+			}
+		}
+		return clawtools.ExecuteSkill(ctx, input, workspace())
 	}
 	return RegisterClawTool(reg, clawtools.SkillTool(), exec)
 }
@@ -438,13 +555,31 @@ type ToolSnapshot func() []api.Tool
 // RegisterClawToolSearch registers the `tool_search` meta-tool. The
 // snapshot closure is invoked on every call to capture the live
 // tool catalog; pass nil to use an empty haystack (degraded but valid).
+//
+// The catalogue the snapshot searches is the registry's, which is wider
+// than the calling node's `tools:` list. When the dispatch pinned the
+// node's executable set on the context ([WithNodeExecutableTools] — the
+// in-process loop and the launcher's side of a sandboxed crossing both
+// do), the answer is rewritten per node: each match is marked available
+// or not, an available match carries its schema, and an unavailable one
+// says why, so a reviewer can no longer select a tool its node cannot
+// execute (#2717). Without the pin the legacy answer stands — a caller
+// that cannot name the node's set does not guess it.
 func RegisterClawToolSearch(reg *Registry, snapshot ToolSnapshot) error {
 	exec := func(ctx context.Context, input map[string]any) (string, error) {
 		var tools []api.Tool
 		if snapshot != nil {
 			tools = snapshot()
 		}
-		return clawtools.ExecuteToolSearch(ctx, input, tools)
+		raw, err := clawtools.ExecuteToolSearch(ctx, input, tools)
+		if err != nil {
+			return "", err
+		}
+		if executable, ok := NodeExecutableToolsFrom(ctx); ok {
+			catalogueOnly, deferred := CatalogueOnlyToolsFrom(ctx)
+			return enrichToolSearchResult(raw, tools, executable, catalogueOnly, deferred)
+		}
+		return raw, nil
 	}
 	return RegisterClawTool(reg, clawtools.ToolSearchTool(), exec)
 }
@@ -636,10 +771,70 @@ func mcpServerNamingSpecs(provider clawmcp.Provider) []clawBuiltinSpec {
 // Field zero-values are populated lazily by RegisterClawAll so callers
 // can opt into specific subsystems by leaving the rest at zero.
 type ClawDefaults struct {
-	// Workspace is forwarded to bash for command validation and to the
-	// skill tool for skill lookup. Leave empty to skip workspace
+	// Workspace is forwarded to bash for command validation, to the
+	// skill tool for skill lookup, and to the command tool for workspace
+	// slash-command lookup. Leave empty to skip workspace
 	// gating.
+	//
+	// It is the STATIC form of the workspace the workspace-scoped tools
+	// (bash, write_file, file_edit, the read tools through their scope, and
+	// the `command`/`skill` lookups) resolve against: RegisterClawAll wraps
+	// it once into the workspace provider, and never reads it again. A host
+	// whose workspace can move after registration — the engine replaces a
+	// run's workDir when `worktree: auto` produces a per-run worktree
+	// (ClawExecutor.SetWorkDir, #2870) — sets WorkspaceProvider instead.
 	Workspace string
+
+	// WorkspaceProvider, when non-nil, answers the workspace the
+	// workspace-scoped tools resolve against, CONSULTED ON EVERY CALL:
+	// the `command`/`skill` lookups (#2870), and — through the read scope
+	// RegisterClawAll builds over this same provider — bash's shell cwd and
+	// validation, write_file's and file_edit's relative-path rebase, and
+	// the read tools' containment (#2889). The provider is the one
+	// mechanism every surface shares, so they cannot drift back into
+	// resolving in two different checkouts: the prompt path reads the
+	// executor's workDir live, and the engine replaces that directory at
+	// run start — after the registry exists — when `worktree: auto`
+	// produces a per-run worktree.
+	//
+	// When set, Workspace is not read at all — not even to seed the read
+	// scope (that resolves through the provider) — so the string can
+	// never become a second, stale source of truth beside the provider.
+	WorkspaceProvider func() string
+
+	// ReadScope, when non-nil, is the read tools' (read_file, glob, grep,
+	// read_image, workspace_grep) scope — workspace plus the extra
+	// read-only roots a
+	// host attaches after registration, the run's ${PROJECT_SCRATCH_DIR}
+	// being the canonical one (#2650). Nil builds a provider-backed scope
+	// over the workspace provider above. A host that passes one here should
+	// hand the SAME instance to whatever attaches roots later (the engine's
+	// executor push), or the reads will not see them — and, when it also
+	// sets WorkspaceProvider, build it with NewReadScopeWithProvider over
+	// the SAME provider, or bash (through the scope) and `command`
+	// (through the provider) resolve different checkouts.
+	ReadScope *ReadScope
+
+	// DisableWorkspaceCommands drops the `command` tool (the model-invoked
+	// workspace slash-command surface, #1716) from the set. Hosts resolve
+	// the kill switch on the HOST (iterion: model.SlashCommandsDisabled,
+	// ITERION_CLAW_SLASH_COMMANDS) — the runner's environment does not
+	// carry it, so a registration reading it there would read nothing.
+	DisableWorkspaceCommands bool
+
+	// WorkspaceTrust is the workspace's provenance, consulted PER `command`
+	// call (ADR-162 U3): on a workspace its tenant did not write the tool
+	// resolves nothing from the checkout. Consulted live, never captured —
+	// the engine pushes the trust after this registry exists (the same
+	// doctrine as SkillAllowlist below). Nil is the trusted default.
+	WorkspaceTrust func() store.RunTrust
+
+	// CommandMaxBytes is the `command` tool's body/expansion ceiling: 0 is
+	// DefaultWorkspaceCommandMaxBytes, a negative value removes the
+	// ceiling. Hosts resolve the dial host-side (iterion:
+	// model.SlashCommandMaxBytes, ITERION_CLAW_SLASH_COMMAND_MAX_BYTES —
+	// whose "0 removes the ceiling" maps to -1 here).
+	CommandMaxBytes int
 
 	// Tasks, Workers, Teams, Crons, LSP hold the registries each tool
 	// family needs. Leave nil to have RegisterClawAll allocate a fresh
@@ -712,6 +907,13 @@ type ClawDefaults struct {
 	// Config.RunIDFromCtx must all be set so per-run vaults can
 	// be persisted at <StoreDir>/runs/<runID>/pii_vault.json.
 	Privacy *privacy.Config
+
+	// SkillAllowlist, when non-nil, is consulted on every `skill` call
+	// (iterion#1719): armed, the tool serves exactly the pinned
+	// name → path entries and refuses everything else — the shape a run
+	// over an untrusted checkout takes, where the walked roots answer
+	// with text the repository planted. Nil keeps the workspace walk.
+	SkillAllowlist SkillAllowlistProvider
 }
 
 // RegisterClawAll registers the full curated set of claw tools
@@ -749,11 +951,32 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		defaults.LSP = clawlsp.NewRegistry()
 	}
 
-	if err := RegisterClawBuiltinsWithEnv(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
+	// The ONE workspace provider the workspace-scoped tools share (#2870):
+	// the lookup tools (`command`, `skill`), and — through the read scope
+	// below — bash's shell, write_file's and file_edit's rebase and the
+	// read tools' containment (#2889). The host's WorkspaceProvider when it
+	// has a live answer (a `worktree: auto` run's worktree, pushed via
+	// ClawExecutor.SetWorkDir after this registry exists), else the
+	// Workspace string wrapped once — the string is read here and nowhere
+	// else, so the two fields can never be two live sources of truth.
+	workspace := defaults.WorkspaceProvider
+	if workspace == nil {
+		workspace = staticWorkspaceProvider(defaults.Workspace)
+	}
+
+	readScope := defaults.ReadScope
+	if readScope == nil {
+		// Provider-backed, not NewReadScope(workspace()): the first-answer
+		// capture is exactly the staleness the provider exists to remove —
+		// with it, bash ran in the construction-time checkout while
+		// `command` followed the run's worktree.
+		readScope = NewReadScopeWithProvider(workspace)
+	}
+	if err := RegisterClawBuiltinsWithScope(reg, readScope, defaults.BashExtraEnv); err != nil {
 		return err
 	}
 	if defaults.IncludeWorkspaceDiagnostics {
-		if err := RegisterClawWorkspaceDiagnostics(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
+		if err := RegisterClawWorkspaceDiagnosticsWithScope(reg, readScope, defaults.BashExtraEnv); err != nil {
 			return err
 		}
 	}
@@ -772,15 +995,20 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {
 		return err
 	}
-	if err := RegisterClawSkill(reg, defaults.Workspace); err != nil {
+	if err := RegisterClawSkillWithSources(reg, workspace, defaults.SkillAllowlist); err != nil {
 		return err
+	}
+	if !defaults.DisableWorkspaceCommands {
+		if err := RegisterClawCommandWithTrust(reg, workspace, defaults.CommandMaxBytes, defaults.WorkspaceTrust); err != nil {
+			return err
+		}
 	}
 	if defaults.IncludeWebSearch {
 		if err := RegisterClawWebSearch(reg); err != nil {
 			return err
 		}
 	}
-	if err := RegisterClawReadImage(reg); err != nil {
+	if err := RegisterClawReadImage(reg, readScope); err != nil {
 		return err
 	}
 	if defaults.IncludeComputerUse {

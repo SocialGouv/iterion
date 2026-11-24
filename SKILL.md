@@ -52,6 +52,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `verified-action` | entry gates (unset or TAKEN `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
+| `goal-loop` | `group goal(condition, cap)`: check (`tool`, needs `jq`, pinned in the bundle's `devbox.json`) → done when it exits 0, else advance (agent) and check again, at most `goal_cap` times, then `GOAL_NOT_REACHED` — the verdict is a command, never the model on its own work |
 | `library` | the graph in `main.bot` (and its vars, when the spec has any), the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
 | `contract` | an entry gate (unset `goal` = typed refusal) → one agent with a typed, published output → a `contract` bound to the workflow: an input mirroring a var, outputs naming their producer (`from: work.summary`; a file port `from: work`), criteria on ports, effects |
 
@@ -189,9 +190,15 @@ Every one of these is enforced by the compiler or the runtime, and none of
 them can be read off the syntax tables — authors reverse-engineer them from
 shipped bots, so they are written here:
 
-- **A tool node's stdout is its output.** With `output:` declared, the
-  command must print a JSON object matching the schema; other stdout is
-  wrapped as `{"result": "…"}` and the fields downstream expect are absent. A
+- **A tool node's stdout is its output.** With `output:` declared, a
+  `command:` / `script:` prints ONE JSON object matching the schema and
+  nothing else: any other non-empty stdout — a `git commit` summary, a
+  progress line, plain text — fails the node (`TOOL_FAILED_PERMANENT`), so
+  everything that is not the answer goes to stderr (`git commit -q -m "$m"
+  >&2`). The engine's own `[iterion] attachment=` / `preview_url=` /
+  `preview_screenshot=` lines are not part of the answer. A later tool body
+  that reads a declared field the producer did not print is refused before
+  it runs. A
   non-zero exit fails the node — wrap a command whose failure is a *result*
   (a failing test suite) so it exits 0 and reports `passed: false`.
 - **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
@@ -307,11 +314,13 @@ shipped bots, so they are written here:
   python3); `-full` and the `-sec` layered on it add python3. So a tool that
   must turn text into the JSON its `output:` schema wants uses `jq -Rs`
   unless the workflow PINS an image that has more; a missing interpreter
-  degrades the output to `{"result": …}` silently.
+  leaves the node without its JSON object, which fails it.
 - **A `fan_out_each` fan-in sees ONE output per node id.** At the collector
-  (`await: wait_all` / `best_effort`) the branches' outputs are merged
-  last-write-wins, so `{{outputs.<node>.<field>}}` after the fan-in is one
-  item's result, not a list, and a downstream `compute` cannot aggregate
+  (`await: wait_all` / `best_effort`) the branches' outputs are merged in
+  the LEXICOGRAPHIC order of their branch ids, the last one winning on
+  every run — not the last item: with twelve items `…_9` sorts after
+  `…_11` — so `{{outputs.<node>.<field>}}` after the fan-in is one
+  item's result, never to be relied on, not a list, and a downstream `compute` cannot aggregate
   the items from `outputs.*`. Give each item its own record instead (a
   board card, a subbot child run's own artifacts) — the
   `per-ticket-subbots` template shows it.
@@ -366,26 +375,29 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `attachments` (`attachments:` in the file, workflow) — entries `<name>: file | image`
 - `attachment` (`attachments:` in attachments) — description str · accept_mime [str] · required bool
 - `secrets` (`secrets:` in the file) — entries `<name>: ["value"]`
-- `secret` (`secrets:` in secrets) — value str · as value|file · mount_path str · env str|id · optional bool · hosts [str] · description str
-- `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · system prompt · user prompt · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · session_slot id · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort none|low|medium|high|xhigh|max|ultracode|"${VAR}" · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async|human_or_host · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · permission off|ask|deny · allow [str] · ask [str] · deny [str] · needs id|[id] · fallbacks {fallbacks} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
+- `secret` (`secrets:` in secrets) — value str · as value|file · mount_path str · env str|id · optional bool · hosts [str] · sinks [str] · description str
+- `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · deliverables [str] · system prompt · user prompt · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · session_slot id · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort none|low|medium|high|xhigh|max|ultracode|"${VAR}" · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async|human_or_host · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · codemode on|off|{codemode} · permission off|ask|deny · allow [str] · ask [str] · deny [str] · needs id|[id] · fallbacks {fallbacks} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
 - `router` — description str · mode fan_out_all|fan_out_each|condition|round_robin|llm · model str · backend str · provider str · system prompt · user prompt · multi bool · reasoning_effort none|low|medium|high|xhigh|max|ultracode|"${VAR}" · over str · as id · key id · depends_on id · needs id|[id]
 - `human` — description str · input id · output id · publish id · artifact_labels [tool] · instructions prompt · system prompt · model str · interaction none|human|llm|llm_or_human|review|async|human_or_host · interaction_prompt id · interaction_model str · min_answers int · await wait_all|best_effort · review_url str · posture human_required|agent_verdict_ok · merge_strategy squash|merge · merge_into str|id · max_turns int
-- `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · env_expansion braced|none · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery} · action str|id · connection str|id · params {params} · retry str|num · timeout str|num
+- `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · env_expansion braced|none · input id · output id · publish id · artifact_labels [tool] · deliverables [str] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · capabilities [tool] · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery} · action str|id · connection str|id · params {params} · retry str|num · timeout str|num
 - `params` (`params:` in tool) — entries `<key>: "value"`
 - `recovery` (`recovery:` in tool) — max_repair_attempts int · max_agent_attempts int · model str · agent_tools [tool]
 - `compute` — description str · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · expr {expr}
 - `expr` (`expr:` in compute) — entries `<field>: "expression"`
-- `subbot` — description str · source str · with with{} · output id · needs id|[id] · isolated bool
+- `subbot` — description str · source str · with with{} · output id · needs id|[id] · isolated bool · auto_merge bool · merge_strategy str|id · merge_into str|id
 - `emit` — description str · event str · with with{}
 - `wait` — description str · event str · timeout str · output id
 - `await_answers` — description str · from str|id · timeout str
 - `fail` — description str · code str|id · message str · resumable bool
-- `workflow` — entry id.id · contract id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async|human_or_host
+- `workflow` — entry id.id · contract id · vars {vars} · attachments {attachments} · business_stores {business_stores} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · codemode on|off|{codemode} · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async|human_or_host
+- `business_stores` (`business_stores:` in workflow) — entries `<id>:`
+- `business_store` (`business_stores:` in business_stores) — kind str|id · namespace str|id · required bool
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int · on_exceeded fail|pause
 - `resources` (`resources:` in workflow) — entries `<name>: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
 - `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool (profile ≤1) · visibility "bot|project|cross_project|user|org|global"
 - `mcp` (`mcp:` in workflow, agent, judge) — autoload_project bool · inherit bool · servers [id] · disable [id]
+- `codemode` (`codemode:` in workflow, agent, judge) — mode on|off · defer on|off · tool_calls int · concurrent_tool_calls int · wall str · cpu str · memory int · script_bytes int · result_bytes int · tool_result_bytes int · store_entries int · store_bytes int
 - `sandbox` (`sandbox:` in workflow, agent, judge, tool) — mode none|auto|inline · image str · build {sandbox.build} · user str · workspace_folder str · host_state auto|none · post_create str · env map · mounts [str|id] · network {sandbox.network}
 - `sandbox.build` (`build:` in sandbox) — dockerfile str · context str · args map
 - `sandbox.network` (`network:` in sandbox) — mode open|allowlist|denylist · preset str|id · inherit replace|append · rules [str|id]

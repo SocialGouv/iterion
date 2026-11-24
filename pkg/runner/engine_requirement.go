@@ -71,46 +71,13 @@ func (r *Runner) guardEngineRequirement(ctx context.Context, msg *queue.RunMessa
 // only cures are a deploy or a bot edit, and after either the run is
 // RE-LAUNCHED (the fixed bot's IR is not the one this run would resume with).
 func (r *Runner) failBotRequiresNewerEngine(ctx context.Context, msg *queue.RunMessage, m *bundle.Manifest, build string, cause error) {
-	if r.cfg.Store == nil {
-		return
-	}
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
-	defer cancel()
-	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
 	required := ""
 	if m.Requires != nil {
 		required = m.Requires.Iterion
 	}
-	// UpdateRunOutcome keeps the cancelled-wins guard: a run the operator
-	// cancelled meanwhile is not flipped back into a failure. A resume still
-	// queued goes back where it came from instead (verdictFromStatuses): a
-	// paused run keeps its pending question, and resumes once the fleet is
-	// aligned.
-	from, leftToRelease := r.verdictFromStatuses(msg)
-	changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailed, cause.Error(),
-		store.RunOutcomeMeta{Code: store.FailureBotRequiresNewerEngine, Continuation: store.ContinuationFinal},
-		from)
-	switch {
-	case err != nil:
-		r.cfg.Logger.Warn("runner: run %s: could not record the engine requirement refusal: %v", msg.RunID, err)
-	case !changed && !leftToRelease:
-		r.cfg.Logger.Warn("runner: run %s: the engine-requirement verdict was declined (status drifted) — the document does not carry BOT_REQUIRES_NEWER_ENGINE", msg.RunID)
-	}
-	if leftToRelease && !changed {
-		// The run goes back where it came from: no failure to announce, and
-		// processOne records the refusal there (run_retry_skipped).
-		return
-	}
-	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
-		Type: store.EventRunFailed,
-		Data: map[string]any{
-			"code": string(store.FailureBotRequiresNewerEngine), "error": cause.Error(),
-			"runner_version": build, "runner_commit": appinfo.Commit,
-			"bot":      msg.BotID,
-			"required": required,
-			"hint":     "the bundle declares requires.iterion above this runner's build; bump the runner image (docs/cloud-deployment.md § pinning), or relax the bot's requirement — then RE-LAUNCH (a resume lands on the same fleet)",
-		},
-	}); err != nil {
-		r.cfg.Logger.Warn("runner: run %s: could not emit run_failed for the engine requirement: %v", msg.RunID, err)
-	}
+	r.recordPreEngineRefusal(ctx, msg, cause, preEngineVerdict{
+		Phase: "engine_requirement", Code: store.FailureBotRequiresNewerEngine, Disposition: store.PreEngineFinalVerdict, FinalStatus: store.RunStatusFailed, RunnerVersion: build,
+		Hint:    "the bundle declares requires.iterion above this runner's build; bump the runner image (docs/cloud-deployment.md § pinning), or relax the bot's requirement — then RE-LAUNCH (a resume lands on the same fleet)",
+		Details: map[string]any{"bot": msg.BotID, "required": required},
+	})
 }

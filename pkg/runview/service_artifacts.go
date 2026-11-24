@@ -373,6 +373,18 @@ func (s *Service) AddRunNoteCtx(ctx context.Context, runID, author, body string)
 	return ns.AppendRunNote(ctx, runID, store.RunNote{Author: author, Body: body})
 }
 
+// ReattributeRunNotesCtx rewrites the author of every note fromAuthor wrote,
+// in every run, to toAuthor — store.RunNoteStore.ReattributeRunNotes on the
+// store the notes are written to. An account's erasure calls it. A store
+// without notes holds none to rewrite: (0, nil).
+func (s *Service) ReattributeRunNotesCtx(ctx context.Context, fromAuthor, toAuthor string) (int64, error) {
+	ns := store.AsRunNoteStore(s.store)
+	if ns == nil {
+		return 0, nil
+	}
+	return ns.ReattributeRunNotes(store.WithoutTenantFilter(ctx), fromAuthor, toAuthor)
+}
+
 // GetRunTagsCtx returns the run's operator-assigned tags (filter/group
 // chips shown in the studio run header). Returns an empty slice — never
 // nil — when the store doesn't satisfy RunTagStore or the run has none, so

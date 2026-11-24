@@ -372,6 +372,60 @@ func TestToSandboxSpecDeniesTheCloudRedirect(t *testing.T) {
 	assertReportMatchesEnv(t, f, spec, denied)
 }
 
+// The interpreters' startup knobs, planted through the repository's own
+// devcontainer.json: the interpreters a tool node runs read these at
+// startup — PYTHONPATH's sitecustomize executes before the first
+// statement, every JVM picks up JAVA_TOOL_OPTIONS with no flag of ours —
+// and the workspace is mounted, so the planter's relative paths resolve.
+// None of it reaches spec.Env, each name is reported (the list the
+// sandbox_env_denied event carries), and the repository's own knobs keep
+// configuring its own tooling — the class refuses by exact name, not by
+// family.
+func TestToSandboxSpecDeniesTheInterpreterStartupKnobs(t *testing.T) {
+	f := &File{
+		Image: "alpine:3",
+		ContainerEnv: map[string]string{
+			"PYTHONPATH":        ".mylib",
+			"PYTHONHOME":        ".mylib-home",
+			"PYTHONSTARTUP":     ".mylib/startup.py",
+			"RUBYOPT":           "-I.mylib -rpwn",
+			"PERL5OPT":          "-MMyPwn",
+			"PERL5LIB":          ".mylib",
+			"JAVA_TOOL_OPTIONS": "-javaagent=.mylib/agent.jar",
+			"JDK_JAVA_OPTIONS":  "-Xlog:init",
+			"CLASSPATH":         ".mylib/agent.jar",
+			"NODE_PATH":         ".mylib",      // the runtime family's earlier member
+			"NODE_ENV":          "development", // outside the class: kept
+			"PYTHONHASHSEED":    "0",           // the repo's own build knob: kept
+			"ANT_OPTS":          "-Xmx2g",      // the ant launcher's, not the JVM's: kept
+		},
+	}
+	spec, denied := ToSandboxSpec(f)
+
+	for _, key := range []string{
+		"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+		"RUBYOPT", "PERL5OPT", "PERL5LIB",
+		"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "NODE_PATH",
+	} {
+		if v, ok := spec.Env[key]; ok {
+			t.Errorf("Env[%s] = %q, want the interpreter startup knob removed from a repo-authored env", key, v)
+		}
+	}
+	for _, key := range []string{"NODE_ENV", "PYTHONHASHSEED", "ANT_OPTS"} {
+		if spec.Env[key] == "" {
+			t.Errorf("Env[%s] missing, want it kept (outside the deny class)", key)
+		}
+	}
+	want := []string{
+		"CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "NODE_PATH",
+		"PERL5LIB", "PERL5OPT", "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "RUBYOPT",
+	}
+	if !reflect.DeepEqual(denied, want) {
+		t.Errorf("denied = %v, want %v (sorted, one entry per removed key)", denied, want)
+	}
+	assertReportMatchesEnv(t, f, spec, denied)
+}
+
 // The removal report is read off the env the container gets. containerEnv
 // wins a collision, so it is the value screened: a refused remoteEnv value
 // it overrides is no removal, and a refused containerEnv value removes the
@@ -558,6 +612,9 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"BASH_ENV", true},
 		{"BASH_FUNC_git%%", true},
 		{"NPM_CONFIG_NODE_OPTIONS", true},
+		{"NPM_CONFIG_SCRIPT_SHELL", true},
+		{"NPM_CONFIG_PREFIX", true},
+		{"LD_AUDIT", true},
 		{"npm_config_script_shell", true},
 		{"EDITOR", true},
 		{"VISUAL", true},
@@ -586,6 +643,8 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"GIT_EXEC_PATH", true},
 		{"GIT_ALLOW_PROTOCOL", true},
 		{"GIT_CONFIG_COUNT", true},
+		{"GIT_CONFIG_KEY_0", true},
+		{"GIT_CONFIG_VALUE_0", true},
 		{"GIT_CONFIG_GLOBAL", true},
 		{"GIT_CONFIG_SYSTEM", true},
 		{"GIT_CONFIG_PARAMETERS", true},
@@ -618,9 +677,48 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"HTTPS_PROXY", true},
 		{"NO_PROXY", true},
 		{"http_proxy", true},
+		// The home the configurations above are read from, and the XDG
+		// base dirs under it: the gitconfig road of #2318, and the
+		// credential store opencode logs into.
+		{"HOME", true},
+		{"XDG_CONFIG_HOME", true},
+		{"XDG_DATA_HOME", true},
+		{"XDG_RUNTIME_DIR", true},
+		// A lower-case spelling of an exact name is the same name: the
+		// three forms of the class all match case-insensitively.
+		{"path", true},
+		{"bash_env", true},
+		{"imds_endpoint", true},
+		// The interpreters' startup knobs — the [plantOnly] edge: refused
+		// HERE, where spec.Env is the environment of every step in the
+		// container (the bare `python3` of a tool node's command among
+		// them; both executions measured at the resolved-env seam), and
+		// OUTSIDE the image screen, where what iterion itself starts reads
+		// none of them (`python3 -I` for the whole PYTHON* family; no site
+		// of its own starts perl, ruby or a JVM — the measured rows in
+		// pkg/runtime's `sandbox_image_env_startup_code_class_test.go`).
+		// The dotenv plant gate refuses them too, by the same execution
+		// grade, and the partition guard holds the three together.
+		// PYTHONPATH puts a directory on the module path whose
+		// sitecustomize EXECUTES at interpreter startup, PYTHONHOME moves
+		// the standard library itself, PYTHONSTARTUP names a file an
+		// interactive run sources, RUBYOPT and PERL5OPT carry the
+		// interpreter's own switches (a -M/`use` loads the planter's
+		// module), PERL5LIB its module path; JAVA_TOOL_OPTIONS is read by
+		// every JVM with no flag of ours, JDK_JAVA_OPTIONS by the java
+		// launcher, CLASSPATH is where the JVM's classes resolve from. The
+		// workspace is mounted, so the relative paths a devcontainer.json
+		// spells resolve.
+		{"PYTHONPATH", true},
+		{"PYTHONHOME", true},
+		{"PYTHONSTARTUP", true},
+		{"RUBYOPT", true},
+		{"PERL5OPT", true},
+		{"PERL5LIB", true},
+		{"JAVA_TOOL_OPTIONS", true},
+		{"JDK_JAVA_OPTIONS", true},
+		{"CLASSPATH", true},
 		// Outside the class: the repository's own configuration.
-		{"HOME", false},
-		{"path", false},
 		{"TOKEN", false},
 		{"MYTOOL_ENDPOINT", false},
 		{"NODE_ENV", false},
@@ -631,14 +729,18 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"DEVBOX_NO_PROMPT", false},
 		{"IS_SANDBOX", false},
 		// The repository's own toolchain, and what needs a terminal: out of
-		// the class by the rule DeniedEnvKey states.
+		// the class by the rule DeniedEnvKey states. (PYTHONHASHSEED: the
+		// startup knobs are in the class by exact name — the rest of the
+		// PYTHON* family keeps configuring the repository's own runs.)
 		{"CFLAGS", false},
 		{"MAVEN_OPTS", false},
-		{"PYTHONPATH", false},
 		{"JAVA_HOME", false},
 		{"PAGER", false},
-		{"XDG_DATA_HOME", false},
+		{"PYTHONHASHSEED", false},
+		// A toolchain's *_HOME: HOME is an exact name in the class, never a
+		// suffix, so these keep configuring the repository's own build.
 		{"ANT_HOME", false},
+		{"GEM_HOME", false},
 		{"ANT_OPTS", false},
 	}
 	for _, c := range cases {
@@ -655,24 +757,34 @@ func TestDeniedEnvKey(t *testing.T) {
 	// guard added without one is the shape that let three names in without
 	// a witness.
 	for _, guard := range deniedEnvSuffixes {
-		assertGuardHasItsOwnRow(t, "suffix "+guard, cases, func(key string) bool {
-			return strings.HasSuffix(strings.ToUpper(key), guard)
+		assertGuardHasItsOwnRow(t, "suffix "+guard.pattern, "suffix", guard.pattern, cases, func(key string) bool {
+			return strings.HasSuffix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for _, guard := range deniedEnvNamespaces {
-		assertGuardHasItsOwnRow(t, "namespace "+guard, cases, func(key string) bool {
-			return strings.HasPrefix(strings.ToUpper(key), guard)
+		assertGuardHasItsOwnRow(t, "namespace "+guard.pattern, "namespace", guard.pattern, cases, func(key string) bool {
+			return strings.HasPrefix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for name := range deniedEnvNames {
-		assertGuardHasItsOwnRow(t, "exact "+name, cases, func(key string) bool { return key == name })
+		assertGuardHasItsOwnRow(t, "exact "+name, "exact", name, cases, func(key string) bool {
+			return strings.EqualFold(key, name)
+		})
 	}
 }
 
-// assertGuardHasItsOwnRow fails unless some `want: true` row is caught by
-// this guard and by nothing else in the class — the row that reddens when
-// the guard is removed.
-func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
+// assertGuardHasItsOwnRow fails unless some `want: true` row is one this
+// guard DECIDES: removing the guard from the class's walk changes the
+// answer for it.
+//
+// Not "no other guard catches it": a narrower guard refines a family that
+// already refuses — `GIT_CONFIG_KEY_` inside `GIT_`, the exact
+// `LD_PRELOAD` inside `LD_` — and the refinement decides the IMAGE
+// disposition rather than membership. Counting matches called those
+// un-witnessed while a deleted refinement would silently downgrade the
+// name; the walk with one guard removed is the mutation itself
+// (screenEnvNameSkipping, image_env_disposition_test.go).
+func assertGuardHasItsOwnRow(t *testing.T, guard string, kind, pattern string, cases []struct {
 	key  string
 	want bool
 }, caughtByGuard func(string) bool) {
@@ -681,26 +793,11 @@ func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
 		if !c.want || !caughtByGuard(c.key) {
 			continue
 		}
-		// Would the class still refuse it with this guard gone?
-		others := 0
-		for _, suffix := range deniedEnvSuffixes {
-			if strings.HasSuffix(strings.ToUpper(c.key), suffix) {
-				others++
-			}
-		}
-		for _, prefix := range deniedEnvNamespaces {
-			if strings.HasPrefix(strings.ToUpper(c.key), prefix) {
-				others++
-			}
-		}
-		if deniedEnvNames[c.key] {
-			others++
-		}
-		if others == 1 {
+		if screenEnvNameSkipping(c.key, kind, pattern) != screenEnvName(c.key) {
 			return
 		}
 	}
-	t.Errorf("%s catches no row of its own: removing it would redden nothing — add a name only it refuses", guard)
+	t.Errorf("%s decides the answer for no row of its own: removing it would redden nothing — add a name whose verdict it alone sets", guard)
 }
 
 // A malformed entry would fail the docker driver's --env guard and kill

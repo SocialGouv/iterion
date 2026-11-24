@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,16 +108,45 @@ type ForgePublishGrant struct {
 	// transient failure, kept for the reconciler to post once the wait is over
 	// (deferGateVerdict).
 	Deferred *gateDeferral `json:"deferred,omitempty"`
-	// Capabilities are the merge-gate GESTURES this grant may execute through
-	// the publish endpoint's verdict block: a subset of
-	// {publishCapApprove, publishCapMerge, publishCapReviewers}. Minted at
-	// launch from the bot's manifest forge.token_scopes (the matching merge-
-	// gate scope at write level), stripped wholesale by the operator pin
+	// Capabilities are the GESTURES this grant may execute through the
+	// publish surface. A pull-request launch's grant carries a subset of
+	// {publishCapApprove, publishCapMerge, publishCapReviewers} (the verdict
+	// block); a repo-bound schedule's carries publishCapDispatchWorkflow (the
+	// dispatch endpoint) alone — no other lane mints it. Minted at launch from
+	// the manifest of the bundle the launch runs (forge.token_scopes, the
+	// matching scope at write level), stripped wholesale by the operator pin
 	// forge_publish_mutations != true — the per-repo disarm that needs no
 	// release. Empty = a comment-and-gate grant: the verdict verbs answer
-	// in-band refused, nothing mutates. Fail-closed by construction: an
-	// unresolvable manifest mints none.
+	// in-band refused, a dispatch is refused, nothing mutates. Fail-closed by
+	// construction: an unresolvable manifest mints none.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// DispatchWorkflow is the one workflow file a grant carrying
+	// publishCapDispatchWorkflow may dispatch — the workflow the schedule row
+	// names (dispatchWorkflowVar), bound at the tick. The dispatch endpoint
+	// refuses any other file, typed, before the forge is asked; a grant
+	// carrying the capability with no workflow bound dispatches nothing.
+	DispatchWorkflow string `json:"dispatch_workflow,omitempty"`
+	// NoPullRequest marks a grant bound to no pull request — the one a
+	// repo-bound schedule mints at its tick (scheduledDispatchGrant). It may
+	// do what its Capabilities name and nothing else: every surface that acts
+	// on a pull request with a grant — the review, the merge-gate commit
+	// status and the verdict gestures riding it, the pull-request read, the
+	// delivery preflight, the server's own gate repairs — resolves the grant
+	// through pullRequestGrant, which refuses this one typed
+	// (grantNoPullRequestReason) before any forge call. A grant able to post
+	// a commit status could paint the repository's required check on any
+	// head; a schedule names none to speak for. The zero value is a
+	// pull-request launch's grant, so a stored record without the key reads
+	// as one.
+	NoPullRequest bool `json:"no_pull_request,omitempty"`
+	// Dispatches records the workflow dispatch spent on this grant — at most
+	// one, claimed BEFORE the forge is asked (claimWorkflowDispatch). The
+	// claim is the grant's, not a run's: every run that presents the grant
+	// (the one it was minted for, a fork or a sub-bot it was handed to, a
+	// replay) finds it and is refused, so one grant never fans the dispatch
+	// out. An attempt the forge refused stays recorded — the schedule's next
+	// tick, under its own grant, is the retry.
+	Dispatches []grantDispatch `json:"dispatches,omitempty"`
 	// Shared marks a grant a second run publishes with — a launch that pinned
 	// the token, a fork (shareGrant) — so no one run's verdict or end may cut
 	// it back to the post-run grace (the end of a gating run that names its
@@ -149,6 +181,70 @@ type gateRefusal struct {
 	Context    string    `json:"context"`
 	Reason     string    `json:"reason"`
 	At         time.Time `json:"at"`
+	// ID identifies this RECORD — minted at record time (newGateRefusal),
+	// never derived from the clock. It is what tells two refusals apart when
+	// they agree on every other field, so clearGateRefusal's compare-and-swap
+	// retires the one it consumed and no other (#2174). The clock cannot
+	// carry that identity: a refusal's At is the untruncated gateNow(), which
+	// makes the collision unreachable on ONE replica serializing its writes,
+	// not impossible — two replicas do not share a clock.
+	//
+	// Empty is legal and means "no identity": a record a build older than
+	// this field wrote, one such a build re-serialized (mergeGrantJSON
+	// rewrites the whole refusal key, nested fields included, so a mixed
+	// -version rollout erases it), or the effectively impossible crypto/rand
+	// failure. The clear then falls back to the pre-id triple — identifies.
+	ID string `json:"id,omitempty"`
+}
+
+// newGateRefusal records one refused verdict. It is the ONE place that stamps
+// a refusal's clock AND its identity, so a third refusing site cannot ship
+// without either (TestEveryGateRefusalIsBuiltByItsConstructor pins it).
+func (s *Server) newGateRefusal(auditedSHA, headSHA, check, reason string) *gateRefusal {
+	return &gateRefusal{
+		AuditedSHA: auditedSHA,
+		HeadSHA:    headSHA,
+		Context:    check,
+		Reason:     reason,
+		At:         s.gateNow(),
+		ID:         newGateRefusalID(),
+	}
+}
+
+// newGateRefusalID mints a refusal's identity: 16 random bytes, hex. Random,
+// not clock-derived — the clock is precisely what proved too coarse to tell
+// two records apart (#2174). "" on the (effectively impossible) crypto/rand
+// failure: that is not a silent degrade, an identity-less refusal is matched
+// by the pre-id triple, the rule this identity replaces (identifies).
+func newGateRefusalID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
+// identifies reports whether r is the same refusal RECORD as other — the
+// compare-and-swap clearGateRefusal performs before it retires one.
+//
+// The id decides when BOTH sides carry one: it is unique per record, so two
+// refusals that agree on their clock, their pin and their check are still
+// told apart (#2174). When either side carries none, the pre-id triple
+// decides — a record written (or re-serialized) by a build that does not know
+// the id must still be clearable, because a refusal nothing retires is a
+// diagnosis a LATER episode inherits, the very defect the clear exists to
+// prevent. The fallback is therefore exactly the rule the id replaces, never
+// a weaker one.
+func (r *gateRefusal) identifies(other *gateRefusal) bool {
+	if r == nil || other == nil {
+		return false
+	}
+	if r.ID != "" && other.ID != "" {
+		return r.ID == other.ID
+	}
+	return r.At.Equal(other.At) &&
+		strings.EqualFold(r.AuditedSHA, other.AuditedSHA) &&
+		strings.EqualFold(r.Context, other.Context)
 }
 
 // grantTenantMismatchReason is the typed refusal a publish grant earns when
@@ -246,6 +342,47 @@ func (s *Server) runOwnsGrant(run *store.Run, grant ForgePublishGrant, what stri
 		"surface":      what,
 	})
 	return false
+}
+
+// grantNoPullRequestReason is the typed refusal a grant bound to no pull
+// request (ForgePublishGrant.NoPullRequest) earns at every surface that acts
+// on one: the `error_code` an endpoint answers, the word a log line carries
+// and a test asserts.
+const grantNoPullRequestReason = "grant_bound_to_no_pull_request"
+
+// errGrantNoPullRequest is pullRequestGrant's refusal, typed for errors.Is.
+var errGrantNoPullRequest = errors.New("the publish grant is bound to no pull request")
+
+// pullRequestGrant resolves token for a surface that acts on a pull request —
+// posts a review or a commit status on one, executes a merge-gate gesture,
+// reads one, preflights a delivery onto one, repairs its gate. It is THE
+// place a grant's pull-request binding is decided: every such surface
+// resolves its grant here, never through the registry's raw lookup
+// (TestEveryPullRequestSurfaceResolvesItsGrantThroughTheBinding pins it), so
+// a surface added later cannot forget the binding.
+//
+// ok is false for a token naming no live grant (err nil) and for a grant
+// bound to no pull request (err wrapping errGrantNoPullRequest, naming the
+// typed reason). A caller that reads ok alone therefore fails closed; one
+// that reads err says why. The refused grant is not returned: nothing on a
+// pull-request surface may act on it.
+func (s *Server) pullRequestGrant(token string) (ForgePublishGrant, bool, error) {
+	g, ok := s.forgePublishTokens.lookup(token)
+	if !ok {
+		return ForgePublishGrant{}, false, nil
+	}
+	if g.NoPullRequest {
+		return ForgePublishGrant{}, false, fmt.Errorf("%w (%s): the grant on %s names no pull request and carries [%s] only — no review, commit status, merge-gate gesture, pull-request read or delivery preflight is made with it",
+			errGrantNoPullRequest, grantNoPullRequestReason, g.Repo, strings.Join(g.Capabilities, ", "))
+	}
+	return g, true, nil
+}
+
+// refuseUnboundGrant answers a pull-request endpoint presented a grant bound
+// to no pull request: 403 with the typed error_code, before any forge call.
+func (s *Server) refuseUnboundGrant(w http.ResponseWriter, r *http.Request, surface string, err error) {
+	s.logWarn("forge publish: %s refused (%s): %v", surface, grantNoPullRequestReason, err)
+	s.httpErrorCode(w, r, http.StatusForbidden, grantNoPullRequestReason, "%v", err)
 }
 
 // ForgePublishTokenStore is the per-run forge-publish token registry. The
@@ -408,14 +545,17 @@ type publishReviewGate struct {
 	Note string `json:"note,omitempty"`
 }
 
-// The verdict-block capability vocabulary, one per merge-gate gesture. These
-// are GRANT capabilities, minted from the bot's manifest scopes — never a
-// request parameter: a body asking for a verb the grant does not carry is
-// refused in-band, whatever the payload says.
+// The grant capability vocabulary: one per merge-gate gesture of the verdict
+// block, and the workflow dispatch. These are GRANT capabilities, minted from
+// the bot's manifest scopes — never a request parameter: a body asking for a
+// verb the grant does not carry is refused, whatever the payload says.
 const (
 	publishCapApprove   = "approve"
 	publishCapMerge     = "merge"
 	publishCapReviewers = "reviewers"
+	// publishCapDispatchWorkflow dispatches one of the grant repository's own
+	// workflows (forge_workflow_dispatch.go), minted from the actions scope.
+	publishCapDispatchWorkflow = "dispatch_workflow"
 )
 
 // publishReviewVerdict carries the gating bot's DETERMINISTIC merge
@@ -492,7 +632,13 @@ type publishReviewResponse struct {
 	// Verified reports whether comments_posted was confirmed by a
 	// follow-up forge read, not assumed from the create call.
 	Verified bool `json:"verified"`
-	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult).
+	// Fallback is "" | "summary" | "partial", over the comments the caller
+	// SUBMITTED (see forge.ReviewResult for the provider's report: only
+	// "summary" promises every comment is in the body; "partial" is a
+	// shortfall that GitLab folds and GitHub/Forgejo do not). Summary mode
+	// reports "summary" when it folded the comments into the body itself. A
+	// comment dropped as unanchorable (dropped_comments) is in neither the
+	// body nor inline, so any drop reports "partial", in every mode.
 	Fallback string `json:"fallback,omitempty"`
 	// BodyMissing reports a partial success whose summary note did not land.
 	BodyMissing bool `json:"body_missing,omitempty"`
@@ -543,7 +689,14 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusNotFound, "forge publishing is not enabled on this server (no forge connections wired)")
 		return
 	}
-	grant, ok := s.forgePublishTokens.lookup(token)
+	// The review, the merge-gate status and the verdict gestures all act on
+	// the pull request the body names: a grant bound to none is refused here,
+	// before the body is read and before any forge call.
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		s.refuseUnboundGrant(w, r, "publish-review", err)
+		return
+	}
 	if !ok {
 		httpError(w, http.StatusUnauthorized, "unknown or expired run token")
 		return
@@ -618,8 +771,8 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	conn, err := s.forgeConnections.Get(r.Context(), grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(r.Context(), grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -693,6 +846,22 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			Verdict:           verdict,
 		})
 		return
+	}
+	// The fallback describes the comments the CALLER submitted, and the
+	// provider saw only the ones kept. A comment dropped as unanchorable is in
+	// neither the body nor inline (dropped_comments names it), so fewer of the
+	// submitted comments are on the pull request than were submitted: that is
+	// "partial" in every mode, whatever the provider reported for the kept
+	// ones, never "summary" (every submitted comment in the body).
+	// Otherwise summary mode folded the comments into the body above, so the
+	// provider saw none and reports no fallback; the fold is this handler's
+	// own and the response states it, or a caller reading zero inline
+	// comments with no fold would take findings in the body for lost ones.
+	switch {
+	case len(droppedComments) > 0:
+		res.Fallback = "partial"
+	case mode == "summary" && len(req.Comments) > 0:
+		res.Fallback = "summary"
 	}
 	if s.logger != nil {
 		s.logger.Info("forge publish: %s %s#%d → %d inline comment(s) (verified=%v fallback=%q)",
@@ -1050,16 +1219,16 @@ func (s *Server) recordGateRefusal(token string, gate gateOutcome) {
 // compare-and-swap on the CONSUMED refusal's identity (like replaceDeferral):
 // a refusal recorded after it — a fresher episode, inside the post→clear
 // window — is not this pass's to retire, or "honored at most once" degrades
-// into "possibly zero". Best-effort: a failed clear costs a wrong diagnosis
-// on one later reconcile, never a wrong write.
+// into "possibly zero". The identity it swaps on is the record's own id
+// (identifies), so two refusals agreeing on clock, pin and check are still
+// told apart. Best-effort: a failed clear costs a wrong diagnosis on one
+// later reconcile, never a wrong write.
 func (s *Server) clearGateRefusal(token string, consumed *gateRefusal) {
 	if s.forgePublishTokens == nil || consumed == nil {
 		return
 	}
 	if _, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
-		if g.Refusal != nil && g.Refusal.At.Equal(consumed.At) &&
-			strings.EqualFold(g.Refusal.AuditedSHA, consumed.AuditedSHA) &&
-			strings.EqualFold(g.Refusal.Context, consumed.Context) {
+		if g.Refusal.identifies(consumed) {
 			g.Refusal = nil
 		}
 	}); err != nil && s.logger != nil {
@@ -1188,22 +1357,16 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		// reader diffing two revisions, or hunting a push that never happened.
 		out.errText = "audited_sha " + strconv.Quote(audited) + " is not a commit id (7-40 hex) — " +
 			"refusing to certify on a pin that cannot be read"
-		out.refusal = &gateRefusal{
-			AuditedSHA: audited, HeadSHA: head, Context: out.context,
-			Reason: "its audited_sha " + strconv.Quote(boundedRunes(audited, 24)) + " is not a commit id",
-			At:     s.gateNow(),
-		}
+		out.refusal = s.newGateRefusal(audited, head, out.context,
+			"its audited_sha "+strconv.Quote(boundedRunes(audited, 24))+" is not a commit id")
 		return out
 	case !equalSHA(head, audited):
 		// Full SHAs on both sides: this message's whole job is to tell two
 		// revisions apart, and abbreviating both is how it names one twice.
 		out.errText = "the head moved since the audit (audited " + audited +
 			", head is now " + head + ") — no status on a revision nobody audited"
-		out.refusal = &gateRefusal{
-			AuditedSHA: audited, HeadSHA: head, Context: out.context,
-			Reason: "it audited " + shortSHA(audited) + " but the head moved to " + shortSHA(head),
-			At:     s.gateNow(),
-		}
+		out.refusal = s.newGateRefusal(audited, head, out.context,
+			"it audited "+shortSHA(audited)+" but the head moved to "+shortSHA(head))
 		return out
 	}
 	out.sha = head
@@ -1349,7 +1512,7 @@ func hostOfURL(raw string) string {
 // store.ServerMintedLaunchVars, the one list the mint, the withdrawal below and
 // every client write path (store.DropServerMintedVars) read, so none can drift
 // from another.
-func forgePublishVars() [4]string {
+func forgePublishVars() [len(store.ServerMintedLaunchVars)]string {
 	return store.ServerMintedLaunchVars
 }
 
@@ -1359,11 +1522,14 @@ func forgePublishVars() [4]string {
 // forgePublishVarPRState is the read half's endpoint, injected alongside them
 // and authenticated by the SAME token: a delivery tail asks it whether the
 // pull request is still open before it pushes onto its branch.
+// forgePublishVarDispatch is the workflow-dispatch endpoint, honoured only
+// for a grant carrying publishCapDispatchWorkflow.
 const (
 	forgePublishVarURL       = store.ForgePublishURLVar
 	forgePublishVarToken     = store.ForgePublishTokenVar
 	forgePublishVarPRState   = store.ForgePRStateURLVar
 	forgePublishVarPreflight = store.ForgeDeliveryPreflightURLVar
+	forgePublishVarDispatch  = store.ForgeDispatchURLVar
 )
 
 // injectForgePublishVars mints a per-run forge-publish grant and injects the
@@ -1438,6 +1604,21 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		return vars, "", nil
 	}
 	dropMaskedGrant(vars)
+	// Evaluation mode (publish_mode=off): the run publishes nothing, so it
+	// holds no grant — whatever bot version serves it, the publish endpoint
+	// has nothing to honour. A grant the caller or the repo policy carried is
+	// withdrawn like an untrusted launch's. Pinned on an integration, the var
+	// reaches every bot of that repo, each launched without a grant.
+	if forge.PublishModeWithholds(vars[forge.PublishModeVar]) {
+		for _, k := range forgePublishVars() {
+			delete(vars, k)
+		}
+		if prURL != "" && s != nil && s.logger != nil {
+			s.logger.Info("forge publish: %s: no publish grant minted for an evaluation launch (%s=off, bot %q) — the run publishes nothing",
+				prURL, forge.PublishModeVar, strings.TrimSpace(botID))
+		}
+		return vars, "", nil
+	}
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, "", nil
 	}
@@ -1449,6 +1630,14 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 			!strings.EqualFold(strings.TrimSpace(grant.TeamID), strings.TrimSpace(teamID)) {
 			return vars, "", fmt.Errorf("%w: the launch pins a forge publish grant minted for team %q, but this launch belongs to team %q",
 				errForgePublishGrantTenant, grant.TeamID, teamID)
+		}
+		// A grant bound to no pull request cannot serve a launch that names
+		// one: every surface this run would publish on refuses it, so the
+		// launch is refused now rather than left to claim a gate it can never
+		// answer.
+		if _, _, err := s.pullRequestGrant(pinned); err != nil {
+			return vars, "", fmt.Errorf("%w: %w — launch without %s to mint a fresh one",
+				errForgePublishGrantUnavailable, err, forgePublishVarToken)
 		}
 		// The caller pinned its own grant — don't overwrite, and this launch
 		// minted nothing: a token it merely found is not its to revoke. Mark
@@ -1495,19 +1684,11 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		}
 		return vars, "", nil
 	}
-	token := newBoardMCPToken()
-	if token == "" {
-		return vars, "", nil
-	}
-	caps := s.forgePublishCapabilitiesFor(ctx, teamID, botID)
-	if ks := strings.TrimSpace(vars[publishMutationKillSwitchVar]); ks != "" && ks != "true" && len(caps) > 0 {
-		if s.logger != nil {
-			s.logger.Info("forge verdict: %s/%s: merge-gesture capabilities stripped by operator pin %s=%q",
-				host, repo, publishMutationKillSwitchVar, ks)
-		}
-		caps = nil
-	}
-	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo, Capabilities: caps}); err != nil {
+	caps := s.pullRequestGrantCapabilitiesFor(ctx, teamID, botID)
+	vars, minted, err := s.registerRunGrant(ForgePublishGrant{
+		TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo, Capabilities: caps,
+	}, host, vars, base)
+	if err != nil {
 		// A launch that reaches here has a connection covering the PR: it is
 		// gating-shaped, and the caller is about to claim the repo's gate
 		// context on this head. Proceeding without a grant is the "pending
@@ -1519,7 +1700,43 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		if s.logger != nil {
 			s.logger.Error("forge publish: %v; refusing the launch on %s/%s rather than starting a run that cannot publish its verdict", err, host, repo)
 		}
-		return vars, "", fmt.Errorf("%w: %s/%s: %w", errForgePublishGrantUnavailable, host, repo, err)
+		return vars, "", err
+	}
+	return vars, minted, nil
+}
+
+// registerRunGrant mints one run's publish grant g — its team, bot,
+// connection, repository, capabilities and pull-request binding, as the
+// minting lane decided them — and writes the bearer and the endpoints it is
+// presented to into vars. It is the ONE place a grant and its launch vars are
+// made, so every lane that mints — a pull-request launch, a repo-bound
+// schedule — hands its run the same endpoint set, and a new endpoint reaches
+// all of them at once. Which of those endpoints serve the grant is the
+// grant's own record: one bound to no pull request is refused by every
+// pull-request endpoint (pullRequestGrant). The dispatch endpoint is the one
+// exception: it is named only to a grant carrying publishCapDispatchWorkflow,
+// and removed from vars otherwise — a value a caller left there would be an
+// endpoint of its choosing the bearer is scoped toward.
+//
+// The operator pin forge_publish_mutations (anything but "true") strips every
+// capability here, whichever lane minted. A registry that refuses the grant
+// is errForgePublishGrantUnavailable; vars is returned untouched then. No
+// token at all (crypto/rand failed) mints nothing and is not an error, the
+// historical answer.
+func (s *Server) registerRunGrant(g ForgePublishGrant, host string, vars map[string]string, base string) (map[string]string, mintedGrant, error) {
+	token := newBoardMCPToken()
+	if token == "" {
+		return vars, "", nil
+	}
+	if ks := strings.TrimSpace(vars[publishMutationKillSwitchVar]); ks != "" && ks != "true" && len(g.Capabilities) > 0 {
+		if s.logger != nil {
+			s.logger.Info("forge verdict: %s/%s: grant capabilities %v stripped by operator pin %s=%q",
+				host, g.Repo, g.Capabilities, publishMutationKillSwitchVar, ks)
+		}
+		g.Capabilities = nil
+	}
+	if err := s.forgePublishTokens.Register(token, g); err != nil {
+		return vars, "", fmt.Errorf("%w: %s/%s: %w", errForgePublishGrantUnavailable, host, g.Repo, err)
 	}
 	if vars == nil {
 		vars = map[string]string{}
@@ -1527,6 +1744,11 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
 	vars[forgePublishVarPreflight] = base + "/api/v1/forge/delivery-preflight"
+	if slices.Contains(g.Capabilities, publishCapDispatchWorkflow) {
+		vars[forgePublishVarDispatch] = base + forgeDispatchWorkflowPath
+	} else {
+		delete(vars, forgePublishVarDispatch)
+	}
 	vars[forgePublishVarToken] = token
 	return vars, mintedGrant(token), nil
 }
@@ -1786,8 +2008,8 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 		if !strings.EqualFold(ri.RepoFullName, repo) {
 			continue
 		}
-		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
-		if cerr != nil || conn.TenantID != teamID || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+		conn, cerr := s.forgeConnections.Get(ctx, ri.TenantID, ri.ConnectionID)
+		if cerr != nil || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
 			continue
 		}
 		// One repo provisioned twice on the same host — through two connections,
@@ -1819,11 +2041,12 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 		// the "first connection on this host" fallback below — then every
 		// review comment and commit status posted through it would 403: its
 		// App holds no pull_requests/statuses grant, by design.
-		return c.TenantID == teamID && !c.IsSecurityReadOnly() &&
+		// The tenant match is the store's now (#2760): Get filters on it.
+		return !c.IsSecurityReadOnly() &&
 			strings.EqualFold(hostOfURL(c.BaseURL()), host)
 	}
 	if preferredConnID != "" {
-		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && matches(c) {
+		if c, err := s.forgeConnections.Get(ctx, teamID, preferredConnID); err == nil && matches(c) {
 			return c, true
 		} else if s.logger != nil {
 			// Falling through to another connection is the historical
@@ -1837,7 +2060,7 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
 	// a newer connection posts under that one and not the row left behind.
 	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
-		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
+		if c, err := s.forgeConnections.Get(ctx, teamID, ri.ConnectionID); err == nil && matches(c) {
 			return c, true
 		}
 	}

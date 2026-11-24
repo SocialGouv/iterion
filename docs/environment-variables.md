@@ -13,8 +13,8 @@ falls back to the listed default.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_DEFAULT_SUPERVISOR_MODEL` | Fallback `model:` compiled into agents, judges, and LLM routers that do not declare one; also the first fallback for `iterion supervise`. Backend resolution remains independent. An LLM router still empty after this uses `anthropic/claude-sonnet-5`; other nodes can use the detected backend's suggested model. | unset |
-| `ITERION_VERIFIED_ACTION_MODEL` | Model spec for the [Verified Action](adr/044-adaptive-recovery-for-deterministic-action-nodes.md) recovery agent. Precedence: a node's `recovery.model` (env-expanded) → this var → package default. | package default |
+| `ITERION_DEFAULT_SUPERVISOR_MODEL` | Fallback `model:` compiled into agents, judges, and LLM routers that do not declare one; also the first fallback for `iterion supervise`. Backend resolution remains independent. An LLM router still empty after this uses `anthropic/claude-opus-5-5`; other nodes can use the detected backend's suggested model. | unset |
+| `ITERION_VERIFIED_ACTION_MODEL` | Model spec for the [Verified Action](adr/044-adaptive-recovery-for-deterministic-action-nodes.md) recovery agent. Precedence: a node's `recovery.model` (env-expanded) → this var → package default. Set it **identically on the server and the runner**: a launch-time walk names the provider a recovery rung will spend by reading this dial where IT runs (the API server), while the rung itself resolves it on the runner — the chart gives both deployments one `envFrom` ConfigMap, so only a hand-rolled deployment can make them disagree. | package default |
 | `ITERION_CONFLICT_RESOLVER_MODEL` | Model for the merge-conflict-resolver agent ([review-merge-gate.md](review-merge-gate.md)). Overrides the auto-detected pick. | auto-detected claw model |
 | `ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS` | Aborts a `claude_code` session after this many **consecutive** tool errors (any success resets the count) — guards against degenerate tool-error loops. `0` disables the guard. | `25` |
 | `ITERION_CLAUDE_CODE_THINKING_DISPLAY` | Controls the `claude_code` thinking-block display flag: unset/other → `summarized` (readable summary); `omitted` → the CLI's latency-optimised default; `off` → stop passing the flag (required for `claude` CLIs older than the flag). | `summarized` |
@@ -34,8 +34,8 @@ falls back to the listed default.
 | `ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT` | How long a session may keep *talking* without *acting*. The idle tiers only see silence; they are blind to a model streaming text and thinking in circles (observed after a network outage: 20+ min of reasoning, no tool call, no commit). Only a tool_use, a tool result, or a turn's ResultMessage resets this timer. Deliberately longer than the hot tier so one slow build does not trip it. With the hot tier it bounds the Bash timeouts every `claude_code` spawn pins. `0` disables it. | `25m` |
 | `ITERION_CLAUDE_CODE_CLOSE_GRACE` | How long the `claude_code` subprocess gets to exit on its own after stdin closes, before the shutdown ladder escalates. Bounds `close()` so a hung child (the CLI keeping bash background loops alive past the agent's logical end) cannot deadlock the caller's `defer sess.Close()`. | `3s` |
 | `ITERION_CLAUDE_CODE_CLOSE_TERM` | How long the same subprocess gets after `SIGTERM` before the ladder resorts to `SIGKILL`. | `1s` |
-| `ITERION_CLAW_COMPACT_THRESHOLD_RATIO` | Context-window fraction (`0 < r ≤ 1`) at which the `claw` router compacts the conversation. Used only when the workflow does not set the field. | engine default |
-| `ITERION_CLAW_COMPACT_PRESERVE_RECENT` | Number of most-recent messages kept verbatim when `claw` compacts. Used only when the workflow does not set the field. | engine default |
+| `ITERION_CLAW_COMPACT_THRESHOLD_RATIO` | Context-window fraction (`0 < r ≤ 1`) at which the `claw` router compacts the conversation. Used only when the workflow does not set the field. Read as inherited: a value a project `.env` planted is nothing said, and the cascade falls through to the engine default — a repository under review does not choose the window its reviewer compacts at. | engine default |
+| `ITERION_CLAW_COMPACT_PRESERVE_RECENT` | Number of most-recent messages kept verbatim when `claw` compacts. Used only when the workflow does not set the field, and read as inherited like the ratio above. | engine default |
 | `ITERION_PI_BIN` | The `pi` binary on the host — e.g. a `bun --compile` single-file build on a host with no Node runtime. An **absolute path** or a **bare name** on PATH; a relative path with a separator is **refused with a typed error** (it would resolve against the workspace and run a binary out of the checkout). Both pi transports apply the same rule. | `pi` on `PATH` |
 | `ITERION_PI_MODE` | Selects the `pi` transport. The default is the long-lived `--mode rpc` session — tool events reach the studio timeline, operator chat is delivered by pi's native `steer`, accounting comes from `get_session_stats`, and a pre-flight handshake resolves the model before any token is spent. `print` rolls back to the one-shot `--mode json` path. | `rpc` |
 | `ITERION_PI_STREAM_COLD_TIMEOUT` | How long a `pi` RPC session may produce no event at all before the node fails transiently. | `90s` |
@@ -45,15 +45,16 @@ falls back to the listed default.
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR` for `pi`. Gives a reproducible pi config (and the only print-mode lever to disable pi's own retry loop), but **hides the operator's `~/.pi/agent/auth.json`** — and with it the OAuth provider breadth that motivates the backend. | unset (pi's own dir) |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's model-catalogue refresh inside a sandbox. Off by default there because a network egress policy would stall startup on the refresh. | off under sandbox |
 | `ITERION_OPENCODE_BIN` | The opencode CLI on the **host**, for a host whose PATH the iterion process does not share. An **absolute path** or a **bare name** on PATH; a relative path with a separator is **refused with a typed error** (it would resolve against the workspace and run a binary out of the checkout). Detection and execution apply the same rule. Ignored inside a sandbox, where a host path means nothing. | PATH lookup |
-| `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the **target repository's** `.opencode/` resources (and an `opencode.json` at any level up to the git root). opencode loads and executes what it finds there inside the agent process, so this turns prompt injection into code execution — only for a repo you control. Process-wide: on a shared server it lifts the refusal for every concurrent run. | refused |
+| `ITERION_OPENCODE_ARGV` | `1` pins the opencode **argv dialect to 1.x**: every generated flag first, `--variant <effort>` for the reasoning dial, the `run` subcommand last. The default is the 2.x dialect, whose parser refuses a flag placed before `run` (`Unrecognized flag: --format in command opencode`, measured on 2.2.5) and which carries the dial inside the model reference (`-m provider/model#variant`). Set it only on a host still running the 1.x line. | 2.x argv |
+| `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the **target repository's** `.opencode/` resources (and an `opencode.json` at any level at or above the workspace, up to the operator's home — 2.2.5 climbs straight past a `.git`, so iterion's screen does not stop there either). opencode loads and executes what it finds there inside the agent process, so this turns prompt injection into code execution — only for a repo you control. Process-wide: on a shared server it lifts the refusal for every concurrent run. | refused |
 | `ITERION_PI_TRUST_PROJECT` | `1` trusts the **target repository's** `.pi/` extensions, skills and settings. pi executes project-local extensions as TypeScript inside the agent process, so this turns prompt injection into code execution — only for a repo you control. | refused |
 | `ITERION_PI_MCP_CONNECT_TIMEOUT_MS` | How long one MCP server gets to handshake and list its tools before the `pi` extension gives up on it. Servers connect in parallel during pi's session start — which iterion's own RPC handshake is waiting on, bounded by `ITERION_PI_STREAM_COLD_TIMEOUT` (90s) — so this bounds what an unreachable server can cost: its own tools, never the run. | `10000` |
 | `ITERION_PI_NO_CONTEXT_FILES` | `1` is the raw off switch for pi's context files (`AGENTS.md` / `CLAUDE.md`, one per directory up to `/` plus the agent dir's), whatever the node's `ambient_context:` says — a cost lever: measured at **26,933 vs 448 input tokens** on iterion's own tree (103 KB `CLAUDE.md`) for a one-word prompt. Without it, the ambient-context policy decides ([ADR-119](adr/119-ambient-context-policy.md)): every policy but `all` already turns pi's own loading off, and iterion supplies the files the policy allows. | unset (the policy decides) |
 | `ITERION_FORBID_SUBSCRIPTION_OAUTH` | `1` refuses to spend a Claude Pro/Max subscription OAuth token on the `pi` and `claw` backends, which reach the API directly rather than through the vendor's CLI. Permitted by default — Anthropic accepts it, billing against a **separate extra-usage balance** rather than your plan limits, and iterion warns on each such node. Set this on a shared or cloud instance, where spending an operator's extra-usage balance is a cost decision taken for everyone. `claude_code` / `codex` are unaffected. | permitted, with a warning |
 | `ITERION_CLAUDE_CODE_SETTING_SOURCES` | Comma-separated `--setting-sources` for `claude_code` nodes (`user`, `project`, `local`). **Raw override**: when set it replaces the node's `ambient_context:` translation (ADR-119) for every claude_code spawn, logged once; the routing pin holds whatever the scopes. `none`/`""` now loads NO source at all (an explicit `--setting-sources ""`): omitting the flag would make the CLI load every source, `local` included. Unknown tokens are logged and dropped — a list made only of typos loads nothing. Unset, the policy decides: `workspace` by default, which keeps the project scope that carries the engine's mirrored skills and plugin contributions, adds the repository's memory, and keeps the operator's user scope out. | unset (the policy decides) |
 | `ITERION_CLAW_SLASH_COMMANDS` | `off`/`0`/`false` stops `claw` nodes resolving a user prompt that opens with `/<name>` against `<workspace>/.claude/commands/<name>.md`, sending the raw text instead. On by default, so a command a plugin contributes (`contributes: commands`) reaches a `claw` node the way `--setting-sources project` gives it to `claude_code` — see [backends.md](backends.md#workspace-slash-commands). Read on the HOST, in the executor, so it holds for a sandboxed run too. Other backends are unaffected: `claude_code` resolves these natively, the CLI agents have no such convention. | on |
-| `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` | Ceiling, in bytes, checked on a workspace command's body **and again on the text it expands to** — a body under the ceiling can still amplify past it, since `$ARGUMENTS` repeated N times multiplies the arguments N-fold. On a review run the workspace is a checkout the run does not control, so that file is untrusted input that becomes a **billed** request; over the ceiling the node sends its prompt unchanged and logs the file, its size and this variable — an abstention, never a truncation, because half a command body is an instruction nobody wrote. `0` removes the ceiling; a value that does not parse is ignored, so a typo cannot silently remove the bound. | `262144` (256 KiB) |
-| `ITERION_CLAUDE_CODE_STRICT_MCP` | `0`/`false`/`off`/`no` drops `--strict-mcp-config`, letting a `claude_code` node inherit the operator's personal `~/.claude.json` MCP servers. On by default so the node's resolved MCP set (`mcp_server:` / `mcp:` blocks, the repo's `.mcp.json`, iterion's own ask-user and board servers) is authoritative — see [backends.md](backends.md). | strict (on) |
+| `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` | Ceiling, in bytes, checked on a workspace command's body **and again on the text it expands to** — a body under the ceiling can still amplify past it, since `$ARGUMENTS` repeated N times multiplies the arguments N-fold. On a review run the workspace is a checkout the run does not control, so that file is untrusted input that becomes a **billed** request; over the ceiling the node sends its prompt unchanged and logs the file, its size and this variable — an abstention, never a truncation, because half a command body is an instruction nobody wrote. `0` removes the ceiling; a value that does not parse is ignored, so a typo cannot silently remove the bound. Read on the HOST for both surfaces of the capability — the prompt path reads it directly, and the model-invoked `command` tool receives the resolved value at registration, carried into the container by the task (`slash_command_max_bytes`) because the container's environment holds no dial. | `262144` (256 KiB) |
+| `ITERION_CLAUDE_CODE_STRICT_MCP` | `0`/`false`/`off`/`no` drops `--strict-mcp-config`, letting a `claude_code` node inherit the operator's personal `~/.claude.json` MCP servers — except a node with `mcp: inherit: false`, which keeps it. On by default so the node's resolved MCP set (`mcp_server:` / `mcp:` blocks, the repo's `.mcp.json`, iterion's own ask-user and board servers) is authoritative — see [backends.md](backends.md). | strict (on) |
 
 Backend selection and provider routing use `ITERION_DEFAULT_BACKEND`,
 `ITERION_BACKEND_PREFERENCE`, `ITERION_OPENAI_USE_OAUTH`, and
@@ -64,9 +65,12 @@ Backend selection and provider routing use `ITERION_DEFAULT_BACKEND`,
 | Variable | Effect | Default |
 |---|---|---|
 | `ITERION_SANDBOX_PULL_TIMEOUT` | Caps `<runtime> pull` for the docker driver (Go duration, e.g. `20m`) so a stalled registry or blocked DNS cannot pend a run indefinitely. | `10m` |
+| `ITERION_SANDBOX_IMAGE_ENV_ALLOW` | Comma-separated **exact** names the [image env screen](sandbox.md#the-env-an-image-bakes-in) must not override with an empty value, where it otherwise empties a repository-authored image's planted credentials and model routes. Case-sensitive, no prefix matching; a name let through is still reported. What it withholds is ITERION's own `--env NAME=`, not the **driver's** pair: a name it lets through that the driver sets when it starts the container (the egress proxy's variables, the per-run CA bundles) reaches the container with ITERION's value, and the run event files it under `driver_set` rather than `allowed` — every disposition of that event is read back from the container, so it says what the container has. It is also the way past a refusal, a branch **no docker image can reach today** (the screen hands over only names docker's own `--env` guard accepts — walked, 0 counterexamples): the screen is closed by default, so a neutralisation a driver will not take STOPS the boot (`CAPABILITY_UNSUPPORTED`) rather than starting a container the guard did not reach. Read from the runner's own environment only — never from the workspace, never from a stored bot var — so the repository under review cannot allowlist itself. | unset |
 | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` | Budget of the `post_create` snippet, on **both** drivers — the budget belongs to the phase, so raising it for a slow toolchain install raises it wherever the phase runs. Fails closed: a value that is not a positive Go duration is refused, the default applies, and one stderr line names the variable, the value and the default. | `30m` |
 | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` | Budget of the kubernetes driver's workspace copy AND of the git fixup that follows, each end-to-end. Same fail-closed parsing. | `15m` |
+| `ITERION_SANDBOX_READBACK_CAP` | The figure the read-back drain (ADR-143) meters a declared dir's set against at sandbox teardown, as a Kubernetes byte quantity (`1Gi`, `500M`, `1073741824`) — for every dir whose serving mount names no `size=` of its own (a bot's own sized `type=emptydir` at the run-files path names its figure itself). The member that takes the set past the cap is dropped with a `sandbox_runfiles_drain_failed` event (`reason: over_cap`), what landed before it uploads. The set is what the host holds: a retried drain's attempts count together, never one archive alone. A value that is no byte quantity is reported and the default kept. | `256Mi` |
 | `ITERION_SANDBOX_K8S_APPLY_TIMEOUT` | Budget of ONE `kubectl` control call on the kubernetes driver — the per-run Secret, the CA Secret, the pod, the NetworkPolicy, the mid-run secret refresh, and every `delete` (stale-pod eviction, rollbacks, cleanup). Enforced by killing the process; never passed as kubectl's own `--request-timeout`, which makes kubectl v1.36 discard the in-cluster configuration and dial `localhost:8080`. Same fail-closed parsing. | `2m` |
+| `ITERION_REWRITE_SANDBOX` | Whether the command-rewriter chain (rtk and plugin `rewriters`) still runs host-side for a **sandboxed** task (#2007). `skip` (the default) stands the chain down: sandboxed commands run verbatim in-container, inside the sandbox boundary, forgoing the rewrite's 60–90% output-token saving on those runs — the stand-down is named on the run's log at each site it engages. `host` restores the previous placement: the rewrite executes host-side, in the launcher/engine process, and the sandboxed CLI or tool node runs the rewritten command in-container — so every Bash command of a sandbox-requested run passes through a host-side subprocess. An unknown value is ignored with a warning (the default applies). | `skip` |
 
 Every setup phase and how its expiry is classified: [sandbox.md § setup
 phases](sandbox.md#setup-phases-and-their-timeouts). The pod-Ready wait
@@ -85,6 +89,7 @@ documented in [sandbox.md](sandbox.md).
 | `ITERION_MCP_AUTOLOAD` | `0`/`false` stops iterion reading a `.mcp.json` next to the `.bot` (CLI, studio) or at the root of the cloned repository (cloud runner). Those entries are `project`-origin: under an active sandbox the launcher does not start them anyway — this removes them from the catalog entirely. | on |
 | `ITERION_MCP_HEALTHCHECK` | `0`/`false` skips the pre-run health check of the workflow's active MCP servers. The check connects — for a stdio server, spawns — so it only ever probes servers the launcher may start; the rest are skipped and logged. | on |
 | `ITERION_MCP_CACHE_TTL` | Lifetime of the on-disk tool-discovery cache (`0` disables it). The cache stores tool names and schemas only, keyed by a hash of the server's configuration. | `1h` |
+| `ITERION_MCP_SERVER_ENV_PASSTHROUGH` | What a launcher-started **stdio** server receives from the launcher's environment beyond its own `env:` block: a comma-separated list of variable names, or `all` for the whole environment (logged as a warning). Empty — the default — passes only what the server declares plus the process-essential allowlist (`PATH`, `HOME`, `TMPDIR`, `NODE_EXTRA_CA_CERTS`, and the Windows equivalents). The names a project `.env` could answer for an npx-based server — `NODE_OPTIONS`, `npm_config_*`, `*_PROXY`, `PYTHONPATH`, `LD_PRELOAD` — are therefore not inherited unless an operator names them. | empty (declared + allowlist) |
 | `ITERION_MCP_EXPAND_UNTRUSTED_ENV` | `true` restores the pre-#1945 behaviour: a **workflow-controlled** server's `command`/`args`/`url` expand `${VAR}` against the launcher's own environment. Off by default — that expansion reads the operator's shell (or the cloud runner pod's credentials) on behalf of a definition the target repository controls, and the expanded value travels into the container as the CLI backends' MCP config. `plugin`-origin servers are unaffected. | off |
 
 Which servers the launcher starts at all is decided by their ORIGIN — see
@@ -111,29 +116,201 @@ unsandboxed run expands, because nothing crosses into a container), and
 `ITERION_SANDBOX_DEFAULT` / `ITERION_SANDBOX_OVERRIDE` are read live, so a
 `.env` setting either to `none` makes the run unsandboxed and the expansion
 happens. Closing that family is tracked separately.
-Note that an operator-installed plugin's stdio server inherits the whole
-environment of the launcher process: that is the operator's own binary and
-the operator's choice, but it is worth knowing before enabling one in a pod
-that holds platform credentials (`ITERION_PLUGINS_ENABLE`).
+
+A launcher-started stdio server does **not** inherit the launcher's
+environment: it receives its own `env:` block plus the process-essential
+allowlist, and `ITERION_MCP_SERVER_ENV_PASSTHROUGH` is the operator's
+explicit way to widen that. The reason is the same provenance rule — the CLI
+fills every unset variable from the nearest `.env`, a file that sits in the
+repository under review, and `NODE_OPTIONS` or `npm_config_registry` decide
+what an npx-based server loads and where it fetches from. The allowlisted
+names are read as INHERITED (a planted `PATH` reads as unset), while a name
+the operator passes through is read live: `.env` is where iterion tells
+people to put run variables, and the hatch itself is read only from the
+inherited environment, so a repository cannot widen its own reach.
+
+### The `.env` walk stops at the git working tree's root
+
+The CLI reads the nearest `.env` walking up from the working directory, and
+the walk stops at the root of the git working tree it starts in: the nearest
+directory whose `.git` git itself accepts — a directory in a primary
+checkout, a `gitdir:` file in a linked worktree or a submodule
+(`pkg/backend/ambient` `IsRepoRoot`, the boundary the bundle lookup shares).
+That root's own `.env` is read; nothing above it is. A worktree nested in
+another checkout (`<repo>/.claude/worktrees/<name>`) with no `.env` of its
+own therefore loads none, rather than the enclosing checkout's, whose values
+configure another tree. Outside any git tree the walk goes on to the
+filesystem root. An empty `.git` placeholder, or a `.git` directory git would
+not open, bounds nothing, as in git's own discovery.
+
+### Only a human's CLI call loads a workspace `.env`
+
+The auto-load is the CLI's convenience, so it belongs to the invocation a
+person typed. A process the **engine** spawned against a workspace — a tool
+node's `command:` or `script:`, a CLI agent, the in-container claw runner, and
+an `iterion` a bot script re-enters through `ITERION_ENGINE_BIN` — already
+holds the environment the engine handed it, credential included; reading the
+repository's `.env` on top of that is how a tree under review fills in the
+names nobody set on purpose, the provider endpoints (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, …) a credential is spent against first among them. Such a
+process therefore does **not** walk up for a `.env`:
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_ENGINE_CHILD` | Written by the engine on every child it spawns against a workspace, and inherited by everything those children spawn in turn. An `iterion` that arrives with it set skips the `.env` auto-load. Engine-owned: a stored bot var cannot spell the name, and a value a `.env` planted only ever COSTS a process the convenience. | unset (a human's CLI call) |
+| `ITERION_DOTENV_FORCE` | The escape hatch: `1` or `true` makes engine children honour the workspace `.env` again. Read as INHERITED only — a `.env` cannot vote itself back in — so it goes in the environment you launch from. It never reopens the `.env` of a process carrying `ITERION_RUN_TRUST`. | unset (skip) |
+| `ITERION_RUN_TRUST` | Written by the engine, for an untrusted run only (a fork run's workspace, ADR-162), on every process a node of it starts — a tool node's command or script, a delegate's CLI, the in-container claw runner — and inherited below. An `iterion` that carries it never loads the working directory's `.env` (`ITERION_DOTENV_FORCE` included), and an `iterion run` it starts adopts it: that run is untrusted too. Cooperative: it holds for processes that pass their environment on, not against an agent writing its own command line. Engine-owned; carrying it can only lower a run's trust. | unset (trusted) |
+
+The hidden `__`-prefixed subcommands (`__claw-runner`, `__scan-shards`, the
+`__mcp-*` stdio helpers, `__permission-hook`, `__claude-hook-drain`) skip it on
+their argv alone: none of them is a human's call, two of them re-execute on
+every tool call of a session, and the `.env` they would walk is written by the
+agent being gated.
+
+What the skip removes is a READ of the repository's file, not inheritance: an
+operator who ran `iterion run` in their own checkout still has every `.env`
+value in the process environment, and it travels to each child the way every
+other variable does.
+
+## The project `.env` and the routes it may not name
+
+Every lane that plants a dotenv file asks the same question at its plant
+(`internal/envtrust` `DotenvPlantRefused`): the CLI auto-loading the nearest
+`.env` walking up from the working directory (`cmd/iterion` `applyDotEnv`),
+the studio/desktop server building a run's environment from the workspace
+project's `.env` (`pkg/projectenv.Snapshot` → `SetRunExtraEnv`), and the
+desktop's own env file (`~/.iterion/env`, `$ITERION_ENV_FILE`). A file sits
+in a repository — including the one a run is reviewing — so any name whose
+SHAPE decides where a connection is dialled, what is presented or sent
+there, or which hosts are trusted is refused by default: a `*_URL` or
+`*_URI` (provider hosts, the OAuth forfait wires the refresh token is POSTed
+to, the AWS endpoint overrides `AWS_ENDPOINT_URL*` per service, the
+deployment's own `ITERION_*_URL` wires, `SEARXNG_URL`), an `*_ENDPOINT`, a
+`*_HOST` (the Azure `*_AUTHORITY_HOST` pair among them), a `*_HOSTS` list
+(the sandbox model hosts the inspecting proxy leaves in the clear, the
+webhook forge allowlist), an `*_ADDRS` list (Redis Sentinel), a `*_DSN`
+(where crash envelopes are delivered), an `*_API_BASE`, a `*_PROXY` — either
+case. The refusal is one line on stderr (no log level reaches it, and the
+level a logger would honour is itself something the file may have planted)
+naming the file, the variable and the opt-in; the name is not planted, not
+even marked, and the credentials presented at a refused route (a
+`*_API_KEY`, a token) still plant as before — a key next to a project is
+what `.env` loading exists for. Each refused name keeps a per-answer belt at
+its reads (`internal/envtrust`): the gateway pair refuses by name, the
+routing names the host planted cross into a sandbox as explicit empties, and
+everything a run's authority question reads goes through the provenance
+seam. Which executable a launcher-started process runs is such a question:
+every **explicit** PATH lookup that answers it goes through
+`envtrust.LookPath` — the agent-CLI discovery (`pkg/internal/clilocate`,
+claude/codex spawned with the operator's credentials), the sandbox
+runtimes' `Detect` and the doctor's probes (`HostHasDocker`,
+`PingContext`), the host devbox install, the dry-run's `dash` checker, the
+authoring validation's python3, the codex `--version` probe, the detached
+runner's `iterion` fallback — which resolves nothing under a planted PATH,
+loudly, as `exec.ErrNotFound` (#2809 closed the seam, #2876 the remaining
+sites; the desktop wrapper, Windows' taskkill and the seam itself are the
+justified exceptions, each on the record with its reason in
+`internal/envtrust` `lookpath_class_test.go`, whose sweep subtracts from
+the module's own non-test Go only the trees it names with their reason, so
+a new lookup outside the record arrives red wherever it lands). What the
+seam resolved is then CARRIED rather than asked again: the sandbox runtimes
+hand the absolute path their `Detect` accepted to every kubectl / docker
+spawn and the dry-run checker spawns the `dash` it resolved, so the binary
+a probe accepted is the binary that runs — held by a second sweep in that
+same file, where a lookup that drops its path arrives red unless it answers
+a yes/no and spawns nothing (`HostHasDocker`). What the seam does NOT answer
+is the **implicit** lookup — `exec.Command("docker")` resolves a bare name
+against the parent's PATH at call time and consults nothing — a wider class
+that needs a seam of its own and is tracked separately. The studio lane marks
+what it DOES plant in the run environment
+(`ITERION_DOTENV_PLANTED` travels in it) and never lets the file's opt-in
+cross into a run; the desktop's file is operator-owned, so its values keep
+the operator's authority — the class refusal is the guard there, not the
+mark. The inventory of shapes is re-walked against the tree's real reads by
+a completeness guard (`internal/envtrust` `routing_completeness_test.go`), so
+a reader that outgrows it arrives red.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_DOTENV_ENDPOINTS` | The operator's opt-in that lets a dotenv file plant routing-shaped names again — for a laptop config that legitimately keeps its own gateway's host beside its key. `allow` grants; anything else (unset, empty, another word; surrounding whitespace ignored) keeps the refusal. Read **only** from the inherited environment, never from what the `.env` plants: a file that names it does not consent on the operator's behalf — and on the studio lane it does not cross into the run environment at all, whoever said it: the runs launched there answer their own opt-in where the run's iterion itself is launched. Refused as a bot variable. The grant answers ROUTES only: the operator grade below is closed with the opt-in exported and without. | unset (refused) |
+
+### The operator grade — names no dotenv file may set
+
+The same entry point refuses a second class outright, with or without the
+opt-in: the OPERATOR-GRADE names — the inventory the bot-var gate denies a
+stored record (`internal/envtrust` `operator.go`, one inventory serving both
+gates), widened to the server's credential spellings. `ITERION_SANDBOX_`
+OVERRIDE/DEFAULT (a reviewed repository disarming the sandbox that reviews
+it), `ITERION_DISABLE_AUTH`, `ITERION_REQUIRE_ORIGIN=0`,
+`ITERION_ALLOWED_ORIGINS`, `ITERION_SECURITY_HEADERS`,
+`ITERION_STUDIO_INSECURE_NONLOOPBACK`, `ITERION_PI_TRUST_PROJECT` (a file
+lifting the project-trust refusal), the session and store secrets
+(`ITERION_JWT_SECRET`, `ITERION_SECRETS_*`, every `ITERION_` name carrying
+`TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` — `ITERION_SERVER_TOKEN`,
+`ITERION_COMPLETION_WEBHOOK_SECRET`), the boot admin
+(`ITERION_BOOTSTRAP_*`), and the whole infra namespace list the bot-var gate
+holds (`ITERION_MONGO_`, `ITERION_NATS_`, `ITERION_REDIS_`, `ITERION_S3_`,
+`ITERION_OIDC_`, `ITERION_OAUTH_`, `ITERION_AUTH_`, `ITERION_LOG_`,
+`ITERION_RUN_`, …). A stored bot var must never set these; the H-10 review
+measured a project `.env` setting them with MORE authority than a bot. The
+refusal line names the file and the variable and points at the operator's
+own channel — the environment iterion runs with — and offers no opt-in.
+
+The plant is closed on every lane; the reads carry the belt. The server's
+config loader (`pkg/config` `lookup`) and its guard postures
+(`pkg/server` `envOperator` — origins, CSRF, security headers, the WS
+origin, the webhook forge list, the assistant's bounds — and the
+`ITERION_DISABLE_AUTH` read of `iterion serve`) answer a planted value with
+nothing, so a marker an older binary's loader left in a child cannot lift a
+guard; a completeness test walks `pkg/server`'s raw reads and fails the day
+a grade name is read around the helper.
+
+### Command substitution — a value no dotenv file may spell
+
+A value carrying `$(...)` or backticks is refused on every lane
+(`envtrust.HasCommandSubstitution`), named like a route and with no opt-in:
+nothing of iterion's evaluates a value, but the studio snapshot used to
+SOURCE the file in bash — the legacy instance manager's frame — and a
+sourced `FOO=$(touch /tmp/x)` EXECUTED on the host before any question was
+asked. The plant set is the PARSE now (`internal/dotenv`, one reader shared
+by the three lanes), and bash keeps one job on the studio lane: expanding
+`$VAR`/`${VAR}` in the values that survived the refusals, on the child's
+base environment. An unquoted value with spaces is one value on every lane
+(the sourcing shell used to lose it silently); a single-quoted value stays
+literal; a `$` the file escaped stays literal; lines that are not
+assignments are skipped, not executed. The git transport family
+(`GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`) rides
+the routing refusal — the reader there is the git BINARY, which no Go-side
+grep sees, and a planted `GIT_SSH_COMMAND` was measured EXECUTED by git
+before it dialled — and `pkg/git` drops a planted transport name again at
+its own env assembly, for a stale marker in a child.
 
 ## Reading a source
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_DSL_READ_BUDGET` | How much one bot may ask its reader to record, its files together. Of `.bot` files: records — every word, value, punctuation mark, prompt line (blank or not), line end, indentation step and the end of each file is one, a comment two; the lexer spends them while it reads, so a bot past the budget is refused (E001) at the record it ran out on, in whichever file, before the work it asks for. Of a YAML twin: its values and comment lines, a value one and a comment line two, counted on what it decodes (E050) — before the decode runs, the values its `:` `,` `?` `-` `[` `{` could open and the comments its `#` could hang on them, two each, outside the text of a `|` or `>` block, may reach twice the count — then the records of the `.bot` it spells (E001), which the fragments it imports share. A frontmatter block is held to it by the values its decode can build. The 10 MiB size cap bounds a file's bytes, not what they turn into: read whole, a flat list of one-letter names would cost some 600 bytes of memory per byte of text. A larger count raises it; `0` removes it, and with it the caps of the diagnostics a reading reports (1000 of each code, 2000 of each severity). A value that is no count keeps the default, and the process says so once on stderr, as an error no log level silences. Set it wherever a bot is read — the CLI, the server, the runner — or a bot one of them accepts is refused by another. The files of a bot share it — the main and every `lib/` fragment it imports — so a bot in several files costs its reader what it would in one, and splitting it is no way past the budget: raising the count is. | `1048576` (2^20) |
+| `ITERION_DSL_READ_BUDGET` | How much one bot may ask its reader to record, its files together. Of `.bot` files: records — every word, value, punctuation mark, prompt line (blank or not), line end, indentation step and the end of each file is one, a comment two; the lexer spends them while it reads, so a bot past the budget is refused (E001) at the record it ran out on, in whichever file, before the work it asks for. Of a YAML twin: its values and comment lines, a value one and a comment line two, counted on what it decodes (E050) — before the decode runs, the values its `:` `,` `?` `-` `[` `{` could open and the comments its `#` could hang on them, two each, outside the text of a `|` or `>` block, may reach twice the count — then the records of the `.bot` it spells (E001), which the fragments it imports share. A frontmatter block is held to it by the values its decode can build. Of an expression — a `compute` field's, a quoted `when`'s, a loop cap's, a fallback `when:` — its tokens (names, values, operators, brackets, punctuation), one each, and its end one, the expressions of a bot together on a budget of the same count, counted on what the compiler reads — a group's expressions once per `use`, a loop cap once per edge that carries it (C320): an expression lives inside one string, which the lexer counts as a single record. The 10 MiB size cap bounds a file's bytes, not what they turn into: read whole, a flat list of one-letter names would cost some 600 bytes of memory per byte of text. A larger count raises it; `0` removes it, and with it the caps of the diagnostics a reading reports (1000 of each code, 2000 of each severity). A value that is no count keeps the default, and the process says so once on stderr, as an error no log level silences. Set it wherever a bot is read — the CLI, the server, the runner — or a bot one of them accepts is refused by another. The files of a bot share it — the main and every `lib/` fragment it imports — so a bot in several files costs its reader what it would in one, and splitting it is no way past the budget: raising the count is. | `1048576` (2^20) |
+| `ITERION_DSL_READ_ADMISSION_MAX_BYTES` | The server-wide bound on what CONCURRENT DSL readings may cost together (#2693) — the read budget above bounds one reading, this bounds the aggregate: every `/api/parse`, `/api/unparse`, `/api/validate` and bot-source write acquires a weight of 512 per input byte against this ceiling, and a request that would push past it waits the grace below, then is refused 503 + `Retry-After` (`dsl_read_admission`). One input heavier than the whole ceiling is admitted alone once the gate drains — the bound is against concurrency, never against one large reading. Sized so two budget-edge readings (~0.5 GiB each measured) cannot overlap under the chart's default 1Gi server limit; per replica — N replicas admit N × this. `0` removes the bound; a value that is no count keeps the default, said once on stderr as an error no log level silences. | `536870912` (512 MiB) |
+| `ITERION_DSL_READ_ADMISSION_WAIT` | The grace (a Go duration) a request past the admission ceiling waits for headroom before its 503; `0` refuses immediately. | `2s` |
+
 
 ## Runtime and runner
 
 | Variable | Effect | Default |
 |---|---|---|
+| `ITERION_DSL_EVAL_BUDGET` | How much WORK one expression evaluation may do (#2775): one unit per node evaluated, plus the produced length of every string a `+` or a builtin builds and the length of every collection a builtin copies — charged AS it is built, before the allocation, so a `join(map(...))` past the count is refused before its result exists. The read budget bounds what an expression's text becomes at parse time and the combinator visit budget (100 000) bounds a `map`/`filter`/`reduce` fan-out; neither saw the work a bounded fan-out multiplies — visits × body nodes — or the quadratic copy of a left-deep string `+` chain, so hours of CPU or a runtime OOM came out of a bot the compiler accepted. A `compute` field, an edge `when`, a loop cap and the launch gate's var-edge filter all evaluate on this count; past it the evaluation is refused (`EXPRESSION_FAILED` at a node) naming this variable. A larger count raises it, `0` removes it; a value that is no count keeps the default, said once on stderr as an error. | `16777216` (2^24) |
+| `ITERION_MEMLIMIT` | `off` disables the server/runner boot's derivation of the Go GC limit (GOMEMLIMIT) from the pod's cgroup memory ceiling (90% of it, so the collector works before the OOM-killer — #2693). An explicit `GOMEMLIMIT` in the environment always wins over the derivation. Only cloud-mode `iterion server` and `iterion runner` derive; a local studio shares the operator's machine and is untouched. | derive from the cgroup ceiling |
 | `ITERION_SKIP_MCP_HEALTH` | Truthy → do not abort the run when a declared MCP server fails its startup health-check; log a warning and continue. Equivalent to the `iterion run --skip-mcp-health` flag. Useful when an HTTP/OAuth MCP server is unreachable in this environment but the run does not depend on it. | off (abort on failure) |
+| `ITERION_PROC_WAIT_DELAY` | The ONE bound on the drain of a child process's output pipes after the child itself is gone — `cmd.WaitDelay` at every site that shells out (the claw sandbox crossing, a CLI agent, an MCP stdio probe, a dispatcher hook, a schedgate guard, the runner's git ops, `kubectl`, the session sweep, the exec that ends a sandboxed spawn, a tool node's command, the permission-hook probe, `codex --version`, the authoring Python parser). `Wait` ends only when EVERY holder of a pipe closes it, so a descendant the child left behind parks it with no bound of its own; each site's default is the one listed below and this variable replaces all of them at once (a Go duration). `0`, `off`, `no`, `none` or `unbounded` removes the bound — the escape hatch for keeping the tail of a slow drain, loud on stderr because an unbounded wait can park a run for good. A malformed or negative value keeps each site's default with a one-time stderr warning, never a silent replacement. When the bound bites, the sites whose verdict is the command's exit status (hook, guard, agent, crossing, the permission-hook probe, **a tool node's command** — including the postcondition and the re-runs of a Verified Action) report the abandoned drain and keep the success; the ones whose answer is the OUTPUT (`git`, the sweep report, a sandbox exec, the `codex --version` line) fail naming this variable, because a truncated read is not an answer. A tool node is in the first family because its verdict is its command's exit status: a recipe that exited 0 and left a server running keeps its success and its answer, and the abandoned drain is reported on the node's `tool_called` event and in the run log, never charged to the node — and the cut is also the node's teardown (#2883): the process group the command led is SIGKILLed where the sentinel is read (the report adds "the process group the command led was killed"), because exec's context watcher is gone as soon as the direct child is reaped and the cancellation kill it armed is never dispatched — so the leftover does not survive the node's window. What that signal cannot reach keeps its own bound: a descendant that escaped the group (its own `setsid`), and the in-container job of a sandboxed node, which the sandbox's teardown and the completion sweep cover. Where the kept bytes no longer parse as the node's JSON object, the output carries a private `_drain_cut: true` so a reader can tell a possible prefix from an answer. The mark rides the CUT, and only it: a job that writes to the node's output and lets go before the bound ever fires contaminates the answer just as thoroughly — it comes back as the `{"result": …}` wrapper with the job's bytes spliced in — and carries no mark and no report, because nothing was cut. That bound is the HOST's, and the host path is every run the engine did not place in a sandbox: `sandbox: none`, and a declared `auto` the host degraded to unsandboxed for want of a container runtime (the run's `sandbox_skipped` event, #1425), where the reading above applies whole — measured on a degraded `auto` run: the report names this variable, `_drain_cut: true` rides the answer, and `ITERION_PROC_WAIT_DELAY=6s` is what waits the leftover's tail out. Under a sandbox the engine ACTIVATED (`sandbox_started`, or `sandbox_shared` with `adopted: true` for a subbot running in its parent's), a tool node whose driver runs the command elsewhere (docker/podman, kubernetes) is waited for through that driver's exec client, so the bound in force is the client's — the driver's own when it set one (the kubernetes driver bounds every `kubectl` it builds, `kubectlDrainBound` 2 s, which this variable reaches because that driver resolves its default through it, not because the tool-node site applies it over a bound a layer below chose), this site's default otherwise (the docker driver sets none) — and a cut there is a cut of the client's pipes, never of the in-container job holding the command's output: the report and the `_drain_cut` mark read that client's drain and promise nothing about the job inside the container. Measured with the docker CLI (29.9.2, image `ghcr.io/socialgouv/iterion-sandbox-slim:edge`; a `podman exec` client's grace is its own): `docker exec` itself stops copying some 2 s after the exec'd process exits and exits 0, and the same recipe at `10ms`, `100ms`, `2s` and `off` comes back at 2.04–2.07 s alike with its object parsed and unmarked — so this variable widens nothing there, and a recipe that needs its whole answer waits for its children (`wait` for the job whose bytes it publishes, a redirect for a job meant to outlive the node; `wait` on a job that merely holds the output splices its bytes into the answer instead). The bound reaches a command for which Go's exec started a copier — any of the three streams iterion hands it as a buffer or a reader rather than as a pipe or a file it opened itself; a spawn whose three streams the SDK driving it takes as pipes of its own (`claude_code`, `pi`) has no copy for `Wait` to abandon and is bounded by its own shutdown instead, which signals the process group. | per site: `500ms` (MCP stdio probe, authoring Python, permission-hook probe), `2s` (claw crossing, CLI agent, dispatcher hook, schedgate guard, `kubectl`, session sweep, the exec that ends a sandboxed spawn, a tool node's command, `codex --version`), `10s` (runner git ops) |
+| `ITERION_STRICT_OUTPUT_VALIDATION` | The output-validation dial, read once per engine on every surface (run, resume, subbot, studio, runner, dispatcher). It has three positions, and unset is not off. **Unset or empty**: an output that misses its declared schema — on a node whose executor does not validate it: tool, human, subbot, wait — is reported (`node_output_schema_mismatch`, field names only) and kept, and a tool node's `command:` / `script:` that declares `output:` and prints non-empty stdout that is not a JSON object fails that node (`TOOL_FAILED_PERMANENT`, not retried, not redelivered; the message names the schema, never the output) — see [the output contract](dsl.md#tool). **On** (`1`, `true`, `yes`, `y`, `on`, `enabled`): every such mismatch fails its node too (`TOOL_FAILED_PERMANENT` for a tool, `SCHEMA_VALIDATION` otherwise). **Off, written out** (`0`, `false`, `no`, `n`, `off`, `disabled`): every mismatch is reported and kept, and a tool node's non-JSON stdout is wrapped as `{"result": "<text>"}` again — the escape hatch for a bot whose recipe prints beside its answer, until that recipe sends the rest to stderr. Alone it does not bring the run of before back: a tool body reading a declared field of the wrapper is refused unless `ITERION_STRICT_OUTPUT_REFS=0` is set beside it. The engine's `[iterion] …=` directive lines are not part of the stdout judged. An unknown value warns (`OUTPUT_VALIDATION_INVALID`) and reads as unset, never as a silent off. Operator-grade: no bot var and no project `.env` may set it. | unset (advisory mismatches, non-JSON tool stdout under `output:` refused) |
+| `ITERION_STRICT_OUTPUT_REFS` | What a tool node does with an `{{outputs.<node>.<field>}}` its body reads when the producer is a tool node that has produced an output in this run, its own `output:` schema declares the field, and that output does not carry it (a human gate, a compute node and a subbot may leave a declared field out: their readers are rendered). The producer has to run again to cure it: a resume re-executes only the refused node — `iterion rewind --run-id <run> --node <producer>` first. On by default: the reading node fails before its body runs (`TOOL_FAILED_PERMANENT`, not retried, not redelivered; the message names the reference and the producer, never a value), on each body that renders the namespace — `command:`, `script:`, `postcondition:`, an action's `params:`. **Off, written out** (`0`, `false`, `no`, `n`, `off`, `disabled`) restores the rendering of that hole: the reference's own text in a `command:` / `postcondition:`, `null` in a `script:` or an action parameter. Every other hole — a producer that has not run on this path or declares no schema, a field its schema does not declare, any other namespace — renders that way on both positions ([template namespaces](dsl.md#template-namespaces)). An unknown value warns (`OUTPUT_REFS_INVALID`) and keeps the default. Operator-grade: no bot var and no project `.env` may set it. | on |
 | `ITERION_BRANCH_CANCEL_GRACE` | Grace period (Go duration, e.g. `30s`) a cancelled fan-out branch is given to unwind before the collector stops waiting on it — raise it for backends that need longer to abort. | `5s` |
 | `ITERION_GIT_AUTHOR_NAME` | Commit-author name seeded into a cloud-runner clone's local git config (no `~/.gitconfig` is mounted in the sandbox). The push-token identity is the preferred attributed path; this fires token-less. | `iterion-runner[bot]` |
 | `ITERION_GIT_AUTHOR_EMAIL` | Commit-author email for the same cloud-runner clone. The default uses a reserved `.invalid` domain (RFC 2606) so the commit maps to no real account. | `iterion-runner@bot.iterion.invalid` |
 | `ITERION_SHUTDOWN_DELAY` | Lame-duck window on SIGTERM: `/readyz` answers 503 for this long while the listener still accepts, so a load balancer can stop routing to the pod before its socket closes. A malformed value is a startup error, never a silent 0. See [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md). | `5s` in **cloud** mode; `0` locally (`iterion studio`, and `iterion server` without `ITERION_MODE=cloud`, which routes to the studio) |
 | `ITERION_SHUTDOWN_TEARDOWN` | What follows that window: draining in-flight runs, then letting in-flight HTTP requests finish. The ceiling on a long upload or a streamed response during a deploy. Must be > 0. | `30s` in **cloud** mode; `60s` locally |
 | `ITERION_WORKTREE_POOL_MAX` | How many per-run worktrees **no live run owns** a store may park under `<store-dir>/worktrees/` before the runtime reclaims the oldest. A worktree is a full checkout of the repository, so the pool is where a long-lived store's disk goes. The bound takes only what a durable ref already holds with nothing uncommitted — never a dirty tree, never a resumable run's checkout — and warns, naming the command, when it cannot get back under. `off` disables it. See [worktree-pool.md](worktree-pool.md). | `8` |
-| `ITERION_SCRATCH_RETENTION` | How long an untouched `${PROJECT_SCRATCH_DIR}` entry is kept. A run sweeps the workspace's scratch on its way out, and `iterion clean` sweeps it too; both take only entries nothing has written to for this long — **age is the concurrency guard**, because scratch is deliberately shared between runs (a subbot writes into its parent's, which is how fan-in works). `off` disables the automatic sweep. | `168h` (7 days) |
+| `ITERION_SCRATCH_RETENTION` | How long an untouched `${PROJECT_SCRATCH_DIR}` entry is kept. A run sweeps the workspace's scratch on its way out, and `iterion clean` sweeps it too; both take only entries nothing has written to for this long — **age is the concurrency guard**, because scratch is deliberately shared between runs (a subbot writes into its parent's, which is how fan-in works). An entry is a top-level directory, except `runs/`, whose children — each run family's `${RUN_SCRATCH_DIR}` subtree — are aged one by one. Both sweeps resolve the root on the home the **operator** chose: an `ITERION_HOME` a project `.env` planted moves nothing the sweep deletes under, and no operator-chosen home at all sweeps nothing. `off` disables the automatic sweep. | `168h` (7 days) |
 | `ITERION_RUNNER_DRAIN_MODE` | `complete` (lame-duck: finish the in-flight run before exiting) or `interrupt` (cancel + checkpoint for auto-resume elsewhere). | `complete` |
 | `ITERION_RUNNER_DRAIN_TIMEOUT` | Lame-duck ceiling — the longest a runner pod waits for its in-flight run before capping it for a checkpoint-resume. | `8h` |
 | `ITERION_RUNNER_SCHEMA_MISMATCH_DELAY` | Redelivery delay a runner applies when it rejects a queue message whose schema version it does not speak (mixed fleet during a rolling schema bump). Set it on server pods too: the orphan sweeper uses `MaxDeliver × max(AckWait, schema delay, epoch delay)`. The Helm chart keeps this older knob in the shared ConfigMap. See [cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md). | `30s` |
@@ -141,11 +318,12 @@ that holds platform credentials (`ITERION_PLUGINS_ENABLE`).
 | `ITERION_RUNNER_EPOCH_MISMATCH_DELAY` | Delayed-Nak interval for a future-epoch message. Keep `delay × (MaxDeliver-1)` above the worst cold-readiness time of the replacement fleet. It contributes to the orphan sweeper's redelivery window and is rendered literally in both Helm PodTemplates. | `2m` |
 | `ITERION_NODE_MAX_TRANSIENT_RETRIES` | In-executor retry budget for a **transient** backend failure — one the executor recognises as a stream idle timeout, a network failure or an upstream 5xx by its error — retried with exponential backoff before the failure becomes a run-level `failed_resumable`. The value is a RETRY count and excludes the initial attempt, so `8` yields 9 attempts. Unset, it follows `ITERION_NODE_MAX_RETRIES` when that one is set (`0` there is fail-fast for both); set, it never drops below the standard budget, so `0` alone still leaves 3 attempts. On a claw node the budgets apply at two levels — the executor retries the node's backend call, and claw retries each provider call inside it — and a provider's client can retry on its own whatever the budget: claw's Anthropic-wire client (Anthropic, Moonshot, z.ai) makes up to 3 attempts per call and then reports a rate limit or a 5xx as final, the AWS SDK under Bedrock retries too. So what a persistent failure costs depends on the provider and the error, up to the product of the levels. A sandboxed claw node's provider calls spend the launcher's budget, never one set in the container. A negative or non-numeric value keeps the default rather than silently disabling retries. | `5` retries (6 attempts) |
 | `ITERION_NODE_MAX_RETRIES` | The budget for the other failures the executor retries: a signal kill, a rate or usage limit a backend reports as retryable. Same counting rules as above. | `2` retries (3 attempts) |
+| `ITERION_NODE_MAX_IDENTICAL_FAILURES` | How many executions **in a row** a tool node's command may fail *identically* — same exit status, same output — before the failure is recorded as `TOOL_FAILED_PERMANENT` instead of `EXECUTION_FAILED`: no further in-process retry, no cloud redelivery, no `--auto-resume`, and a board card moved to `blocked` at once; an operator's resume still re-executes the node, once. The count is of executions, across deliveries: it rides the run's checkpoint, so a redelivery on another runner continues it. The delivery that launches a run executes a failing node twice (the one in-process retry), every redelivery once — so a limit of N ≥ 2 spends N − 2 redeliveries before the verdict, and `1` takes it at the **first** counted failure, without the retry ([the table](resume.md#a-tool-command-that-fails-the-same-way-again-is-permanent)); a value past what an integer holds is a limit nothing reaches. `0` (or `off`/`no`/`false`/`none`) removes the verdict: an identical failure stays `EXECUTION_FAILED` and is redelivered up to the queue's delivery bound, a sandbox each. Counted: a `command:` the shell runs or a `script:` body that ran to an exit status the failure carries, never under `policy: recover`. Never counted, whatever the value: a failure whose output carries one of the known outage wordings (`pkg/runtime/transient_outage.go`: name resolution, connection, TLS, timeout, HTTP 5xx/429, rate limit — a 4xx a tool reports on a line of its own and a proxy's 403 are refusals, and are counted; a refusal git meets at the RPC stage is trailed by its hang-up line, and is not), which keeps the retry and the redeliveries; one whose output differs between two executions; a command that never ran, or whose exit status only the sandbox's completion line knows. A value that is no count keeps the default, said once on stderr. Read by the process that runs the engine — the runner in cloud, the CLI or the studio locally — for every run it executes: there is no per-bot value. | `3` |
 | `ITERION_WORKSPACE_TRACK` | `off`/`0`/`false`/`no` disables workspace versioning globally — the content-addressed capture that backs `iterion rewind`'s file restore for runs with no isolated worktree ([workspace-versioning.md](workspace-versioning.md)). On by default: without it a rewind cannot undo what a node produced. The escape hatch exists because the cost scales with the workspace, not with the run. | on |
 | `ITERION_WORKSPACE_MAX_FILE_MB` | Largest single file workspace versioning will capture. A file over the bound is **reported** (`files.overwritten` / `files.left_in_place`), not silently lost — but reporting is not restoring, so raise it for a media pipeline whose deliverable is the artefact a rewind most needs back. A non-numeric or non-positive value keeps the default. | `32` (MiB) |
 | `ITERION_AUTO_MEMORY` | Env level of the `auto_memory:` precedence chain (`--auto-memory` → node → workflow → this → default). Off by default so a run is hermetic — see [memory-and-knowledge.md](memory-and-knowledge.md). | `off` |
 | `ITERION_AMBIENT_CONTEXT` | Env level of the `ambient_context:` precedence chain (`--ambient-context` / launch `ambient_context` → node → workflow → this → `workspace`). Which instruction files agent/judge nodes inherit besides their prompt: `workspace` (the repository's, the default), `operator` (the operator's setup), `all`, `none` — ADR-119. An invalid value is ignored, logged once, and the run falls through to the workflow or the default. Enforced on `claude_code`, `claw`, `codex` and `pi`; `kimi` applies `workspace` and `all`, `opencode` `all`. A value set here is a declared one: a node whose backend cannot apply it is refused at dispatch ([backends.md](backends.md#ambient-context-adr-119--what-a-node-inherits-besides-its-prompt)). | `workspace` |
-| `ITERION_LOOP_BUDGET_GUARD` | Env level of the `loop_budget_guard:` chain (`--loop-budget-guard` → workflow → this → default). Declines a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path instead of dying mid-pass on `BUDGET_EXCEEDED` — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `on` |
+| `ITERION_LOOP_BUDGET_GUARD` | Env level of the `loop_budget_guard:` chain (`--loop-budget-guard` → loop clause `guard:` → workflow → this → default). Declines a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path instead of dying mid-pass on `BUDGET_EXCEEDED` — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `on` |
 | `ITERION_BUDGET_EXIT_GRACE` | How far past a *spent* cap a run may walk **forward** to reach a terminal node, as a fraction of the declared cap — so work already paid for gets delivered instead of dying on disk. Accepts a ratio in `[0,1]`; `off`/`no`/`false`/`none`/`0` make every declared cap **absolute** (the setting for shared instances and pooled credentials). Fails **closed**: an out-of-range or unparsable value is treated as `0` with a one-time stderr warning, never as the permissive default. The grace is refused outright when the loop budget guard is off, and on a cap clamped by an outside authority (platform ceiling, credential-pool donor allowance). Each graced node emits a `budget_exit_grace` event — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `0.1` (10%) |
 | `ITERION_REPO_DEVBOX` | Env level of the `repo_devbox:` chain (`--repo-devbox` → workflow → this → default). `off` skips the **target repo's** `devbox.json`; the bot's own is always installed. Worth turning off for a run that reads a repo without building it — see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox). | `on` |
 | `ITERION_RUN_WS_MAX_LIFETIME` | Absolute lifetime of one open run-event WebSocket, whatever its traffic (the client reconnects and resumes from its last sequence at the cap). A Go duration; an unparsable or non-positive value answers the default and is named in the server's boot log, never silently replaced. | `2h` |
@@ -207,6 +385,32 @@ This is the *per-run* bound. The *per-org* monthly cost cap, run quota,
 concurrency and launch rate are a separate admission layer with its own
 variables — see [quotas-and-limits.md](quotas-and-limits.md).
 
+## Org purge (cloud)
+
+The nightly sweeper that hard-purges an org once its soft-delete grace has
+elapsed ([cloud-admin-guide.md](cloud-admin-guide.md#14-suspend-or-set-an-org-to-read-only)).
+Set on the **server** Deployment; read at start.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_ORG_PURGE_RUN_BATCH` | Run deletes one nightly pass **attempts** per purged org — failed ones included, so a bucket outage cannot stretch a pass over every run — each with its objects in the bucket, before it defers the rest to the next sweep (`ErrPurgeDeferred`): the pass stops before any collection sweep and the org stays pending. Each pass re-lists the live runs of the org's teams, so a small batch multiplies the listings by the nights the org takes to drain. A value that is not a non-negative integer refuses to start the server rather than read as `0`. | `0` (no bound: the org goes in one pass) |
+| `ITERION_ORG_PURGE_FORCE_SWEEP` | Comma-separated org ids whose purge sweeps Mongo even though some of their runs could not be deleted — a delete that keeps failing, or a run that is not terminal. Each abandoned run is named in a warning; its objects stay in the bucket, no longer attributable to the org. A forced org is purged in one pass (the run batch does not apply to it). The escape hatch for an org a run withholds for good; every forced id is logged at start. | unset (nothing forced) |
+
+## Connector sources (server)
+
+The connector ingress lane ([webhooks.md](webhooks.md#connector-ingress),
+[ADR-168](adr/168-an-event-source-is-a-connector-package.md) §3, §8). Set on the
+**server** Deployment; read at start. A value that does not parse refuses to
+start the server rather than read as the default.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_CONNECTOR_INTAKE_BACKLOG_MAX` | A team's cap on unprocessed intakes (pending or claimed). Past it an authenticated delivery answers 503 with `Retry-After` and writes nothing; a redelivery of a stored one is still acknowledged. A soft bound: concurrent deliveries that each read room may overshoot it by the deliveries in flight. `0` removes the cap. | `10000` |
+| `ITERION_CONNECTOR_WORKER_INTERVAL` | How often the connector worker ticks (Go duration): one matching pass over claimable intakes, then one launching pass over claimable pairs. Every replica runs one; the claims keep them off each other's rows. A value that does not parse keeps the worker off, said in the log. | `2s` |
+| `ITERION_CONNECTOR_PAIR_MAX_ATTEMPTS` · `_BACKOFF` · `_BACKOFF_MAX` · `_CLAIM_TTL` | A matched pair's launch policy: attempts before it lands in the dead-letter view (`0` for no bound), the backoff and its ceiling, the claim's lifetime. A concurrency or launch-rate denial and a maintenance hold postpone without spending an attempt. | see `intake.DefaultPolicy` |
+| `ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS` · `_BACKOFF` · `_BACKOFF_MAX` · `_CLAIM_TTL` | The same policy for matching an intake against its subscriptions. | see `intake.DefaultPolicy` |
+| `ITERION_CONNECTOR_INTAKE_RETENTION` | How long an intake row is kept (Go duration) — the window in which a vendor's redelivery is absorbed. `0` keeps rows. | `720h` (30 days) |
+
 ## Merge gate (server)
 
 The cadence of the [merge-gate sweep](merge-gate.md#two-triggers-because-one-event-is-not-a-guarantee),
@@ -229,6 +433,7 @@ default and warns in the server log, naming the variable:
 | `ITERION_GATE_SWEEP_INTERVAL` | Time between two passes (Go duration). The sweeper's lease is paced by it, capped at the default: its TTL is three intervals, three minutes at most, so a long interval does not delay the failover. A new term's first pass runs at once. | `1m` |
 | `ITERION_GATE_SWEEP_LOOKBACK` | How far back an ordinary pass reaches (Go duration). The ordinary publish grant outlives it by 30 minutes. | `1h` |
 | `ITERION_GATE_SWEEP_DEEP_EVERY` | Passes between two deep ones, which reach the whole 8-day horizon. | `30` |
+| `ITERION_LEASE_HANDOVER` | Whether a leased net's term may end on the work failing, and after how many consecutive passes that attempted work and reached nothing (#2685). `off` (or `0`, `false`, `no`) disarms it on every net — a replica whose egress is broken then keeps renewing while every pass fails, as before. A positive count replaces the default. Anything else keeps the default and warns, naming the variable. Applies to the four elected server nets: forge token refresh, merge-gate sweep, assistant run-watch sweep, forge→board issue sync. | `3` passes |
 
 ## Forge publish read-back (server)
 
@@ -257,12 +462,123 @@ longer runs it, and in prose it renders the same (inside a code block the
 backslash shows). A one-click suggestion whose replacement holds such a line
 is shown as text instead, since changing it would change the code the click
 applies; when the guard rewrites a finding's own text, the suggestion fences
-that text opens at the top level become `text` blocks. Text a bot posts itself with its own forge token (a skill calling
-the GitLab API or `glab`) does not go through this guard.
+that text opens at the top level become `text` blocks.
+
+Text a bot posts itself with its own forge token (a skill calling the GitLab
+API or `glab`, or a deterministic node of the bot) cannot cross this guard, so
+every skill that posts to GitLab — the `forge-mr-create` copies, the
+supply-shield `forge-report`s, dep-update-guard's note — applies the same
+rewrite to its bodies before posting (#2422), pinned and witnessed by
+`TestEveryGitLabPostingSkillCarriesTheQuickActionGuard` and
+`TestQuickActionGuardSedLeavesNothingGitLabRuns` in
+[bots/forge_quickactions_test.go](../bots/forge_quickactions_test.go).
+revi-converse's `publish_reply` node applies it in python to the answer it
+posts, witnessed by the server's own predicate in
+[bots/revi_converse_publish_test.go](../bots/revi_converse_publish_test.go).
+The skill-side sed escapes `/` after optional leading blanks too (a superset
+of the column-0 rule) and uses `[^[:print:]]`, not `[^[:ascii:]]`, for the
+non-ASCII letters Onigmo folds onto command names: GNU sed rejects
+`[:ascii:]`.
 
 | Variable | Effect | Default |
 |---|---|---|
 | `ITERION_FORGE_GITLAB_QUICK_ACTIONS` | `live` (any case) posts text as written, quick actions included — for an instance that drives GitLab through a bot's comments on purpose. Read as inherited: a project `.env` cannot set it. Any other value keeps the guard. | unset (guarded) |
+
+## Trusted proxies (server)
+
+Who may name the client of an inbound request. `X-Forwarded-For`, RFC 7239
+`Forwarded` and `X-Real-IP` are all client-writable, so the server reads them
+only when the immediate peer falls inside a configured range; otherwise the
+client is the socket address. That one address is the identity the audit rows
+carry and the one the webhook HMAC warnings name — and it never carries the
+ephemeral source port, which would make every TCP connection of one client a
+different client.
+
+The auth rate limiter keys its buckets on that identity widened to the **/64**
+for IPv6: a residential or VPS client holds a whole prefix and RFC 4941 privacy
+extensions rotate its address without being asked, so a per-address bucket is
+one the client replaces for free, and every tier keyed on the IP alone would be
+unlimited for anybody holding a prefix. An IPv4 address is its own bucket. The
+audit row keeps the full address either way — a bucket groups clients on
+purpose, a row names the one that acted.
+
+Behind a proxy whose range is **not** configured, every request carries the
+proxy's own address: the limiter then holds one bucket for the whole instance
+instead of one per client (login 5/min, register 2/min, refresh 30/min for
+everybody at once). Both modes of `iterion server` warn about exactly that at
+boot when the list is empty, naming the variable — and when an entry is a `/0`,
+which trusts every client to name its own address. Warned, never refused.
+
+**Restrict it to your ingress controller's pod CIDR.** Every address inside a
+trusted range is a proxy you vouch for, so a workload that can dial the server
+port from there names any client it likes: a forged audit IP, and a victim's
+rate-limit bucket drained by naming the victim. `networkPolicy.enabled` is what
+keeps that reach to the controller namespaces and the release's own pods
+([#2804](https://github.com/SocialGouv/iterion/issues/2804)); `values-prod.yaml`
+ships it on.
+
+**The ranges only make the identity unforgeable for a header the proxy
+rewrites or appends on every request.** They say WHO may name the client;
+`ITERION_AUTH_FORWARDED_HEADER` says WHERE, and the server reads that one
+header and no other — a client cannot pick the mechanism. A proxy that computes
+the client into `X-Real-IP` (the hand-written nginx `proxy_set_header X-Real-IP
+$remote_addr;` alone) or into RFC 7239 `Forwarded` (HAProxy, most CDNs) while
+passing the client's own `X-Forwarded-For` through untouched needs the variable
+set: left at its default the client's header is the identity it names itself,
+rotating it buys a fresh rate-limit bucket per value, and the audit row carries
+an address the client chose. Narrowing the ranges does not help — the ingress
+stays trusted and the header is still the client's. The server warns once, at
+the first request that shows it, when the header it is told to read is not the
+one the requests carry — once when that header IS there but carries no address
+(a proxy writing a hostname, a mistyped neighbour like `X-Forwarded-Proto`),
+which reads no client just the same — and once when the chain it carries is
+made of our own addresses only, fewer than the hops declared, which reads no
+client either: on that path the count exceeds the appending proxies in front,
+or the front end named no client.
+
+How the chain is read, when the peer is trusted: **right to left**, stopping at
+the hop `ITERION_AUTH_TRUSTED_PROXY_HOPS` entries in from the right — one by
+default. A proxy that appends rather than replaces (ingress-nginx with
+`use-forwarded-headers` **and** `compute-full-forwarded-for` — the first alone
+resolves the client and writes that one address —, Envoy, Istio, HAProxy
+`option forwardfor`) writes
+`<what the client sent>, <the address it saw>`, so the client's own forgeries
+arrive on the left, and a client can only make the chain *longer* — never move
+the hop its proxy appended. Behind one appending proxy the answer is therefore
+the rightmost entry, the address that proxy actually saw, and no header moves
+it.
+
+**The count is what bounds the walk, not the trust of what it reads.** Skipping
+every hop that happens to be inside the ranges would walk back into the
+client's half of the chain whenever the client itself holds an in-range address
+— which the chart default makes every LAN client and every in-cluster pod: such
+a client would buy a fresh bucket per forged value again just by writing one
+*out-of-range* entry of its own. So an in-range entry is skipped only while
+fewer than that many have been, and the entry that reaches the bound is the
+answer whether it is in-range or not. Raise the count only for a chained front
+end (a CDN edge appending in front of the ingress is 2, with the CDN's egress
+ranges in the list); declaring more appending hops than are really in front
+hands the identity back to what a client wrote. A peer that reaches the port
+*directly* wrote the whole chain itself, so it still names any address it
+likes, which is the reach the paragraph above asks you to keep to the ingress.
+
+Only the 32 hops nearest the server are read, and only within the ~2 KB of
+header nearest it: an entry longer than an address can be is no hop, a value
+that is not an address at all never becomes the identity nor counts against the
+hop bound, and a client that pads its header past those bounds pushes its own
+entries out of them — landing on its proxy's own bucket, which is less reach
+and not more.
+
+`iterion server --mode local` honours it like the cloud mode — it is a shipped
+deployment shape behind the same Service, so its auth limiter needs the same
+per-client key. The desktop studio (`iterion studio`) leaves it unset by
+design: nothing sits in front of a loopback listener.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_AUTH_TRUSTED_PROXY_CIDRS` | Comma-separated CIDR ranges whose forwarded client address the server believes. An entry that is not a CIDR is refused at boot, naming it, and so is one with host bits set (`10.42.0.7/16` would trust the whole `/16`) — a single address is `/32` (or `/128`), never bare. | unset in the binary — no forwarded header is trusted. The chart renders it from `config.auth.trustedProxyCidrs`, which defaults to the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) so the ingress in front is trusted out of the box; narrow it to the controller's pod CIDR |
+| `ITERION_AUTH_TRUSTED_PROXY_HOPS` | How many APPENDING proxies of yours sit in front — the number of the chain's rightmost entries your infrastructure wrote, and the hop the right-to-left read stops at. It is what tells a proxy's entry from an in-range client's; raising it past the hops really in front makes a client's own entries the identity again. A negative value is refused at boot. | `0`, read as one appending proxy. The chart renders it from `config.auth.trustedProxyHops`, which ships `1` — the one ingress controller its `ingress` block configures |
+| `ITERION_AUTH_FORWARDED_HEADER` | The ONE header a trusted proxy names the client with — name the one your proxy rewrites or appends on every request. `Forwarded` is read with the RFC 7239 grammar; any other field name is a comma-separated address list, so `X-Real-IP` and a CDN's `CF-Connecting-IP` or `True-Client-IP` work as themselves. A value that is not one field name (a list, a header line, a name with a space) is refused at boot, naming it: a lookup for it would match no request and read no client address at all. So is a credential-bearing name (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`): none of them carries an address, and the diagnosis below quotes the value it could not parse. | unset — `X-Forwarded-For`, which every ingress controller writes, including the one the chart configures. The chart renders it from `config.auth.forwardedHeader` |
 
 ## Platform environment isolation (cloud)
 

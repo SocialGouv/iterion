@@ -11,6 +11,7 @@ const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
 const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
+const RunsAdminPage = lazy(() => import("@/views/admin/RunsAdminPage"));
 const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPage"));
 const PlatformForgeAppsPage = lazy(() => import("@/views/admin/PlatformForgeAppsPage"));
 const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
@@ -40,6 +41,7 @@ const PAGES = {
   "/bots": PlatformBotsPage,
   "/audit": AuditAdminPage,
   "/dlq": DLQAdminPage,
+  "/runs": RunsAdminPage,
   "/spend": CredentialSpendPage,
 } satisfies Record<AdminPath, unknown>;
 

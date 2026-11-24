@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // RequestInfo is passed to the OnRequest hook before a generation call.
@@ -19,8 +20,16 @@ type RequestInfo struct {
 	// MessageCount is the number of messages in the request.
 	MessageCount int
 
-	// ToolCount is the number of tools available.
+	// ToolCount is the number of the node's tools, catalogue-only ones left
+	// out: what the tool loop's request declared, and on a structured-output
+	// request — which carries only the synthetic tool — still the node's
+	// count, never the synthetic tool (fireOnRequest).
 	ToolCount int
+
+	// CatalogueOnlyCount is how many of the node's tools a deferring node
+	// held off the wire while still serving them by name (CM-14). Zero on a
+	// node that defers nothing.
+	CatalogueOnlyCount int
 
 	// ReasoningEffort is the resolved reasoning_effort spec sent on the
 	// request, when set ("none", "low", "medium", "high", "xhigh", "max"). Empty
@@ -73,6 +82,11 @@ type StepResult struct {
 	// MaxTokens is the max_tokens the step's request carried — what a
 	// FinishLength step was cut at.
 	MaxTokens int
+
+	// ReasoningEffort is the reasoning effort the step's request carried on
+	// the wire: after the client's own rule (wireReasoningEffort), "" when it
+	// carried none.
+	ReasoningEffort string
 }
 
 // TurnCaptureInfo is the payload of the OnTurnCapture hook fired by
@@ -125,9 +139,18 @@ type ToolCallInfo struct {
 	InputSize int
 
 	// ToolUseID correlates start↔completion when multiple parallel tool
-	// calls share a node. Populated for OnToolStarted; the post-execution
-	// OnToolCall path leaves it empty (existing callers don't need it).
+	// calls share a node. Every path that reports a tool_use block stamps
+	// it, the refusals included, so a refused call is attributable too.
 	ToolUseID string
+
+	// ParentToolUseID is the tool_use id of the call whose Execute made this
+	// one — the codemode call a program's nested call ran under. Empty on a
+	// call the model made itself.
+	ParentToolUseID string
+
+	// Batch is a nested call's slot in the `call.parallel` batch it came in;
+	// nil outside a batch.
+	Batch *scripthost.BatchSlot
 
 	// Input is the raw JSON arguments passed to the tool. Populated for
 	// OnToolStarted so observers can render the tool's target (URL, file
@@ -148,4 +171,8 @@ type ToolCallInfo struct {
 
 	// Error is non-nil if the tool execution failed.
 	Error error
+
+	// Codemode is what one codemode program did — its effective bounds and
+	// how it ended — set on the completion of a codemode call only.
+	Codemode *CodemodeReport
 }

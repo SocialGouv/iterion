@@ -12,9 +12,10 @@ func noEnv(string) string { return "" }
 // because it is not a proof that the node holds nothing:
 //
 //   - on claude_code the bound is `--disallowedTools` over `claudeNativeTools`,
-//     a hardcoded 14-name enumeration of a roster iterion does not own — the
-//     same package's `orchestrationTools` names `Agent`, `TaskOutput` and
-//     `Monitor` outside it, and MCP tools are not on it either;
+//     a twenty-name declaration of a roster iterion does not own — the same
+//     package's `orchestrationTools` still names `TaskOutput` and `Monitor`
+//     outside it, and MCP tools are not on it either (`Agent` joined the
+//     roster with #1651);
 //   - on claw the runtime's own `interaction:` append puts `ask_user` back,
 //     and the appends below it `todo_write` and, under `auto_memory:`,
 //     `write_file` (C270 warns about exactly that).

@@ -1,0 +1,83 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: `group goal(condition, cap)`.
+##
+## A goal is a CONDITION plus a CAP, and the thing that decides it is a
+## command — never the model's opinion of its own work. Check (a tool,
+## deterministic) → done when it exits 0, or advance (the agent) and check
+## again, at most `goal_cap` times, then a typed failure. The pair is a
+## `group`, so one bot can carry several goals (`use goal as deploy with
+## { … }`, `use goal as migrate with { … }`) without copying the cluster:
+## a group is a compile-time macro, so nothing of it reaches the runtime.
+##
+## Why the judge is a command: an evaluator that reads the transcript of
+## the agent it judges is gameable, and the agent has no way to make the
+## world true by writing that it is. `goal_condition` runs in the
+## workspace and its EXIT CODE is the verdict; its output is carried for
+## the next pass to read, not for the verdict. Fill in: the mission,
+## `goal_condition`, `goal_cap`.
+##
+## docs/groups-iteration-subbots.md
+
+dsl: 2
+
+<%template "vars_block" .%>
+## met is the check's exit code, not a field a model fills: the only
+## writer of this schema is the tool below.
+schema goal_state:
+  met: bool
+  log: string
+
+schema advance_out:
+  summary: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt advance_user:
+  The goal is not reached yet. This is what the check reported:
+  ```
+  {{outputs.reach.check.log}}
+  ```
+  Make the check pass. Change the workspace, not the report: the same
+  command runs again after you, and its exit code is the only verdict.
+  Say in summary what you changed and why you expect the check to pass.
+
+group goal(condition, cap):
+  ## No LLM: the operator's own command, run in the workspace. A `{{ref}}`
+  ## in a command is shell-escaped by the runtime, and a group's
+  ## `{{params.X}}` is substituted at COMPILE time — so what lands here is
+  ## the ref the `use` binds, escaped once when the node runs.
+  ##
+  ## An EMPTY condition is refused by name rather than treated as met: a
+  ## goal whose check is `bash -c ''` would exit 0 on the first pass and
+  ## report a reached goal nobody checked. jq's absence fails the node the
+  ## same way — without the guard, `$(… | jq …)` would substitute nothing,
+  ## the stdout would not parse, and the run would end on a verdict that
+  ## was never computed. jq is pinned in the bundle's devbox.json and
+  ## ships in every iterion sandbox image.
+  tool check:
+    command: `test -n {{params.condition}} || { echo "goal: the stop condition is empty — a goal with no check is met by default" >&2; exit 1; }; command -v jq >/dev/null || { echo "goal: jq is required to JSON-encode the check output" >&2; exit 1; }; out=$(bash -c {{params.condition}} 2>&1); rc=$?; met=false; [ "$rc" -eq 0 ] && met=true; printf '%s' "$out" | jq -Rs --argjson met "$met" '{met: $met, log: .[-4000:]}' || { echo "goal: jq failed to encode the check output" >&2; exit 1; }`
+    output: goal_state
+  agent advance:<%template "llm_fields_nested" .%>
+    system: mission
+    user: advance_user
+    output: advance_out
+  advance -> check
+  ## The exit is guarded on the condition the back-edge negates, so it
+  ## cannot pre-empt the loop on the first pass. The bare edge last is the
+  ## loop-exhaustion exit: taken when the back-edge is declined.
+  check -> done when met
+  check -> advance when not met as goal_loop("{{params.cap}}")
+  check -> goal_not_reached
+
+use goal as reach with {
+  condition: "{{vars.goal_condition}}",
+  cap: "{{vars.goal_cap}}"
+}
+
+fail goal_not_reached:
+  description: "the goal's check never passed within the cap"
+  code: GOAL_NOT_REACHED
+  message: "the check still fails after {{vars.goal_cap}} attempts: {{outputs.reach.check.log}}"
+
+workflow <%.WorkflowName%>:
+  entry: reach.check<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>

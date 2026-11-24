@@ -6,6 +6,11 @@ export interface CopyButtonProps {
   value: string;
   label?: string;
   copiedLabel?: string;
+  // What this button copies, for the accessible name only: a row of copy
+  // buttons all announcing "copy" is one control as far as a screen reader
+  // is concerned (RGAA 11.1 / WCAG 2.4.6). The visible label is untouched
+  // and stays the start of the name, which is what SC 2.5.3 asks for.
+  describes?: string;
   // Visual variant. "text" is the lightweight inline pill used in
   // headers/summaries; "icon" renders a small icon-only button; "share"
   // renders a share-arrow glyph (semantically a copy of a URL).
@@ -28,6 +33,7 @@ export function CopyButton({
   value,
   label = "copy",
   copiedLabel = "copied",
+  describes,
   variant = "text",
   className,
   onCopied,
@@ -60,12 +66,21 @@ export function CopyButton({
     inner = copied ? copiedLabel : label;
   }
 
+  const visible = copied ? copiedLabel : label;
+  // Qualify the RESTING label: a name that becomes "Copied of plan" for the
+  // 1.2 s of the copied state is both ungrammatical and a name change on a
+  // focused control, which assistive tech re-announces.
+  const name = describes ? `${label} ${describes}` : visible;
+
   return (
     <button
       type="button"
       onClick={handleClick}
-      title={copied ? copiedLabel : label}
-      aria-label={copied ? copiedLabel : label}
+      // The tooltip keeps the visible wording ("copy" / "copied"): the
+      // qualification is for the accessible name, and "copied of plan" is not
+      // English anyone should read.
+      title={visible}
+      aria-label={name}
       className={[baseClass, className ?? ""].join(" ")}
     >
       {inner}

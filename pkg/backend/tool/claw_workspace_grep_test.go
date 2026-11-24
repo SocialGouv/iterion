@@ -51,7 +51,7 @@ func TestWorkspaceGrepBoundsSparseSearch(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			out, err := executeWorkspaceGrepWithLimits(t.Context(), map[string]any{"pattern": "needle"}, root, workspaceGrepLimits{maxResults: 100, maxOutputBytes: 512, maxVisitedEntries: tc.entries, maxScannedBytes: tc.input})
+			out, err := executeWorkspaceGrepWithLimits(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(root), workspaceGrepLimits{maxResults: 100, maxOutputBytes: 512, maxVisitedEntries: tc.entries, maxScannedBytes: tc.input})
 			if err != nil || !strings.Contains(out, tc.reason) || strings.Contains(out, "No matches") {
 				t.Fatalf("sparse search=%q err=%v", out, err)
 			}
@@ -65,12 +65,12 @@ func TestWorkspaceGrepInputCutPreservesOnlyCompleteLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	limits := workspaceGrepLimits{maxResults: 100, maxOutputBytes: 512, maxScannedBytes: 13}
-	out, err := executeWorkspaceGrepWithLimits(t.Context(), map[string]any{"pattern": "needle$"}, root, limits)
+	out, err := executeWorkspaceGrepWithLimits(t.Context(), map[string]any{"pattern": "needle$"}, NewReadScope(root), limits)
 	if err != nil || !strings.Contains(out, "input.txt:1:needle\n") || strings.Contains(out, "input.txt:2:") || !strings.Contains(out, "input limit (13 bytes)") {
 		t.Fatalf("cut line=%q err=%v", out, err)
 	}
 	limits.maxOutputBytes = 8
-	if out, err := executeWorkspaceGrepWithLimits(t.Context(), map[string]any{"pattern": "absent"}, root, limits); err == nil || out != "" {
+	if out, err := executeWorkspaceGrepWithLimits(t.Context(), map[string]any{"pattern": "absent"}, NewReadScope(root), limits); err == nil || out != "" {
 		t.Fatalf("tiny output silently hides truncation: %q %v", out, err)
 	}
 }
@@ -167,7 +167,7 @@ func TestWorkspaceGrepTraversalKeepsExclusionsAndOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, root)
+	out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(root))
 	want := strings.Join([]string{filepath.Join(root, "a.txt") + ":1:needle", filepath.Join(root, "nested/b.txt") + ":1:needle", filepath.Join(root, "z.txt") + ":1:needle"}, "\n")
 	if err != nil || out != want {
 		t.Fatalf("traversal=%q err=%v, want %q", out, err, want)

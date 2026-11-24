@@ -470,10 +470,13 @@ describe("HumanPromptForm — operator uploads at a gate", () => {
     );
 
     // The declared field gets its own picker, distinct from the generic
-    // 📎 button below the form.
-    // The drop zone (role=button) and its file input share the name; the
-    // zone is what this asserts.
-    expect(await screen.findByRole("button", { name: /Upload Music/i })).toBeTruthy();
+    // 📎 button below the form. The picker IS the file input the drop
+    // zone's label owns — the zone itself carries no role and no name
+    // since #2766, so one named control reaches this field.
+    const picker = await screen.findByLabelText(/Upload Music/i);
+    expect(picker.tagName).toBe("INPUT");
+    expect((picker as HTMLInputElement).type).toBe("file");
+    expect(screen.getAllByLabelText(/Upload Music/i)).toHaveLength(1);
     expect(
       screen.getByRole("button", { name: /Attach a file/i }),
     ).toBeTruthy();

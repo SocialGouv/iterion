@@ -9,13 +9,14 @@
 //	connector.yaml   identity, provenance/licence, base URL, auth schemes, maturity
 //	ops/*.yaml       operations, one file per domain
 //	overlay.yaml     the curation a machine cannot derive
-//	triggers.yaml    inbound webhooks / polling
+//	triggers.yaml    inbound events the package declares (curated, optional)
 //
 // Two properties are load-bearing and shape every type below.
 //
 // GENERATED IS NOT AUTHORED. Everything under ops/ is derivable from the
 // vendor's description, so it is disposable and re-derivable; everything in
-// overlay.yaml is iterion's own work. Provenance records which is which,
+// overlay.yaml and triggers.yaml is iterion's own work — no description states
+// which of a vendor's webhooks an engine will believe. Provenance records which is which,
 // because it decides what may be REDISTRIBUTED: a vendor spec under a
 // non-commercial licence may be generated from locally by an operator, but
 // its derived ops may not ship in iterion's own catalog.
@@ -66,6 +67,18 @@ type Connector struct {
 	// never HIGHER than this one — a package nobody has qualified cannot
 	// contain a qualified operation.
 	Maturity Maturity `yaml:"maturity" json:"maturity"`
+
+	// Category is the catalog's grouping (the pills the studio's source
+	// view filters by). Closed like Maturity, so a typo cannot silently
+	// sort a connector under nothing.
+	Category Category `yaml:"category,omitempty" json:"category,omitempty"`
+	// BrandColor is the package's accent as "#rrggbb" — the monogram's
+	// background on the entries that ship no icon file.
+	BrandColor string `yaml:"brand_color,omitempty" json:"brand_color,omitempty"`
+	// Icon is the path, within the package directory, of an SVG mark. It
+	// is read, sanitized and size-capped at load (icon.go): the bytes a
+	// route serves are the bytes sanitized there, never the file's.
+	Icon string `yaml:"icon,omitempty" json:"icon,omitempty"`
 
 	// Outcome describes an API that signals failure inside a successful HTTP
 	// status. It sits here rather than on each operation because an API that
@@ -145,6 +158,11 @@ const (
 	// secret, an iterion-managed or operator-registered app) or public
 	// (PKCE). The connection holds the tokens; the package holds the URLs.
 	AuthOAuth2 AuthKind = "oauth2"
+	// AuthNone presents nothing: a public resource — a feed — that an
+	// operator still connects to, so its origin is pinned and its grants are
+	// stated like any connection's. A connection holding it carries no
+	// credential, and a request under it sends none.
+	AuthNone AuthKind = "none"
 )
 
 // AuthScheme is one way to authenticate against the API. A package may
@@ -228,3 +246,25 @@ func (m Maturity) Known() bool {
 	}
 	return false
 }
+
+// Category is the catalog's grouping for a connector: the pills the
+// studio's source view filters by. An OPEN vocabulary (ADR-168 §2): the
+// declared values are the pills this build labels, an unknown value loads
+// and renders raw — a display field never refuses the package that ships
+// it — and the empty value reads as uncategorized.
+type Category string
+
+const (
+	// CategorySourceControl is forge hosting: repositories, reviews, pushes.
+	CategorySourceControl Category = "source_control"
+	// CategoryChat is chat and messaging platforms.
+	CategoryChat Category = "chat"
+	// CategoryIssueTracker is issue and project tracking.
+	CategoryIssueTracker Category = "issue_tracker"
+	// CategoryIncident is incident management and on-call paging.
+	CategoryIncident Category = "incident"
+	// CategoryMonitoring is monitoring, alerting and observability.
+	CategoryMonitoring Category = "monitoring"
+	// CategoryFeeds is syndication feeds: RSS and Atom.
+	CategoryFeeds Category = "feeds"
+)

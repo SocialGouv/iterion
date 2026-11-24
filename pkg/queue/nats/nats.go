@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -257,13 +259,17 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("queue/nats: stream replicas %d invalid (want >= 1)", cfg.StreamReplicas)
 	}
 
-	nc, err := nats.Connect(cfg.URL,
+	// MaxReconnects + ReconnectWait govern RE-connection once a first
+	// connect succeeded; the first dial is the one waitForBroker bounds —
+	// a broker that is not up yet at boot is retried, anything no retry
+	// cures is returned straight away.
+	nc, err := waitForBroker(ctx, dialBroker(cfg.URL,
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(2*time.Second),
 		nats.Name("iterion"),
-	)
+	), defaultDialPolicy)
 	if err != nil {
-		return nil, fmt.Errorf("queue/nats: connect: %w", err)
+		return nil, err
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -419,6 +425,7 @@ func (c *Conn) EnsureSchema(ctx context.Context) error {
 }
 
 type schemaManager interface {
+	CreateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error)
 	CreateOrUpdateStream(context.Context, jetstream.StreamConfig) (jetstream.Stream, error)
 	CreateOrUpdateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error)
 }
@@ -460,13 +467,18 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaReso
 // shared EnsureSchema and the pool-scoped Connect path need exactly
 // these; the streams differ between the two, the buckets do not.
 func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+	// Never rewrite the shared lease TTL beneath existing holders. A changed
+	// configuration requires draining holders and coordinating bucket migration.
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   cfg.KVBucket,
 		TTL:      cfg.LockTTL,
 		History:  1,
 		Replicas: cfg.StreamReplicas,
 	})
 	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketExists) {
+			return schemaResources{}, fmt.Errorf("queue/nats: lease bucket %s conflicts with configured TTL %s or storage configuration; drain holders and align bucket configuration before restarting: %w", cfg.KVBucket, cfg.LockTTL, err)
+		}
 		return schemaResources{}, fmt.Errorf("queue/nats: kv %s: %w", cfg.KVBucket, err)
 	}
 
@@ -484,7 +496,9 @@ func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResourc
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
 // Launches use RunID as Nats-Msg-Id so retries inside JetStream's dedup window
-// are absorbed. Resumes must use a distinct id: a schema-mismatch park can
+// are absorbed; a launch that is a new attempt of an already-queued run (an
+// idempotent submission's completion) salts it with its attempt, so the
+// window never swallows it for the attempt it supersedes. Resumes must use a distinct id: a schema-mismatch park can
 // happen before that window closes, and reusing bare RunID would make an
 // operator's successful resume response enqueue nothing. PublishedAtRFC is
 // stable when the same message object is retried, yet unique per resume
@@ -523,7 +537,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	}
 
 	headers := nats.Header{}
-	headers.Set("Nats-Msg-Id", runMessageID(msg))
+	headers.Set("Nats-Msg-Id", MessageID(msg))
 	headers.Set("iterion-schema-version", fmt.Sprintf("%d", msg.V))
 
 	// Plan §F (T-41): inject W3C traceparent + tracestate from the
@@ -564,9 +578,16 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	})
 }
 
-func runMessageID(msg *queue.RunMessage) string {
+// MessageID is the Nats-Msg-Id a RunMessage is published under, the identity
+// JetStream deduplicates within its window: the run id for a launch, salted
+// per attempt for a resume and for a launch that re-queues an already-queued
+// run.
+func MessageID(msg *queue.RunMessage) string {
 	if msg.Resume != nil {
 		return fmt.Sprintf("%s|resume-%s", msg.RunID, msg.PublishedAtRFC)
+	}
+	if msg.LaunchAttempt != "" {
+		return fmt.Sprintf("%s|launch-%s", msg.RunID, msg.LaunchAttempt)
 	}
 	return msg.RunID
 }
@@ -661,10 +682,28 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, admitted store
 // to drain the queue. It is created lazily so a process that only
 // publishes (the server) doesn't pay the cost of consumer setup.
 type Consumer struct {
+	// mu guards cons: the fetch loop reads the handle on every cycle
+	// while the stall self-heal (Recreate) swaps it after a deletion.
+	mu     sync.Mutex
 	cons   jetstream.Consumer
 	owner  *Conn
 	cfg    Config
 	logger *iterlog.Logger
+	// pool names the sovereign pool this Consumer is attached to
+	// (AttachPoolConsumer); empty for the shared default pool. A pool
+	// consumer is the server reconciler's topology — the runner never
+	// creates, deletes or recreates it.
+	pool string
+}
+
+// handle returns the current consumer handle. Callers hold the returned
+// value for one operation: a Recreate may swap it concurrently, and the
+// old handle's next operation then fails with a consumer-gone error the
+// caller already recovers from.
+func (cons *Consumer) handle() jetstream.Consumer {
+	cons.mu.Lock()
+	defer cons.mu.Unlock()
+	return cons.cons
 }
 
 // NewConsumer creates / updates the durable consumer on the runs
@@ -727,7 +766,7 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	batch, err := cons.cons.FetchNoWait(1)
+	batch, err := cons.handle().FetchNoWait(1)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: fetch: %w", err)
 	}
@@ -745,7 +784,7 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	batch2, err := cons.cons.Fetch(1, jetstream.FetchContext(timeoutCtx))
+	batch2, err := cons.handle().Fetch(1, jetstream.FetchContext(timeoutCtx))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -779,16 +818,331 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 // failure (the runner does).
 var ErrNoMessage = errors.New("queue/nats: no message ready")
 
-// Pending returns the number of messages currently waiting on the
-// durable consumer. Used by the runner's metrics goroutine to publish
-// the iterion_nats_pending_messages gauge — the same value KEDA pulls
-// via the JetStream scaler.
-func (cons *Consumer) Pending(ctx context.Context) (uint64, error) {
-	info, err := cons.cons.Info(ctx)
+// Sample is the consumer's delivery posture at one instant.
+type Sample struct {
+	// Pending counts messages never delivered to any pull request.
+	Pending uint64
+	// AckPending counts delivered-but-unacknowledged messages —
+	// in-flight runs, and the residue a frozen redelivery machinery
+	// leaves behind (issue #2890: five messages sat here for 15 hours
+	// while NumPending read zero).
+	AckPending uint64
+	// AckFloorSeq is the acknowledged stream sequence — the progress
+	// witness: a floor that never moves while AckPending holds is the
+	// frozen-consumer signature.
+	AckFloorSeq uint64
+	// DeliveredConsumerSeq is the consumer's own delivery sequence —
+	// the counter that FROZE during the #2890 wedge (stuck at the
+	// initial five deliveries while the stream kept advancing).
+	DeliveredConsumerSeq uint64
+}
+
+// Sample reads the durable consumer's counters. Used by the runner's
+// metrics goroutine to publish iterion_nats_pending_messages (the same
+// value KEDA pulls via the JetStream scaler) and to feed the stall
+// detector.
+func (cons *Consumer) Sample(ctx context.Context) (Sample, error) {
+	info, err := cons.handle().Info(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+		return Sample{}, fmt.Errorf("queue/nats: consumer info: %w", err)
 	}
-	return info.NumPending, nil
+	return Sample{
+		Pending:              info.NumPending,
+		AckPending:           uint64(info.NumAckPending),
+		AckFloorSeq:          info.AckFloor.Stream,
+		DeliveredConsumerSeq: info.Delivered.Consumer,
+	}, nil
+}
+
+// StreamLastSeq reads the stream's highest stored sequence — the inflow
+// witness: messages arriving while nothing delivers is the wedge shape
+// (issue #2890: stream 12977→12987 advancing, consumer delivery frozen).
+func (cons *Consumer) StreamLastSeq(ctx context.Context) (uint64, error) {
+	if cons == nil || cons.owner == nil {
+		return 0, fmt.Errorf("queue/nats: consumer not initialised")
+	}
+	stream, err := cons.owner.js.Stream(ctx, cons.owner.cfg.StreamName)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: stream %s: %w", cons.owner.cfg.StreamName, err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: stream %s info: %w", cons.owner.cfg.StreamName, err)
+	}
+	return info.State.LastSeq, nil
+}
+
+// IsConsumerGone reports whether err is the broker saying the durable
+// consumer no longer exists — the shape every other pod's fetch sees
+// while the stall self-heal has the consumer deleted for recreation.
+func IsConsumerGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return true
+	}
+	// Server API errors of the same codes do not always unwrap to the
+	// sentinel through the pull-request path; the descriptions are the
+	// API's own and stable across the versions this module vendors.
+	msg := err.Error()
+	return strings.Contains(msg, "consumer deleted") || strings.Contains(msg, "consumer not found")
+}
+
+// RecoverIfGone recreates the consumer when err says it is gone, and
+// reports whether a recreate happened. Two shapes say gone: the
+// sentinel errors, and — the one a deleted consumer's pull request
+// actually returns — nats.ErrNoResponders, which a dead broker cannot
+// be told apart from by shape alone. The second shape is verified
+// against the broker: Info on a live connection answers the
+// consumer-not-found sentinel for a deleted consumer, and anything
+// else (dead connection, live consumer) reads as no-gone so a broker
+// outage never triggers a recreate.
+func (cons *Consumer) RecoverIfGone(ctx context.Context, err error) bool {
+	if cons == nil || cons.owner == nil {
+		return false
+	}
+	if cons.pool != "" {
+		// A pool consumer is the server reconciler's topology: its
+		// disappearance is the reconciler's to repair, and a runner-side
+		// Recreate would delete the SHARED fleet consumer (owner/cfg name
+		// it even on a pool-attached handle) and rebind this pod onto
+		// shared runs' messages.
+		return false
+	}
+	if !IsConsumerGone(err) {
+		if !errors.Is(err, nats.ErrNoResponders) {
+			return false
+		}
+		if _, ierr := cons.handle().Info(ctx); !IsConsumerGone(ierr) {
+			return false
+		}
+	}
+	if rerr := cons.Recreate(ctx); rerr != nil {
+		cons.logger.Error("queue/nats: consumer recreate after deletion failed: %v", rerr)
+		return false
+	}
+	return true
+}
+
+// Recreate deletes and re-creates the durable runs consumer, swapping
+// this handle to the fresh one. The self-heal behind the stall detector:
+// the Oct 30 wedge froze the consumer's raft state — deliveries stopped
+// while pull requests kept waiting — and never self-resolved; only
+// deleting the consumer did (issue #2890). Recreate is safe to call from
+// several pods: the delete of an already-deleted consumer is tolerated,
+// and CreateOrUpdateConsumer is idempotent, so a racing pair converges on
+// one consumer. Redeliveries of messages a still-executing run holds are
+// refused by the run lock onto the lock-failure DLQ for replay — they
+// never double-execute.
+func (cons *Consumer) Recreate(ctx context.Context) error {
+	if cons != nil && cons.pool != "" {
+		// The refusal outranks every other check: a pool-attached
+		// Consumer's owner/cfg still name the SHARED fleet stream, so an
+		// ungated recreate would delete the fleet's consumer and rebind
+		// the pool pod onto shared runs' messages.
+		return fmt.Errorf("queue/nats: consumer %s is pool %q's topology — the server's reconciler owns it; the runner never recreates a pool consumer", cons.owner.cfg.ConsumerName, cons.pool)
+	}
+	if cons == nil || cons.owner == nil || cons.owner.js == nil {
+		return fmt.Errorf("queue/nats: consumer not initialised")
+	}
+	cons.mu.Lock()
+	defer cons.mu.Unlock()
+	if err := cons.owner.js.DeleteConsumer(ctx, cons.owner.cfg.StreamName, cons.owner.cfg.ConsumerName); err != nil {
+		// Already as deleted as we need it — a sibling healed first.
+		if !IsConsumerGone(err) {
+			return fmt.Errorf("queue/nats: delete consumer %s: %w", cons.owner.cfg.ConsumerName, err)
+		}
+	}
+	fresh, err := cons.owner.PrepareConsumer(ctx)
+	if err != nil {
+		return fmt.Errorf("queue/nats: recreate consumer %s: %w", cons.owner.cfg.ConsumerName, err)
+	}
+	cons.cons = fresh.cons
+	return nil
+}
+
+// IsLeadershipChange reports whether err is the broker telling a pull
+// request the consumer's leader changed — the signal that opened the
+// Oct 30 wedge (issue #2890): the election itself costs seconds, but it
+// can leave the durable consumer's raft state frozen, after which every
+// fetch silently long-polls an empty answer forever. The sentinel does
+// not always survive the pull-request path's wrapping, so the API's own
+// (stable) description is matched too.
+func IsLeadershipChange(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, jetstream.ErrConsumerLeadershipChanged) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "leadership change")
+}
+
+// LeadershipRecovery is the typed outcome of RecoverFromLeadershipChange —
+// what the post-election verification decided and, for the frozen shape,
+// whether the recreate gesture landed.
+type LeadershipRecovery int
+
+const (
+	// LeadershipRecoveryDisabled: the operator's off switch won before any
+	// broker call (same switch as the stall-onset heal).
+	LeadershipRecoveryDisabled LeadershipRecovery = iota
+	// LeadershipRecoveryPoolOwned: a pool consumer's topology is the server
+	// reconciler's — the runner never recreates it (same rule as
+	// RecoverIfGone and Recreate).
+	LeadershipRecoveryPoolOwned
+	// LeadershipRecoveryUnreadable: the posture never read back twice inside
+	// the window (election still running, broker degraded) — no blind
+	// deletion; the posture stall detector keeps watch.
+	LeadershipRecoveryUnreadable
+	// LeadershipRecoveryCutShort: the caller's context (shutdown) ended the
+	// verification mid-window — no gesture was decided or performed.
+	LeadershipRecoveryCutShort
+	// LeadershipRecoveryNoWork: the consumer holds nothing — the election
+	// cost seconds and there is nothing to heal.
+	LeadershipRecoveryNoWork
+	// LeadershipRecoveryResumed: held work started moving again across the
+	// window — the fleet healed on its own.
+	LeadershipRecoveryResumed
+	// LeadershipRecoveryNoInflow: held work stayed frozen but the stream
+	// was quiet — which is ALSO the steady state of a healthy busy fleet
+	// (runs executing hold ack-pending for minutes while the queue sits
+	// drained). The two shapes are indistinguishable without inflow, so
+	// this arm never recreates: the posture stall detector owns it (it
+	// only trips while messages keep arriving).
+	LeadershipRecoveryNoInflow
+	// LeadershipRecoveryRecreated: held work stayed frozen while the stream
+	// kept advancing across the whole window — the wedge shape, and only
+	// it — so the consumer was deleted and recreated.
+	LeadershipRecoveryRecreated
+	// LeadershipRecoveryRecreateFailed: the wedge shape was seen but the
+	// recreate failed; the posture detector remains the net.
+	LeadershipRecoveryRecreateFailed
+)
+
+// DefaultLeadershipVerifyWindow bounds the post-election verification:
+// long enough for a NATS election and a few fleet-wide fetch cycles to
+// show delivery movement, short enough that a wedged consumer is healed
+// in seconds rather than by the (minutes-long) posture stall detector.
+const DefaultLeadershipVerifyWindow = 15 * time.Second
+
+// leadershipPollCadence spaces the posture samples inside the window.
+const leadershipPollCadence = 500 * time.Millisecond
+
+// decideLeadershipHeal is the guard half of the leadership recovery, pure
+// so a regression in the interlocks cannot silently delete a healthy
+// consumer: the off switch wins first, a pool consumer is never the
+// runner's to recreate, fewer than two readable postures carry no
+// movement information (no blind deletion), an empty consumer has nothing
+// to heal, and a delivery sequence that moved means the fleet recovered.
+// The last two arms are the wedge's own signature, and BOTH witnesses are
+// required (the stall detector's doctrine, pollPending): held work frozen
+// while the stream ADVANCES is the wedge; held work frozen over a quiet
+// stream is also the steady state of a healthy busy fleet — runs execute
+// for minutes holding ack-pending while the queue sits drained — so
+// without inflow nothing is deleted. The positive arm is named for the
+// gesture the caller then performs; a failed gesture maps to
+// LeadershipRecoveryRecreateFailed at the call site.
+func decideLeadershipHeal(disabled, pool bool, onset, fresh Sample, samples int, inflowMoved bool) LeadershipRecovery {
+	if disabled {
+		return LeadershipRecoveryDisabled
+	}
+	if pool {
+		return LeadershipRecoveryPoolOwned
+	}
+	if samples < 2 {
+		return LeadershipRecoveryUnreadable
+	}
+	if fresh.Pending == 0 && fresh.AckPending == 0 {
+		return LeadershipRecoveryNoWork
+	}
+	if fresh.DeliveredConsumerSeq != onset.DeliveredConsumerSeq {
+		return LeadershipRecoveryResumed
+	}
+	if !inflowMoved {
+		return LeadershipRecoveryNoInflow
+	}
+	return LeadershipRecoveryRecreated
+}
+
+// RecoverFromLeadershipChange verifies the consumer right after the
+// broker reported a leadership change, and recreates it when held work
+// stays frozen while the stream keeps advancing across the window — the
+// fast path of the #2890 self-heal, gated on the SAME two witnesses the
+// posture stall detector (minutes) uses: frozen deliveries AND inflow.
+// Without the inflow witness the wedge is indistinguishable from a
+// healthy busy fleet (runs executing hold ack-pending for minutes over a
+// drained queue), and a healthy election over one would pay a recreate
+// per pod per election — redelivering every executing run's held
+// delivery onto the lock-failure DLQ. The verification is deliberately
+// cheap: posture samples (consumer Info + the stream's last sequence) on
+// a fixed cadence, with an early exit as soon as two readable samples
+// prove there is nothing held or that deliveries moved. Recreate is
+// idempotent and converges when several pods see the same election. A
+// cancelled ctx cuts the verification short without any gesture.
+// window <= 0 selects DefaultLeadershipVerifyWindow.
+func (cons *Consumer) RecoverFromLeadershipChange(ctx context.Context, window time.Duration, disabled bool) LeadershipRecovery {
+	if cons == nil || cons.owner == nil {
+		return LeadershipRecoveryUnreadable
+	}
+	if disabled {
+		return LeadershipRecoveryDisabled
+	}
+	if cons.pool != "" {
+		return LeadershipRecoveryPoolOwned
+	}
+	if window <= 0 {
+		window = DefaultLeadershipVerifyWindow
+	}
+	deadline := time.Now().Add(window)
+	var onset, fresh Sample
+	var onsetInflow, lastInflow uint64
+	inflowKnown := false
+	samples := 0
+	for {
+		if s, err := cons.Sample(ctx); err == nil {
+			if samples == 0 {
+				onset = s
+				// The inflow witness degrades to silence, never to an
+				// alarm: an unreadable stream sequence means no recreate,
+				// and the posture detector keeps watch.
+				if seq, ierr := cons.StreamLastSeq(ctx); ierr == nil {
+					onsetInflow, lastInflow, inflowKnown = seq, seq, true
+				}
+			} else {
+				fresh = s
+				if inflowKnown {
+					if seq, ierr := cons.StreamLastSeq(ctx); ierr == nil {
+						lastInflow = seq
+					}
+				}
+			}
+			samples++
+			if samples >= 2 {
+				if d := decideLeadershipHeal(false, false, onset, fresh, samples, false); d == LeadershipRecoveryNoWork || d == LeadershipRecoveryResumed {
+					return d
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return LeadershipRecoveryCutShort
+		case <-time.After(leadershipPollCadence):
+		}
+	}
+	decision := decideLeadershipHeal(false, false, onset, fresh, samples, inflowKnown && lastInflow != onsetInflow)
+	if decision != LeadershipRecoveryRecreated {
+		return decision
+	}
+	if err := cons.Recreate(ctx); err != nil {
+		cons.logger.Error("queue/nats: leadership-change recreate failed: %v — the consumer stays wedged; recreate it by hand", err)
+		return LeadershipRecoveryRecreateFailed
+	}
+	return LeadershipRecoveryRecreated
 }
 
 // Delivery bundles a JetStream message with helpers to ack / nak /

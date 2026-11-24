@@ -1,115 +1,16 @@
 package reviewtopology
 
 import (
+	"os"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
-func rep(providers ...detect.ProviderStatus) detect.Report {
-	return detect.Report{Providers: providers}
-}
-
-func prov(name string, avail bool) detect.ProviderStatus {
-	return detect.ProviderStatus{Name: name, Available: avail}
-}
-
-// repB builds a report from backend statuses (no provider creds), used to
-// cover the forfait case: a claude_code backend OAuth with no anthropic key.
-func repB(backends ...detect.BackendStatus) detect.Report {
-	return detect.Report{Backends: backends}
-}
-
-func backendSt(name string, avail bool) detect.BackendStatus {
-	return detect.BackendStatus{Name: name, Available: avail}
-}
-
-// TestResolve_BackendFamilies covers families backed by a usable BACKEND
-// (not a provider key) — the claude_code forfait being the motivating case.
-func TestResolve_BackendFamilies(t *testing.T) {
-	tests := []struct {
-		name       string
-		report     detect.Report
-		override   string
-		wantMode   string
-		wantFamily string
-	}{
-		// forfait-only host: claude_code backend, no anthropic provider key.
-		// Must now resolve a claude family (was gpt/none before the fix).
-		{"forfait claude_code → mono claude", repB(backendSt(detect.BackendClaudeCode, true)), "mono", ModeMono, FamilyClaude},
-		{"forfait claude_code auto → mono claude", repB(backendSt(detect.BackendClaudeCode, true)), "auto", ModeMono, FamilyClaude},
-		// claude_code forfait + openai provider → two families available, but
-		// auto still resolves MONO: having two providers configured is not a
-		// request to spend two reviewer passes on every run.
-		{
-			"forfait + openai provider → mono claude",
-			detect.Report{
-				Providers: []detect.ProviderStatus{prov("openai", true)},
-				Backends:  []detect.BackendStatus{backendSt(detect.BackendClaudeCode, true)},
-			},
-			"auto", ModeMono, FamilyClaude,
-		},
-		// codex backend → gpt family (symmetry).
-		{"codex backend → mono gpt", repB(backendSt(detect.BackendCodex, true)), "mono", ModeMono, FamilyGPT},
-		// claw backend backs no family on its own.
-		{"claw backend only → no family (dual fallback)", repB(backendSt(detect.BackendClaw, true)), "auto", ModeDual, ""},
-		// unavailable backend is ignored.
-		{"unavailable claude_code ignored", repB(backendSt(detect.BackendClaudeCode, false)), "auto", ModeDual, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mode, family := Resolve(tt.report, tt.override)
-			if mode != tt.wantMode || family != tt.wantFamily {
-				t.Fatalf("Resolve(%q) = (%q, %q), want (%q, %q)",
-					tt.override, mode, family, tt.wantMode, tt.wantFamily)
-			}
-		})
-	}
-}
-
-func TestResolve(t *testing.T) {
-	tests := []struct {
-		name       string
-		report     detect.Report
-		override   string
-		wantMode   string
-		wantFamily string
-	}{
-		// auto: two families → dual
-		{"auto both families → mono (dual is a deliberate spend)", rep(prov("anthropic", true), prov("openai", true)), "auto", ModeMono, FamilyClaude},
-		{"empty override both families → mono", rep(prov("anthropic", true), prov("openai", true)), "", ModeMono, FamilyClaude},
-		// auto: single family → mono on that family
-		{"auto claude only", rep(prov("anthropic", true), prov("openai", false)), "auto", ModeMono, FamilyClaude},
-		{"auto gpt only", rep(prov("anthropic", false), prov("openai", true)), "auto", ModeMono, FamilyGPT},
-		// zai counts as the claude family (operator decision)
-		{"auto zai only → claude", rep(prov("zai", true)), "auto", ModeMono, FamilyClaude},
-		{"auto zai + openai → mono", rep(prov("zai", true), prov("openai", true)), "auto", ModeMono, FamilyClaude},
-		{"auto anthropic + zai is one family → mono claude", rep(prov("anthropic", true), prov("zai", true)), "auto", ModeMono, FamilyClaude},
-		// auto: no participating family → dual (fail normally on credential)
-		{"auto no providers", rep(), "auto", ModeDual, ""},
-		{"auto only cloud providers ignored", rep(prov("bedrock", true), prov("vertex", true)), "auto", ModeDual, ""},
-		// explicit dual always dual
-		{"explicit dual with one family", rep(prov("anthropic", true)), "dual", ModeDual, ""},
-		{"explicit dual with none", rep(), "dual", ModeDual, ""},
-		// explicit mono picks preferred available family
-		{"explicit mono both → claude preferred", rep(prov("anthropic", true), prov("openai", true)), "mono", ModeMono, FamilyClaude},
-		{"explicit mono gpt only", rep(prov("openai", true)), "mono", ModeMono, FamilyGPT},
-		{"explicit mono none → empty family", rep(), "mono", ModeMono, ""},
-		// unknown override collapses to auto behaviour
-		{"unknown override falls back to auto", rep(prov("openai", true)), "wat", ModeMono, FamilyGPT},
-		{"case-insensitive DUAL", rep(prov("anthropic", true), prov("openai", true)), "DUAL", ModeDual, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mode, family := Resolve(tt.report, tt.override)
-			if mode != tt.wantMode || family != tt.wantFamily {
-				t.Fatalf("Resolve(%q) = (%q, %q), want (%q, %q)",
-					tt.override, mode, family, tt.wantMode, tt.wantFamily)
-			}
-		})
-	}
-}
+// The review topology names ROLES, not vendors (ADR-169): the resolver
+// decides HOW MANY reviewers run, never which family serves them, and it
+// reads no credential at all — which is what these witnesses pin down.
 
 func wfWithVars(names ...string) *ir.Workflow {
 	vars := make(map[string]*ir.Var, len(names))
@@ -119,12 +20,40 @@ func wfWithVars(names ...string) *ir.Workflow {
 	return &ir.Workflow{Vars: vars}
 }
 
-func TestInjectIfDeclared_optIn(t *testing.T) {
-	// Bot that does NOT declare review_mode is untouched.
+func TestResolve(t *testing.T) {
+	tests := []struct {
+		override string
+		want     string
+	}{
+		// Frugality is the default: auto is what every unconfigured caller
+		// gets, and a second reviewer pass is a deliberate spend.
+		{"", ModeSingle},
+		{"auto", ModeSingle},
+		{"single", ModeSingle},
+		{"paired", ModePaired},
+		{" PAIRED ", ModePaired},
+		// A value outside the vocabulary resolves single rather than
+		// refusing the launch — the bot's declared enum is the gate for
+		// typos, and it sees the CONCRETE mode this function writes back.
+		{"wat", ModeSingle},
+		// Retired spellings still in the field (integration launch vars)
+		// map onto the role vocabulary instead of tripping that gate.
+		{"mono", ModeSingle},
+		{"dual", ModePaired},
+		{"DUAL", ModePaired},
+	}
+	for _, tt := range tests {
+		t.Run(tt.override, func(t *testing.T) {
+			if got := Resolve(tt.override); got != tt.want {
+				t.Fatalf("Resolve(%q) = %q, want %q", tt.override, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInjectReviewModeIfDeclared_optIn(t *testing.T) {
 	inputs := map[string]any{}
-	_, _, injected, _ := InjectIfDeclared(wfWithVars("workspace_dir"), inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "")
-	if injected {
+	if _, injected := InjectReviewModeIfDeclared(wfWithVars("workspace_dir"), inputs, ""); injected {
 		t.Fatal("expected no injection for a bot without review_mode var")
 	}
 	if len(inputs) != 0 {
@@ -132,62 +61,165 @@ func TestInjectIfDeclared_optIn(t *testing.T) {
 	}
 }
 
-// auto is what every unconfigured caller gets, so it must resolve to the
-// FRUGAL topology even when both families are present: dual doubles the
-// reviewer spend on every run and has to be asked for.
-func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
-	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	inputs := map[string]any{VarReviewMode: ModeAuto}
-	mode, family, injected, _ := InjectIfDeclared(wf, inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "")
-	if !injected || mode != ModeMono || family != FamilyClaude {
-		t.Fatalf("got (%q,%q,injected=%v), want mono/claude/true", mode, family, injected)
+// Every declaring bot gets a CONCRETE mode written back, whatever the
+// surface handed in: the enum gate reads the injected value, so a retired or
+// misspelt override must never reach it.
+func TestInjectReviewModeIfDeclared_writesTheConcreteMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		flag  string
+		input string
+		want  string
+	}{
+		{"auto detected", "", ModeAuto, ModeSingle},
+		{"flag alone", ModePaired, "", ModePaired},
+		{"var alone", "", ModePaired, ModePaired},
+		{"flag wins over var", ModeSingle, ModePaired, ModeSingle},
+		{"retired var", "", "dual", ModePaired},
+		{"retired flag", "mono", "", ModeSingle},
 	}
-	if inputs[VarReviewMode] != ModeMono || inputs[VarMonoFamily] != FamilyClaude {
-		t.Fatalf("inputs not written: %v", inputs)
-	}
-}
-
-// Dual stays reachable — it is an explicit override, not a detection outcome.
-func TestInjectIfDeclared_explicitDual(t *testing.T) {
-	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	inputs := map[string]any{VarReviewMode: ModeDual}
-	mode, family, injected, _ := InjectIfDeclared(wf, inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "")
-	if !injected || mode != ModeDual || family != "" {
-		t.Fatalf("got (%q,%q,injected=%v), want dual/empty/true", mode, family, injected)
-	}
-}
-
-func TestInjectIfDeclared_autoDetectMonoSingleFamily(t *testing.T) {
-	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	inputs := map[string]any{VarReviewMode: ModeAuto}
-	mode, family, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
-	if mode != ModeMono || family != FamilyGPT {
-		t.Fatalf("got (%q,%q), want mono/gpt", mode, family)
-	}
-	if inputs[VarMonoFamily] != FamilyGPT {
-		t.Fatalf("mono_family not injected: %v", inputs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputs := map[string]any{}
+			if tt.input != "" {
+				inputs[VarReviewMode] = tt.input
+			}
+			mode, injected := InjectReviewModeIfDeclared(wfWithVars(VarReviewMode), inputs, tt.flag)
+			if !injected || mode != tt.want {
+				t.Fatalf("got (%q, injected=%v), want (%q, true)", mode, injected, tt.want)
+			}
+			if got := inputs[VarReviewMode]; got != tt.want {
+				t.Fatalf("inputs[review_mode] = %v, want the concrete %q", got, tt.want)
+			}
+			if _, stale := inputs["mono_family"]; stale {
+				t.Fatalf("mono_family written back: %v", inputs)
+			}
+		})
 	}
 }
 
-func TestInjectIfDeclared_flagOverrideWins(t *testing.T) {
-	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	// Two families available (auto would pick dual) but the flag forces mono.
-	inputs := map[string]any{VarReviewMode: ModeAuto}
-	mode, family, _, _ := InjectIfDeclared(wf, inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "mono")
-	if mode != ModeMono || family != FamilyClaude {
-		t.Fatalf("got (%q,%q), want mono/claude (flag override)", mode, family)
+func TestInjectAllSummaryNamesTheModeAndTheFamilies(t *testing.T) {
+	inputs := map[string]any{}
+	inj := InjectAll(wfWithVars(VarReviewMode, VarLLMFamilies), inputs,
+		InventoryFromCredentialNames([]string{"anthropic", "openai"}, nil), ModePaired)
+	if inj.ReviewMode != ModePaired || !inj.ReviewModeInjected {
+		t.Fatalf("review mode not injected paired: %+v", inj)
+	}
+	if got, want := inj.Summary(), "review topology: paired · llm families: claude,gpt"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
 	}
 }
 
-func TestInjectIfDeclared_varOverrideUsedWhenNoFlag(t *testing.T) {
-	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	// Operator set --var review_mode=dual; no flag → var wins over auto.
-	inputs := map[string]any{VarReviewMode: ModeDual}
-	mode, _, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
-	if mode != ModeDual {
-		t.Fatalf("got %q, want dual (var override)", mode)
+// An engine with the role vocabulary still runs bundles written before it.
+// An integration pinned to review-pr ≤ 0.9.25 declares the OLD enum, and the
+// launch gate judges the injected value against it: the injection must write
+// a spelling that enum accepts, or every launch of an untouched bot is
+// refused. The reported mode stays the role either way.
+func TestInjectReviewModeSpeaksTheWorkflowsOwnEnum(t *testing.T) {
+	withEnum := func(values ...string) *ir.Workflow {
+		return &ir.Workflow{Vars: map[string]*ir.Var{VarReviewMode: {Name: VarReviewMode, Type: ir.VarString, EnumValues: values}}}
 	}
+	for _, tc := range []struct {
+		name      string
+		wf        *ir.Workflow
+		override  string
+		wantMode  string
+		wantInput string
+	}{
+		{"an old bundle, default", withEnum("auto", "mono", "dual"), "", ModeSingle, "mono"},
+		{"an old bundle, paired asked", withEnum("auto", "mono", "dual"), ModePaired, ModePaired, "dual"},
+		{"an old bundle, a retired spelling asked", withEnum("auto", "mono", "dual"), "dual", ModePaired, "dual"},
+		{"a new bundle", withEnum("auto", "single", "paired"), "dual", ModePaired, "paired"},
+		{"no enum at all", wfWithVars(VarReviewMode), "mono", ModeSingle, "single"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := map[string]any{}
+			mode, injected := InjectReviewModeIfDeclared(tc.wf, inputs, tc.override)
+			if !injected || mode != tc.wantMode {
+				t.Fatalf("got (%q, injected=%v), want the role %q", mode, injected, tc.wantMode)
+			}
+			if got := inputs[VarReviewMode]; got != tc.wantInput {
+				t.Fatalf("inputs[review_mode] = %v, want %q — the spelling this workflow's enum accepts", got, tc.wantInput)
+			}
+		})
+	}
+}
+
+// A bundle written before ADR-169 still routes on `mono_family` and defaults
+// it to "claude": on a GPT-only host the old resolver picked gpt for it, and
+// without that pick the bundle takes its claude nodes and dies. The legacy
+// declaration (with its enum) is resolved from the credentials; the new
+// bots' retired declaration (no enum) and an explicit value are left alone.
+func TestInjectAllResolvesALegacyBundlesMonoFamily(t *testing.T) {
+	legacy := func() *ir.Workflow {
+		return &ir.Workflow{Vars: map[string]*ir.Var{
+			VarReviewMode: {Name: VarReviewMode, Type: ir.VarString, EnumValues: []string{"auto", "mono", "dual"}},
+			"mono_family": {Name: "mono_family", Type: ir.VarString, EnumValues: []string{"claude", "gpt"}},
+		}}
+	}
+	retired := &ir.Workflow{Vars: map[string]*ir.Var{
+		VarReviewMode: {Name: VarReviewMode, Type: ir.VarString, EnumValues: []string{"auto", "single", "paired"}},
+		"mono_family": {Name: "mono_family", Type: ir.VarString},
+	}}
+	gptOnly := InventoryFromCredentialNames([]string{"openai"}, nil)
+	both := InventoryFromCredentialNames([]string{"anthropic", "openai"}, nil)
+	for _, tc := range []struct {
+		name   string
+		wf     *ir.Workflow
+		inv    FamilyInventory
+		inputs map[string]any
+		want   any
+	}{
+		{"a legacy bundle on a gpt-only host", legacy(), gptOnly, map[string]any{}, "gpt"},
+		{"a legacy bundle where claude is backed", legacy(), both, map[string]any{}, "claude"},
+		{"a legacy bundle's explicit pin is kept", legacy(), gptOnly, map[string]any{"mono_family": "claude"}, "claude"},
+		{"a legacy bundle on a paired run is left alone", legacy(), gptOnly, map[string]any{VarReviewMode: "dual"}, nil},
+		{"a new bundle's retired var is left alone", retired, gptOnly, map[string]any{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			InjectAll(tc.wf, tc.inputs, tc.inv, "")
+			if got := tc.inputs["mono_family"]; got != tc.want {
+				t.Fatalf("mono_family = %v, want %v (inputs %v)", got, tc.want, tc.inputs)
+			}
+		})
+	}
+}
+
+// A third-party reviewer-loop bot that declares `review_mode` WITHOUT an enum
+// and compares it to 'mono'/'dual' reads that vocabulary, not the roles:
+// writing `single` would read as neither and flip its topology. The shipped
+// fixture e2e/testdata/review_topology_mini.bot has exactly that shape.
+func TestInjectReviewModeKeepsAnUnconstrainedBotsOwnVocabulary(t *testing.T) {
+	pr, err := parser.Parse("review_topology_mini.bot", mustRead(t, "../../e2e/testdata/review_topology_mini.bot"))
+	if err != nil || pr == nil || pr.File == nil {
+		t.Fatalf("the mini fixture does not parse: %v", err)
+	}
+	cr := ir.Compile(pr.File)
+	if cr.Workflow == nil {
+		t.Fatalf("the mini fixture does not compile: %+v", cr.Diagnostics)
+	}
+	// The fixture compares only to 'mono': a single review must read as
+	// 'mono' there, and a paired one as anything else (its alternation).
+	for override, single := range map[string]bool{"": true, "mono": true, "single": true, "dual": false, "paired": false} {
+		inputs := map[string]any{}
+		InjectReviewModeIfDeclared(cr.Workflow, inputs, override)
+		if got := inputs[VarReviewMode]; (got == "mono") != single {
+			t.Errorf("override %q: the mini fixture got review_mode=%v — its own guard reads 'mono' as the single topology, so a single review owes 'mono' and a paired one anything else", override, got)
+		}
+	}
+	// A bot with no enum that reads none of the retired literals gets the role.
+	inputs := map[string]any{}
+	InjectReviewModeIfDeclared(wfWithVars(VarReviewMode), inputs, "dual")
+	if got := inputs[VarReviewMode]; got != ModePaired {
+		t.Errorf("an unconstrained bot reading no retired literal got %v, want %q", got, ModePaired)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

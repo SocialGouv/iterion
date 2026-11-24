@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -38,9 +39,13 @@ func TestCancelProducesCancelledStatus(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
 
 	exec := newStubExecutor()
+	// The engine has admitted this invocation before its node cancels.
+	exec.on("step", func(map[string]any) (map[string]any, error) {
+		cancel()
+		return nil, ctx.Err()
+	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
@@ -100,17 +105,20 @@ func TestInterruptedCauseProducesResumableStatus(t *testing.T) {
 		Loops:   map[string]*ir.Loop{},
 	}
 
-	// Cancel with the interrupted cause BEFORE running, mirroring a runner
-	// drain that cancels the run context via context.CancelCause. Wrap it in
+	// Cancel with the interrupted cause from the admitted node, mirroring a
+	// runner drain via context.CancelCause. Wrap the base context in
 	// a WithTimeout child exactly like the runner's executeRun does (msg
 	// TimeoutSec) — the cause must still propagate to context.Cause(rs.ctx)
 	// through that child, or the engine would fall back to `cancelled`.
 	base, cancel := context.WithCancelCause(context.Background())
-	cancel(ErrRunInterrupted)
 	ctx, timeoutCancel := context.WithTimeout(base, time.Hour)
 	defer timeoutCancel()
 
 	exec := newStubExecutor()
+	exec.on("step", func(map[string]any) (map[string]any, error) {
+		cancel(ErrRunInterrupted)
+		return nil, ctx.Err()
+	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
@@ -288,55 +296,59 @@ func TestCancelDuringExecution(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTimeoutProducesFailedStatus(t *testing.T) {
-	wf := &ir.Workflow{
-		Name:  "timeout_test",
-		Entry: "slow",
-		Nodes: map[string]ir.Node{
-			"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
-			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
-		},
-		Edges: []*ir.Edge{
-			{From: "slow", To: "done"},
-		},
-		Schemas: map[string]*ir.Schema{},
-		Prompts: map[string]*ir.Prompt{},
-		Vars:    map[string]*ir.Var{},
-		Loops:   map[string]*ir.Loop{},
-	}
+	synctest.Test(t, func(t *testing.T) {
+		wf := &ir.Workflow{
+			Name:  "timeout_test",
+			Entry: "slow",
+			Nodes: map[string]ir.Node{
+				"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
+				"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			},
+			Edges: []*ir.Edge{
+				{From: "slow", To: "done"},
+			},
+			Schemas: map[string]*ir.Schema{},
+			Prompts: map[string]*ir.Prompt{},
+			Vars:    map[string]*ir.Var{},
+			Loops:   map[string]*ir.Loop{},
+		}
 
-	// Use a very short deadline that will expire before execution.
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-	// Give the deadline time to expire.
-	time.Sleep(1 * time.Millisecond)
+		// A real deadline advances only once the admitted node waits in the bubble.
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
 
-	exec := newStubExecutor()
-	s := tmpStore(t)
-	eng := New(wf, s, exec)
+		exec := newStubExecutor()
+		exec.on("slow", func(map[string]any) (map[string]any, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		s := tmpStore(t)
+		eng := New(wf, s, exec)
 
-	err := eng.Run(ctx, "run-timeout", nil)
-	if err == nil {
-		t.Fatal("expected error from timeout")
-	}
+		err := eng.Run(ctx, "run-timeout", nil)
+		if err == nil {
+			t.Fatal("expected error from timeout")
+		}
 
-	// Should NOT be ErrRunCancelled — it's a timeout.
-	if errors.Is(err, ErrRunCancelled) {
-		t.Error("timeout should not be ErrRunCancelled")
-	}
+		// Should NOT be ErrRunCancelled — it's a timeout.
+		if errors.Is(err, ErrRunCancelled) {
+			t.Error("timeout should not be ErrRunCancelled")
+		}
 
-	// Run status should be "failed_resumable" for timeouts (all execLoop failures are resumable).
-	r, err := s.LoadRun(context.Background(), "run-timeout")
-	if err != nil {
-		t.Fatalf("load run: %v", err)
-	}
-	if r.Status != store.RunStatusFailedResumable {
-		t.Errorf("expected status failed_resumable for timeout, got %s", r.Status)
-	}
+		// Run status should be "failed_resumable" for timeouts (all execLoop failures are resumable).
+		r, err := s.LoadRun(context.Background(), "run-timeout")
+		if err != nil {
+			t.Fatalf("load run: %v", err)
+		}
+		if r.Status != store.RunStatusFailedResumable {
+			t.Errorf("expected status failed_resumable for timeout, got %s", r.Status)
+		}
 
-	// Error message should mention timeout.
-	if r.Error == "" {
-		t.Error("expected error message for timeout")
-	}
+		// Error message should mention timeout.
+		if r.Error == "" {
+			t.Error("expected error message for timeout")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -664,15 +676,23 @@ func TestCancelledRunHasFinishedAt(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
 	exec := newStubExecutor()
+	exec.on("step", func(map[string]any) (map[string]any, error) {
+		cancel()
+		return nil, ctx.Err()
+	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
-	_ = eng.Run(ctx, "run-cancel-fin", nil)
+	if err := eng.Run(ctx, "run-cancel-fin", nil); !errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("cancel: %v", err)
+	}
 
-	r, _ := s.LoadRun(context.Background(), "run-cancel-fin")
+	r, err := s.LoadRun(context.Background(), "run-cancel-fin")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if r.FinishedAt == nil {
 		t.Error("cancelled run should have FinishedAt set")
 	}

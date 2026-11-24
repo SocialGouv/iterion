@@ -88,3 +88,52 @@ func TestRunNoteStore(t *testing.T) {
 		}
 	})
 }
+
+// TestRunNoteStore_ReattributeRunNotes: an erasure rewrites the author of
+// every note the address wrote, in every run, however the address was
+// spelled, and touches no other author's note.
+func TestRunNoteStore_ReattributeRunNotes(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	for _, run := range []string{"run-a", "run-b"} {
+		if _, err := s.CreateRun(ctx, run, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", run, err)
+		}
+	}
+	for _, c := range []struct{ run, author string }{
+		{"run-a", "alice@example.org"},
+		{"run-a", "bob@example.org"},
+		{"run-b", " Alice@Example.org "},
+		{"run-b", "alice@example.org.uk"},
+	} {
+		if _, err := s.AppendRunNote(ctx, c.run, RunNote{Author: c.author, Body: "note"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	if _, err := s.ReattributeRunNotes(ctx, " ", "u-1"); err == nil {
+		t.Fatal("a reattribution naming no author answered no error")
+	}
+	n, err := s.ReattributeRunNotes(ctx, "ALICE@example.org", "u-1")
+	if err != nil || n != 2 {
+		t.Fatalf("ReattributeRunNotes = %d (%v), want 2", n, err)
+	}
+	got := map[string][]string{}
+	for _, run := range []string{"run-a", "run-b"} {
+		notes, err := s.ListRunNotes(ctx, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, note := range notes {
+			got[run] = append(got[run], note.Author)
+		}
+	}
+	if want := []string{"u-1", "bob@example.org"}; !equalStrings(got["run-a"], want) {
+		t.Fatalf("run-a authors = %v, want %v", got["run-a"], want)
+	}
+	if want := []string{"u-1", "alice@example.org.uk"}; !equalStrings(got["run-b"], want) {
+		t.Fatalf("run-b authors = %v, want %v", got["run-b"], want)
+	}
+	if n, err := s.ReattributeRunNotes(ctx, "alice@example.org", "u-1"); err != nil || n != 0 {
+		t.Fatalf("a second reattribution = %d (%v), want 0", n, err)
+	}
+}

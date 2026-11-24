@@ -59,6 +59,7 @@ const HREFS: Record<string, string> = {
   Audit: "/studio/admin/audit",
   "Dead-letter queue": "/studio/admin/dlq",
   Spend: "/studio/admin/spend",
+  Runs: "/studio/admin/runs",
 };
 
 afterEach(cleanup);

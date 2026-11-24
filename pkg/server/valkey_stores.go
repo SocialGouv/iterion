@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Valkey-backed implementations of the per-pod state stores (forge CSRF state,
@@ -93,10 +96,26 @@ type boardTokenPayload struct {
 	Caps          []string `json:"caps"`
 	SourceIssueID string   `json:"src,omitempty"`
 	TenantID      string   `json:"tenant_id,omitempty"`
+	// Trust carries the run's RunTrust to whichever replica serves the
+	// connector facade's call (#2758); absent on a legacy payload, which
+	// lookup must read as UNSTATED — the facade fails closed on it.
+	Trust       string `json:"trust,omitempty"`
+	TrustStated bool   `json:"trust_stated,omitempty"`
+	// WorkDir carries the run's working directory for the same reason: the
+	// facade's project tier is rooted at THE RUN'S workspace. Absent on a
+	// legacy payload reads as "none".
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string) error {
-	b, err := json.Marshal(boardTokenPayload{Caps: caps, SourceIssueID: strings.TrimSpace(sourceIssueID), TenantID: strings.TrimSpace(tenantID)})
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool, workDir string) error {
+	b, err := json.Marshal(boardTokenPayload{
+		Caps:          caps,
+		SourceIssueID: strings.TrimSpace(sourceIssueID),
+		TenantID:      strings.TrimSpace(tenantID),
+		Trust:         string(trust),
+		TrustStated:   trustStated,
+		WorkDir:       workDir,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal board MCP caps: %w", err)
 	}
@@ -110,9 +129,9 @@ func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceI
 	return nil
 }
 
-// Revoke is best-effort: it has no production caller today and the Redis
-// key's boardMCPDefaultTTL is the backstop that reaps a missed delete, so a
-// failure is logged (token prefix only) rather than propagated.
+// Revoke is best-effort: the Redis key's boardMCPDefaultTTL is the backstop
+// that reaps a missed delete, so a failure is logged (token prefix only —
+// the token itself never reaches a log) rather than propagated.
 func (s *valkeyBoardMCPTokenStore) Revoke(token string) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
@@ -125,7 +144,9 @@ func (s *valkeyBoardMCPTokenStore) Revoke(token string) {
 	}
 }
 
-func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
+// Lookup returns the grant a token carries, false when the key is absent,
+// expired (Redis evicted it) or holds a payload no reader accepts.
+func (s *valkeyBoardMCPTokenStore) Lookup(token string) (boardMCPGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
 	b, err := s.rdb.Get(ctx, boardTokenKeyPrefix+token).Bytes()
@@ -145,6 +166,9 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 		Capabilities:  boardops.Capabilities{},
 		SourceIssueID: payload.SourceIssueID,
 		TenantID:      payload.TenantID,
+		Trust:         payload.Trust,
+		TrustStated:   payload.TrustStated,
+		WorkDir:       payload.WorkDir,
 	}
 	for _, c := range payload.Caps {
 		grant.Capabilities[c] = true
@@ -156,7 +180,69 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 
 // --- forge-publish run tokens ------------------------------------------------
 
+// forgePublishTokenKeyPrefix keyed a grant by the BEARER itself. Anything that
+// can SCAN, MONITOR or read the slowlog reads key NAMES, so that key handed a
+// live grant to every one of them. Kept for the dual read below until no grant
+// minted under it can still be alive.
 const forgePublishTokenKeyPrefix = "iterion:forgepub:tok:"
+
+// forgePublishTokenDigestKeyPrefix keys a grant by the SHA-256 of its bearer:
+// the name proves nothing a holder of the keyspace can present.
+const forgePublishTokenDigestKeyPrefix = "iterion:forgepub:tokd:"
+
+// forgePublishUnboundTokenKeyPrefix keys a grant bound to no pull request
+// (ForgePublishGrant.NoPullRequest) by the SHA-256 of its bearer, apart from
+// every other grant. The binding is a field a build older than it does not
+// know: decoding the record, that build would read the zero value — a
+// pull-request launch's grant — and honour it on the review, the merge-gate
+// status and the pull-request read while replicas of two versions share the
+// store. Under this prefix an older build finds no grant at all, so it
+// answers "unknown token": the binding fails closed for every reader that
+// cannot honour it.
+const forgePublishUnboundTokenKeyPrefix = "iterion:forgepub:tokn:"
+
+// forgePublishTokenKey is where a grant minted by this build lives.
+func forgePublishTokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return forgePublishTokenDigestKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// forgePublishUnboundTokenKey is where a grant bound to no pull request lives.
+func forgePublishUnboundTokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return forgePublishUnboundTokenKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// forgePublishRegisterKey is the key Register writes g under: the unbound
+// namespace for a grant bound to no pull request, the digest key otherwise.
+func forgePublishRegisterKey(token string, g ForgePublishGrant) string {
+	if g.NoPullRequest {
+		return forgePublishUnboundTokenKey(token)
+	}
+	return forgePublishTokenKey(token)
+}
+
+// bindStoredGrant applies what the key a grant was read from says of it: a
+// record under the unbound namespace is bound to no pull request whatever its
+// body carries — the namespace is the binding older builds cannot miss, and
+// the body must not be able to contradict it.
+func bindStoredGrant(key string, g *ForgePublishGrant) {
+	if strings.HasPrefix(key, forgePublishUnboundTokenKeyPrefix) {
+		g.NoPullRequest = true
+	}
+}
+
+// forgePublishTokenKeys are the keys a grant can live under, in READ order:
+// the digest key, the unbound key (a grant bound to no pull request), then
+// the legacy key whose name was the bearer. The legacy read is the cutover's
+// bridge — a grant minted by a previous build stays usable for at most one
+// grant TTL (forgePublishDefaultTTL: 9 days, the retry window plus a margin),
+// after which no legacy key can exist and that read can go. Every reader,
+// writer and reaper of a grant goes through this one list, so the keys cannot
+// drift apart.
+func forgePublishTokenKeys(token string) []string {
+	return []string{forgePublishTokenKey(token), forgePublishUnboundTokenKey(token), forgePublishTokenKeyPrefix + token}
+}
 
 // valkeyForgePublishTokenStore shares per-run forge-publish grants across
 // server replicas (the run's POST is load-balanced to any pod while the
@@ -179,7 +265,7 @@ func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGran
 	defer cancel()
 	// Redis TTL replaces the in-memory sweep. The grant is safe to name in
 	// the error (team/conn/repo); the token is not.
-	if err := s.rdb.Set(ctx, forgePublishTokenKeyPrefix+token, b, forgePublishDefaultTTL).Err(); err != nil {
+	if err := s.rdb.Set(ctx, forgePublishRegisterKey(token, g), b, forgePublishDefaultTTL).Err(); err != nil {
 		return fmt.Errorf("store forge publish token (repo=%s): %w", g.Repo, err)
 	}
 	return nil
@@ -190,7 +276,9 @@ func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGran
 func (s *valkeyForgePublishTokenStore) Revoke(token string) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	if err := s.rdb.Del(ctx, forgePublishTokenKeyPrefix+token).Err(); err != nil && s.logger != nil {
+	// Both keys: a grant minted before the digest cutover lives under the
+	// legacy one, and a revoke that missed it would leave it usable.
+	if err := s.rdb.Del(ctx, forgePublishTokenKeys(token)...).Err(); err != nil && s.logger != nil {
 		prefix := token
 		if len(prefix) > 8 {
 			prefix = prefix[:8]
@@ -205,12 +293,16 @@ func (s *valkeyForgePublishTokenStore) Revoke(token string) {
 func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	if err := s.rdb.ExpireLT(ctx, forgePublishTokenKeyPrefix+token, d).Err(); err != nil && s.logger != nil {
-		prefix := token
-		if len(prefix) > 8 {
-			prefix = prefix[:8]
+	// ExpireLT on a key that does not exist is a no-op, so both keys of the
+	// cutover are named and whichever holds the grant is shortened.
+	for _, key := range forgePublishTokenKeys(token) {
+		if err := s.rdb.ExpireLT(ctx, key, d).Err(); err != nil && s.logger != nil {
+			prefix := token
+			if len(prefix) > 8 {
+				prefix = prefix[:8]
+			}
+			s.logger.Warn("forge publish: shorten token %s… to %s: %v (best-effort — Redis TTL %s is the backstop)", prefix, d, err, forgePublishDefaultTTL)
 		}
-		s.logger.Warn("forge publish: shorten token %s… to %s: %v (best-effort — Redis TTL %s is the backstop)", prefix, d, err, forgePublishDefaultTTL)
 	}
 }
 
@@ -219,9 +311,21 @@ func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 // expiry is not pushed out, and a concurrent write to the same grant makes
 // the transaction retry rather than be overwritten.
 func (s *valkeyForgePublishTokenStore) update(token string, fn func(*ForgePublishGrant)) (bool, error) {
+	// In read order, one transaction per key: a grant lives under exactly one
+	// of them (Register writes one, forgePublishRegisterKey), so a miss on a
+	// key is not an absent grant until the last key misses too.
+	for _, key := range forgePublishTokenKeys(token) {
+		found, err := s.updateKey(key, fn)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+func (s *valkeyForgePublishTokenStore) updateKey(key string, fn func(*ForgePublishGrant)) (bool, error) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	key := forgePublishTokenKeyPrefix + token
 	found := false
 	txf := func(tx *redis.Tx) error {
 		b, err := tx.Get(ctx, key).Bytes()
@@ -236,6 +340,7 @@ func (s *valkeyForgePublishTokenStore) update(token string, fn func(*ForgePublis
 		if err := json.Unmarshal(b, &g); err != nil {
 			return fmt.Errorf("decode forge publish grant: %w", err)
 		}
+		bindStoredGrant(key, &g)
 		fn(&g)
 		out, err := mergeGrantJSON(b, g)
 		if err != nil {
@@ -294,21 +399,25 @@ func mergeGrantJSON(raw []byte, g ForgePublishGrant) ([]byte, error) {
 
 // forgePublishGrantKeys are the JSON keys ForgePublishGrant owns; a test pins
 // the list to the struct's tags.
-var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "capabilities", "verdict", "refusal", "deferred", "shared", "cut_back"}
+var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "capabilities", "dispatch_workflow", "no_pull_request", "dispatches", "verdict", "refusal", "deferred", "shared", "cut_back"}
 
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	b, err := s.rdb.Get(ctx, forgePublishTokenKeyPrefix+token).Bytes()
-	if err != nil {
-		return ForgePublishGrant{}, false
+	for _, key := range forgePublishTokenKeys(token) {
+		b, err := s.rdb.Get(ctx, key).Bytes()
+		if err != nil {
+			continue
+		}
+		var g ForgePublishGrant
+		if json.Unmarshal(b, &g) != nil {
+			return ForgePublishGrant{}, false
+		}
+		bindStoredGrant(key, &g)
+		// ExpiresAt left zero: Redis already evicted the key if it lapsed.
+		return g, true
 	}
-	var g ForgePublishGrant
-	if json.Unmarshal(b, &g) != nil {
-		return ForgePublishGrant{}, false
-	}
-	// ExpiresAt left zero: Redis already evicted the key if it lapsed.
-	return g, true
+	return ForgePublishGrant{}, false
 }
 
 // --- auth rate limit (atomic token bucket) ----------------------------------

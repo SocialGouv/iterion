@@ -27,11 +27,11 @@ type claudeAmbientSpawn struct {
 }
 
 // claudeAmbient translates the node's policy into Claude Code's two
-// mechanisms. The project scope always loads: it carries the engine's own
-// mirrored skills and plugin contributions (pkg/runtime/plugin_skills.go),
-// which the CLI only discovers under it. What a policy removes is memory
-// files (CLAUDE.md, CLAUDE.local.md, .claude/rules/) and the operator's user
-// scope:
+// mechanisms. On a trusted run the project scope always loads: it carries the
+// engine's own mirrored skills and plugin contributions
+// (pkg/runtime/plugin_skills.go), which the CLI only discovers under it. What
+// a policy removes is memory files (CLAUDE.md, CLAUDE.local.md,
+// .claude/rules/) and the operator's user scope:
 //
 //	all        user,project
 //	workspace  project, minus the memory files above the repository root
@@ -47,23 +47,61 @@ type claudeAmbientSpawn struct {
 //
 // ITERION_CLAUDE_CODE_SETTING_SOURCES, when set, replaces the scopes verbatim
 // and drops the exclusions: it is the operator's raw escape hatch.
+//
+// FLOOR (ADR-162 U3): on a workspace the tenant did not write, the checkout's
+// own scopes — `project` and `local`, both the same directory — are stripped
+// from whatever was resolved, the operator's raw list included: the repo's
+// .claude/settings.json carries HOOKS, which are commands the CLI runs on its
+// own lifecycle events with the run's credential in reach, and its `env`
+// block can redirect every model request. The agent's cwd IS that checkout.
+// The run's skills are untouched by the withdrawal: on an untrusted run they
+// arrive through the pinned skill channel (--add-dir, #1719), never through
+// the project scope. Iterion's own plugin hooks keep firing too — inlined
+// into the --settings layer whenever the resolved list loads no project
+// source (claudeSpawnPins).
 func claudeAmbient(task Task) claudeAmbientSpawn {
+	var spawn claudeAmbientSpawn
 	if srcs, set, unknown := settingSourcesFromEnv(); set {
-		return claudeAmbientSpawn{sources: srcs, legacy: true, unknown: unknown}
+		spawn = claudeAmbientSpawn{sources: srcs, legacy: true, unknown: unknown}
+	} else {
+		project := []claudesdk.SettingSource{claudesdk.SettingSourceProject}
+		both := []claudesdk.SettingSource{claudesdk.SettingSourceUser, claudesdk.SettingSourceProject}
+		root := ambient.RepoRoot(task.WorkDir)
+		switch task.AmbientContext {
+		case ambient.All:
+			spawn = claudeAmbientSpawn{sources: both}
+		case ambient.Operator:
+			spawn = claudeAmbientSpawn{sources: both, excludes: excludeTree(ambient.OperatorBoundary(root))}
+		case ambient.None:
+			spawn = claudeAmbientSpawn{sources: project, excludes: []string{"**"}}
+		default:
+			spawn = claudeAmbientSpawn{sources: project, excludes: excludeAncestors(root)}
+		}
 	}
-	project := []claudesdk.SettingSource{claudesdk.SettingSourceProject}
-	both := []claudesdk.SettingSource{claudesdk.SettingSourceUser, claudesdk.SettingSourceProject}
-	root := ambient.RepoRoot(task.WorkDir)
-	switch task.AmbientContext {
-	case ambient.All:
-		return claudeAmbientSpawn{sources: both}
-	case ambient.Operator:
-		return claudeAmbientSpawn{sources: both, excludes: excludeTree(ambient.OperatorBoundary(root))}
-	case ambient.None:
-		return claudeAmbientSpawn{sources: project, excludes: []string{"**"}}
-	default:
-		return claudeAmbientSpawn{sources: project, excludes: excludeAncestors(root)}
+	if !task.WorkspaceTrust.Trusted() {
+		spawn.sources = withoutCheckoutScopes(spawn.sources)
+		// The exclusions answered which of the workspace's own memory files
+		// a loaded project scope may not read; with the scope itself gone
+		// they exclude nothing, and carrying them would only misreport the
+		// posture. `user`-scope memory (the operator's own) stays loaded.
+		spawn.excludes = nil
 	}
+	return spawn
+}
+
+// withoutCheckoutScopes drops the scopes that ARE the checkout — project and
+// local — from a resolved source list. An untrusted run whose list held only
+// those resolves to the empty list, emitted as `--setting-sources ""`: the
+// CLI loads nothing.
+func withoutCheckoutScopes(srcs []claudesdk.SettingSource) []claudesdk.SettingSource {
+	out := make([]claudesdk.SettingSource, 0, len(srcs))
+	for _, s := range srcs {
+		if s == claudesdk.SettingSourceProject || s == claudesdk.SettingSourceLocal {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // settingSourcesOption emits the scopes, an empty list included.

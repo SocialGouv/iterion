@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -945,61 +946,46 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 	}
 }
 
-// serializingSlowTracker: one global lock, fixed latency per call — the
-// shape of the FS store's single mutex and of a rate-limited forge
-// client. What it exposes: goroutines whose budgets started before
-// their turn burn a SHARED window while queued.
-//
-// Every gated call records ctx.Deadline() at entry so the test can assert
-// the ORDERING property directly (deadlines advance batch by batch) rather
-// than infer it from "no leaks" — the latter was wall-clock-shaped and
-// flaked on shared runners (#1393). Unbounded T0 budgets would produce
-// one deadline shared by every call; per-TURN budgets produce a spread.
+// serializingSlowTracker serializes board calls with a fixed virtual latency.
+// The channel gate is durably blocking in synctest (unlike a mutex), so the
+// clock can advance while the other cards wait for their turn at the store.
 type serializingSlowTracker struct {
 	tracker.Tracker
 	leaser  tracker.ClaimLeaser
-	gate    sync.Mutex
+	gate    chan struct{}
 	latency time.Duration
 
-	obsMu       sync.Mutex
-	obsCalls    int
-	obsWithout  int
-	obsDeadline []time.Time // ctx.Deadline() at each gated call
+	obsMu        sync.Mutex
+	observations []drainCall
 }
 
-func (r *serializingSlowTracker) call(ctx context.Context) error {
-	// Record the ctx we were handed BEFORE checking it: an already-cut
-	// ctx is a fact about how the drain is calling us and belongs in the
-	// observation trace, not swallowed.
+type drainCall struct {
+	kind              string
+	entered, deadline time.Time
+	hasDeadline       bool
+}
+
+func (r *serializingSlowTracker) call(ctx context.Context, kind string) error {
 	dl, hasDL := ctx.Deadline()
 	r.obsMu.Lock()
-	r.obsCalls++
-	if hasDL {
-		r.obsDeadline = append(r.obsDeadline, dl)
-	} else {
-		r.obsWithout++
-	}
+	r.observations = append(r.observations, drainCall{kind, time.Now(), dl, hasDL})
 	r.obsMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	r.gate.Lock()
-	defer r.gate.Unlock()
+	r.gate <- struct{}{}
+	defer func() { <-r.gate }()
 	time.Sleep(r.latency)
 	return ctx.Err()
 }
 
-// snapshot returns a copy of the observed deadlines and a count of gated
-// calls that observed no deadline at all (a drain missing its bounds —
-// the failure mode that shipped without any test before #1393).
-func (r *serializingSlowTracker) snapshot() ([]time.Time, int, int) {
+func (r *serializingSlowTracker) snapshot() []drainCall {
 	r.obsMu.Lock()
 	defer r.obsMu.Unlock()
-	out := append([]time.Time(nil), r.obsDeadline...)
-	return out, r.obsCalls, r.obsWithout
+	return append([]drainCall(nil), r.observations...)
 }
 func (r *serializingSlowTracker) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
-	if err := r.call(ctx); err != nil {
+	if err := r.call(ctx, "refresh"); err != nil {
 		return nil, err
 	}
 	return r.Tracker.RefreshStates(ctx, ids)
@@ -1011,54 +997,50 @@ func (r *serializingSlowTracker) RenewClaim(ctx context.Context, id string, tok 
 	return r.leaser.RenewClaim(ctx, id, tok)
 }
 func (r *serializingSlowTracker) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
-	if err := r.call(ctx); err != nil {
+	if err := r.call(ctx, "release"); err != nil {
 		return err
 	}
 	return r.leaser.ReleaseOwned(ctx, id, tok)
 }
 func (r *serializingSlowTracker) UpdateStateOwned(ctx context.Context, id, state string, tok tracker.ClaimToken) error {
-	if err := r.call(ctx); err != nil {
+	if err := r.call(ctx, "update"); err != nil {
 		return err
 	}
 	return r.leaser.UpdateStateOwned(ctx, id, state, tok)
 }
 
-// TestShutdown_DrainDoesNotLeakAgainstASerializingTracker: bounded
-// parallelism with budgets that start at each card's TURN. Unbounded
-// goroutines whose clocks all started at T0 burned one shared window
-// while queued behind the tracker's lock — claims at the tail were
-// refused at entry and leaked, the very failure the drain exists to
-// prevent (measured at N=20 with production budgets: 7 leaked where the
-// old sequential drain freed all 20).
-//
-// The property is proved TWICE, on purpose:
-//   - the ORDERING assertion (observed ctx deadlines advance across
-//     drain batches, and none is missing) is deterministic against a
-//     T0-shared-budget mutation, whatever the runner's speed;
-//   - the "no leaks" assertion still catches a drain that walks around
-//     its budgets and starves, but with a wall-clock envelope wide
-//     enough that a shared-runner slowdown of ~8× is still green (the
-//     previous 30 ms latency vs 500 ms budget had ~1.4×; #1393 reported
-//     the ejection at ~2×).
+// Each revert/release budget starts at that card's turn, after admission to
+// the drain. Virtual time advances only when the bubble is durably blocked:
+// runner load cannot spend a card's budget. The real filesystem board still
+// proves that every transition and fenced release actually happened.
+// Moving the revert budget before admission, sharing a fleet-wide deadline,
+// or removing the bounds must fail the call observations below.
 func TestShutdown_DrainDoesNotLeakAgainstASerializingTracker(t *testing.T) {
+	// The store owns a kernel watcher: create and close it outside the
+	// bubble, where real I/O cannot keep the virtual clock from advancing.
 	board, err := native.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = board.Close() })
+	synctest.Test(t, func(t *testing.T) {
+		testShutdownDrainAgainstASerializingTracker(t, board)
+	})
+}
+
+func testShutdownDrainAgainstASerializingTracker(t *testing.T, board *native.Store) {
 	adapter := native.NewAdapter(board)
-	// latency=5 ms: 32 cards × 3 gated calls × 5 ms = 480 ms of serial
-	// gate work — a T0-shared 500 ms budget passes the "no leaks" check
-	// even under the mutation, so this file uses the ORDERING check to
-	// falsify it. 5 ms × 12 (max wait per card behind the 4-parallelism
-	// sem) = 60 ms, ≪ 500 ms, so a shared-runner slowdown of ~8× is
-	// still safe.
-	rec := &serializingSlowTracker{Tracker: adapter, leaser: adapter, latency: 5 * time.Millisecond}
+	rec := &serializingSlowTracker{
+		Tracker: adapter, leaser: adapter, gate: make(chan struct{}, 1),
+		latency: 5 * time.Millisecond,
+	}
 	c := &Dispatcher{
 		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
 		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
 		ws: newWsBridge(iterlog.Nop()),
 	}
-	c.shutdownRevertBudget, c.shutdownReleaseBudget = 500*time.Millisecond, 500*time.Millisecond
+	const budget = 500 * time.Millisecond
+	c.shutdownRevertBudget, c.shutdownReleaseBudget = budget, budget
 	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
 	const N = 32
 	for i := 0; i < N; i++ {
@@ -1083,42 +1065,38 @@ func TestShutdown_DrainDoesNotLeakAgainstASerializingTracker(t *testing.T) {
 
 	leaked := 0
 	for id := range c.state.running {
-		if cur, _ := board.Get(id); cur.Claim != "" {
+		if cur, err := board.Get(id); err != nil {
+			t.Fatal(err)
+		} else if cur.State != native.StateReady || cur.Claim != "" {
 			leaked++
 		}
 	}
 	if leaked > 0 {
-		t.Fatalf("%d/%d claims leaked against a serializing tracker — budgets that start before a card's turn burn a shared window while queued", leaked, N)
+		t.Fatalf("%d/%d cards were not reverted and released against a serializing tracker", leaked, N)
 	}
 
-	// The ordering witness: every gated call must observe a deadline,
-	// and those deadlines must span at least a handful of distinct
-	// buckets — a T0-shared budget produces a single value, the very
-	// mutation this test exists to falsify. Bucketed by 50 ms to
-	// tolerate the runtime's per-batch scheduling jitter without
-	// masking the shape.
-	deadlines, calls, without := rec.snapshot()
-	if calls == 0 {
-		t.Fatal("no gated call observed — the drain skipped the tracker entirely (unbounded release)")
+	// Refresh opens a revert; release opens its own budget. Neither has a
+	// blocking operation between budget creation and tracker entry, so its
+	// ENTIRE budget must remain at entry. Update shares the revert budget
+	// after refresh; its deadline must still be bounded. This checks the
+	// placement of budgets directly, without deadline buckets or a guessed
+	// tolerance for a busy runner.
+	calls := rec.snapshot()
+	counts := map[string]int{}
+	for _, call := range calls {
+		counts[call.kind]++
+		if !call.hasDeadline {
+			t.Errorf("%s called without a deadline", call.kind)
+		} else if call.kind != "update" && call.deadline.Sub(call.entered) != budget {
+			t.Errorf("%s budget started before its turn: remaining %s, want %s", call.kind, call.deadline.Sub(call.entered), budget)
+		}
 	}
-	if without > 0 {
-		t.Fatalf("%d/%d gated calls observed no ctx deadline — the drain called an unbounded context.Background(), which is the shape a shutdown-timeout regression takes", without, calls)
+	for _, kind := range []string{"refresh", "update", "release"} {
+		if counts[kind] != N {
+			t.Errorf("%s called %d times, want %d", kind, counts[kind], N)
+		}
 	}
-	buckets := map[int64]struct{}{}
-	for _, dl := range deadlines {
-		buckets[dl.Truncate(50*time.Millisecond).UnixNano()] = struct{}{}
-	}
-	// The witness this bucket count carries is NARROW: it falsifies a
-	// budget SHARED across the fleet (T0 or shutdown-scoped), because
-	// that mutation collapses every observed deadline into one 50 ms
-	// bucket. It does not distinguish per-turn from per-batch budgets;
-	// a coarser "one deadline per sem-batch of 4" mutation would still
-	// spread over ≥ 8 buckets and pass. Threshold 4 is safe against
-	// scheduling jitter (measured under -race × 20: 11-27 buckets).
-	if len(buckets) < 4 {
-		t.Fatalf("observed deadlines cluster in %d bucket(s) over %d calls — the drain is sharing one budget across the fleet (the T0-mutation would land here silently)", len(buckets), len(deadlines))
-	}
-	t.Logf("[c0-flakes] ORDERING witness: %d gated calls, %d distinct 50ms deadline buckets", len(deadlines), len(buckets))
+
 }
 
 // failingReleaseTracker fails Release with an injectable error.

@@ -55,6 +55,7 @@ export const ADMIN_SECTIONS = [
       { path: "/audit", label: "Audit" },
       { path: "/dlq", label: "Dead-letter queue" },
       { path: "/spend", label: "Spend" },
+      { path: "/runs", label: "Runs" },
     ],
   },
 ] as const satisfies readonly AdminNavSection[];

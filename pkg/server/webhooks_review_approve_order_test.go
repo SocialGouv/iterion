@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -30,7 +31,7 @@ func approveOrderFixture(t *testing.T, died, updatedAt, clockNow time.Time) (*Se
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
 	s.gateSettles = newMemoryGateSettleStore(nil)
 	s.gateDecisions = newMemoryGateDecisionStore(nil)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "conn-app", TenantID: "t1", Provider: forge.ProviderGitHub,
 	}); err != nil {

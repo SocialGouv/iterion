@@ -100,3 +100,42 @@ func TestRunNoteStore_AppendList(t *testing.T) {
 		t.Errorf("cross-tenant leak: tenant t2 saw %d of t1's notes", len(iso))
 	}
 }
+
+// TestRunNoteStore_ReattributeRunNotes is the Mongo twin of the filesystem
+// test: the address's notes are rewritten in every tenant, from a context
+// naming none, however the address was spelled; no other author's note is.
+func TestRunNoteStore_ReattributeRunNotes(t *testing.T) {
+	s := newNoteTestStore(t)
+	t1 := store.WithIdentity(context.Background(), "t1", "u1")
+	t2 := store.WithIdentity(context.Background(), "t2", "u2")
+	for _, c := range []struct {
+		ctx         context.Context
+		run, author string
+	}{
+		{t1, "run-a", "alice@example.org"},
+		{t1, "run-a", "bob@example.org"},
+		{t2, "run-b", " Alice@Example.org "},
+		{t2, "run-b", "alice@example.org.uk"},
+	} {
+		if _, err := s.AppendRunNote(c.ctx, c.run, store.RunNote{Author: c.author, Body: "note"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	n, err := s.ReattributeRunNotes(context.Background(), "ALICE@example.org", "u-1")
+	if err != nil || n != 2 {
+		t.Fatalf("ReattributeRunNotes = %d (%v), want 2", n, err)
+	}
+	for _, c := range []struct {
+		ctx  context.Context
+		run  string
+		want [2]string
+	}{
+		{t1, "run-a", [2]string{"u-1", "bob@example.org"}},
+		{t2, "run-b", [2]string{"u-1", "alice@example.org.uk"}},
+	} {
+		notes, err := s.ListRunNotes(c.ctx, c.run)
+		if err != nil || len(notes) != 2 || notes[0].Author != c.want[0] || notes[1].Author != c.want[1] {
+			t.Fatalf("%s notes = %+v (%v), want authors %v", c.run, notes, err, c.want)
+		}
+	}
+}

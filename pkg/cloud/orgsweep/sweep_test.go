@@ -127,9 +127,23 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		}
 	}
 	// Team-scoped, both tenant_id and team_id key variants.
-	ins("runs", bson.M{"_id": "r-a1", "tenant_id": teamA})
+	ins("runs", bson.M{"_id": "r-a1", "tenant_id": teamA, "birth_id": "active", "data_protocol": 1})
 	ins("runs", bson.M{"_id": "r-a2", "team_id": teamA})
 	ins("runs", bson.M{"_id": "r-b1", "tenant_id": teamB})
+	// Incarnation inbox rows include retired/orphan births with no live header.
+	// The tenant sweep must reach them independently of DeleteRun.
+	for _, row := range []struct{ tenant, run, birth string }{{teamA, "r-a1", "active"}, {teamA, "r-a1", "retired"}, {teamA, "r-orphan", "orphan"}, {teamB, "r-a1", "other-tenant-birth"}} {
+		namespace := "run-data-v1/f1/" + row.run + "/" + row.birth + "/"
+		ins("run_data_v1_user_messages", bson.M{"_id": bson.D{{Key: "run_id", Value: row.run}, {Key: "message_id", Value: "same-message"}, {Key: "namespace", Value: namespace}}, "tenant_id": row.tenant, "run_id": row.run, "data_namespace": namespace})
+	}
+
+	// The same runs as the run store knows them, each with objects in the
+	// bucket: the purge must take A's through DeleteRun (blobs and all)
+	// and leave B's untouched.
+	runs := newFakeRunStore()
+	runs.addRun("r-a1", teamA, 2)
+	runs.addRun("r-a2", teamA, 1)
+	runs.addRun("r-b1", teamB, 1)
 	ins("forge_connections", bson.M{"_id": "fc-a", "tenant_id": teamA})
 	ins("forge_connections", bson.M{"_id": "fc-b", "tenant_id": teamB})
 	ins("api_keys", bson.M{"_id": "k-a", "tenant_id": teamA})
@@ -148,9 +162,13 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	// A PERSONAL forfait belongs to a user, who outlives the org — it must
 	// survive even when its owner was a member of the purged org.
 	ins(secrets.OAuthCollectionName, bson.M{"_id": "oa-user", "user_id": "user-in-org-a"})
-	// Org-scoped.
+	// Org-scoped — and the audit rows keyed by a TEAM id (auditTenant:
+	// member.added with the member's email, team.status_changed), which the
+	// org filter cannot reach.
 	ins("audit_events", bson.M{"_id": "au-a", "tenant_id": orgA})
 	ins("audit_events", bson.M{"_id": "au-b", "tenant_id": orgB})
+	ins("audit_events", bson.M{"_id": "au-team-a", "tenant_id": teamA, "action": "member.added"})
+	ins("audit_events", bson.M{"_id": "au-team-b", "tenant_id": teamB, "action": "member.added"})
 	ins("org_usage", bson.M{"_id": "org|" + orgA + "|2026-06", "org_id": orgA})
 	ins("org_usage", bson.M{"_id": "org|" + orgB + "|2026-06", "org_id": orgB})
 	// The tenant routing policies: composite _id ("org:<id>" /
@@ -175,7 +193,7 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		return st.DeleteOrg(ctx, orgID)
 	}
 
-	p := &Purger{DB: db, Store: st, Cascade: cascade}
+	p := &Purger{DB: db, Store: st, Cascade: cascade, Runs: runs}
 	if _, err := p.PurgeOrg(ctx, orgA); err != nil {
 		t.Fatalf("PurgeOrg(A): %v", err)
 	}
@@ -191,7 +209,28 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		return bson.M{"$or": bson.A{bson.M{"tenant_id": id}, bson.M{"team_id": id}}}
 	}
 
-	// A's data is gone…
+	if n := count("run_data_v1_user_messages", bson.M{"tenant_id": teamA}); n != 0 {
+		t.Errorf("incarnation inbox of purged team: got %d, want 0 (all births)", n)
+	}
+	if n := count("run_data_v1_user_messages", bson.M{"tenant_id": teamB}); n != 1 {
+		t.Errorf("incarnation inbox of other team: got %d, want 1", n)
+	}
+	// A's data is gone… the runs' objects first, through the run store.
+	if n := runs.objects(); n != 1 {
+		t.Errorf("objects left in the bucket: %d, want 1 (B's run only) — A's blobs survived the purge of A", n)
+	}
+	if n := runs.runsOf(teamA); n != 0 {
+		t.Errorf("run store still holds %d run(s) of team A, want 0", n)
+	}
+	if n := runs.runsOf(teamB); n != 1 {
+		t.Errorf("run store holds %d run(s) of team B, want 1 — the purge reached B's runs", n)
+	}
+	if n := count("audit_events", bson.M{"tenant_id": teamA}); n != 0 {
+		t.Errorf("team-keyed audit rows of team A: got %d, want 0 — the rows auditTenant writes under the team id survived", n)
+	}
+	if n := count("audit_events", bson.M{"tenant_id": teamB}); n != 1 {
+		t.Errorf("team-keyed audit rows of team B: got %d, want 1", n)
+	}
 	if n := count("llm_routing_policies", bson.M{"_id": "org:" + orgA}); n != 0 {
 		t.Errorf("routing policy of org A: got %d, want 0", n)
 	}
@@ -272,5 +311,245 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	// Idempotent: purging A again is a clean no-op.
 	if n, err := p.PurgeOrg(ctx, orgA); err != nil || n != 0 {
 		t.Errorf("PurgeOrg(A) second call = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+// TestPurgeOrg_Mongo_EveryClassifiedCollection is the witness the completeness
+// guard needs beside it: the guard proves every collection of the tree is
+// CLASSIFIED, this proves the classification is TRUE of a real Mongo — one
+// document per swept collection goes in for the purged team and for a second
+// team, and after the purge the first team has none left and the second has
+// all of them.
+//
+// Table-driven ON THE PRODUCTION TABLES, so a collection added there is
+// witnessed by the next run without anyone remembering to extend this test —
+// and a collection added there whose rows the filter cannot reach fails here
+// rather than passing as fiction.
+func TestPurgeOrg_Mongo_EveryClassifiedCollection(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo orgsweep suite")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_orgsweep_all_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+
+	st := identity.NewMongoStore(db)
+	if err := st.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	seed := func(tag string, pending bool) (orgID, teamID string) {
+		orgID, teamID = "org-"+tag, "team-"+tag
+		org := identity.Org{ID: orgID, Name: "Org " + tag, Slug: "org-" + tag}
+		if pending {
+			org.Status = identity.TeamStatusPendingDeletion
+			past := time.Now().UTC().Add(-time.Hour)
+			org.PurgeAfter = &past
+		}
+		if _, err := st.CreateOrg(ctx, org); err != nil {
+			t.Fatalf("CreateOrg %s: %v", tag, err)
+		}
+		if _, err := st.CreateTeam(ctx, identity.Team{ID: teamID, OrgID: orgID, Name: "Team " + tag, Slug: "team-" + tag}); err != nil {
+			t.Fatalf("CreateTeam %s: %v", tag, err)
+		}
+		return
+	}
+	orgA, teamA := seed("x", true)
+	orgB, teamB := seed("y", false)
+
+	ins := func(coll string, doc bson.M) {
+		if _, err := db.Collection(coll).InsertOne(ctx, doc); err != nil {
+			t.Fatalf("insert %s: %v", coll, err)
+		}
+	}
+	// The ids carry the scope: audit_events is in both tables, one row per
+	// scope and tenant.
+	for _, coll := range teamScopedCollections {
+		ins(coll, bson.M{"_id": "team-" + coll + "-a", "tenant_id": teamA})
+		ins(coll, bson.M{"_id": "team-" + coll + "-b", "tenant_id": teamB})
+	}
+	for _, coll := range orgScopedCollections {
+		ins(coll, bson.M{"_id": "org-" + coll + "-a", "tenant_id": orgA})
+		ins(coll, bson.M{"_id": "org-" + coll + "-b", "tenant_id": orgB})
+	}
+	// The one bespoke filter this test can seed from its own shape: the
+	// launch intent that carries its tenant inside the embedded schedule.
+	ins("schedule_launch_intents", bson.M{"_id": "li-a", "schedule": bson.M{"tenant_id": teamA}})
+	ins("schedule_launch_intents", bson.M{"_id": "li-b", "schedule": bson.M{"tenant_id": teamB}})
+	// A collection the tables deliberately LEAVE: it must still be there.
+	ins("sessions", bson.M{"_id": "sess-user", "user_id": "u-in-org-x"})
+
+	cascade := func(ctx context.Context, orgID string) error {
+		teams, err := st.ListTeamsByOrg(ctx, orgID)
+		if err != nil {
+			return err
+		}
+		for _, tm := range teams {
+			if err := st.DeleteTeam(ctx, tm.ID); err != nil {
+				return err
+			}
+		}
+		return st.DeleteOrg(ctx, orgID)
+	}
+	p := &Purger{DB: db, Store: st, Cascade: cascade, Runs: newFakeRunStore()}
+	if _, err := p.PurgeOrg(ctx, orgA); err != nil {
+		t.Fatalf("PurgeOrg(A): %v", err)
+	}
+
+	count := func(coll string, filter bson.M) int64 {
+		n, err := db.Collection(coll).CountDocuments(ctx, filter)
+		if err != nil {
+			t.Fatalf("count %s: %v", coll, err)
+		}
+		return n
+	}
+	if len(teamScopedCollections) < 40 {
+		t.Fatalf("the team table holds %d collection(s) — it shrank, and this witness now covers almost nothing", len(teamScopedCollections))
+	}
+	for _, coll := range teamScopedCollections {
+		if n := count(coll, bson.M{"tenant_id": teamA}); n != 0 {
+			t.Errorf("%s: %d document(s) of the purged team survive — the collection is in teamScopedCollections and the purge did not reach it", coll, n)
+		}
+		if n := count(coll, bson.M{"tenant_id": teamB}); n != 1 {
+			t.Errorf("%s: the untouched team has %d document(s), want 1 — over-deletion", coll, n)
+		}
+	}
+	for _, coll := range orgScopedCollections {
+		if n := count(coll, bson.M{"tenant_id": orgA}); n != 0 {
+			t.Errorf("%s: %d document(s) of the purged org survive", coll, n)
+		}
+		if n := count(coll, bson.M{"tenant_id": orgB}); n != 1 {
+			t.Errorf("%s: the untouched org has %d document(s), want 1 — over-deletion", coll, n)
+		}
+	}
+	if n := count("schedule_launch_intents", bson.M{"schedule.tenant_id": teamA}); n != 0 {
+		t.Errorf("schedule_launch_intents: %d pending launch(es) of the purged team survive", n)
+	}
+	if n := count("schedule_launch_intents", bson.M{"schedule.tenant_id": teamB}); n != 1 {
+		t.Errorf("schedule_launch_intents: the untouched team has %d, want 1 — over-deletion", n)
+	}
+	if n := count("sessions", bson.M{"user_id": "u-in-org-x"}); n != 1 {
+		t.Errorf("sessions: got %d, want 1 — notPurged says a user's sessions outlive the org, and the purge took them", n)
+	}
+}
+
+// TestPurgeOrg_Mongo_ResumesAfterADeferredPass is the interrupted purge end
+// to end: a batch of one over two runs. The first pass deletes one run's
+// blobs and defers — the org is still there and so is every Mongo row, the
+// sweep withheld. The second pass takes the remaining run, sweeps, cascades,
+// and a third is a clean no-op.
+func TestPurgeOrg_Mongo_ResumesAfterADeferredPass(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo orgsweep suite")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_orgsweep_resume_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	st := identity.NewMongoStore(db)
+	if err := st.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	past := time.Now().UTC().Add(-time.Hour)
+	orgID, teamID := "org-resume", "team-resume"
+	if _, err := st.CreateOrg(ctx, identity.Org{ID: orgID, Name: "Resume", Slug: "resume", Status: identity.TeamStatusPendingDeletion, PurgeAfter: &past}); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if _, err := st.CreateTeam(ctx, identity.Team{ID: teamID, OrgID: orgID, Name: "Resume", Slug: "resume"}); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	ins := func(coll string, doc bson.M) {
+		if _, err := db.Collection(coll).InsertOne(ctx, doc); err != nil {
+			t.Fatalf("insert %s: %v", coll, err)
+		}
+	}
+	ins("runs", bson.M{"_id": "r-1", "tenant_id": teamID})
+	ins("runs", bson.M{"_id": "r-2", "tenant_id": teamID})
+	ins("audit_events", bson.M{"_id": "au-team", "tenant_id": teamID})
+	ins("audit_events", bson.M{"_id": "au-org", "tenant_id": orgID})
+	runs := newFakeRunStore()
+	runs.addRun("r-1", teamID, 2)
+	runs.addRun("r-2", teamID, 2)
+	cascade := func(ctx context.Context, orgID string) error {
+		teams, err := st.ListTeamsByOrg(ctx, orgID)
+		if err != nil {
+			return err
+		}
+		for _, tm := range teams {
+			if err := st.DeleteTeam(ctx, tm.ID); err != nil {
+				return err
+			}
+		}
+		return st.DeleteOrg(ctx, orgID)
+	}
+	count := func(coll string, filter bson.M) int64 {
+		n, err := db.Collection(coll).CountDocuments(ctx, filter)
+		if err != nil {
+			t.Fatalf("count %s: %v", coll, err)
+		}
+		return n
+	}
+	p := &Purger{DB: db, Store: st, Cascade: cascade, Runs: runs, RunBatch: 1}
+
+	n, err := p.PurgeOrg(ctx, orgID)
+	if !errors.Is(err, ErrPurgeDeferred) || n != 1 {
+		t.Fatalf("first pass = (%d, %v), want (1, ErrPurgeDeferred)", n, err)
+	}
+	if got := runs.objects(); got != 2 {
+		t.Errorf("after the first pass %d object(s) remain, want 2 (one run's)", got)
+	}
+	if got := count("runs", bson.M{"tenant_id": teamID}); got != 2 {
+		t.Errorf("after a deferred pass the run rows must be untouched, got %d, want 2", got)
+	}
+	if got := count("audit_events", bson.M{}); got != 2 {
+		t.Errorf("after a deferred pass the audit rows must be untouched, got %d, want 2", got)
+	}
+	if _, err := st.GetOrg(ctx, orgID); err != nil {
+		t.Fatalf("the org must stay pending after a deferred pass: %v", err)
+	}
+
+	if n, err := p.PurgeOrg(ctx, orgID); err != nil {
+		t.Fatalf("second pass: %v", err)
+	} else if n < 1 {
+		t.Errorf("second pass deleted %d, want the remaining run and the rows", n)
+	}
+	if got := runs.objects(); got != 0 {
+		t.Errorf("objects left after the resumed purge: %d, want 0", got)
+	}
+	if got := count("runs", bson.M{"tenant_id": teamID}); got != 0 {
+		t.Errorf("run rows left: %d, want 0", got)
+	}
+	if got := count("audit_events", bson.M{}); got != 0 {
+		t.Errorf("audit rows left (org and team): %d, want 0", got)
+	}
+	if _, err := st.GetOrg(ctx, orgID); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("GetOrg after the resumed purge: %v, want ErrNotFound", err)
+	}
+	if n, err := p.PurgeOrg(ctx, orgID); err != nil || n != 0 {
+		t.Errorf("third pass = (%d, %v), want (0, nil)", n, err)
 	}
 }

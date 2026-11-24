@@ -34,13 +34,22 @@ pnpm` works without enable).
 
 ```bash
 task build             # build studio, sync embedded dispatcher bots, then ./iterion
-task lint              # gofmt + go vet + golangci-lint
+task lint              # go fmt (REWRITES source) + go vet + golangci-lint
+task ci:gofmt          # the reporting form: fails on an unformatted file, writes nothing
 task test              # all Go unit tests
 task test:e2e          # deterministic/stub E2E suite
 task test:goldens      # recorded bot-schema/invariant replays; no credentials
 task studio:check      # ESLint + TypeScript + Vitest
 task check             # lint + the free layer: unit, goldens, studio, pi extension, brand, DSL and map checks
 ```
+
+**A script that reads a task's exit code needs `task -x`.** Measured on the
+pinned go-task 3.48.0: a task whose command exits 2 makes `task` exit **201**,
+and so does one that exits 7 — every failure collapses into one number, so
+"exit 2 means a precondition refused" cannot survive the wrapper.
+`-x/--exit-code` passes the real code through. `scripts/ci/gate.sh` is the one
+caller that depends on this, and it is why `ci:gate` can tell a machine that
+cannot judge from a tree that is broken.
 
 `task --list` prints every task with its description. `task lint` runs a
 curated golangci-lint (`.golangci.yml`: errcheck, govet, ineffassign,
@@ -106,7 +115,8 @@ listed tree green in 95 s.
 # mongod listens on 27018 INSIDE the container too (--port), so the member
 # it advertises resolves to itself; 27017 is left to a studio's own Mongo.
 docker run --rm -d --name iterion-mongo-conf --ulimit nofile=131072:131072 \
-  -p 27018:27018 mongo:8.0 --replSet rs0 --bind_ip_all --port 27018
+  -p 127.0.0.1:27018:27018 mongo:8.0 --replSet rs0 --bind_ip_all --port 27018 \
+  --setParameter enableTestCommands=1
 docker exec iterion-mongo-conf mongosh --port 27018 --quiet \
   --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27018" }] })'
 # wait for the election — a single status read is not a wait:
@@ -122,6 +132,10 @@ ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
   devbox run -- go test -count=1 $pkgs
 docker rm -f iterion-mongo-conf
 ```
+
+The owned test containers enable Mongo test commands for the commit-failure
+probe, which filters its failpoint by a unique client application name. Keep
+this setting on test fixtures only; the ordinary development stack is unchanged.
 
 Three details that each cost a session: `-p 27018:27017` with a member
 advertised as `localhost:27018` never initiates (docker's port mapping is
@@ -140,6 +154,89 @@ goes straight to `running`, the cloud store to `queued`
 compares-and-sets from a status it did not set itself passes on one twin by
 accident and can never match on the other; state the status the row tests
 from.
+
+## Testing child leases with Mongo and NATS
+
+`TestSubbotLeaseMongoNATS` exercises child birth, lease renewal, release and TTL
+configuration refusal through the real Mongo/NATS seam. Start disposable Mongo
+(replica set, with the file-descriptor limit above) and NATS (JetStream), then
+provide both endpoints:
+
+```bash
+ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
+ITERION_TEST_NATS_URI='nats://localhost:4222' \
+  devbox run -- go test -mod=vendor -count=1 -v ./pkg/store/mongo \
+    -run '^TestSubbotLeaseMongoNATS$'
+```
+
+The dedicated `mongo-conformance` step supplies both services. A local skip is
+not proof. The test removes its own unique database, pool streams and KV buckets;
+it does not exercise object-storage bodies. Mongo service provenance tests use
+real local filesystem locks separately from this distributed-lease witness.
+
+## The same replica set from an agent's Bash sandbox
+
+The recipe above assumes the test process and docker share a network
+namespace. An agent's Bash sandbox (Claude Code's bubblewrap one) does not:
+its namespace holds `lo` and nothing else, which `ip -o addr` prints in two
+lines, and docker's port publication is host-side — so `127.0.0.1:<published>`
+answers `connection refused` inside the sandbox while `docker port` shows the
+mapping, and the container's bridge address is `network unreachable`. The
+symptom is not an error, it is a wait: `mongostore.New` validates the
+connection through `pingPrimary`, which retries as long as its context lives
+(`pkg/store/mongo/ping.go`), and the context comes from `t.Deadline()`, so the
+test burns the whole `-timeout` before reporting — measured against a dead
+port, `-timeout 45s` reports after 40 s, which makes the documented
+`-timeout 1200s` a twenty-minute silence that reads as a store regression.
+
+A unix socket crosses the namespace boundary, being a filesystem object rather
+than a route. Run mongod on one in a bind-mounted scratch dir outside the
+repo, initiate the single-member set as above so transactions are available,
+and keep `directConnection=true`: the driver then connects only to the host in
+the URI and never discovers the `host:port` the member advertises, which would
+be a TCP route again (`SetDirect`, the driver's `clientoptions.go`). Run
+verbatim on 2026-11-01, where it carried a transaction-replay suite through
+the real `mongostore.SaveRun`.
+
+```bash
+name=iterion-mongo-sock                    # your own name: never a running container's
+sockdir=${TMPDIR:-/tmp}/$name              # outside the repo; mongod creates the socket here
+mkdir -p "$sockdir" && chmod 0777 "$sockdir"   # the image's mongod is not your uid
+docker run --rm -d --name "$name" --ulimit nofile=131072:131072 \
+  -v "$sockdir":/sock mongo:8.0 --replSet rs0 \
+  --unixSocketPrefix /sock --filePermissions 0777 --setParameter enableTestCommands=1
+# mongod answers a few seconds after the container exists — initiating before
+# that is ECONNREFUSED, and the set then stays unconfigured for good:
+for i in $(seq 1 30); do
+  docker exec "$name" mongosh --quiet --eval 'db.adminCommand({ ping: 1 })' >/dev/null 2>&1 && break
+  sleep 1
+done
+docker exec "$name" mongosh --quiet \
+  --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+for i in $(seq 1 30); do
+  st=$(docker exec "$name" mongosh --quiet \
+        --eval 'try { print(rs.status().members[0].stateStr) } catch (e) { print("NOTREADY") }' | tail -1)
+  [ "$st" = "PRIMARY" ] && break; sleep 2
+done; [ "$st" = "PRIMARY" ] || { echo "replica set never became PRIMARY"; exit 1; }
+
+# the socket path is the URI's host, percent-encoded, and must end in .sock
+uri="mongodb://$(printf %s "$sockdir/mongodb-27017.sock" | sed 's|/|%2F|g')/?directConnection=true"
+# devbox run starts in the devbox project dir, not the cwd: name the tree you mean
+root=$(dirname "$(git rev-parse --git-common-dir)")
+ITERION_TEST_MONGO_URI="$uri" devbox run -c "$root" -- \
+  bash -c "cd $PWD && go test -count=1 -timeout 1200s ./pkg/server/cloudpublisher/"
+docker logs --tail 50 "$name"              # capture before removing: the container is --rm
+docker rm -f "$name"
+```
+
+`--bind_ip_all` is absent on purpose: nothing dials this server over TCP, and
+`mongosh` inside the container reaches it on loopback. Both permissions are
+needed, and each is missed differently: a mount dir left at your own `0775`
+makes mongod exit 48 with the dir still empty — it does not run as your uid
+and has to create the socket there — while without `--filePermissions 0777`
+the socket appears as `srwx------` owned by the image's user and the host side
+gets `permission denied`. The socket inode outlives `docker rm` in the scratch
+dir; it is inert, and a rerun replaces it.
 
 ## Frontend and local services
 
@@ -191,7 +288,7 @@ iterion/
 ├── scripts/ + tooling/      # generation, release, and verification helpers
 ├── internal/httpx/          # module-private HTTP utility
 ├── third_party/             # checked-in third-party source/assets
-└── vendor/                  # vendored Go modules, including claw-code-go
+└── vendor/                  # vendored Go modules
 ```
 
 The labels `schedule-related`, `cloud-related`, and `extensions/state` above are conceptual groupings, not literal directories; inspect `pkg/` for the individual packages. This keeps the map useful as packages evolve.
@@ -202,7 +299,6 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 - `pkg/server` registers the HTTP route table that generates `openapi.json`; `task openapi:check` guards the committed spec and studio types.
 - `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
 - Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.
-- The module vendors [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) for in-process multi-provider execution. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
-- Bump the claw-code-go pin **only** with [`scripts/bump-claw.sh`](../scripts/bump-claw.sh): it pushes the claw commit if needed, then runs `go get @<sha>`, tidy, vendor, verify and commits. Never hand-write the pseudo-version — a locally computed, non-UTC timestamp fails `go mod verify` ("does not match version-control timestamp") and turns `vendor-check` red on `main` and on every PR merge ref (three times on 2026-07-11). claw-code-go is developed by this team (sibling worktrees under `.works/`): improving it while touching a seam that crosses it is in scope.
+- The in-process multi-provider runtime lives in `pkg/claw`, folded from [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) and maintained here as first-party code ([the fold](agents/backends/clawfold.md)): change it like any other package. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
 
 Before opening a change, run the gates your diff concerns (the narrower block above; `task check:fast` covers the cheap cross-cutting layer) and finish with `devbox run -- task check` when practical. Changes to OpenAPI, the SDK, Helm, desktop, or live-test declarations also need their domain-specific checks above.

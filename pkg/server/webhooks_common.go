@@ -122,6 +122,10 @@ type webhookEventMeta struct {
 	// not guarantee delivery order — see webhooks.DeferredPayloadIsStale.
 	// Empty when the payload omits it.
 	EventUpdatedAt string
+	// DeliveryID is the forge's own id of this event, the one its
+	// redeliveries carry again (forgeDeliveryID). Set by the lanes that
+	// read it; persisted as Delivery.ForgeDeliveryID.
+	DeliveryID string
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
@@ -135,7 +139,18 @@ type webhookEventMeta struct {
 // repo's shared gate_context, and a lane that skipped it would post its status
 // under the bot's default context — leaving the required one stale, which is
 // exactly what a manual /revi is supposed to repair.
-func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config) map[string]string {
+//
+// An UNTRUSTED target gets NEITHER layer (ADR-162 decision 4): these are the
+// base repository's configuration, and the base's configuration may stop a
+// fork run, never steer or grant it — a var pinned here decides where the run
+// posts, what it reads and which routing gates it narrows, all of which is
+// the repo's own choice about its OWN code. The check is the trust the
+// TARGET carries, not the config's lane kind, so a lane that later gains an
+// untrusted class inherits the floor without a second guard to forget.
+func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config, trust store.RunTrust) map[string]string {
+	if !trust.Trusted() {
+		return vars
+	}
 	mergeVarsInto(vars, cfg.LaunchVars)
 	mergeVarsInto(vars, cfg.OperatorLaunchVars)
 	return vars
@@ -161,6 +176,17 @@ func trustedVarNames(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// trustedVarNamesFor is trustedVarNames with the fork lane's floor: an
+// untrusted launch certifies NO routing-narrowing var names, because the
+// only names it could certify come from the base repository's operator
+// layer — which decision 4 withdraws from an untrusted target entirely.
+func trustedVarNamesFor(trust store.RunTrust, m map[string]string) []string {
+	if !trust.Trusted() {
+		return nil
+	}
+	return trustedVarNames(m)
 }
 
 // suppressedByHoldLabel applies the bot-agnostic hold-label veto shared by
@@ -222,6 +248,20 @@ func fillVarGaps(dst, src map[string]string) map[string]string {
 		}
 	}
 	return dst
+}
+
+// withForgeBaseURL stamps the webhook's pinned forge web base on a launch's
+// vars as forge_base_url when the config names one (cfg.ForgeBaseURL, the
+// instance the bot's token may call back to). A bot that calls its forge
+// with its own token — revi-converse's publish_reply — derives the API from
+// it instead of the PR URL's origin: the only way to reach a GitLab or a
+// Forgejo served under a sub-path. A bot that declares no such var drops it.
+// Stamped before the operator's layers, which keep the last word.
+func withForgeBaseURL(vars map[string]string, cfg webhooks.Config) map[string]string {
+	if base := strings.TrimSpace(cfg.ForgeBaseURL); base != "" {
+		vars["forge_base_url"] = base
+	}
+	return vars
 }
 
 // reviewPRVars composes the launch-vars map every forge-specific
@@ -457,7 +497,7 @@ func (s *Server) webhookForgeConnection(ctx context.Context, cfg webhooks.Config
 	if connID == "" || connID == cfg.ProvisionedBy {
 		return forge.Connection{}, false
 	}
-	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
+	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), cfg.TenantID, connID)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Debug("webhooks: forge connection %s for webhook %s: %v", connID, cfg.ID, err)
@@ -649,6 +689,28 @@ func (s *Server) checkBotPermitted(
 	return botID, true
 }
 
+// gateLabelBotVisibility is the label door's visibility arm (#2676): the
+// shared resolver's verdict, delivered as the family's filtered answer. It
+// records the filtered delivery, writes the 200 body and reports ok=false
+// when the bot is disabled — or when its visibility could not be read: a
+// refused overlay starts nothing, fail closed, the card door's rule.
+func (s *Server) gateLabelBotVisibility(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, botID, payloadHash, srcIP string) bool {
+	visible, err := s.botVisibleForLaunch(ctx, cfg.TenantID, botID)
+	if err == nil && visible {
+		return true
+	}
+	reason := fmt.Sprintf("bot %q is disabled in the catalogue — a label does not start it", botID)
+	if err != nil {
+		reason = fmt.Sprintf("the visibility of bot %q could not be read: %v", botID, err)
+	}
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+	if s.logger != nil {
+		s.logger.Warn("webhooks: %s/%s label launch refused: %s", cfg.Provider, meta.ProjectPath, reason)
+	}
+	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered, "reason": reason})
+	return false
+}
+
 // newWebhookDelivery builds the common fields of a delivery audit row.
 // Provider handlers layer the idempotency key + outcome-specific fields
 // (BotID, RunID, Error) on top.
@@ -671,6 +733,7 @@ func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payl
 		ClosesSubject:   meta.ClosesSubject,
 		SubjectSHA:      meta.SubjectSHA,
 		PayloadHash:     payloadHash,
+		ForgeDeliveryID: meta.DeliveryID,
 		Status:          status,
 		SourceIP:        srcIP,
 		ReceivedAt:      now,
@@ -723,7 +786,7 @@ func (s *Server) insertAndLaunchWebhook(
 ) {
 	s.acceptWebhookTargets(ctx, w, r, cfg, meta, []forgeLaunchTarget{{
 		BotID: botID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
-		Trust: prov.Trust, ExpectedSHA: prov.ExpectedSHA,
+		Trust: prov.Trust, ExpectedSHA: prov.ExpectedSHA, ForkAuthor: prov.ForkAuthor,
 	}}, payloadHash, srcIP)
 }
 
@@ -778,6 +841,11 @@ type launchProvenance struct {
 	// ExpectedSHA pins the commit the admission proved, for a RepoRef whose
 	// author can move it between the admission and the runner's fetch.
 	ExpectedSHA string
+	// ForkAuthor names the OUTSIDE author the fork review gesture admitted,
+	// for the per-contributor bound the launch gate meters (decision 5).
+	// Nil on every lane but the fork gesture's — an untrusted target that
+	// names no author is refused by the gate, never launched unmetered.
+	ForkAuthor *webhooks.ForkAuthorRef
 }
 
 // forgeLaunchTarget is one resolved (bot, idempotency key, vars) triple of a
@@ -790,11 +858,24 @@ type forgeLaunchTarget struct {
 	retryAttempt *int
 	// durableRetry is set by intake; internal gate/debounce launches keep their own recovery owner.
 	durableRetry bool
-	BotID        string
-	IdemKey      string
-	Vars         map[string]string
-	RepoURL      string
-	RepoRef      string
+	// onLaunched, when set, is called with the launch's result once it
+	// completes — the fork review gesture's Q1 note, which needs the run
+	// link and posts AFTER the launch, from the booking context the tail
+	// already runs it in. Never persisted: a relaunch from the durable retry
+	// row (the sweeper, the manual retry — prepareWebhookRetry) rebuilds the
+	// target without it and posts no note, and a duplicate fires none.
+	onLaunched func(webhookLaunchResult)
+	// onClaimDecided, when set, learns how the tail decided this target's
+	// claim before anything launches: claimed (the row under IdemKey is this
+	// delivery's now — inserted, or a failed claim taken over), or a
+	// duplicate of existing, the row that answers it. Never persisted, like
+	// onLaunched; an admission refusal decides no claim and fires none.
+	onClaimDecided func(claimed bool, existing *webhooks.Delivery)
+	BotID          string
+	IdemKey        string
+	Vars           map[string]string
+	RepoURL        string
+	RepoRef        string
 	// Trust says who wrote the code at (RepoURL, RepoRef). The zero value is
 	// the trusted default, so every target built before the fork lane existed
 	// keeps its meaning. launchWebhookTarget cross-checks it against the
@@ -805,6 +886,17 @@ type forgeLaunchTarget struct {
 	// author can move (a fork pull request's head). Carried to the runner,
 	// which refuses the run when the fetch lands elsewhere.
 	ExpectedSHA string
+	// ForkAuthor names the outside author a fork gesture admitted, for the
+	// per-contributor bound the tail's admission gate meters. Nil on every
+	// lane but the fork gesture's.
+	ForkAuthor *webhooks.ForkAuthorRef
+}
+
+// claimDecided reports the tail's claim decision to the target's observer.
+func (t forgeLaunchTarget) claimDecided(claimed bool, existing *webhooks.Delivery) {
+	if t.onClaimDecided != nil {
+		t.onClaimDecided(claimed, existing)
+	}
 }
 
 // webhookLaunchResult is one bot's outcome inside a (possibly multi-bot)
@@ -1157,33 +1249,11 @@ func (s *Server) prepareWebhookTarget(
 	// lane's neutering — a silent, confusing degradation. A trusted config
 	// launching a fork target is the real hazard: it is how an untrusted tree
 	// would reach a publish grant and the tenant's secrets.
-	// Both predicates, each on the side it belongs to, and NOT `ForkLane !=
-	// IsFork()`: that spelling admits an unrecognised trust onto an ordinary
-	// lane, because IsFork() is false for it — the exact reading store.RunTrust
-	// forbids ("Never use it to gate a capability — Trusted() is that
-	// predicate"), at the one site that gates the most. An ordinary lane
-	// therefore requires PROVEN trusted; the fork lane requires the one
-	// untrusted class this binary can reason about, so a third class added
-	// later is served by neither until someone decides what it means.
-	if (cfg.ForkLane && !t.Trust.IsFork()) || (!cfg.ForkLane && !t.Trust.Trusted()) {
-		reason := forkLaneMismatchRefusal(cfg.ForkLane, t.Trust)
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
-		if s.logger != nil {
-			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
-		}
-		out.Status = webhooks.StatusFiltered
-		out.Error = reason
-		return out, nil
-	}
-
-	// An untrusted launch MUST carry the commit its admission proved. The
-	// runner's comparison is a no-op on an empty pin, so the two facts are
-	// only a guarantee together — and "they always travel together" was
-	// written as a comment on DeferredTarget without ever being checked.
-	// Checked here, at the chokepoint all five callers cross.
-	if !t.Trust.Trusted() && strings.TrimSpace(t.ExpectedSHA) == "" {
-		reason := "untrusted launch carries no admitted commit (trust=" + string(t.Trust) +
-			"): the ref it would fetch is one its author can move, and an empty pin disables the runner's comparison entirely"
+	// The precondition lives in webhookProvenanceRefusal, which the durable
+	// retry and the board branch of dispatchInvocation cross too — the board
+	// branch before it writes any card, since a Ready card is a launch that
+	// never reaches this line.
+	if reason := webhookProvenanceRefusal(cfg, t.Trust, t.ExpectedSHA); reason != "" {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		if s.logger != nil {
 			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
@@ -1219,6 +1289,7 @@ func (s *Server) prepareWebhookTarget(
 			if existing.Status != webhooks.StatusLaunchError || existing.RunID != "" {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				out.duplicateOf(existing)
+				t.claimDecided(false, &existing)
 				return out, nil
 			}
 			ex := existing
@@ -1251,7 +1322,31 @@ func (s *Server) prepareWebhookTarget(
 	// Select predecessors without side effects. Admission reads maintenance
 	// ONCE, after this lookup, and credits only verified live replacement slots.
 	predecessors := s.supersededRunIDs(ctx, cfg, meta, botID)
-	adm, d := s.gateLaunch(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors})
+	// The subject the gate meters carries the target's TRUST and — on the
+	// fork lane — the outside author the admission proved (decision 5):
+	// the gate meters the per-contributor bound from it, and every arm of
+	// it that would admit a launch unmetered refuses an untrusted subject
+	// instead of failing open.
+	//
+	// A fork target carries its funding judge too (webhookForkFunding): the
+	// gate refuses, typed and before either counter moves, a fork run its
+	// team's own keys cannot fund.
+	adm, d := s.gateLaunch(ctx, launchSubject{
+		BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors,
+		Trust: t.Trust, ForkAuthor: t.ForkAuthor,
+		Funding: s.webhookForkFunding(cfg, meta, t),
+	})
+	// The admission composed the author's metering subject (org id, else
+	// team id — the same id the org budget metered on). Stamped back onto
+	// the target HERE, at the one point every later carrier reads: the
+	// durable retry row below, and the launcher closure, whose LaunchSpec
+	// persists it onto the run document and the queue message so the
+	// runner's second charge and a resume re-enter the SAME subject.
+	if adm != nil && adm.forkSubject != "" && t.ForkAuthor != nil {
+		fa := *t.ForkAuthor
+		fa.Subject = string(adm.forkSubject)
+		t.ForkAuthor = &fa
+	}
 	if d != nil {
 		if reusePriorFailure != nil {
 			out = s.failWebhookRetry(ctx, *reusePriorFailure, d.reason, false)
@@ -1275,6 +1370,7 @@ func (s *Server) prepareWebhookTarget(
 		delivery.RetryTarget = &webhooks.DeferredTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: cloneWebhookVars(t.Vars),
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
+			ForkAuthor: t.ForkAuthor,
 		}
 		delivery.PublicBase = s.publicBaseURL(r)
 	}
@@ -1313,9 +1409,11 @@ func (s *Server) prepareWebhookTarget(
 				out.DeliveryID = reusePriorFailure.ID
 				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
 					out.duplicateOf(existing)
+					t.claimDecided(false, &existing)
 				}
 				return out, nil
 			}
+			t.claimDecided(true, nil)
 		}
 	} else if s.webhookDeliveries != nil {
 		if err := s.webhookDeliveries.Insert(ctx, delivery); err != nil {
@@ -1339,6 +1437,7 @@ func (s *Server) prepareWebhookTarget(
 				}
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				out.duplicateOf(existing)
+				t.claimDecided(false, &existing)
 				return out, nil
 			}
 			adm.rollback(s.logger)
@@ -1347,6 +1446,7 @@ func (s *Server) prepareWebhookTarget(
 			out.httpStatus = http.StatusInternalServerError
 			return out, nil
 		}
+		t.claimDecided(true, nil)
 	}
 
 	out.Status, out.DeliveryID = webhooks.StatusAccepted, delivery.ID
@@ -1356,10 +1456,10 @@ func (s *Server) prepareWebhookTarget(
 		launch := s.webhookLaunchBot
 		if launch == nil {
 			// A closure over cfg rather than a bare method reference: the real
-			// launcher needs the webhook's own retry policy, and threading it
-			// as a ninth positional parameter would churn every test fake of
-			// this seam for one field.
-			launch = s.webhookLauncherFor(cfg, t)
+			// launcher needs the webhook's own retry policy and the delivery
+			// row this launch answers, and threading those as further
+			// positional parameters would churn every test fake of this seam.
+			launch = s.webhookLauncherFor(cfg, t, delivery.ID, webhookLaunch(r, srcIP))
 		}
 		// Hand the run any prior review of the same PR, if it asked for one. Done
 		// HERE, in the tail every lane funnels through, rather than per provider
@@ -1370,7 +1470,7 @@ func (s *Server) prepareWebhookTarget(
 		s.stampHandoffs(ctx, cfg, botID, vars, handoffQuery{
 			PRURL:   vars["pr_url"],
 			HeadSHA: vars["head_sha"],
-		})
+		}, t.Trust)
 		// Deterministic forge review publishing: a review-shaped delivery
 		// carries a pr_url var — mint a per-run publish grant scoped to the
 		// webhook's tenant so the bot's deterministic publish node posts
@@ -1523,6 +1623,77 @@ func (s *Server) prepareWebhookTarget(
 // an explicit resume — the runner never imports the webhook layer, so the
 // vocabulary lives in the store, not here.
 const prClosedRunReason = store.RunEndReasonPRClosed
+
+// forkAuthorSubject returns the composed per-contributor metering subject
+// a fork target carries once the admission gate has metered it, "" when the
+// target is not a fork one or has not been admitted yet.
+func (t forgeLaunchTarget) forkAuthorSubject() string {
+	if t.ForkAuthor == nil {
+		return ""
+	}
+	return t.ForkAuthor.Subject
+}
+
+// webhookProvenanceRefusal is the ONE precondition every launch from a
+// webhook config crosses before anything is metered, recorded or launched —
+// the launch tail (prepareWebhookTarget), the durable retry, and the board
+// branch of dispatchInvocation before it writes any card (with a coordinator
+// the card IS the launch and the tail is never reached; without one the
+// tracking card would outlive the tail's refusal). "" admits; otherwise the
+// refusal's wording.
+//
+// Three facts, in order:
+//
+//   - Lane disjointness, both directions. A fork-lane config launching a
+//     trusted target would run a repository's own work with the fork lane's
+//     neutering — and a TRUSTED launch on that lane's entries (an issue
+//     label, a board card) is the lane serving what it exists not to serve.
+//     A trusted config launching a fork target is the real hazard: it is how
+//     an untrusted tree would reach a publish grant and the tenant's secrets.
+//     Both predicates sit on their own side, and NOT `ForkLane != IsFork()`:
+//     that spelling admits an unrecognised trust onto an ordinary lane,
+//     because IsFork() is false for it — the reading store.RunTrust forbids
+//     ("Never use it to gate a capability — Trusted() is that predicate"). An
+//     ordinary lane requires PROVEN trusted; the fork lane requires the one
+//     untrusted class this binary can reason about, so a third class added
+//     later is served by neither until someone decides what it means.
+//   - An untrusted launch carries the commit its admission proved. The
+//     runner's comparison is a no-op on an empty pin, so the two facts are
+//     only a guarantee together.
+//   - A fork-lane config names the runner pool its runs execute on
+//     (ADR-162 Q3 and decision 10: only through the publisher, on a runner
+//     whose sandbox resolves active). A config stored before the field
+//     existed names none, and its fork launch is refused here, before either
+//     budget is metered — the publisher would refuse it too, after the gate.
+func webhookProvenanceRefusal(cfg webhooks.Config, trust store.RunTrust, expectedSHA string) string {
+	if (cfg.ForkLane && !trust.IsFork()) || (!cfg.ForkLane && !trust.Trusted()) {
+		return forkLaneMismatchRefusal(cfg.ForkLane, trust)
+	}
+	if !trust.Trusted() && strings.TrimSpace(expectedSHA) == "" {
+		return "untrusted launch carries no admitted commit (trust=" + string(trust) +
+			"): the ref it would fetch is one its author can move, and an empty pin disables the runner's comparison entirely"
+	}
+	if cfg.ForkLane && strings.TrimSpace(cfg.ForkLanePool) == "" {
+		return forkLaneNoPoolRefusal
+	}
+	return ""
+}
+
+// forkLanePoolFor is the pool a webhook launch names for its run: the
+// fork-lane config's own for an untrusted target, none for a trusted one —
+// whose pool is its team's mapping, decided where the run is published. The
+// provenance precondition has already refused an untrusted target on an
+// ordinary config and a fork-lane config without a pool.
+func forkLanePoolFor(cfg webhooks.Config, trust store.RunTrust) string {
+	if trust.Trusted() {
+		return ""
+	}
+	return strings.TrimSpace(cfg.ForkLanePool)
+}
+
+// forkLaneNoPoolRefusal is the delivery-row reason of a fork launch on a
+// fork-lane config that names no runner pool.
+const forkLaneNoPoolRefusal = "fork lane names no runner pool — a fork run executes only on the pool its fork-lane config names, whose runners resolve the kubernetes sandbox for every run (ADR-162 decision 10), and this config predates fork_lane_pool, which is set at creation only: delete and recreate the webhook naming the pool"
 
 // forkLaneMismatchRefusal words the launch tail's lane-disjointness refusal.
 // It exists as its own helper, beside forkGuardRefusal, because the two
@@ -1785,7 +1956,7 @@ func (s *Server) runIsStoppable(ctx context.Context, runID string) bool {
 		return true
 	case store.RunStatusFailedResumable:
 		// Only the ones something will actually come back for.
-		return run.RetryState != nil && run.RetryState.RetryAfter != nil
+		return runWillResume(run, false, time.Now().UTC())
 	default:
 		return false
 	}

@@ -1,5 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
-import { formatCost, formatDateTime } from "@/lib/format";
+import { formatCost, formatDateTime, shortKeyID } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/Badge";
@@ -202,10 +202,17 @@ export default function CredPoolTab({
               </THead>
               <TBody>
                 {donors.map((d) => (
-                  <Tr key={`${d.user_id}-${d.source}-${d.ref}`}>
+                  // Keyed by the entry's own id: (user, source, ref) collides
+                  // the moment one lender lends two keys of one provider.
+                  <Tr key={d.id}>
                     <Td>{d.user_id}</Td>
                     <Td>
                       {d.ref}
+                      {d.key_id && (
+                        <span className="text-fg-muted ml-2 font-mono text-xs" title={d.key_id}>
+                          {shortKeyID(d.key_id)}
+                        </span>
+                      )}
                       {d.metered && (
                         <Badge variant="warning" className="ml-2">
                           metered

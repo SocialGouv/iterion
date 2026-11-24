@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -157,24 +156,11 @@ func (c *ExecutionContext) Normalize() error {
 	if err := validateWorkspaceMode(c.Workspace.Mode); err != nil {
 		return err
 	}
-	seen := make(map[string]struct{}, len(c.BusinessStores))
-	for i := range c.BusinessStores {
-		ref := &c.BusinessStores[i]
-		if strings.TrimSpace(ref.ID) == "" {
-			return fmt.Errorf("store: execution context business_stores[%d].id is required", i)
-		}
-		if strings.TrimSpace(ref.Kind) == "" {
-			return fmt.Errorf("store: execution context business_stores[%d].kind is required", i)
-		}
-		key := ref.Kind + "\x00" + ref.Namespace + "\x00" + ref.ID
-		if _, ok := seen[key]; ok {
-			return fmt.Errorf("store: duplicate execution context business store %q", ref.ID)
-		}
-		seen[key] = struct{}{}
+	refs, err := normalizeBusinessStores(c.BusinessStores)
+	if err != nil {
+		return err
 	}
-	sort.SliceStable(c.BusinessStores, func(i, j int) bool {
-		return contextRefKey(c.BusinessStores[i]) < contextRefKey(c.BusinessStores[j])
-	})
+	c.BusinessStores = refs
 	return nil
 }
 
@@ -188,8 +174,4 @@ func validateWorkspaceMode(mode WorkspaceMode) error {
 	default:
 		return fmt.Errorf("store: unsupported execution context workspace mode %q", mode)
 	}
-}
-
-func contextRefKey(ref ContextRef) string {
-	return ref.Kind + "\x00" + ref.Namespace + "\x00" + ref.ID + "\x00" + ref.Revision
 }

@@ -130,10 +130,13 @@ export default function ComputeForm({ decl }: Props) {
               >
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-caption text-fg-subtle font-mono">#{i}</span>
+                  {/* Sibling entries repeat the visible "Remove"; the key is
+                      what a screen reader needs to tell them apart. */}
                   <Button
                     variant="ghost"
                     size="sm"
                     className="text-danger hover:text-danger-fg"
+                    aria-label={`Remove entry ${e.key || i + 1}`}
                     onClick={() => removeExprAt(i)}
                   >
                     Remove

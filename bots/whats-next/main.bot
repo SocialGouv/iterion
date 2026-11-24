@@ -31,9 +31,12 @@
 ##                     Nexie to close the session.
 ##
 ## Conversation continuity: the loop edge chat -> nexie carries
-## outputs.nexie._session_id (+ fingerprint) so every turn resumes the
-## SAME claude session — Nexie remembers the whole conversation
-## without re-shipping context through prompts.
+## outputs.nexie._session_id (+ fingerprint), so a turn RESUMES the
+## claude session the previous one left instead of re-shipping context
+## through prompts. Best-effort by contract (`inherit_if_available`):
+## when the backing state is gone — a fresh pod, a restarted runner —
+## the engine drops the id and the turn runs fresh on
+## `operator_message`, which is this node's whole input.
 ##
 ## Run:
 ##   devbox run -- iterion run bots/whats-next/main.bot \
@@ -56,11 +59,16 @@ vars:
 prompt nexie_system:
   You are Nexie, the operator's standing co-CTO for the workspace at
   {{vars.workspace_dir}}. You run inside iterion as a long-lived chat
-  session: each of your turns ends with a structured reply, the
+  session: each of your turns ends with a structured reply, and the
   operator answers whenever they want (minutes or days later — the
-  pause costs nothing), and your LLM session persists across turns,
-  so you remember the whole conversation. Act like a sharp colleague
-  in a chat window, not like a workflow.
+  pause costs nothing). Your model session is resumed per turn on a
+  BEST-EFFORT basis: usually you still hold the conversation, and when
+  its backing state is gone the engine runs the turn fresh, with the
+  operator's message as your only context. So never answer from a
+  memory you cannot see: when the message refers to something you no
+  longer hold, say so in one line and re-read the board and the repo
+  instead of guessing. Act like a sharp colleague in a chat window,
+  not like a workflow.
 
   Anchor every file read, glob and grep on {{vars.workspace_dir}} — never on
   your cwd: evidence read in the wrong tree is right for the wrong tree.
@@ -172,9 +180,16 @@ prompt nexie_system:
       * Clean up together: propose duplicates to merge, stale items
         to close, wrong labels/bots to fix. Request `board.issue.comment`
         (one-line rationale) before a close transition.
-  - Memory: the inherited model session carries this conversation. Do not
-    write a workspace memory file; durable memory writes are not part of the
-    host action catalogue yet.
+  - Memory: the resumed model session carries this conversation when the
+    engine could resume it, and nothing carries it when it could not — so
+    what you remember is best-effort, never the record. Do not write a
+    workspace memory file, and do not promise one: you have no path to
+    it. `memory_read`/`memory_write`/`memory_list` are claw-only, and
+    the write surface that would reach the tree directly is withheld
+    twice over — your `tools:` list does not name it, and the runtime
+    gate denies it (below). The board IS your durable record: a
+    decision, a constraint or an open thread worth keeping goes into a
+    ticket or a comment, where the next session reads it.
 
   ─── Action guardrails ───────────────────────────────────────────
   - Explicit + targeted instruction (create/move/close/dispatch ONE
@@ -349,9 +364,12 @@ agent nexie:
   ## Each loop turn inherits the previous turn's claude session via
   ## the loop edge's _session_id mapping — that's what makes this a
   ## conversation instead of N one-shot invocations. inherit_if_available
-  ## (not inherit) so turn 1 starts fresh instead of erroring.
+  ## (not inherit) so turn 1 starts fresh instead of erroring, and so
+  ## does a later turn whose backing session the engine cannot find:
+  ## the mode is best-effort, which is why the prompt tells Nexie her
+  ## memory may be gone rather than promising it.
   session: inherit_if_available
-  tools: [read_file, glob, grep, skill]
+  tools: [read_file, glob, grep, skill, agent]
   capabilities: [board.read]
   ## A study's board-execution turn alone runs 30-40 board calls
   ## (epic + framed tickets + labels + set_bot + promotions) on top
@@ -379,12 +397,13 @@ human chat:
 
 ## Entry projection: turn 1's operator_message comes from
 ## vars.initial_message so nexie has ONE input contract for entry and
-## loop alike. Deterministic, never blocks.
+## loop alike. An empty seed asks Nexie to open the session; supplied
+## messages stay verbatim, including native slash commands.
 compute seed:
   input: seed_input
   output: turn_input
   expr:
-    operator_message: "vars.initial_message"
+    operator_message: "if(vars.initial_message == '', 'Open the session with the board state and a recommendation, following the conversation contract.', vars.initial_message)"
 
 ## Deterministic projection for the when-clauses + reply passthrough
 ## (the chat node's input references outputs.gate so it never has to
@@ -399,16 +418,17 @@ compute gate:
 
 ## ─── Workflow ─────────────────────────────────────────────────────
 workflow whats_next:
-  ## Nexie mutates the board and memory, never the repo — a git
-  ## worktree would only produce phantom storage branches (bilan
-  ## 2026-06-22) and aim workspace_dir at a tree without .iterion.
+  ## The conversation stays in the operator's workspace so it reads the
+  ## intended board. Native Agent calls may create temporary Git worktrees
+  ## when they request isolation; the audit remains read-only by instruction,
+  ## not by an OS sandbox (documented in skills/repo-survey.md).
   worktree: none
   ## A host action policy is not a boundary if the model can bypass it with
   ## curl or a direct board.json edit. Write-shaped primitives are therefore
-  ## removed at the runtime gate. Internal board.read and ask_user tools are
+  ## removed at the runtime gate for direct calls. Internal board.read and ask_user tools are
   ## infrastructure and remain available through their own contracts.
   permission: deny
-  allow: ["Read(**)", "Glob", "Grep", "Skill"]
+  allow: ["Read(**)", "Glob", "Grep", "Skill", "Agent", "Task"]
   deny: ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch"]
 
   entry: seed

@@ -64,16 +64,23 @@ func TestMarketplace_PublicAccessGating(t *testing.T) {
 	writeFixtureBundle(t, repo, "mybot")
 	srv, h, store := newAuthedCloudMarketplaceServer(t)
 
-	// Seed an approved public (builtin-style) entry so an anonymous viewer
-	// can see it — a *pending* submission would be invisible by design.
+	// Seed an approved public entry so an anonymous viewer can see it — a
+	// *pending* submission would be invisible by design. It carries the
+	// submitter / reviewer account ids a moderated cloud submission would,
+	// so the public view's projection is what the assertions below see.
 	if err := store.Upsert(context.Background(), marketplace.Entry{
-		Slug:    "mybot",
-		Name:    "mybot",
-		RepoURL: repo, // local bundle dir, as a builtin seed records it
-		Version: "0.1.0",
-		Source:  marketplace.SourceBuiltin,
-		Status:  marketplace.StatusApproved,
-		Scope:   marketplace.ScopePublic,
+		Slug:        "mybot",
+		Name:        "mybot",
+		Author:      "Fixture Author",
+		RepoURL:     repo, // local bundle dir, as a builtin seed records it
+		Version:     "0.1.0",
+		README:      "# mybot",
+		Source:      marketplace.SourceBuiltin,
+		Status:      marketplace.StatusApproved,
+		Scope:       marketplace.ScopePublic,
+		SubmittedBy: "u-owner",
+		ReviewedBy:  "u-admin",
+		ReviewedAt:  "2026-11-03T00:00:00Z",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +111,29 @@ func TestMarketplace_PublicAccessGating(t *testing.T) {
 	if len(list.Bots) != 1 || list.Bots[0].Slug != "mybot" {
 		t.Fatalf("anon browse mismatch: %+v", list.Bots)
 	}
+	// The public listing is a projection: no account ids, no moderation
+	// metadata — but the catalogue fields are all there.
+	var rawList struct {
+		Bots []map[string]any `json:"bots"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawList); err != nil {
+		t.Fatalf("decode raw list: %v", err)
+	}
+	if len(rawList.Bots) != 1 {
+		t.Fatalf("raw list = %d entries", len(rawList.Bots))
+	}
+	assertPublicMarketplaceView(t, "anon browse", rawList.Bots[0])
 
-	// Anonymous detail → 200.
-	if rec := do(http.MethodGet, "/api/v1/marketplace/bots/mybot", nil); rec.Code != http.StatusOK {
+	// Anonymous detail → 200, same projection.
+	rec = do(http.MethodGet, "/api/v1/marketplace/bots/mybot", nil)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("anon detail = %d; %s", rec.Code, rec.Body.String())
 	}
+	var rawDetail map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawDetail); err != nil {
+		t.Fatalf("decode raw detail: %v", err)
+	}
+	assertPublicMarketplaceView(t, "anon detail", rawDetail)
 
 	// Anonymous .botz download → 200 + a re-openable bundle named "mybot".
 	rec = do(http.MethodGet, "/api/v1/marketplace/bots/mybot/download", nil)
@@ -153,4 +178,36 @@ func TestMarketplace_PublicAccessGating(t *testing.T) {
 		t.Errorf("anon download of pending entry = %d; want 404", rec.Code)
 	}
 	_ = srv
+}
+
+// marketplaceViewerOnlyKeys are the wire keys a public or non-owner read
+// must never carry (account ids and moderation metadata).
+var marketplaceViewerOnlyKeys = []string{"submitted_by", "reviewed_by", "reviewed_at", "reject_reason"}
+
+// assertPublicMarketplaceView checks a decoded entry body is the public
+// projection: the viewer-only keys are absent and the catalogue fields
+// (author, repo_url, readme) are present.
+func assertPublicMarketplaceView(t *testing.T, where string, body map[string]any) {
+	t.Helper()
+	for _, k := range marketplaceViewerOnlyKeys {
+		if v, ok := body[k]; ok {
+			t.Errorf("%s: public view carries %q = %v", where, k, v)
+		}
+	}
+	for _, k := range []string{"author", "repo_url", "readme"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("%s: public view lacks %q: %v", where, k, body)
+		}
+	}
+}
+
+// assertViewerOnlyKeysPresent checks a decoded entry body still carries the
+// moderation metadata — what the submitter and super-admins read.
+func assertViewerOnlyKeysPresent(t *testing.T, where string, body map[string]any, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		if v, _ := body[k].(string); v == "" {
+			t.Errorf("%s: entitled view lacks %q: %v", where, k, body)
+		}
+	}
 }

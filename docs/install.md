@@ -31,7 +31,7 @@ curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
 Or install to a custom directory (no sudo needed):
 
 ```bash
-INSTALL_DIR=. curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
+curl -fsSL https://socialgouv.github.io/iterion/install.sh | INSTALL_DIR=. sh
 ```
 
 ### Homebrew (macOS, Linux)

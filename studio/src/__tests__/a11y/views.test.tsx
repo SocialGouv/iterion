@@ -21,7 +21,7 @@ import AuditTab from "@/views/teams/tabs/AuditTab";
 import { RunViewSkeleton, RunViewLoadError } from "@/components/Runs/runView/RunViewLoadStates";
 import AdminNav from "@/views/admin/AdminNav";
 import { ADMIN_BASE } from "@/views/admin/adminRoutes";
-import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
+import { setupMatchMedia, expectNoViolationsStrict } from "./axeHelpers";
 
 // jsdom lacks matchMedia; the theme store + a few hooks read it on mount.
 setupMatchMedia();
@@ -50,17 +50,17 @@ describe("a11y / composed surfaces", () => {
   afterEach(() => cleanup());
 
   it("Settings · AppearanceTab — theme + chat-input radio groups", async () => {
-    await expectNoViolations(mount(<AppearanceTab />), "AppearanceTab");
+    await expectNoViolationsStrict(mount(<AppearanceTab />), "AppearanceTab");
   });
 
   it("Settings · AboutTab — version/info panel", async () => {
-    await expectNoViolations(mount(<AboutTab desktopFeatures={false} />), "AboutTab");
+    await expectNoViolationsStrict(mount(<AboutTab desktopFeatures={false} />), "AboutTab");
   });
 
   it("Teams · AuditTab — admin-only gate (no network)", async () => {
     // canManage=false short-circuits to a pure EmptyState before any
     // fetch, so this exercises the tab's landmark/label wiring under jsdom.
-    await expectNoViolations(
+    await expectNoViolationsStrict(
       mount(<AuditTab teamID="team-1" canManage={false} />),
       "AuditTab",
     );
@@ -70,11 +70,12 @@ describe("a11y / composed surfaces", () => {
     // Mounted the way the console mounts it: inside the studio base and the
     // nested /admin route, which is what decides its hrefs.
     //
-    // axe only: it reports a dangling aria-labelledby as *incomplete* and
-    // expectNoViolations reads violations only, so the section naming and the
-    // current entry are pinned by AdminNav.test.tsx, not here.
+    // The dangling aria-labelledby axe reports as *incomplete* is the one
+    // this entry used to drop; the strict helper fails on it now. The
+    // section naming and the current entry stay pinned by AdminNav.test.tsx
+    // — by accessible name, which is more than an axe rule can say.
     const loc = memoryLocation({ path: `/studio${ADMIN_BASE}/users` });
-    await expectNoViolations(
+    await expectNoViolationsStrict(
       mount(
         <Router hook={loc.hook} base="/studio">
           <Route path={ADMIN_BASE} nest>
@@ -87,11 +88,11 @@ describe("a11y / composed surfaces", () => {
   });
 
   it("RunView · skeleton load state", async () => {
-    await expectNoViolations(mount(<RunViewSkeleton />), "RunViewSkeleton");
+    await expectNoViolationsStrict(mount(<RunViewSkeleton />), "RunViewSkeleton");
   });
 
   it("RunView · error load states (404 + generic)", async () => {
-    await expectNoViolations(
+    await expectNoViolationsStrict(
       mount(
         <div>
           <RunViewLoadError
@@ -113,7 +114,7 @@ describe("a11y / composed surfaces", () => {
   });
 
   it("Runs · EventLog — the console toolbar, axe smoke", async () => {
-    await expectNoViolations(
+    await expectNoViolationsStrict(
       mount(
         <EventLog
           events={[]}
@@ -127,10 +128,10 @@ describe("a11y / composed surfaces", () => {
   });
 
   it("Runs · EventsTab — the detail tab toolbar, axe smoke", async () => {
-    await expectNoViolations(mount(<EventsTab events={[]} />), "EventsTab");
+    await expectNoViolationsStrict(mount(<EventsTab events={[]} />), "EventsTab");
   });
 
   it("Library · LibraryPanel — the side panel, axe smoke", async () => {
-    await expectNoViolations(mount(<LibraryPanel />), "LibraryPanel");
+    await expectNoViolationsStrict(mount(<LibraryPanel />), "LibraryPanel");
   });
 });

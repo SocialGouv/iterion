@@ -42,6 +42,13 @@ func requirePiBinary(t *testing.T) string {
 				"(npm i -g @earendil-works/pi-coding-agent, or set ITERION_PI_BIN)")
 		}
 	}
+	// Every real-binary scenario owns the agent configuration, whether it
+	// invokes pi directly or through iterion's higher-precedence override.
+	// Scope this to the scenario: env-resolution tests need the ambient
+	// variables absent and cannot use a suite-wide override.
+	agentDir := t.TempDir()
+	t.Setenv("ITERION_PI_AGENT_DIR", agentDir)
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
 	return bin
 }
 

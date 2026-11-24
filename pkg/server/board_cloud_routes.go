@@ -25,21 +25,28 @@ func (s *Server) registerCloudBoardRoutes() {
 }
 
 // mutatingRungAuth is the ONE definition of the member rung as HTTP
-// middleware, and the two wrappers below are its only instances: a mount
-// wraps reads as well as writes, and on a read it is inert — requireAuth,
-// then, on a state-changing method only, the member rung the mutation takes.
-// Its two instances guard the surfaces that FILL a queue a machine
-// principal drains: a board's Ready column (the dispatcher, boarddispatch.go)
-// and a trigger subscription (the spine's serviceLauncher, which launches
-// under machineLaunchCtx). Both drains are exempt from the rung by kind, so
-// the authorization is owed where the queue is filled, not where the daemon
-// launches it. The detail is the refused caller's one sentence, so each
-// family says what the caller was changing.
+// middleware: a mount wraps reads as well as writes, and on a read it is
+// inert — requireAuth, then, on a state-changing method only, the member
+// rung the mutation takes. Its instances guard the surfaces a machine
+// principal CONSUMES, where the consumer is exempt from the rung by kind:
+// a board's Ready column (the dispatcher, boarddispatch.go), a trigger
+// subscription (the spine's serviceLauncher, which launches under
+// machineLaunchCtx) and a team memory space (the engine, which reads the
+// documents back into an agent run — memory_routes.go). The authorization
+// is therefore owed where the queue is filled or the instruction is
+// written, not where the daemon acts on it. The detail is the refused
+// caller's one sentence, so each family says what the caller was changing.
 //
 // The refusal renders through writeRungDenial, not writeLaunchDenial: same
 // token, status and envelope, no metric — iterion_launch_denied_total counts
 // the admission gate's refusals, and a refused board write is not a refused
 // launch (launch_gate.go holds both renderers side by side).
+//
+// A family's instance is three declarations next to its registrar — the
+// detail constant, the wrapper, the denial reader — and nothing else: the
+// decision below is shared, so two families cannot drift into disagreeing
+// about who may spend the org's money (the cross-family witness of
+// trigger_write_rung_test.go holds them to one envelope).
 func (s *Server) mutatingRungAuth(detail string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"math"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // MaxReported is how many diagnostics of one code, errors and warnings
@@ -60,8 +62,24 @@ func reportLimits() (perCode, perSeverity int) {
 	return MaxReported, MaxReportedOfASeverity
 }
 
-// Add records d and reports whether it was kept.
+// Bounded is d with its Message and Hint held to expr.MaxDiagnosticText —
+// the one door every diagnostic that reaches a user passes, at the
+// recording doors (Report.Add, the compiler's emit) and at the constructors
+// that join no report (the YAML twin's docDiag, the unit loader's first
+// refusal, the server's rewrite of a recorded message): whatever the site
+// composed — an anchor name, an import path, a workflow name of any length
+// — a message is a bounded reading of it, never the text whole (#2801).
+func Bounded(d Diagnostic) Diagnostic {
+	d.Message, d.Hint = expr.Clip(d.Message, expr.MaxDiagnosticText), expr.Clip(d.Hint, expr.MaxDiagnosticText)
+	return d
+}
+
+// Add records d and reports whether it was kept. The message and the hint
+// are held to expr.MaxDiagnosticText here — the one door every reader of a
+// source records through (the parser, the YAML twin's speller and guard,
+// the unit loader) — whatever the site composed.
 func (r *Report) Add(d Diagnostic) bool {
+	d = Bounded(d)
 	if r.codes == nil {
 		r.codes = map[reportKey]*codeCount{}
 		r.limit, r.total = reportLimits()

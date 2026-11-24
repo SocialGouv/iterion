@@ -156,6 +156,10 @@ func (s *Server) handlePatchForgeIntegration(w http.ResponseWriter, r *http.Requ
 	}
 	ri.UpdatedAt = time.Now().UTC()
 	if err := s.forgeIntegrations.Update(r.Context(), ri); err != nil {
+		if errors.Is(err, forge.ErrIntegrationConflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -470,7 +474,7 @@ func forEachForgeIssuePage(ctx context.Context, ic forge.IssueClient, repo strin
 // as much as their start instants differ. That only ever widens the next
 // window, which is a re-read.
 func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge.RepoIntegration) (mirrored, created, updated int, err error) {
-	conn, err := s.forgeConnections.Get(ctx, ri.ConnectionID)
+	conn, err := s.forgeConnections.Get(ctx, ri.TenantID, ri.ConnectionID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("connection: %w", err)
 	}
@@ -1030,8 +1034,8 @@ func (s *Server) handleListIntegrationHooks(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	conn, err := s.forgeConnections.Get(r.Context(), ri.ConnectionID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(r.Context(), teamID, ri.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -1153,8 +1157,8 @@ func (s *Server) cardFromPath(w http.ResponseWriter, r *http.Request, board nati
 // board lane's READS (pullClientForConn: listing and reading pull requests);
 // its writes go through connWriterFor.
 func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.Admin, forge.Connection, bool) {
-	conn, err := s.forgeConnections.Get(ctx, connID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(ctx, teamID, connID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return nil, forge.Connection{}, false
 	}
@@ -1168,8 +1172,8 @@ func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID
 }
 
 func (s *Server) connWriterFor(w http.ResponseWriter, ctx context.Context, teamID, connID, repo string) (forge.Admin, forge.Connection, bool) {
-	conn, err := s.forgeConnections.Get(ctx, connID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(ctx, teamID, connID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return nil, forge.Connection{}, false
 	}
@@ -1363,14 +1367,16 @@ const (
 // way out, one that dies is outlived by the TTL, and each term opens with a
 // pass.
 func (s *Server) runBoardSyncWorker(ctx context.Context, interval time.Duration) {
+	health := s.newLeaseHealth()
 	err := lease.Run(ctx, s.leases, lease.Spec{
-		Name:  leaseBoardIssueSync,
-		Owner: s.replicaID,
-		TTL:   forgeBoardSyncLeaseTTLFactor * interval,
-		Retry: interval,
-		Info:  s.infof,
-		Warn:  s.warnf,
-	}, func(ctx context.Context) { s.boardSyncPasses(ctx, interval) })
+		Name:   leaseBoardIssueSync,
+		Owner:  s.replicaID,
+		TTL:    forgeBoardSyncLeaseTTLFactor * interval,
+		Retry:  interval,
+		Info:   s.infof,
+		Warn:   s.warnf,
+		Health: health,
+	}, func(ctx context.Context) { s.boardSyncPasses(ctx, interval, health) })
 	if err != nil {
 		s.warnf("forge→board issue sync NOT started: %v — a forge issue whose webhook was dropped never reaches its team board", err)
 	}
@@ -1385,44 +1391,75 @@ func (s *Server) runBoardSyncWorker(ctx context.Context, interval time.Duration)
 // lease-store blip, a rollout — would otherwise leave the net never actually
 // sweeping. Terms are paced by the campaign's retry (one interval), so this
 // cannot sweep faster than the interval either.
-func (s *Server) boardSyncPasses(ctx context.Context, interval time.Duration) {
+func (s *Server) boardSyncPasses(ctx context.Context, interval time.Duration, health *lease.Health) {
 	// Every forge request of every pass is charged to the sweep's own lane:
 	// the hourly tally is where an operator reads what this net spends, and
 	// that request budget is what the lease exists to protect.
 	ctx = withForgeLane(ctx, forgeLaneBoardIssueSync)
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	s.syncAllEnabledIntegrations(ctx)
+	// A term the passes end — K of them in a row that reached nothing — is a
+	// handover: returning here releases the lease so a peer, whose egress to
+	// the forge may be intact, sweeps instead (#2685).
+	if health.Observe(s.syncAllEnabledIntegrations(ctx)) {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.syncAllEnabledIntegrations(ctx)
+			if health.Observe(s.syncAllEnabledIntegrations(ctx)) {
+				return
+			}
 		}
 	}
 }
 
-func (s *Server) syncAllEnabledIntegrations(ctx context.Context) {
+// syncAllEnabledIntegrations runs one pass and reports what it was worth. Each
+// integration is one item of the pass: syncOneIntegration reads that repo's
+// issue window from the forge, so its answer — not the absence of a created
+// or updated card — is what says whether this replica reaches the forge at
+// all. A fleet with nothing to mirror is an idle pass, not a sick one.
+func (s *Server) syncAllEnabledIntegrations(ctx context.Context) lease.PassVerdict {
+	var pass lease.Pass
 	ris, err := s.forgeIntegrations.ListSyncEnabled(ctx)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("board sync: list sync-enabled integrations: %v", err)
 		}
-		return
+		// The pass could not even learn what to sweep: one item attempted,
+		// none done, and the store's own failure is the cause it carries —
+		// unless it is the term ending, which records nothing
+		// (FailedUnlessDone).
+		pass.FailedUnlessDone(ctx, err)
+		return pass.Verdict()
 	}
 	for _, ri := range ris {
 		// Short-circuit on a term that ended — a step-down, a rollout, a
 		// SIGTERM — so a pass that matched N repos does not run N connection
-		// reads each failing on ctx.Done, one warn line apiece.
+		// reads each failing on ctx.Done, one warn line apiece. What the pass
+		// did before that is what it reports: the term is over either way,
+		// and a pass cut short is not evidence of anything. The recorders
+		// carry the same rule (pkg/lease UnlessDone): the cancellation that
+		// arrived between this guard and the round-trip below reaches the
+		// recording, not the guard.
 		if err := ctx.Err(); err != nil {
-			return
+			return pass.Verdict()
 		}
 		_, c, u, err := s.syncOneIntegration(ctx, ri.TenantID, ri)
-		if err != nil && s.logger != nil {
-			s.logger.Warn("board sync: %s/%s: %v", ri.TenantID, ri.RepoFullName, err)
-		} else if (c > 0 || u > 0) && s.logger != nil {
-			s.logger.Info("board sync: %s %s → %d created, %d updated", ri.TenantID, ri.RepoFullName, c, u)
+		switch {
+		case err != nil:
+			pass.FailedUnlessDone(ctx, err)
+			if s.logger != nil {
+				s.logger.Warn("board sync: %s/%s: %v", ri.TenantID, ri.RepoFullName, err)
+			}
+		default:
+			pass.SucceededUnlessDone(ctx)
+			if (c > 0 || u > 0) && s.logger != nil {
+				s.logger.Info("board sync: %s %s → %d created, %d updated", ri.TenantID, ri.RepoFullName, c, u)
+			}
 		}
 	}
+	return pass.Verdict()
 }

@@ -131,7 +131,7 @@ func TestPatchSecurityRead_DoesNotMoveARuntimeConnectionsRefreshClock(t *testing
 	seedAppConn(t, s, "runtime-conn", "SocialGouv", "", false)
 
 	// A runtime token about to expire — the case that breaks.
-	conn, err := s.forgeConnections.Get(context.Background(), "runtime-conn")
+	conn, err := s.forgeConnections.Get(context.Background(), "t1", "runtime-conn")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestPatchSecurityRead_DoesNotMoveARuntimeConnectionsRefreshClock(t *testing
 		t.Fatalf("enable: code=%d body=%s", w.Code, w.Body.String())
 	}
 
-	got, err := s.forgeConnections.Get(context.Background(), "runtime-conn")
+	got, err := s.forgeConnections.Get(context.Background(), "t1", "runtime-conn")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestPatchSecurityRead_DoesNotMoveARuntimeConnectionsRefreshClock(t *testing
 func TestPatchSecurityRead_DatesAWatchOnlyConnectionFromTheMint(t *testing.T) {
 	s := newForgeTestServer(t)
 	seedAppConn(t, s, "watch-conn", "SocialGouv", "", false)
-	conn, err := s.forgeConnections.Get(context.Background(), "watch-conn")
+	conn, err := s.forgeConnections.Get(context.Background(), "t1", "watch-conn")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestPatchSecurityRead_DatesAWatchOnlyConnectionFromTheMint(t *testing.T) {
 	if w := patchSecurityRead(t, s, "watch-conn", true); w.Code != http.StatusOK {
 		t.Fatalf("enable: code=%d body=%s", w.Code, w.Body.String())
 	}
-	got, err := s.forgeConnections.Get(context.Background(), "watch-conn")
+	got, err := s.forgeConnections.Get(context.Background(), "t1", "watch-conn")
 	if err != nil {
 		t.Fatal(err)
 	}

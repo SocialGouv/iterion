@@ -126,7 +126,7 @@ func TestRequireAuth_AWSTicketRedemptionThatFailsIsAFailure(t *testing.T) {
 				t.Fatalf("a ticket redemption the store could not complete answered %d %s, want 500", code, body)
 			}
 			var got map[string]string
-			if err := json.Unmarshal([]byte(body), &got); err != nil || got["error"] != identityUnavailable || len(got) != 1 {
+			if err := json.Unmarshal([]byte(body), &got); err != nil || got["error"] != identityUnavailable || got["request_id"] == "" || len(got) != 2+boolInt(got["trace_id"] != "") {
 				t.Fatalf("a failed ticket redemption answered the body %s, want {\"error\":%q}", body, identityUnavailable)
 			}
 			if strings.Contains(body, internalHost) {

@@ -80,6 +80,11 @@ func sweepOne(t *testing.T, src string, body []byte, before *Manifest, beforeKey
 		y := *x
 		y.Name, y.DisplayName, y.Icon, y.Version, y.Description = "", "", "", "", ""
 		y.Author, y.WhenToUse, y.Enabled, y.Triggers, y.Requires = "", "", nil, nil, nil
+		// DeclaredKeys is a projection of the DOCUMENT rather than a value
+		// of it: a patch that inserts a key the file was missing moves it
+		// by design. The key set has its own assertion below, which is
+		// where a deletion is caught.
+		y.DeclaredKeys = nil
 		return y
 	}
 	if a, b := mask(m), mask(before); !reflect.DeepEqual(a, b) {

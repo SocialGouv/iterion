@@ -15,6 +15,7 @@ import (
 // attempt might work; a run-long entry would darken healthy routes), and
 // auth outside the resolved triggers stays today's fail-open no-record.
 func TestAuthCooldown(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	err := errors.New("invalid api key")
 	triggers := []string{"usage_window", "auth"}

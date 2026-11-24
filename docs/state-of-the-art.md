@@ -193,6 +193,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | 💬 [Assistant](https://github.com/SocialGouv/iterion/issues/1400) | 🟠 | 13 | Copi & Nexie |
 | 🔌 [Backends](https://github.com/SocialGouv/iterion/issues/1404) | 🟠 | 18 | execution backends and their parity |
 | 🩺 [CI health](https://github.com/SocialGouv/iterion/issues/1410) | 🟠 | 16 | flakes, races, the merge queue |
+| 🧩 [Codemode](https://github.com/SocialGouv/iterion/issues/3153) | 🟠 | 48 | the model writes code that calls the node's own tools; claw absorbed into the tree (`pkg/claw`); one reference harness — counted 2026-11-20. The v1 is wired and opt-in (`codemode: on`): a credential-less child under kernel bounds, the posture bench held 7/7 on a production node on 2026-11-20, the **deployed** v7.19.1 child reporting its socket wall and memory room ([posture-bench-remote](agents/testing/posture-bench-remote.md#measured-on-production-2026-11-18)). The holes: no catalog bot opts in, so no production workload has run it yet; concurrency, `store()`, rich results, the sandbox crossing and the RT stream are ticketed ([#3443](https://github.com/SocialGouv/iterion/issues/3443)–[#3469](https://github.com/SocialGouv/iterion/issues/3469)) |
 | 🧩 [Connectors](https://github.com/SocialGouv/iterion/issues/1406) | 🟠 | 12 | connectors, MCP, plugins, skills |
 | 📚 [Docs](https://github.com/SocialGouv/iterion/issues/1414) | 🟠 | 4 | the doc site, ADRs, this page |
 | 🧪 [E2E proof](https://github.com/SocialGouv/iterion/issues/1421) | 🟠 | 4 | the free layer always, the paid layer deliberately |
@@ -200,7 +201,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | 📦 [Sandbox](https://github.com/SocialGouv/iterion/issues/1405) | 🟠 | 19 | isolation and the permission gate |
 | 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 13 | editor, board, run console, desktop |
 | 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟠 | 1 | the watch feed in production |
-| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules |
+| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules, [event sources](event-sources.md) — pushed and polled ([#3269](https://github.com/SocialGouv/iterion/issues/3269), gaps in [#3396](https://github.com/SocialGouv/iterion/issues/3396)) |
 | 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 13 | 38 bundles, shapes, `dsl: 2`, dogfood |
 | 🏷️ [Brand & product home](https://github.com/SocialGouv/iterion/issues/1429) | 🟡 | 1 | what iterion says it is, and how it talks to users |
 | ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 13 | tenancy, replicas, persistence |
@@ -215,6 +216,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | ⚙️ [Runtime](https://github.com/SocialGouv/iterion/issues/1403) | 🟡 | 24 | fan-out, checkpoints, resume, rewind |
 | 🛡️ [Seki](https://github.com/SocialGouv/iterion/issues/1398) | 🟡 | 9 | security audit on the cloud |
 | 🧠 [Memory & knowledge](https://github.com/SocialGouv/iterion/issues/1430) | ⚪ | 1 | scopes, the knowledge store, lifecycle, quotas |
+| 🛰️ [Standing crews](https://github.com/SocialGouv/iterion/issues/3133) | ⚪ | 13 | bots that stay addressable, wake on events, remember and work together — opened 2026-11-10 by [the live-agents study](references/live-agents-openmausbot.md), counted that day |
 
 ## ✅ Keeping this page honest
 

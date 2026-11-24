@@ -14,7 +14,9 @@ func (c *compiler) compileLoopCap(loop *Loop, edge *ast.Edge) {
 	if src == "" {
 		return
 	}
-	bad := func(err error) { c.errorfOnEdge(DiagBadTemplateRef, edge, "loop %q cap %q: %v", loop.Name, src, err) }
+	bad := func(err error) {
+		c.errorfOnEdge(DiagBadTemplateRef, edge, "loop %q cap %q: %v", loop.Name, expr.Excerpt(src), err)
+	}
 	if n, err := strconv.Atoi(src); err == nil {
 		loop.MaxIterations = n
 		loop.MaxIterationsExpr = ""
@@ -37,8 +39,14 @@ func (c *compiler) compileLoopCap(loop *Loop, edge *ast.Edge) {
 		loop.MaxIterationsExprRefs = refs
 		return
 	}
-	parsed, err := expr.Parse(src)
+	before := c.exprBudget.Spent()
+	parsed, err := expr.ParseOn(src, c.exprBudget)
+	loop.capRecords = c.exprBudget.Spent() - before
 	if err != nil {
+		if pastReadBudget(err) {
+			c.errorfOnEdge(DiagExprPastReadBudget, edge, "loop %q cap: %v", loop.Name, err)
+			return
+		}
 		bad(err)
 		return
 	}
@@ -46,13 +54,23 @@ func (c *compiler) compileLoopCap(loop *Loop, edge *ast.Edge) {
 }
 
 func (c *compiler) validateLoopCapExpressions(w *Workflow) {
-	predecessors := buildPredecessors(w)
+	// The reachability check pays a reverse-BFS per consumer that asks; the
+	// common case — no loop carries an expression cap — must pay nothing, so
+	// the predecessor index is built only where a cap references outputs
+	// (#2776: materialising it unconditionally was quadratic in node count).
+	var predecessors *predecessorIndex
 	for _, edge := range w.Edges {
 		loop := w.Loops[edge.LoopName]
-		if loop == nil || loop.MaxIterationsExpr == "" {
+		if loop == nil || loop.MaxIterationsExpr == "" || c.capRefused[edge] {
 			continue
 		}
-		loc := fmt.Sprintf("loop %q cap %q", loop.Name, loop.MaxIterationsExpr)
+		if loop.MaxIterationsAST == nil && loop.MaxIterationsExprRefs == nil {
+			// The cap's reading was refused — past the budget, or a
+			// template that did not parse — and said at compileLoopCap:
+			// there is nothing to hold its references to.
+			continue
+		}
+		loc := fmt.Sprintf("loop %q cap %q", loop.Name, expr.Excerpt(loop.MaxIterationsExpr))
 		rc := refContext{NodeID: edge.From, IncludeSelf: true, EdgeID: edgeID(edge.From, edge.To), Span: c.edgeSpans[edge], Location: loc}
 		var refs []*Ref
 		var snapshot *expr.Snapshot
@@ -60,7 +78,7 @@ func (c *compiler) validateLoopCapExpressions(w *Workflow) {
 			snapshot = expr.ToSnapshot(loop.MaxIterationsAST)
 			for _, r := range loop.MaxIterationsAST.Refs() {
 				if r.Namespace != "vars" && r.Namespace != "outputs" {
-					c.refErrorf(rc, DiagBadTemplateRef, "%s: expressions may reference vars and outputs, got %q", loc, r.Namespace)
+					c.refErrorf(rc, DiagBadTemplateRef, "%s: expressions may reference vars and outputs, got %q", loc, expr.Excerpt(r.Namespace))
 					continue
 				}
 				refs = append(refs, refFromExpr(r))
@@ -77,6 +95,9 @@ func (c *compiler) validateLoopCapExpressions(w *Workflow) {
 			case RefVars:
 				c.validateVarsRef(w, rc)
 			case RefOutputs:
+				if predecessors == nil {
+					predecessors = newPredecessorIndex(w)
+				}
 				c.validateOutputsRef(w, rc, predecessors)
 			default:
 				c.refErrorf(rc, DiagBadTemplateRef, "%s: a cap must reference vars or outputs", loc)

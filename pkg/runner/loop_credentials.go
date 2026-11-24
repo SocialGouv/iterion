@@ -9,16 +9,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // injectCredentials resolves the run's sealed bundle, decrypts it,
 // stamps the plaintext into ctx via secrets.WithCredentials, and
 // returns a cleanup func that performs LOCAL hygiene (wipes the
 // in-memory plaintext keys + removes the OAuth temp dirs) at the call
-// site. When no bundle is attached or the runner has no Sealer wired,
-// returns the original ctx unchanged.
+// site. When no bundle is attached, returns the original ctx unchanged —
+// except for a run the pod's environment must not fund: an untrusted run
+// (store.RunTrust.AmbientLLMRefused) or one stamped team_gateway, whose
+// context carries the ambient refusal instead (both below).
 //
 // The cleanup func runs on every executeRun return. Removal of the
 // *persistent* sealed bundle from the store is intentionally NOT part
@@ -30,14 +34,38 @@ import (
 // Credentials.OAuthCredentialFiles so the delegate backends point
 // the spawned CLI at them. The cleanup func tears the dirs down on
 // every exit path.
+//
+// The ambient refusal travels with the RUN, not with an optional bundle
+// (ADR-162 decision 7, #3126): an untrusted run spends only what was sealed
+// for it, and the publisher seals no bundle at all for a run no tier funds.
+// So the refusal is derived from the message's trust here, through the
+// predicate the publisher's stamp reads too (store.RunTrust.
+// AmbientLLMRefused), on both branches: with no bundle the run's context
+// carries credentials that hold nothing and refuse the pod's environment —
+// exactly what a sealed empty bundle would have said — and with a bundle
+// the stamp is the bundle's OR the trust's. A trusted run without a bundle
+// keeps its context unchanged: the environment is its funding.
+//
+// A team_gateway stamp on the message (ADR-131 §4) is the ambient refusal
+// on the same terms, whatever the bundle carries: a carriage that lost the
+// flag — a stale replica's resume over an old-rules bundle, or no bundle at
+// all — must not let the run's gateway routes fall to the pod's
+// environment. The two facts are OR'ed in one condition per branch.
 func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
 	if msg.SecretsRef == "" {
+		if msg.Trust.AmbientLLMRefused() || msg.ContentBoundary.TeamGateway() {
+			return secrets.WithCredentials(ctx, secrets.Credentials{AmbientRefused: true}), nil, nil
+		}
 		return ctx, nil, nil
 	}
 	if r.cfg.RunSecrets == nil {
 		return ctx, nil, fmt.Errorf("runner: SecretsRef set but RunSecrets not wired")
 	}
-	rec, err := r.cfg.RunSecrets.Get(ctx, msg.SecretsRef)
+	// Scoped like every other store read of this loop
+	// (store.WithIdentity): the ref is an `_id`, so the tenant clause is
+	// what keeps the query inside this run's team. The post-read binding
+	// check below stays — it is the second layer, not the first.
+	rec, err := r.cfg.RunSecrets.Get(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.SecretsRef)
 	if err != nil {
 		return ctx, nil, fmt.Errorf("fetch run_secrets %s: %w", msg.SecretsRef, err)
 	}
@@ -84,10 +112,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// keep the fingerprint-less meter they always had.
 	// The server's own fingerprint travels in the bundle for a gateway key
 	// (RunBundle.APIKeyFingerprints): its identity folds its base URL in.
-	// Absent — every vendor key, and every bundle sealed before #2005
-	// PR-C' — the runner recomputes the identity the server would have
-	// stamped: sha256 of the secret for a vendor key, the URL-folded form
-	// for a gateway key met with its URL.
+	// Absent — every vendor key, and a bundle sealed by a server that
+	// predates the field — the runner recomputes the identity the server
+	// would have stamped: sha256 of the secret for a vendor key, the
+	// URL-folded form for a gateway key met with its URL.
 	fingerprints := map[string]string{}
 	stamped := func(prov secrets.Provider, key, baseURL string) string {
 		if fp := bundle.APIKeyFingerprints[prov]; fp != "" {
@@ -119,12 +147,13 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	creds := secrets.Credentials{
 		APIKeys:       bundle.APIKeys,
 		PinnedAPIKeys: bundle.PinnedAPIKeys,
-		// The gateway roots paired with the key maps, and the publisher's
-		// word that this run spends its own credentials only. Not secret:
-		// cleanup below leaves them, as it leaves the hostnames.
+		// The gateway roots paired with the key maps, and the word that this
+		// run spends its own credentials only — the publisher's stamp, or the
+		// wire's trust or team_gateway stamp when a bundle sealed without it.
+		// Not secret: cleanup below leaves them, as it leaves the hostnames.
 		APIBaseURLs:       bundle.APIBaseURLs,
 		PinnedAPIBaseURLs: bundle.PinnedAPIBaseURLs,
-		AmbientRefused:    bundle.AmbientLLMRefused,
+		AmbientRefused:    bundle.AmbientLLMRefused || msg.Trust.AmbientLLMRefused() || msg.ContentBoundary.TeamGateway(),
 		Generic:           bundle.GenericSecrets,
 		// Per-secret egress narrowing from bot-secret bindings; the guard
 		// intersects these with the workflow's declared hosts. Hostnames
@@ -191,6 +220,13 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles, maps.Clone(bundle.OAuthRecordRefs), maps.Clone(bundle.OAuthFingerprints), maps.Clone(bundle.OAuthRecordConnectedAt), maps.Clone(bundle.PoolSourced))
 	}
 	ctx = secrets.WithCredentials(ctx, creds)
+	// The run's price-feed table (ADR-163): bytes the server folded and
+	// sealed, planted on the run's environment here — the ONE
+	// bundle-to-context adapter, shared with the suites, so the wire shape
+	// and the planted name cannot drift. Not secret (prices), so cleanup
+	// leaves it; a malformed payload plants nothing and the run keeps the
+	// operator floor.
+	ctx = compatgw.OverlayFeedTable(ctx, bundle.GatewayPriceFeed)
 	return ctx, cleanup, nil
 }
 
@@ -211,7 +247,11 @@ func (r *Runner) deleteRunSecrets(msg *queue.RunMessage) {
 	}
 	ctxDel, cancel := context.WithTimeout(context.Background(), runSecretsDeleteTimeout)
 	defer cancel()
-	if delErr := r.cfg.RunSecrets.Delete(ctxDel, msg.SecretsRef); delErr != nil {
+	// A detached ctx carries no identity, and the ref is an `_id`: without
+	// the stamp this delete is the one store write of the loop that leaves
+	// its team. Every sibling detached call stamps the same way
+	// (loop_gitws, bank_push, loop_spend).
+	if delErr := r.cfg.RunSecrets.Delete(store.WithIdentity(ctxDel, msg.TenantID, msg.OwnerID), msg.SecretsRef); delErr != nil {
 		r.cfg.Logger.Warn("runner: run_secrets delete for %s (ref=%s): %v", msg.RunID, msg.SecretsRef, delErr)
 	}
 }

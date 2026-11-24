@@ -271,6 +271,10 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
 	if err != nil || run == nil {
+		// An offer that cannot read its run attempted work and did none of
+		// it, and the cause is the store's — never evidence about the forge
+		// (recordGateRunUnreadable).
+		recordGateRunUnreadable(ctx, err)
 		return nil
 	}
 	// A paused run is expected to resume and post its own verdict.
@@ -291,7 +295,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		if via == gateTriggerEvent {
 			s.noticeGateDLQParked(ctx, run)
 		}
-	} else if runAwaitsArmedRetry(run) {
+	} else if runWillResume(run, via == gateTriggerEvent, time.Now().UTC()) {
 		// A resumable failure is only "not dead" when something will
 		// actually resume it. The runner arms a durable retry for
 		// usage-window failures (persisted BEFORE the outcome event fires
@@ -355,7 +359,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return nil
 	}
 
-	grant, ok := s.forgePublishTokens.lookup(token)
+	// The repair posts a commit status on the pull request the run names: a
+	// grant bound to none (a scheduled run's, whatever pr_url its vars carry)
+	// speaks for no head of it.
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		return abstain("%v", err)
+	}
 	if !ok {
 		// The grant outlives the longest retry wait by construction
 		// (forgePublishDefaultTTL), so reaching here means the run sat dead
@@ -392,7 +402,10 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// in hand predates the replay, and the refusal check below would
 		// otherwise be blind to what THIS pass just learned — parking the
 		// run on a reversible settlement for hours with the answer in hand.
-		fresh, found := s.forgePublishTokens.lookup(token)
+		fresh, found, err := s.pullRequestGrant(token)
+		if err != nil {
+			return abstain("%v", err)
+		}
 		if !found {
 			return abstain("its publish grant expired or was revoked mid-repair")
 		}
@@ -487,12 +500,9 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if !strings.EqualFold(strings.TrimSpace(repo), strings.TrimSpace(grant.Repo)) {
 		return abstain("its grant covers %s — refusing to post outside the grant's repo", grant.Repo)
 	}
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID)
 	if err != nil {
 		return abstain("its connection %s is unreadable: %v", grant.ConnectionID, err)
-	}
-	if conn.TenantID != grant.TeamID {
-		return abstain("its connection %s belongs to another tenant", grant.ConnectionID)
 	}
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
 		return abstain("its connection points at %q, not %q", hostOfURL(conn.BaseURL()), host)
@@ -505,7 +515,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return abstain("provider %s cannot post commit statuses", conn.Provider)
 	}
 
+	// The offer's first forge round-trip, and the one every later one in this
+	// repair depends on: its answer — or the absence of one — is what this
+	// replica's forge egress is reported by (recordGateForgeReach). Every
+	// branch above declined before any forge traffic, so a run that owed
+	// nothing accounts into nothing.
 	pr, err := gc.GetPullRequest(ctx, repo, number)
+	recordGateForgeReach(ctx, err)
 	if err != nil {
 		return abstain("the pull request is unreadable: %v", err)
 	}
@@ -902,20 +918,39 @@ func gateRunURL(base, runID string) string {
 	return deeplink.Run(base, runID)
 }
 
+// runInEvaluationMode reports whether the run was launched with
+// publish_mode=off (forge.PublishModeWithholds): it posted nothing on its
+// pull request, by design. Every reader that would speak for such a run —
+// the gate arms through runGateDisabled, the hand-off walk — asks here, on
+// the launch value as stored.
+func runInEvaluationMode(run *store.Run) bool {
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	mode, ok := run.Inputs[forge.PublishModeVar].(string)
+	return ok && forge.PublishModeWithholds(mode)
+}
+
 // runInputString reads one launch input as a trimmed string.
 // runGateDisabled reports whether the run was launched with an EXPLICIT
 // gate_enabled pin that leaves the gating bot advisory-only (the value
 // classification is forge.GateValueDisables — one table shared with the
-// provisioning derivation). Every gate arm (the launch claim, this
-// reconciler, the auto-fix lane) must consult it: a repo that pinned the
-// gate off while still carrying a gate_context would otherwise get a
-// pending claim nothing ever resolves, then a synthetic "review died"
-// failure and a relaunch — a misconfiguration turned into a deadlock.
+// provisioning derivation), or in evaluation mode (publish_mode=off,
+// forge.PublishModeWithholds), where the bot posts nothing at all. Every
+// gate arm (the launch claim, this reconciler, the auto-fix lane, the pause
+// and DLQ notices) must consult it: a repo that pinned the gate off while
+// still carrying a gate_context would otherwise get a pending claim nothing
+// ever resolves, then a synthetic "review died" failure and a relaunch — a
+// misconfiguration turned into a deadlock; and an evaluation run would get
+// a red check and a comment on a pull request it was launched not to touch.
 // Absent key, or a non-string non-bool input shape → the gate stays armed
 // (the pre-pin behavior).
 func runGateDisabled(run *store.Run) bool {
 	if run == nil || run.Inputs == nil {
 		return false
+	}
+	if runInEvaluationMode(run) {
+		return true
 	}
 	v, ok := run.Inputs["gate_enabled"]
 	if !ok {

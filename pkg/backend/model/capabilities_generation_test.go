@@ -8,6 +8,7 @@ import "testing"
 // price for a degraded answer without a single warning. These tests pin the
 // PROPERTY — generation ≥ 3.5 reasons — so a new Claude works on arrival.
 func TestClaudeGenerationParsesBothIdShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		id           string
 		major, minor int
@@ -40,13 +41,14 @@ func TestClaudeGenerationParsesBothIdShapes(t *testing.T) {
 }
 
 func TestAnthropicReasoningFollowsGeneration(t *testing.T) {
+	t.Parallel()
 	reasons := []string{
 		"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-5[1m]",
 		"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
 		"claude-3-5-sonnet-20241022", "claude-3.5-sonnet",
 	}
 	for _, id := range reasons {
-		if !anthropicCapabilities(id).Reasoning {
+		if !yes(anthropicCapabilities(id).Reasoning) {
 			t.Errorf("%s: expected extended thinking to be available", id)
 		}
 	}
@@ -55,7 +57,7 @@ func TestAnthropicReasoningFollowsGeneration(t *testing.T) {
 	// thinking from a model that has none is a hard API error, so an
 	// unrecognised id must not opt in.
 	for _, id := range []string{"claude-3-opus-20240229", "claude-2.1", "claude-instant"} {
-		if anthropicCapabilities(id).Reasoning {
+		if !no(anthropicCapabilities(id).Reasoning) {
 			t.Errorf("%s: expected no extended thinking", id)
 		}
 	}
@@ -65,12 +67,13 @@ func TestAnthropicReasoningFollowsGeneration(t *testing.T) {
 // supposed to keep passing when Claude 6 ships — if it ever fails, the parser
 // regressed to a list.
 func TestFutureGenerationsNeedNoCodeChange(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{"claude-opus-6", "claude-sonnet-7-2", "claude-opus-10"} {
 		c := anthropicCapabilities(id)
-		if !c.Reasoning {
+		if !yes(c.Reasoning) {
 			t.Errorf("%s: a later generation must resolve as reasoning-capable", id)
 		}
-		if !c.ToolCall || !c.Temperature {
+		if !yes(c.ToolCall) || !yes(c.Temperature) {
 			t.Errorf("%s: tool calling and temperature must stay available", id)
 		}
 	}
@@ -80,8 +83,9 @@ func TestFutureGenerationsNeedNoCodeChange(t *testing.T) {
 // handled before the Claude generation reading, which would otherwise find no
 // generation in "glm-5.2" and report it as non-reasoning.
 func TestGLMStillHandledBeforeClaudeParsing(t *testing.T) {
+	t.Parallel()
 	c := anthropicCapabilities("glm-5.2")
-	if !c.Reasoning {
+	if !yes(c.Reasoning) {
 		t.Error("glm-5.2: reasoning lost — the GLM branch must run first")
 	}
 	if c.ContextWindow != 1_000_000 {
@@ -93,6 +97,7 @@ func TestGLMStillHandledBeforeClaudeParsing(t *testing.T) {
 // glm-5.3 — the id the catalog's GLM routes default to — was sized at 200K by
 // an exact "glm-5.2" match, a fifth of what z.ai serves it with.
 func TestGLMContextWindowFollowsTheGeneration(t *testing.T) {
+	t.Parallel()
 	for id, want := range map[string]int{
 		"glm-5.3":           1_000_000,
 		"glm-5.3-flash":     1_000_000,

@@ -6,8 +6,8 @@ touch names:
 
 | Leaf | Read it when |
 |---|---|
-| [rgaa-audit-run.md](rgaa-audit-run.md) | Running the RGAA audit demo yourself (one command, real LLM spend). |
-| [skills.md](skills.md) | Editing a bundle's `skills/`. |
+| [rgaa-audit-run.md](rgaa-audit-run.md) | Running the RGAA audit demo yourself (one command, real LLM spend) — and what a sandboxed cloud run does not get. |
+| [skills.md](skills.md) | Editing a bundle's `skills/`; a skill several bundles carry is declared in `internal/skillshare`, not duplicated. |
 | [run-link.md](run-link.md) | A bot posts anything on a forge — a body, a review, a comment, a reply. |
 | [convergence.md](convergence.md) | Writing a loop, campaign or reviewer bot. |
 | [untrusted-input.md](untrusted-input.md) | A prompt carrying untrusted text in an acting node. |
@@ -18,3 +18,5 @@ touch names:
 | [taxonomy.md](taxonomy.md) | The six-verb navigation spine: `category:` and `tags:`. |
 | [engine-bot-agnostic.md](engine-bot-agnostic.md) | Engine code about to name a bot. |
 | [toolchain-devbox.md](toolchain-devbox.md) | A bot needs a binary the sandbox lacks. |
+
+Vetty commit evidence and revision-owned auto-merge: [dep-update-guard](../../../bots/dep-update-guard/README.md).

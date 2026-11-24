@@ -251,6 +251,7 @@ type jsonSecretField struct {
 	Env         string   `json:"env,omitempty"`
 	Optional    bool     `json:"optional,omitempty"`
 	Hosts       []string `json:"hosts,omitempty"`
+	Sinks       []string `json:"sinks,omitempty"`
 	Description string   `json:"description,omitempty"`
 }
 
@@ -453,13 +454,14 @@ type jsonAgentDecl struct {
 	Output            string               `json:"output,omitempty"`
 	Publish           string               `json:"publish,omitempty"`
 	ArtifactLabels    []string             `json:"artifact_labels,omitempty"`
+	Deliverables      []string             `json:"deliverables,omitempty"`
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
 	SessionSlot       string               `json:"session_slot,omitempty"`
 	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
-	Capabilities      []string             `json:"capabilities,omitempty"`
+	Capabilities      *[]string            `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
@@ -480,6 +482,7 @@ type jsonAgentDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	AmbientContext    string               `json:"ambient_context,omitempty"`
+	Codemode          *jsonCodemodeBlock   `json:"codemode,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -503,13 +506,14 @@ type jsonJudgeDecl struct {
 	Output            string               `json:"output,omitempty"`
 	Publish           string               `json:"publish,omitempty"`
 	ArtifactLabels    []string             `json:"artifact_labels,omitempty"`
+	Deliverables      []string             `json:"deliverables,omitempty"`
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
 	SessionSlot       string               `json:"session_slot,omitempty"`
 	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
-	Capabilities      []string             `json:"capabilities,omitempty"`
+	Capabilities      *[]string            `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
@@ -530,6 +534,7 @@ type jsonJudgeDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	AmbientContext    string               `json:"ambient_context,omitempty"`
+	Codemode          *jsonCodemodeBlock   `json:"codemode,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -604,6 +609,7 @@ type jsonToolNodeDecl struct {
 	Output         string             `json:"output,omitempty"`
 	Publish        string             `json:"publish,omitempty"`
 	ArtifactLabels []string           `json:"artifact_labels,omitempty"`
+	Deliverables   []string           `json:"deliverables,omitempty"`
 	Await          string             `json:"await,omitempty"`
 	Sandbox        *jsonSandboxBlock  `json:"sandbox,omitempty"`
 	Compress       string             `json:"compress,omitempty"`
@@ -613,6 +619,7 @@ type jsonToolNodeDecl struct {
 	Policy         string             `json:"policy,omitempty"`
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
+	Capabilities   *[]string          `json:"capabilities,omitempty"`
 	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
 	EnvExpansion   string             `json:"env_expansion,omitempty"`
 	Comments       []*jsonComment     `json:"comments,omitempty"`
@@ -685,6 +692,134 @@ func recoveryBlockFromJSON(j *jsonRecoveryBlock) *RecoveryBlock {
 		MaxAgentAttempts:  j.MaxAgentAttempts,
 		Model:             j.Model,
 		AgentTools:        j.AgentTools,
+	}
+}
+
+// jsonCodemodeBlock is the JSON form of an ast.CodemodeBlock.
+//
+// It marshals as a bare STRING when the block carries only a mode, and as an
+// object once a bound is declared — the author document's spelling of the
+// DSL's own `ident | block` duality, and the reason every document written
+// before the bounds existed stays byte-identical: `"codemode": "on"` reads
+// and writes exactly as it did. A reader that only took the object form would
+// refuse every stored document, and a writer that only emitted it would churn
+// every golden to say the same thing.
+type jsonCodemodeBlock struct {
+	Mode                string `json:"mode,omitempty"`
+	Defer               string `json:"defer,omitempty"`
+	ToolCalls           int64  `json:"tool_calls,omitempty"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
+	Wall                string `json:"wall,omitempty"`
+	CPU                 string `json:"cpu,omitempty"`
+	Memory              int64  `json:"memory,omitempty"`
+	ScriptBytes         int64  `json:"script_bytes,omitempty"`
+	ResultBytes         int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
+	StoreEntries        int64  `json:"store_entries,omitempty"`
+	StoreBytes          int64  `json:"store_bytes,omitempty"`
+}
+
+// bounded mirrors ast.CodemodeBlock.Bounded: any bound declared. A declared
+// `defer` counts too — it is a property only the block form can carry, so a
+// defer-only block must take the object form or the transport would drop it.
+func (c *jsonCodemodeBlock) bounded() bool {
+	if c == nil {
+		return false
+	}
+	return c.Defer != "" || c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
+}
+
+// MarshalJSON writes the short form while there is nothing but a mode to say.
+func (c jsonCodemodeBlock) MarshalJSON() ([]byte, error) {
+	if !c.bounded() {
+		return json.Marshal(c.Mode)
+	}
+	type plain jsonCodemodeBlock // no recursion through this method
+	return json.Marshal(plain(c))
+}
+
+// UnmarshalJSON accepts both forms. A string is the mode; an object is the
+// block. Anything else is reported as the type error it is rather than left
+// as a zero value, which would read as "no codemode declared".
+func (c *jsonCodemodeBlock) UnmarshalJSON(b []byte) error {
+	var mode string
+	if err := json.Unmarshal(b, &mode); err == nil {
+		*c = jsonCodemodeBlock{Mode: mode}
+		return nil
+	}
+	type plain jsonCodemodeBlock
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return fmt.Errorf("codemode: expected a mode string or a bounds object: %w", err)
+	}
+	*c = jsonCodemodeBlock(p)
+	return nil
+}
+
+func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
+	if c == nil {
+		return nil
+	}
+	return &jsonCodemodeBlock{
+		Mode:                c.Mode,
+		Defer:               c.Defer,
+		ToolCalls:           c.ToolCalls,
+		ConcurrentToolCalls: c.ConcurrentToolCalls,
+		Wall:                c.Wall,
+		CPU:                 c.CPU,
+		Memory:              c.Memory,
+		ScriptBytes:         c.ScriptBytes,
+		ResultBytes:         c.ResultBytes,
+		ToolResultBytes:     c.ToolResultBytes,
+		StoreEntries:        c.StoreEntries,
+		StoreBytes:          c.StoreBytes,
+	}
+}
+
+func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
+	if j == nil {
+		return nil
+	}
+	// The two rules sandboxBlockFromJSON states forty lines below, and they
+	// are rules rather than tidiness: UnmarshalFile BYPASSES the parser
+	// (compile.go says so where it enforces its own invariants), so every
+	// default the parser applies has to be applied here too or the same
+	// document is two programs. The first draft of this function was a
+	// verbatim field copy — it took the struct's shape and left both rules,
+	// and an adversarial round measured the result: a bounds block whose
+	// mode was not repeated compiled to `on` through the parser and to ""
+	// through the transport, with no diagnostic on either side, because
+	// C348 keys on "off" and never on "".
+	//
+	// `codemode: {}` — a block a canvas created and did not fill in — has
+	// no mode and no bound, which no .bot text can express, and means what
+	// its absence means: inherit. It is read as absent, so the document
+	// saves and reads back the same.
+	if j.Mode == "" && !j.bounded() {
+		return nil
+	}
+	// A block with bounds but no mode is the block form, which the parser
+	// reads as `on` — the transport reads it the same way, so a document
+	// and its re-parse agree on the mode. A mode written out is kept as
+	// written: this fills a hole, it does not overwrite a choice.
+	mode := j.Mode
+	if mode == "" {
+		mode = "on"
+	}
+	return &CodemodeBlock{
+		Mode:                mode,
+		Defer:               j.Defer,
+		ToolCalls:           j.ToolCalls,
+		ConcurrentToolCalls: j.ConcurrentToolCalls,
+		Wall:                j.Wall,
+		CPU:                 j.CPU,
+		Memory:              j.Memory,
+		ScriptBytes:         j.ScriptBytes,
+		ResultBytes:         j.ResultBytes,
+		ToolResultBytes:     j.ToolResultBytes,
+		StoreEntries:        j.StoreEntries,
+		StoreBytes:          j.StoreBytes,
 	}
 }
 
@@ -809,15 +944,18 @@ type jsonComputeExpr struct {
 type jsonSubbotDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File        string           `json:"file,omitempty"`
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Source      string           `json:"source,omitempty"`
-	With        []*jsonWithEntry `json:"with,omitempty"`
-	Output      string           `json:"output,omitempty"`
-	Needs       []string         `json:"needs,omitempty"`
-	Isolated    bool             `json:"isolated,omitempty"`
-	Comments    []*jsonComment   `json:"comments,omitempty"`
+	File          string           `json:"file,omitempty"`
+	Name          string           `json:"name"`
+	Description   string           `json:"description,omitempty"`
+	Source        string           `json:"source,omitempty"`
+	With          []*jsonWithEntry `json:"with,omitempty"`
+	Output        string           `json:"output,omitempty"`
+	Needs         []string         `json:"needs,omitempty"`
+	Isolated      bool             `json:"isolated,omitempty"`
+	AutoMerge     bool             `json:"auto_merge,omitempty"`
+	MergeInto     string           `json:"merge_into,omitempty"`
+	MergeStrategy string           `json:"merge_strategy,omitempty"`
+	Comments      []*jsonComment   `json:"comments,omitempty"`
 }
 
 type jsonEmitDecl struct {
@@ -869,18 +1007,19 @@ type jsonFailDecl struct {
 type jsonWorkflowDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File           string                `json:"file,omitempty"`
-	Name           string                `json:"name,omitempty"`
-	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
-	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Entry          string                `json:"entry,omitempty"`
-	Contract       string                `json:"contract,omitempty"`
-	DefaultBackend string                `json:"default_backend,omitempty"`
-	ToolPolicy     []string              `json:"tool_policy,omitempty"`
-	Capabilities   []string              `json:"capabilities,omitempty"`
-	Skills         []string              `json:"skills,omitempty"`
-	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
-	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	File           string                    `json:"file,omitempty"`
+	Name           string                    `json:"name,omitempty"`
+	Vars           *jsonVarsBlock            `json:"vars,omitempty"`
+	Attachments    *jsonAttachmentsBlock     `json:"attachments,omitempty"`
+	BusinessStores *[]*jsonBusinessStoreDecl `json:"business_stores,omitempty"`
+	Entry          string                    `json:"entry,omitempty"`
+	Contract       string                    `json:"contract,omitempty"`
+	DefaultBackend string                    `json:"default_backend,omitempty"`
+	ToolPolicy     []string                  `json:"tool_policy,omitempty"`
+	Capabilities   *[]string                 `json:"capabilities,omitempty"`
+	Skills         []string                  `json:"skills,omitempty"`
+	MCP            *jsonMCPConfigDecl        `json:"mcp,omitempty"`
+	Budget         *jsonBudgetBlock          `json:"budget,omitempty"`
 	// Resources is a pointer so the EMPTY block travels: a bare `resources:`
 	// (a block the canvas created and did not fill in, or a plain file's) is
 	// `{}`, an absent block is no key — with a plain map, omitempty would
@@ -897,6 +1036,7 @@ type jsonWorkflowDecl struct {
 	Compress            string               `json:"compress,omitempty"`
 	AutoMemory          string               `json:"auto_memory,omitempty"`
 	AmbientContext      string               `json:"ambient_context,omitempty"`
+	Codemode            *jsonCodemodeBlock   `json:"codemode,omitempty"`
 	LoopBudgetGuard     string               `json:"loop_budget_guard,omitempty"`
 	RepoDevbox          string               `json:"repo_devbox,omitempty"`
 	WorkspaceCheckpoint string               `json:"workspace_checkpoint,omitempty"`
@@ -950,6 +1090,8 @@ type jsonLoopClause struct {
 	MaxIterationsExpr string `json:"max_iterations_expr,omitempty"`
 	Unbounded         bool   `json:"unbounded,omitempty"`
 	FuelCap           int    `json:"fuel_cap,omitempty"`
+	Guard             string `json:"guard,omitempty"`
+	SizedBy           string `json:"sized_by,omitempty"`
 }
 
 type jsonWithEntry struct {
@@ -1033,12 +1175,15 @@ func toJSON(f *File) (*jsonFile, error) {
 	}
 	for _, s := range f.Subbots {
 		js := &jsonSubbotDecl{
-			Name:        s.Name,
-			Description: s.Description,
-			Source:      s.Source,
-			Output:      s.Output,
-			Needs:       s.Needs,
-			Isolated:    s.Isolated,
+			Name:          s.Name,
+			Description:   s.Description,
+			Source:        s.Source,
+			Output:        s.Output,
+			Needs:         s.Needs,
+			Isolated:      s.Isolated,
+			AutoMerge:     s.AutoMerge,
+			MergeInto:     s.MergeInto,
+			MergeStrategy: s.MergeStrategy,
 		}
 		for _, w := range s.With {
 			js.With = append(js.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
@@ -1143,6 +1288,7 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Output:         t.Output,
 		Publish:        t.Publish,
 		ArtifactLabels: t.ArtifactLabels,
+		Deliverables:   t.Deliverables,
 		Await:          awaitModeToStr[t.Await],
 		Sandbox:        sandboxBlockToJSON(t.Sandbox),
 		Compress:       t.Compress,
@@ -1152,6 +1298,7 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Policy:         t.Policy,
 		Recovery:       recoveryBlockToJSON(t.Recovery),
 		Needs:          t.Needs,
+		Capabilities:   declaredListToJSON(t.Capabilities),
 		ParallelSafe:   t.ParallelSafe,
 		EnvExpansion:   t.EnvExpansion,
 	}
@@ -1486,6 +1633,7 @@ func secretsBlockToJSON(s *SecretsBlock) *jsonSecretsBlock {
 			Env:         f.Env,
 			Optional:    f.Optional,
 			Hosts:       f.Hosts,
+			Sinks:       f.Sinks,
 			Description: f.Description,
 		})
 	}
@@ -1528,13 +1676,14 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Output:            a.Output,
 		Publish:           a.Publish,
 		ArtifactLabels:    a.ArtifactLabels,
+		Deliverables:      a.Deliverables,
 		System:            a.System,
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
 		SessionSlot:       a.SessionSlot,
 		Tools:             declaredListToJSON(a.Tools),
 		ToolPolicy:        a.ToolPolicy,
-		Capabilities:      a.Capabilities,
+		Capabilities:      declaredListToJSON(a.Capabilities),
 		Skills:            a.Skills,
 		ToolMaxSteps:      a.ToolMaxSteps,
 		MaxTokens:         a.MaxTokens,
@@ -1555,6 +1704,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Compress:          a.Compress,
 		AutoMemory:        a.AutoMemory,
 		AmbientContext:    a.AmbientContext,
+		Codemode:          codemodeBlockToJSON(a.Codemode),
 		Permission:        a.Permission,
 		Allow:             a.Allow,
 		Ask:               a.Ask,
@@ -1576,13 +1726,14 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Output:            j.Output,
 		Publish:           j.Publish,
 		ArtifactLabels:    j.ArtifactLabels,
+		Deliverables:      j.Deliverables,
 		System:            j.System,
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
 		SessionSlot:       j.SessionSlot,
 		Tools:             declaredListToJSON(j.Tools),
 		ToolPolicy:        j.ToolPolicy,
-		Capabilities:      j.Capabilities,
+		Capabilities:      declaredListToJSON(j.Capabilities),
 		Skills:            j.Skills,
 		ToolMaxSteps:      j.ToolMaxSteps,
 		MaxTokens:         j.MaxTokens,
@@ -1603,6 +1754,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Compress:          j.Compress,
 		AutoMemory:        j.AutoMemory,
 		AmbientContext:    j.AmbientContext,
+		Codemode:          codemodeBlockToJSON(j.Codemode),
 		Permission:        j.Permission,
 		Allow:             j.Allow,
 		Ask:               j.Ask,
@@ -1642,7 +1794,8 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Contract:            w.Contract,
 		DefaultBackend:      w.DefaultBackend,
 		ToolPolicy:          w.ToolPolicy,
-		Capabilities:        w.Capabilities,
+		Capabilities:        declaredListToJSON(w.Capabilities),
+		BusinessStores:      businessStoresToJSON(w.BusinessStores),
 		Skills:              w.Skills,
 		MCP:                 mcpConfigToJSON(w.MCP),
 		Compaction:          compactionToJSON(w.Compaction),
@@ -1650,6 +1803,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Compress:            w.Compress,
 		AutoMemory:          w.AutoMemory,
 		AmbientContext:      w.AmbientContext,
+		Codemode:            codemodeBlockToJSON(w.Codemode),
 		LoopBudgetGuard:     w.LoopBudgetGuard,
 		RepoDevbox:          w.RepoDevbox,
 		WorkspaceCheckpoint: w.WorkspaceCheckpoint,
@@ -1715,6 +1869,8 @@ func edgeToJSON(e *Edge) *jsonEdge {
 			MaxIterationsExpr: e.Loop.MaxIterationsExpr,
 			Unbounded:         e.Loop.Unbounded,
 			FuelCap:           e.Loop.FuelCap,
+			Guard:             e.Loop.Guard,
+			SizedBy:           e.Loop.SizedBy,
 		}
 	}
 	if e.Foreach != nil {
@@ -1973,12 +2129,15 @@ func fromJSON(jf *jsonFile) (*File, error) {
 
 	for _, js := range jf.Subbots {
 		sd := &SubbotDecl{
-			Name:        js.Name,
-			Description: js.Description,
-			Source:      js.Source,
-			Output:      js.Output,
-			Needs:       js.Needs,
-			Isolated:    js.Isolated,
+			Name:          js.Name,
+			Description:   js.Description,
+			Source:        js.Source,
+			Output:        js.Output,
+			Needs:         js.Needs,
+			Isolated:      js.Isolated,
+			AutoMerge:     js.AutoMerge,
+			MergeInto:     js.MergeInto,
+			MergeStrategy: js.MergeStrategy,
 		}
 		for _, w := range js.With {
 			sd.With = append(sd.With, &WithEntry{Key: w.Key, Value: w.Value})
@@ -2102,6 +2261,7 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Output:         jt.Output,
 		Publish:        jt.Publish,
 		ArtifactLabels: jt.ArtifactLabels,
+		Deliverables:   jt.Deliverables,
 		Await:          aw,
 		Sandbox:        sandboxBlockFromJSON(jt.Sandbox),
 		Compress:       jt.Compress,
@@ -2111,6 +2271,7 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Policy:         jt.Policy,
 		Recovery:       recoveryBlockFromJSON(jt.Recovery),
 		Needs:          jt.Needs,
+		Capabilities:   declaredListFromJSON(jt.Capabilities),
 		ParallelSafe:   jt.ParallelSafe,
 		EnvExpansion:   jt.EnvExpansion,
 	}, nil
@@ -2269,6 +2430,7 @@ func secretsBlockFromJSON(js *jsonSecretsBlock) *SecretsBlock {
 			Env:         jf.Env,
 			Optional:    jf.Optional,
 			Hosts:       jf.Hosts,
+			Sinks:       jf.Sinks,
 			Description: jf.Description,
 		})
 	}
@@ -2352,13 +2514,14 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Output:            ja.Output,
 			Publish:           ja.Publish,
 			ArtifactLabels:    ja.ArtifactLabels,
+			Deliverables:      ja.Deliverables,
 			System:            ja.System,
 			User:              ja.User,
 			Session:           sess,
 			SessionSlot:       ja.SessionSlot,
 			Tools:             declaredListFromJSON(ja.Tools),
 			ToolPolicy:        ja.ToolPolicy,
-			Capabilities:      ja.Capabilities,
+			Capabilities:      declaredListFromJSON(ja.Capabilities),
 			Skills:            ja.Skills,
 			ToolMaxSteps:      ja.ToolMaxSteps,
 			MaxTokens:         ja.MaxTokens,
@@ -2379,6 +2542,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Compress:          ja.Compress,
 			AutoMemory:        ja.AutoMemory,
 			AmbientContext:    ja.AmbientContext,
+			Codemode:          codemodeBlockFromJSON(ja.Codemode),
 			Permission:        ja.Permission,
 			Allow:             ja.Allow,
 			Ask:               ja.Ask,
@@ -2414,13 +2578,14 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Output:            jj.Output,
 			Publish:           jj.Publish,
 			ArtifactLabels:    jj.ArtifactLabels,
+			Deliverables:      jj.Deliverables,
 			System:            jj.System,
 			User:              jj.User,
 			Session:           sess,
 			SessionSlot:       jj.SessionSlot,
 			Tools:             declaredListFromJSON(jj.Tools),
 			ToolPolicy:        jj.ToolPolicy,
-			Capabilities:      jj.Capabilities,
+			Capabilities:      declaredListFromJSON(jj.Capabilities),
 			Skills:            jj.Skills,
 			ToolMaxSteps:      jj.ToolMaxSteps,
 			MaxTokens:         jj.MaxTokens,
@@ -2441,6 +2606,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Compress:          jj.Compress,
 			AutoMemory:        jj.AutoMemory,
 			AmbientContext:    jj.AmbientContext,
+			Codemode:          codemodeBlockFromJSON(jj.Codemode),
 			Permission:        jj.Permission,
 			Allow:             jj.Allow,
 			Ask:               jj.Ask,
@@ -2491,13 +2657,18 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 }
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
+	businessStores, err := businessStoresFromJSON(jw.BusinessStores)
+	if err != nil {
+		return nil, err
+	}
 	w := &WorkflowDecl{
 		Name:                jw.Name,
 		Entry:               jw.Entry,
 		Contract:            jw.Contract,
 		DefaultBackend:      jw.DefaultBackend,
 		ToolPolicy:          jw.ToolPolicy,
-		Capabilities:        jw.Capabilities,
+		Capabilities:        declaredListFromJSON(jw.Capabilities),
+		BusinessStores:      businessStores,
 		Skills:              jw.Skills,
 		MCP:                 mcpConfigFromJSON(jw.MCP),
 		Compaction:          compactionFromJSON(jw.Compaction),
@@ -2505,6 +2676,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Compress:            jw.Compress,
 		AutoMemory:          jw.AutoMemory,
 		AmbientContext:      jw.AmbientContext,
+		Codemode:            codemodeBlockFromJSON(jw.Codemode),
 		LoopBudgetGuard:     jw.LoopBudgetGuard,
 		RepoDevbox:          jw.RepoDevbox,
 		WorkspaceCheckpoint: jw.WorkspaceCheckpoint,
@@ -2593,6 +2765,8 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 			MaxIterationsExpr: je.Loop.MaxIterationsExpr,
 			Unbounded:         je.Loop.Unbounded,
 			FuelCap:           je.Loop.FuelCap,
+			Guard:             je.Loop.Guard,
+			SizedBy:           je.Loop.SizedBy,
 		}
 	}
 	if je.Foreach != nil {
@@ -2617,8 +2791,10 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 // — so a list that must tell "declared, and empty" from "not declared" crosses
 // as a POINTER: nil is absent, a pointer to an empty slice is `[]`.
 //
-// The one field with that semantics today is an agent/judge `tools:`
-// (toolcatalog.ToolsDeclared). The rule lists deliberately do not have it.
+// The fields with that semantics today are an agent/judge `tools:`
+// (toolcatalog.ToolsDeclared) and the `capabilities:` of an agent, judge and
+// workflow — a declared `capabilities: []` is no grant, not an inheritance
+// (#1801). The rule lists deliberately do not have it.
 func declaredListToJSON(v []string) *[]string {
 	if v == nil {
 		return nil

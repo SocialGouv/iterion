@@ -2,15 +2,13 @@ package parser
 
 import (
 	"fmt"
-	"math"
-	"os"
-	"strconv"
+	"slices"
 	"strings"
-	"sync"
 	"unicode"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Safety limits to prevent DoS from malicious .bot files.
@@ -19,22 +17,35 @@ const (
 	maxNestingDepth = 100              // max indentation nesting levels
 )
 
-// ReadBudgetEnv names the operator's override of the read budget.
-const ReadBudgetEnv = "ITERION_DSL_READ_BUDGET"
+// MaxIdentifierRunes is the most runes one identifier — a declaration's
+// name, a reference's — may hold (E057 past it). An identifier is one token
+// of the read budget whatever its length, and a diagnostic names its
+// container whole — the node id rides `node_id`, which the studio reads to
+// locate the node and cannot excerpt — so a name of any length rode every
+// message that named it (#2779). The bound is lexical, like the size cap:
+// no read-budget override moves it. 1024 runes: the catalogue's longest
+// identifier is 62.
+const MaxIdentifierRunes = 1024
 
-// DefaultReadBudget is how much one bot may ask the reader to record:
-// 2^20 records of its .bot files together — every word, value, punctuation
-// mark, prompt line (blank or not), line end, indentation step and the end
-// of each file is one, a comment two (commentRecords) — and 2^20 of a
-// YAML twin's reading, a value one and a comment line two (pkg/dsl/author).
-// The size cap bounds each file's bytes; the
-// budget bounds what they turn into, which a dense shape makes hundreds of
-// bytes of memory per byte of source (one flat list of one-letter names, a
-// line of commas, a run of comment lines). The lexer spends it as it reads,
+// ReadBudgetEnv names the operator's override of the read budget
+// (readbudget.Env).
+const ReadBudgetEnv = readbudget.Env
+
+// DefaultReadBudget is how much one bot may ask the reader to record
+// (readbudget.Default): 2^20 records of its .bot files together — every
+// word, value, punctuation mark, prompt line (blank or not), line end,
+// indentation step and the end of each file is one, a comment two
+// (commentRecords) — and 2^20 of a YAML twin's reading, a value one and a
+// comment line two (pkg/dsl/author). The size cap bounds each file's bytes;
+// the budget bounds what they turn into, which a dense shape makes hundreds
+// of bytes of memory per byte of source (one flat list of one-letter names,
+// a line of commas, a run of comment lines). The lexer spends it as it reads,
 // so a bot past it is refused before the work it asks for, not after; the
 // files of one bot share it (NewUnitBudget), so splitting a bot into
-// fragments does not multiply what one load of it costs.
-const DefaultReadBudget = 1 << 20
+// fragments does not multiply what one load of it costs. An expression lives
+// inside one string, which the lexer counts as a single record: the
+// expression parser spends the same budget on its tokens (pkg/dsl/expr).
+const DefaultReadBudget = readbudget.Default
 
 // commentRecords is what a comment spends of the read budget. A token the
 // parser reads and drops costs the readers its token; a comment is
@@ -44,34 +55,14 @@ const DefaultReadBudget = 1 << 20
 // peak memory on /api/parse's work, 826 against 407 on the canonical form.
 const commentRecords = 2
 
-// ReadBudget is the budget in force: DefaultReadBudget, or the count the
-// operator sets in ITERION_DSL_READ_BUDGET where the source is read — 0
-// removes the budget. A value that is not a count (a sign, a unit, a
-// number past the int range) keeps the default, and the process says so
-// once on stderr, naming the value and the budget it applied — as an
-// error, which no ITERION_LOG_LEVEL silences: the operator meant
-// something, and silence would replace it unseen.
+// ReadBudget is the budget in force (readbudget.Read): DefaultReadBudget, or
+// the count the operator sets in ITERION_DSL_READ_BUDGET where the source is
+// read — 0 removes the budget. Every reader of a bot resolves it there, the
+// YAML twin and the expression parser included, so one knob governs them all
+// and a level added to the resolver reaches each at once.
 func ReadBudget() int {
-	v := strings.TrimSpace(os.Getenv(ReadBudgetEnv))
-	if v == "" {
-		return DefaultReadBudget
-	}
-	n, err := strconv.Atoi(v)
-	switch {
-	case err != nil || n < 0:
-		if _, warned := readBudgetWarned.LoadOrStore(v, true); !warned {
-			iterlog.NewFromEnv(os.Stderr).Error("dsl: invalid %s=%q (a count of records, 0 for none); using the default %d", ReadBudgetEnv, v, DefaultReadBudget)
-		}
-		return DefaultReadBudget
-	case n == 0:
-		return math.MaxInt
-	}
-	return n
+	return readbudget.Read()
 }
-
-// readBudgetWarned holds the invalid values already said, once each per
-// process: every source read would otherwise say it again.
-var readBudgetWarned sync.Map
 
 // ReadBudgetMessage is the refusal of a source past budget, the wording
 // every reader of the budget gives (the lexer, the YAML twin's speller).
@@ -155,8 +146,16 @@ type Lexer struct {
 	line int // 1-based
 	col  int // 1-based
 
-	tokens []Token // accumulated tokens
-	ti     int     // current read index into tokens
+	// tokens is the stream's materialized prefix: every token up to the
+	// frontier, which the cursor never passes (ti <= len(tokens)). What the
+	// stream still holds past the frontier lives in ahead, the splice queue:
+	// a resync that splices a broken list's closing DEDENTs cuts the tail
+	// loose into it instead of recopying it (splice). Before the first
+	// splice the queue is empty and tokens is the whole stream, so a reading
+	// that never rescues pays nothing for it.
+	tokens []Token
+	ti     int // current read index into the stream; tokens[:ti] is consumed
+	ahead  tokenQueue
 
 	indentStack []int // stack of indentation levels (in spaces); starts with [0]
 	atLineStart bool  // true when we are at the beginning of a (possibly indented) line
@@ -391,27 +390,50 @@ func detectStrictEscape(src string) bool {
 	return false
 }
 
-// All returns every token produced by the lexer (for debugging).
+// All returns every token of the stream (for debugging): the materialized
+// prefix completed by what the splice queue still holds, which the join
+// drains.
 func (l *Lexer) All() []Token {
-	return l.tokens
+	for {
+		t, ok := l.ahead.pop()
+		if !ok {
+			return l.tokens
+		}
+		l.tokens = append(l.tokens, t)
+	}
 }
+
+// streamLen is the length of the whole stream: the materialized prefix plus
+// what the splice queue still holds.
+func (l *Lexer) streamLen() int { return len(l.tokens) + l.ahead.queued }
 
 // Next returns the next token.
 func (l *Lexer) Next() Token {
-	if l.ti >= len(l.tokens) {
-		return Token{Type: TokenEOF, Line: l.line, Column: l.col}
+	if l.ti < len(l.tokens) {
+		t := l.tokens[l.ti]
+		l.ti++
+		return t
 	}
-	t := l.tokens[l.ti]
-	l.ti++
-	return t
+	if t, ok := l.ahead.pop(); ok {
+		// A token leaves the queue for the materialized prefix: the consumed
+		// stream (openBlocks) and the lookbacks behind the cursor read it
+		// there.
+		l.tokens = append(l.tokens, t)
+		l.ti++
+		return t
+	}
+	return Token{Type: TokenEOF, Line: l.line, Column: l.col}
 }
 
 // Peek returns the next token without consuming it.
 func (l *Lexer) Peek() Token {
-	if l.ti >= len(l.tokens) {
-		return Token{Type: TokenEOF, Line: l.line, Column: l.col}
+	if l.ti < len(l.tokens) {
+		return l.tokens[l.ti]
 	}
-	return l.tokens[l.ti]
+	if t, ok := l.ahead.peekAt(0); ok {
+		return t
+	}
+	return Token{Type: TokenEOF, Line: l.line, Column: l.col}
 }
 
 // Backup unreads the last consumed token.
@@ -424,10 +446,226 @@ func (l *Lexer) Backup() {
 // PeekAt returns the token n positions ahead without consuming anything
 // (PeekAt(0) is Peek).
 func (l *Lexer) PeekAt(n int) Token {
-	if l.ti+n >= len(l.tokens) {
-		return Token{Type: TokenEOF, Line: l.line, Column: l.col}
+	if i := l.ti + n; i < len(l.tokens) {
+		return l.tokens[i]
+	} else if t, ok := l.ahead.peekAt(i - len(l.tokens)); ok {
+		return t
 	}
-	return l.tokens[l.ti+n]
+	return Token{Type: TokenEOF, Line: l.line, Column: l.col}
+}
+
+// splice inserts toks ahead of the stream position at — an absolute index in
+// the stream: the materialized prefix, then the queue — at or ahead of the
+// cursor, where the parser's resyncs always stand. Behind the cursor (a
+// test's doing, never a rescue's) the insert is the plain recopy.
+func (l *Lexer) splice(at int, toks []Token) {
+	switch {
+	case at < l.ti:
+		l.tokens = slices.Insert(l.tokens, at, toks...)
+	case at < len(l.tokens):
+		// The splice point is materialized but unread: the tail moves to the
+		// queue — a slice header, not a copy — with the inserted tokens ahead
+		// of it. The prefix is clipped so a later append can never write
+		// into the tail's backing array.
+		tail := l.tokens[at:]
+		l.tokens = l.tokens[:at:at]
+		l.ahead.prepend(tail)
+		l.ahead.insertAt(0, toks)
+	default:
+		l.ahead.insertAt(at-len(l.tokens), toks)
+	}
+}
+
+// qseg is one segment of the unread stream the splice queue holds: a run of
+// the lexed stream a splice cut loose, or one rescue's spliced DEDENTs. A
+// segment's toks never change once linked — a split only reslices — so two
+// segments may share a backing array and neither can clobber the other.
+type qseg struct {
+	toks       []Token
+	prev, next *qseg
+}
+
+// tokenQueue is the unread tail of the token stream past the materialized
+// prefix: segments in stream order, plus a scan cache for the resync's
+// peeks. It exists so a rescue's splice is a cut-and-join of links — O(1) at
+// the cursor, and O(1) at the point the close-point scan just walked to —
+// where inserting into the flat slice recopied the whole tail of the stream
+// at every rescue: quadratic on a source whose broken lists repeat (#2880).
+type tokenQueue struct {
+	head   *qseg // first segment holding unread tokens
+	off    int   // how far into head.toks the reading stands
+	queued int   // the unread tokens the queue holds, over all segments
+
+	// cacheK, cacheNode and cacheOff are where the last peekAt answer
+	// stands: cacheK its offset from the frontier (the materialized
+	// prefix's length), cacheNode and cacheOff the segment and index
+	// holding it. A nil cacheNode is no cache. A pop moves the frontier one
+	// closer to it, an insert at or before it pushes it one run further;
+	// both adjust it.
+	cacheK    int
+	cacheNode *qseg
+	cacheOff  int
+}
+
+// pop consumes the queue's head token.
+func (q *tokenQueue) pop() (Token, bool) {
+	if q.head == nil {
+		return Token{}, false
+	}
+	t := q.head.toks[q.off]
+	q.off++
+	q.queued--
+	if q.cacheNode != nil {
+		q.cacheK--
+		if q.cacheK < 0 {
+			q.cacheNode = nil
+		}
+	}
+	if q.off == len(q.head.toks) {
+		q.head = q.head.next
+		if q.head != nil {
+			q.head.prev = nil
+		}
+		q.off = 0
+	}
+	return t, true
+}
+
+// peekAt answers the token k positions into the queue, caching where the
+// walk ended: the resync's scans peek at ever-growing offsets, so the next
+// peek resumes where this one stopped and a scan of the whole queue costs
+// one step per token in it, never one walk per peek.
+func (q *tokenQueue) peekAt(k int) (Token, bool) {
+	if k < 0 || k >= q.queued {
+		return Token{}, false
+	}
+	node, off, at := q.head, q.off, 0
+	if q.cacheNode != nil && q.cacheK <= k {
+		node, off, at = q.cacheNode, q.cacheOff, q.cacheK
+	}
+	for at < k {
+		off++
+		if off == len(node.toks) {
+			node = node.next
+			off = 0
+		}
+		at++
+	}
+	q.cacheK, q.cacheNode, q.cacheOff = k, node, off
+	return node.toks[off], true
+}
+
+// prepend links toks in front of every segment the queue holds: the tail a
+// splice cut loose. The frontier moved back by len(toks), so every position
+// the cache holds shifts by it.
+func (q *tokenQueue) prepend(toks []Token) {
+	if len(toks) == 0 {
+		return
+	}
+	q.dropConsumed()
+	q.queued += len(toks)
+	if q.cacheNode != nil {
+		q.cacheK += len(toks)
+	}
+	seg := &qseg{toks: toks, next: q.head}
+	if q.head != nil {
+		q.head.prev = seg
+	}
+	q.head, q.off = seg, 0
+}
+
+// dropConsumed drops the head segment's consumed prefix, so position 0 of
+// the queue is the head node's own start and no link joins ahead of tokens
+// already read — a link that kept them would serve them twice and part the
+// chain from the count. The scan cache keeps its token.
+func (q *tokenQueue) dropConsumed() {
+	if q.head == nil || q.off == 0 {
+		return
+	}
+	q.head.toks = q.head.toks[q.off:]
+	if q.cacheNode == q.head {
+		q.cacheOff -= q.off
+	}
+	q.off = 0
+}
+
+// insertAt links toks ahead of the token k positions into the queue (k == 0
+// is the head); an empty toks links nothing. The walk to k resumes at the
+// scan cache when it stands on the way: a rescue splices where its
+// close-point scan just stopped, so the splice is a link join, never a walk
+// back and never a copy.
+func (q *tokenQueue) insertAt(k int, toks []Token) {
+	if len(toks) == 0 {
+		return
+	}
+	n := len(toks)
+	q.queued += n
+	if q.head == nil {
+		q.head = &qseg{toks: toks}
+		return
+	}
+	q.dropConsumed()
+	if k == 0 {
+		seg := &qseg{toks: toks, next: q.head}
+		q.head.prev, q.head = seg, seg
+		if q.cacheNode != nil {
+			q.cacheK += n
+		}
+		return
+	}
+	node, off, at := q.head, 0, 0
+	var prev *qseg
+	if q.cacheNode != nil && q.cacheK <= k {
+		node, off, at, prev = q.cacheNode, q.cacheOff, q.cacheK, q.cacheNode.prev
+	}
+	for at < k && node != nil {
+		off++
+		if off == len(node.toks) {
+			prev, node, off = node, node.next, 0
+		}
+		at++
+	}
+	if node == nil {
+		// k reaches past the queue's end — no rescue's splice does (its
+		// index names a token that exists): link at the end.
+		ded := &qseg{toks: toks, prev: prev}
+		if prev != nil {
+			prev.next = ded
+		} else {
+			q.head = ded
+		}
+		if q.cacheNode != nil && q.cacheK >= k {
+			q.cacheK += n
+		}
+		return
+	}
+	var right *qseg
+	if off == 0 {
+		ded := &qseg{toks: toks, prev: node.prev, next: node}
+		if node.prev != nil {
+			node.prev.next = ded
+		} else {
+			q.head = ded
+		}
+		node.prev = ded
+	} else {
+		right = &qseg{toks: node.toks[off:], prev: node, next: node.next}
+		ded := &qseg{toks: toks, prev: node, next: right}
+		right.prev = ded
+		if node.next != nil {
+			node.next.prev = right
+		}
+		node.next, node.toks = ded, node.toks[:off]
+	}
+	// The scan cache holds a position: every token at or past k moved one
+	// run further, and one cached in the split-away part of node moved with
+	// it.
+	if q.cacheNode != nil && q.cacheK >= k {
+		if q.cacheNode == node && right != nil {
+			q.cacheNode, q.cacheOff = right, q.cacheOff-off
+		}
+		q.cacheK += n
+	}
 }
 
 // ---------------- internal ----------------
@@ -1055,6 +1293,14 @@ func (l *Lexer) scanIdentOrKeyword(startLine, startCol int) {
 	}
 	word := string(buf)
 
+	// A name past the lexical cap is refused where it is scanned (E057), the
+	// diagnosis standing on its first rune and naming it by excerpt: no
+	// token — and no diagnostic downstream — ever holds the text (#2779).
+	if len(buf) > MaxIdentifierRunes {
+		l.emitError(DiagIdentifierTooLong, fmt.Sprintf("an identifier is at most %d runes long; this one runs %d: %s", MaxIdentifierRunes, len(buf), expr.Excerpt(word)), startLine, startCol)
+		return
+	}
+
 	// Handle "string[]"
 	if word == "string" && l.pos+1 < len(l.src) && l.src[l.pos] == '[' && l.src[l.pos+1] == ']' {
 		l.advance() // [
@@ -1197,7 +1443,16 @@ func (l *Lexer) emitError(code DiagCode, msg string, line, col int) {
 	if !l.spend(line, col, 1) {
 		return
 	}
-	l.tokens = append(l.tokens, Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col})
+	// The diagnosis token stands on the rune it refuses: its extent is that
+	// rune, so a span closed on it ends past the rune and not past the text
+	// of the diagnosis.
+	t := Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col}
+	if line >= 1 && line <= len(l.lineStarts) {
+		if off := l.lineStarts[line-1] + col - 1; off >= 0 && off < len(l.src) {
+			t.Offset, t.End = off, off+1
+		}
+	}
+	l.tokens = append(l.tokens, t)
 }
 
 func isIdentStart(r rune) bool {

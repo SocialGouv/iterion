@@ -3,18 +3,20 @@
 // CI, a script) and authorize it to launch a configured set of bots.
 //
 // It is the first long-lived-token concept in iterion (operator auth is
-// short-lived JWT + refresh). Tokens are shown once and stored only as a
-// salted hash + last4 + fingerprint, mirroring the invitation/session
-// token pattern in pkg/auth.
+// short-lived JWT + refresh). Tokens are shown once and stored only as an
+// unsalted SHA-256 hash (the token is 256 random bits; ADR-156) + last4 +
+// fingerprint, mirroring the invitation/session token pattern in pkg/auth.
 //
 // This package is provider-agnostic; the GitLab merge-request handler
 // that consumes it lives in pkg/webhooks/gitlab + the server route.
 package webhooks
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
@@ -29,6 +31,12 @@ const (
 	ProviderGitHub  Provider = "github"
 	ProviderForgejo Provider = "forgejo" // same wire shape as Gitea
 	ProviderGeneric Provider = "generic"
+	// ProviderConnector is a connector package's ingress (ADR-168 §6): the
+	// vendor is the bound connection's, the package's `ingress:` block says
+	// how a delivery is verified and read, and the route is
+	// POST /api/webhooks/c/{id}. The last value of the closed set: a new
+	// source is a package, not a provider.
+	ProviderConnector Provider = "connector"
 )
 
 // SignatureMode selects how an inbound delivery proves authenticity.
@@ -63,15 +71,22 @@ type Rate struct {
 // exactly once at create/rotate; only TokenHash/TokenLast4/Fingerprint
 // persist.
 type Config struct {
-	ID          string        `bson:"_id" json:"id"`
-	TenantID    string        `bson:"tenant_id" json:"tenant_id"`
-	Name        string        `bson:"name" json:"name"`
-	Provider    Provider      `bson:"provider" json:"provider"`
-	SignMode    SignatureMode `bson:"sign_mode,omitempty" json:"sign_mode,omitempty"`
-	Enabled     bool          `bson:"enabled" json:"enabled"`
-	TokenHash   string        `bson:"token_hash" json:"-"`
-	TokenLast4  string        `bson:"token_last4" json:"token_last4"`
-	Fingerprint string        `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// ProvisionFrozen seals the old policy snapshot during a webhook migration.
+	// Retry the integration to finish the migration, then edit its active config.
+	ProvisionFrozen bool  `bson:"provision_frozen,omitempty" json:"-"`
+	Version         int64 `bson:"version" json:"-"`
+	// ProvisionIntegrationID names the authoritative active epoch. Enabled alone
+	// cannot reactivate a retired config after an expired provisioning lease.
+	ProvisionIntegrationID string        `bson:"provision_integration_id,omitempty" json:"-"`
+	ID                     string        `bson:"_id" json:"id"`
+	TenantID               string        `bson:"tenant_id" json:"tenant_id"`
+	Name                   string        `bson:"name" json:"name"`
+	Provider               Provider      `bson:"provider" json:"provider"`
+	SignMode               SignatureMode `bson:"sign_mode,omitempty" json:"sign_mode,omitempty"`
+	Enabled                bool          `bson:"enabled" json:"enabled"`
+	TokenHash              string        `bson:"token_hash" json:"-"`
+	TokenLast4             string        `bson:"token_last4" json:"token_last4"`
+	Fingerprint            string        `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 
 	// HMACSecretSealed holds the sealed plaintext used to recompute the
 	// body HMAC for hmac-mode providers (GitHub, Forgejo). Same plaintext
@@ -261,48 +276,56 @@ type Config struct {
 	// store.RunTrustFork, which withdraws the publish grant, the tenant's
 	// workflow secrets and every mutating bot, wherever those are read.
 	//
-	// THAT LIST IS NOT #874's FIVE CONSTRAINTS. Two of them are UNENFORCED
-	// and belong to the admission half, and they are named here so the gap
-	// is carried forward rather than read as already closed:
+	// THAT LIST IS NOT #874's FIVE CONSTRAINTS. Two of them were deferred
+	// to the admission half (ADR-162 U6) and have LANDED with it:
 	//
 	//   - constraint 4b — fork code must not execute the TARGET repo's own
 	//     toolchain or config (`repo_devbox: off`, sandbox `network:
 	//     allowlist`). store.RunTrust DOES reach pkg/runtime and pkg/runner
 	//     — it rides queue.RunMessage, refuses a pinless untrusted workspace
 	//     (loop_gitws.go) and is stamped onto a sub-bot's document
-	//     (runtime.WithTrust). What no path routes it into is the TOOLCHAIN
-	//     and NETWORK policy: resolveRepoDevbox(override, workflow) takes no
-	//     trust argument, and the sandbox network policy has none either.
+	//     (runtime.WithTrust). The TOOLCHAIN half is floored (ADR-162 U5):
+	//     resolveRepoDevbox(override, workflow, trust) answers false for
+	//     every untrusted workspace, and the repo's devcontainer is not
+	//     read either. The NETWORK policy floor rides the same unit.
 	//   - constraint 5 beyond the gate context — the base repo's project
-	//     settings must not be honoured. Among THOSE surfaces only the
-	//     gate-context write is trust-gated: applyWebhookVarLayers still
-	//     layers cfg.LaunchVars and cfg.OperatorLaunchVars onto a target
-	//     whatever its trust, and the hold-label veto is trust-blind. The
-	//     per-fork-author bound exists as orgusage.ForkAuthorSubject with NO
-	//     production caller.
-	//
-	// Why deferred rather than done here: nothing sets RunTrustFork, so
-	// PR1's safety is safety-by-refusal — the marker's readers must be
-	// correct before anything can carry it. 4b and 5 are ADMISSION-time
-	// controls: they shape how a fork run is built, which is the half that
-	// does not exist yet, and a guard whose condition can never be true is
-	// documented as working, which is worse than absent. They are on #874's
-	// remainder.
+	//     settings must not be honoured: applyWebhookVarLayers refuses to
+	//     layer cfg.LaunchVars and cfg.OperatorLaunchVars onto an untrusted
+	//     target, and the hold label BLOCKS the gesture (ADR-162 Q2). The
+	//     per-fork-author bound is metered by the launch gate on
+	//     orgusage.ForkAuthorSubject — runs and dollars, beside the org's
+	//     own quota (decision 5).
 	//
 	// The two kinds are DISJOINT, enforced in both directions at the launch
 	// tail (launchWebhookTarget): a fork-lane config never launches a
 	// same-repo target, and an ordinary config never launches a fork target.
 	//
-	// NOT SETTABLE THROUGH THE API YET, deliberately: no create/PATCH request
-	// struct carries it, so today every config decodes false and the fork
-	// lane admits nothing. The admission half — the maintainer gesture that
-	// opts one pull request in, and the per-author budget — is a follow-up,
-	// and the field becomes settable WITH it. When it does, the PATCH route
-	// has to refuse changing it on an existing config: the per-author budget
-	// is keyed on the config, so flipping the kind under it re-interprets
-	// rows written for the other one. That guard does not exist today and
-	// this comment is not claiming it does.
+	// SETTABLE AT CREATION ONLY (ADR-162 decision 1): `POST
+	// /api/teams/{id}/webhooks` accepts fork_lane, github-only — the
+	// creation refuses it typed on every other provider, naming the
+	// witness that provider lacks. The PATCH route refuses a CHANGE of it
+	// on an existing config (a restatement of the stored value is a
+	// no-op): flipping the kind under a config would re-read its parked
+	// debounce targets as the other kind and re-interpret the per-author
+	// budget's rows, which were written under the kind it carried.
 	ForkLane bool `bson:"fork_lane,omitempty" json:"fork_lane,omitempty"`
+
+	// ForkLanePool names the runner pool every run of a fork-lane config
+	// executes on (ADR-162 Q3 and decision 10): a pool of ADR-154's
+	// registry whose runners resolve the kubernetes sandbox for every run.
+	// The launch stamps it onto the run (runview.LaunchSpec.ForkLanePool →
+	// the run document's and the queue message's RunnerPool), so a fork run
+	// lands on that pool alone and every resume, retry and forked child
+	// follows the frozen stamp.
+	//
+	// SET AT CREATION, REQUIRED THERE AND IMMUTABLE, like ForkLane itself:
+	// the creation refuses a fork-lane config without it and an ordinary
+	// config with it, and the PATCH route refuses a change — moving the pool
+	// under a config would split one lane's runs across two pools. A
+	// fork-lane config stored without one (created before the field) is
+	// refused at the launch tail, typed, before anything is metered
+	// (webhookProvenanceRefusal).
+	ForkLanePool string `bson:"fork_lane_pool,omitempty" json:"fork_lane_pool,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The
@@ -383,6 +406,13 @@ type Config struct {
 	// binding level for webhook-provisioned bots. nil = the level says
 	// nothing. BREADTH: one webhook serves every bot its rules fan out to.
 	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
+	// Pool is the webhook's binding-level pool block (ADR-164) — the
+	// enforcement half of a forge integration's pool: block, written ONLY
+	// by the provisioner after the integration's write surface validated
+	// the block and the pool's consent. The webhook CRUD request has no
+	// pool field: a hand-written block would grant a pool no validated
+	// surface ever consented to. nil = the level says nothing.
+	Pool *credpool.Binding `bson:"pool,omitempty" json:"pool,omitempty"`
 
 	// AuthorizedRepliers + MinReplierRole gate who may "talk back" to the bot
 	// via a note (a /revi command or a reply): a note author is authorized
@@ -400,6 +430,45 @@ type Config struct {
 	// Integrations" pill. Empty = a normal operator-created webhook (the
 	// default; every pre-existing row decodes to "" and behaves as before).
 	ProvisionedBy string `bson:"provisioned_by,omitempty" json:"provisioned_by,omitempty"`
+
+	// ConnectorConnectionID names the pkg/connection record this webhook's
+	// deliveries are BELIEVED through (#2761, ADR-098): when set, the inbound
+	// handler is the connector lane — the event is matched against what the
+	// connector PACKAGE declares (triggers.yaml), not an engine switch, and
+	// the connection must hold the `trigger` grant, which is what an operator
+	// consented to when entrusting it. The signature secret stays on
+	// HMACSecretSealed: the grant is the connection's, the secret is the
+	// webhook's (the split trigger.go states). Empty = the legacy
+	// provider-switch lane, byte-identical for every row written before the
+	// field existed.
+	ConnectorConnectionID string `bson:"connector_connection_id,omitempty" json:"connector_connection_id,omitempty"`
+
+	// ContractDigest pins a connector ingress to the package's `ingress:`
+	// block as the operator consented to it when binding
+	// (spec.IngressDigest). A delivery whose package now resolves to another
+	// contract — a team override, a new version — is refused, naming both
+	// digests, until the operator re-binds. Set only on ProviderConnector.
+	ContractDigest string `bson:"contract_digest,omitempty" json:"contract_digest,omitempty"`
+	// Installation is the installation value a connector ingress is bound
+	// to (a Slack team_id), read from the authenticated body through the
+	// package's `installation:` expression; a delivery carrying another
+	// value is refused. Empty when the package declares none.
+	Installation string `bson:"installation,omitempty" json:"installation,omitempty"`
+	// RepoHosts are the hosts beyond the connection's own a connector
+	// ingress's events may name as a run's clone target (the reserved
+	// repo_url output, ADR-168 §5): a repo_url on any other host refuses the
+	// launch, naming the host. Set only on ProviderConnector.
+	RepoHosts []string `bson:"repo_hosts,omitempty" json:"repo_hosts,omitempty"`
+	// Connector is the connector a connector ingress receives deliveries
+	// for, recorded when it is bound: the sealed secret is that vendor's, so
+	// a re-bind keeps it, and a delivery whose connection now names another
+	// connector is refused.
+	Connector string `bson:"connector,omitempty" json:"connector,omitempty"`
+	// SecretOrigin is where a connector ingress's sealed secret came from —
+	// minted by iterion or pasted from the vendor — as its package declared
+	// when the secret was sealed. A contract that declares another origin is
+	// consented to only after a rotation re-seals the secret from it.
+	SecretOrigin string `bson:"secret_origin,omitempty" json:"secret_origin,omitempty"`
 
 	CreatedBy  string     `bson:"created_by" json:"created_by"`
 	CreatedAt  time.Time  `bson:"created_at" json:"created_at"`
@@ -617,6 +686,12 @@ type Delivery struct {
 	ClosesSubject bool   `bson:"closes_subject,omitempty" json:"-"`
 	SubjectSHA    string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
 	PayloadHash   string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	// ForgeDeliveryID is the forge's own id of the event this row answers,
+	// the one a redelivery of the event carries again (GitHub
+	// X-GitHub-Delivery, GitLab webhook-id / Idempotency-Key). Recorded by
+	// the lanes that read it — the issue trigger lanes, whose redeliveries
+	// are recognised by it or by PayloadHash.
+	ForgeDeliveryID string `bson:"forge_delivery_id,omitempty" json:"forge_delivery_id,omitempty"`
 
 	Status     string    `bson:"status" json:"status"`
 	BotID      string    `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
@@ -642,6 +717,24 @@ type Delivery struct {
 	NextAttemptAt *time.Time      `bson:"next_attempt_at,omitempty" json:"next_attempt_at,omitempty"`
 	// ClaimedAt is when the current attempt claimed the row (insert or retry claim).
 	ClaimedAt *time.Time `bson:"claimed_at,omitempty" json:"claimed_at,omitempty"`
+	// The outcome of the run this delivery launched — what the run DID, as
+	// opposed to Status/Error above, which are the DELIVERY's own verdict
+	// (accepted, filtered, launched, launch_error). Stamped by the
+	// run-outcome spine from the run's terminal status (#1501): a delivery
+	// that launched and whose run died read exactly like one that launched
+	// and worked.
+	//
+	// RunID above is this tuple's id half — a delivery launches ONE run, and
+	// a retry of a failed row replaces it — so there is no last_run_id here
+	// and no second source of truth for it. LastRunError/LastRunErrorCode are
+	// CLEARED by a successful outcome: this is a health signal, not an audit
+	// trail (the run record is the audit). LastRunAt is the run document's
+	// own instant and the monotonicity key: an out-of-order stamp can never
+	// move the fields backwards.
+	LastRunStatus    string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
+	LastRunError     string     `bson:"last_run_error,omitempty" json:"last_run_error,omitempty"`
+	LastRunErrorCode string     `bson:"last_run_error_code,omitempty" json:"last_run_error_code,omitempty"`
+	LastRunAt        *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
 }
 
 // ClaimStart is when the row's current attempt claimed it — what every reader
@@ -678,6 +771,30 @@ const (
 // a parked delivery — the serialized twin of the server's in-memory
 // launch target, so the sweep can replay the launch exactly as the
 // handler would have performed it.
+// ForkAuthorRef names the OUTSIDE author a fork review gesture admitted,
+// for the per-contributor bound (ADR-162 decision 5). It rides the
+// provenance a target carries: the identity halves on a first admission
+// (the forge provider and the pull request author's NUMERIC forge id),
+// and — once the launch gate has metered the bound — the composed
+// orgusage.Subject, which is what the run document, the queue message and
+// the runner's second charge read. The subject is composed at the ONE
+// place the metering id is decided (gateMonthlyCaps), so the subject
+// charged, the one stamped on the document and the one re-charged on a
+// re-entry can never diverge.
+type ForkAuthorRef struct {
+	// Provider is the forge the pull request lives on ("github" — the
+	// lane is github-only).
+	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
+	// AuthorID is the pull request author's NUMERIC forge user id — never
+	// the login, which is renameable and would reset the bound on demand.
+	AuthorID string `bson:"author_id,omitempty" json:"author_id,omitempty"`
+	// Subject is the composed orgusage.Subject once the gate has metered
+	// the bound on it. A re-entry that replays a stored row (the debounce
+	// flush, the delivery retry, the run-retry sweeper) carries this and
+	// never re-derives the identity halves.
+	Subject string `bson:"subject,omitempty" json:"subject,omitempty"`
+}
+
 type DeferredTarget struct {
 	BotID   string            `bson:"bot_id" json:"bot_id"`
 	IdemKey string            `bson:"idem_key" json:"idem_key"`
@@ -694,6 +811,13 @@ type DeferredTarget struct {
 	// the trusted default and no pin, i.e. to what it did yesterday.
 	Trust       store.RunTrust `bson:"trust,omitempty" json:"trust,omitempty"`
 	ExpectedSHA string         `bson:"expected_sha,omitempty" json:"expected_sha,omitempty"`
+	// ForkAuthor is the outside author the gesture admitted, parked with
+	// the provenance it belongs to: a flush that re-enters the launch tail
+	// must meter the per-contributor bound, and an untrusted target that
+	// cannot be metered is refused, not launched unmetered. Nil on every
+	// row but a fork gesture's; a row written before the field decodes to
+	// nil, i.e. to what it was.
+	ForkAuthor *ForkAuthorRef `bson:"fork_author,omitempty" json:"fork_author,omitempty"`
 }
 
 // DeferredLaunch parks one webhook delivery's resolved launch for a
@@ -779,6 +903,13 @@ func (c Config) NormalizedReviewRequestLogins() []string {
 	return out
 }
 
+// PoolBindingLayer projects the webhook's pool block as the binding layer
+// the launch fold consumes (ADR-164). ok=false when the webhook binds no
+// pool.
+func (c Config) PoolBindingLayer() (credpool.BindingLayer, bool) {
+	return c.Pool.Layer("webhook")
+}
+
 // RoutingPolicy projects the webhook's routing block (ADR-121). Not
 // normalized — one layer of a precedence chain. BREADTH, said out loud: a
 // webhook serves every bot its rules fan out to, so one webhook's
@@ -801,4 +932,87 @@ func (c Config) RetryPolicy() retrypolicy.Policy {
 		MaxWait:     c.RetryMaxWait,
 		Jitter:      c.RetryJitter,
 	}
+}
+
+// ThreadAnchor is the diff position a review thread's root comment anchors
+// to — what a conversational bot needs to focus its diff read on the hunk
+// the thread is about (#3283). The forge spellings are normalized here:
+// Side is "new" (the post-image line the comment renders on) or "old" (a
+// line the change removed — a pre-image line, never a current one); Line
+// is the line number on that side; OldLine is the pre-image line the forge
+// keeps beside the anchor — GitHub's original_line, GitLab's old_line
+// beside a new_line — and is NEVER a current line: the comment may be
+// outdated, the line renamed or deleted since; Commit is the commit the
+// anchor was made on (GitHub's commit_id, GitLab's position.head_sha), the
+// value a consumer compares against the revision it actually reads; and
+// OldPath names the file before a rename when the forge reports one
+// (GitLab's position.old_path; GitHub's payload carries none).
+//
+// Zero value: no anchor — the thread hangs off the conversation (a general
+// note), not off the diff. The six-line shape the forge gave is kept:
+// consumers degrade on what is missing, they do not guess.
+type ThreadAnchor struct {
+	Path    string
+	OldPath string
+	Line    int64
+	OldLine int64
+	Side    string // "new" | "old" | ""
+	Commit  string
+}
+
+// Set reports whether an anchor was carried at all. Only Path decides: a
+// thread that anchors nothing names no file, whatever else arrived.
+func (a ThreadAnchor) Set() bool { return a.Path != "" }
+
+// LaunchVars renders the anchor as the launch vars the conversational bots
+// declare (thread_anchor_*). Always the six keys, empty string where the
+// forge gave nothing (a line number of 0 means absent — real lines start
+// at 1): the lanes set them as one block, so a consumer reads one shape
+// whether the anchor came whole, half or not at all.
+func (a ThreadAnchor) LaunchVars() map[string]string {
+	return map[string]string{
+		"thread_anchor_path":     a.Path,
+		"thread_anchor_old_path": a.OldPath,
+		"thread_anchor_line":     formatAnchorLine(a.Line),
+		"thread_anchor_old_line": formatAnchorLine(a.OldLine),
+		"thread_anchor_side":     a.Side,
+		"thread_anchor_commit":   a.Commit,
+	}
+}
+
+// formatAnchorLine renders a line number, 0 — the absent value — as the
+// empty string.
+func formatAnchorLine(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// GitHubReviewAnchor normalizes a GitHub (or Forgejo/Gitea, the shared wire
+// shape) review comment's anchor fields. side is the wire's "LEFT"/"RIGHT"
+// (the pre-image / post-image side line anchors to); line is the comment's
+// current line on that side — null on an outdated comment, the forge keeps
+// only originalLine then; originalLine is the line the comment was ORIGINALLY
+// written on and never travels as a current line; commit is the comment's
+// commit_id. A side the payload does not name (Forgejo today) leaves the
+// anchor un-sided: the file path alone survives, which is still enough to
+// focus the read on the file's diff.
+func GitHubReviewAnchor(path, side string, line, originalLine int64, commit string) ThreadAnchor {
+	a := ThreadAnchor{Path: path, Line: line, OldLine: originalLine, Commit: commit}
+	switch strings.ToLower(side) {
+	case "right":
+		a.Side = "new"
+	case "left":
+		a.Side = "old"
+	default:
+		// No usable side: the line cannot be read as a current one (its
+		// image is unknown), so it travels only as the pre-image hint it is.
+		a.Side = ""
+		if a.Line != 0 {
+			a.OldLine = a.Line
+			a.Line = 0
+		}
+	}
+	return a
 }

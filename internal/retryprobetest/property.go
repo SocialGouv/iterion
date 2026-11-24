@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -206,6 +207,10 @@ type Snapshot struct {
 	Row          *store.RunRetryState
 	Status       store.RunStatus
 	Continuation store.ContinuationState
+	// Record is the run document the row belongs to, for the readings taken
+	// of the record as a whole — the usage window a due row may still be held
+	// by (retrypolicy.UsageWindowNotBefore). Nil reads as "no window".
+	Record *store.Run
 
 	// Metered is the org's monthly run-quota units charged so far.
 	Metered int
@@ -687,6 +692,14 @@ func dueAndUnleased(s Snapshot, now time.Time) bool {
 	}
 	if s.Row.RetryAfter.After(now) {
 		return false
+	}
+	// A row the usage window its record names still holds is not due: the
+	// due pass waits for the window, free of charge, and only a probe in
+	// flight goes through before it (#3127).
+	if s.Record != nil && !s.Row.ProbeInFlight(now) {
+		if _, waits := retrypolicy.UsageWindowNotBefore(s.Record, now); waits {
+			return false
+		}
 	}
 	return s.Row.ClaimedAt == nil || !s.Row.ClaimedAt.After(now.Add(-ClaimLease))
 }

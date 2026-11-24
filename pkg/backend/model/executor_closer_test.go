@@ -24,6 +24,7 @@ func (c *countingCloser) Close() error {
 // be released by ClawExecutor.Close(), nil entries ignored, and their errors
 // aggregated. Without this each per-subbot BuildExecutor call leaks a watcher.
 func TestClawExecutorCloseReleasesExtraClosers(t *testing.T) {
+	t.Parallel()
 	a := &countingCloser{}
 	sentinel := errors.New("board store close failed")
 	b := &countingCloser{err: sentinel}
@@ -51,6 +52,7 @@ func TestClawExecutorCloseReleasesExtraClosers(t *testing.T) {
 // manager, no extra closers) still returns nil — a regression guard for the
 // errors.Join refactor.
 func TestClawExecutorCloseNoClosersNoError(t *testing.T) {
+	t.Parallel()
 	exec := NewClawExecutor(NewRegistry(), &ir.Workflow{})
 	if err := exec.Close(); err != nil {
 		t.Fatalf("Close() with no closers = %v, want nil", err)

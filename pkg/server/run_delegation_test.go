@@ -10,7 +10,7 @@ import (
 
 func TestCompileDelegatedWorkerRequiresHostContextAndWorktree(t *testing.T) {
 	featureDev := filepath.Join("..", "..", "bots", "feature-dev", "main.bot")
-	wf, err := compileDelegatedWorker(featureDev, "", "")
+	wf, err := compileDelegatedWorker(featureDev, "", "", "")
 	if err != nil {
 		t.Fatalf("feature-dev delegation contract: %v", err)
 	}
@@ -27,7 +27,7 @@ workflow unsafe:
   worktree: none
 done done:
 `
-	if _, err := compileDelegatedWorker("unsafe.bot", unsafe, ""); err == nil {
+	if _, err := compileDelegatedWorker("unsafe.bot", unsafe, "", ""); err == nil {
 		t.Fatal("worktree:none worker was accepted")
 	}
 }

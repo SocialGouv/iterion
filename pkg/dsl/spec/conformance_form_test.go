@@ -117,10 +117,57 @@ var formWitnesses = map[spec.Form]witnesses{
 	},
 	spec.BlockOrIdent: {
 		// The parser takes any bare word (the compiler narrows it, C044);
-		// the quoted spelling and a list are not a mode.
-		accepted: []string{"zz_word", "\n  image: \"img\""},
+		// the quoted spelling and a list are not a mode. `%b` is a line the
+		// property's OWN body kind accepts, derived from the registry — the
+		// block-form witness was `image: "img"` while `sandbox` was the only
+		// property of this form, which made it sandbox's witness rather than
+		// the form's, and the second such property is what said so.
+		accepted: []string{"zz_word", "\n  %b"},
 		refused:  []string{`"%s"`, "1", "[%s]"},
 	},
+}
+
+// bodyWitness is one property line the kind named by a Block / BlockOrIdent
+// property's Body accepts: the first of that kind's properties whose own Form
+// has a single-line accepted witness, rendered as `name: value`.
+//
+// Derived rather than written down, so a property of a block form is probed
+// with ITS body and not with whichever body happened to be first.
+func bodyWitness(body string) string {
+	k, ok := spec.Lookup(body)
+	if !ok {
+		// A Body naming a kind the registry does not have. Returning a line
+		// that happens to parse would hide it behind a green sweep (and
+		// `mode:` did, since every body so far has one); this name cannot be
+		// a property of anything, so the red says what is wrong.
+		return "__no_such_body_kind__: 1"
+	}
+	// `mode` is skipped on purpose: every BlockOrIdent body so far opens with
+	// one, so a witness taken from the first property was the same line for
+	// `sandbox` and for `codemode` and stopped telling a right Body: from a
+	// wrong one. Skipping it also restores `sandbox`'s original witness
+	// (`image: "img"`) rather than weakening it.
+	for _, bp := range k.Properties {
+		if bp.Name == "mode" {
+			continue
+		}
+		w, ok := formWitnesses[bp.Form]
+		if !ok || len(w.accepted) == 0 {
+			continue
+		}
+		v := w.accepted[0]
+		if strings.Contains(v, "\n") || strings.Contains(v, "%b") {
+			continue // a nested block is not a one-line witness
+		}
+		if strings.Contains(v, "%s") {
+			if len(bp.Values) == 0 {
+				continue
+			}
+			v = strings.ReplaceAll(v, "%s", bp.Values[0])
+		}
+		return bp.Name + ": " + v
+	}
+	return "__no_body_witness__: 1"
 }
 
 // witnessLine writes one witness as the property's line(s): a value after
@@ -130,6 +177,9 @@ var formWitnesses = map[spec.Form]witnesses{
 func witnessLine(p spec.Property, w, indent string) string {
 	if strings.Contains(w, "%s") && len(p.Values) > 0 {
 		w = strings.ReplaceAll(w, "%s", p.Values[0])
+	}
+	if strings.Contains(w, "%b") {
+		w = strings.ReplaceAll(w, "%b", bodyWitness(p.Body))
 	}
 	var line string
 	switch {
@@ -191,5 +241,32 @@ func TestEveryPropertyFormHasWitnesses(t *testing.T) {
 				t.Errorf("%s.%s: form %q has no witnesses", k.Name, p.Name, p.Form)
 			}
 		}
+	}
+}
+
+// bodyWitness has to tell the two BlockOrIdent bodies APART. Measured once a
+// second property of that form existed: both kinds open with `mode`, so a
+// witness taken from the first property was the identical line for both and
+// the sweep stopped distinguishing a right `Body:` from a wrong one.
+func TestTheBodyWitnessDistinguishesTheBodies(t *testing.T) {
+	t.Parallel()
+	sandbox, codemode := bodyWitness("sandbox"), bodyWitness("codemode")
+	if sandbox == codemode {
+		t.Errorf("both bodies witness as %q — a wrong Body: would pass the form sweep", sandbox)
+	}
+	// And each is a property of ITS own kind, not of the other's.
+	// codemode's witness is `defer:` since the deferral property joined the
+	// block: it is the first post-`mode` property whose form has a one-line
+	// witness, it names codemode alone (sandbox has no `defer`), and it
+	// tells the two bodies apart exactly as the test asks.
+	for body, want := range map[string]string{"sandbox": "image", "codemode": "defer"} {
+		if got := bodyWitness(body); !strings.HasPrefix(got, want+":") {
+			t.Errorf("bodyWitness(%q) = %q, want a %s line", body, got, want)
+		}
+	}
+	// A Body nobody declares must produce a red that names the problem,
+	// never a line that happens to parse.
+	if got := bodyWitness("no_such_kind_here"); !strings.Contains(got, "no_such_body_kind") {
+		t.Errorf("bodyWitness of an unknown kind = %q, which may parse and hide the mistake", got)
 	}
 }

@@ -54,6 +54,15 @@ func (r *Run) extractExport(stream io.Reader, hostDst string) (map[string]bool, 
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
+			// A file where the archive carries a dir is replaced — the
+			// mirror of writeExportFile's own replace: the archive's view
+			// wins over one member, pre-existing included, whatever the
+			// attempt that last touched the path wrote.
+			if info, err := os.Lstat(abs); err == nil && !info.IsDir() {
+				if err := os.Remove(abs); err != nil {
+					return nil, fmt.Errorf("replace %s: %w", abs, err)
+				}
+			}
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return nil, fmt.Errorf("create %s: %w", abs, err)
 			}
@@ -114,10 +123,23 @@ func (r *Run) exportTarget(root, name string) (rel, abs string, skip bool, err e
 		r.driver.logger.Warn("sandbox: export refused %q from the pod's archive: %v", name, err)
 		return "", "", true, nil
 	}
-	if exportExcluded(landing) {
+	if exportExcluded(landing) || (r.info.UntrustedRun && untrustedExportExcluded(landing)) {
 		return landing, abs, true, nil
 	}
 	return landing, abs, false, nil
+}
+
+// untrustedExportExcluded reports whether rel — a landing path the export
+// extract was about to write — is git-private state an untrusted run never
+// delivers: the WHOLE `.git` tree (ADR-162 U5). The untrusted copy crossed
+// no `.git` (populateWorkspace), but the pod's archiver runs in the
+// sandbox, on an image the workflow chose, and the fork's agent has a
+// shell: a `.git` planted in the workspace must not come back through the
+// export onto the host clone — not its config, and not its refs either.
+// Decided HERE, host-side, on the landing path, for the same reason
+// exportExcluded is: a pattern the in-pod tar applies is a request.
+func untrustedExportExcluded(rel string) bool {
+	return rel == ".git" || strings.HasPrefix(rel, ".git/")
 }
 
 // writeExportFile writes one regular member. An existing symlink at the path
@@ -160,19 +182,73 @@ func (r *Run) writeExportFile(abs string, hdr *tar.Header, src io.Reader) error 
 	return nil
 }
 
-// writeExportSymlink recreates a symlink the run's work left in the
-// workspace — a repository may legitimately hold some — but only where the
-// link resolves inside the exported tree. A link pointing out of it is the
-// member that turns a later write into a write anywhere. Reports whether the
-// link was written.
-func (r *Run) writeExportSymlink(root, abs string, hdr *tar.Header) (bool, error) {
-	target := hdr.Linkname
-	resolved := target
+// symlinkLanding is where a link member written at abs would resolve, and
+// whether that is inside root: the export's reading of linkResolution.
+//
+// The answer is the kernel's, never the text's. A relative target resolves
+// from the directory the link lands in — abs's parent chain read through
+// every link in it (safepath.Landing) — so a name that reaches its
+// directory through an earlier member's `l -> .` puts the link where its
+// ".." climb from, not where the name spells.
+func symlinkLanding(root, abs, target string) (resolved string, inside bool) {
+	at, err := safepath.Landing(root, abs)
+	if err != nil {
+		return "", false
+	}
+	return linkResolution(root, filepath.Dir(filepath.Join(root, filepath.FromSlash(at))), target)
+}
+
+// linkResolution is where a link standing in the real directory linkDir
+// and pointing at target resolves, and whether that is inside root. A link
+// pointing out of the tree is the member that turns a later write into a
+// write anywhere; the export and the drain both refuse it on this one
+// predicate — the drain handing it the directory its member's name spells,
+// which is where the member lands, since it writes through no link.
+//
+// The target's own ".." must all come before its first name
+// (linkTargetClimbsFirst): the kernel follows a name — a link the tree
+// holds, or one a later member lays there — before the ".." after it
+// climbs, so that ".." answers for a directory no reading of the text
+// knows.
+func linkResolution(root, linkDir, target string) (resolved string, inside bool) {
+	if !linkTargetClimbsFirst(target) {
+		return "", false
+	}
+	resolved = target
 	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(filepath.Dir(abs), target)
+		resolved = filepath.Join(linkDir, target)
 	}
 	resolved = filepath.Clean(resolved)
-	if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+	return resolved, resolved == root || strings.HasPrefix(resolved, root+string(os.PathSeparator))
+}
+
+// linkTargetClimbsFirst reports whether every ".." of a link's target comes
+// before its first name. Those climb from the link's own directory, a real
+// one, and land where the text says; a ".." after a name climbs from
+// wherever the kernel found that name to lead.
+func linkTargetClimbsFirst(target string) bool {
+	named := false
+	for _, part := range strings.Split(filepath.ToSlash(target), "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			if named {
+				return false
+			}
+		default:
+			named = true
+		}
+	}
+	return true
+}
+
+// writeExportSymlink recreates a symlink the run's work left in the
+// workspace — a repository may legitimately hold some — but only where the
+// link resolves inside the exported tree (symlinkLanding). Reports whether
+// the link was written.
+func (r *Run) writeExportSymlink(root, abs string, hdr *tar.Header) (bool, error) {
+	target := hdr.Linkname
+	if _, inside := symlinkLanding(root, abs, target); !inside {
 		r.driver.logger.Warn("sandbox: export skipped the link %s -> %s: it leaves the exported workspace", abs, target)
 		return false, nil
 	}

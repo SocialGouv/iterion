@@ -102,7 +102,7 @@ func TestMongoStore(t *testing.T) {
 	if _, err := st.Get(t2, created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-tenant Get must be ErrNotFound, got %v", err)
 	}
-	if err := st.Delete(t2, created.ID); !errors.Is(err, ErrNotFound) {
+	if err := st.Delete(t2, created.ID, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-tenant Delete must be ErrNotFound, got %v", err)
 	}
 
@@ -115,7 +115,34 @@ func TestMongoStore(t *testing.T) {
 	// contract the memory twin pins, on real Mongo.
 	assertVersionHistoryContract(t, st, ctx, "team-1")
 
-	if err := st.Delete(t1, created.ID); err != nil {
+	// Version-guarded DELETE, the twin of the memory store's
+	// TestDeleteHonoursTheIfMatchVersion: the guard rides the deletion's own
+	// filter, so the match and the removal are one server-side act. `created`
+	// still carries the stale version 1 from the update assertion above.
+	if err := st.Delete(t1, created.ID, created.Version); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale token = %v, want ErrVersionConflict", err)
+	}
+	if _, err := st.Get(t1, created.ID); err != nil {
+		t.Fatalf("refused delete removed the row anyway: %v", err)
+	}
+	if err := st.Delete(t1, "no-such-id", 2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id = %v, want ErrNotFound", err)
+	}
+	if err := st.Delete(t1, created.ID, updated.Version); err != nil {
+		t.Fatalf("fresh token: %v", err)
+	}
+	if _, err := st.Get(t1, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound after the version-guarded delete, got %v", err)
+	}
+
+	// …and the untokened deletion still works, on a row created for it: 0 is
+	// "no if-match" in this twin too.
+	fresh, err := st.Create(t1, validSource("team-1", "reviewer"))
+	if err != nil {
+		t.Fatalf("re-create for the untokened delete: %v", err)
+	}
+	created = fresh
+	if err := st.Delete(t1, created.ID, 0); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := st.Get(t1, created.ID); !errors.Is(err, ErrNotFound) {

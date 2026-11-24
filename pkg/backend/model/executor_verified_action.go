@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -72,7 +72,7 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 	}
 
 	// Rung 2 — recipe.
-	res, repairable, setupErr := e.runVerifiedRecipe(ctx, node, input)
+	res, setupErr := e.runVerifiedRecipe(ctx, node, input)
 	if setupErr != nil {
 		// Build / policy failure — not a recoverable recipe error.
 		return nil, setupErr
@@ -93,6 +93,9 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		// error — but the error is still what happened, so it is recorded.
 		e.logVA(node.ID, fmt.Sprintf("recipe failed: %v", res.runErr))
 	}
+	if err := e.deliveryVerdict(node.ID, res); err != nil {
+		return nil, err
+	}
 	met, pcOut, pcErr := e.runPostcondition(ctx, node, input)
 	if pcErr != nil {
 		return nil, pcErr
@@ -106,13 +109,26 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 
 	// Rungs 3-4 only run under policy: recover.
 	if policy == ir.PolicyRecover && node.Recovery != nil {
-		// Rung 3 — self-repair (bounded). Only for command/script recipes.
-		if repairable && node.Recovery.MaxRepairAttempts > 0 {
-			lastStdout, lastStderr, lastCmd := res.stdout, res.stderr, res.resolved
+		// Rung 3 — self-repair (bounded). Only for command/script
+		// recipes: the predicate the launch walks read is this gate.
+		if ir.ToolRecoverySelfRepairRung(node) {
+			// The model reads the recipe's repair form, never its logged
+			// one: there a placeholder data carried reads exactly like the
+			// author's reference, and the corrected command the model
+			// returns runs through the agent sink.
+			// A shell script's data rides its environment: the corrected
+			// command keeps the script's variable reads, so it runs with the
+			// same delivery.
+			lastStdout, lastStderr, lastCmd, data := res.stdout, res.stderr, res.repair, res.repairData
+			previousFingerprint := ""
 			for i := 0; i < node.Recovery.MaxRepairAttempts; i++ {
-				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd)
+				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd, data, &previousFingerprint)
 				if rerr != nil {
-					e.logVA(node.ID, fmt.Sprintf("self-repair attempt %d aborted: %v", i+1, rerr))
+					if errors.Is(rerr, errSelfRepairUnchanged) {
+						e.logVA(node.ID, fmt.Sprintf("self-repair stopped at attempt %d: proposal and failure evidence unchanged; duplicate command not executed", i+1))
+					} else {
+						e.logVA(node.ID, fmt.Sprintf("self-repair attempt %d aborted: %v", i+1, rerr))
+					}
 					break
 				}
 				if ambiguousEnd(repairRes.runErr) {
@@ -123,6 +139,9 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 				}
 				if errors.Is(repairRes.runErr, sandbox.ErrExecStatusUnknown) {
 					repairRes.output = nil
+				}
+				if derr := e.deliveryVerdict(node.ID, repairRes); derr != nil {
+					return nil, derr
 				}
 				lastRung = "self_repair"
 				met, pcOut, pcErr = e.runPostcondition(ctx, node, input)
@@ -138,7 +157,7 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		}
 
 		// Rung 4 — agent recovery (opt-in; OFF unless budgeted).
-		if node.Recovery.MaxAgentAttempts > 0 {
+		if ir.ToolRecoveryAgentRung(node) {
 			for i := 0; i < node.Recovery.MaxAgentAttempts; i++ {
 				if aerr := e.agentRecovery(ctx, node, input, lastRung); aerr != nil {
 					e.logVA(node.ID, fmt.Sprintf("agent recovery attempt %d aborted: %v", i+1, aerr))
@@ -170,35 +189,74 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 
 	// required / recover: fail (resumable). The recipe's stderr is the most
 	// useful diagnostic; surface it alongside the unmet-postcondition reason.
+	//
+	// A recipe that itself failed stays in the chain: the postcondition is
+	// what judges the node, and the recipe's own end — the process's exit
+	// status, or the sandbox's word that its end was never proven — is still
+	// a fact a reader of the chain asks for (errors.As), which a recipe that
+	// exited 0 on an unmet goal does not carry.
+	if res.runErr != nil {
+		return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s; the recipe failed: %w\nstdout: %s\nstderr: %s",
+			node.ID, policy, lastRung, res.runErr, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
+	}
 	return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s\nstdout: %s\nstderr: %s",
 		node.ID, policy, lastRung, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
 }
 
-// runVerifiedRecipe runs the node's recipe (rung 2) and reports whether it
-// is repairable (command/script — a self-repair rung can propose a corrected
-// command). Registry-tool recipes run via the standard path and are not
-// command-repairable. The returned error is a setup error (build/policy),
-// never a recipe run error (that lives in recipeResult.runErr).
-func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (recipeResult, bool, error) {
+// deliveryVerdict ends the node when a recipe run lost a file it
+// declared `required=true`, and reports nil otherwise.
+//
+// EVERY rung that RUNS a recipe asks it — rung 2 and the self-repair
+// re-runs of rung 3 — because the guarantee belongs to the directive,
+// not to the rung that happened to execute the command. One helper
+// rather than the same four lines twice: the third rung would drift.
+//
+// It ends the node BEFORE the oracle and the rungs after it. The
+// postcondition answers about the world the recipe acted on; this loss
+// is about the run's own store, which no rung can mend — re-running a
+// command that already exited 0 cannot deliver bytes this process could
+// not read. Failing early also keeps the LLM rungs from spending on a
+// node that is going to fail anyway.
+func (e *ClawExecutor) deliveryVerdict(nodeID string, res recipeResult) error {
+	if res.deliveryErr == nil {
+		return nil
+	}
+	e.logVA(nodeID, fmt.Sprintf("required deliverable lost: %v", res.deliveryErr))
+	return res.deliveryErr
+}
+
+// runVerifiedRecipe runs the node's recipe (rung 2). Whether a self-repair
+// rung may follow is NOT its answer: that is
+// ir.ToolRecoverySelfRepairRung's, keyed on the same recipe kind this
+// switch reads, so the gate above and the launch walks that price the rung
+// cannot disagree about which recipes dispatch can repair. The returned
+// error is a setup error (build/policy), never a recipe run error (that
+// lives in recipeResult.runErr).
+func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (recipeResult, error) {
 	switch recipeKindOf(node) {
 	case recipeScript:
 		resolve, buildCmd := e.scriptRecipe(ctx, node, input)
-		res, err := e.runToolNodeCore(ctx, node, scriptToolNodeToolName(node), resolve, buildCmd)
-		return res, true, err
+		return e.runToolNodeCore(ctx, node, scriptToolNodeToolName(node), resolve, buildCmd)
 	case recipeShell:
 		resolve, buildCmd := e.shellRecipe(ctx, node, input)
-		res, err := e.runToolNodeCore(ctx, node, shellToolNodeToolName(node), resolve, buildCmd)
-		return res, true, err
+		return e.runToolNodeCore(ctx, node, shellToolNodeToolName(node), resolve, buildCmd)
 	default:
-		// Registry tool (bare name): run via the standard recipe path. No
-		// command to self-repair, so report non-repairable. The sandbox
-		// refusal is a setup error; any other failure is the recipe's run.
+		// Registry tool (bare name): run via the standard recipe path —
+		// there is no command for rung 3 to correct. The sandbox refusal
+		// is a setup error; any other failure is the recipe's run.
 		out, rerr := e.executeToolNodeRecipe(ctx, node, input)
 		var setup *toolNodeSetupError
 		if errors.As(rerr, &setup) {
-			return recipeResult{}, false, rerr
+			return recipeResult{}, rerr
 		}
-		return recipeResult{output: out, runErr: rerr}, false, nil
+		// A lost required deliverable travels as itself, never as the
+		// recipe's run error: the tool ran and returned, and the ladder
+		// must not read it as a run to judge by the postcondition.
+		var lost *requiredAttachmentLostError
+		if errors.As(rerr, &lost) {
+			return recipeResult{output: out, deliveryErr: rerr}, nil
+		}
+		return recipeResult{output: out, runErr: rerr}, nil
 	}
 }
 
@@ -211,17 +269,35 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 // `command:` is resolved: the same env expansion, the same escaper, the same
 // snapshot, and the same declared shapes — its refs are validated against the
 // same input schema, so a `json`-declared field holding a list must land as
-// one token here exactly as it does in the command itself.
-func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) string {
+// one token here exactly as it does in the command itself — and the same
+// marking of the author's own secret references (renderCommandBody).
+func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) authoredBody {
 	expanded, _ := ToolBodyEnv(node, node.Postcondition, lookupToolEnv)
 	td := TemplateDataFromContext(ctx)
-	return resolveCommandTemplate(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
+	return renderCommandBody(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
 }
 
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
-	resolve := func() string { return e.postconditionBody(ctx, node, input) }
+	var body authoredBody
+	resolve := func() string {
+		body = e.postconditionBody(ctx, node, input)
+		return body.shown()
+	}
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
-		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
+		// Before the check runs: an output field its producer declared and
+		// did not supply is refused, as in the node's own command — an
+		// oracle that compares against the reference's text answers about
+		// nothing.
+		if err := e.owedOutputRefs(ctx, "postcondition", node.PostcondRefs); err != nil {
+			return toolCommand{}, nil, err
+		}
+		// A postcondition is the AUTHOR's text, like the node's command: its
+		// own references resolve — the env-only class by environment — and
+		// a placeholder that arrived through data stays text.
+		materialized, env, err := body.shellFor(resolved)
+		if err != nil {
+			return toolCommand{}, nil, err
+		}
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, postcondToolName(node), resolve, buildCmd)
@@ -231,6 +307,16 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 	if ambiguousEnd(res.runErr) {
 		return false, nil, fmt.Errorf("model: tool node %q: postcondition: %w", node.ID, res.runErr)
 	}
+	// res.deliveryErr is deliberately not read: a postcondition is the
+	// node's oracle, not its producer. A directive on its stdout still
+	// publishes, and a loss is still recorded on the run, but what the
+	// CHECK declares cannot overturn the check's own answer.
+	//
+	// exit 0 = met, and a drain the bound stopped waiting for IS an exit 0:
+	// runToolNodeCore reads that cut as the success it is and reports the
+	// abandoned drain (#2855), so a check that printed its state while a
+	// process it left held the output does not send the ladder back through
+	// the recipe's side effect.
 	return res.runErr == nil, res.output, nil
 }
 
@@ -248,17 +334,17 @@ func ambiguousEnd(err error) bool {
 // aware, secret-materialised). The resolved corrected command is emitted as
 // a tool_called event — the model fixes the recipe, it never does the side
 // effect blind. Returns the corrected command + its run result.
-func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string) (string, recipeResult, error) {
+func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string, data repairData, previousFingerprint *string) (string, recipeResult, error) {
 	modelSpec := e.recoveryModel(node)
 	if modelSpec == defaultVerifiedActionModel && anthropicFunding(ctx) == "" {
 		return "", recipeResult{}, fmt.Errorf("the recovery model is the default (%s) and no anthropic credential serves it — set recovery.model or ITERION_VERIFIED_ACTION_MODEL", defaultVerifiedActionModel)
 	}
-	// ResolveWithContext, never plain Resolve: the guard above reads the
-	// ctx's funding, so the resolution must spend from the same well — on a
-	// runner pod (ctx creds, empty env) plain Resolve builds a
-	// credential-less client and the 401 loop this guard exists to kill
-	// comes back through the side door.
-	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
+	// The claw arm's resolution over the run's credentials, never plain
+	// Resolve: the guard above reads the ctx's funding, so the resolution
+	// must spend from the same well — on a runner pod (ctx creds, empty env)
+	// plain Resolve builds a credential-less client and the 401 loop this
+	// guard exists to kill comes back through the side door.
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		return "", recipeResult{}, fmt.Errorf("resolve recovery model %q: %w", modelSpec, err)
 	}
@@ -278,21 +364,25 @@ STDERR:
 %s
 
 Return only the corrected command (one shell invocation, may use && / pipes). Do not explain in the command itself.`,
-		strings.TrimSpace(node.Goal), e.secretGuard.Redact(strings.TrimSpace(lastCmd)),
+		strings.TrimSpace(node.Goal), e.secretGuard.Redact(e.secretGuard.RedactForModel(strings.TrimSpace(lastCmd))),
 		// A prompt: the command's output goes back to placeholders — Layer 1,
 		// which the sink switch leaves on — and a value that never was a
-		// placeholder (a minted launch var) is redacted outright.
-		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(stdout)), 4000),
-		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(stderr)), 4000))
+		// placeholder (a minted launch var) is redacted outright. A
+		// placeholder the output already carried as TEXT — data the command
+		// printed — is defused: it is no reference, and echoed into the
+		// corrected command the agent sink would resolve it (repairOutput).
+		truncate(e.secretGuard.Redact(repairOutput(e.secretGuard, stdout)), 4000),
+		truncate(e.secretGuard.Redact(repairOutput(e.secretGuard, stderr)), 4000))
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,
+		Credential:     credential,
 		System:         "You are a precise build/release engineer. You correct a single failing shell command so it achieves the stated goal, accounting for the error output. You return strictly structured output.",
 		Messages:       []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: userMsg}}}},
 		ExplicitSchema: json.RawMessage(selfRepairSchema),
 	}
 
-	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
 	if err != nil {
 		return "", recipeResult{}, fmt.Errorf("self-repair generation: %w", err)
 	}
@@ -302,12 +392,34 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 		return "", recipeResult{}, fmt.Errorf("self-repair returned an empty command")
 	}
 
+	// Compare before execution: a repeated answer is not permission to repeat
+	// the effect. Full evidence participates even when the prompt clips it.
+	fingerprint := selfRepairFingerprint(corrected, stdout, stderr, lastCmd)
+	if previousFingerprint != nil {
+		if *previousFingerprint == fingerprint {
+			return corrected, recipeResult{}, errSelfRepairUnchanged
+		}
+		*previousFingerprint = fingerprint
+	}
+
 	// Run the corrected command deterministically as a shell command. The
 	// resolved (placeholder-form) command is what hooks/events persist.
 	resolve := func() string { return corrected }
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
+		// The MODEL wrote this command: the plain materialiser, where the
+		// env-only class resolves to nothing. A model that copies the
+		// grant's placeholder out of the failed command it was shown gets
+		// the placeholder, not the bearer.
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
-		return e.toolNodeCommand(ctx, materialized, env), nil, nil
+		// The recipe's data, which the corrected command's variable reads
+		// name: its environment, and the prologue for what that cannot hold.
+		for name, value := range data.env {
+			if env == nil {
+				env = make(map[string]string, len(data.env))
+			}
+			env[name] = value
+		}
+		return e.toolNodeCommand(ctx, data.prologue+materialized, env), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, "self_repair:"+node.ID, resolve, buildCmd)
 	if setupErr != nil {
@@ -327,15 +439,8 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 // (budget, node events, capability→tool opening). Replace with a typed
 // recovery-agent entry point on the generation/backend layer.
 func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, input map[string]any, lastRung string) error {
-	recovery := node.Recovery
 	modelSpec := e.recoveryModel(node)
-	syn := &ir.AgentNode{
-		BaseNode: ir.BaseNode{ID: node.ID + "__recover"},
-		LLMFields: ir.LLMFields{
-			Model: modelSpec,
-		},
-		Tools: recovery.AgentTools,
-	}
+	syn := recoveryAgentNode(node.ID, modelSpec, node.Recovery.AgentTools)
 	// A DEFAULT the serving backend cannot fund is refused before dispatch —
 	// claw-scoped like the router guard: a claude_code-serving deployment
 	// funds the recovery agent on the CLI's own login (FORBID's documented
@@ -347,17 +452,21 @@ func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, inp
 	}
 	// The goal + failure context flow as the agent's user message (no output
 	// schema → buildUserMessage serialises this input map).
+	// The recovery agent is a model, and its tool calls are the agent sink:
+	// a placeholder in what it is handed — data the node's input carries,
+	// one the author typed as text in the recipe — is no reference, so it
+	// reaches the agent defused, and echoed back it resolves nowhere.
 	agentInput := map[string]any{
 		"instructions":    "Achieve the GOAL below using your tools. A prior deterministic attempt did not satisfy the postcondition.",
 		"goal":            node.Goal,
 		"last_rung":       lastRung,
-		"original_recipe": cmp.Or(node.Command, node.Script),
+		"original_recipe": e.secretGuard.DefuseAll(cmp.Or(node.Command, node.Script)),
 	}
 	for k, v := range input {
 		// Pass through the node's structured input so the agent has the same
 		// context the recipe had (workspace_dir, base_sha, file lists, …).
 		if _, clash := agentInput[k]; !clash {
-			agentInput[k] = v
+			agentInput[k] = e.secretGuard.DefuseAllValue(v)
 		}
 	}
 	if _, err := e.executeBackend(ctx, syn, agentInput); err != nil {
@@ -367,24 +476,35 @@ func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, inp
 }
 
 // recoveryModel resolves the model spec for the recovery rungs: the node's
-// recovery.model (env-expanded) when set, else ITERION_VERIFIED_ACTION_MODEL,
-// else the package default.
+// recovery.model (env-expanded) when set, else the ladder's default arm
+// (recoveryModelFallback — the one the launch walks read, so a pre-flight
+// and this dispatch cannot disagree on one unpinned spec).
 func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 	if node.Recovery != nil && node.Recovery.Model != "" {
 		if m := e.resolveRoutingField(node.Recovery.Model); m != "" {
 			return m
 		}
 	}
-	if m := ir.LookupEnv("ITERION_VERIFIED_ACTION_MODEL"); m != "" {
-		return m
-	}
-	return defaultVerifiedActionModel
+	return recoveryModelFallback()
 }
 
 // verifiedOutput merges the recipe output with the postcondition's JSON
 // stdout (postcondition wins on key clash — it observed the final state) and
 // stamps the private _verified_action metadata the engine reads to emit the
 // node_verified_action event. The key is stripped before schema validation.
+//
+// Every rung that PUBLISHES an output crosses this merge, and it is the only
+// place in the engine where two tool-node output maps become one — so it is
+// where a mark that describes ONE of them is honoured or lost. The exits
+// that publish nothing cross nothing — every exit that fails the node
+// instead of answering with it: a build or policy failure, an ambiguous end
+// (a recipe or a repair whose end was never proven), a lost `required`
+// deliverable, an oracle that could not run, a cancelled node, and rung 5
+// under `required` or `recover`.
+// [toolNodeDrainCutKey] describes the `result` wrapper of the run it came
+// from, so it follows the `result` that survived the clash: the whole point
+// of the mark is to tell a possible prefix from an answer, and on a complete
+// answer it says the opposite of the truth.
 func (e *ClawExecutor) verifiedOutput(primary, postcond map[string]any, rung string, met bool, policy string) map[string]any {
 	out := map[string]any{}
 	for k, v := range primary {
@@ -392,6 +512,14 @@ func (e *ClawExecutor) verifiedOutput(primary, postcond map[string]any, rung str
 	}
 	for k, v := range postcond {
 		out[k] = v
+	}
+	if _, postcondOwnsResult := postcond["result"]; postcondOwnsResult {
+		// The recipe's `result` is gone, and with it everything its mark
+		// described. Only the postcondition's own mark — already merged in
+		// above when it carries one — can speak for the bytes that stayed.
+		if _, postcondMarked := postcond[toolNodeDrainCutKey]; !postcondMarked {
+			delete(out, toolNodeDrainCutKey)
+		}
 	}
 	out["_verified_action"] = map[string]any{
 		"rung":              rung,

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -70,7 +71,7 @@ func TestForgeWriterFor_ProjectBotConnectionPostsAsTheBot(t *testing.T) {
 	}
 	// A connection that posts as itself keeps its own credential.
 	pat := forge.Connection{ID: "c-pat", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, ForgeBaseURL: srv.URL, AccountLogin: "alice"}
-	sealed, err := forge.SealPAT(s.sealer, pat.ID, pbGrant)
+	sealed, err := connection.SealForgePAT(s.sealer, pat.ID, pbGrant)
 	if err != nil {
 		t.Fatal(err)
 	}

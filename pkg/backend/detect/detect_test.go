@@ -37,6 +37,9 @@ func isolateEnv(t *testing.T) {
 		"ITERION_OPENAI_USE_OAUTH",
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
+		// The local OpenAI-compatible gateway row (OPENAI_COMPATIBLE_*): a
+		// host that serves one would otherwise flip the gateway provider on.
+		"OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR",
 		"XDG_DATA_HOME", "ITERION_OPENCODE_BIN",
@@ -386,6 +389,102 @@ func TestDetect_MoonshotProvider(t *testing.T) {
 	if p.SuggestedModel != "moonshot/kimi-k2" {
 		t.Errorf("moonshot suggested model = %q, want moonshot/kimi-k2", p.SuggestedModel)
 	}
+}
+
+// The local OpenAI-compatible gateway row (#2646): the host serves
+// `openai_compatible/<id>` when the operator's own environment names one AND
+// authenticates it. Available says what a NODE would get, so the row answers
+// no for a gateway no client can be built for — claw's OpenAI provider
+// refuses an empty key outright (compatgw.ErrNoKey). The row is what lets
+// `iterion models` answer a gateway spec instead of reporting "no credential
+// probe".
+func TestDetect_GatewayProvider(t *testing.T) {
+	find := func(t *testing.T, r Report) ProviderStatus {
+		t.Helper()
+		for _, p := range r.Providers {
+			if p.Name == "openai_compatible" {
+				return p
+			}
+		}
+		t.Fatal("openai_compatible provider not present in the report")
+		return ProviderStatus{}
+	}
+
+	t.Run("absent without the variables", func(t *testing.T) {
+		isolateEnv(t)
+		p := find(t, Detect(context.Background()))
+		if p.Available {
+			t.Errorf("gateway reported available with nothing set: %+v", p)
+		}
+	})
+
+	// The base URL alone names a gateway and funds no call: the row says so
+	// rather than reporting a provider whose every node would die at
+	// dispatch, and the SOURCE still names the variable that is set, so
+	// `iterion models` can tell a half-configured gateway from none.
+	t.Run("the base URL alone is not enough", func(t *testing.T) {
+		isolateEnv(t)
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
+		p := find(t, Detect(context.Background()))
+		if p.Available {
+			t.Errorf("gateway reported available with no key: %+v — every node on it is refused by claw's provider", p)
+		}
+		if p.Source != "OPENAI_COMPATIBLE_BASE_URL" {
+			t.Errorf("gateway source = %q, want OPENAI_COMPATIBLE_BASE_URL", p.Source)
+		}
+	})
+
+	t.Run("the pair is enough, and the key names the credential", func(t *testing.T) {
+		isolateEnv(t)
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-test-secret")
+		r := Detect(context.Background())
+		p := find(t, r)
+		if !p.Available || p.Source != "OPENAI_COMPATIBLE_API_KEY" {
+			t.Errorf("gateway = %+v, want available with source OPENAI_COMPATIBLE_API_KEY", p)
+		}
+		if strings.Contains(p.Source, "gw-test-secret") {
+			t.Fatal("detect report leaks OPENAI_COMPATIBLE_API_KEY value")
+		}
+		if p.SuggestedModel != "" {
+			t.Errorf("gateway suggested model = %q, want none — the model id is the deployment's naming", p.SuggestedModel)
+		}
+		// claw drives the gateway; the row must fund its availability.
+		var claw BackendStatus
+		for _, b := range r.Backends {
+			if b.Name == BackendClaw {
+				claw = b
+			}
+		}
+		if !claw.Available || !slices.Contains(claw.Sources, "OPENAI_COMPATIBLE_API_KEY") {
+			t.Errorf("claw = %+v, want available with the gateway source", claw)
+		}
+	})
+
+	// pi resolves none of the OPENAI_COMPATIBLE_* variables: counting the
+	// row would report pi available on a credential it cannot spend, and
+	// ITERION_BACKEND_PREFERENCE=pi would then resolve there.
+	t.Run("pi cannot read it", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-test-secret")
+		for _, b := range Detect(context.Background()).Backends {
+			if b.Name == BackendPi && b.Available {
+				t.Errorf("pi available on the gateway row (sources %v) — it cannot read that credential", b.Sources)
+			}
+		}
+	})
+
+	// An empty suggestion is what keeps the row out of every "pick a default
+	// model" consumer: with ONLY the gateway set, no default resolves.
+	t.Run("never the suggested default", func(t *testing.T) {
+		isolateEnv(t)
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
+		if spec := SuggestedModel(BackendClaw, Detect(context.Background()).Providers); spec != "" {
+			t.Errorf("SuggestedModel = %q, want \"\" — a gateway model id cannot be guessed", spec)
+		}
+	})
 }
 
 func TestDetect_XAIProvider(t *testing.T) {
@@ -835,5 +934,26 @@ func TestProvidersIsDetectsProviderList(t *testing.T) {
 		return a.Name == b.Name && a.Available == b.Available && a.SuggestedModel == b.SuggestedModel && a.Source == b.Source && slices.Equal(a.OverriddenSources, b.OverriddenSources)
 	}) {
 		t.Errorf("Providers() = %+v, want Detect's %+v", got, want)
+	}
+}
+
+// BinaryFound is the field the launch-time route judgement (#1221) reads to
+// tell "unavailable" (no CLI) from "auth" (a CLI with nothing to spend): it
+// must hold in EVERY branch that proves the binary — including step 3, where
+// the forfait is proven only by `claude auth status` (no credentials file,
+// no Keychain entry) and the probe just RAN the binary it would deny.
+func TestDetect_ClaudeCodeAuthStatusStepKeepsBinaryFound(t *testing.T) {
+	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
+	// No credentials file, no Keychain entry: step 3 alone proves the login.
+	stubSource(t, &claudeKeychainOAuthSource, "")
+	stubClaudeAuthStatus(t, true)
+
+	st := findBackend(t, Detect(context.Background()), BackendClaudeCode)
+	if !st.Available {
+		t.Fatal("claude auth status proved the login: claude_code must be available")
+	}
+	if !st.BinaryFound {
+		t.Error("step 3 ran the binary and reports BinaryFound=false — a pinned node reads the slot as CLI-absent (#1221)")
 	}
 }

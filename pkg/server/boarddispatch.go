@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -1660,6 +1661,17 @@ const (
 	boardKeyOverridesKey    = "__iterion_key_overrides"
 	boardSecretOverridesKey = "__iterion_secret_overrides"
 	boardWebhookIDKey       = "__iterion_webhook_id"
+	// boardProjectPathKey carries the forge slug the card's repo belongs to
+	// (the webhook payload's own project path, stamped by ensureBoardCard).
+	// It is the run's ProjectPath — the identity pkg/credusage meters and
+	// the per-repo quota keys on — so a board-dispatched run both counts
+	// against and is bounded by its repository's quota (#2371, D33). The
+	// launch honors it only under the provenance boardCardRepoIdentity
+	// spells out (an integration of the tenant, the clone URL in play); a
+	// card without a provable stamp derives the slug from its clone URL at
+	// launch (forge.ProjectPathFromCloneURL). The write routes a client
+	// drives never persist it (native.DropReservedLaunchArgs).
+	boardProjectPathKey = "__iterion_project_path"
 )
 
 // boardLaunchContext is the non-var launch state lifted off a card's BotArgs.
@@ -1667,6 +1679,7 @@ type boardLaunchContext struct {
 	Vars            map[string]string
 	RepoURL         string
 	RepoRef         string
+	ProjectPath     string
 	KeyOverrides    map[string]string
 	SecretOverrides map[string]string
 	WebhookID       string
@@ -1691,19 +1704,26 @@ type boardLaunchContext struct {
 // spent ABSENT (ADR-129 §5). The id is member-writable like every bot-arg, so
 // the tenant check is the guard that makes the recorded level true — another
 // team's config is as unreadable here as a deleted one.
-func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc boardLaunchContext) ([]llmroute.Layer, []retrypolicy.Layer, error) {
+//
+// The integration itself rides back beside its layers: its pool block is the
+// lanes' binding layer for the pool fold (poolLayersOf), and its two var layers
+// are the lanes' to apply around the card's bot_args
+// (applyCardIntegrationVarLayers, #2665 item 1) — read in the same live
+// fetch, under the same tenant check, so the vars a carded run reads and
+// the policy it reads come from one record. Nil when the card names none.
+func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc boardLaunchContext) ([]llmroute.Layer, []retrypolicy.Layer, *webhooks.Config, error) {
 	if lc.WebhookID == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if s.webhookConfigs == nil {
-		return nil, nil, fmt.Errorf("card names integration %s, whose launch policy this server cannot read (no webhook config store wired)", lc.WebhookID)
+		return nil, nil, nil, fmt.Errorf("card names integration %s, whose launch policy this server cannot read (no webhook config store wired)", lc.WebhookID)
 	}
 	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), lc.WebhookID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read the launch policy of integration %s: %w", lc.WebhookID, err)
+		return nil, nil, nil, fmt.Errorf("read the launch policy of integration %s: %w", lc.WebhookID, err)
 	}
 	if cfg.TenantID != tenant {
-		return nil, nil, fmt.Errorf("card names integration %s, which belongs to another team", lc.WebhookID)
+		return nil, nil, nil, fmt.Errorf("card names integration %s, which belongs to another team", lc.WebhookID)
 	}
 	var routeLayers []llmroute.Layer
 	if cfg.Routing != nil {
@@ -1713,7 +1733,7 @@ func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc b
 	if p := retryLayerPolicy(cfg); p != nil {
 		retryLayers = []retrypolicy.Layer{{Source: retrypolicy.SourceWebhook, Policy: *p}}
 	}
-	return routeLayers, retryLayers, nil
+	return routeLayers, retryLayers, &cfg, nil
 }
 
 // retryLayerPolicy is a webhook's retry block as a fold LAYER, or nil when
@@ -1729,6 +1749,43 @@ func retryLayerPolicy(cfg webhooks.Config) *retrypolicy.Policy {
 	return &p
 }
 
+// boardCardRepoIdentity derives the repository identity a carded run is
+// metered and bounded by (#2371, D33): the slug the launch's spend counts
+// against and the per-repo quota reads. integration is the card's own
+// integration claim, already resolved and tenant-checked by
+// cardLaunchPolicyLayers — nil when the card names none.
+//
+// The card's stamp (boardProjectPathKey) is a bot-arg, and bot-args are
+// member-writable: honored only when the card names an integration OF ITS
+// TENANT, and even then the clone URL re-derived against that integration's
+// forge base is what decides — byte-for-byte what the REST lane stamps for
+// the same clone URL (runs_launch.go), sub-path forge bases included. The
+// stamp stands only where no clone URL contradicts it: the webhook event
+// that names the repo without carrying a clone URL. A clone URL OFF the
+// named integration's base meters the clone the run will actually make. A
+// card naming no integration has nothing to prove the stamp with — the
+// clone URL alone answers (forge.ProjectPathFromCloneURL, its sub-path
+// caveat documented there) and an unverifiable stamp is ignored.
+func boardCardRepoIdentity(integration *webhooks.Config, lc boardLaunchContext) string {
+	stamp := strings.TrimSpace(lc.ProjectPath)
+	if integration == nil {
+		if lc.RepoURL != "" {
+			return forge.ProjectPathFromCloneURL(lc.RepoURL)
+		}
+		return ""
+	}
+	if lc.RepoURL != "" {
+		// The same canonicalisation whatever the URL's spelling: a
+		// "…/widgets.git/" tail that kept its own trim would split the quota
+		// key and launch the over-quota repository under a key no ceiling
+		// aims at. Fixed point + any-case suffix, and the slug's own case
+		// folds at the reads (see CanonicalRepoSlug) — the derivation the
+		// REST and scheduled lanes stamp under.
+		return forge.ProjectPathOnBase(forge.CanonicalBaseURL(forge.Provider(integration.Provider), integration.ForgeBaseURL), lc.RepoURL)
+	}
+	return stamp
+}
+
 // liftBoardLaunchContext splits a card's BotArgs into the bot's vars and the
 // reserved launch context (repo + overrides + the integration id), removing
 // the reserved keys from the vars so they never leak to the bot. A malformed
@@ -1736,9 +1793,10 @@ func retryLayerPolicy(cfg webhooks.Config) *retrypolicy.Policy {
 // webhook's BYOK key / secret overrides, so the failure must surface instead.
 func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, error) {
 	lc := boardLaunchContext{
-		RepoURL:   botArgs[boardRepoURLKey],
-		RepoRef:   botArgs[boardRepoRefKey],
-		WebhookID: botArgs[boardWebhookIDKey],
+		RepoURL:     botArgs[boardRepoURLKey],
+		RepoRef:     botArgs[boardRepoRefKey],
+		ProjectPath: botArgs[boardProjectPathKey],
+		WebhookID:   botArgs[boardWebhookIDKey],
 	}
 	if blob := botArgs[boardKeyOverridesKey]; blob != "" {
 		if err := json.Unmarshal([]byte(blob), &lc.KeyOverrides); err != nil {
@@ -1753,7 +1811,7 @@ func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, erro
 	lc.Vars = make(map[string]string, len(botArgs))
 	for k, v := range botArgs {
 		switch k {
-		case boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey:
+		case boardRepoURLKey, boardRepoRefKey, boardProjectPathKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey:
 			continue
 		}
 		lc.Vars[k] = v
@@ -1942,13 +2000,30 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// its ledger, and the next tick retries it until the attempt cap files it
 	// blocked with the reason (processCard's errCardLaunchRefused arm): a
 	// store outage spaces and then stops these launches, it never widens them.
-	routeLayers, retryLayers, policyErr := s.cardLaunchPolicyLayers(ctx, tenant, lc)
+	routeLayers, retryLayers, integration, policyErr := s.cardLaunchPolicyLayers(ctx, tenant, lc)
 	if policyErr != nil {
 		return &launchRefusal{cardID: iss.ID, cause: policyErr}
+	}
+	// The integration's var layers reach the carded run as they reach the
+	// direct lane (#2665 item 1): operator layer over the card's bot_args
+	// over launch_vars, the operator's names trusted for the routing gate.
+	var trustedVars []string
+	if integration != nil {
+		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, func(format string, args ...any) {
+			if s.logger != nil {
+				s.logger.Warn("board dispatcher: card "+iss.ID+": "+format, args...)
+			}
+		})
 	}
 	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, tenant, lb.BotID, routeLayers...)
 	if routeErr != nil {
 		return &launchRefusal{cardID: iss.ID, cause: routeErr}
+	}
+	// The integration's pool block is the card lane's BINDING layer, as on
+	// the direct webhook lane — its opt-out included (ADR-164).
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, tenant, lb.BotID, cardPoolLayers(integration, lb.BotID)...)
+	if poolErr != nil {
+		return &launchRefusal{cardID: iss.ID, cause: poolErr}
 	}
 	retryPolicy := s.resolveRunRetryPolicy(ctx, tenant, lb.BotID, retryLayers...)
 	// A card that targets a pull request also needs the repo's launch policy
@@ -1967,17 +2042,35 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		}
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
+	// The run's repository identity, derived HERE like on every other launch
+	// surface (#2371, D33): the slug the card's own launch will be metered
+	// against, byte-for-byte the one the per-repo quota reads. The stamped
+	// slug is a bot-arg and bot-args are member-writable, so it never
+	// decides on its own word — boardCardRepoIdentity honors it only when
+	// the card's integration claim proves webhook provenance, and takes the
+	// clone URL into account either way. A card with neither targets no
+	// repository, like any local run, and the repo quota has nothing to
+	// bind.
+	cardRepo := boardCardRepoIdentity(integration, lc)
 	spec := runview.LaunchSpec{
-		Vars: lc.Vars,
+		Vars:            lc.Vars,
+		TrustedVarNames: trustedVars,
 		// Same warn-and-proceed contract as pipeline admission: the
 		// unknown-key warning was emitted upstream, the launch proceeds.
-		AllowUnknownInputs: true,
-		RepoURL:            lc.RepoURL,
-		RepoRef:            lc.RepoRef,
-		KeyOverrides:       lc.KeyOverrides,
-		SecretOverrides:    lc.SecretOverrides,
-		RetryPolicy:        retryPolicy,
-		LLMRoutePolicy:     routePolicy,
+		AllowUnknownInputs:           true,
+		RefuseUndecidedRoutingFields: true,
+		RepoURL:                      lc.RepoURL,
+		RepoRef:                      lc.RepoRef,
+		// ProjectPath is what the runner's spend meter reads back off the
+		// run document (repoForSpend): stamping it here is what CHARGES the
+		// board run to its repository, and the gate subject below is what
+		// BOUNDS it — the two halves of one identity, never derived twice.
+		ProjectPath:     cardRepo,
+		KeyOverrides:    lc.KeyOverrides,
+		SecretOverrides: lc.SecretOverrides,
+		RetryPolicy:     retryPolicy,
+		LLMRoutePolicy:  routePolicy,
+		PoolAttachment:  poolAttachment,
 		// Stamp the card onto the run record (ADR-046 SourceRef) — the
 		// card→run edge SetLastRun writes below is not enough: the
 		// fork-adoption sweep resolves an issue's runs through the indexed
@@ -2003,16 +2096,18 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// The card names the bot, so the subject is known here and MUST be
 	// passed: judged as ordinary work, a card stamped with a RESERVED bot
 	// faces the ceiling its own reservation lowered — the reservation
-	// refusing the very run it exists to protect. No repository: the card
-	// carries a clone URL, and the quota keys on the forge slug the meter
-	// writes, never a second identity derived from a URL.
+	// refusing the very run it exists to protect. The repository rides
+	// too (#2371, D33): the same slug stamped on the spec above, so the
+	// card is bounded by the quota its run's spend will count against —
+	// a board run over its repo's ceiling is now DENIED here, where it
+	// used to launch unmetered and unbounded.
 	adm, deny := s.gateLaunch(machineLaunchCtx(ctx, tenant, boardDispatcherActor),
-		launchSubject{BotID: iss.Bot})
+		launchSubject{BotID: iss.Bot, Repo: cardRepo})
 	if deny != nil {
 		s.revokeUnlaunchedGrant(minted)
 		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
 	}
-	res, err := s.runs.Launch(ctx, spec)
+	res, err := s.launchRun(ctx, systemLaunch(boardDispatcherActor), spec)
 	if err != nil {
 		// The fact travels on the error (RunPersistedError, or a queue
 		// publish that landed and then reported failure — the publisher

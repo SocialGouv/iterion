@@ -1,10 +1,15 @@
 package runview
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -24,15 +29,24 @@ import (
 //
 // Gated on the WORKFLOW rather than built always, exactly like the local
 // secret store and for the same reason: constructing the resolver reads the
-// catalog roots and the connection store, and a run with no `action:` node has
-// no use for either.
+// catalog roots and the connection store, and a run with no `action:` node the
+// catalog serves has no use for either — a native action (board.*) is
+// executed by its registered transport, with no catalog and no credential.
 //
 // The SEALER is a parameter rather than built here: a surface that already
 // holds one (the studio's, the dispatcher's lazy one) must not open a second,
 // and a surface with none is a cloud one, whose connections come from
 // elsewhere entirely.
-func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.Sealer) (model.ConnectorResolver, *http.Client, error) {
-	if sealer == nil || !WorkflowHasAction(wf) {
+//
+// The TRUST is a parameter for a stronger reason: it is a property of the RUN
+// this executor is being built for, so only the caller holds it — the launch
+// spec, the resumed run's document, the parent of a subbot. The resolver
+// refuses every action until the trust is stated and the tenant's own
+// (connection.ActionTrust), which is what keeps an untrusted workspace from
+// spending the tenant's connector credential (#1802, tightened by ADR-162
+// decision 6 to refuse the reads too).
+func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.Sealer, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
+	if sealer == nil || !WorkflowHasCatalogAction(wf) {
 		return nil, nil, nil
 	}
 	// The workspace root is where a project may ship or pin its own
@@ -41,7 +55,7 @@ func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.S
 	// guessing at a cwd — on a server that cwd is wherever the process was
 	// started, which is not the operator's project.
 	paths := connection.LocalCatalogPaths(workDir, store.GlobalIterionDataDir())
-	r, err := connection.LocalResolver(paths, storeDir, sealer)
+	r, err := connection.LocalResolver(paths, storeDir, sealer, trust)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -63,23 +77,243 @@ func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.S
 // WorkDir already follows — the dispatcher points it at the per-issue
 // worktree, so a project tier belongs to the issue's checkout and not to the
 // daemon's cwd.
-func (s *Service) localConnectors(wf *ir.Workflow, workDirOverride string) (model.ConnectorResolver, *http.Client, error) {
+//
+// The TRUST stays a parameter here too: the Service serves launches, resumes
+// and subbots, and each of the three reads it from a different place (the
+// launch spec, the resumed run, the parent's run). A field on the Service
+// would be one answer for all three.
+func (s *Service) localConnectors(wf *ir.Workflow, workDirOverride string, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
 	workDir := s.workDir
 	if workDirOverride != "" {
 		workDir = workDirOverride
 	}
-	return LocalConnectors(wf, workDir, s.storeDir, s.localSealer)
+	return LocalConnectors(wf, workDir, s.storeDir, s.localSealer, trust)
 }
 
-// WorkflowHasAction reports whether any tool node declares a connector action.
-func WorkflowHasAction(wf *ir.Workflow) bool {
-	if wf == nil {
-		return false
-	}
-	for _, n := range wf.Nodes {
-		if t, ok := n.(*ir.ToolNode); ok && t.Action != "" {
-			return true
+// WorkflowHasCatalogAction reports whether any tool node declares an action
+// the connector CATALOG serves — every action except a native connector's
+// (board.*, ADR-151), which a registered transport executes in process with
+// no catalog, no connection and no sealer. The gate every surface reads
+// before it opens the catalog or the local sealer: a workflow whose only
+// actions are native must not touch the OS keychain or mint key material
+// for a catalog it never consults.
+func WorkflowHasCatalogAction(wf *ir.Workflow) bool {
+	return len(CatalogActionNodes(wf)) > 0
+}
+
+// ActionNode is one tool node declaring a connector action, reduced to what a
+// refusal has to name: which node, which operation, which package has to be
+// installed, and which connection would have authenticated the call.
+type ActionNode struct {
+	NodeID string
+	// Action is the operation id, `connector.resource.verb`.
+	Action string
+	// Connector is the package half of Action — the thing a tier serves.
+	Connector string
+	// Connection is the alias the node authenticates with, empty when the
+	// author wrote none (the compiler refuses that, C261; a hand-built IR can
+	// still carry it).
+	Connection string
+}
+
+// Native reports whether the node's connector is a NATIVE one (board.*,
+// ADR-151): served by a registered in-process transport, never by the
+// catalog. The ONE reading every action-node consumer here asks, so the
+// catalog gate, the admission check and `validate --connectors` cannot
+// disagree about which actions the catalog owes.
+func (n ActionNode) Native() bool { return ir.NativeConnectorIDs[n.Connector] }
+
+// CatalogActionNodes is ActionNodes without the native ones: the action nodes
+// the connector catalog has to serve, in node-id order.
+func CatalogActionNodes(wf *ir.Workflow) []ActionNode {
+	var out []ActionNode
+	for _, n := range ActionNodes(wf) {
+		if !n.Native() {
+			out = append(out, n)
 		}
 	}
-	return false
+	return out
+}
+
+// ActionNodes lists every tool node declaring a connector action, ordered by
+// node id.
+//
+// SORTED rather than walked in map order. ir.Workflow.Nodes is a map, the list
+// is read into a refusal an operator and a test both read, and a message whose
+// order depends on which bucket Go visited first is a message nothing can
+// assert on.
+func ActionNodes(wf *ir.Workflow) []ActionNode {
+	if wf == nil {
+		return nil
+	}
+	out := make([]ActionNode, 0, len(wf.Nodes))
+	for _, n := range wf.Nodes {
+		t, ok := n.(*ir.ToolNode)
+		if !ok || t.Action == "" {
+			continue
+		}
+		connector, _, _ := strings.Cut(t.Action, ".")
+		out = append(out, ActionNode{NodeID: t.NodeID(), Action: t.Action, Connector: connector, Connection: t.Connection})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out
+}
+
+// UnservedActionsError is the admission refusal of a run this process cannot
+// serve: the workflow declares `action:` nodes and no connector catalog is
+// wired here.
+//
+// TYPED rather than a formatted string: "the plane serves no connector at all"
+// is a deployment fact an operator fixes by installing a package, and a caller
+// that wants to tell it apart from "this connection may not" (a grant fixed on
+// the record) needs more than a substring.
+type UnservedActionsError struct {
+	// Nodes are the action nodes, ordered by node id.
+	Nodes []ActionNode
+}
+
+func (e *UnservedActionsError) Error() string {
+	var b strings.Builder
+	b.WriteString("runview: this process wires no connector catalog, so the run is refused at admission — ")
+	fmt.Fprintf(&b, "%d tool node(s) declare `action:`:", len(e.Nodes))
+	for _, n := range e.Nodes {
+		fmt.Fprintf(&b, " %q wants %s from connector %q", n.NodeID, n.Action, n.Connector)
+		if n.Connection != "" {
+			fmt.Fprintf(&b, " through connection %q", n.Connection)
+		}
+		b.WriteByte(';')
+	}
+	b.WriteString(" nothing here resolves a connector package or opens its credential." +
+		" Locally: install the package in a tier this process reads" +
+		" (`<iterion data dir>/connectors/<id>/`, or `<workspace>/connectors/<id>/` with ITERION_CONNECTOR_PROJECT_CATALOG=1 —" +
+		" `iterion connectors gen` builds one) and bind a credential with `iterion connections add`." +
+		" The platform and team tiers of docs/adr/098-connector-catalog.md, and the cloud connection store a server would" +
+		" read, do not exist yet, so a cloud plane and a runner arrive here too." +
+		" " + ConnectorAdmissionEnv + "=off keeps the old behaviour — the run starts and fails at the node.")
+	return b.String()
+}
+
+// ConnectorAdmissionEnv turns the admission refusal below off for the process.
+//
+// A refusal that stops a run is a LOAD-BEARING bound, and a load-bearing bound
+// keeps a greppable way out. Two legitimate uses, neither of them a defect in
+// the refusal:
+//
+//   - a bot whose `action:` node is on a branch this launch will not take. It
+//     ran to completion on a catalog-less plane before, and an operator who
+//     knows that is entitled to keep it running while they install the
+//     package.
+//   - a caller that builds an executor to run ONE node rather than a run
+//     (botreplay's scenario recorder), where a bot's unrelated action node is
+//     not the node being executed.
+//
+// Spelled like ITERION_CONNECTOR_ALLOW_PRIVATE and for the same reason: the
+// decision belongs to whoever runs the process, and the refusal names the
+// variable so an operator does not have to find it.
+const ConnectorAdmissionEnv = "ITERION_CONNECTOR_ADMISSION"
+
+// admitConnectorActions refuses, at executor build, a workflow whose action
+// nodes nothing here can resolve.
+//
+// At ADMISSION rather than at the node. The executor keeps its own refusal
+// (executeToolNodeAction, "this process has no connector catalog wired") and
+// must: the two guards protect different things, and only that one protects an
+// IR built by a path that never came through here. But reaching it means the
+// run already started, already spent whatever its earlier nodes cost, and
+// already took whatever effects they had — for a verdict every one of its
+// inputs was known before the first node ran. The honesty the catalog owes is
+// that a `.bot` which cannot run here says so before it runs, naming the
+// package to install rather than failing mid-flight at the node.
+//
+// The predicate is the executor's own — a nil INTERFACE, not a nil pointer
+// inside one (LocalConnectors returns the former deliberately), so the two
+// guards cannot disagree about what "wired" means.
+//
+// Since ADR-151 the question is two-staged: a NATIVE connector (board.*) is
+// served by a registered transport, not by the catalog — so a native action
+// with no transport registered is a WIRING gap (the surface did not hand its
+// store over), refused by name, whether or not an HTTP catalog exists; and a
+// native action whose operation the facade does not expose is refused too,
+// with the exposed set listed, because "the verb does not exist yet" is also
+// known before the first node runs.
+func admitConnectorActions(wf *ir.Workflow, connectors model.ConnectorResolver, transports []model.ActionTransport) error {
+	if os.Getenv(ConnectorAdmissionEnv) == "off" {
+		return nil
+	}
+	nodes := ActionNodes(wf)
+	if len(nodes) == 0 {
+		return nil
+	}
+	owned := make(map[string]model.ActionTransport, len(transports))
+	for _, t := range transports {
+		if t != nil {
+			owned[t.Connector()] = t
+		}
+	}
+	var unserved []ActionNode
+	for _, n := range nodes {
+		transport, native := owned[n.Connector]
+		if native {
+			if pkg := transport.Package(); pkg != nil {
+				if _, ok := pkg.Operation(n.Action); !ok {
+					return &FacadeOperationError{Node: n, Exposed: operationIDs(pkg)}
+				}
+			}
+			continue
+		}
+		if n.Native() {
+			// A native connector answers through NO catalog: its transport is
+			// the only way, and this surface did not wire one.
+			return &NativeTransportMissingError{Node: n}
+		}
+		if connectors == nil {
+			unserved = append(unserved, n)
+		}
+	}
+	if len(unserved) > 0 {
+		return &UnservedActionsError{Nodes: unserved}
+	}
+	return nil
+}
+
+// operationIDs lists a facade's operation ids, sorted — the set a refusal
+// prints so the author reads what the connector DOES expose.
+func operationIDs(pkg *spec.Package) []string {
+	ops := pkg.Operations()
+	out := make([]string, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, op.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NativeTransportMissingError is the admission refusal of a workflow whose
+// native action (board.*) reaches a surface that wired no transport for it:
+// the store was not handed over, and no package install can fix that.
+type NativeTransportMissingError struct {
+	Node ActionNode
+}
+
+func (e *NativeTransportMissingError) Error() string {
+	return fmt.Sprintf("runview: tool node %q declares `action: %s`, a NATIVE connector action, but this process wires no native transport for connector %q — "+
+		"the surface building this run must hand the instance's board store over (ExecutorSpec.ActionTransports, runview.NativeBoardTransport); "+
+		"no connector package or connection serves a native id. "+ConnectorAdmissionEnv+"=off keeps the old behaviour — the run starts and fails at the node.",
+		e.Node.NodeID, e.Node.Action, e.Node.Connector)
+}
+
+// FacadeOperationError is the admission refusal of a native action whose
+// verb the registered facade does not expose — the compiler warns the same
+// verb (C336), and this is the refusal it announces.
+type FacadeOperationError struct {
+	Node ActionNode
+	// Exposed is the facade's operation set, sorted.
+	Exposed []string
+}
+
+func (e *FacadeOperationError) Error() string {
+	return fmt.Sprintf("runview: tool node %q declares `action: %s`, which the native facade for connector %q does not expose (it serves: %s) — "+
+		"name one of those verbs; a board act the facade does not serve (closing, commenting, assigning, …) goes through an agent or judge node's board tools under its capabilities: grant (C336 warns this at compile time). "+
+		ConnectorAdmissionEnv+"=off keeps the old behaviour — the run starts and fails at the node.",
+		e.Node.NodeID, e.Node.Action, e.Node.Connector, strings.Join(e.Exposed, ", "))
 }

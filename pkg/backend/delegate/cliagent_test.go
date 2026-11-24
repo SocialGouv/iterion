@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -233,6 +235,155 @@ printf '%s\n' '{"role":"meta","type":"session.resume_hint","session_id":"s9"}'
 	}
 	if res.Tokens != 0 {
 		t.Errorf("Tokens = %d, want 0 when kimi reports no usage", res.Tokens)
+	}
+}
+
+// TestCLIAgentNonZeroExitCarriesTheParsedReason is the chokepoint every
+// CLI-agent backend crosses: a CLI that reports WHY in its machine-readable
+// stream on STDOUT while exiting non-zero, with nothing on stderr, must
+// surface that reason — `exit status 1` alone names nothing. stderr is logged
+// and kept on the Result; stdout was dropped before the parse, so the only
+// copy of the sentence died with it.
+func TestCLIAgentNonZeroExitCarriesTheParsedReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	fake := filepath.Join(t.TempDir(), "fakecli")
+	script := "#!/bin/sh\nprintf '%s\\n' 'FATAL: the provider has no route for that model'\nexit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stubagent",
+		DefaultBinary:  "stubagent",
+		PromptViaStdin: true,
+		ParseOutputRich: func(stdout string) CLIAgentParse {
+			if reason, ok := strings.CutPrefix(strings.TrimSpace(stdout), "FATAL: "); ok {
+				return CLIAgentParse{Err: fmt.Errorf("delegate: stubagent: %s", reason)}
+			}
+			return CLIAgentParse{Text: stdout}
+		},
+	}
+	b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+	res, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "x"})
+	if err == nil {
+		t.Fatalf("a non-zero exit succeeded with %v", res.Output)
+	}
+	if !strings.Contains(err.Error(), "the provider has no route for that model") {
+		t.Fatalf("error = %v, want the stream's own reason", err)
+	}
+	// The process error stays wrapped: a caller matching on it still can.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("error = %v, want the process failure still wrapped", err)
+	}
+	if res.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", res.ExitCode)
+	}
+}
+
+// TestCLIAgentNonZeroExitKeepsTheParsedErrorType: the parser's typed value is
+// what the executor's classifier keys on (isDelegateRetryable, IsUsageWindow
+// and ClassifyFallback all errors.As on it), and CLIAgentParse.Err promises it
+// reaches Execute's caller. A non-zero exit must not flatten it to prose.
+func TestCLIAgentNonZeroExitKeepsTheParsedErrorType(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stubagent",
+		DefaultBinary:  "stubagent",
+		PromptViaStdin: true,
+		ParseOutputRich: func(string) CLIAgentParse {
+			return CLIAgentParse{Err: &ErrRateLimited{Provider: "stubagent", Detail: "upstream 429: slow down", Kind: RateLimitKindUsageWindow}}
+		},
+	}
+	for _, exit := range []int{0, 1} {
+		t.Run(fmt.Sprintf("exit %d", exit), func(t *testing.T) {
+			fake := filepath.Join(t.TempDir(), "fakecli")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' 'slow down'\nexit %d\n", exit)
+			if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+				t.Fatal(err)
+			}
+			b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+			_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "x"})
+			var rl *ErrRateLimited
+			if !errors.As(err, &rl) {
+				t.Fatalf("error = %v (%T), want the parser's *ErrRateLimited reachable through errors.As", err, err)
+			}
+			if !IsUsageWindow(err) {
+				t.Fatalf("IsUsageWindow(%v) = false, want the typed Kind to travel", err)
+			}
+			if exit == 0 {
+				return
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("error = %v, want the process failure still wrapped beside the reason", err)
+			}
+			if !strings.Contains(err.Error(), "slow down") {
+				t.Fatalf("error = %v, want the reason's text too", err)
+			}
+		})
+	}
+}
+
+// TestCLIAgentNonZeroExitReportsWhatTheTurnSpent is the other half of the
+// same chokepoint: a turn that MINTED a session and spent tokens before it
+// died must report both. The session id is what `session: inherit` continues
+// the CLI's own conversation with, and a spend reported as zero is a spend
+// the run never books.
+func TestCLIAgentNonZeroExitReportsWhatTheTurnSpent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	fake := filepath.Join(t.TempDir(), "fakecli")
+	// A turn that answered, then failed mid-stream, then exited non-zero —
+	// the shape of a provider refusal or a quota on an established session.
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' 'MINTED ses_minted 40 10'\n" +
+		"printf '%s\\n' 'FATAL: the provider has no route for that model'\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stubagent",
+		DefaultBinary:  "stubagent",
+		PromptViaStdin: true,
+		ParseOutputRich: func(stdout string) CLIAgentParse {
+			parse := CLIAgentParse{}
+			for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+				switch fields := strings.Fields(line); {
+				case len(fields) == 4 && fields[0] == "MINTED":
+					parse.SessionID = fields[1]
+					parse.InputTokens, _ = strconv.Atoi(fields[2])
+					parse.OutputTokens, _ = strconv.Atoi(fields[3])
+					parse.CostUSD = 0.25
+				case strings.HasPrefix(line, "FATAL: "):
+					parse.Err = fmt.Errorf("delegate: stubagent: %s", strings.TrimPrefix(line, "FATAL: "))
+				}
+			}
+			return parse
+		},
+	}
+	b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+	res, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "x", Model: "prov/m1"})
+	if err == nil {
+		t.Fatalf("a non-zero exit succeeded with %v", res.Output)
+	}
+	if res.SessionID != "ses_minted" {
+		t.Errorf("SessionID = %q, want the id the failing turn minted", res.SessionID)
+	}
+	if res.Tokens != 50 {
+		t.Errorf("Tokens = %d, want 50 — the spend of a failing turn is still a spend", res.Tokens)
+	}
+	if res.CostUSD != 0.25 {
+		t.Errorf("CostUSD = %v, want the cost the CLI reported", res.CostUSD)
+	}
+	// Both halves travel together: the reason too.
+	if !strings.Contains(err.Error(), "no route for that model") {
+		t.Errorf("error = %v, want the stream's own reason", err)
 	}
 }
 
@@ -467,7 +618,11 @@ func TestExternalHookPolicyDropsOnlyClawOnlyAskRules(t *testing.T) {
 		Ask:    []string{},
 		Deny:   []string{"Bash(rm:*)"},
 		Grants: []string{"Read(docs/**)"},
-		Exempt: []string{"ask_user"},
+		// The policy carries no engine-armed tree, but Config() renders
+		// every list non-nil — the field exists since #1710's per-node
+		// secret bound.
+		EngineDeny: []string{},
+		Exempt:     []string{"ask_user"},
 	}
 	if actual := got.Config(); !reflect.DeepEqual(actual, want) {
 		t.Fatalf("external hook policy = %+v, want %+v", actual, want)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -25,7 +26,11 @@ import (
 //
 // Errors other than [*exec.ExitError] are returned verbatim. ExitError
 // is normalised to (result with ExitCode set, nil error) so callers
-// can branch on res.ExitCode without a type assertion.
+// can branch on res.ExitCode without a type assertion. The drain bound
+// expiring is the one error given a sentence of its own: the command ran,
+// so the bare sentinel tells an operator nothing, while the bytes in the
+// result may be short of what it wrote — which is why it is not normalised
+// to success like a non-zero exit.
 func ExecCmd(c *exec.Cmd, opts ExecOpts) (ExecResult, error) {
 	var stdoutBuf, stderrBuf bytes.Buffer
 	if opts.Stdout != nil {
@@ -52,6 +57,13 @@ func ExecCmd(c *exec.Cmd, opts ExecOpts) (ExecResult, error) {
 	}
 	if _, isExit := err.(*exec.ExitError); isExit {
 		err = nil
+	}
+	if proc.DrainCutShort(err) {
+		// What a caller parses is res.Stdout, and the copy of it was
+		// abandoned mid-flight: an error, not a success with a hole in it,
+		// naming the bound that ran and the knob that widens it.
+		err = fmt.Errorf("the command exited 0 but a process it left kept its output open, so the read was cut %s: %w",
+			proc.WaitDelayHint(c.WaitDelay), err)
 	}
 	return res, err
 }
@@ -141,8 +153,9 @@ const MaxInlineArgBytes = 100_000
 // argv to avoid E2BIG. Returns the script when so; "" otherwise.
 //
 // Conditions: cmd is exactly `["sh","-c", script]` or `["bash","-c",
-// script]`, no stdin is already attached (so a caller-provided reader
-// is never clobbered), and the script exceeds [MaxInlineArgBytes].
+// script]`, no stdin is attached or reserved through KeepStdinOpen (so the
+// caller's reader or later StdinPipe is never clobbered), and the script exceeds
+// [MaxInlineArgBytes].
 // Both shells are matched because internal callers emit both: the
 // tool-node executor runs recipes via `bash -c`, while RunPostCreate
 // and the claw bash builtin use `sh -c`. Any other shell or argv shape
@@ -158,7 +171,7 @@ func ShouldStreamScriptViaStdin(cmd []string, opts ExecOpts) string {
 	if len(cmd) != 3 || (cmd[0] != "sh" && cmd[0] != "bash") || cmd[1] != "-c" {
 		return ""
 	}
-	if opts.Stdin != nil {
+	if opts.Stdin != nil || opts.KeepStdinOpen {
 		return ""
 	}
 	if len(cmd[2]) <= MaxInlineArgBytes {

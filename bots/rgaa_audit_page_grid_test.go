@@ -3,6 +3,7 @@ package bots
 import (
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,26 +33,7 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 	}
 	std := []string{"--standard", "rgaa", "--lang", "fr"}
 	run := filepath.Join(t.TempDir(), "run")
-	if err := os.MkdirAll(filepath.Join(run, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(run, "state"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// prepare's two artifacts the final_report node reads through lib.js.
-	lib := rgaaRenderScript(t, "prepare", extractHelpers(t, scripts["prepare"]), map[string]any{
-		"input.run_dir": run, "input.workspace_dir": site, "input.standard": "rgaa", "run.id": "page-grid-test",
-	})
-	if !strings.HasPrefix(lib, "function helpers() {") || !strings.HasSuffix(strings.TrimSpace(lib), "}") {
-		t.Fatalf("the extracted helpers are not one closed function:\n%s", lib[:min(len(lib), 200)])
-	}
-	if err := os.WriteFile(filepath.Join(run, "bin", "lib.js"), []byte("module.exports = ("+lib+")();\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pin := rgaaReadPin(t)
-	rgaaWriteJSON(t, filepath.Join(run, "bin", "engine.json"), map[string]any{
-		"entry": bin, "size": pin.Size, "sha256": pin.SHA256,
-	})
+	rgaaInitReportRun(t, run, site, bin, scripts)
 	if code, _, stderr := rgaaEngineRun(t, bin, site, nil, append([]string{"audit", ".", "--graph", "--jsx", "--out", run, "--json"}, std...)...); code != 0 {
 		t.Fatalf("audit exit %d: %s", code, stderr)
 	}
@@ -98,13 +80,54 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 	// commitAudit would (checkAudit compares against this record).
 	foldedRaw := []byte(mustRead(t, filepath.Join(run, "audit-latest.json")))
 	rgaaWriteJSON(t, filepath.Join(run, "state", "audit.json"), map[string]any{"sha256": fmt.Sprintf("%x", sha256.Sum256(foldedRaw)), "at": "test"})
+	// Feed final_report the render-layer completion record for the captures
+	// imported by this fixture; the engine derives the actual page grids.
+	if err := os.MkdirAll(filepath.Join(run, "layers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rgaaWriteJSON(t, filepath.Join(run, "layers", "rendered.json"), map[string]any{"status": "ok", "pages_recorded": 2, "pages_refused": 0})
 	env := []string{"ULTRA11Y_BIN=" + bin}
 	values := map[string]any{
 		"input.run_dir": run, "input.workspace_dir": site, "input.standard": "rgaa", "input.html_report": false,
-		"input.report_dir": "", "input.require_complete": false, "input.undecidable_present": false,
+		"input.report_dir": filepath.Join(t.TempDir(), "export"), "input.require_complete": false, "input.undecidable_present": false,
 		"input.undecidable_path": "", "input.scope_notes": "", "run.id": "page-grid-test",
 	}
+	staleAsset := filepath.Join(run, "out", "assets", "previous.png")
+	if err := os.MkdirAll(filepath.Dir(staleAsset), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleAsset, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, values))
+	for _, page := range []string{"accueil", "contact"} {
+		rel := filepath.Join("assets", page+".png")
+		exported := filepath.Join(fmt.Sprint(values["input.report_dir"]), rel)
+		if got, want := mustRead(t, exported), mustRead(t, filepath.Join(site, ".ultra11y", "pages", page, "screen.png")); got != want {
+			t.Fatalf("exported screenshot %s differs", page)
+		}
+		if !rgaaContains(rgaaStrings(out["report_files"]), filepath.Join(run, "out", rel)) {
+			t.Fatalf("report_files omits %s", rel)
+		}
+		if !strings.Contains(mustRead(t, fmt.Sprint(out["report_path"])), "./assets/"+page+".png") {
+			t.Fatalf("fixture report does not link screenshot %s", page)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(fmt.Sprint(values["input.report_dir"]), "assets", "previous.png")); !os.IsNotExist(err) {
+		t.Fatal("export included an unlinked historical asset")
+	}
+
+	for _, key := range []string{"grid_path", "grid_json_path"} {
+		p := fmt.Sprint(out[key])
+		if p == "" {
+			t.Fatalf("missing %s", key)
+		}
+		original := mustRead(t, p)
+		exported := mustRead(t, filepath.Join(fmt.Sprint(values["input.report_dir"]), filepath.Base(p)))
+		if original != exported {
+			t.Fatalf("exported %s differs", key)
+		}
+	}
 	annex, err := os.ReadFile(fmt.Sprint(out["annex_path"]))
 	if err != nil {
 		t.Fatal(err)
@@ -151,3 +174,158 @@ func extractHelpers(t *testing.T, prepareScript string) string {
 }
 
 var _ = exec.Command // keep os/exec imported for callers that shell out
+
+func rgaaInitReportRun(t *testing.T, run, site, bin string, scripts map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(run, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(run, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// prepare's two artifacts the final_report node reads through lib.js.
+	lib := rgaaRenderScript(t, "prepare", extractHelpers(t, scripts["prepare"]), map[string]any{
+		"input.run_dir": run, "input.workspace_dir": site, "input.standard": "rgaa", "run.id": "page-grid-test",
+	})
+	if !strings.HasPrefix(lib, "function helpers() {") || !strings.HasSuffix(strings.TrimSpace(lib), "}") {
+		t.Fatalf("the extracted helpers are not one closed function:\n%s", lib[:min(len(lib), 200)])
+	}
+	if err := os.WriteFile(filepath.Join(run, "bin", "lib.js"), []byte("module.exports = ("+lib+")();\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pin := rgaaReadPin(t)
+	rgaaWriteJSON(t, filepath.Join(run, "bin", "engine.json"), map[string]any{
+		"entry": bin, "size": pin.Size, "sha256": pin.SHA256,
+	})
+}
+
+// Report dependencies come from the engine's fresh output tree. Diagnostic
+// examples are content, even if they look like paths, escapes or image markup.
+func TestRgaaAuditEngineReportKeepsImageExamplesAsContent(t *testing.T) {
+	bin, _ := rgaaResolveEngine(t)
+	scripts := rgaaBotScripts(t)
+	for _, scenario := range []struct{ rendered, symlinked bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		for _, counter := range []struct{ name, line string }{
+			{"malformed", "- **Décidés** : exemple cité dans le constat"},
+			{"numeric", "- **Décidés** : 0/106 — 0 conforme(s), 0 non conforme(s), 0 conforme(s) faute de sujet, 106 à évaluer"},
+		} {
+			t.Run(fmt.Sprintf("rendered=%v/symlinked=%v/%s", scenario.rendered, scenario.symlinked, counter.name), func(t *testing.T) {
+				rendered := scenario.rendered
+				site := rgaaCopyFixtureSite(t)
+				if rendered {
+					if err := os.CopyFS(filepath.Join(site, ".ultra11y", "pages"), os.DirFS(filepath.Join("testdata", "rgaa-audit-site-captures", "pages"))); err != nil {
+						t.Fatal(err)
+					}
+				}
+				root := t.TempDir()
+				if scenario.symlinked {
+					link := filepath.Join(t.TempDir(), "linked")
+					if err := os.Symlink(root, link); err != nil {
+						t.Fatal(err)
+					}
+					root = link
+				}
+				run := filepath.Join(root, "run")
+				rgaaInitReportRun(t, run, site, bin, scripts)
+				audit := filepath.Join(run, "audit-latest.json")
+				std := []string{"--standard", "rgaa", "--lang", "fr"}
+				if code, _, stderr := rgaaEngineRun(t, bin, site, nil, append([]string{"audit", ".", "--out", run, "--json"}, std...)...); code != 0 {
+					t.Fatalf("audit: %s", stderr)
+				}
+				var wl worklistOut
+				rgaaEngineJSON(t, bin, site, nil, &wl, append([]string{"verify", "--manual", "--in", audit, "--out", run, "--json"}, std...)...)
+				var todo struct {
+					Items []struct {
+						CriteriaID string           `json:"criteriaId"`
+						Evidence   []map[string]any `json:"evidence"`
+					} `json:"items"`
+				}
+				rgaaReadJSON(t, wl.TodoPath, &todo)
+				var anchor map[string]any
+				for _, item := range todo.Items {
+					if item.CriteriaID == "1.1" && len(item.Evidence) > 0 {
+						anchor = item.Evidence[0]
+					}
+				}
+				if anchor == nil {
+					t.Fatal("fixture has no 1.1 evidence")
+				}
+				message := "Exemples Markdown `![](/img/hero.png)`, `![](images/nope.png)`, `![](bad%escape.png)` et `![Capture](./assets/fake.png)`." + "\n" + counter.line
+				var adj map[string]any
+				rgaaReadJSON(t, wl.VerdictsPath, &adj)
+				adj["items"] = []any{map[string]any{"criteriaId": "1.1", "verdict": "NC", "justification": "Constat ancré (fixture).", "findings": []any{map[string]any{"file": anchor["file"], "line": anchor["line"], "snippet": anchor["snippet"], "normativeRef": "1.1", "message": message}}}}
+				rgaaWriteJSON(t, wl.VerdictsPath, adj)
+				var folded foldOut
+				rgaaEngineJSON(t, bin, site, nil, &folded, append([]string{"verify", "--apply", wl.VerdictsPath, "--in", audit, "--out", run, "--json"}, std...)...)
+				if folded.Applied != 1 || rgaaContains(folded.RejectedCriteria, "1.1") {
+					t.Fatalf("fixture NC refused: %+v", folded)
+				}
+				rgaaWriteJSON(t, filepath.Join(run, "state", "audit.json"), map[string]any{"sha256": rgaaFileSHA(t, audit)})
+				values := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": "rgaa", "run.id": "image-content"}
+				draft := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, nil, values))
+				rgaaAssertDraftReaders(t, draft)
+				if !strings.Contains(mustRead(t, fmt.Sprint(draft["draft_path"])), message) {
+					t.Fatal("regression message did not reach the report")
+				}
+				values["input.html_report"], values["input.report_dir"], values["input.require_complete"] = true, filepath.Join(root, "export"), false
+				values["input.undecidable_present"], values["input.undecidable_path"], values["input.scope_notes"] = false, "", ""
+				final := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, nil, values))
+				if !strings.Contains(mustRead(t, fmt.Sprint(final["report_path"])), message) {
+					t.Fatal("final report lost the finding content")
+				}
+				if degraded, ok := final["degraded"].(map[string]any); ok {
+					if reason, exists := degraded["decided_line"]; exists {
+						t.Fatalf("finding content replaced the annex counters: %v", reason)
+					}
+				}
+				assets := 0
+				for _, file := range rgaaStrings(final["report_files"]) {
+					if strings.HasSuffix(file, ".png") {
+						assets++
+						if !rendered || (filepath.Base(file) != "accueil.png" && filepath.Base(file) != "contact.png") {
+							t.Fatalf("exported content as asset: %s", file)
+						}
+					}
+					rel, err := filepath.Rel(filepath.Join(run, "out"), file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if mustRead(t, file) != mustRead(t, filepath.Join(fmt.Sprint(values["input.report_dir"]), rel)) {
+						t.Fatalf("export differs: %s", rel)
+					}
+				}
+				if (rendered && assets != 2) || (!rendered && assets != 0) {
+					t.Fatalf("rendered=%v, assets=%d", rendered, assets)
+				}
+				if counter.name == "numeric" && !rendered && !scenario.symlinked {
+					// Corrupt only the real engine's generated annex before the
+					// unmodified final node reads it. Its own comparison must
+					// still flag a genuine mismatch against the audit document.
+					mutant := maps.Clone(scripts)
+					mutant["final_report"] = `(() => {
+  const fs = require("fs"), path = require("path");
+  const m = require(path.join({{input.run_dir}}, "bin", "lib.js")), init = m.init;
+  m.init = (...args) => {
+    const L = init(...args), generate = L.generateReport;
+    L.generateReport = (...args) => {
+      const r = generate(...args), file = r.json.annexPath;
+      const text = fs.readFileSync(file, "utf8");
+      const changed = text.replace(/^- \*\*Décidés\*\* : .*$/m, "- **Décidés** : 999/106 — 999 conforme(s), 0 non conforme(s), 0 conforme(s) faute de sujet, 0 à évaluer");
+      if (changed === text) throw new Error("annex fixture has no counter metadata");
+      fs.writeFileSync(file, changed);
+      return r;
+    };
+    return L;
+  };
+})();
+` + mutant["final_report"]
+					damaged := rgaaOK(t, "final_report", rgaaRunNode(t, mutant, "final_report", site, nil, values))
+					degraded, ok := damaged["degraded"].(map[string]any)
+					if !ok || degraded["decided_line"] == nil {
+						t.Fatalf("final report accepted incorrect annex counters: %v", damaged)
+					}
+				}
+			})
+		}
+	}
+}

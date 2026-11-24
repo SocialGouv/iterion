@@ -12,38 +12,17 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
 
 // CreateRun inserts a new run document with status=queued. Cloud
 // runs always start queued; the runner pod transitions them to
 // running on pickup (plan §F T-31).
 func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*store.Run, error) {
-	now := time.Now().UTC()
-	r := &store.Run{
-		FormatVersion:  store.RunFormatVersion,
-		ID:             id,
-		WorkflowName:   workflowName,
-		Status:         store.RunStatusQueued,
-		Inputs:         inputs,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		QueuedAt:       &now,
-		SchemaVersion:  SchemaVersion,
-		CASVersion:     1,
-		LaunchEnv:      store.CaptureLaunchEnv(),
-		IterionVersion: appinfo.FullVersion(),
-	}
-	stampTenant(ctx, r)
-	if _, err := s.runs.InsertOne(ctx, r); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil, fmt.Errorf("store/mongo: run %s already exists", id)
-		}
-		return nil, fmt.Errorf("store/mongo: insert run: %w", err)
-	}
-	return r, nil
+	return s.CreateRunWithValueFormat(ctx, store.RunCreateSpec{ID: id, WorkflowName: workflowName, Inputs: inputs, Format: store.LegacyValueFormat})
 }
 
 var _ store.ParentedRunCreator = (*Store)(nil)
@@ -52,31 +31,19 @@ var _ store.ParentedRunCreator = (*Store)(nil)
 // CreateRun) with ParentRunID stamped in the same insert, so the cloud
 // launch path persists the parent link without a follow-up SaveRun.
 // Implements store.ParentedRunCreator.
+//
+// The filesystem twin's rule, in the same change: the parent is read and the
+// child inherits its workspace provenance (store.ChildTrustFromParent); a
+// parent this store cannot read is refused, typed
+// (store.ErrChildParentUnreadable). The read is tenant-scoped like every read
+// here, so a parent in another tenant is not found and the child is refused by
+// the same rule — which is why a caller hands this method the launch's
+// tenant rather than this method bypassing its own filter.
 func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*store.Run, error) {
-	now := time.Now().UTC()
-	r := &store.Run{
-		FormatVersion:  store.RunFormatVersion,
-		ID:             id,
-		WorkflowName:   workflowName,
-		ParentRunID:    parentRunID,
-		Status:         store.RunStatusQueued,
-		Inputs:         inputs,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		QueuedAt:       &now,
-		SchemaVersion:  SchemaVersion,
-		CASVersion:     1,
-		LaunchEnv:      store.CaptureLaunchEnv(),
-		IterionVersion: appinfo.FullVersion(),
+	if parentRunID == "" {
+		return nil, fmt.Errorf("%w: child run %s names an empty parent", store.ErrChildParentUnreadable, id)
 	}
-	stampTenant(ctx, r)
-	if _, err := s.runs.InsertOne(ctx, r); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil, fmt.Errorf("store/mongo: run %s already exists", id)
-		}
-		return nil, fmt.Errorf("store/mongo: insert child run: %w", err)
-	}
-	return r, nil
+	return s.CreateRunWithValueFormat(ctx, store.RunCreateSpec{ID: id, WorkflowName: workflowName, ParentRunID: parentRunID, Inputs: inputs, Format: store.LegacyValueFormat})
 }
 
 // LoadRun fetches the run document by _id. The query is implicitly
@@ -85,9 +52,7 @@ func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunI
 // not-found, never a leak. Refuses documents written by a future
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
-	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
-		fmt.Errorf("store/mongo: run %s not found: %w", id, store.ErrRunNotFound),
-		fmt.Sprintf("store/mongo: load run %s", id))
+	r, err := s.loadRunValueRecord(ctx, id, options.FindOne().SetProjection(bson.M{codemodeScratchField: 0}))
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +60,7 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
 	}
 	if r.SchemaVersion > SchemaVersion {
-		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
+		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", id, r.SchemaVersion, store.ErrRunMetadataUndecodable)
 	}
 	return &r, nil
 }
@@ -108,10 +73,8 @@ var _ store.RunListingStore = (*Store)(nil)
 // it. Same tenant filter and the same deleted / schema-version refusals as
 // LoadRun: a projection must not become a second, laxer door.
 func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, error) {
-	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
-		fmt.Errorf("store/mongo: run %s not found: %w", id, store.ErrRunNotFound),
-		fmt.Sprintf("store/mongo: load run %s for listing", id),
-		options.FindOne().SetProjection(bson.M{"workflow_source": 0, "workflow_sources": 0}))
+	r, err := s.loadRunValueRecord(ctx, id,
+		options.FindOne().SetProjection(bson.M{"workflow_source": 0, "workflow_sources": 0, codemodeScratchField: 0}))
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +82,7 @@ func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, e
 		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
 	}
 	if r.SchemaVersion > SchemaVersion {
-		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
+		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", id, r.SchemaVersion, store.ErrRunMetadataUndecodable)
 	}
 	r.SourceOmitted = true
 	return &r, nil
@@ -129,89 +92,176 @@ func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, e
 // document, its events, seq counter, interactions, queued user-messages
 // (Mongo), and every artifact + attachment blob. Tenant-scoped when the
 // ctx carries a tenant, so a tenant can only delete its own runs.
-// Idempotent — a gone run is a no-op.
+// Idempotent — a gone run is a no-op. A delete bound to a run no document
+// holds any more is refused instead (boundDeletionAbsence).
 //
-// Order: blobs first, then the child Mongo collections, then the run
-// document last. A partial failure can only UNDER-delete (leave orphaned
-// docs pointing at gone blobs — harmless), never leave the run visible
-// while its data is gone.
+// Order: retain the original format, write its pending tombstone, sweep only
+// its namespaces, then remove child metadata and mark cleanup complete under
+// that same tombstone. Pending tombstones cannot be pruned or recreated.
 func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("store/mongo: DeleteRun requires a run id")
 	}
-	if err := s.blob.DeleteRun(ctx, id); err != nil {
-		return fmt.Errorf("store/mongo: blob delete run %s: %w", id, err)
+	original, _, err := s.readRunFormatMetadata(ctx, id)
+	if err != nil {
+		return err
 	}
-	if err := s.blob.DeleteRunAttachments(ctx, id); err != nil {
+	if original == nil {
+		original = &store.Run{ID: id, FormatVersion: 1}
+	}
+	ctx, objects, err := s.runObjectsFromRun(ctx, original)
+	if err != nil {
+		return err
+	}
+	// Both exact byte capabilities must exist before the pending tombstone.
+	// A missing backend capability is a refusal, not a partially started delete.
+	if original.FormatVersion == int(store.ExactValueFormat) {
+		if _, ok := s.blob.(blob.ValueFormatArtifacts); !ok {
+			return store.ErrValueFormatCapability
+		}
+	}
+	var scratchRoot string
+	var scratchDir *store.IncarnationDirectory
+	if s.runFilesScratch != "" {
+		format, e := store.ValueFormatForWrite(ctx, id)
+		if e != nil {
+			return e
+		}
+		if original.DataProtocol == store.IncarnationRunData {
+			scratchDir, _, err = s.openRunFilesNamespace(ctx, id, format, false)
+			if err != nil {
+				return err
+			}
+			if scratchDir != nil {
+				defer scratchDir.Close()
+			}
+		} else {
+			scratchRoot, err = s.runFilesScratchForBinding(ctx, id, format)
+			if err != nil {
+				return err
+			}
+		}
+
+	}
+	target, pending, err := s.beginValueDeletion(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !pending {
+		return nil
+	}
+	if err = s.deleteValueArtifacts(ctx, target.Format, id); err != nil {
+		return fmt.Errorf("store/mongo: artifact cleanup: %w", err)
+	}
+	if err := objects.DeleteRunAttachments(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachments %s: %w", id, err)
 	}
-	if err := s.blob.DeleteRunToolBlobs(ctx, id); err != nil {
+	if err := objects.DeleteRunToolBlobs(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete tool blobs %s: %w", id, err)
 	}
-	if err := s.blob.DeleteRunFiles(ctx, id); err != nil {
+	if err := objects.DeleteRunFiles(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete run files %s: %w", id, err)
 	}
 	if err := s.blob.DeleteRunIR(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete IR blob %s: %w", id, err)
 	}
-	if err := s.blob.DeleteRunBackendSessions(ctx, id); err != nil {
+	if err := objects.DeleteRunBackendSessions(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete backend sessions %s: %w", id, err)
 	}
 	// Also sweep the runner-local scratch dir if this store owns one (a
 	// runner-side store; server-side stores leave runFilesScratch empty
 	// so the join is harmless but the tree never exists).
-	if s.runFilesScratch != "" {
-		if err := os.RemoveAll(s.runFilesScratchDir(id)); err != nil {
+	if original.DataProtocol == store.IncarnationRunData {
+		if scratchDir != nil {
+			if err := removeRunFilesNamespace(ctx, scratchDir); err != nil {
+				return err
+			}
+		}
+	} else if s.runFilesScratch != "" {
+		if err := os.RemoveAll(scratchRoot); err != nil {
 			return fmt.Errorf("store/mongo: remove run files scratch %s: %w", id, err)
 		}
 	}
-	children := []struct {
-		name string
-		coll *mongo.Collection
-	}{
-		{"events", s.events},
-		{"run_seq", s.runSeq},
-		{"interactions", s.interactions},
-		{"user_messages", s.userMessages},
-		{"run_gitmeta", s.runGitMeta},
-		{"run_plans", s.runPlans},
-		{"run_notes", s.runNotes},
-		{"run_turns", s.runTurns},
-		{"run_logs", s.runLogs},
-		{"run_tags", s.runTags},
-		{"run_route_decisions", s.routeDecisions},
+	streamNS, err := s.streamNamespace(ctx, id, original)
+	if err != nil {
+		return err
 	}
-	for _, c := range children {
-		if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {
-			return fmt.Errorf("store/mongo: delete %s for run %s: %w", c.name, id, err)
+	return s.completeValueDeletion(ctx, id, target, func(ctx context.Context) error {
+		if streamNS.namespace != "" {
+			for _, coll := range []*mongo.Collection{streamNS.events, streamNS.logs, streamNS.plans, streamNS.notes} {
+				if _, err := coll.DeleteMany(ctx, streamNS.filter(ctx, nil)); err != nil {
+					return err
+				}
+			}
+			if _, err := streamNS.seq.DeleteMany(ctx, bson.M{"_id": streamNS.counterKey(ctx)}); err != nil {
+				return err
+			}
 		}
-	}
-	// Durable tombstone (the Mongo twin of the filesystem .deleted
-	// marker): strip the run document down to a skeleton stamped
-	// deleted_at instead of removing it, so a late writer's
-	// upsert/update matches the tombstone and gets ErrRunDeleted
-	// instead of silently resurrecting the run. Reaped by runs prune.
-	now := time.Now().UTC()
-	tomb := bson.M{"$set": bson.M{"deleted_at": now, "status": "deleted", "updated_at": now},
-		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
-			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "",
-			// A tombstone watches nothing.
-			"watched_issue_ids": ""}}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), versionRunUpdate(tomb)); err != nil {
-		return fmt.Errorf("store/mongo: tombstone run %s: %w", id, err)
-	}
-	return nil
+		inbox, err := s.inboxNamespace(ctx, id, original)
+		if err != nil {
+			return err
+		}
+		if _, err = inbox.collection.DeleteMany(ctx, inbox.filter(ctx, bson.M{"run_id": id})); err != nil {
+			return fmt.Errorf("store/mongo: delete inbox for run %s: %w", id, err)
+		}
+		// run_seq is keyed by the COMPOUND _id {tenant_id, run_id} (events.go) and
+		// carries no top-level run_id, so the run_id sweep below never matched it:
+		// every deleted run left its sequence counter behind, for the lifetime of
+		// the database. Deleted here, by the key the counter is actually written
+		// under. The legacy plain-string _id (the pre-compound cohort named in
+		// events.go) is included: it is the same counter under its old key, and a
+		// counter is self-healing — seedStreamSeqField re-seeds it from the persisted
+		// tail — so the one shape this cannot distinguish costs a re-seed, not
+		// data.
+		if streamNS.namespace == "" {
+			compoundSeq := bson.M{"_id.run_id": id}
+			if tenantID, ok := store.TenantFromContext(ctx); ok && tenantID != "" {
+				compoundSeq["_id.tenant_id"] = tenantID
+			}
+			seqFilter := bson.M{"$or": bson.A{compoundSeq, bson.M{"_id": id}}}
+			if _, err := s.runSeq.DeleteMany(ctx, seqFilter); err != nil {
+				return fmt.Errorf("store/mongo: delete run_seq for run %s: %w", id, err)
+			}
+		}
+		// The credential-slot ledger (cred_slots.go) is keyed by FINGERPRINT and
+		// names the run inside its holders array, tenant-blind: a platform key's
+		// row lists every tenant's runs. Pulled by that key, so a deleted run frees
+		// its slot now rather than when a refusal's reconcile finds its document
+		// gone past the grace.
+		if _, err := s.credSlots.UpdateMany(ctx, bson.M{"holders.run_id": id},
+			bson.M{"$pull": bson.M{"holders": bson.M{"run_id": id}}, "$set": bson.M{"updated_at": time.Now().UTC()}}); err != nil {
+			return fmt.Errorf("store/mongo: release cred slots of run %s: %w", id, err)
+		}
+		children := []struct {
+			name string
+			coll *mongo.Collection
+		}{
+			{"events", s.events},
+			{"interactions", s.interactions},
+			{"run_gitmeta", s.runGitMeta},
+			{"run_plans", s.runPlans},
+			{"run_notes", s.runNotes},
+			{"run_turns", s.runTurns},
+			{"run_logs", s.runLogs},
+			{"run_tags", s.runTags},
+			{"run_route_decisions", s.routeDecisions},
+		}
+		for _, c := range children {
+			if streamNS.namespace != "" && (c.name == "events" || c.name == "run_logs" || c.name == "run_plans" || c.name == "run_notes") {
+				continue
+			}
+			if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {
+				return fmt.Errorf("store/mongo: delete %s for run %s: %w", c.name, id, err)
+			}
+		}
+		return nil
+	})
 }
 
-// PruneDeletionMarkers reaps tombstone skeleton docs older than cutoff.
+// Prune waits for durable cleanup completion before allowing another birth.
+
 func (s *Store) PruneDeletionMarkers(ctx context.Context, cutoff time.Time) (int, error) {
-	res, err := s.runs.DeleteMany(ctx, withTenantFilter(ctx, bson.M{
-		"deleted_at": bson.M{"$exists": true, "$lt": cutoff},
-	}))
-	if err != nil {
-		return 0, fmt.Errorf("store/mongo: prune deletion markers: %w", err)
-	}
-	return int(res.DeletedCount), nil
+	return s.pruneValueDeletionMarkers(ctx, cutoff)
 }
 
 // runDeleted reports whether the run document carries the deletion
@@ -277,6 +327,12 @@ func writeOnceString(field, incoming string) bson.M {
 }
 
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
+	if _, err := store.CheckRunFormatReplacement(ctx, r, r); err != nil {
+		return err
+	}
+	if err := store.CheckRunDataReplacement(ctx, r, r); err != nil {
+		return err
+	}
 	// preserveUnknownBSON keeps only fields this struct does NOT know, so a
 	// blanked-but-known workflow_source is dropped rather than preserved: the
 	// projection must not reach a whole-document replace.
@@ -301,11 +357,26 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// only a newer Run/Checkpoint struct knows. The final version CAS makes
 	// this read and the replacement one optimistic transaction.
 	var previous bson.M
-	previousRaw, ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID}))).Raw()
+	var formatPreimage *store.Run
+	previousRaw, ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
+		options.FindOne().SetProjection(bson.M{codemodeScratchField: 0})).Raw()
 	if ferr != nil && !errors.Is(ferr, mongo.ErrNoDocuments) {
 		return fmt.Errorf("store/mongo: read run %s before replacement: %w", r.ID, ferr)
 	}
 	if ferr == nil {
+		if _, err := store.RunValueFormatFromBSON(ctx, previousRaw); err != nil {
+			return err
+		}
+		header, err := store.RunDataHeaderFromBSON(ctx, previousRaw)
+		if err != nil {
+			return err
+		}
+		if _, err := store.ValidateRunDataObservation(ctx, r.ID, header); err != nil {
+			return err
+		}
+		if err := store.RequireRunDataStorage(header.Protocol); err != nil {
+			return err
+		}
 		// Decode without the public payload registry: unknown values must
 		// retain their BSON types too (its int32 -> int64 normalization is
 		// useful to engine consumers, but this is a lossless storage copy).
@@ -313,6 +384,8 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 			return err
 		}
 		var cur struct {
+			BirthID        string            `bson:"birth_id"`
+			FormatVersion  int               `bson:"format_version"`
 			MergeStatus    store.MergeStatus `bson:"merge_status"`
 			MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
 			SchemaVersion  int               `bson:"v"`
@@ -320,14 +393,26 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		if err := bson.Unmarshal(previousRaw, &cur); err != nil {
 			return err
 		}
+		formatPreimage = &store.Run{ID: r.ID, FormatVersion: cur.FormatVersion, BirthID: cur.BirthID, DataProtocol: header.Protocol}
+		if r.BirthID != "" && r.BirthID != cur.BirthID {
+			return fmt.Errorf("store/mongo: run %s birth identity: %w", r.ID, store.ErrRunConflict)
+		}
 		if cur.SchemaVersion > SchemaVersion {
-			return fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", r.ID, cur.SchemaVersion)
+			return fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", r.ID, cur.SchemaVersion, store.ErrRunMetadataUndecodable)
 		}
 		if r.MergeStatus != store.MergeStatusMerging && cur.MergeStatus == store.MergeStatusMerging {
 			r.MergeStatus = cur.MergeStatus
 			r.MergeClaimedAt = cur.MergeClaimedAt
 		}
 	}
+	preservedFormat, err := store.CheckRunFormatReplacement(ctx, formatPreimage, r)
+	if err != nil {
+		return err
+	}
+	if err := store.CheckRunDataReplacement(ctx, formatPreimage, r); err != nil {
+		return err
+	}
+	r.FormatVersion = preservedFormat
 	// The notDeleted predicate closes the guard's TOCTOU window: a
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then
@@ -359,13 +444,16 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// the persisted values; a status change through SaveRun IS a
 	// transition ⇒ new episode on terminal arrival, continuation
 	// cleared (untyped). Mirrors FilesystemRunStore.
-	raw, err := bson.Marshal(r)
+	raw, err := store.EncodeValueRecordBSON(ctx, store.ValueFormat(r.FormatVersion), store.ExactRun, r)
 	if err != nil {
 		return fmt.Errorf("store/mongo: marshal run %s: %w", r.ID, err)
 	}
 	var doc bson.M
 	if err := bson.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("store/mongo: remarshal run %s: %w", r.ID, err)
+	}
+	if err = setInputPRURLProjection(ctx, doc, store.ValueFormat(r.FormatVersion)); err != nil {
+		return fmt.Errorf("store/mongo: project run PR URL: %w", err)
 	}
 	if previous != nil {
 		merged, err := preserveUnknownBSON(previous, doc, reflect.TypeFor[store.Run]())
@@ -377,11 +465,20 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "outcome_seq")
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
+	delete(doc, "pre_engine_refusal")
+	delete(doc, resumePauseHandoffField)
+	delete(doc, "error")
 	delete(doc, "routing_policy")
+	delete(doc, "spent_tool_approvals")
+	delete(doc, "unresolved_tool_approval")
+	delete(doc, "tool_approval_claim")
+	delete(doc, "execution_epoch")
+	delete(doc, "birth_id")
 	// Removed from the literal half so the computed clause above decides
 	// them; left in, the $literal document would overwrite what it preserves.
 	delete(doc, "trust")
 	delete(doc, "repo_sha_expected")
+	delete(doc, "fork_author_subject")
 	doc["version"] = r.CASVersion + 1
 	terminalInc := 0
 	switch r.Status {
@@ -402,7 +499,34 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	if r.FailureCode != "" {
 		docCode = bson.M{"$literal": string(r.FailureCode)}
 	}
+	// The recorder owns its diagnostic across metadata saves of the same
+	// publication and status. The incoming field has no authority, including
+	// on upsert creation or a fresh-version copy carrying stale metadata.
+	keepRefusal := bson.M{"$and": bson.A{
+		bson.M{"$eq": bson.A{"$status", string(r.Status)}},
+		bson.M{"$eq": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", nil}}, r.QueuedAt}},
+		bson.M{"$eq": bson.A{bson.M{"$type": "$pre_engine_refusal"}, "object"}},
+	}}
+	// Preserve the Run's omitempty contract when no owned refusal supplies
+	// the message. Writing an empty string would resurrect a deliberately
+	// removed error field during a metadata save.
+	var docError any = "$$REMOVE"
+	if r.Error != "" {
+		docError = bson.M{"$literal": r.Error}
+	}
 	computed := bson.M{
+		// The private bank is carried directly from the live document,
+		// never through this ordinary saver or its public Run projection.
+		codemodeScratchField:       bson.M{"$ifNull": bson.A{"$" + codemodeScratchField, "$$REMOVE"}},
+		"spent_tool_approvals":     bson.M{"$ifNull": bson.A{"$spent_tool_approvals", "$$REMOVE"}},
+		"unresolved_tool_approval": bson.M{"$ifNull": bson.A{"$unresolved_tool_approval", "$$REMOVE"}},
+		"tool_approval_claim":      bson.M{"$cond": bson.A{bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", store.RunStatusRunning}}, r.Status == store.RunStatusRunning}}, bson.M{"$ifNull": bson.A{"$tool_approval_claim", "$$REMOVE"}}, "$$REMOVE"}},
+		"pre_engine_refusal":       bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal", "$$REMOVE"}},
+		"error":                    bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", docError}},
+		"execution_epoch": executionEpochExpr(bson.M{"$or": bson.A{statusChanged,
+			bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", string(store.RunStatusQueued)}}, r.Status == store.RunStatusQueued,
+				bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", nil}}, bson.M{"$literal": r.QueuedAt}}}}},
+		}}),
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
@@ -422,6 +546,12 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		// race, and every capability this run is denied is read back from it.
 		"trust":             writeOnceString("$trust", string(r.Trust)),
 		"repo_sha_expected": writeOnceString("$repo_sha_expected", r.RepoSHAExpected),
+		// The fork lane's metering subject holds the same contract as the
+		// trust it travels with (the FS twin's write-once in SaveRun): a
+		// saver carrying the zero value must not un-meter a run whose every
+		// later re-entry — a resume, a retry, the runner's second charge —
+		// reads the subject back from this document.
+		"fork_author_subject": writeOnceString("$fork_author_subject", r.ForkAuthorSubject),
 		"routing_policy": bson.M{"$cond": bson.A{
 			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
 			"$routing_policy",
@@ -431,6 +561,10 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 				nil,
 			}},
 		}},
+	}
+	if r.Status.CarriesResumePauseHandoff() {
+		// Only the persisted marker has authority across metadata saves.
+		computed[resumePauseHandoffField] = bson.M{"$ifNull": bson.A{"$" + resumePauseHandoffField, "$$REMOVE"}}
 	}
 	// $literal shields the document from aggregation-expression
 	// evaluation: without it, any string VALUE starting with "$" is
@@ -444,18 +578,44 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{computed, bson.M{"$literal": doc}}}}},
 	}
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID}))
+	f, err := store.NormalizeValueFormat(r.FormatVersion)
+	if err != nil {
+		return err
+	}
+	filter["$and"] = bson.A{valueFormatPredicate(f)}
 	if r.CASVersion == 0 {
 		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
 	} else {
 		filter["version"] = r.CASVersion
 	}
-	result, err := s.runs.UpdateOne(ctx, filter, pipeline, options.UpdateOne().SetUpsert(r.CASVersion == 0))
+	birth := formatPreimage == nil && r.CASVersion == 0
+	// The same preimage/version CAS owns birth identity preservation. Do not
+	// backfill a historical absence, or accept an incoming caller identity.
+	birthID := ""
+	if birth {
+		birthID = store.NewRunBirthID()
+		computed["birth_id"] = bson.M{"$literal": birthID}
+	} else if formatPreimage != nil {
+		birthID = formatPreimage.BirthID
+		computed["birth_id"] = bson.M{"$ifNull": bson.A{"$birth_id", "$$REMOVE"}}
+		if birthID == "" {
+			filter["birth_id"] = bson.M{"$in": bson.A{"", nil}}
+		} else {
+			filter["birth_id"] = birthID
+		}
+	}
+	if birth {
+		// The equality seeds the upsert's _id; the contradictory existence clause
+		// makes this branch insert-only. A raced-in incumbent yields DuplicateKey.
+		filter = notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID, "$and": bson.A{bson.M{"_id": bson.M{"$exists": false}}}}))
+	}
+	result, err := s.runs.UpdateOne(ctx, filter, pipeline, options.UpdateOne().SetUpsert(birth))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			if derr := s.guardNotDeleted(ctx, r.ID); derr != nil {
 				return derr
 			}
-			return fmt.Errorf("store/mongo: run %s: %w", r.ID, store.ErrRunConflict)
+			return fmt.Errorf("store/mongo: run %s: %w", r.ID, errors.Join(store.ErrRunConflict, (runMetadataFormat{original: store.RunValueFormat{RunID: r.ID, Format: f}}).checkMiss(ctx, s)))
 		}
 		return fmt.Errorf("store/mongo: replace run %s: %w", r.ID, err)
 	}
@@ -463,9 +623,10 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		if derr := s.guardNotDeleted(ctx, r.ID); derr != nil {
 			return derr
 		}
-		return fmt.Errorf("store/mongo: run %s: %w", r.ID, store.ErrRunConflict)
+		return fmt.Errorf("store/mongo: run %s: %w", r.ID, errors.Join(store.ErrRunConflict, (runMetadataFormat{original: store.RunValueFormat{RunID: r.ID, Format: f}}).checkMiss(ctx, s)))
 	}
 	r.CASVersion++
+	r.BirthID = birthID
 	return nil
 }
 
@@ -479,7 +640,7 @@ func (s *Store) PatchRunBudgetOverrides(ctx context.Context, runID string, overr
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": runID})), update)
+	res, err := s.updateRunMetadata(ctx, runID, notDeleted(withTenantFilter(ctx, bson.M{"_id": runID})), update)
 	if err != nil {
 		return fmt.Errorf("store/mongo: patch run budget overrides %s: %w", runID, err)
 	}
@@ -554,7 +715,7 @@ func (s *Store) ClearSubbotChild(ctx context.Context, parentRunID, key string) e
 }
 
 func (s *Store) updateSubbotChildren(ctx context.Context, runID string, update bson.M) error {
-	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: update subbot children %s: %w", runID, err)
 	}
@@ -571,7 +732,10 @@ func (s *Store) updateWatched(ctx context.Context, runID string, update bson.M) 
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.After).
 		SetProjection(bson.M{"watched_issue_ids": 1})
-	err := s.runs.FindOneAndUpdate(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update), opts).Decode(&doc)
+	metadataResult, err := s.findOneAndUpdateRunMetadata(ctx, runID, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update), opts)
+	if err == nil {
+		err = metadataResult.Decode(&doc)
+	}
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("store/mongo: run %s not found", runID)
@@ -701,26 +865,32 @@ func (s *Store) ListDeliverableWatchers(ctx context.Context) ([]string, error) {
 	return s.listRunIDsBy(ctx, deliverableWatchersFilter(), "list deliverable watchers")
 }
 
-// ListRunsForPR returns the ids of runs whose `pr_url` input equals prURL,
-// sorted by created_at ascending. Indexed by tenant_pr_url_created, partial
-// on the input so only runs launched with a pr_url index. Tenant scope is
-// enforced when ctx carries a tenant_id. Refs #2636.
-func (s *Store) ListRunsForPR(ctx context.Context, prURL string) ([]string, error) {
-	if prURL == "" {
-		return []string{}, nil
-	}
-	return s.listRunIDsBy(ctx, bson.M{"inputs.pr_url": prURL}, "list runs for pr")
-}
-
 // listRunIDsBy runs an indexed Find over the runs collection with the
 // given (tenant-wrapped) filter, projecting _id and sorting by
 // created_at ascending. Shared by the reverse-tree queries.
 func (s *Store) listRunIDsBy(ctx context.Context, filter bson.M, what string) ([]string, error) {
-	cur, err := s.runs.Find(
-		ctx,
-		notDeleted(withTenantFilter(ctx, filter)),
-		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
-	)
+	return s.findRunIDs(ctx, filter,
+		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}), what)
+}
+
+// ListRunIDsForPurge returns the ids of the live (not deleted) runs of the
+// tenant the context carries, in no particular order — the org purge's
+// question (pkg/cloud/orgsweep), asked once per team of an org past its
+// grace. Unsorted and projected on _id, its tenant_id equality is served by
+// the tenant-prefixed run indexes rather than ListRuns' scan and in-memory
+// sort. A context without a tenant is refused: the unscoped answer would hand
+// every run of every tenant to a delete loop.
+func (s *Store) ListRunIDsForPurge(ctx context.Context) ([]string, error) {
+	if _, ok := store.TenantFromContext(ctx); !ok {
+		return nil, fmt.Errorf("store/mongo: list runs for purge: no tenant in the context — refused, the answer feeds a delete loop")
+	}
+	return s.findRunIDs(ctx, bson.M{}, options.Find().SetProjection(bson.M{"_id": 1}), "list runs for purge")
+}
+
+// findRunIDs runs a Find over the runs collection with the given
+// (tenant-wrapped, tombstones excluded) filter and returns the ids.
+func (s *Store) findRunIDs(ctx context.Context, filter bson.M, opts *options.FindOptionsBuilder, what string) ([]string, error) {
+	cur, err := s.runs.Find(ctx, notDeleted(withTenantFilter(ctx, filter)), opts)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: %s: %w", what, err)
 	}
@@ -888,14 +1058,23 @@ func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunC
 		"credential_tiers":  stamp.Tiers,
 		"updated_at":        time.Now().UTC(),
 	}
-	// A re-stamp is a fresh attempt: it counts until it proves idle.
+	// A re-stamp is a fresh attempt: the previous one's model-idle marker
+	// is cleared.
 	unset := bson.M{"llm_idle_since": ""}
+	// No subject is an absent key, the shape a launch writes for a run that
+	// seals no gateway key: a stored empty list and an absent key mean the
+	// same thing to the holder filter (spendsCredentialFilter).
+	if len(stamp.CapacitySubjects) > 0 {
+		set["capacity_subjects"] = stamp.CapacitySubjects
+	} else {
+		unset["capacity_subjects"] = ""
+	}
 	if stamp.SkippedReopensAt != nil {
 		set["skipped_cred_reopens_at"] = stamp.SkippedReopensAt.UTC()
 	} else {
 		unset["skipped_cred_reopens_at"] = ""
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": set, "$unset": unset}))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": set, "$unset": unset}))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set run cred stamp: %w", err)
 	}
@@ -940,7 +1119,7 @@ func (s *Store) SetRunRecordedSource(ctx context.Context, id, src string, files 
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set run recorded source: %w", err)
 	}
@@ -959,7 +1138,7 @@ func (s *Store) SetRunLLMIdle(ctx context.Context, id string, idleSince *time.Ti
 	} else {
 		update["$unset"] = bson.M{"llm_idle_since": ""}
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set run llm idle: %w", err)
 	}
@@ -980,7 +1159,7 @@ func (s *Store) SetRunBudgetOverrides(ctx context.Context, id string, o *store.R
 	} else {
 		update["$set"].(bson.M)["budget_overrides"] = o
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set run budget overrides: %w", err)
 	}
@@ -997,7 +1176,7 @@ func (s *Store) SetRunBudgetOverrides(ctx context.Context, id string, o *store.R
 func (s *Store) SetRunnerVersion(ctx context.Context, id, version string) error {
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
 	update := bson.M{"$set": bson.M{"runner_version": version, "updated_at": time.Now().UTC()}}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set runner version: %w", err)
 	}
@@ -1077,7 +1256,7 @@ func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.Ru
 	} else {
 		update["$set"].(bson.M)["budget"] = b
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set run budget snapshot: %w", err)
 	}
@@ -1087,13 +1266,30 @@ func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.Ru
 	return nil
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
-// stamped with fingerprint (see store.RunStore). Deliberately NO tenant
-// filter — a platform key serves every tenant on one ceiling.
+// CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
+// fingerprint — a credential's, or a capacity subject — model-idle or not
+// (see store.RunStore): the query form of store.Run.SpendsCredential.
+// Deliberately NO tenant filter — a platform key and a shared gateway serve
+// every tenant on one ceiling.
 func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
+	n, err := s.runs.CountDocuments(ctx, spendsCredentialFilter(fingerprint, excludeRunID))
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
+	}
+	return int(n), nil
+}
+
+// spendsCredentialFilter selects the runs that spend the credential with this
+// fingerprint, or the capacity subject of that name, excludeRunID aside: the
+// query form of store.Run.SpendsCredential, read by the alive-run count and,
+// narrowed (credSlotAdoptableFilter), by the slot ledger's adoption. The two
+// arms of the $or are the predicate's two stamps; the namespaces are
+// disjoint, so a value matches one arm at most. No tenant filter — a
+// platform key and a shared gateway serve every tenant on one cap.
+func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
 	holding := make([]string, 0, 2)
 	for _, st := range store.AllRunStatuses {
 		if st.HoldsCredentialSlot() {
@@ -1101,20 +1297,16 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 		}
 	}
 	filter := notDeleted(bson.M{
-		"cred_fingerprints": fingerprint,
-		"status":            bson.M{"$in": holding},
-		// {field: null} matches both an absent and an explicit null
-		// marker: legacy documents and documents the runner cleared.
-		"llm_idle_since": nil,
+		"$or": bson.A{
+			bson.M{"cred_fingerprints": fingerprint},
+			bson.M{"capacity_subjects": fingerprint},
+		},
+		"status": bson.M{"$in": holding},
 	})
 	if excludeRunID != "" {
 		filter["_id"] = bson.M{"$ne": excludeRunID}
 	}
-	n, err := s.runs.CountDocuments(ctx, filter)
-	if err != nil {
-		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
-	}
-	return int(n), nil
+	return filter
 }
 
 func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
@@ -1125,7 +1317,7 @@ func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides m
 	if budgetRaises != nil {
 		set["budget_raises"] = budgetRaises
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": set}))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": set}))
 	if err != nil {
 		return fmt.Errorf("store/mongo: patch run steering: %w", err)
 	}
@@ -1143,7 +1335,7 @@ func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants 
 		return nil
 	}
 	set := bson.M{"updated_at": time.Now().UTC(), "permission_grants": grants}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": set}))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": set}))
 	if err != nil {
 		return fmt.Errorf("store/mongo: patch run permission grants: %w", err)
 	}
@@ -1166,7 +1358,7 @@ func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served 
 		"updated_at":             time.Now().UTC(),
 		"nodes_served." + nodeID: served,
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{
 		"$set": set,
 	}))
 	if err != nil {
@@ -1204,9 +1396,24 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		"updated_at": now,
 		"version":    bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 	}
+	if status.IsQueued() || status == store.RunStatusRunning || status.IsFinalSuccess() || status.IsFinalFailure() {
+		set["pre_engine_refusal"] = "$$REMOVE"
+	} else {
+		clearRefusal := bson.A{statusChanged}
+		if runErr != "" {
+			clearRefusal = append(clearRefusal, bson.M{"$ne": bson.A{"$pre_engine_refusal.message", bson.M{"$literal": runErr}}})
+		}
+		if meta.Code != "" {
+			clearRefusal = append(clearRefusal, bson.M{"$ne": bson.A{"$pre_engine_refusal.code", bson.M{"$literal": string(meta.Code)}}})
+		}
+		set["pre_engine_refusal"] = bson.M{"$cond": bson.A{bson.M{"$or": clearRefusal}, "$$REMOVE", bson.M{"$ifNull": bson.A{"$pre_engine_refusal", "$$REMOVE"}}}}
+	}
+	set["execution_epoch"] = executionEpochExpr(bson.M{"$or": bson.A{statusChanged, status == store.RunStatusQueued}})
 	if status == store.RunStatusRunning {
+		set["tool_approval_claim"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$tool_approval_claim", "$$REMOVE"}}}}
 		set["await_answers_waits"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$await_answers_waits", "$$REMOVE"}}}}
 	} else {
+		set["tool_approval_claim"] = "$$REMOVE"
 		set["await_answers_waits"] = "$$REMOVE"
 	}
 	// The error message: a transition always states its own (empty
@@ -1277,6 +1484,9 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		// state into paused must clear finished_at too.
 		set["finished_at"] = "$$REMOVE"
 	}
+	if !status.CarriesResumePauseHandoff() {
+		set[resumePauseHandoffField] = "$$REMOVE"
+	}
 	if terminal {
 		seqBase := bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}
 		set["outcome_seq"] = bson.M{"$cond": bson.A{statusChanged,
@@ -1343,23 +1553,44 @@ func (s *Store) UpdateRunStatusCoded(ctx context.Context, id string, status stor
 		return err
 	}
 	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC()))
-	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), pipeline,
-		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: update status %s", id))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), pipeline)
+	if err != nil {
+		return fmt.Errorf("store/mongo: update status %s: %w", id, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("store/mongo: run %s not found", id)
+	}
+	return nil
 }
 
 // UpdateRunOutcome is the typed status transition (see store.RunStore):
 // UpdateRunStatusIf plus the outcome metadata persisted atomically.
 // The RUNNER-side writer — the engine's code-only writers stay above.
 func (s *Store) UpdateRunOutcome(ctx context.Context, id string, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, expectedFrom []store.RunStatus) (bool, error) {
+	return s.updateRunOutcome(ctx, id, status, runErr, meta, expectedFrom, nil)
+}
+func (s *Store) UpdateRunOutcomeIf(ctx context.Context, id string, expected store.RunOutcomeExpectation, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, expectedFrom []store.RunStatus) (bool, error) {
+	if err := expected.Validate(); err != nil {
+		return false, err
+	}
+	return s.updateRunOutcome(ctx, id, status, runErr, meta, expectedFrom, &expected)
+}
+func (s *Store) updateRunOutcome(ctx context.Context, id string, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, expectedFrom []store.RunStatus, expected *store.RunOutcomeExpectation) (bool, error) {
 	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, meta, time.Now().UTC()))
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	if expected != nil {
+		filter["$and"] = bson.A{correctionVersionFilter(expected.Version), correctionEpochFilter(expected.Epoch)}
+	}
+	if !applyExactQueuedAt(filter, meta.ExactQueuedAt) {
+		return false, nil
+	}
 	if len(expectedFrom) > 0 {
 		filter["status"] = bson.M{"$in": expectedFrom}
 	}
 	if status == store.RunStatusCancelled {
 		filter["failure_code"] = bson.M{"$ne": store.FailureAmbiguousEffect}
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(pipeline))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(pipeline))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update outcome %s: %w", id, err)
 	}
@@ -1391,11 +1622,83 @@ func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status st
 	if status == store.RunStatusCancelled {
 		filter["failure_code"] = bson.M{"$ne": store.FailureAmbiguousEffect}
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(pipeline))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(pipeline))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+var _ store.CodemodeQuotaResumeClaimer = (*Store)(nil)
+
+// ClaimResumeWithCodemodeQuota implements store.CodemodeQuotaResumeClaimer.
+func (s *Store) ClaimResumeWithCodemodeQuota(ctx context.Context, id string, claim store.CodemodeQuotaResumeClaim, quota store.CodemodeScratchLimits) (*scripthost.Limits, error) {
+	if err := claim.Validate(quota); err != nil {
+		return nil, fmt.Errorf("store/mongo: claim resume with codemode quota %s: %w", id, err)
+	}
+	execution, fenced := store.ResumeExecutionClaimFromContext(ctx)
+	if fenced {
+		if err := execution.Validate(); err != nil {
+			return nil, fmt.Errorf("store/mongo: claim resume with codemode quota %s: %w", id, err)
+		}
+	}
+	const boundsField = "codemode_bounds_override"
+	// The bounds struct uses BSON's default lowercase field names, not its
+	// JSON wire names. Merge only the dimensions stated by the caller, keeping
+	// any other overrides (including fields from newer binaries) intact.
+	patch := bson.M{}
+	if quota.Entries != 0 {
+		patch["storeentries"] = quota.Entries
+	}
+	if quota.Bytes != 0 {
+		patch["storebytes"] = quota.Bytes
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": claim.ExpectedStatus}))
+	if !claim.QueuedAt.IsZero() {
+		filter["queued_at"] = claim.QueuedAt
+	}
+	set := statusTransitionSet(store.RunStatusRunning, "", store.RunOutcomeMeta{}, time.Now().UTC())
+	if fenced {
+		filter["$and"] = bson.A{correctionVersionFilter(claim.ExpectedVersion), correctionEpochFilter(execution.ExpectedEpoch)}
+		set["execution_epoch"] = bson.M{"$literal": execution.NextEpoch}
+	} else if claim.ExpectedStatus != store.RunStatusQueued {
+		filter["$and"] = bson.A{correctionVersionFilter(claim.ExpectedVersion)}
+	}
+	if quota == (store.CodemodeScratchLimits{}) {
+		filter["codemode_quota_claimed_at"] = claim.QueuedAt
+		filter[boundsField] = bson.M{"$type": "object"}
+	} else {
+		if !claim.QueuedAt.IsZero() {
+			set["codemode_quota_claimed_at"] = claim.QueuedAt
+		}
+		set[boundsField] = bson.M{"$mergeObjects": bson.A{bson.M{"$ifNull": bson.A{"$" + boundsField, bson.M{}}}, patch}}
+	}
+	guard, err := s.prepareRunMetadataFormat(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if claim.PauseHandoff != nil {
+		handoff, err := valueRecordDocument(ctx, guard.original.Format, store.ExactResumePauseHandoff, claim.PauseHandoff)
+		if err != nil {
+			return nil, fmt.Errorf("store/mongo: encode quota claim pause handoff %s: %w", id, err)
+		}
+		set[resumePauseHandoffField] = bson.M{"$literal": handoff}
+	}
+	var after struct {
+		Bounds *scripthost.Limits `bson:"codemode_bounds_override"`
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{boundsField: 1, "_id": 0})
+	if s.afterRunMetadataPrepare != nil {
+		s.afterRunMetadataPrepare(id)
+	}
+	err = s.runs.FindOneAndUpdate(ctx, guard.filter(ctx, filter), statusTransitionPipeline(set), opts).Decode(&after)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, guard.checkMiss(ctx, s)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: claim resume with codemode quota %s: %w", id, err)
+	}
+	return after.Bounds, nil
 }
 
 // mergeStatusFilter builds the merge_status clause for a CAS filter:
@@ -1420,8 +1723,9 @@ func mergeStatusFilter(expectedFrom []store.MergeStatus) bson.M {
 // (see store.RunStore), implemented as a conditional FindOneAndUpdate:
 // the flip to "merging" only lands when the persisted status is
 // claimable — unset/pending/failed, or a "merging" whose claim stamp
-// predates staleBefore (the previous claimant crashed mid-merge).
-func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
+// predates staleBefore (the previous claimant crashed mid-merge) — and,
+// when expect checks, the document holds the expected birth.
+func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect store.ExpectedBirth) (bool, store.MergeStatus, time.Time, error) {
 	// Millisecond precision: BSON stores times in ms, and the token
 	// must compare equal after a round-trip.
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1433,7 +1737,7 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 		// it) counts as infinitely stale — it must not wedge the run.
 		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$exists": false}},
 	}}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": mergeCAS(bson.A{claimable}, expect)}))
 	// Strictly monotonic vs the stamp being stolen (mirrors the FS
 	// twin): a steal landing in the SAME millisecond would mint an
 	// equal token and the loser's token-scoped exits would pass as the
@@ -1460,7 +1764,10 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 		MergeStatus    store.MergeStatus `bson:"merge_status"`
 		MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
 	}
-	err := s.runs.FindOneAndUpdate(ctx, filter, versionRunUpdate(update), opts).Decode(&before)
+	metadataResult, err := s.findOneAndUpdateRunMetadata(ctx, id, filter, versionRunUpdate(update), opts)
+	if err == nil {
+		err = metadataResult.Decode(&before)
+	}
 	if err == nil {
 		token := now
 		if !before.MergeClaimedAt.IsZero() && !now.After(before.MergeClaimedAt) {
@@ -1470,6 +1777,10 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 	}
 	if !errors.Is(err, mongo.ErrNoDocuments) {
 		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	// A successor under the same ID is never claimed: say so typed.
+	if err := s.checkMergeMissBirth(ctx, id, expect); err != nil {
+		return false, "", time.Time{}, err
 	}
 	// Not claimable (or missing): read the current status so the caller
 	// can say WHY the claim was refused.
@@ -1514,13 +1825,18 @@ func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMe
 		// stolen must not consume its successor's (see RunMergeUpdate).
 		cas = append(cas, bson.M{"merge_claimed_at": upd.ExpectClaimedAt})
 	}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": cas}))
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": mergeCAS(cas, upd.ExpectBirth)}))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
 	}
 	if res.MatchedCount > 0 {
 		return true, nil
+	}
+	// A successor under the same ID never receives this outcome: say so
+	// typed rather than as a lost race.
+	if err := s.checkMergeMissBirth(ctx, id, upd.ExpectBirth); err != nil {
+		return false, err
 	}
 	// Distinguish "state drifted" (a CAS outcome the caller handles)
 	// from "run missing" (an error — a silently absorbed write would
@@ -1583,20 +1899,49 @@ type queuedFlipPriorDoc struct {
 // replaced — see store.QueuedFlipper. The document before the update is the
 // prior, read by the same FindOneAndUpdate.
 func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time) (store.QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, nil, false)
+}
+
+func (s *Store) FlipRevisionToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version int64) (store.QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, &version, false)
+}
+
+func (s *Store) FlipAcknowledgedRevisionToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version int64) (store.QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, &version, true)
+}
+
+func (s *Store) flipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version *int64, acknowledged bool) (store.QueuedFlip, bool, error) {
 	if at.IsZero() {
 		return store.QueuedFlip{}, false, fmt.Errorf("store/mongo: flip %s to queued without an attempt marker", id)
 	}
 	at = store.QueuedFlipAt(at)
 	set := statusTransitionSet(store.RunStatusQueued, "", store.RunOutcomeMeta{}, time.Now().UTC())
 	set["queued_at"] = queuedAtMarkerExpr(at)
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from}))
+	// The resume's credential-slot admission is still to come
+	// (store.Run.AwaitsCredSlotAdmission). A boolean is a literal in a
+	// pipeline stage.
+	set["cred_admission_pending"] = true
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from, "unresolved_tool_approval": bson.M{"$exists": false}}))
+	if acknowledged {
+		delete(filter, "unresolved_tool_approval")
+	}
+	if version != nil {
+		if *version == 0 {
+			filter["version"] = bson.M{"$in": bson.A{0, nil}}
+		} else {
+			filter["version"] = *version
+		}
+	}
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
 		SetProjection(bson.M{"status": 1, "queued_at": 1, "error": 1, "failure_code": 1, "end_reason": 1,
 			"outcome_seq": 1, "continuation_state": 1, "finished_at": 1,
 			"workflow_source": 1, "workflow_sources": 1, "workflow_hash": 1})
 	var before queuedFlipPriorDoc
-	err := s.runs.FindOneAndUpdate(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)), opts).Decode(&before)
+	metadataResult, err := s.findOneAndUpdateRunMetadata(ctx, id, filter, versionRunUpdate(statusTransitionPipeline(set)), opts)
+	if err == nil {
+		err = metadataResult.Decode(&before)
+	}
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return store.QueuedFlip{}, false, nil
 	}
@@ -1622,8 +1967,11 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 	if runErr == "" {
 		runErr = prior.Error
 	}
-	set := bson.M{"status": prior.Status, "updated_at": time.Now().UTC()}
-	unset := bson.M{"await_answers_waits": ""}
+	set := bson.M{"status": prior.Status, "updated_at": time.Now().UTC(), "execution_epoch": store.NewExecutionEpoch()}
+	unset := bson.M{"await_answers_waits": "", "cred_admission_pending": ""}
+	if !prior.Status.CarriesResumePauseHandoff() {
+		unset[resumePauseHandoffField] = ""
+	}
 	field := func(key string, val any, empty bool) {
 		if empty {
 			unset[key] = ""
@@ -1634,6 +1982,7 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 	field("queued_at", prior.QueuedAt, prior.QueuedAt == nil)
 	field("error", runErr, runErr == "")
 	field("failure_code", prior.FailureCode, prior.FailureCode == "")
+	field("pre_engine_refusal", nil, true)
 	field("end_reason", prior.EndReason, prior.EndReason == "")
 	field("outcome_seq", prior.OutcomeSeq, prior.OutcomeSeq == 0)
 	field("continuation_state", prior.ContinuationState, prior.ContinuationState == "")
@@ -1642,7 +1991,7 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 	field("workflow_sources", prior.WorkflowSources, len(prior.WorkflowSources) == 0)
 	field("workflow_hash", prior.WorkflowHash, prior.WorkflowHash == "")
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": store.RunStatusQueued, "queued_at": flip.At}))
-	res, err := s.runs.UpdateOne(ctx, filter, bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}})
+	res, err := s.updateRunMetadata(ctx, id, filter, bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}})
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: revert queued run %s: %w", id, err)
 	}
@@ -1660,6 +2009,29 @@ func (s *Store) ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishe
 	return s.transitionQueuedAttempt(ctx, id, store.RunStatusRunning, "", publishedAt, store.RunOutcomeMeta{})
 }
 
+func queuedAttemptClauses(publishedAt time.Time) bson.A {
+	return bson.A{
+		bson.M{"queued_at": bson.M{"$lte": publishedAt}},
+		// Legacy queued documents have no newer attempt marker, so the
+		// delivery is the best available identity.
+		bson.M{"queued_at": nil},
+	}
+}
+
+// applyExactQueuedAt adds an optional exact queue marker, rejecting values
+// BSON would silently round down to a different instant.
+func applyExactQueuedAt(filter bson.M, exact time.Time) bool {
+	if exact.IsZero() {
+		return true
+	}
+	if !exact.Equal(store.QueuedFlipAt(exact)) {
+		return false
+	}
+	delete(filter, "$or")
+	filter["queued_at"] = exact
+	return true
+}
+
 // transitionQueuedAttempt moves the queue attempt publishedAt names, and
 // only that one, out of queued: queued_at and status are matched in the SAME
 // update, so a concurrent resume cannot slip a newer attempt between a read
@@ -1669,19 +2041,16 @@ func (s *Store) transitionQueuedAttempt(ctx context.Context, id string, to store
 	filter := notDeleted(withTenantFilter(ctx, bson.M{
 		"_id":    id,
 		"status": store.RunStatusQueued,
-		"$or": bson.A{
-			bson.M{"queued_at": bson.M{"$lte": publishedAt}},
-			// Legacy queued documents predate QueuedAt. They have no newer
-			// attempt marker, so the delivery is the best available identity.
-			bson.M{"queued_at": bson.M{"$exists": false}},
-			bson.M{"queued_at": nil},
-		},
+		"$or":    queuedAttemptClauses(publishedAt),
 	}))
+	if !applyExactQueuedAt(filter, meta.ExactQueuedAt) {
+		return false, nil
+	}
 	// The filter pins status=queued, so the transition-gated episode
 	// increment fires on a terminal target; meta rides the same write as
 	// the flip.
 	pipeline := statusTransitionPipeline(statusTransitionSet(to, runErr, meta, now))
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(pipeline))
+	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(pipeline))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: move queued attempt %s to %s: %w", id, to, err)
 	}
@@ -1694,55 +2063,60 @@ var _ store.QueuedAttemptStore = (*Store)(nil)
 // §F T-33 layers an explicit version-conditional update on top; this
 // method is the simple "no contention" form used by the engine itself.
 func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
-	// Same pointer discipline as statusTransitionSet (mirrors the FS
-	// twin): a checkpoint carrying interaction evidence may only land
-	// while the run's status carries it — otherwise a stale in-memory
-	// copy is being replayed. The status read costs one projection and
-	// only fires when the checkpoint actually carries a pointer (the
-	// rare pause-adjacent writes; ordinary boundary writes skip it).
-	if cp != nil && (cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
-		var cur struct {
-			Status store.RunStatus `bson:"status"`
-		}
-		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
-			options.FindOne().SetProjection(bson.M{"status": 1})).Decode(&cur); ferr == nil &&
-			!cur.Status.CarriesPausePointer() {
-			c := *cp
-			c.InteractionID = ""
-			c.InteractionQuestions = nil
-			cp = &c
-		}
+	format, err := s.valueWriteFormat(ctx, id)
+	if err != nil {
+		return err
 	}
-	update := bson.M{
-		"$set": bson.M{
-			"checkpoint": cp,
-			"updated_at": time.Now().UTC(),
-		},
-		"$inc": bson.M{"version": 1},
+	whole, consumed, err := checkpointValueDocuments(ctx, format, cp)
+	if err != nil {
+		return err
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
-		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: save checkpoint %s", id))
+	return s.withValueRecordWrite(ctx, id, func(sc context.Context, _ store.ValueFormat, p *store.Run) error {
+		if p == nil {
+			return store.ErrRunNotFound
+		}
+		value := whole
+		if !p.Status.CarriesPausePointer() {
+			value = consumed
+		}
+		return mongoutil.UpdateOneChecked(sc, s.runs, notDeleted(withTenantFilter(sc, bson.M{"_id": id})), versionRunUpdate(bson.M{"$set": bson.M{"checkpoint": value, "updated_at": time.Now().UTC()}}), store.ErrRunNotFound, "store/mongo: save checkpoint")
+	})
 }
 
-// PauseRun atomically writes the checkpoint, flips status to paused,
-// and stamps updated_at. Single-document update is naturally atomic.
 func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":     store.RunStatusPausedWaitingHuman,
-			"checkpoint": cp,
-			"updated_at": now,
-		},
-		"$inc": bson.M{"version": 1},
-		// A paused run carries no failure classification and no
-		// platform continuation statement — same discipline as
-		// statusTransitionSet, which this checkpoint-coupled write
-		// bypasses.
-		"$unset": bson.M{"finished_at": "", "failure_code": "", "continuation_state": "", "await_answers_waits": ""},
+	format, err := s.valueWriteFormat(ctx, id)
+	if err != nil {
+		return err
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
-		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
+	whole, _, err := checkpointValueDocuments(ctx, format, cp)
+	if err != nil {
+		return err
+	}
+	return s.withValueRecordWrite(ctx, id, func(ctx context.Context, _ store.ValueFormat, p *store.Run) error {
+		if p == nil {
+			return store.ErrRunNotFound
+		}
+		now := time.Now().UTC()
+		// Preserve the historical pause fields while using an expression for
+		// renewal: a repeated pause is not a new execution boundary.
+		set := bson.M{"status": string(store.RunStatusPausedWaitingHuman), "checkpoint": bson.M{"$literal": whole}, "updated_at": now,
+			"version":         bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
+			"execution_epoch": executionEpochExpr(bson.M{"$ne": bson.A{"$status", string(store.RunStatusPausedWaitingHuman)}}),
+			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE", "tool_approval_claim": "$$REMOVE", resumePauseHandoffField: "$$REMOVE"}
+		// A fresh exact pause re-arms the approval cycle: its own claim/spend
+		// identity is the durable continuation of the cycle it replaces, so a
+		// marker an earlier ambiguous dispatch left (the force-resume path)
+		// must not block answering THIS pause.
+		if cp != nil && len(cp.BackendPermissionInput) != 0 {
+			// $$REMOVE, not "": inside a pipeline $set an empty string would
+			// STORE the field, and every claim/flip filter matches on the
+			// field being absent.
+			set["unresolved_tool_approval"] = "$$REMOVE"
+		}
+		update := statusTransitionPipeline(set)
+		return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
+			fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
+	})
 }
 
 // failRunCheckpointed is the shared body of FailRunResumable and
@@ -1754,45 +2128,47 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // a run somebody deliberately stopped. An ambiguous effect cannot auto-resume
 // and must stay visible even if the cancel was written first.
 func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
-	set := statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC())
-	// The whole-checkpoint $set replaces statusTransitionSet's
-	// surviving-checkpoint expression — apply the pointer consumption
-	// to the VALUE instead. (Engine failure boundaries never set a
-	// pointer; this guards the preserved-checkpoint callers.) $literal
-	// because in a pipeline stage the checkpoint's own content —
-	// arbitrary node outputs — would otherwise be evaluated as
-	// expressions.
-	if cp != nil && !status.CarriesPausePointer() &&
-		(cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
-		consumed := *cp
-		consumed.InteractionID = ""
-		consumed.InteractionQuestions = nil
-		cp = &consumed
-	}
-	if cp != nil {
-		set["checkpoint"] = bson.M{"$literal": cp}
-	} else {
-		set["checkpoint"] = nil
-	}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
-	if code != store.FailureAmbiguousEffect {
-		filter["status"] = bson.M{"$ne": store.RunStatusCancelled}
-	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)))
+	format, err := s.valueWriteFormat(ctx, id)
 	if err != nil {
-		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)
+		return err
 	}
-	if res.MatchedCount == 0 {
-		// Either the run is gone (absent or tombstoned — LoadRun's
-		// typed error says which), or it is already cancelled and
-		// stays so.
-		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
-			return nil
-		} else {
-			return fmt.Errorf("store/mongo: %s %s: %w", opName, id, gerr)
+	_, consumed, err := checkpointValueDocuments(ctx, format, cp)
+	if err != nil {
+		return err
+	}
+	return s.withValueRecordWrite(ctx, id, func(ctx context.Context, _ store.ValueFormat, p *store.Run) error {
+		if p == nil {
+			return store.ErrRunNotFound
 		}
-	}
-	return nil
+		if p.Status == store.RunStatusCancelled && code != store.FailureAmbiguousEffect {
+			return errValuePublicationNoop
+		}
+		set := statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC())
+		if cp != nil {
+			set["checkpoint"] = bson.M{"$literal": consumed}
+		} else {
+			set["checkpoint"] = nil
+		}
+		filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+		if code != store.FailureAmbiguousEffect {
+			filter["status"] = bson.M{"$ne": store.RunStatusCancelled}
+		}
+		res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)))
+		if err != nil {
+			return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)
+		}
+		if res.MatchedCount == 0 {
+			// Either the run is gone (absent or tombstoned — LoadRun's
+			// typed error says which), or it is already cancelled and
+			// stays so.
+			if _, gerr := s.LoadRun(ctx, id); gerr == nil {
+				return nil
+			} else {
+				return fmt.Errorf("store/mongo: %s %s: %w", opName, id, gerr)
+			}
+		}
+		return nil
+	})
 }
 
 // FailRunResumable writes the checkpoint, flips status to

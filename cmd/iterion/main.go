@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -17,19 +16,37 @@ import (
 	// log timestamps and time.Local then honour the operator's timezone.
 	_ "time/tzdata"
 
+	"github.com/SocialGouv/iterion/internal/dotenv"
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox/execenv"
 	"github.com/spf13/cobra"
 )
 
 var jsonOutput bool
 
 var rootCmd = &cobra.Command{
-	Use:           "iterion",
-	Short:         "Build, run and orchestrate agentic AI workflows",
-	Long:          "iterion — build, run and orchestrate agentic AI workflows",
+	Use:   "iterion",
+	Short: "Build, run and orchestrate agentic AI workflows",
+	Long: "iterion — build, run and orchestrate agentic AI workflows\n" +
+		"\n" +
+		"The nearest `.env` walking up from the working directory is auto-loaded, filling in\n" +
+		"every variable left unset: a convenience for API keys next to a project. The walk\n" +
+		"stops at the root of the git working tree it starts in — a linked worktree or a\n" +
+		"submodule is a tree of its own — or, outside any, at the filesystem root. It does\n" +
+		"not CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
+		"deployment, so it decides nothing an operator answers for: where plugins are\n" +
+		"installed, which table prices a model and where that table is cached, when a node\n" +
+		"compacts, and which credential a gateway is presented. A route it names — a *_URL\n" +
+		"or *_URI, an *_ENDPOINT, a *_HOST or *_HOSTS, a *_DSN, a proxy — is not applied at\n" +
+		"all: a project `.env` does not choose where a connection goes, and the refusal\n" +
+		"names the variable and the way past it. Export those in the environment iterion\n" +
+		"runs with, or export ITERION_DOTENV_ENDPOINTS=allow to let the file plant its\n" +
+		"routes. The same class is refused on the studio lane and in the desktop's own\n" +
+		"env file.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -41,6 +58,9 @@ func init() {
 }
 
 func main() {
+	if handled, code := execenv.TryMain(os.Args, os.Stdin, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	// The permission hook is the grok/kimi anti-prompt-injection
 	// boundary. Both CLIs spawn it with cwd = the gated workspace and
 	// re-execute it on every tool call; a timeout is an ALLOW. So this
@@ -53,11 +73,41 @@ func main() {
 	// of that work.
 	if !isPermissionHookInvocation() && !isContractsInvocation() {
 		// Auto-load `.env` from the working directory (and walk up to
-		// the closest one) before subcommands run, so iterion behaves
+		// the closest one, no further than the root of the git working
+		// tree it starts in) before subcommands run, so iterion behaves
 		// like every other modern CLI tool when API keys / model env
 		// vars live in a `.env` next to a project. Pre-existing env
-		// vars take precedence; .env only fills in missing keys.
-		if !isWorkspaceStudioInvocation() {
+		// vars take precedence; .env only fills in missing keys. Which
+		// invocations get that convenience — a human's, not a child the
+		// engine spawned against a repository — is the predicate's.
+		//
+		// The `.env` walk also aimed errtrack at a host of the file's
+		// choosing (#498 review, R6fa6d2): SENTRY_DSN is a wire like
+		// the rest and sits in the routing class — a crash envelope
+		// carries the operator's stack and machine context, so a
+		// planted DSN delivers them where the file said. Init still
+		// sits after the load: the opt-in (or the operator's own DSN)
+		// applies to it as to every other name.
+		//
+		// FILLING a name is not answering for it: applyDotEnv marks
+		// every key it sets (internal/envtrust), and the reads that
+		// need the operator's own answer — the plugin home, the model
+		// table that prices a run and the cache file it is read from,
+		// the window a node compacts at, the gateway catalog and the
+		// credential it presents — resolve the INHERITED value and take
+		// a planted one as nothing said. One CLASS is refused outright
+		// rather than marked: the routing-shaped names (a *_URL or
+		// *_URI, an *_ENDPOINT, a *_HOST or *_HOSTS, a *_DSN, a proxy),
+		// which decide where a connection goes or what reaches it — a
+		// planted route would point every wire, the operator's
+		// credentials included, at a host the file chose. A `.env`
+		// that legitimately configures its own gateway needs the
+		// operator's ITERION_DOTENV_ENDPOINTS=allow. The file sits in
+		// a repository, including the one a run is reviewing. The
+		// studio lane plants the same file by another road
+		// (projectenv.Snapshot) and asks the same question there; the
+		// desktop's own env-file loader asks it too.
+		if shouldLoadWorkspaceDotEnv() {
 			loadDotEnvFromCwd()
 		}
 
@@ -157,20 +207,79 @@ func invokedCommand() string {
 	return cmd.CommandPath()
 }
 
-// isPermissionHookInvocation reports whether this process is the grok/kimi
-// PreToolUse hook. First positional argv, flags skipped: cobra is not
-// consulted because the caller has to decide this BEFORE loadDotEnvFromCwd.
-func isPermissionHookInvocation() bool {
+// firstPositionalArg returns what argv names as the subcommand: the first
+// argument that is not a flag, or "" when there is none. Cobra is not consulted
+// because every caller has to decide BEFORE loadDotEnvFromCwd, which runs
+// before Execute. A `--` ends the search: what follows belongs to whatever
+// is on the other side of it, not to this binary's command tree.
+func firstPositionalArg() string {
 	for _, a := range os.Args[1:] {
 		if a == "--" {
-			return false
+			return ""
 		}
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		return a == "__permission-hook"
+		return a
 	}
-	return false
+	return ""
+}
+
+// isPermissionHookInvocation reports whether this process is the grok/kimi
+// PreToolUse hook.
+func isPermissionHookInvocation() bool {
+	return firstPositionalArg() == "__permission-hook"
+}
+
+// isInternalSubcommandInvocation reports whether this process runs one of the
+// hidden `__`-prefixed subcommands: the in-container claw runner, the shard
+// dispatcher, the MCP stdio helpers, the agent-CLI hooks. None of them is a
+// human's CLI call — each is re-entered by the engine, or by an agent CLI the
+// engine configured, with cwd = the workspace, and each gets its environment
+// from the process that spawned it.
+//
+// Two of them re-execute on EVERY tool call of a session
+// (__permission-hook, __claude-hook-drain) where a `.env` walk is also a
+// per-call cost on a file the gated agent writes (R6fa6d2); the others
+// re-enter the CLI holding a credential the engine resolved. The class is the
+// prefix, so a hidden subcommand added later is covered rather than
+// re-introducing the hole.
+func isInternalSubcommandInvocation() bool {
+	return strings.HasPrefix(firstPositionalArg(), "__")
+}
+
+// shouldLoadWorkspaceDotEnv reports whether this invocation gets the `.env`
+// convenience loadDotEnvFromCwd implements. It is the whole decision: main
+// calls nothing else.
+//
+// The convenience belongs to a human running the CLI in a project of their
+// own. A process the engine spawned against a workspace — a tool node's
+// command, a CLI agent, the in-container claw runner, an iterion a bot script
+// re-enters — already holds the environment the engine handed it, so reading
+// the workspace `.env` on top only lets the repository under review fill in
+// the names nobody set on purpose: the provider endpoints a credential is
+// spent against first among them (#2844). The operator's own `.env` still
+// reaches such a child, as every other variable does — through the
+// environment its parent passed on.
+func shouldLoadWorkspaceDotEnv() bool {
+	// `studio --workspace` serves a workspace it must not take its own
+	// configuration from; its reason is its own and no override applies.
+	if isWorkspaceStudioInvocation() {
+		return false
+	}
+	// A process started by a node of a run whose workspace its tenant did not
+	// write (envtrust.EnvRunTrust) is in that workspace: its `.env` is the
+	// outsider's, and the names it would fill in configure the run this
+	// process adopts the trust for — the model endpoint first, with the run's
+	// key in the header. The operator's force hatch was granted for their own
+	// workspaces and does not reopen this one.
+	if envtrust.CarriedRunTrust() != "" {
+		return false
+	}
+	if envtrust.SpawnedByEngine() || isInternalSubcommandInvocation() {
+		return envtrust.DotEnvForced()
+	}
+	return true
 }
 
 // rejectUnknownSubcommands makes every GROUP command — one that only
@@ -204,21 +313,28 @@ func rejectUnknownSubcommands(cmd *cobra.Command) {
 }
 
 // loadDotEnvFromCwd walks up from $CWD looking for a `.env` file and
-// applies it. We stop at the first one found OR at the filesystem
-// root. Already-set env vars are preserved (parent shell wins).
+// applies the first one found. Already-set env vars are preserved (parent
+// shell wins); the format is internal/dotenv's.
 //
-// The format is the standard one: `KEY=VALUE` per line, optional
-// `#` comments, optional surrounding `"` or `'` quotes around the
-// value. We deliberately don't pull in godotenv to avoid a
-// dependency for ~30 lines of code.
+// The walk stops at the root of the git working tree it starts in: the
+// nearest directory whose `.git` git itself accepts (ambient.IsRepoRoot) —
+// a directory in a primary checkout, a `gitdir:` file in a linked worktree
+// or a submodule. That root's own `.env` is read; above it the files belong
+// to another tree. A worktree nested in a checkout
+// (`<repo>/.claude/worktrees/<name>`) holding no `.env` of its own would
+// otherwise take the enclosing checkout's, every name the refusals below
+// let through included, for a command that runs on a different tree.
+// Outside any git tree the walk goes on to the filesystem root.
 func loadDotEnvFromCwd() {
 	dir, err := os.Getwd()
 	if err != nil {
 		return
 	}
 	for {
-		candidate := filepath.Join(dir, ".env")
-		if applyDotEnv(candidate) {
+		if applyDotEnv(filepath.Join(dir, ".env")) {
+			return
+		}
+		if ambient.IsRepoRoot(dir) {
 			return
 		}
 		parent := filepath.Dir(dir)
@@ -230,45 +346,12 @@ func loadDotEnvFromCwd() {
 }
 
 func applyDotEnv(path string) bool {
-	f, err := os.Open(path)
+	entries, err := dotenv.Parse(path)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		eq := strings.Index(line, "=")
-		if eq < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:eq])
-		// Allow `export KEY=VALUE` lines (common shell convention).
-		key = strings.TrimPrefix(key, "export ")
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		// A key no shell could export is refused, not set. One carrying the
-		// planted-names separator would reach a child as two names, the extra
-		// one denying the OPERATOR's own environment its authority there; one
-		// outside ASCII is folded by Windows in ways envtrust.CanonicalName
-		// cannot mirror, so it could be recorded as planted under the name of
-		// a variable it never set. Such a line is malformed anyway.
-		if !envtrust.Exportable(key) {
-			continue
-		}
-		val := strings.TrimSpace(line[eq+1:])
-		// Strip a single surrounding pair of matching quotes.
-		if len(val) >= 2 {
-			if (val[0] == '"' && val[len(val)-1] == '"') ||
-				(val[0] == '\'' && val[len(val)-1] == '\'') {
-				val = val[1 : len(val)-1]
-			}
-		}
+	for _, entry := range entries {
+		key, val := entry.Key, entry.Value
 		// The provenance record is not a value a repository gets to write.
 		// Without this, one `.env` line naming ITERION_DOTENV_PLANTED seeded
 		// the whole planted set from the file itself — marking the
@@ -280,6 +363,61 @@ func applyDotEnv(path string) bool {
 			continue
 		}
 		if _, exists := os.LookupEnv(key); !exists {
+			// A name that decides where a connection goes is NOT applied.
+			// The loader is the site that knows it is planting, so it is one
+			// of the lanes that closes the whole routing class (ARB-122):
+			// the *_URL/_URI wires, the *_ENDPOINTs, the *_HOST/*_HOSTS
+			// lists, the proxies, the *_DSN, the git transport family. Every
+			// child inherits what lands here and the reads are not all
+			// iterion's — the vendored claw provider packages and SDKs read
+			// these names themselves — so a route never planted is a route
+			// nothing can follow, where a guard at one read site closes
+			// exactly that site; the per-name credential tables
+			// (internal/envtrust) stay as the belt at the reads. The same
+			// predicate refuses the execution grade (the generic host-env
+			// families — BASH_ENV, LD_PRELOAD, PATH, IFS, NODE_OPTIONS,
+			// XDG_*, the trust roots — whose plant makes a child of iterion
+			// run or trust what the file chose) and the operator grade: the
+			// infra names the bot-var gate denies a stored record, widened
+			// to every credential-shaped ITERION_ name — the file a project
+			// holds has no more authority over ITERION_SANDBOX_OVERRIDE or
+			// ITERION_JWT_SECRET or ITERION_GH_PAT than a bot does. The
+			// operator's channels are the environment itself, or
+			// ITERION_DOTENV_ENDPOINTS=allow for the ROUTES and the
+			// execution grade. The studio lane (projectenv.Snapshot) and
+			// the desktop env-file loader ask the same question at their
+			// own plants. The guard sits before the planted mark: a refused
+			// name does not exist, it is not "planted but distrusted".
+			if envtrust.DotenvPlantRefused(key) {
+				// The refusal goes to stderr directly, not through the
+				// level-configured logger: the level it would ride on is
+				// itself something this file may have planted one line above
+				// (ITERION_LOG_LEVEL=error mutes the message the moment the
+				// file wants its route applied quietly). A safety refusal is
+				// not a log level.
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.RoutingRefusalLine(key, "the project `.env`", path))
+				continue
+			}
+			// The parser kept this file's bytes as bytes; no shell of ours
+			// evaluates them — but every child MIGHT (a value reaches a
+			// run's own shell tooling one fork away), so a value spelling
+			// shell execution — $(...), backticks, a ${name@op} operator —
+			// is refused rather than planted: nothing of ours executes it,
+			// and nothing downstream gets handed the trigger either.
+			if envtrust.HasCommandSubstitution(val) {
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the project `.env`", path))
+				continue
+			}
+			// This lane plants NO expansion: a $-reference stays the bytes
+			// the file spelled, where the studio lane expands the same file
+			// (and a child shell will not re-expand them either — a planted
+			// `$HOME/...` execs a path literally named `$HOME/...`). The
+			// bytes are the operator's to plant, so this warns instead of
+			// refusing; single-quoting the value keeps it literal on every
+			// lane and silences the line.
+			if !entry.SingleQuoted && envtrust.CarriesExpansionReference(val) {
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.UnexpandedReferenceWarningLine(key, "the project `.env`", path))
+			}
 			_ = os.Setenv(key, val)
 			// A `.env` sits in a repository — including one under review — so
 			// what it plants must not later speak for the operator. The value

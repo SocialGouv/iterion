@@ -16,6 +16,11 @@ describe("inboundWebhookURL", () => {
     const url = inboundWebhookURL("generic", "abc/def", "https://iterion.example.com");
     expect(url).toBe("https://iterion.example.com/api/webhooks/generic/abc%2Fdef");
   });
+
+  it("routes a connector ingress to /api/webhooks/c/{id}", () => {
+    const url = inboundWebhookURL("connector", "ing-1", "https://iterion.example.com");
+    expect(url).toBe("https://iterion.example.com/api/webhooks/c/ing-1");
+  });
 });
 
 describe("providerSetupSnippet", () => {
@@ -36,5 +41,15 @@ describe("providerSetupSnippet", () => {
     const s = providerSetupSnippet("generic", "https://x/api/webhooks/generic/wh", "iwh_42");
     expect(s.example).toContain("curl");
     expect(s.example).toContain("X-Iterion-Webhook-Token: iwh_42");
+  });
+});
+
+describe("providerSetupSnippet for a connector ingress", () => {
+  it("shows a minted secret, and no secret line for the vendor's own", () => {
+    const minted = providerSetupSnippet("connector", "https://x/api/webhooks/c/ing", "iwh_abc");
+    expect(minted.example).toContain("iwh_abc");
+    const vendor = providerSetupSnippet("connector", "https://x/api/webhooks/c/ing", "");
+    expect(vendor.example).toBe("# URL\nhttps://x/api/webhooks/c/ing");
+    expect(vendor.steps.join(" ")).toContain("vendor's own signing secret");
   });
 });

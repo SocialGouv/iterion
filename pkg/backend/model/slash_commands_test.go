@@ -34,14 +34,26 @@ func commandWorkspace(t *testing.T, rel, body string) string {
 	return dir
 }
 
+// slashTestExecutor is the executor the workspace-command loader is a method
+// of: the workspace and the trust travel together (SetWorkspaceTrust beside
+// SetWorkDir, as the engine pushes them), so a test cannot pair one
+// workspace's directory with another's trust. The pushed zero value is the
+// trusted default.
+func slashTestExecutor(ws string, logger *iterlog.Logger) *ClawExecutor {
+	e := &ClawExecutor{logger: logger}
+	e.SetWorkDir(ws)
+	return e
+}
+
 // commandExecutor is an executor whose single prompt is `promptBody`, rooted
 // at workDir.
 func commandExecutor(workDir, promptBody string) *ClawExecutor {
-	return &ClawExecutor{
+	e := &ClawExecutor{
 		logger:  iterlog.Nop(),
-		workDir: workDir,
 		prompts: map[string]*ir.Prompt{"u": {Name: "u", Body: promptBody}},
 	}
+	e.SetWorkDir(workDir)
+	return e
 }
 
 func promptParts(t *testing.T, e *ClawExecutor, input map[string]any, backend string) (string, []delegate.ContentBlock) {
@@ -201,7 +213,7 @@ func TestExpandWorkspaceSlashCommandPassesAnUnknownNameThrough(t *testing.T) {
 		"/tmp is full, clean it up and report",
 		"/status",
 	} {
-		got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+		got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand(prompt, delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 		if hit || got != prompt {
 			t.Errorf("expand(%q) = (%q, %v), want the text unchanged", prompt, got, hit)
 		}
@@ -214,7 +226,7 @@ func TestExpandWorkspaceSlashCommandPassesAnUnknownNameThrough(t *testing.T) {
 func TestExpandWorkspaceSlashCommandIgnoresAProsePathPrompt(t *testing.T) {
 	ws := commandWorkspace(t, "usr.md", "SHOULD NOT BE USED\n")
 
-	got, hit := expandWorkspaceSlashCommand("/usr/bin/foo is broken, fix it", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand("/usr/bin/foo is broken, fix it", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit {
 		t.Fatal("a prose path prompt was expanded")
 	}
@@ -233,14 +245,14 @@ func TestExpandWorkspaceSlashCommandHonoursTheEscapeHatch(t *testing.T) {
 
 	for _, off := range []string{"off", "0", "false", "OFF"} {
 		t.Setenv(SlashCommandsEnv, off)
-		got, hit := expandWorkspaceSlashCommand("/probe-secret", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+		got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand("/probe-secret", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 		if hit || got != "/probe-secret" {
 			t.Errorf("%s=%s: got (%q, %v), want the raw invocation", SlashCommandsEnv, off, got, hit)
 		}
 	}
 	// The control: any other value leaves the capability on.
 	t.Setenv(SlashCommandsEnv, "on")
-	if got, hit := expandWorkspaceSlashCommand("/probe-secret", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{}); !hit || got != probeBody {
+	if got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand("/probe-secret", delegate.BackendClaw, "n", 0, &nodeBuildSession{}); !hit || got != probeBody {
 		t.Errorf("on: got (%q, %v), want the expansion", got, hit)
 	}
 }
@@ -257,7 +269,7 @@ func TestExpandWorkspaceSlashCommandSkipsAWorkspaceWithoutCommands(t *testing.T)
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &buf)
 
-	got, hit := expandWorkspaceSlashCommand("/anything", t.TempDir(), delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(t.TempDir(), logger).expandWorkspaceSlashCommand("/anything", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit || got != "/anything" {
 		t.Errorf("= (%q, %v), want an untouched no-op", got, hit)
 	}
@@ -358,8 +370,8 @@ func TestSchemaReaskFeedbackLandsOnTheExpandedBody(t *testing.T) {
 func TestExpandWorkspaceSlashCommandKeepsArgumentsABodyDoesNotConsume(t *testing.T) {
 	ws := commandWorkspace(t, "review.md", "Review the code and report.\n")
 
-	got, hit := expandWorkspaceSlashCommand(
-		"/review the auth module, focus on session fixation", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand(
+		"/review the auth module, focus on session fixation", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if !hit {
 		t.Fatal("the command did not resolve")
 	}
@@ -394,7 +406,7 @@ func TestExpandWorkspaceSlashCommandKeepsArgumentsALookalikePlaceholderDoesNotTa
 		ws := commandWorkspace(t, "c.md", body)
 		// ONE argument, so $3 is genuinely out of range: with three words
 		// it would substitute legitimately and prove nothing.
-		got, hit := expandWorkspaceSlashCommand("/c auth-module", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+		got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand("/c auth-module", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 		if !hit {
 			t.Fatalf("%q did not resolve", body)
 		}
@@ -410,7 +422,7 @@ func TestExpandWorkspaceSlashCommandKeepsArgumentsALookalikePlaceholderDoesNotTa
 func TestExpandWorkspaceSlashCommandDoesNotDuplicateConsumedArguments(t *testing.T) {
 	for _, body := range []string{"ARGS=[$ARGUMENTS]\n", "FIRST=[$1]\n"} {
 		ws := commandWorkspace(t, "c.md", body)
-		got, hit := expandWorkspaceSlashCommand("/c alpha", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+		got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand("/c alpha", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 		if !hit {
 			t.Fatalf("%q did not resolve", body)
 		}
@@ -438,7 +450,7 @@ func TestExpandWorkspaceSlashCommandRefusesToSendAnEmptyBody(t *testing.T) {
 		// first would make an empty body look non-empty, and the model would
 		// get a bare "ARGUMENTS: …" with no instruction at all.
 		for _, prompt := range []string{"/" + name, "/" + name + " please do the thing"} {
-			got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+			got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand(prompt, delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 			if hit || got != prompt {
 				t.Errorf("%s: = (%q, %v), want the prompt left alone", prompt, got, hit)
 			}
@@ -460,7 +472,7 @@ func TestExpandWorkspaceSlashCommandPassesThroughAnUnreadableFile(t *testing.T) 
 		t.Fatal(err)
 	}
 	prompt := "/tmp is full, clean it up and report"
-	got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, iterlog.Nop()).expandWorkspaceSlashCommand(prompt, delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit || got != prompt {
 		t.Errorf("= (%q, %v), want the prose prompt to survive", got, hit)
 	}
@@ -483,7 +495,7 @@ func TestSlashCommandDiagnosticsCarryTheStudioNodePrefix(t *testing.T) {
 	ws := commandWorkspace(t, "dyn.md", "run !`git status` and use $1\n")
 	writeExtraCommand(t, ws, "empty.md", "")
 	for _, prompt := range []string{"/dyn alpha", "/absent", "/empty"} {
-		expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "mynode", 3, logger, nil, &nodeBuildSession{})
+		slashTestExecutor(ws, logger).expandWorkspaceSlashCommand(prompt, delegate.BackendClaw, "mynode", 3, &nodeBuildSession{})
 	}
 	out := buf.String()
 
@@ -648,7 +660,7 @@ func TestExpandWorkspaceSlashCommandRefusesAnOversizedBody(t *testing.T) {
 	big := strings.Repeat("A", defaultSlashCommandMaxBytes+1)
 	ws := commandWorkspace(t, "huge.md", big)
 
-	got, hit := expandWorkspaceSlashCommand("/huge", ws, delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, logger).expandWorkspaceSlashCommand("/huge", delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit || got != "/huge" {
 		t.Errorf("= (%d bytes, %v), want the prompt left unchanged", len(got), hit)
 	}
@@ -666,7 +678,7 @@ func TestExpandWorkspaceSlashCommandRefusesAnOversizedBody(t *testing.T) {
 	// The control: one byte under the ceiling still expands, so the bound
 	// bounds the abuse and not the use.
 	okWS := commandWorkspace(t, "fits.md", strings.Repeat("B", defaultSlashCommandMaxBytes-1))
-	if _, hit := expandWorkspaceSlashCommand("/fits", okWS, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, &nodeBuildSession{}); !hit {
+	if _, hit := slashTestExecutor(okWS, iterlog.Nop()).expandWorkspaceSlashCommand("/fits", delegate.BackendClaw, "n", 0, &nodeBuildSession{}); !hit {
 		t.Error("a body one byte under the ceiling was refused")
 	}
 }
@@ -774,7 +786,7 @@ func TestExpandWorkspaceSlashCommandRefusesABodyThatAMPLIFIESPastTheCeiling(t *t
 	ws := commandWorkspace(t, "amp.md", body)
 	args := strings.Repeat("x", 1024)
 
-	got, hit := expandWorkspaceSlashCommand("/amp "+args, ws, delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, logger).expandWorkspaceSlashCommand("/amp "+args, delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit {
 		t.Errorf("an amplifying body expanded to %d bytes and was accepted", len(got))
 	}
@@ -866,7 +878,7 @@ func TestExpandWorkspaceSlashCommandRefusesWhenTheArgumentsPushItOver(t *testing
 	ws := commandWorkspace(t, "tail.md", body)
 	args := strings.Repeat("d", 256) // pushes the total over
 
-	got, hit := expandWorkspaceSlashCommand("/tail "+args, ws, delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, logger).expandWorkspaceSlashCommand("/tail "+args, delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit {
 		t.Errorf("the appended arguments pushed it to %d bytes and it was accepted", len(got))
 	}
@@ -878,10 +890,11 @@ func TestExpandWorkspaceSlashCommandRefusesWhenTheArgumentsPushItOver(t *testing
 	}
 }
 
-// The frontmatter divergence is the one with a security consequence — a
-// command that narrows itself to `allowed-tools: Read, Grep` runs here with
-// the node's full set — and it was the only divergence with no runtime
-// signal at all. Documenting it in bold is not a diagnostic.
+// The frontmatter keys the lookup still DISCARDS (`model:` and its
+// siblings) owe the operator a runtime signal: a file that configures itself
+// must not mean one thing on claude_code and another here in silence.
+// `allowed-tools:` is no longer one of them — it is honoured (#1717), so it
+// leaves the warning and lands on the build session's narrowing instead.
 //
 // Mutation: drop the DiscardedFrontmatter warn block (or have claw surface
 // an empty list) and the operator gets nothing.
@@ -891,15 +904,25 @@ func TestExpandWorkspaceSlashCommandWarnsAboutDiscardedFrontmatter(t *testing.T)
 	ws := commandWorkspace(t, "narrow.md",
 		"---\ndescription: narrowed\nallowed-tools: Read, Grep\nmodel: claude-3-5-haiku\n---\nAudit the diff.\n")
 
-	got, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	sess := &nodeBuildSession{}
+	got, hit := slashTestExecutor(ws, logger).expandWorkspaceSlashCommand("/narrow", delegate.BackendClaw, "n", 0, sess)
 	if !hit || got != "Audit the diff." {
 		t.Fatalf("= (%q, %v), want the command body", got, hit)
 	}
 	out := buf.String()
-	for _, want := range []string{"allowed-tools", "model", "#1717", "narrow"} {
+	for _, want := range []string{"model", "#1717", "narrow"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the frontmatter warning does not name %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "allowed-tools") {
+		t.Errorf("allowed-tools is honoured now — it must not be warned about as discarded:\n%s", out)
+	}
+	// …and the honouring is a FACT, not a docstring: the build session
+	// carries the narrowing the ToolDefs intersection applies.
+	if sess.commandNarrowingBy != "narrow" || !slices.Equal(sess.commandNarrowing, []string{"Read", "Grep"}) {
+		t.Errorf("narrowing = (%q, %v), want the command's declared list on the session",
+			sess.commandNarrowingBy, sess.commandNarrowing)
 	}
 	// It has to be visible at production level, like every other abstention.
 	if !strings.Contains(out, "[n#0/claw]") {
@@ -910,8 +933,8 @@ func TestExpandWorkspaceSlashCommandWarnsAboutDiscardedFrontmatter(t *testing.T)
 	// fires is one an author learns to ignore.
 	var quiet bytes.Buffer
 	plainWS := commandWorkspace(t, "plain.md", "---\ndescription: plain\n---\nJust do it.\n")
-	if _, hit := expandWorkspaceSlashCommand("/plain", plainWS, delegate.BackendClaw, "n", 0,
-		iterlog.New(iterlog.LevelInfo, &quiet), nil, &nodeBuildSession{}); !hit {
+	if _, hit := slashTestExecutor(plainWS, iterlog.New(iterlog.LevelInfo, &quiet)).expandWorkspaceSlashCommand("/plain",
+		delegate.BackendClaw, "n", 0, &nodeBuildSession{}); !hit {
 		t.Fatal("the plain command did not resolve")
 	}
 	if strings.Contains(quiet.String(), "frontmatter") {
@@ -1011,7 +1034,7 @@ func TestCrossBackendFallbackReportsThePromptDivergence(t *testing.T) {
 // the delegate event loses the ignored frontmatter and this reddens.
 func TestLLMRouterCarriesTheBuildSessionOntoItsDelegateEvent(t *testing.T) {
 	ws := commandWorkspace(t, "route.md",
-		"---\ndescription: routing\nallowed-tools: Read\n---\nPick the route that fits.\n")
+		"---\ndescription: routing\nmodel: claude-3-5-haiku\n---\nPick the route that fits.\n")
 
 	captured := &capturingBackend{results: []delegate.Result{
 		{Output: map[string]any{"selected_route": "a", "reasoning": "r"}},
@@ -1040,7 +1063,7 @@ func TestLLMRouterCarriesTheBuildSessionOntoItsDelegateEvent(t *testing.T) {
 	if len(finished) != 1 {
 		t.Fatalf("%d delegate_finished events, want 1", len(finished))
 	}
-	if !slices.Contains(finished[0].CommandFrontmatterIgnored, "allowed-tools") {
+	if !slices.Contains(finished[0].CommandFrontmatterIgnored, "model") {
 		t.Errorf("the router's delegate event carries %v — the build session never reached it",
 			finished[0].CommandFrontmatterIgnored)
 	}
@@ -1053,24 +1076,27 @@ func TestLLMRouterCarriesTheBuildSessionOntoItsDelegateEvent(t *testing.T) {
 // The frontmatter divergence is keyed per NODE and rides the EVENT: a second
 // node invoking the same command file may grant a broader `tools:` set, so
 // its exposure is its own, and a deterministic gate reads events.jsonl, not
-// the log.
+// the log. The probe key is `model:` — `allowed-tools:` is honoured (#1717)
+// and no longer counts as discarded.
 //
 // Mutation: key the dedupe on the command file path (as the `$N` noise
 // suppression does) and the second node is told nothing.
 func TestFrontmatterDivergenceIsPerNodeAndOnTheEvent(t *testing.T) {
 	ws := commandWorkspace(t, "narrow.md",
-		"---\ndescription: narrowed\nallowed-tools: Read, Grep\n---\nAudit the diff.\n")
-	once := &slashWarnOnce{} // shared across nodes, as the run-scoped one is
+		"---\ndescription: narrowed\nmodel: claude-3-5-haiku\n---\nAudit the diff.\n")
+	// One executor across the nodes, as the run-scoped one is: the dedupe
+	// state lives on it now.
+	ex := slashTestExecutor(ws, iterlog.Nop())
 
 	var events []DelegateInfo
 	for _, node := range []string{"first", "second"} {
 		var buf bytes.Buffer
 		sess := &nodeBuildSession{}
-		if _, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, node, 0,
-			iterlog.New(iterlog.LevelInfo, &buf), once, sess); !hit {
+		ex.logger = iterlog.New(iterlog.LevelInfo, &buf)
+		if _, hit := ex.expandWorkspaceSlashCommand("/narrow", delegate.BackendClaw, node, 0, sess); !hit {
 			t.Fatalf("%s: the command did not resolve", node)
 		}
-		if !strings.Contains(buf.String(), "allowed-tools") {
+		if !strings.Contains(buf.String(), "model") {
 			t.Errorf("%s: no frontmatter line — a second node with a broader tools: set gets no warning:\n%s",
 				node, buf.String())
 		}
@@ -1079,7 +1105,7 @@ func TestFrontmatterDivergenceIsPerNodeAndOnTheEvent(t *testing.T) {
 		events = append(events, di)
 	}
 	for i, di := range events {
-		if !slices.Contains(di.CommandFrontmatterIgnored, "allowed-tools") {
+		if !slices.Contains(di.CommandFrontmatterIgnored, "model") {
 			t.Errorf("node %d: delegate event does not carry the ignored frontmatter (%v) — a gate reading events.jsonl cannot see it",
 				i, di.CommandFrontmatterIgnored)
 		}
@@ -1088,7 +1114,7 @@ func TestFrontmatterDivergenceIsPerNodeAndOnTheEvent(t *testing.T) {
 	// A command that declares only a description puts nothing on the event.
 	plainWS := commandWorkspace(t, "plain.md", "---\ndescription: plain\n---\nJust do it.\n")
 	sess := &nodeBuildSession{}
-	expandWorkspaceSlashCommand("/plain", plainWS, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil, sess)
+	slashTestExecutor(plainWS, iterlog.Nop()).expandWorkspaceSlashCommand("/plain", delegate.BackendClaw, "n", 0, sess)
 	var di DelegateInfo
 	sess.describeDivergence(&di)
 	if len(di.CommandFrontmatterIgnored) != 0 {
@@ -1109,7 +1135,7 @@ func TestSlashCommandDiagnosticsAreBounded(t *testing.T) {
 	ws := commandWorkspace(t, "present.md", "body\n")
 
 	huge := strings.Repeat("z", 4<<20)
-	got, hit := expandWorkspaceSlashCommand("/"+huge, ws, delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	got, hit := slashTestExecutor(ws, logger).expandWorkspaceSlashCommand("/"+huge, delegate.BackendClaw, "n", 0, &nodeBuildSession{})
 	if hit || got != "/"+huge {
 		t.Errorf("the prompt was not left unchanged")
 	}
@@ -1132,12 +1158,13 @@ func TestSlashCommandDiagnosticsAreBounded(t *testing.T) {
 func TestSlashCommandDivergenceWarnsOncePerCommand(t *testing.T) {
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &buf)
-	once := &slashWarnOnce{}
 	ws := commandWorkspace(t, "review.md", "Review $1 and report.\n")
+	// ONE executor across the iterations, as the run-scoped one is: the
+	// dedupe state lives on it now.
+	ex := slashTestExecutor(ws, logger)
 
 	for i := range 3 {
-		if _, hit := expandWorkspaceSlashCommand("/review alpha beta", ws,
-			delegate.BackendClaw, "n", i, logger, once, &nodeBuildSession{}); !hit {
+		if _, hit := ex.expandWorkspaceSlashCommand("/review alpha beta", delegate.BackendClaw, "n", i, &nodeBuildSession{}); !hit {
 			t.Fatalf("iteration %d did not resolve", i)
 		}
 	}
@@ -1147,7 +1174,7 @@ func TestSlashCommandDivergenceWarnsOncePerCommand(t *testing.T) {
 
 	// A different command file gets its own line.
 	writeExtraCommand(t, ws, "other.md", "Other $2 here.\n")
-	if _, hit := expandWorkspaceSlashCommand("/other a b", ws, delegate.BackendClaw, "n", 0, logger, once, &nodeBuildSession{}); !hit {
+	if _, hit := ex.expandWorkspaceSlashCommand("/other a b", delegate.BackendClaw, "n", 0, &nodeBuildSession{}); !hit {
 		t.Fatal("the second command did not resolve")
 	}
 	if n := strings.Count(buf.String(), "uses "); n != 2 {

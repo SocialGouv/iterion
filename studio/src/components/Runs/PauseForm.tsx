@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { isForceResumeRequiredError, resumeRun } from "@/api/runs";
 import { Button, Textarea } from "@/components/ui";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import {
   askUserAllowsFreeText,
   askUserOptions,
@@ -44,7 +45,7 @@ const ASK_USER_KEY = "ask_user_response";
 
 type ForceRetry =
   | { kind: "form" }
-  | { kind: "decision"; decision: string };
+  | { kind: "decision"; decision: string; interactionId?: string };
 
 // The most identifying argument of a tool call, for compact display.
 function briefInput(input?: Record<string, unknown>): string {
@@ -68,6 +69,7 @@ export default function PauseForm({
   onSubmitted,
   onStage,
 }: Props) {
+  const canAct = useRunCanAct();
   const marker = useMemo(() => permissionMarker(questions ?? {}), [questions]);
   const options = useMemo(() => askUserOptions(questions ?? {}), [questions]);
   // Reserved (underscore) keys are runtime plumbing (options payload,
@@ -145,10 +147,20 @@ export default function PauseForm({
   // approval buttons ("allow"/"allow always"/"deny" become a grant rule
   // or refusal) and by the structured-options buttons (the picked
   // option's id, or typed free text).
-  const decide = async (decision: string, force = false) => {
+  const decide = async (
+    decision: string,
+    force = false,
+    interactionId = !force && typeof questions?._approval_interaction_id === "string"
+      ? questions._approval_interaction_id
+      : undefined,
+  ) => {
+    const answers = {
+      [ASK_USER_KEY]: decision,
+      ...(interactionId ? { _approval_interaction_id: interactionId } : {}),
+    };
     if (onStage) {
       onStage({
-        answers: { [ASK_USER_KEY]: decision },
+        answers,
         source: resolvedSource,
         ...(force ? { force: true } : {}),
       });
@@ -160,7 +172,7 @@ export default function PauseForm({
     setForceRetry(null);
     try {
       await resumeRun(runId, {
-        answers: { [ASK_USER_KEY]: decision },
+        answers,
         source: resolvedSource,
         ...(force ? { force: true } : {}),
       });
@@ -169,7 +181,7 @@ export default function PauseForm({
       const msg = errorMessage(e);
       setError(msg);
       if (isForceResumeRequiredError(e)) {
-        setForceRetry({ kind: "decision", decision });
+        setForceRetry({ kind: "decision", decision, interactionId });
       }
     } finally {
       setBusy(false);
@@ -187,7 +199,7 @@ export default function PauseForm({
         disabled={busy}
         onClick={() => {
           if (forceRetry.kind === "decision") {
-            void decide(forceRetry.decision, true);
+            void decide(forceRetry.decision, true, forceRetry.interactionId);
           } else {
             void onSubmit(undefined, true);
           }
@@ -201,9 +213,21 @@ export default function PauseForm({
     </div>
   );
 
+  // A reader, or a view whose run was lost (scope_lost), resumes nothing:
+  // the read-only note replaces the form.
+  if (!canAct) {
+    return (
+      <p className="text-body text-fg-muted" role="note">
+        This pause waits on a member of the run&apos;s team — you cannot answer it from this view.
+      </p>
+    );
+  }
+
   if (marker) {
     const prompt = String(questions[ASK_USER_KEY] ?? "");
-    const arg = briefInput(marker.input);
+    const arg = typeof marker.exact_input_json === "string"
+      ? marker.exact_input_json
+      : briefInput(marker.input);
     return (
       <div className="space-y-3">
         {message && <p className="text-fg-muted text-micro">{message}</p>}
@@ -212,12 +236,12 @@ export default function PauseForm({
             🔐 Approval required: <code>{marker.tool}</code>
           </div>
           {arg && (
-            <pre className="text-caption text-fg-subtle whitespace-pre-wrap break-all max-h-32 overflow-auto m-0">
+            <pre className="text-caption text-fg-muted whitespace-pre-wrap break-all max-h-32 overflow-auto m-0">
               {arg}
             </pre>
           )}
           {!arg && prompt && (
-            <div className="text-caption text-fg-subtle whitespace-pre-wrap">{prompt}</div>
+            <div className="text-caption text-fg-muted whitespace-pre-wrap">{prompt}</div>
           )}
         </div>
         {error && (

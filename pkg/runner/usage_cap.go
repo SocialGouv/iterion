@@ -2,12 +2,13 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -52,6 +53,10 @@ type runCredKeys struct {
 	moonshotFP  string
 	anthropicFP string
 	oauthFP     string
+	// gatewayFP is the run's openai_compatible credential's fingerprint —
+	// the server's URL-folded stamp, carried by the bundle (PR-B'1). ""
+	// when the run holds no gateway credential.
+	gatewayFP string
 	// pinnedSlots are the slots funded ONLY by a key a shared tier filled
 	// because a route pins that provider (secrets.Credentials.PinnedAPIKeys).
 	// Their fingerprint is real — a reading that NAMES such a slot is charged
@@ -70,6 +75,42 @@ type runCredKeys struct {
 	// struct's scope exists to prevent. So the owner's scope travels with the
 	// slot instead of being re-derived from the run.
 	pinnedScopes map[string]string
+	// ambientFP is the fingerprint of the credential the pod inherits, read
+	// host-side once (delegate.AmbientCredentialFingerprint — the claude CLI's
+	// reading of the pod). "" when the pod carries none — its "Not logged in"
+	// a refusal — a cloud-provider switch answers instead, or the run refuses
+	// the pod env (ambientRefused). It is the meter key of the nothing-held
+	// default, not a slot of the run: no label of the run resolves to it, only
+	// a session with no credential of its own spends it. A claw call names its
+	// own account instead (the arm's Spend, spendKey).
+	ambientFP string
+	// ambientRefused is the stamp (secrets.Credentials.AmbientRefused): every
+	// fallback of the run to the pod env answers a typed refusal, so its
+	// nothing-held default stays on the no-credential meter.
+	ambientRefused bool
+	// defaultHeld: the run holds a default credential on the anthropic wire —
+	// a key of the run's own, a forfait dir — fingerprinted or not. A legacy
+	// OAuth record carries no fingerprint (firstHeld cannot name it) and is
+	// still what the run's sessions spend: its default is that slot's
+	// fingerprint-less meter, never the pod's ambient account.
+	defaultHeld bool
+	// sandboxed is the run's sandbox as the pre-flight reads it
+	// (usageCapPreflight: the mode the floored workflow resolves — every node
+	// shares the run's sandbox): the resolver places a node's call there (a
+	// claw node resolves in the container, over the env the crossing hands
+	// it), and a pi node reads the container's agent dir. The recording side
+	// never reads it: it keys the labels sessions stamp.
+	sandboxed bool
+	// detected is the dispatch's pick for a claw dispatch naming no model
+	// (model.DetectedClawSpecUnder, the run's allowlist applied): the spec
+	// such a leg is asked about, exactly as the admission asks it.
+	detected func(nodeID string) (string, error)
+	// trust is the run's workspace trust (msg.Trust, the run document's own
+	// mirrored on the wire): the arm resolves the run's calls under it, so a
+	// leg an untrusted run's crossing refuses — a forfait, the launcher's
+	// ambient env (ADR-162 decision 7) — spends nothing to meter, exactly as
+	// the launch's admission reads it.
+	trust store.RunTrust
 }
 
 // scopeFor returns the meter scope a reading on this slot belongs to: the
@@ -96,6 +137,8 @@ func (k runCredKeys) bySlot(slot string) string {
 		return k.anthropicFP
 	case string(secrets.OAuthKindClaudeCode):
 		return k.oauthFP
+	case string(secrets.ProviderOpenAICompatible):
+		return k.gatewayFP
 	}
 	return ""
 }
@@ -117,8 +160,16 @@ func (k runCredKeys) bySlot(slot string) string {
 // subscription is the org's, and merging it with the deployment's would
 // make one org's exhausted window park every other tenant's runs.
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
-	k := runCredKeys{scope: usagecap.ScopePlatform}
+	k := runCredKeys{scope: usagecap.ScopePlatform, detected: model.DetectedClawSpecUnder(msg.LLMProviders), trust: msg.Trust}
 	creds, ok := secrets.CredentialsFromContext(ctx)
+	// The pod's ambient credential exists whether or not the run carries a
+	// bundle, and a stamped run refuses it: its nothing-held default stays on
+	// the no-credential meter. Read host-side, once, beside the bundle's own
+	// facts.
+	k.ambientRefused = ok && creds.AmbientRefused
+	if !k.ambientRefused {
+		k.ambientFP = delegate.AmbientCredentialFingerprint()
+	}
 	if !ok {
 		return k
 	}
@@ -156,6 +207,7 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 		return anyTenant, anyOrg, anyHeld
 	}
 	anyTenant, anyOrg, anyDefault := scopeOf(false)
+	k.defaultHeld = anyDefault
 	if !anyDefault {
 		anyTenant, anyOrg, _ = scopeOf(true)
 	}
@@ -169,6 +221,10 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k.moonshotFP = creds.Fingerprint(string(secrets.ProviderMoonshot))
 	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
 	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
+	// The gateway slot: the server's URL-folded stamp travels in the bundle
+	// (PR-B'1) and the runner stamps it verbatim — its identity cannot be
+	// recomputed from the secret alone.
+	k.gatewayFP = creds.Fingerprint(string(secrets.ProviderOpenAICompatible))
 	for _, slot := range secrets.AnthropicWireSlotOrder {
 		if !creds.IsPinnedSlot(slot) {
 			continue
@@ -195,17 +251,30 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // on. The source labels are providerFingerprint's vocabulary: a facade URL
 // is a facade token, "anthropic-direct" the Anthropic API key,
 // "anthropic-oauth" the OAuth dir. An empty label (older binary) falls back
-// to the bundle-default precedence, secrets.AnthropicWireSlotOrder —
-// anthropicCredEnvForCLI's contract, read from the list it is written
-// against. A rotated token therefore opens a fresh meter instead of
-// inheriting the readings of the account it replaced.
+// to the run's default (defaultKey): the bundle-default precedence,
+// secrets.AnthropicWireSlotOrder — anthropicCredEnvForCLI's contract, read
+// from the list it is written against — and on a run holding none of it the
+// meter of the session that spends the pod's env, the one the pre-flight
+// reads for that same default. A rotated token therefore opens a fresh meter
+// instead of inheriting the readings of the account it replaced.
 //
-// "anthropic-env" is the POD's inherited env: the session carried no bundle
-// credential at all — an `anthropic`-pinned node on a run whose wire is held
-// by a z.ai key reaches it, and on a pod with no ambient auth its "Not
-// logged in" is a refusal. It is keyed on the scope with no credential,
-// never on the bundle default: charged to the head of the precedence, that
-// refusal would bench a healthy z.ai key the session never touched.
+// An ambient-credential label ("anthropic-env:<fingerprint>") is the POD's
+// inherited key — or a node's own key on top of it — and it is ONE account
+// for the whole deployment: keyed on the PLATFORM scope under the
+// fingerprint the delegate computed host-side (AmbientSourceFingerprint
+// reads it back), so what one tenant's run measures reaches every other
+// run that would spend the same key, and a node key never shares a meter
+// with the pod key it sits beside. Keying it on the run's scope would
+// split one account into one ledger per borrower — the split
+// usageCapCredKeys exists to prevent for shared credentials.
+//
+// Bare "anthropic-env" is the session whose spend no inherited credential
+// names: a pod with no ambient auth at all — its "Not logged in" is a
+// refusal — or one whose cloud-provider switch answers instead, where the
+// spend is that cloud account's and no ambient variable names it. It is
+// keyed on the scope with no credential, never on the bundle default:
+// charged to the head of the precedence, that refusal would bench a healthy
+// z.ai key the session never touched.
 //
 // Every facade renders as "facade:<slot>:<base-url>", and the SLOT is what
 // names the vendor now that two ride this wire — the delegate stamps it on the
@@ -224,89 +293,210 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 //
 // An UNRECOGNISED facade label (an operator base URL forwarded from the
 // ambient env, a label from a binary that predates the stamp) names no slot at
-// all, and there the bundle default is the only answer available.
+// all, and there the run's default is the only answer available, as for an
+// empty one.
 func (k runCredKeys) forSource(source string) string {
-	return k.keyForSlot(k.slotForSource(source))
+	if fp, ok := delegate.AmbientSourceFingerprint(source); ok {
+		return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, fp)
+	}
+	if slot, named := k.slotForSource(source); named {
+		return k.keyForSlot(slot)
+	}
+	return k.defaultKey()
 }
 
 // slotForSource names the slot a reading's source label is charged to — ""
-// when no bundle credential ran — by the rules forSource documents.
-func (k runCredKeys) slotForSource(source string) string {
+// when the route it names ran on no bundle credential — by the rules
+// forSource documents, and named=false for a label that names no route at
+// all (an empty one, an unrecognised one), which the run's default answers.
+// The whole "anthropic-env" family is named: bare for a session whose spend
+// no inherited credential names, fingerprinted labels being answered by
+// forSource before this walk, and a fingerprint-less member (a hand-written
+// label, a future shape) charging nobody rather than the run's default.
+func (k runCredKeys) slotForSource(source string) (slot string, named bool) {
 	switch {
 	case strings.HasPrefix(source, "facade:"):
 		if s := delegate.AnthropicWireFacadeSlot(source); s != "" {
-			return s
+			return s, true
 		}
 	case source == "anthropic-direct":
 		if k.anthropicFP != "" {
-			return string(secrets.ProviderAnthropic)
+			return string(secrets.ProviderAnthropic), true
 		}
-		return ""
+		return "", true
 	case source == "anthropic-oauth":
 		if k.oauthFP != "" {
-			return string(secrets.OAuthKindClaudeCode)
+			return string(secrets.OAuthKindClaudeCode), true
 		}
-		return ""
-	case source == "anthropic-env":
-		return ""
+		return "", true
+	case delegate.IsAmbientSource(source):
+		return "", true
 	}
-	_, slot := k.firstHeld()
-	return slot
+	return "", false
 }
 
 // keyForSlot is the meter key the readings of one credential slot land on:
 // the slot's own ledger scope — a shared tier's pinned key is metered on its
 // owner's ledger even when the run itself is tenant-scoped — and its
-// fingerprint. "" is the run's scope with no credential, where a session on
-// the pod's ambient env records.
+// fingerprint. "" is the run's scope with no credential, where a session
+// whose spend no credential names records (the bare "anthropic-env").
 func (k runCredKeys) keyForSlot(slot string) string {
 	return usagecap.Key(delegate.BackendClaudeCode, k.scopeFor(slot), k.bySlot(slot))
 }
 
 // routeKey is the meter key a primary anthropic-wire route draws on, and
-// whether the operator's cap meters that route at all.
+// whether the operator's cap meters that route at all (ADR-161 decision 4):
+// the key of the first leg of the route's chain the resolver funds — the one
+// the dispatch spends first, a refused leg being one it walks past — read off
+// that leg's Spend (spendKey), each leg asked where the route's call is made
+// (model.WireRoute.Call: the run's sandbox for a dispatch, the host for a
+// direct generation). A route no leg of which is funded spends nothing and
+// is not metered; whether a capped leg's fall-through escapes the park is
+// ladderEscapes' question. A route the walk cannot read keeps the run's
+// default credential — defaultKey, the ledger the coming session writes.
 //
-// A claude_code route asks the delegate itself which source its session will
-// stamp (delegate.AnthropicRouteSource, under the hint the executor will hand
-// it), so the pre-flight reads the ledger the session will write — a forfait,
-// the run's own key, a key pinned for the route or the pod's ambient env. A
-// route the delegate refuses before spawning (a facade hint with no key)
-// spends nothing and is not metered. pi's hint names the provider it spends,
-// over the model's prefix; kimi and grok spend their own config and are not
-// metered; other backends route on the spec, as the spend ledger books them
-// (credentialSlotForRoute) — opencode, which books on nobody, on the pod's
-// ambient meter. A slot off the anthropic wire is not what the cap meters. A
-// route the walk cannot read keeps the run's default credential — what the
-// pre-flight read before it read routes.
+// A leg pinning no model sends the route's model, and a claw dispatch naming
+// none the detector's pick (model.WireRoute.Base over k.detected), asked of
+// the arm exactly as the admission asks it: a pick the run's allowlist
+// refuses fails the node before its first leg, which spends nothing. A
+// backend whose arm has not landed (credroute.ErrNoArm) keeps its own reading
+// for that leg (legacyRouteKey, ADR-161 decision 9) — never a claw leg, whose
+// arm is registered.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
-		return k.forSource(""), true
+		return k.defaultKey(), true
 	}
-	hint := model.RouteProviderHint(ctx, route.Backend, route.Hint, route.Model)
-	if route.Backend == delegate.BackendClaudeCode {
+	base, err := route.Base(k.detected)
+	if err != nil {
+		return "", false
+	}
+	// The arm answers under the run's trust (ADR-162 decision 7): the same
+	// leg the launch's admission reads, not a trusted shadow of it.
+	ctx = credroute.WithRunTrust(ctx, k.trust)
+	placement := credroute.Sandbox{Contained: k.sandboxed}
+	for i, leg := range route.Legs {
+		spec := route.LegSpec(i, base)
+		spend, err := credroute.Resolve(ctx, route.Call(i, spec, placement))
+		switch {
+		case errors.Is(err, credroute.ErrNoArm):
+			return k.legacyRouteKey(ctx, route.Backend, leg.Provider, spec)
+		case err != nil:
+			continue
+		}
+		return k.spendKey(route.Backend, spec, spend, false)
+	}
+	return "", false
+}
+
+// spendKey is the meter key a resolved Spend draws on — the meter's scope
+// (the slot's owner, tenant, org or platform) × the Spend's slot and
+// fingerprint — and whether the cap meters it at all. It meters the
+// anthropic wire, the wire its readings come from:
+//
+//   - a run slot of that wire (secrets.WireFamily) keys the slot's own ledger
+//     under its fingerprint; a supervisor's gateway pair too — its evaluator
+//     reports no readings of its own, and the pair's walls the gateway lanes
+//     record are the only evidence it has. Another slot is off the wire;
+//   - the pod's env keys the PLATFORM meter of the account the request
+//     carries, the one every lane's ambient label lands on; one no ambient
+//     label names (the z.ai synthesis, z.ai's account) meets no wall this cap
+//     keeps;
+//   - this host's login keys the scope's no-credential meter — no variable
+//     names the spend — except under a GLM id, which no login of the host
+//     serves.
+//
+// A GLM id bound for the real Anthropic API (model.GLMUnservedAt, at the
+// destination the Spend names) meets the provider's refusal before any wall:
+// it is not metered.
+//
+// A backend's own configuration is keyed as it was before the resolver
+// (ADR-161 decision 5): kimi and grok spend a vendor config whose walls this
+// cap keeps no account of, unmetered; opencode spends the pod's money through
+// its own config, on the run's unslotted meter (keyForSlot("")).
+func (k runCredKeys) spendKey(backend, spec string, s credroute.Spend, supervisor bool) (string, bool) {
+	if s.Channel == credroute.ChannelOwnConfig {
+		if backend == delegate.BackendOpenCode {
+			return k.keyForSlot(""), true
+		}
+		return "", false
+	}
+	if model.GLMUnservedAt(spec, s.BaseURL) {
+		return "", false
+	}
+	switch {
+	case s.RunSlot():
+		if secrets.WireFamily(s.Slot) != secrets.WireFamilyAnthropic &&
+			(!supervisor || s.Slot != string(secrets.ProviderOpenAICompatible)) {
+			return "", false
+		}
+		return usagecap.Key(delegate.BackendClaudeCode, k.scopeFor(s.Slot), s.Fingerprint), true
+	case wireForRoute(delegate.BackendClaw, spec) != anthropicWire:
+		return "", false
+	case s.Channel == credroute.ChannelPodEnv:
+		if s.Fingerprint == "" {
+			return "", false
+		}
+		return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, s.Fingerprint), true
+	case s.Channel == credroute.ChannelHostLogin:
+		if model.GLMOnAnthropicWire(spec) {
+			return "", false
+		}
+		return k.keyForSlot(""), true
+	}
+	return "", false
+}
+
+// legacyRouteKey is the pre-flight's reading of a leg whose backend no arm
+// decides yet (ADR-161 decision 9, interim): a claude_code route asks the
+// delegate itself which source its session will stamp
+// (delegate.AnthropicRouteSource, under the hint the executor will hand it),
+// so the pre-flight reads the ledger the session will write — a forfait, the
+// run's own key, a key pinned for the route or the pod's ambient env; a route
+// the delegate refuses before spawning (a facade hint with no key) spends
+// nothing and is not metered. A pi route on its Anthropic provider asks the
+// delegate the same question (delegate.PiAnthropicRouteSource: pi's own
+// credential order, not claude_code's channel set, and the container's agent
+// dir on a sandboxed run); on any other provider pi's hint names the provider
+// it spends, over the model's prefix; other backends route on the spec, as
+// the spend ledger books them (credentialSlotForRoute). A slot off the
+// anthropic wire is not what the cap meters, and neither is a nothing-held
+// answer: those routes fund from config iterion does not read, and the
+// reading side books every one of them on nobody, so keying it here would
+// park the run on evidence no spend of its can raise.
+func (k runCredKeys) legacyRouteKey(ctx context.Context, backend, legHint, spec string) (key string, metered bool) {
+	hint := model.RouteProviderHint(ctx, backend, legHint, spec)
+	if backend == delegate.BackendClaudeCode {
 		source, refused := delegate.AnthropicRouteSource(ctx, hint)
 		if refused {
 			return "", false
 		}
 		return k.forSource(source), true
 	}
-	switch route.Backend {
-	case delegate.BackendKimi, delegate.BackendGrok:
-		// Vendor CLIs paid by their own config: no credential of the run,
-		// and none of the pod's anthropic-wire ones.
-		return "", false
+	if backend == delegate.BackendPi {
+		// pi on its Anthropic provider resolves its own credential order — its
+		// store, then its bearer, OAuth and API-key channels — so the delegate
+		// names the source the session will stamp, exactly as it does for
+		// claude_code above, and the pre-flight reads the meter that label
+		// keys: the run's key, an inherited account by its fingerprint, the
+		// bare meter, or nothing iterion keeps.
+		if source, metered, anthropic := delegate.PiAnthropicRouteSource(ctx, spec, hint, k.sandboxed); anthropic {
+			if !metered {
+				return "", false
+			}
+			return k.forSource(source), true
+		}
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
 	var slot string
-	if h := strings.ToLower(strings.TrimSpace(hint)); route.Backend == delegate.BackendPi && h != "" {
+	if h := strings.ToLower(strings.TrimSpace(hint)); backend == delegate.BackendPi && h != "" {
 		if secrets.WireFamily(h) != secrets.WireFamilyAnthropic {
 			return "", false
 		}
 		slot = heldForRoute(creds, h)
 	} else {
-		slot = credentialSlotForRoute(creds, route.Backend, route.Model)
+		slot = credentialSlotForRoute(creds, backend, spec, hint)
 	}
-	if slot != "" && secrets.WireFamily(slot) != secrets.WireFamilyAnthropic {
+	if slot == "" || secrets.WireFamily(slot) != secrets.WireFamilyAnthropic {
 		return "", false
 	}
 	return k.keyForSlot(slot), true
@@ -331,11 +521,43 @@ func (k runCredKeys) firstHeld() (fp, slot string) {
 	return "", ""
 }
 
-// usageCapKey is the run's DEFAULT credential key — the one a session with no
-// source label is charged to, and what the pre-flight reads for a route it
-// cannot read (runCredKeys.routeKey).
+// defaultKey is the meter of a spend nothing attributes — a reading whose
+// label names no route (forSource) and a route the pre-flight cannot read
+// (routeKey), one meter for both sides: the run's default credential when the
+// bundle holds one — its fingerprint's meter, the scope's fingerprint-less
+// one for a legacy record that carries none — and when it holds none, the
+// ledger the coming session writes — the pod's ambient account's meter where
+// the pod carries the credential (nothingHeldKey), the bare no-credential
+// meter where it does not. Keying the nothing-held arm on the bare meter
+// would read a ledger no ambient wall ever lands on: the account's refusals
+// travel under its fingerprinted label.
+func (k runCredKeys) defaultKey() string {
+	if _, slot := k.firstHeld(); slot != "" {
+		return k.keyForSlot(slot)
+	}
+	if k.defaultHeld {
+		return k.keyForSlot("")
+	}
+	return k.nothingHeldKey()
+}
+
+// nothingHeldKey is the meter key of a session with no credential of the run:
+// the pod's ambient account's meter where the pod carries the credential —
+// the same platform-scope key the account's fp'd ambient labels key on — and
+// the scope's no-credential meter otherwise ("Not logged in" refusals, a
+// cloud-provider switch's spend, a stamped run's refused fallbacks).
+func (k runCredKeys) nothingHeldKey() string {
+	if k.ambientFP != "" {
+		return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, k.ambientFP)
+	}
+	return k.keyForSlot("")
+}
+
+// usageCapKey is the run's DEFAULT credential key (runCredKeys.defaultKey) —
+// the one a session with no source label is charged to (forSource), and what
+// the pre-flight reads for a route it cannot read (runCredKeys.routeKey).
 func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
-	return usageCapCredKeys(ctx, msg).forSource("")
+	return usageCapCredKeys(ctx, msg).defaultKey()
 }
 
 // usageGuardFor builds the guard for one run: the machine-wide policy
@@ -414,7 +636,7 @@ const usageCapStoreTimeout = 5 * time.Second
 // in the `run.log` the studio reads. One fork carries the run id as a FIELD
 // through the whole walk — the shape loop_nats.go's admission-rejection lines
 // use, and the chokepoint the lines that do NOT format msg.RunID themselves
-// need: the two a supervisor drop writes (runview.PoolSurvivingSpecs,
+// need: the two a supervisor drop writes (runview.FundedSupervisorSpecs,
 // supervise.SpecsFromWorkflow name the supervisor) and the credential-read
 // refusal in cappedRoutes (it names the credential key). Rendered by the
 // runner's own format, which is JSON (cmd/iterion/runner.go).
@@ -457,7 +679,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// justify refusing the run before it starts; the view's RunFallbacks
 	// stay zero for the same rule, and the walk reads no fallback chain.
 	// Every uncertainty answers "reachable". A supervisor the run will
-	// spawn is a route too — one every execution takes (supervisorRouteID).
+	// spawn is a route too — one every execution takes (model.SupervisorSiteID).
 	launchVars, haveLaunch := r.launchReading(ctx, msg, logger)
 	view := model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides), AllowedProviders: msg.LLMProviders}
 	if haveLaunch {
@@ -480,7 +702,24 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// a primary that rides nothing meterable) is delivery-1 deferred: the
 	// mid-run guard still covers claude_code stages in flight, and claw
 	// stages were never meterable.
-	escapable := ladderEscapes(wf, msg, runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault))
+	// The MODE-only sandbox reading, on purpose (#2166): the materializing
+	// screen refuses a codex stage on a run whose mode sandboxes it, from
+	// the same two tiers, so the escape judgment agrees with the refusal it
+	// mirrors. A driver-aware answer here would un-park a degraded-auto run
+	// for a codex stage the screen still refuses, stranding it on the
+	// capped wire — the very outcome the park prevents. The workflow is the
+	// FLOORED one (#1959): the mode that counts is the one the run resolves
+	// after a non-operator source's opt-out is neutralized.
+	// The same reading tells the meter where a node resolves its credential
+	// (runCredKeys.sandboxed): a sandboxed claw node in the container, over the
+	// env the crossing hands it, a sandboxed pi node over the container's agent
+	// dir. Mode-only there too: the driver-aware answer
+	// (runtime.RunWillBeSandboxed) reads the checkout this admission has not
+	// paid for yet, and on the runner an active mode starts the container — an
+	// auto run degraded to the host is read as sandboxed, the residual.
+	flooredWf, _ := runtime.ApplySandboxFloor(wf, msg.BotSourceTier, r.cfg.SandboxOverride)
+	sandboxed := runtime.WorkflowSandboxActive(flooredWf, r.cfg.SandboxOverride, r.cfg.SandboxDefault)
+	escapable := ladderEscapes(wf, msg, sandboxed)
 	if len(routes) == 0 && len(sups) == 0 {
 		if logger != nil {
 			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
@@ -491,7 +730,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// default: a run holding a closed Claude forfait beside a key pinned for
 	// its GLM routes can serve those routes, and a run whose default has room
 	// may still route every node onto a walled key.
-	capped := r.cappedRoutes(ctx, msg, routes, sups, pol, logger)
+	capped := r.cappedRoutes(ctx, msg, routes, sups, sandboxed, pol, logger)
 	for id := range escapable {
 		delete(capped, id)
 	}
@@ -508,27 +747,18 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if logger != nil {
 		logger.Warn("runner: run %s not started — %s", msg.RunID, d.Reason)
 	}
+	if msg.Resume != nil && msg.Resume.CodemodeQuota != nil && !msg.Resume.CodemodeQuotaSpent {
+		// The sweeper replays the durable run, not this publication's
+		// unclaimed quota intent. Do not arm a quota-free retry.
+		return &unappliedQuotaUsageRefusal{reason: d.Reason}
+	}
 	// The status flip is what makes the retry armable: ScheduleRunRetry
 	// conditions on failed_resumable, and a run stopped before its first
 	// node has never been marked anything. Without this the retry silently
 	// fails to arm and the run is acked into nothing.
-	if r.cfg.Store != nil {
-		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
-		defer scancel()
-		sctx = store.WithIdentity(sctx, msg.TenantID, msg.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
-			d.Reason,
-			// Continuation deliberately unknown here: the arming
-			// decision happens later (armUsageWindowRetry), and three
-			// of its branches arm nothing — the document must not say
-			// retry_armed before a retry actually exists. Promotion to
-			// retry_armed lives with ScheduleRunRetry; demotion to
-			// final with AbandonRunRetry.
-			store.RunOutcomeMeta{Code: store.FailureUsageLimitBlocked},
-			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil && logger != nil {
-			logger.Warn("runner: usage-cap status flip for %s: %v", msg.RunID, serr)
-		}
-	}
+	r.recordPreEngineRefusal(ctx, msg, errors.New(d.Reason), preEngineVerdict{
+		Phase: "usage_cap", Code: store.FailureUsageLimitBlocked, Disposition: store.PreEngineUsagePark, Timeout: usageCapStoreTimeout,
+	})
 	return &delegate.ErrRateLimited{
 		Provider:    delegate.BackendClaudeCode,
 		Detail:      fmt.Sprintf("%s (not started)", d.Reason),
@@ -540,11 +770,13 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 
 // cappedRoutes reads, once per meter key, the cap's verdict on the credential
 // each primary route and each supervisor spends, and returns the capped ones by
-// node id (supervisorRouteID for a supervisor). It fails OPEN per credential: a
+// node id (model.SupervisorSiteID for a supervisor). It fails OPEN per credential: a
 // key the store cannot read is headroom, like the whole pre-flight is when the
-// store is down.
-func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes []model.WireRoute, sups []supervisorRoute, pol usagecap.Policy, logger *iterlog.Logger) map[string]usagecap.Decision {
+// store is down. sandboxed is the run's sandbox (runCredKeys.sandboxed): where
+// a node's backend resolves its credential decides what it spends.
+func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes []model.WireRoute, sups []supervisorRoute, sandboxed bool, pol usagecap.Policy, logger *iterlog.Logger) map[string]usagecap.Decision {
 	keys := usageCapCredKeys(ctx, msg)
+	keys.sandboxed = sandboxed
 	rctx, cancel := context.WithTimeout(ctx, usageCapStoreTimeout)
 	defer cancel()
 	now := time.Now().UTC()
@@ -586,7 +818,7 @@ func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes
 	// A supervisor calls its model in process — claw, which reports no
 	// readings — for the whole run: nothing stops it in flight either.
 	for _, sup := range sups {
-		key, metered := keys.supervisorKey(ctx, sup.spec)
+		key, metered := keys.supervisorKey(ctx, sup.spec, sup.hint)
 		if !metered {
 			continue
 		}
@@ -626,13 +858,19 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 	//   - a codex stage on a SANDBOXED run is refused by the screen
 	//     (fallback_apply.go) — the runner's own sandbox tiers are known
 	//     here, so the refusal is decided, not guessed;
-	//   - an unmappable model (StageModel's no-mapping pairs) is dropped
-	//     per node — checked against the node's own model.
+	//   - an unmappable model (StageModel's no-mapping pairs, and a node
+	//     routed to the team's gateway under the run's team_gateway content
+	//     boundary) is dropped per node — checked against the node's own
+	//     model and the boundary the message carries.
 	// RESIDUAL, said: the per-node predicates (ungated ask-rules, tools
 	// inversion, session continuity) are not re-judged here — a stage
 	// refused by one of them after its park was deleted converts the
 	// durable retry into a bare failure. Delivery-1 boundary.
 	ovs := modelOverridesFromMsg(msg.ModelOverrides)
+	// The screen's own reading of each node's route, over the vars the
+	// materializing screen reads (the message's): a `{{vars.model}}` node
+	// is judged by the route the run decides, never by its template text.
+	reading := ir.NewPolicyLadderReading(wf, msg.Vars)
 	for _, st := range stages {
 		if st.Backend == delegate.BackendClaudeCode {
 			continue // the anthropic wire itself: no escape
@@ -651,21 +889,18 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 			if !ok || nn.NodeKind() != ir.NodeAgent || len(nn.GetFallbacks()) > 0 {
 				continue
 			}
-			// The EFFECTIVE model — the override the launch stamped wins
+			// The EFFECTIVE route — the override the launch stamped wins
 			// over the declared field, exactly as the materializing
-			// screen's own nodeModel callback reads it. A node with no
+			// screen's own route callback reads it (LadderRoute), mapped
+			// through the screen's own per-node mapping. A node with no
 			// model of its own has NO ladder: the materializer drops its
 			// stages (StageModel maps nothing modelless), so it cannot
 			// escape off the capped wire — the park stands. A model that
 			// maps nothing likewise drops the stage (named there) and is
 			// no escape. (R27b623: the declared field alone disagreed
 			// with the materializer whenever an override decided.)
-			ov := ovs.ForNode(nn.NodeID(), nn.NodeKind())
-			nodeModel := nn.GetLLMFields().Model
-			if ov.Model != "" {
-				nodeModel = ov.Model
-			}
-			if _, mappable, _ := llmroute.StageModel(st.Backend, st.Provider, nodeModel, llmroute.ResolveClasses(msg.FallbackModelClasses)); !mappable {
+			nodeModel, nodeProvider := ovs.LadderRoute(nn)
+			if _, mappable, _ := reading.StageModel(st.Backend, st.Provider, nodeModel, nodeProvider, llmroute.ResolveClasses(msg.FallbackModelClasses), msg.ContentBoundary.TeamGateway()); !mappable {
 				continue
 			}
 			escapes[nn.NodeID()] = true
@@ -674,9 +909,10 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 	return escapes
 }
 
-// supervisorRoute is one supervisor the run will spawn, and the model spec its
-// evaluator will resolve.
-type supervisorRoute struct{ id, spec string }
+// supervisorRoute is one supervisor the run will spawn, the model spec its
+// evaluator will resolve, and the provider hint it resolves that spec under
+// (supervise.Spec.ProviderHint — the registry honours it as a node's own).
+type supervisorRoute struct{ id, spec, hint string }
 
 // preflightSupervisors lists the supervisors this run will spawn on this
 // runner — none when the run-level override or ITERION_SUPERVISORS turns them
@@ -687,13 +923,15 @@ type supervisorRoute struct{ id, spec string }
 // and spends nothing, and so does one no node of this run's topology is
 // watched by (supervisorArms, reading `open`).
 //
-// The list is the one the spawn walks, pool filter included
-// (runview.PoolSurvivingSpecs, the same call loop.go makes before
-// supervise.StartDeclared): on a run stamped to a sovereign pool, a
-// supervisor whose effective model is not the pool's gateway is REFUSED at
-// spawn (D12), so metering it would park the run for spend no execution can
-// make — the same rule supervisorArms applies to the watch set. A run with
-// no pool stamp keeps every spec, which is every run but a pooled one.
+// The supervisors are the run's supervisor call sites (model.CallSites, the
+// one enumeration the node routes and the launch's admission read too), each
+// kept only where the spawn keeps it: the list is the one the spawn walks
+// (runview.FundedSupervisorSpecs, the same call loop.go makes before
+// supervise.StartDeclared), joined by the supervisor's name. A supervisor the
+// content boundary refuses (D12), or whose model no credential funds — the
+// claw arm's answer, the stamp's refusal of the pod's money included — is
+// dropped at spawn, so metering it would park the run for spend no execution
+// can make — the same rule supervisorArms applies to the watch set.
 //
 // Both halves of that call get a logger, where a nil one discarded their two
 // lines: a spec the filter refuses here WIDENS the walk — a run a capped
@@ -729,8 +967,19 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 	if enabled, _ := supervise.DeclaredEnabled(msg.Supervisors); !enabled {
 		return nil
 	}
+	funded := map[string]supervise.Spec{}
+	for _, spec := range runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, vars, modelOverridesFromMsg(msg.ModelOverrides), logger), msg.ContentBoundary, msg.RunnerPool, logger) {
+		funded[spec.Name] = spec
+	}
 	var out []supervisorRoute
-	for i, spec := range runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, vars, logger), msg.RunnerPool, logger) {
+	for _, site := range model.CallSites(model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides), Vars: vars}, nil) {
+		if site.Kind != model.SiteSupervisor {
+			continue
+		}
+		spec, kept := funded[site.Name]
+		if !kept {
+			continue
+		}
 		if !supervisorArms(wf, open, spec.Watches) {
 			continue
 		}
@@ -748,7 +997,7 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		if err != nil {
 			continue
 		}
-		out = append(out, supervisorRoute{id: supervisorRouteID(spec.Name, i), spec: resolved})
+		out = append(out, supervisorRoute{id: site.ID, spec: resolved, hint: spec.ProviderHint})
 	}
 	return out
 }
@@ -784,52 +1033,27 @@ func supervisorArms(wf *ir.Workflow, open ir.EdgeFilter, watches []string) bool 
 }
 
 // supervisorRouteIDPrefix marks a capped route that is a supervisor, not a
-// node: it is on every execution of the run. A node id is a DSL identifier,
-// which never holds the colon.
+// node (model.SupervisorSiteID): it is on every execution of the run.
 const supervisorRouteIDPrefix = "supervisor:"
 
-func supervisorRouteID(name string, i int) string {
-	if name != "" {
-		return supervisorRouteIDPrefix + name
-	}
-	return fmt.Sprintf("%s#%d", supervisorRouteIDPrefix, i)
-}
-
 // supervisorKey is the meter key a supervisor's resolved model spec spends,
-// and whether the cap meters it at all. It spends in process, in
-// Registry.ResolveWithContext's order: `anthropic/…` the Anthropic key held for
-// the route, else the Claude forfait while the claw factory takes it (not under
-// ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic
-// ANTHROPIC_BASE_URL — anthropicFromCtxForfait), else the pod's ambient env —
-// a GLM id there the z.ai key first; `zai/…` and `moonshot/…` that provider's
-// key, else the ambient env. A spec the registry cannot parse spends nothing;
-// any other provider is off the wire the cap meters.
-func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string, metered bool) {
-	// Read as the registry reads it: untrimmed, case-sensitive.
-	provider, _, err := model.ParseModelSpec(spec)
+// and whether the cap meters it at all: the claw arm's Spend for the spec, in
+// process, under the hint its evaluator resolves with (the watched nodes'
+// provider family, supervise.Spec.ProviderHint) — keyed by spendKey. A spec
+// the arm refuses, or the registry cannot parse, spends nothing. A claw
+// supervisor reports no readings of its own, so the account's refusals the
+// other lanes record are the only evidence it has.
+func (k runCredKeys) supervisorKey(ctx context.Context, spec, hint string) (key string, metered bool) {
+	if _, _, err := model.ParseModelSpec(spec); err != nil {
+		return "", false
+	}
+	spend, err := credroute.Resolve(credroute.WithRunTrust(ctx, k.trust), credroute.Call{
+		Backend: delegate.BackendClaw, Spec: spec, Leg: credroute.Leg{Provider: hint}, Role: credroute.RoleSupervisor,
+	})
 	if err != nil {
 		return "", false
 	}
-	creds, _ := secrets.CredentialsFromContext(ctx)
-	var slot string
-	switch secrets.Provider(provider) {
-	case secrets.ProviderAnthropic:
-		if model.GLMOnAnthropicWire(spec) {
-			slot = heldForRoute(creds, string(secrets.ProviderZAI))
-		}
-		if slot == "" {
-			slot = heldForRoute(creds, string(secrets.ProviderAnthropic))
-		}
-		if slot == "" && creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-			!secrets.ForbidSubscriptionOAuth() && secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
-			slot = string(secrets.OAuthKindClaudeCode)
-		}
-	case secrets.ProviderZAI, secrets.ProviderMoonshot:
-		slot = heldForRoute(creds, provider)
-	default:
-		return "", false
-	}
-	return k.keyForSlot(slot), true
+	return k.spendKey(delegate.BackendClaw, spec, spend, true)
 }
 
 // launchReading resolves the launch values the pre-flight's walks read —

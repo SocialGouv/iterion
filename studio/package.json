@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:a11y:target-size": "playwright test --config playwright.a11y.config.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

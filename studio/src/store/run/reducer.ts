@@ -519,19 +519,24 @@ export function reduceEvents(
         if (!exec) break;
         const prev = inFlightToolsByExec.get(exec.execution_id);
         if (!prev || prev.length === 0) break;
+        // The sandbox launcher's own refusal of a forwarded call is not the
+        // call's completion — the runner reports that — and its id is the
+        // runner's claim: it closes nothing.
+        if (evt.data?.emitted_by === "launcher") break;
         const toolUseID = evt.data?.tool_use_id ?? "";
         const toolName = evt.data?.tool ?? "";
-        // Prefer matching by toolUseID (only claude_code paths carry
-        // one); fall back to the oldest entry with the same toolName,
-        // and as a last resort drop the oldest entry to avoid leaks.
-        let dropIdx = -1;
-        if (toolUseID) {
-          dropIdx = prev.findIndex((t) => t.toolUseID === toolUseID);
-        }
-        if (dropIdx < 0 && toolName) {
-          dropIdx = prev.findIndex((t) => t.toolName === toolName);
-        }
-        if (dropIdx < 0) dropIdx = 0;
+        // A completion carrying an id closes the start with that id and
+        // nothing else: a refusal that never started (a codemode program's
+        // refused nested call) must not close its running program. An
+        // id-less completion (a DSL tool node, an older emitter) closes the
+        // oldest start of the same tool. A completion that matches no start
+        // drops nothing — the node's end clears whatever is left.
+        const dropIdx = toolUseID
+          ? prev.findIndex((t) => t.toolUseID === toolUseID)
+          : toolName
+            ? prev.findIndex((t) => t.toolName === toolName)
+            : -1;
+        if (dropIdx < 0) break;
         ensureInFlightCopy();
         const next = prev.slice(0, dropIdx).concat(prev.slice(dropIdx + 1));
         if (next.length === 0) {

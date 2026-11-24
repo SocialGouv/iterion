@@ -30,7 +30,7 @@ func (s *Server) routes() {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+expectedBirthHeader)
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -81,12 +81,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)
 	s.mux.HandleFunc("POST /api/v1/bots/import", s.handleBotImport)
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
+	// The program a launch naming this bot runs, with the digest a launch
+	// form pins its launch to (expect_source_sha256).
+	s.mux.HandleFunc("GET /api/v1/bots/{name}/launch-source", s.handleBotLaunchSource)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}", s.handleBotsPut)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}/overlay", s.handleBotOverlay)
 	// Pipeline Boards are a bot-bound execution projection layered alongside
 	// the native backlog board. They keep their own routes/read model so the
 	// existing /board tracker and dispatcher semantics remain unchanged.
 	s.registerPipelineBoardRoutes()
+
+	// The operator's legal pages (ADR-160): public reads of the configured
+	// documents, every mode.
+	s.registerLegalRoutes()
 
 	// Hosted marketplace — curated registry of bot bundles published by
 	// repos. Each endpoint short-circuits to 404 when s.marketplace is
@@ -189,6 +196,15 @@ func (s *Server) routes() {
 	// carries tenants at all — the handlers degrade honestly without it.
 	if s.authSvc != nil {
 		s.registerRoutingPolicyRoutes()
+		s.registerPriceFeedRoutes()
+	}
+	// Key pools (ADR-164): the named pools, their entries and the
+	// per-scope attachments. Registered inside the auth gate like the
+	// tenant config surfaces above; the handlers degrade honestly (503)
+	// when the stores are nil — the openapi dump and the CLI stay usable
+	// on a deployment that never wired pools.
+	if s.authSvc != nil {
+		s.registerPoolsRoutes()
 	}
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
@@ -229,6 +245,9 @@ func (s *Server) routes() {
 		s.registerGitHubWebhookRoute()
 		s.registerForgejoWebhookRoute()
 		s.registerGenericWebhookRoute()
+		if s.connectorIntakes != nil {
+			s.registerConnectorIngressRoute()
+		}
 	}
 
 	// Bot-secret bindings (policy wrapper over generic secrets).
@@ -282,6 +301,18 @@ func (s *Server) routes() {
 		s.registerBoardForgeRoutes()
 		// Team ⇄ forge PROJECT board binding (ADR-097).
 		s.registerBoardBindingRoutes()
+	}
+
+	// Connector connections (ADR-098, #2759): tenant-scoped CRUD over
+	// pkg/connection. Needs the store (Mongo twin in cloud), the catalog the
+	// credential is pinned against, the sealer, and the auth stack — which is
+	// the CLOUD gate in practice: team membership is what canManageTeam reads,
+	// and a local process has no auth service (there is no team for the path's
+	// {id} to name; `iterion connections` is the local surface). Local mode
+	// still wires the store for the facade (which reads it under
+	// connection.LocalTenant), so this family must not register on nil auth.
+	if s.connectionStore != nil && s.connectorCatalog != nil && s.sealer != nil && s.authSvc != nil {
+		s.registerConnectionRoutes()
 	}
 
 	// Per-tenant SSO providers (a tenant's own Keycloak + GitHub team-gating).
@@ -364,6 +395,10 @@ func (s *Server) routes() {
 	// and the runtime-mutable sandbox default image.
 	s.registerAdminSettingsFamilyRoutes()
 
+	// Platform runs view (super-admin): every org's runs in one
+	// filterable, server-side paginated list (#2148). Read-only.
+	s.registerAdminRunRoutes()
+
 	// Dispatcher + native tracker — both optional. Each handler is
 	// registered through requireAuth so a server bound to a non-loopback
 	// address (devcontainer / LAN / SSH tunnel) can't have its kanban
@@ -405,11 +440,29 @@ func (s *Server) routes() {
 		// pull request is still open before it pushes or posts.
 		s.mux.ServeMux.HandleFunc("GET /api/v1/forge/pull-request", s.handleForgePullRequest)
 		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/delivery-preflight", s.handleForgeDeliveryPreflight)
+		// The workflow-dispatch gesture of the same grant, honoured only for
+		// a grant carrying publishCapDispatchWorkflow. Spelled literally (=
+		// forgeDispatchWorkflowPath): the REST inventory reads literal
+		// registrations only.
+		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/dispatch-workflow", s.handleForgeDispatchWorkflow)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.
 	if s.cfg.TriggerStore != nil {
 		s.registerTriggerRoutes()
+		// The connector intake's dead-letter view and replays: a re-judged
+		// pair reads its subscription from the trigger store.
+		if s.connectorIntakes != nil {
+			s.registerConnectorDeadLetterRoutes()
+		}
+		s.registerTeamTriggerRoutes()
+	}
+	// The catalog's icon route, and the source catalog read model: any
+	// deployment that resolves connector packages (the static catalog or
+	// the durable tiers) can serve both.
+	if s.connectorCatalog != nil || s.connectorPackages != nil {
+		s.registerConnectorIconRoutes()
+		s.registerSourcesRoutes()
 	}
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).

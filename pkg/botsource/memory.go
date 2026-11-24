@@ -207,11 +207,20 @@ func (m *MemoryStore) PurgeHistory(ctx context.Context, tenantID, id string) (in
 	return n, nil
 }
 
-func (m *MemoryStore) Delete(_ context.Context, id string) error {
+// Delete removes a row. If version is non-zero it acts as an if-match token,
+// exactly as Update's does: a mismatch against the stored version returns
+// ErrVersionConflict and the row survives. The comparison and the removal
+// happen under the same lock hold, so a concurrent write cannot land between
+// them.
+func (m *MemoryStore) Delete(_ context.Context, id string, version int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.byID[id]; !ok {
+	stored, ok := m.byID[id]
+	if !ok {
 		return ErrNotFound
+	}
+	if version != 0 && version != stored.Version {
+		return ErrVersionConflict
 	}
 	delete(m.byID, id)
 	return nil

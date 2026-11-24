@@ -79,6 +79,13 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 // Go 1.22's ServeMux doesn't flag ambiguities against other catch-all
 // method routes. The prefix may itself contain path wildcards (e.g.
 // "/api/teams/{tid}/board") that the resolver reads back via PathValue.
+// Every route whose handler can persist a card's BotArgs filters the class
+// at the write (DropServerMintedLaunchVars / KeepStoredLaunchContext) — a
+// client door that forgets re-opens the launch context to the client. The
+// registrations stay literal on purpose: the route witnesses in pkg/server
+// (cli_route_reachability_test.go, docs_rest_reference_test.go,
+// board_write_rung_test.go) parse THIS source, and a registration they
+// cannot read is one they cannot guard.
 func (h *BoardAPI) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, wrap func(http.Handler) http.Handler) {
 	p := strings.TrimSuffix(prefix, "/")
 	if wrap == nil {
@@ -186,6 +193,11 @@ func (h *BoardAPI) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// A client-created card never carries the reserved launch context: it is
+	// the server's stamp about what a carded run targets (card_launch_args.go),
+	// and the board REST surface is a client. The publish grant is dropped
+	// store-side at Create (BotArgsForWrite); this class is dropped HERE,
+	// because the server's own stamp writes through the same store.Create.
 	out, err := s.Create(Issue{
 		Title:    in.Title,
 		Body:     in.Body,
@@ -197,7 +209,7 @@ func (h *BoardAPI) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Fields:   in.Fields,
 		External: in.External,
 		Bot:      in.Bot,
-		BotArgs:  in.BotArgs,
+		BotArgs:  DropServerMintedLaunchVars(in.BotArgs),
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -280,6 +292,21 @@ func (h *BoardAPI) handlePatchIssue(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// A patch replaces bot args wholesale: the client's own vars land, the
+	// reserved launch context comes back off the STORED card — the patching
+	// client never wrote it and may not rewrite it (card_launch_args.go).
+	if in.BotArgs != nil {
+		existing, gerr := s.Get(id)
+		if gerr != nil {
+			writeErr(w, statusForErr(gerr), gerr)
+			return
+		}
+		kept := DropServerMintedLaunchVars(*in.BotArgs)
+		if existing != nil {
+			kept = KeepStoredLaunchContext(existing.BotArgs, kept)
+		}
+		in.BotArgs = &kept
 	}
 	out, err := s.Update(id, Patch{
 		Title:    in.Title,
@@ -410,7 +437,26 @@ func (h *BoardAPI) handleAddComment(w http.ResponseWriter, r *http.Request) {
 			patch.Bot = bot
 		}
 		if botArgs != nil {
-			patch.BotArgs = &botArgs
+			// The comment door is as client-facing as create and PATCH, and
+			// its bot stamp replaces bot args wholesale: the caller's own
+			// vars land, the reserved launch context comes back off the
+			// STORED card. Unfiltered, one comment forging the
+			// __iterion_webhook_id + __iterion_project_path pair (ids
+			// readable on any webhook-created card of the team) re-keys the
+			// run's meter, bound and BYOK audience one gate below the
+			// filtered create/patch doors (card_launch_args.go). The same
+			// merge covers the comment-dispatcher's own resolved args: a
+			// "/command" restamp keeps the stored context too.
+			kept := DropServerMintedLaunchVars(botArgs)
+			existing, gerr := s.Get(id)
+			if gerr != nil {
+				writeErr(w, statusForErr(gerr), gerr)
+				return
+			}
+			if existing != nil {
+				kept = KeepStoredLaunchContext(existing.BotArgs, kept)
+			}
+			patch.BotArgs = &kept
 		}
 		if _, err := s.Update(id, patch); err != nil {
 			writeErr(w, statusForErr(err), err)
@@ -858,7 +904,20 @@ func statusForErr(err error) int {
 	}
 }
 
+// writeJSON answers one JSON body. Every /issues route ends here, which is
+// why the publish-grant mask (card_grant.go) lives in it rather than at each
+// route: a card hands out whatever bot args it carries, and a card written
+// before the write-boundary drop can still carry a live bearer.
+//
+// It knows the two shapes the board serves — one card and a list of them. A
+// response type that EMBEDS a card masks it itself, with IssueForRead.
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	switch t := v.(type) {
+	case *Issue:
+		v = IssueForRead(t)
+	case []*Issue:
+		v = IssuesForRead(t)
+	}
 	httpx.WriteJSON(w, status, v)
 }
 
@@ -875,5 +934,5 @@ func writeBoard(w http.ResponseWriter, s BoardStore) {
 }
 
 func writeErr(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	httpx.WriteError(w, status, "", err.Error())
 }

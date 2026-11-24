@@ -1,0 +1,26 @@
+## A11y target-size fixture: declares a bool var so the Launch form renders
+## VarFieldInput's bool branch — the 14px checkbox #2765 names as the known
+## SC 2.5.8 candidate violation. Rendered by e2e/a11y/target-size.spec.ts
+## only, NEVER executed, so no credential is needed.
+
+vars:
+  flag: bool
+  mission: string
+
+schema verdict:
+  ok: bool
+
+agent survey:
+  ## Same model pin as launch-fixture: curated-known, so the launch form
+  ## renders fully offline.
+  model: "anthropic/glm-5.2"
+  system: "Survey {{vars.mission}} under flag={{vars.flag}}."
+  output: verdict
+
+workflow a11y_bool_vars:
+  worktree: none
+  sandbox: none
+  entry: survey
+
+  survey -> done when ok
+  survey -> fail

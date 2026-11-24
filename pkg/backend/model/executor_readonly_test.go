@@ -7,6 +7,7 @@ import (
 )
 
 func TestExtractBackendFieldsCarriesReadonly(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		node ir.Node

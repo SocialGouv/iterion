@@ -56,7 +56,7 @@ export default function CanvasToolbar({
   const macroView = useUIStore((s) => s.macroView);
   const toggleMacroView = useUIStore((s) => s.toggleMacroView);
   const document = useDocumentStore((s) => s.document);
-  const hasGroups = documentGroups(document).length > 0;
+  const hasGroups = documentGroups(document).groups.length > 0;
 
   const expandLabel = expanded ? "Collapse canvas" : "Expand canvas (hide chrome)";
   const fullscreenLabel = browserFullscreen ? "Exit fullscreen" : "Enter fullscreen";

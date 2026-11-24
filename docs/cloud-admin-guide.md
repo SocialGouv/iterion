@@ -140,12 +140,63 @@ The handler also accepts `pending_deletion`, the soft-delete state that
 posted here it blocks the org without that deadline, and the purge
 sweeper only lists orgs whose `purge_after` has passed.
 
+What the nightly purge (02:00 UTC, on the one replica holding the
+`org-purge-sweeper` lease, plus a catch-up at each lease term's start)
+removes once that deadline has passed
+([pkg/cloud/orgsweep/sweep.go](../pkg/cloud/orgsweep/sweep.go)): every
+run of every team the org still lists — a team deleted through the team
+door took no runs with it, and the purge no longer sees them
+([flow-org-team-lifecycle.md](diagrams/flow-org-team-lifecycle.md)) — one
+by one through the run store, with the objects it owns in the bucket (`artifacts/`, `attachments/`, `tools/`,
+`ir/<run>.json` and the bundle snapshots `ir/<run>-bundle-<digest>.json`,
+`sessions/`, `runfiles/` under the run id); then every team-scoped
+and org-scoped Mongo collection, the audit rows keyed by the org AND by
+each of its teams, the org's sealed credentials and routing policies; then
+the identity rows (teams, memberships, invitations, the org). What it
+leaves, on purpose: the `users` rows and their SSO links — a user outlives
+their orgs and may be re-invited; erasing an account is a separate,
+explicit gesture — a user's own sessions and personal forfait. The order
+is the safety: no Mongo row is swept while a run's objects are still in
+the bucket, so a failed or interrupted purge leaves the org pending and
+the next sweep, on any replica, resumes it. A run that is not terminal
+(running, queued, paused) is not deleted — the engine
+may still write its objects — and withholds the sweep the same way until
+it ends: cancel it to let the purge finish.
+
+`ITERION_ORG_PURGE_RUN_BATCH` bounds the run deletes one pass attempts
+per org (a run delete is paginated S3 work; failed attempts count): once
+reached, the pass stops before any collection sweep, logs `resumes at the
+next sweep`, and the org is purged over several nights. Unset or `0` is no
+bound — the org goes in one pass; a value that is not a non-negative
+integer refuses to start the server rather than read as `0`.
+
+**Restoring during a purge.** `POST /api/admin/orgs/{id}/restore` is
+accepted as long as the org is `pending_deletion`, including after its
+`purge_after` has passed. The purge re-reads the org before every run
+delete and before its first collection sweep, so a restore stops it at the
+next step — but the runs a pass already deleted (with their objects) are
+gone for good: a restore after the deadline, or between two nights of a
+batched purge, returns the org without them. The sweep logs it as a
+warning: `left purge eligibility mid-purge … N run(s) already deleted`.
+
+**A purge that never finishes.** A run whose delete keeps failing (a
+bucket permission, an object under legal hold) or that never ends keeps
+the org `pending_deletion` with a warning each night —
+`orgsweep: purge org <id> … could not be deleted, the Mongo sweep is
+withheld`. Fix the cause (cancel the run, repair the bucket access) and the
+next sweep finishes. When the objects cannot be deleted at all, set
+`ITERION_ORG_PURGE_FORCE_SWEEP=<org id>` on the server and restart it: the
+purge of that org goes past the runs it cannot delete, names each in a
+warning, and leaves their objects in the bucket — unattributed, so record
+the run ids from that warning before removing the variable.
+
 UI path: Admin → Organisations → Acme → toggle status.
 
 ### 1.5 Audit log
 
-Every control-plane mutation is recorded
-([pkg/audit/audit.go](../pkg/audit/audit.go)):
+Every control-plane mutation is recorded, and every sign-in — accepted or
+refused, every provider ([pkg/audit/audit.go](../pkg/audit/audit.go),
+[ADR-157](adr/157-authentication-events-join-the-audit-log.md)):
 
 ```bash
 # All platform-level actions (super-admin and org status changes).
@@ -166,7 +217,7 @@ call sites for the full list):
 > · `team.created` · `team.updated` · `team.status_changed`
 > · `team.caps_updated` · `team.deleted` · `member.added`
 > · `user.password_changed`
-> · `user.password_reset` · `user.sessions_revoked` · `member.removed`
+> · `user.password_reset` · `user.sessions_revoked` · `user.erased` · `member.removed`
 > · `member.role_changed` · `invitation.created` · `invitation.accepted`
 > · `invitation.deleted` · `byok.created` · `byok.updated` · `byok.deleted`
 > · `secret.created` · `secret.updated` · `secret.deleted`
@@ -174,12 +225,97 @@ call sites for the full list):
 > · `webhook.created` · `webhook.updated` · `webhook.rotated` · `webhook.deleted`
 > · `pat.created` · `pat.revoked`
 > · `dlq.replayed` · `dlq.discarded`
+> · `auth.login.succeeded` · `auth.login.failed`
+> · `run.launched` · `run.forked` · `run.deleted` · `run.retry.*`
 
-Two scopes: tenant rows (visible to the org's admins at
-`GET /api/teams/{id}/audit`) and platform rows (super-admin only at
-`/api/admin/audit`). Each carries the actor's IP + user-agent + a small
-`meta` blob (never secret material). Mongo TTL: **400 days**
+`run.launched` is one tenant row per launched run, whatever launched it,
+keyed by the run id (`target_id`). A launch that returns an error but may
+still have left a run behind — its run persisted before the failure, or a
+queue publish that reports failure after the message may have landed —
+writes its row too, with `meta.outcome: may_have_started`; a launch
+refused before anything could execute writes none. The actor is the principal the launch
+ran under: the signed-in user for a Studio, CLI or API launch — the
+operator's "launch now" on a pipeline card included (`actor_kind:
+user`), the webhook principal `webhook:<config-id>` for an inbound
+delivery (`actor_kind: webhook`), and a daemon of this process for the
+rest (`actor_kind: system` — `scheduler:<bot>`, `board-dispatcher`,
+`trigger-spine`; the local pipeline-admission loop is wired too but
+runs only outside cloud mode, where no audit store exists, so its actor
+never appears in a cloud log). `meta` names the bot, the workflow file,
+the repository, the `trigger` — the run's own provenance when it has one
+(`dispatcher` | `schedule` | `studio_chat` | `webhook`), else the client
+that asked (`studio` for a browser, `api` for the CLI or any other API
+client), absent for a daemon — and the `delivery_id` or `schedule_id`
+that caused it; never the launch vars. IP and user-agent are recorded
+when an HTTP request served the launch (a webhook row carries the
+delivery's source address), empty for a daemon. Every launch surface
+crosses one choke point
+([pkg/server/runs_launch_audit.go](../pkg/server/runs_launch_audit.go)),
+and a test keeps it the only one. A fork is a new run that crosses no
+launch: `POST /api/runs/{id}/fork` writes `run.forked` instead — the
+operator as actor, the child run as `target_id`, `meta.parent_run_id`
+naming the run it was forked from. A resume continues an existing run
+and writes no row.
+
+Two scopes: tenant rows and platform rows (super-admin only at
+`/api/admin/audit`). A tenant row is keyed on a team or on an org, and each
+route lists its own key: `GET /api/teams/{id}/audit` (team admins) the
+team-keyed rows, `GET /api/orgs/{id}/audit` (org admins) the org-keyed
+ones — the org mutations and every accepted sign-in. Each row carries the
+actor's IP + user-agent + a small `meta` blob (never secret material).
+Mongo TTL: **400 days**
 ([pkg/audit/audit.go:RetentionDays](../pkg/audit/audit.go)).
+
+Sign-ins follow their own rules. An accepted one (`auth.login.succeeded`)
+is a tenant row on the **org** the session is active in — read it at
+`GET /api/orgs/{id}/audit`, not on the team route — actor = the account,
+`meta.method` one of `password` `github` `google` `oidc` `org_sso`
+`desktop` (`oidc` is every deployment-wide connector but the two built-in
+ones, the one the deployment names `sso` included; `org_sso` is an org's
+own IdP), `meta.flow` when the session is the side effect of a
+registration, a password change or a reset, `meta.provider` the connector
+slug, `meta.team_id` the active team. A refused one (`auth.login.failed`)
+is a **platform** row with no tenant — a refusal names no org, and an org
+admin must not read attempts on addresses that are not their members —
+with `meta.reason` typed (`unknown_account`, `bad_password`, `locked`,
+`disabled`, `password_change_required`, `link_required`, `sso_restricted`,
+`ticket_invalid`, `reset_token_invalid`, `agent_binding`,
+`password_changed_sign_in`, `error`, …) and, where the attempt named an
+address, `meta.subject_hash`: a 16-hex **peppered** HMAC of the address
+under a key derived from the signing key, never the address itself and
+never a bare hash of it (reversible by dictionary). The digest lets you
+follow one campaign on one address:
+
+```bash
+curl "https://iterion.example.com/api/admin/audit?action=auth.login.failed&from=2026-11-01T00:00:00Z"
+```
+
+A refusal's `target_id` is the account only where the server resolved it
+(the self-service password change, a desktop ticket's account, a password
+change committed without a session — `password_changed_sign_in`, beside
+its `user.password_reset` / `user.password_changed` row); an attempt by
+address names the address only through the digest. A session refresh
+writes no row (the session lineage records it). An OIDC callback refused
+before an identity resolves — an expired or replayed state, a failed code
+exchange, an error the IdP returned — writes no row: it names no subject,
+and the server's `Warn` log is its trace; the login-CSRF guard
+(`agent_binding`) is the exception and is recorded.
+
+**What the recorded IP is, and what bounds a flood.** No deployment
+setting yet trusts a forwarded header: the server's trusted-proxy list is
+wired to no chart value or environment variable (#2673). The recorded IP
+is therefore the immediate peer's address **and port** — behind an
+ingress, the ingress pod's — and the per-IP rate-limit bucket is keyed on
+that same value, so it is per TCP connection rather than per client. What
+bounds the rows today, per route: `POST /api/auth/login` and
+`POST /api/auth/password/change` also limit per attempted address (burst
+5, 5/min), so one address cannot be hammered faster than that, but
+attempts spread over many addresses and fresh connections are not bounded;
+`POST /api/auth/password/reset/confirm` and
+`POST /api/auth/desktop/exchange` have the per-IP bucket only;
+`POST /api/auth/register` its own (burst 3); the OIDC callback has no
+limiter, and each of its rows costs a full IdP round trip. A request the
+limiter throttles (429) reaches no sign-in and writes no row.
 
 ### 1.6 User admin — force a password rotation
 
@@ -220,7 +356,7 @@ with `ITERION_BOOTSTRAP_ADMIN_PASSWORD` is the exception: the next
 restart's reconciliation (§1.1) sets it active and super-admin again — the
 sessions, tokens and identities the disable ended stay ended — so remove
 the `ITERION_BOOTSTRAP_ADMIN_*` declaration before disabling that account
-for good.
+for good. Disabling keeps the person's data; erasing them is §1.11.
 
 ### 1.7 DLQ triage
 
@@ -312,7 +448,25 @@ When `ITERION_SMTP_HOST` is set, the boot log shows
 `email_enabled` so the SPA hides the forgot-password link when it's
 off.
 
-### 1.10 PrometheusRule + PodMonitor
+### 1.10 Legal pages
+
+The legal notice, privacy policy, terms of use and accessibility statement
+are deployment configuration ([ADR-160](adr/160-legal-content-is-deployment-configuration.md));
+the chart's `config.legal.*` block fills every variable below
+([cloud-admin.md](cloud-admin.md#legal-pages-configlegal)).
+
+| Env var | Required | Effect |
+|---|---|---|
+| `ITERION_LEGAL_DOCUMENTS_DIR` | no | Directory of `<slug>.md` markdown files (`mentions-legales`, `confidentialite`, `cgu`, `accessibilite`), read once at startup; a stray or empty file refuses the start |
+| `ITERION_LEGAL_CONTACT_EMAIL` | no | The `mailto:` contact every legal page offers |
+| `ITERION_LEGAL_ACCESSIBILITY_STATUS` | no | `non_compliant` \| `partially_compliant` \| `compliant`; empty = not published |
+| `ITERION_LEGAL_ACCESSIBILITY_DATE` | no | Date the statement was established, `YYYY-MM-DD` |
+| `ITERION_LEGAL_ACCESSIBILITY_RATE` | no | Conformance rate in percent from a full audit; refused without a status |
+
+`/api/server/info` carries a `legal` block (configured documents, contact,
+status) the SPA reads to decide which links to show.
+
+### 1.11 PrometheusRule + PodMonitor
 
 The chart's `metrics.podMonitor.enabled=true` deploys a PodMonitor that
 scrapes both server and runner `/metrics`; `metrics.prometheusRule.enabled=true`
@@ -326,6 +480,59 @@ Ingress. See [quotas-and-limits.md](quotas-and-limits.md) for the
 exhaustive metric list and
 [charts/iterion/README.md](../charts/iterion/README.md) for the chart
 values.
+
+### 1.11 Erase an account (right to erasure, GDPR art. 17)
+
+An erasure request reaches the DPO or you; verify the requester's identity
+out of band, then erase the account — from the studio (Admin → Users →
+the account's file → "Effacer le compte (anonymisation)"), the CLI
+(`iterion remote admin users erase <user-id> --yes`) or the API:
+
+```bash
+curl -X POST https://iterion.example.com/api/admin/users/$USER_ID/erase
+```
+
+The account is **anonymized, not deleted**
+([ADR-159](adr/159-identity-data-lifecycle-erasure-by-anonymization.md)):
+its row keeps its id as a pseudonym — every run, audit row, note and secret
+that named the account still does — under the marker
+`erased-<id>@erased.invalid` and the terminal status `erased`. Everything
+that names or lets in the person goes: name, password, GitHub orgs, SSO
+identities, org and team memberships, pending invitations addressed to it,
+push subscriptions, its own LLM subscription credentials (forfaits) and
+credential-pool pledges, its personal API keys and secrets; its sessions
+are **deleted** (they carry the IP and user agent of each sign-in), its
+personal access tokens revoked; the run notes it wrote name its id instead
+of its address; the config-share edits it made lose their IP and user
+agent; the audit rows it acted in lose their `ip`, `user_agent`,
+`meta.email` and `meta.subject_hash`, and the rows naming it otherwise —
+an administrator's act on it, an invitation addressed to it — lose the
+`meta` keys and keep their actor's IP. Its personal organization is
+scheduled for the nightly purge, after the 24-hour grace of any
+organization deletion. The act is one platform audit line, `user.erased`,
+under your identity, carrying the counts of what was removed — keep the
+request's reference in the ticket that tracked it. The account carries
+the `erased` status from the request's first write, so nothing signs it in
+while the erasure runs, nor after a failure that interrupts it; an access
+token already minted keeps its access until its own expiry (at most the
+access TTL, 15 minutes by default), as after a disable.
+
+Refusals: your own account (`422 self_erasure` — another super-admin
+erases it); the last owner of a shared organization (`409
+last_org_owner`, naming it — transfer the ownership or delete the
+organization first). An erased account admits no further console write
+(`409 user_erased`) and owns no new organization (`422`). The route is
+idempotent: a second call answers `200` with `already_erased: true`, and a
+`500` is answered by repeating the request — its `user.erased` line, written
+anyway, carries `incomplete: true`.
+
+Backups taken before an erasure hold what it erased until they age out
+([cloud-backup.md](cloud-backup.md)); a dump is never edited. A
+restoration brings the audit log back to the restored point too, so the
+erasures to replay are read on the LIVE deployment — the `user.erased`
+lines since the dump, beside the DPO's request register — and replayed
+one request per account before any route reaches the restored server
+([restore drill](cloud-backup.md#restore-drill), step 6).
 
 ---
 
@@ -414,11 +621,68 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/review-pr/bindi
 
 UI path: **Integrations → Secrets** (`/integrations?tab=secrets`) → "Add
 team secret"; then **Integrations → Bot bindings** → pick review-pr →
-"Add binding" → pick the stored secret.
+"Add binding" → kind `secret` → pick the stored secret. The same dialog's
+`context` kind binds a pinned document instead (source repository, ref,
+path, optional read credential), and the bindings table shows each row's
+kind plus the engine's `degraded` flag when a launch could not
+materialise it.
 
 The full binding resolution chain (user > binding > team) and what
 `allowed_hosts` enforces is in
 [secrets-reference.md](secrets-reference.md).
+
+#### Binding a context document to a bot
+
+A binding of **kind `context`** ties REFERENCE MATERIAL — not a
+credential — to one bot: a file inside a git repository the operator
+controls, materialised as a run attachment of **every** run of that bot
+(schedules and webhook launches included), under a name the workflow
+declares in its `attachments:` block (ADR
+[147](adr/147-operator-bound-bot-context-is-a-pinned-source.md)).
+
+```bash
+curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/doki/bindings \
+  -d '{
+    "kind": "context",
+    "secret_name_for_workflow": "handbook",
+    "context": {
+      "git_url": "https://gitlab.example.com/org/doki-context.git",
+      "ref": "v1.4.2",
+      "path": "handbook/pricing.pdf",
+      "secret_id": "sec_…"
+    }
+  }'
+```
+
+- `secret_name_for_workflow` is the name the workflow declares in
+  `attachments:` — here `handbook`. A name the workflow does not declare
+  delivers a file no node can reach, so the binding is skipped (and
+  flagged) rather than stored unread.
+- **Pin a tag or sha in `ref`.** A moving branch makes the document
+  change under the operator's feet — the silent-drift failure the whole
+  pinned-source design exists to prevent
+  (`pkg/pluginsource`'s doctrine, reused).
+- `context.secret_id` is the READ credential (a stored team-scoped PAT
+  or deploy key), referenced by id, never inlined; omit it for a public
+  repository. A context binding exposes no secret to the workflow —
+  `secret_id` at the top level stays empty for this kind.
+- Precedence when several sources claim the same attachment name:
+  **author < operator < launch** — a bundle's `attachments/` default is
+  the author's suggestion, a context binding overrides it, and a
+  per-launch upload overrides both.
+- A binding that cannot be materialised (remote refuses the pin, path
+  missing from the checkout, document past the size bound) does NOT fail
+  the launch: the run proceeds without it, and the binding is flagged
+  `degraded_reason` on the list endpoint until a launch resolves it
+  again. The flag is the readout — a silently missing context is the
+  defect this feature exists to fix. Note the bound applies to the
+  delivered document (default 50 MiB), not to the fetch: the clone of
+  the source repository is depth-1 but otherwise unbounded, so point
+  bindings at small dedicated context repositories.
+
+On the wire the document travels as a run attachment (blob-store
+reference in cloud), so the runner pod reads it through the ordinary
+attachment contract — no queue-message change.
 
 ### 2.3 Watch usage
 

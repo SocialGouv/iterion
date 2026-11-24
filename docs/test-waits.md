@@ -188,11 +188,190 @@ of the members the scan found, for the sweep that runs in-process;
 waits at, for the program a sandbox runs. Both are inert by default (nil, and an
 empty `GATE=''` whose `gate()` returns at once), and the program's gate is
 bounded: a gate nobody releases prints an `iterion-node-session error` line, so
-a held sweep is never read as a sweep that found nothing. The witness holds the
-sweep there, asserts from the sweep's OWN view that the held scan found nothing,
-starts `late`, waits until `FindNodeSession` holds it — the entry is readable
-only once the exec is done, which is the fact the window needs — and only then
-releases.
+a held sweep is never read as a sweep that found nothing. EVERY scan is held and
+released one at a time, the release naming the scan it frees (`.resume.<n>` for
+the program), so a witness reads what each scan found from the sweep's own view
+and stages its window at the scan its premise names.
+
+**Which scan the premise is about, and why the first one is a bet.** Holding the
+FIRST scan put the premise back where the sleep had been: a seed's `exec` can
+still be running when that scan reads it, and a process in the middle of an
+execve takes its `/proc/<pid>/environ` with it for that instant, so the scan
+files it as unreadable instead of a member.
+`TestSweepStopsAProcessThatShowsAfterANonEmptyScan` asserted its held scan had
+found the seed, and reddened on 2 of 40 serial runs of unchanged code
+(`premise: the scan the sweep is held at found nothing`), then on 2 of the 3
+`go` arms of a second series — a verdict on an execve, and idle-biased: 0 of
+200 arms of the same binary under eight-way load, so a green loaded run says
+nothing about it. (The sandbox is the right place to hunt it: it is a PID
+namespace of its own, nine processes, which is the throwaway namespace this
+package's header asks for.) The
+premise is now a predicate given to `scanWindow.at`, which releases the scans
+that do not meet it and judges the first that does — the pattern
+`TestGuardFoundRefusesALiveIntruder` already applied to its own scan. And what
+`awaitSessionHolds` proves is where a launcher BECOMES visible: until its own
+execve it is a fork of the test binary, carrying the test binary's environment.
+It never proves where a process stops being missable, so a witness that needs
+ONE named scan to hold a process it started adds `awaitExeced`, which waits for
+the name `/proc/<pid>/stat` gives — the file the last execve ran.
+
+**The window the product opens is not only the first one.** A sweep that files
+the members of its first scans and then stops re-discovering passed both
+witnesses while their single window sat between scan 1 and scan 2: a mutant that
+drops members new at the third scan of a phase was green on 18 of 18 arms. Each
+witness stages its window a second time, at a later scan, and the non-empty one
+a third time two scans further on. A window witnesses that drop only when it
+sits in the phase that ENDS the sweep: a member dropped in a phase that hands
+over to the next one is re-discovered for free by that phase's own first scan.
+The non-empty witness has that by construction — its later windows sit in the
+KILL phase, which has no successor, so a member dropped there is left running
+and unreported, on the product's own lines (the join's `left running [latest
+(pid N)]`, then `latest (pid N) was stopped but not reported` — while that
+phase still had a deadline, `latest (pid N) belongs to the session and is still
+running`). Those lines come free only for
+the LAST window: a member left running is a session never quiet again, so when
+it is an earlier window's member the NEXT window's premise — a scan that found
+nothing — expires first, and a premise names the scans it waited through, not
+the process left alive. So every premise staged after a window goes through
+`atAfterStaging`, which joins the sweep and judges it as well as failing on the
+premise. Measured on the mutant that drops re-discovery in the KILL phase alone,
+whose dropped member is the SECOND window's: with the join, the red carries both
+`premise, within 30s: no scan of the sweep found nothing once more, two scans
+later` and `later (pid N) belongs to the session and is still running`, 3 of 3
+arms; without it, the same 3 arms carried the premise alone and no product line
+at all. The empty-scan witness could not have any of this: its windows
+sit in the TERM phase, which ends that sweep only while the session goes quiet,
+and the very mutants it hunts leave a member alive — with a 10s budget, the
+phase burned it and handed the member to KILL, which found it. That is how the
+third-scan mutant and its sh twin stayed green on it, 3 of 3 arms each at 10.1s,
+with the second window already in place.
+
+**A premise, not an assumption — and no clock in it.** The empty-scan witness
+reads the sweep's own scan log once it has returned (`endedQuiet`): the log must
+end on the two empty scans a quiet phase returns on. It first did so against the
+10s budget, counting at most a quarter of the scans that budget allows — 6 scans
+on each of 9 arms of sound code, against a ceiling of 50, where a phase that
+burned the budget logged 201 scans in the go implementation and 160 to 191 in
+the program — on the claim that a count is not a duration. The budget was one.
+With 150 extra processes and 48 busy loops in the sandbox's PID namespace, one
+scan of the program without `grep -z` took 4.5s, so the 10s TERM phase ran out
+after its third scan and handed both windows to KILL. Traced, the log read
+`[0 1 0 1 0 0]`: KILL's first scan re-discovered `later` for free and its two
+empty scans read as a quiet end, the premise passing the very handover it exists
+to refuse. With 300, scans took up to 8s, KILL ran out too, and the premise
+reddened unchanged code 3 of 3 arms (`[0 1 0 1]`, `[0 1 0]`) — the shape seen
+locally at load 45 and 102 (`[0 1 0 1 0]`). The phases a window sits in now
+have no deadline (`sweepNoDeadline`), so that witness's TERM phase ends on two
+empty scans or not at all, on any host, and `endedQuiet` asks only that, within
+`scanBound` (50) scans. Under the 300: both witnesses green 3 of 3 on every arm,
+the empty-scan one's TERM phase ending quiet with no KILL phase at all (traced).
+The third-scan mutant and its sh twin keep the session from ever going quiet:
+the join names the member left running once the log passes the bound (`left
+running [later (pid N)]`) and stops it, and the premise reddens too —
+`endedQuiet` in the empty-scan witness, the third window's in the non-empty one
+— 6 of 6 arms at rest, where the old premise caught it after 77 to 186 scans of
+its burned budget. Under the 300 the old witness PASSED that mutant 2 of 2, its
+TERM phase handing `later` to KILL; the new one reddens on the join's verdict,
+after 53 scans and 321s. No log shape says WHICH phase stopped a member, so the
+witness also reads each member's own end, the kernel's wait status
+(`endedOfTerm`): `late` and `later` — and `replacement`, below — must die of the
+SIGTERM their phase sends. A mutant that drops members new from the TERM phase's
+3rd scan AND hands over to KILL after its 5th ends on two empty scans in 7,
+every member stopped and reported — it passed the old witness 3 of 3 arms at
+rest, and reddened the witness as `f5de1b70f` had it 3 of 3 on `later (pid N)
+signal: killed, not of the TERM its window's phase sends`.
+
+**The respawn window, kept in the phase that ends the sweep.** A supervisor
+forks its replacement because TERM reached it, so the replacement shows only
+after a scan of the TERM phase that found the supervisor, and the scan that
+first finds it is that phase's too while the grace lasts — a scan that found
+members ends a phase only on its deadline. The non-empty witness staged that
+window while its TERM phase had a 1s budget; with a deadline already past, its
+TERM phase is one scan that hands over, its first window's member is first
+found by KILL's first scan, and no window of the package sat after a TERM scan
+that found members with another TERM scan to follow. Measured with a mutant that
+signals a member the TERM phase finds just after a scan that found members but
+never files it, Go and its sh twin: the witness as `9cdd04bae` had it reddens 3
+of 3 arms (`late (pid N) was stopped but not reported`); the package at
+`f5de1b70f` passed ENTIRELY, rc 0 — the respawner's replacement in
+`TestSweepStopsTheSessionAndNothingElse` is judged only when the sweep sighted
+it, which this sweep never does, so it SKIPPED on all three arms. The
+empty-scan witness now also holds the scan that found `late`, before the sweep
+signals it, and stages `replacement` there; its TERM phase has no deadline, so
+the scan that finds `replacement` is TERM's, and `endedOfTerm` reads that it
+ended of TERM. That mutant reddens it 3 of 3 arms on `replacement (pid N) was
+stopped but not reported` alone, its scan log the sound one, 7 scans:
+`[0 1 1 0 1 0 0]`; the respawner's subtests still SKIP. The third-scan drop still
+reddens all six arms of the two witnesses, the empty-scan one now on `left
+running [replacement (pid N)]`, and so does its variant that hands over after
+the TERM phase's 5th scan — `later` then lands at KILL's third scan and is
+dropped there (`left running [later (pid N)]`, 53 scans). A variant that drops
+only in the TERM phase and hands over after its 5th scan ends on two empty
+scans with every member reported (`[0 1 1 1 1 1 0 1 0 0]`) and reddens the
+empty-scan witness 3 of 3 on `endedOfTerm` alone: `replacement (pid N) signal:
+killed, not of the TERM its window's phase sends`. A member the join stopped
+itself is told apart (`… by the join: no phase of the sweep stopped it`),
+measured with a sweep stalled 35s after its 5th scan, 3 of 3 arms.
+
+**How far the windows reach.** A window's member is new to the scan AFTER it, so
+the two windows the non-empty witness stages in the KILL phase pin re-discovery
+at its 3rd and 5th scans, and the empty-scan one pins the 2nd and 3rd of its
+own and, at rest, the 5th. The non-empty witness's FIRST window pins no index:
+that one sits in the TERM phase, which hands over in that witness, so KILL's own
+first scan re-discovers the member for free — a mutant that classifies no new
+member at all through the whole TERM phase, and one that drops them from its 2nd
+scan on, both pass it 3 of 3 arms, while reddening the empty-scan witness 3 of 3
+on `endedQuiet`. What the first window asserts is that its member is STOPPED, by
+whichever phase reaches it; the TERM indexes are the empty-scan witness's to
+hold. Measured with mutants that drop a member first seen at the Kth scan of a
+phase: K=3 and K=4 redden both witnesses, K=5 the non-empty one, K=6 passes
+both — and with the respawn window in place, K=5 reddens the empty-scan witness
+too (3 of 3), while K=6 still passes both at rest. The third window is what K=4
+and K=5 cost: with only two, K=4 and its sh twin passed the ENTIRE package, 69
+green and rc 0. No finite set of windows reaches every index, which is why the
+product's clause stays a loop over every scan, and why both witnesses say where
+their proof stops.
+
+The scan INDEX is also the only axis these windows bound, and that bound is
+load-free but not time-free: at rest both witnesses reach their last window
+within a second or two of the sweep's start, where production gives the phases
+5s and 3s, so a sweep that stops re-discovering
+after a few seconds of ELAPSED time is invisible to them. Measured, a mutant
+that classifies no new member more than 3s after the sweep started: the ENTIRE
+package green, 69 green and rc 0, both witnesses passing on all three of their
+arms. Nothing here covers it, and a window cannot — a window is an index.
+
+The KILL-phase window also turns a capture that never was one: the mutant that
+drops re-discovery in the KILL phase ALONE read as caught by
+`TestSweepSignalsBeforeItsDeadline`, and is caught there 1 arm in 15 — by the
+same execve miss, so the verdict was a race's. It reddens the non-empty witness
+3 of 3 instead, and deterministically: the member it drops keeps the session from
+ever being quiet again, so the third window's premise cannot be met and fails as
+itself, naming the scans it waited through — and, since `atAfterStaging` joins
+the sweep on that failure, alongside the product's own verdict on the process it
+left running. The deadline witness still catches it only by that race, and that
+is no loss — when a sweep gives up is that
+witness's subject, re-discovery is not.
+
+**No deadline where a window sits, and every wait counted in scans.** A phase
+that ends on its deadline skips the scan a window was staged for and reads as a
+verdict on how long this host took to scan — when a sweep gives up is
+`TestSweepSignalsBeforeItsDeadline`'s subject, and it keeps the knob. Wide
+budgets were the first answer, and a wide budget is a bigger constant: the
+non-empty witness's KILL phase got 20s for its 7 scans and 2 stagings — measured
+then at most 5.28s an arm over 1056 arms, eight workers in parallel — and under
+the load above it ran out before the third window's scan, 2 of 2 arms
+(`premise, within 30s: … [1 2 0 1]`). So `sweepBudget` gives the phases the
+windows sit in `sweepNoDeadline`, and that witness's TERM phase — which only its
+deadline can end, the seed ignoring TERM — a deadline already past, one scan
+whatever the host. Every wait that spans scans is bounded by the sweep's
+progress, not the wait's age: `scanBound` scans in all, `premiseWait` with no
+new one (`atOrNot`, the join). A sweep that never ends is the product's verdict,
+named with what it left running; the join then stops that session itself, so
+the sweep comes back with a report to judge. The program's own net follows: a
+held program ends by its witness, and `shSweep` gives it the test binary's
+deadline, never less than `sweepProgramCeiling` — under that load the
+sh-without-grep-z arms took 43s to 57s, the go and sh ones 1.2s to 10.7s.
 
 Where the gate sits is what keeps the mutation honest. At the settle instead,
 the mutant that ends on the FIRST empty scan never settles, and the witness
@@ -214,9 +393,11 @@ time instead of a verdict, and a premise that never holds fails as itself.
 
 The seeds are the other side of the same wall, and there load FAILS the witness
 instead of passing it vacuously. A foreground seed returns the pid of a launcher
-whose exec may still be running, and a process carries the entry only once its
-exec is done — until then its `/proc/pid/environ` is the test binary's, and a
-scan misses it. `TestSweepStopsTheSessionAndNothingElse/go` bet all of
+the test binary has only just forked, and until that launcher's own execve runs
+it carries the test binary's environment and not the entry, so a scan misses it.
+What it does not prove is the exec of the program the seed goes on to become:
+that is the bet the two paragraphs above pay for.
+`TestSweepStopsTheSessionAndNothingElse/go` bet all of
 `populate()` on those execs and lost in a merge queue that touched no file of
 the package (#2539): the guard refused (`the session misses [respawner …]`),
 which is correct, but read as a product verdict. The world now awaits its seeds:

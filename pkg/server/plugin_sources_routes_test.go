@@ -78,7 +78,7 @@ func serveGitOverHTTP(t *testing.T, root string) *httptest.Server {
 	if err != nil {
 		t.Skip("git not available")
 	}
-	execPath, err := exec.Command(gitBin, "--exec-path").Output()
+	execPath, err := exec.Command(gitBin, gitlib.NoAutoMaintenance("--exec-path")...).Output()
 	if err != nil {
 		t.Skipf("git --exec-path: %v", err)
 	}

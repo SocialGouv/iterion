@@ -53,7 +53,7 @@ three members of an aggregate proves nothing about the third.
 
 ### 2. Renovate opens the PRs
 
-Four gestures, in this order:
+Five gestures, in this order:
 
 **2a. Install the App on the repository.** The org's `socialgouv-renovate` App
 is `repository_selection: selected` — a repository not explicitly added never
@@ -118,6 +118,52 @@ agreement 4, and the preflight derives it rather than checking a fixed list:
 | `dependencyDashboard` | `issues: write` — the dashboard is an issue |
 | `vulnerabilityAlerts` | `vulnerability_alerts: read` |
 
+**2e. Give it a cadence GitHub keeps.** The workflow's own `schedule:` is a
+best-effort trigger, and on buildkit-operator it was a poor one: 41 of ~813
+expected hourly passes fired between 27/10 and 10/11/2026 (≈ 5 %, median gap
+6.2 h), so a security advisory waited 4 h 51 for the pass that opened its PR
+([#3130](https://github.com/SocialGouv/iterion/issues/3130)). The external
+trigger is an iterion schedule of the
+[`workflow-kick`](../bots/workflow-kick/README.md) bot, which dispatches the
+workflow (`workflow_dispatch`, which the recipe above already declares) every
+hour:
+
+1. **The App permission.** The GitHub App behind the repository's iterion
+   connection holds `Actions: Read and write` — an org owner approves the
+   pending permission request. The server checks the recorded grant before it
+   mints; when the record lacks it, it re-reads the installation's live grant
+   and records it, so an approval made after the install counts from the next
+   tick, with no refresh to run. It names this permission only when the
+   installation still lacks it (`workflow_dispatch_permission_missing`).
+2. **Enable `workflow-kick`** on the repository's integration (Studio →
+   Integrations). Provisioning creates its hourly schedule (`7 * * * *`) bound
+   to the integration.
+3. **Name the workflow** on that schedule: `PATCH
+   /api/teams/{id}/schedules/{sid}` with `{"vars": {"workflow":
+   "renovate.yml"}}`, or Studio → Automations → Schedules (team admin). Until
+   then the tick mints no grant and each run ends `NO_WORKFLOW`; once set, the
+   grant is bound to that file and dispatches nothing else. A manifest
+   declaring the `actions` scope cannot default this var: the bundle decode
+   refuses it, so the operator, not the bot's author, names the workflow.
+
+The bot declares `forge.token_scopes: { actions: write }`, which mints the
+dispatch capability into its schedule run's publish grant — a pull-request or
+API launch never gets it, nor does any other bot. That grant is bound to the
+named workflow, dispatches it once, and is bound to no pull request, so it
+dispatches and does nothing else: a
+review, a commit status — the required check included — or a pull-request read
+made with it is refused (`grant_bound_to_no_pull_request`) before any forge
+call. The
+dispatch itself is made by the server with a GitHub App token minted for that
+one call — `{actions: write, metadata: read}`, narrowed to the repository — so
+no run, and no other bot, ever holds the Actions permission, and the runtime
+token every run mounts is unchanged. A refusal (another workflow or
+repository, a file name that is not a plain `*.yml`, an untrusted or ended
+run, a second dispatch on the same grant, a connection that is not a GitHub
+App) is typed and comes before any forge call; the run ends
+`WORKFLOW_NOT_DISPATCHED` with the code, and the schedule's health surface
+shows it.
+
 ### 3. The ruleset requires the CI checks — and only those, for now
 
 Require what already runs. **Do not** require the review context yet: a
@@ -129,6 +175,24 @@ Inventory the **bypass actors** while you are there. They are not a defect —
 they are the admin escape hatch, kept on purpose. What is a defect is not
 knowing them, because a merge by a bypass actor did **not** pass the gate, and
 nothing downstream should read it as a conforming merge.
+
+The inventory says who **may** bypass; it cannot say who **did**. That is
+agreement 8, and it reads GitHub's own verdict per push —
+`repos/<repo>/rulesets/rule-suites` answers `pass | fail | bypass` with the
+actor — rather than inferring a merge actor from a pull request, where a queue
+merge, a squash and a direct push all look the same. What reddens is a bypass
+no inventory entry can explain **by shape**: an App bypassed while the ruleset
+lists no `Integration`, or a human bypassed while it lists no role-shaped
+actor. Shape is as far as the read honestly goes — rule-suites names the user
+who pushed, the ruleset names the role that let them, and nothing joins the
+two, so the report names the **actor** and never claims the role. The read
+needs admin on the repository; without it the agreement is a BLIND SPOT, never
+"no bypass".
+
+Measured on `SocialGouv/iterion` itself (2026-10-29): 8 of the last 10 pushes
+to `main` were `bypass` — the landing trains, by a repository admin, under
+`RepositoryRole 5`. Both legitimate and worth saying out loud, which is the
+whole point of the agreement.
 
 ### 4. The iterion integration, auto-merge OFF
 
@@ -175,9 +239,8 @@ produced goes with them. A non-empty list also refuses a launch whose routing
 fields it cannot READ (ADR-129 §5), and this block's own `overrides` cells do
 not repair every such slot: not a node the walk records as fieldless
 (`fieldlessSite` — a `human` node's llm half, a subbot, an agent recovery),
-whose refusal says to replace the node or launch without the list, and not
-`review-pr`'s two `${ITERION_VIBE_PROVIDER_GPT:-}` slots (ADR-129 §7). The
-recipe above carries both — `dep-update-guard`'s `escalate` is
+whose refusal says to replace the node or launch without the list. The
+recipe above carries one — `dep-update-guard`'s `escalate` is
 `interaction: llm_or_human`. So screen EVERY bot the integration enables, not
 the one you are wiring: a refused launch names only ONE unreadable route, the
 head of a list sorted by site then field (`FirstUnreadable`) — a SAMPLE, not
@@ -204,10 +267,96 @@ commit status on the repository — including one that is neither Revi nor Vetty
 The loop's whole premise is that the gate proves an adversarial reviewer saw
 the change, and a name does not prove that. This is agreement 2.
 
+```
+gh api repos/<owner>/<repo>/rulesets/<id> -X PUT --input - <<'JSON'
+{ "rules": [ { "type": "required_status_checks", "parameters": {
+    "required_status_checks": [
+      { "context": "revi/review", "integration_id": 4895793 },
+      { "context": "test" }, { "context": "race" } ] } } ] }
+JSON
+```
+
+Two numbers that are **not** interchangeable, and getting them wrong is the
+whole of this step:
+
+- `integration_id` is the **App id** — `app_id` on the installation payload,
+  and the same id space as a `bypass_actors` entry of `actor_type:
+  Integration`. On SocialGouv, `iterion-forge-core` is **installation**
+  160560029 of **App** 4895793; pinning the installation id pins nothing that
+  can ever post.
+- the App to pin is the one iterion **posts as**, read rather than assumed:
+  `repos/<repo>/commits/<head>/statuses` carries `creator.login` on the
+  verdict (`iterion-forge-core[bot]` here). Per-tenant deployments carry their
+  own `iterion-forge-*` App, so the id is per-org, never a constant.
+
+Agreement 2 decides this as a **triple** — context × producing App ×
+requiring ruleset — because dropping any leg answers something else: a merely
+*present* pin can name an App that never posts (a check that can never go
+green), and GitHub **accumulates** required checks across active rulesets, so
+the same context can be required twice with a different pin each time.
+
+#### The merge-queue caveat — pin LAST, and in this order
+
+A merge-queue entry is a revision **no pull request owns**: GitHub builds
+`gh-readonly-queue/<base>/pr-<n>-<base-sha>` and fires `merge_group`, so the
+review lane never runs there and the required context is absent exactly where
+the merge decision is made. The queue then waits for a status that cannot
+arrive and dequeues the entry on timeout, with every entry behind it
+(measured 2026-07-28 on PR #307: 62 minutes in `AWAITING_CHECKS`).
+
+Two things can answer on that revision, and only one of them can satisfy a
+pinned check:
+
+| producer | posts as | works under a pin? |
+|---|---|---|
+| the engine (`pkg/server/forge_gate_merge_group.go`) | the repo's iterion App | yes — the same App as on the pull request head |
+| [merge-queue-gate.yml](../.github/workflows/merge-queue-gate.yml) | GitHub Actions (App 15368) | no — the pinned App never posted it |
+
+So the order is not a preference. **Pinning the ruleset while the workflow is
+the producer stalls every queue entry**, and the last writer owns the context,
+so both posting is not a safe middle ground either:
+
+1. the engine's binary carrying the `merge_group` lane is **deployed**;
+2. the GitHub App's webhook subscription carries **Merge group** (without it
+   the delivery never arrives and nothing on the queue revision changes);
+3. one entry observed with `revi/review` on the queue revision **posted by
+   the iterion App** — read `creator.login`, not just the state;
+4. `MERGE_QUEUE_MIRROR=off` on the repository, retiring the fallback;
+5. **then** `integration_id` on the ruleset, and one more queue entry watched
+   through.
+
+Rolling back is step 4 in reverse: unset `MERGE_QUEUE_MIRROR` and drop the
+`integration_id`, in that order — the workflow must be producing again before
+the pin stops being satisfiable.
+
 ### 7. Watch it BLOCK a fresh revision
 
 Push a new commit to an open PR and confirm the gate goes back to pending and
 holds the PR. A gate that only ever goes green has not been observed to gate.
+
+A new commit, not a rebase. With `review_on_sync` on, Vetty (2.12.0) carries
+its gate across a **pure rebase** with no LLM call: its `continuity` node
+compares the change identity of the new head (the `patch-id --verbatim` of
+`merge-base..head`, folded with the changed paths and modes and with
+`base_ref`) against the identity stamped on
+its earlier verdicts, and publishes the green verdict `carried` on the new head
+— or, when the head already carries its own green, only renews the arming. Any
+verdict on the same change that is not green, and any red already on the new
+head, vetoes the carry — so does a review of Vetty's edited after it was
+published, or its stamp on a status another identity wrote — and a green older
+than `carry_max_age_h` (72 h, from the original audit) is audited again, on the
+new head and on its own. A carry also needs a check the base REQUIRES other
+than the gate on the new head: on a base whose only required check is the gate,
+a carried head would merge with no build, so it is audited in full instead. An audit that finishes after the rebase
+is repinned onto the new head under the same veto, the new head's identity
+read from the forge, never from the workspace its agents ran in.
+So "the gate went green again on its own" after a rebase is the gate working;
+the build on the new base is the repository's required checks', which run on
+every head. The verdict set Vetty publishes is now eight — `carried` is the
+third green, beside `clean` and `committed` — and `/vetty` buys a full audit
+unless the integration's `launch_vars` pin `continuity` (they win over the
+command's own). The mechanics and their limits are in
+[the bundle's README](../bots/dep-update-guard/README.md#gate-continuity--a-rebase-keeps-its-gate-with-no-llm-call).
 
 ### 8. Arm auto-merge — last
 
@@ -226,6 +375,21 @@ Two settled arbitrations govern this step:
 Which is why the preflight's agreement 7 sharpens its wording once
 `arm_automerge` is on: a required context that nothing produces stops being
 "this PR blocks" and becomes "this configuration cannot converge".
+
+And the launch var is only **half** the gesture. The other half is the
+repository's own **Allow auto-merge**: the bot arms a PR through
+`enablePullRequestAutoMerge`, which GitHub refuses outright while that setting
+is off, so an armed bot on a repository that forbids auto-merge merges nothing:
+Vetty reads the setting back and never turns that refusal into a merge of its
+own, and its reason names it. A repository created without it has it off —
+GitHub's default — so this is a gesture, not a box already ticked:
+
+```
+gh api -X PATCH repos/<owner>/<repo> -F allow_auto_merge=true
+```
+
+That pair is agreement 9: the preflight reads the launch var and the repository
+setting together, because either one alone describes a loop that cannot merge.
 
 ---
 
@@ -296,6 +460,94 @@ bot minting a runtime token on that connection carries it, and an actor that
 can rewrite CI runs arbitrary code in it — so it stays a deliberate,
 per-connection decision (#1595).
 
+### Every pusher answers for its delivery
+
+Vetty and Billy are not the only bots that push under the managed forge
+credential, and the same raw 403 waits for any of them. So the question is
+asked of the whole class rather than of a list, by
+[bots/forge_delivery_class_test.go](../bots/forge_delivery_class_test.go):
+every bundle that declares the `forge_token` secret **and** can deliver —
+a program of its own calling `git push`, a bundle shipping
+`skills/forge-mr-create.md`, or a `delivery_probe` already — owes one of three
+answers, and a bundle that joins the class owing none reddens the suite.
+
+| answer | who | what it buys |
+|---|---|---|
+| **probe the delivery** — ask the preflight above before pushing | `dep-update-guard`, `branch-improve-loop` | an answered denial becomes a typed hold; nothing unanswered ever does |
+| **own the paths delivered** — `DELIVERY_OWNED_PATHS` in the pushing program, which both stages and refuses from that tuple | `feed-watch`, `prod-watch`, `vuln-watch` (their state dir) | a `.github/workflows/**` path cannot be in the diff, so there is nothing to ask |
+| **gate the delivery** — the same declaration in a deterministic node standing on the only in-edge of the agent that pushes, exiting to a typed `fail` | `docs-refresh`, `product-docs` (their doc writeable-set) | the paths are refused BY NAME before the agent runs, so a run that would carry one ends on `DELIVERY_PATHS_REFUSED` instead of at the forge |
+
+The declaration is a name in the program, never a comment: the staging and the
+refusal read the tuple and nothing else, so narrowing it narrows the delivery —
+and a tuple widened to the repository root or `.github` is refused by the same
+guard, since a pathspec that can hold a workflow file buys the exemption while
+delivering exactly the diff the probe exists to refuse. A gate earns the
+exemption on two further counts, both read off the compiled graph: it must
+**dominate** the delivery — cut its verdict edges and the delivery is
+unreachable, which is what a loop condition like a writeable-set gate never
+was — and its own exit must be a declared `fail` carrying a code, because an
+untyped refusal reads as the engine's generic `FAIL_NODE`.
+
+A gate is the strict **tail** of the loop condition it stands behind, and
+owes it the same rule in the same **window**: the writeable-set gate is the
+only remediation route there is, so a path the gate refuses and the loop
+certifies has no cure at all — the campaign is never asked to revert it, the
+loop converges, and the run dies typed after the whole budget is spent, with
+nothing to widen. Same rule, different window is the same defect: both nodes
+are handed the base the entry node recorded, never one re-derived from the
+campaign's own commit messages, and both read it in one frame (the committed
+series and the worktree, `--no-renames`, `core.quotePath=false`). The two
+are therefore asserted EQUAL on one tree, bot by bot — the window included
+(`bots/delivery_gate_test.go`, `TestTheLoopGateAndTheDeliveryGateAgree`) —
+and what a gate refuses by name stays as narrow as the credential's own
+refusal: `.github/workflows/**`, not `.github/`.
+
+The pushers that still owe an answer are the ones whose delivery no pathspec
+can bound: an agent writes code across the whole tree and opens the pull
+request itself, so there is no pull request for the preflight to be asked
+about yet, and no narrow owned set to declare. Each is named with that reason
+in `unprovenForgePushers`, pointed at epic
+[#1409](https://github.com/SocialGouv/iterion/issues/1409) — the preflight
+widened to a (repo, credential) pair — and the guard refuses a stale entry as
+firmly as a missing one: the day one of them answers, the list has to lose it.
+
+---
+
+## When the provider's quota runs out
+
+The lane's reviews run on a provider forfait, and a forfait has walls: a
+five-hour window, a weekly cap (z.ai `[1308]`, `[1310]`). A review that meets
+one is **parked**, not dead, and what an operator sees is the same on every
+surface ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)):
+
+- the run sits at `failed_resumable` with `USAGE_LIMIT_BLOCKED`, and a
+  `run_retry_scheduled` event naming the instant it comes back — the earlier of
+  the wall and a skipped credential's reopening;
+- the pull request carries one pause notice, which names that same instant
+  and says the credential is probed hourly until then, at most
+  `ITERION_RETRY_PROBE_BUDGET` times: one parked run per credential — the one
+  pulled least recently, earliest-parked first — is relaunched once an hour to
+  ask the provider whether the wall fell early, and when it gets past the wall (a
+  forfait topped up by hand) every run parked on the same credentials resumes
+  in the same pass. Nothing else relaunches a parked review before its date —
+  not the due pass, not the gate reconciler, which counts a parked review as
+  alive (also in the gap before its retry is armed) and leaves the head's one
+  relaunch unspent;
+- the minutes an attempt spends only meeting the wall leave the run's
+  `max_duration` (`duration_refunded_ms` on `run_failed`), so a week-long wait
+  no longer kills the review on its duration budget;
+- a fallback chain that met the window on one route and a dead credential on
+  another still parks on the window; the dead route is named in the
+  `node_recovery` event's `chain_routes`, and repairing or retiring that route
+  is a separate, human task.
+
+What still needs a human: a spend ceiling (it reopens when an admin raises
+it), a chain whose every route is a dead credential (`AUTH_FAILED`), and a
+park whose attempt budget is spent — that one is dead, and the gate's usual
+repair (one relaunch per head, then the board) takes over. To look before the
+hourly probe on a forfait topped up by hand, `iterion remote runs resume
+--usage-blocked` resumes every parked run at once.
+
 ---
 
 ## The preflight
@@ -304,7 +556,7 @@ per-connection decision (#1595).
 scripts/auto-maintenance-check.sh <owner>/<repo> [--json]
 ```
 
-It reads; it never writes. Seven agreements:
+It reads; it never writes. Ten agreements:
 
 | # | agreement | broken means |
 |---|---|---|
@@ -315,8 +567,11 @@ It reads; it never writes. Seven agreements:
 | 5 | the delivery App is live, reaches this repository, can touch what Renovate may bump, and the workflow's secrets exist | the alignment cannot be delivered — a workflow-touching one is held by name (see below), the rest is refused at push |
 | 6 | the repository is inside the Renovate installation | no dependency PR is ever opened here |
 | 7 | every required context has actually been produced | the PR blocks forever — or, armed, cannot converge |
+| 8 | a conforming merge is told apart from a bypass merge | a push that skipped the gate is read as one that passed it |
+| 9 | the forge allows the auto-merge the integration is armed for | the armed bot merges nothing: GitHub refuses `enablePullRequestAutoMerge` while the repository setting is off |
+| 10 | the dependency lane itself has produced | the loop is silent, and a silent loop looks exactly like a repository with nothing to bump |
 
-Four things it does **not** do the obvious way, each because the obvious way
+Five things it does **not** do the obvious way, each because the obvious way
 was measured wrong:
 
 - **Only rulesets that gate the default branch count.** Dependency PRs target
@@ -333,15 +588,43 @@ was measured wrong:
   so there is nothing to be blind about.
 - **A suspended installation is a disagreement, not a permission question.** It
   holds every permission it ever held and uses none of them.
-- **Bypass actors are printed as inventory, not scored as an agreement.** They
-  are the admin escape hatch, kept on purpose, so neither outcome can redden —
-  and a line that cannot fail should not be counted among lines that can. What
-  the reader needs is the list, so that a merge by one of them is never
-  mistaken for a conforming merge.
+- **Who MAY bypass is inventory; who DID is agreement 8.** The list is the
+  admin escape hatch, kept on purpose, so its contents cannot redden and it
+  stays a note rather than a scored line. What could not stay is the sentence
+  printed in its place — "every merge went through the gate", whenever the list
+  came back empty — a claim about pushes nobody had read. The push history is
+  read instead, and what reddens there is a bypass no inventory entry can
+  explain by shape.
+- **Agreement 10 reads whether the lane RAN, how long ago, and its blind spot
+  is self-limiting.** Settings that all agree still bump nothing when the lane
+  itself is broken: a scheduled run failing on a secret it cannot mint, a
+  workflow GitHub disabled after 60 days of repository inactivity, or a lane
+  that simply stopped firing while its workflow stays `active` and its last
+  run stays green. So it reads the last run that reached a **verdict** — its
+  `.conclusion`, never `.status`, which only says the run finished — by a
+  stable key rather than by the page's order, and reddens when that verdict is
+  older than 60 days whatever its colour (`AUTO_MAINT_LANE_MAX_AGE_DAYS` moves
+  the bound; `AUTO_MAINT_NOW` pins the clock for a replay, and a pinned clock
+  is announced on the report's header line and carried in `--json` as `now`
+  and `now_pinned`, so a replay variable left in a job cannot green a dead
+  lane unseen). A `cancelled` or `skipped` run is neither a production nor a
+  failure: it is looked past and counted, together with the runs not finished
+  yet, and a sample made only of them (`AUTO_MAINT_RUN_SAMPLE` widens it) is
+  answered the way a silent workflow read is — by a pull request the installed
+  App opened within the bound, or by a blind spot. The lane is the workflow at
+  the recipe's path or one named exactly `Renovate` (`AUTO_MAINT_LANE_WORKFLOW`
+  names another); a config validator next to it is printed as inventory and
+  never judged as the lane, so a red validator cannot redden a producing lane
+  and a green one cannot hide a red lane. A lane that runs forge-side leaves no
+  workflow to read, and there a pull request the **installed** App opened
+  **within the bound** proves what a run would have proven; silence proves
+  nothing and blinds — and so does a hosted service that stopped org-wide,
+  whose last pull request has long fallen out of the window.
 
 **Exit codes.** `0` all agree · `1` at least one measured disagreement · `2` a
 **blind spot** — a tool missing, an API that did not answer, a truncated page,
-an unparseable payload, or a read this credential cannot make.
+a payload unparseable or of a shape the endpoint does not contract, or a read
+this credential cannot make.
 
 Blind outranks broken, deliberately. With a blind spot open the run cannot
 claim its list of disagreements is the whole list, and a comparison that fails
@@ -367,7 +650,27 @@ be told apart from a script that always fails.
 
 It guards the *inputs* as well as the predicates, which is the harder half: a
 ruleset scoped to a release branch, an `evaluate`-mode ruleset, a preset-only
-config, a config GitHub withheld for size, two installations of the same scope,
-a suspended App, `arm_automerge: "yes"`, the inline spelling of the manifest's
-allowlist, and a working directory holding files that look like glob matches
-for it. Every one of those was a full green before its fix.
+config, a config GitHub withheld for size, a symlink where the config should
+be, two installations of the same scope, a suspended App, `arm_automerge:
+"yes"`, a repository that forbids the auto-merge the integration arms, a
+workflow GitHub disabled for inactivity, a lane whose last completed run
+failed, a green verdict from 2021 on a workflow still `active`, a 2021 pull
+request as the only trace of a hosted service, a red config validator next to
+a green lane, a run the forge cancelled, a sample made only of skipped runs
+next to the App's own fresh pull request, GitHub's error object served with
+exit 0 as a list, as a ruleset and as a file, two completed runs the stable
+key cannot tell apart, the inline spelling of the manifest's allowlist, and a
+working directory holding files that look like glob matches for it. Every one
+of those was a wrong verdict before its fix — a full green for most; for the
+red validator, the cancelled run and the skipped sample, a red or a blind spot
+on a lane that was producing; and for the error object served as a file, an
+agreement that vanished from the report instead of reddening.
+
+**And the table above is witnessed too.** The agreement count a reader counts
+lives in this page while the agreements live in the script, which is the very
+shape of drift this preflight exists to catch — it drifted here, for a week,
+with agreement 8 described 300 lines above a table that stopped at seven. So
+`TestTheDocTableNamesEveryAgreementTheScriptCanEmit` derives both sides and
+compares them: every numbered label the script can emit has its row, every row
+names an agreement the script can emit, and the spelled number matches the
+rows.

@@ -154,6 +154,13 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 		Short: "List or manage " + scopeWord(prefix) + " invitations",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+			// Before the scope resolution, which reads /api/auth/me: a
+			// credential that mints nothing sends nothing at all.
+			if len(args) == 2 && args[0] == "create" {
+				if err := c.RefuseTeamTokenMintFromPAT(scopeWord(prefix) + " → Members → Invite"); err != nil {
+					return err
+				}
+			}
 			id, err := resolve(cmd, c)
 			if err != nil {
 				return err
@@ -163,6 +170,8 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 			case len(args) == 0:
 				return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 			case args[0] == "create" && len(args) == 2:
+				// The invitation IS a team token — whoever holds it joins
+				// the team with it — so a stored token was refused above.
 				role := remoteInviteRole
 				if role == "" {
 					role = "member"
@@ -217,16 +226,17 @@ var remoteTeamsCreateCmd = &cobra.Command{
 
 var remoteTeamsSwitchCmd = &cobra.Command{
 	Use:   "switch <team-id>",
-	Short: "Switch the CLI's default team (mints a team-pinned token)",
+	Short: "Switch the CLI's default team (mints a team-pinned token via a browser approval)",
 	Long: "Switch the CLI's default team.\n\n" +
 		"A token's team is fixed when it is minted, so switching means minting a\n" +
-		"new one — which a token may not do: the instance refuses it. From a\n" +
-		"stored token, pin the team at login instead:\n" +
-		"  iterion remote login <url> --email <you> --team <id>\n" +
-		"or switch team in the studio and run `iterion remote login <url>`.",
+		"new one pinned to the target team — and a stored token may not mint one\n" +
+		"(the instance refuses it), so the switch re-opens the browser approval\n" +
+		"(the studio's /cli-auth page) with the team pinned: the approving session\n" +
+		"mints the token, the CLI stores it, and the previous CLI token is revoked.\n" +
+		"Headless: `iterion remote login <url> --email <you> --team <id>`.",
 	Args: cobra.ExactArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteTeamsSwitch(cmd.Context(), c, p, args[0], cliTokenName())
+		return cli.RemoteTeamsSwitch(cmd.Context(), c, p, args[0], cliTokenName(), cliTeamApproval(c))
 	}),
 }
 

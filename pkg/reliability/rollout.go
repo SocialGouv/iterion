@@ -42,24 +42,95 @@ var emitInvalidModeWarning = func(name, value string) {
 	)
 }
 
-// ModeFromEnv resolves the ONE rollout mode every surface must agree on.
-// A recognised EnvMode is authoritative, including an explicit legacy
-// rollback. An unset or invalid value falls back to the compatibility alias;
-// invalid values are warned once so a typo cannot silently change the gate.
-func ModeFromEnv() Mode {
+// ModeUnset is the absence of an answer from a tier. Every caller passes it
+// for the level tier today: the run-affecting settings a database level
+// owns (ADR-132 territory, #2699) have no resolver yet, so the process
+// floor below is the whole answer. The parameter is the seam — when that
+// resolver lands, its caller passes the level-resolved mode HERE rather
+// than adding a second resolution the launch surfaces could disagree with.
+const ModeUnset Mode = ""
+
+// strictness orders the modes by how much the gate refuses. It is what
+// makes the process env a FLOOR rather than a value a level overwrites: a
+// level may raise the gate above what the operator set on the process, and
+// may not lower it.
+//
+// A value this package does not recognise is NOT an answer (-1): the floor
+// stands, exactly as it does for an unparseable variable.
+func (m Mode) strictness() int {
+	switch m {
+	case ModeLegacy:
+		return 0
+	case ModeReport:
+		return 1
+	case ModeEnforce:
+		return 2
+	default:
+		return -1
+	}
+}
+
+// ModeFloor is the PROCESS tier of the rollout mode: the mode an operator
+// set on this process, plus whether they set the authoritative variable to
+// legacy — which is a CAP, not a floor.
+//
+// The distinction is the whole value of the record. Step 4 of
+// docs/workflow-reliability-1006.md promises that
+// ITERION_RELIABILITY_MODE=legacy is an emergency lever; under plain floor
+// arithmetic a level resolving to enforce would raise the gate straight
+// back over the operator pulling it, and the documented rollback would
+// stop being a rollback.
+type ModeFloor struct {
+	Mode Mode
+	// Rollback is true only for an EXPLICIT legacy on EnvMode. The older
+	// alias does not set it: that variable is the narrower switch this
+	// rollout generalises, and the doc states the rollback is performed
+	// through EnvMode alone.
+	Rollback bool
+}
+
+// FloorFromEnv resolves the process tier. A recognised EnvMode is
+// authoritative, including an explicit legacy rollback. An unset or invalid
+// value falls back to the compatibility alias; invalid values are warned
+// once so a typo cannot silently change the gate.
+func FloorFromEnv() ModeFloor {
 	if raw := strings.TrimSpace(os.Getenv(EnvMode)); raw != "" {
 		if mode, ok := parseMode(raw); ok {
-			return mode
+			return ModeFloor{Mode: mode, Rollback: mode == ModeLegacy}
 		}
 		warnInvalidModeOnce(EnvMode, raw)
 	}
 	if raw := strings.TrimSpace(os.Getenv(EnvContextPolicyAlias)); raw != "" {
 		if mode, ok := parseMode(raw); ok {
-			return mode
+			return ModeFloor{Mode: mode}
 		}
 		warnInvalidModeOnce(EnvContextPolicyAlias, raw)
 	}
-	return ModeLegacy
+	return ModeFloor{Mode: ModeLegacy}
+}
+
+// Resolve folds a level-resolved mode onto the process floor: the rollback
+// cap first, then the stricter of level and floor. ModeUnset for level —
+// today's only caller — returns the floor unchanged.
+func (f ModeFloor) Resolve(level Mode) Mode {
+	if f.Rollback {
+		return ModeLegacy
+	}
+	floor := f.Mode
+	if floor.strictness() < 0 {
+		floor = ModeLegacy
+	}
+	if level.strictness() > floor.strictness() {
+		return level
+	}
+	return floor
+}
+
+// ModeFromEnv resolves the ONE rollout mode every surface must agree on,
+// from the tiers that exist today: the process floor, with no level above
+// it.
+func ModeFromEnv() Mode {
+	return FloorFromEnv().Resolve(ModeUnset)
 }
 
 func parseMode(raw string) (Mode, bool) {
@@ -113,12 +184,9 @@ func (m Mode) ContextPolicy() store.ContextPolicy {
 // not a rollback lever for the reliability-mode pilot. The existing
 // ITERION_OUTPUT_CORRECTION_BUDGET variable sets the process-wide engine
 // default, and runtime.WithOutputCorrectionBudget overrides it per engine, but
-// correction fires only when runtime.WithOutputValidation is enabled AND the
-// executor implements runtime.OutputCorrector. No production path currently
-// satisfies both conditions (the sole corrector in the tree is a test double,
-// and ClawExecutor validates and retries upstream of the engine's optional
-// path), so changing that budget does not disable the pilot controls reported
-// by Config.
+// the executor's schema correction loop shares this durable allowance with
+// runtime correctors. It is independent of the reliability pilot controls
+// reported by Config.
 type Config struct {
 	Mode                  Mode
 	RetryCircuitThreshold int
@@ -186,24 +254,16 @@ func ReportForRun(run *store.Run) CompatibilityReport {
 	return r
 }
 
-// correctionSucceeded is the one episode status that leaves nothing for a
-// rollback to strand: the output was repaired and published. The vocabulary
-// is store.OutputCorrectionEpisode.Status, whose values are spelled out in
-// pkg/runtime/node_output.go (active | succeeded | exhausted | unchanged) —
-// unexported there, so this is a literal by necessity, not by choice.
-const correctionSucceeded = "succeeded"
-
-// correctionEpisodeSettled decides whether one episode leaves the run safe to
-// roll back. The SAFE set is the closed one, deliberately: enumerating the
-// UNSAFE statuses is what made "unchanged" — the runtime's no-progress stop,
-// which it groups with "exhausted" in its own terminated-episode guard — read
-// as green, on the very artifact an operator uses to decide promote vs
-// rollback. It is the mistake the rollout doc names one level up: a missing
-// or unrecognised field means pre-pilot, never successful. An episode status
-// this package has not seen (a future state, or an empty one on a partially
-// written ledger) is therefore unsafe, not safe.
+// correctionEpisodeSettled recognizes terminal correction episodes. Exhausted
+// and unchanged episodes have no pending correction to strand on rollback.
+// Unknown and partially written statuses remain unsafe.
 func correctionEpisodeSettled(episode store.OutputCorrectionEpisode) bool {
-	return episode.Status == correctionSucceeded
+	switch episode.Status {
+	case "succeeded", "exhausted", "unchanged":
+		return true
+	default:
+		return false
+	}
 }
 
 // Baseline summarises the current fleet without changing any run. It is the
@@ -219,6 +279,22 @@ type Baseline struct {
 	RetryArmed             int `json:"retry_armed"`
 	RunsWithCorrections    int `json:"runs_with_corrections"`
 	RunsWithWatcherCursors int `json:"runs_with_watcher_cursors"`
+	// The admission trio answers the acceptance criterion the pilot is
+	// judged on — "the pilot report includes the BLOCKED admissions" —
+	// which the status counters above cannot: a denied run is refused
+	// before execution and lands in `failed`, indistinguishable from a
+	// run that failed on its own work.
+	//
+	// AdmissionsRecorded is what makes AdmissionsDenied readable. Zero
+	// denials over a population the gate never visited is not the same
+	// fact as zero denials over a population it did, and a promotion
+	// decided on the second reading of the first number is a promotion
+	// decided on nothing. LegacyContextRuns completes it: those runs
+	// predate the versioned context contract, so the gate allows them by
+	// design and the pilot has nothing to say about them.
+	AdmissionsRecorded int `json:"admissions_recorded"`
+	AdmissionsDenied   int `json:"admissions_denied"`
+	LegacyContextRuns  int `json:"legacy_context_runs"`
 }
 
 func Summarize(runs []*store.Run) Baseline {
@@ -255,9 +331,29 @@ func Summarize(runs []*store.Run) Baseline {
 		if len(run.WatcherCursors) > 0 {
 			b.RunsWithWatcherCursors++
 		}
+		if run.Admission != nil {
+			b.AdmissionsRecorded++
+			// The vocabulary is store.AdmissionDecision.Decision, whose
+			// only refusing value the runtime writes is "denied"
+			// (pkg/runtime/admission.go). Counting the refusals rather
+			// than the allowances is deliberate: a decision this package
+			// has not seen must not silently join the allowed side of a
+			// promotion report.
+			if run.Admission.Decision == admissionDenied {
+				b.AdmissionsDenied++
+			}
+		}
+		if run.ExecutionContext == nil {
+			b.LegacyContextRuns++
+		}
 	}
 	return b
 }
+
+// admissionDenied is the one refusing verdict the runtime's admission gate
+// writes (store.AdmissionDecision.Decision). The field is a plain string
+// on the record, so this is a literal by necessity, not by choice.
+const admissionDenied = "denied"
 
 // RollbackPlan describes the non-destructive rollback contract. Rollback
 // disables new enforcement but retains evidence already written, so a pilot
@@ -273,7 +369,7 @@ func (c Config) Rollback() RollbackPlan {
 		DisableEnforcement: true,
 		PreserveEvidence:   true,
 		Actions: []string{
-			"set " + EnvMode + "=legacy (authoritative; it overrides " + EnvContextPolicyAlias + ", which does not need unsetting)",
+			"set " + EnvMode + "=legacy (authoritative; it overrides " + EnvContextPolicyAlias + ", which does not need unsetting, and caps any level-resolved mode)",
 			"keep execution_context, admission, correction and watcher ledgers for audit",
 		},
 	}

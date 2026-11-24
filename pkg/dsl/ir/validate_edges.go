@@ -3,6 +3,8 @@ package ir
 import (
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // ---------------------------------------------------------------------------
@@ -74,15 +76,30 @@ func (c *compiler) validateHumanModesInExecBranch(w *Workflow) {
 	}
 }
 
+// validateSessionSlots holds the two rules of a named slot: it needs
+// `session: persist` (C268), and it may not be spelt like another node of the
+// workflow (C314) — a persisted conversation is keyed on the slot when the
+// node declares one and on the node id otherwise, in one keyspace, so such a
+// slot would read and write that node's session. A slot carrying its own
+// node's id is the same key either way and is left alone.
 func (c *compiler) validateSessionSlots(w *Workflow) {
 	for id, node := range w.Nodes {
 		llm, ok := node.(LLMNode)
-		if !ok || llm.GetSessionSlot() == "" || llm.GetSession() == SessionPersist {
+		if !ok || llm.GetSessionSlot() == "" {
 			continue
 		}
-		c.errorf(DiagSessionSlotWithoutPersist,
-			"node %q declares session_slot %q but session is %s; named slots require session: persist",
-			id, llm.GetSessionSlot(), llm.GetSession())
+		slot := llm.GetSessionSlot()
+		if llm.GetSession() != SessionPersist {
+			c.errorf(DiagSessionSlotWithoutPersist,
+				"node %q declares session_slot %q but session is %s; named slots require session: persist",
+				id, slot, llm.GetSession())
+			continue
+		}
+		if _, taken := w.Nodes[slot]; taken && slot != id {
+			c.errorfAt(DiagSessionSlotNamesANode, id, "",
+				"node %q declares session_slot %q, which is the id of another node of this workflow; a persisted conversation is keyed on the slot, or on the node id when none is declared, so this slot would read and write node %q's session — name it something no node carries",
+				id, slot, slot)
+		}
 	}
 }
 
@@ -998,7 +1015,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 			if field == nil {
 				c.errorfAt(DiagConditionFieldNotFound, e.From, edgeID(e.From, e.To),
 					"edge %s -> %s: condition field %q not found in output schema %q of node %q",
-					e.From, e.To, e.Condition, outSchema, e.From)
+					e.From, e.To, expr.Excerpt(e.Condition), expr.Excerpt(outSchema), e.From)
 				continue
 			}
 			if field.Type != FieldTypeBool {
@@ -1029,7 +1046,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 				if findField(schema, r.Path[1]) == nil {
 					c.errorfAt(DiagConditionFieldNotFound, e.From, edgeID(e.From, e.To),
 						"edge %s -> %s: expression references field %q not found in output schema %q of node %q",
-						e.From, e.To, r.Path[1], outSchema, e.From)
+						e.From, e.To, expr.Excerpt(r.Path[1]), expr.Excerpt(outSchema), e.From)
 				}
 			}
 		}

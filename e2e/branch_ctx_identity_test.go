@@ -36,7 +36,7 @@ func (e *ctxProbeExecutor) Execute(ctx context.Context, node ir.Node, _ map[stri
 	case "seed":
 		return map[string]any{"value": "SEEDED", "items": []any{"alpha", "beta"}}, nil
 	case "trunk_probe", "each_probe", "all_probe":
-		return map[string]any{"run_id": "stub", "elapsed": "0"}, nil
+		return map[string]any{"run_id": "stub", "elapsed": "0", "seed": "SEEDED", "item": "stub"}, nil
 	default:
 		return map[string]any{"text": "ok"}, nil
 	}

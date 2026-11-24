@@ -9,6 +9,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import MainSpinner from "@/components/shared/MainSpinner";
 import { useAuth } from "@/auth/AuthContext";
 import { rootRoute } from "@/lib/scope";
+import { LegalLinks } from "@/views/Legal/LegalLinks";
 
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 
@@ -65,6 +66,11 @@ export default function RestrictedShell() {
           <MarketplaceView />
         </Suspense>
       </div>
+      {/* No sidebar here, so the legal links (RGAA 12: every signed-in
+          page reaches them; ADR-160) ride the shell's own foot. */}
+      <footer className="shrink-0 border-t border-border-subtle px-4 py-2">
+        <LegalLinks />
+      </footer>
     </div>
   );
 }

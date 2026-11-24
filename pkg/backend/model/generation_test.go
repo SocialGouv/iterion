@@ -11,8 +11,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
@@ -890,6 +890,148 @@ func TestGenerateObjectDirect(t *testing.T) {
 	}
 }
 
+// TestGenerateObjectDirect_RecoversFromContextOverflow gives the
+// structured turn the same reactive ladder the text loop has: a
+// context-window rejection on a session history the local estimator reads
+// under the first rung must compact and retry, not kill the node one token
+// over the provider ceiling (parity with the review-pool incident fix).
+func TestGenerateObjectDirect_RecoversFromContextOverflow(t *testing.T) {
+	type Weather struct {
+		City string `json:"city"`
+		Temp int    `json:"temp"`
+	}
+
+	overflow := []api.StreamEvent{
+		{Type: api.EventError, ErrorMessage: "openai: API error 400: litellm.ContextWindowExceededError: This model's maximum context length is 262144 tokens. However, you requested 8192 output tokens and your prompt contains at least 253953 input tokens"},
+	}
+	answer := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 80},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"city":"Paris","temp":22}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 15}},
+		{Type: api.EventMessageStop},
+	}
+	client := newMockClient(overflow, answer)
+
+	// ~100k estimated tokens: under the 256k and 128k ladder rungs, over
+	// 64k — the walk-down, not the first rung, is what recovers this call.
+	body := strings.Repeat("x ", 8_000)
+	var msgs []api.Message
+	for i := 0; i < 25; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, api.Message{Role: role, Content: []api.ContentBlock{{Type: "text", Text: body}}})
+	}
+
+	schema := json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"},"temp":{"type":"integer"}},"required":["city","temp"]}`)
+	var retried int
+	result, err := GenerateObjectDirect[Weather](context.Background(), client, GenerationOptions{
+		Model:                 "openai_compatible/scaleway/deepseek-v4.1-flash",
+		ExplicitSchema:        schema,
+		Messages:              msgs,
+		OnContextCompactRetry: func(_ int, _ error, _, _ int) { retried++ },
+	})
+	if err != nil {
+		t.Fatalf("expected recovery via ladder walk-down, got error: %v", err)
+	}
+	if result.Object.City != "Paris" || result.Object.Temp != 22 {
+		t.Errorf("Object = %+v, want {Paris 22}", result.Object)
+	}
+	if retried == 0 {
+		t.Fatal("expected at least one context-compaction retry")
+	}
+	if calls := client.getCalls(); len(calls) < 2 {
+		t.Fatalf("expected >=2 model calls (fail + retry), got %d", len(calls))
+	}
+	// The returned session history is the COMPACTED one — the history the
+	// successful request actually carried — not the oversized original:
+	// generateStructured persists ObjectResult.Messages, so a returned
+	// oversized history would resend the rejected transcript on every
+	// following session call (finding R7c4e86).
+	inChars, outChars := 0, 0
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Text != "" {
+				inChars += len(b.Text)
+			}
+		}
+	}
+	for _, m := range result.Messages {
+		for _, b := range m.Content {
+			if b.Text != "" {
+				outChars += len(b.Text)
+			}
+		}
+	}
+	if outChars >= inChars {
+		t.Fatalf("persisted history carries %d text chars, not less than the original %d — the compacted conversation was not returned", outChars, inChars)
+	}
+}
+
+// TestGenerateObjectDirect_RecoversFromDirectStreamRefusal covers the
+// refusal arriving BEFORE the stream opens: StreamResponse returns the
+// context-limit 400 as its DIRECT error with a nil channel, so
+// callAndAggregate hands back err set and agg nil — a shape the
+// aggregate-only retry condition never saw (finding R532a71).
+func TestGenerateObjectDirect_RecoversFromDirectStreamRefusal(t *testing.T) {
+	type Weather struct {
+		City string `json:"city"`
+		Temp int    `json:"temp"`
+	}
+
+	answer := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 80},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"city":"Lyon","temp":19}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 12}},
+		{Type: api.EventMessageStop},
+	}
+	// The exact litellm wording from the incident; refused BEFORE the
+	// stream opens (nil channel, direct error return).
+	client := &ctxOverflowClient{
+		failFirst:     1,
+		errMsg:        "openai: API error 400: litellm.ContextWindowExceededError: This model's maximum context length is 262144 tokens. However, you requested 8192 output tokens and your prompt contains at least 253953 input tokens",
+		successEvents: answer,
+	}
+
+	// ~100k estimated tokens: under the 256k and 128k ladder rungs, over
+	// 64k — the walk-down, not the first rung, is what recovers this call.
+	body := strings.Repeat("x ", 8_000)
+	var msgs []api.Message
+	for i := 0; i < 25; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, api.Message{Role: role, Content: []api.ContentBlock{{Type: "text", Text: body}}})
+	}
+
+	schema := json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"},"temp":{"type":"integer"}},"required":["city","temp"]}`)
+	var retried int
+	result, err := GenerateObjectDirect[Weather](context.Background(), client, GenerationOptions{
+		Model:                 "openai_compatible/scaleway/deepseek-v4.1-flash",
+		ExplicitSchema:        schema,
+		Messages:              msgs,
+		OnContextCompactRetry: func(_ int, _ error, _, _ int) { retried++ },
+	})
+	if err != nil {
+		t.Fatalf("expected recovery from the direct stream refusal, got error: %v", err)
+	}
+	if result.Object.City != "Lyon" || result.Object.Temp != 19 {
+		t.Errorf("Object = %+v, want {Lyon 19}", result.Object)
+	}
+	if retried == 0 {
+		t.Fatal("expected at least one context-compaction retry on the direct-error shape")
+	}
+	if calls := client.calls; calls < 2 {
+		t.Fatalf("expected >=2 model calls (refused + retry), got %d", calls)
+	}
+}
+
 func TestGenerateObjectDirect_NoSchema(t *testing.T) {
 	type Dummy struct{}
 	client := newMockClient()
@@ -1496,6 +1638,196 @@ func TestBuildRequest_MirrorsMultipleSystemBlocksInOrder(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_MarksTheLastServedSystemBlock reddens when the system
+// prefix stops being closed by a breakpoint: the prompt cache covers a prefix
+// up to and including a marked block, so the block a composer appends AFTER
+// the system prompt's own marker — the ambient-context corpus every claw node
+// receives under the default policy — is re-billed on every tool turn unless
+// the tail carries one. The blank trailing block is the second half of the
+// contract: a breakpoint (4 per request) is not spent on bytes no model reads.
+func TestBuildRequest_MarksTheLastServedSystemBlock(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		// A tool loop: the only shape a second turn can reuse the prefix in.
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
+		SystemBlocks: []api.ContentBlock{
+			{
+				Type:         "text",
+				Text:         "the operating posture and the node's task",
+				CacheControl: api.EphemeralCacheControl(),
+			},
+			// What clawAmbientSystemContext appends: no marker of its own.
+			{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+			{Type: "text", Text: "  "},
+		},
+	}
+
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 3 {
+		t.Fatalf("SystemBlocks len = %d, want 3", len(req.SystemBlocks))
+	}
+	if req.SystemBlocks[1].CacheControl == nil {
+		t.Error("the appended ambient block closes the system prefix: want an ephemeral marker, got none")
+	} else if req.SystemBlocks[1].CacheControl.Type != "ephemeral" {
+		t.Errorf("SystemBlocks[1].CacheControl.Type = %q, want ephemeral", req.SystemBlocks[1].CacheControl.Type)
+	}
+	if req.SystemBlocks[2].CacheControl != nil {
+		t.Error("a blank block serves no model: it must not spend a breakpoint")
+	}
+	// The caller's own marker is left where it put it, so a request that
+	// shares only the posture still hits on that shorter prefix.
+	if req.SystemBlocks[0].CacheControl == nil {
+		t.Error("the caller's marker on the first block must survive")
+	}
+	// Anthropic admits 4 breakpoints per request, and the tools array takes
+	// one of its own (marked below in buildRequest).
+	marks := 0
+	for _, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			marks++
+		}
+	}
+	if marks > 3 {
+		t.Errorf("system breakpoints = %d, want at most 3 so the tools array keeps one", marks)
+	}
+}
+
+// TestBuildRequest_SingleSystemBlockTakesExactlyOneMarker is the one-block
+// shape the claw backend builds when a node's policy excludes the workspace
+// (ambient_context: none). It carries NO caller marker on purpose: with one,
+// the assertion would witness what the caller wrote rather than what
+// buildRequest does, and no mutation of this function could redden it.
+func TestBuildRequest_SingleSystemBlockTakesExactlyOneMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
+		SystemBlocks: []api.ContentBlock{{
+			Type: "text",
+			Text: "the operating posture and the node's task",
+		}},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 1 {
+		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))
+	}
+	marks := 0
+	for _, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			marks++
+		}
+	}
+	if marks != 1 {
+		t.Errorf("system breakpoints = %d, want exactly 1 (the tail, not spent twice)", marks)
+	}
+}
+
+// TestBuildRequest_AOneShotRequestTakesNoSystemMarker is the sign witness. The
+// cache writes at ~1.25x and reads at ~0.1x, so marking a prefix no second
+// request will read COSTS ~0.25x of it. Two shapes are one-shot and must stay
+// unmarked: a node with no tools (the loop breaks on the first reply carrying
+// no tool_use) and the structured path, which nils opts.Tools and hands its
+// synthetic tool through extraTools for a single turn.
+func TestBuildRequest_AOneShotRequestTakesNoSystemMarker(t *testing.T) {
+	blocks := []api.ContentBlock{
+		{Type: "text", Text: "the operating posture and the node's task"},
+		{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+	}
+	cases := []struct {
+		name  string
+		opts  GenerationOptions
+		extra []api.Tool
+		cheap *api.ToolChoice
+	}{
+		{
+			name: "no tools at all",
+			opts: GenerationOptions{Model: "claude-sonnet-4-6", SystemBlocks: blocks},
+		},
+		{
+			name:  "structured output: tools nil, synthetic tool via extraTools",
+			opts:  GenerationOptions{Model: "claude-sonnet-4-6", SystemBlocks: blocks},
+			extra: []api.Tool{{Name: "structured_output"}},
+			cheap: &api.ToolChoice{Type: "tool", Name: "structured_output"},
+		},
+		{
+			name: "a tool loop bounded to a single step",
+			opts: GenerationOptions{
+				Model:        "claude-sonnet-4-6",
+				SystemBlocks: blocks,
+				Tools:        []GenerationTool{{Name: "bash", Description: "run"}},
+				MaxSteps:     1,
+			},
+		},
+		{
+			// The production shape with workspace memory on: posture,
+			// ambient corpus, memory index, autoload. A predicate keyed on
+			// the BLOCK COUNT instead of on the caller's loop passes the
+			// two-block cases above and marks this one.
+			name: "the four-block memory shape, still one-shot",
+			opts: GenerationOptions{
+				Model: "claude-sonnet-4-6",
+				SystemBlocks: []api.ContentBlock{
+					{Type: "text", Text: "the operating posture and the node's task"},
+					{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+					{Type: "text", Text: "<workspace_memory_index>…</workspace_memory_index>"},
+					{Type: "text", Text: "<workspace_memory>…</workspace_memory>"},
+				},
+			},
+		},
+		{
+			name: "a negative step budget reads as the default, not as one-shot",
+			opts: GenerationOptions{
+				Model:        "claude-sonnet-4-6",
+				SystemBlocks: blocks,
+				MaxSteps:     -1,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := buildRequest(tc.opts, []api.Message{{Role: "user"}}, tc.extra, tc.cheap)
+			if err != nil {
+				t.Fatalf("buildRequest: %v", err)
+			}
+			for i, b := range req.SystemBlocks {
+				if b.CacheControl != nil {
+					t.Errorf("SystemBlocks[%d] carries a marker: a one-shot request pays the write and never reads it", i)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildRequest_UnservedSystemBlocksTakeNoMarker covers the all-blank
+// shape: nothing is served, so nothing is marked and the request still builds.
+func TestBuildRequest_UnservedSystemBlocksTakeNoMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
+		SystemBlocks: []api.ContentBlock{
+			{Type: "text", Text: ""},
+			{Type: "text", Text: "\n\t "},
+		},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	for i, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			t.Errorf("SystemBlocks[%d] is unserved and must take no marker", i)
+		}
+	}
+	if req.System != "" {
+		t.Errorf("System = %q, want empty", req.System)
+	}
+}
+
 func TestBuildRequest_FallsBackToSystemString(t *testing.T) {
 	opts := GenerationOptions{
 		Model:  "claude-sonnet-4-6",
@@ -1744,19 +2076,32 @@ func TestIsContextWindowError(t *testing.T) {
 
 // ctxOverflowClient returns a context_length_exceeded error for its first
 // failFirst calls, then a successful text response — modelling a backend
-// whose real window is smaller than the model's advertised one.
+// whose real window is smaller than the model's advertised one. The error
+// is StreamResponse's DIRECT return (nil channel): the request was refused
+// before any stream opened. successEvents overrides the scripted success
+// when a caller needs a shape other than a plain text answer.
 type ctxOverflowClient struct {
-	failFirst int
-	calls     int
+	failFirst     int
+	errMsg        string // overrides the scripted overflow error when set
+	successEvents []api.StreamEvent
+	calls         int
 }
 
 func (c *ctxOverflowClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	c.calls++
 	if c.calls <= c.failFirst {
-		return nil, fmt.Errorf("claw backend: text+tools generation: stream error: openai stream error: context_length_exceeded: Your input exceeds the context window of this model")
+		msg := c.errMsg
+		if msg == "" {
+			msg = "claw backend: text+tools generation: stream error: openai stream error: context_length_exceeded: Your input exceeds the context window of this model"
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
-	ch := make(chan api.StreamEvent, 8)
-	for _, ev := range textEvents("done", 10, 2) {
+	success := c.successEvents
+	if len(success) == 0 {
+		success = textEvents("done", 10, 2)
+	}
+	ch := make(chan api.StreamEvent, len(success))
+	for _, ev := range success {
 		ch <- ev
 	}
 	close(ch)
@@ -1811,6 +2156,51 @@ func TestGenerateTextDirect_NonContextErrorNotRetried(t *testing.T) {
 	}
 	if retried != 0 {
 		t.Fatalf("non-context error should not trigger compaction retry, got %d", retried)
+	}
+}
+
+// TestGenerateTextDirect_RecoversWhenEstimateFitsFirstRung is the
+// review-pool incident shape: the provider refuses the request while the
+// LOCAL estimate still fits under the ladder's first (256k) rung — litellm
+// bills cached turns against the window, so its count ran ~30k tokens ahead
+// of the estimator (253,953 real vs under 256,000 estimated). The old
+// single-rung retry found nothing to shrink at 256k and surfaced the error;
+// the ladder must walk down to a rung that actually shrinks the transcript.
+func TestGenerateTextDirect_RecoversWhenEstimateFitsFirstRung(t *testing.T) {
+	// ~100k estimated tokens: under the 256k and 128k rungs, over 64k.
+	body := strings.Repeat("x ", 8_000) // ~16k chars ≈ ~4k tokens each
+	var msgs []api.Message
+	for i := 0; i < 25; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, api.Message{Role: role, Content: []api.ContentBlock{{Type: "text", Text: body}}})
+	}
+
+	// The exact litellm wording from the incident (run 01a1ba63-5bef):
+	// classified by the "maximum context length" marker.
+	client := &ctxOverflowClient{
+		failFirst: 1,
+		errMsg:    "claw backend: runner: openai: API error 400: litellm.ContextWindowExceededError: OpenAIException - This model's maximum context length is 262144 tokens. However, you requested 8192 output tokens and your prompt contains at least 253953 input tokens",
+	}
+	var retried int
+	res, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model:                 "openai_compatible/scaleway/deepseek-v4.1-flash",
+		Messages:              msgs,
+		OnContextCompactRetry: func(_ int, _ error, _, _ int) { retried++ },
+	})
+	if err != nil {
+		t.Fatalf("expected recovery via ladder walk-down, got error: %v", err)
+	}
+	if res == nil || res.Text != "done" {
+		t.Fatalf("expected recovered text %q, got %+v", "done", res)
+	}
+	if retried == 0 {
+		t.Fatal("expected at least one context-compaction retry")
+	}
+	if client.calls < 2 {
+		t.Fatalf("expected >=2 model calls (fail + retry), got %d", client.calls)
 	}
 }
 

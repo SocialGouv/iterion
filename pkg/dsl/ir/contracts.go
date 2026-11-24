@@ -7,7 +7,10 @@ import "encoding/json"
 // the node and field that produce it, every criterion a port and an
 // evaluator. It carries no evaluator function — reflect.DeepEqual holds two
 // compiled programs equal (SameProgram), and a func is never equal to
-// another — so the runtime compiles a criterion's evaluator when it runs.
+// another. CompilePublicCriterion hands an evaluator to this compiler, which
+// validates the parameters and discards it: no shipped surface evaluates a
+// declared criterion, registered or not (ADR-153 clause 4, docs/dsl.md's
+// C303 bullet).
 // The JSON tags are the wire form `iterion validate --json` and the MCP
 // local_validate tool return (`public_contract`): snake_case like every
 // other key of that document.
@@ -59,8 +62,9 @@ type PublicFile struct {
 }
 
 // PublicCriterion is a deterministic check on a port. Registered reports
-// whether an evaluator ships for Kind: a criterion of an unregistered kind
-// is kept and rendered, not evaluated (C303).
+// whether an evaluator ships for Kind, and C303 warns when none does; a
+// criterion of either kind is kept and rendered, and none is evaluated —
+// Registered says what the build ships, never that a check runs.
 type PublicCriterion struct {
 	Name       string          `json:"name"`
 	Kind       string          `json:"kind"`

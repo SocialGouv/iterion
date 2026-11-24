@@ -10,14 +10,16 @@ package botinstall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/botlock"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -36,6 +38,22 @@ type Options struct {
 	Workdir     string  // workspace root for catalog regen (default cwd)
 	SkipCatalog bool    // private dependency staging only; preserve pinned catalog bytes
 	Origin      *Origin // private staging: durable source identity instead of the fetched checkout
+	// ReplaceUnrecorded is the operator's explicit override of the refusal
+	// below: --force may replace a target this installer has no record of
+	// installing. The escape hatch of a load-bearing limit, greppable by
+	// this name — never set by default, and every setter says why it owns
+	// the destination.
+	ReplaceUnrecorded bool
+	// DeferSharedDeps says the CALLER resolves the bundle's shared
+	// dependencies — `dependencies.fragments` (ADR-145) and
+	// `dependencies.skills` (ADR-144) — once every bundle of the project is
+	// in place. Only botdeps owns that order (Sync materializes the whole
+	// lockfile, then resolves): a lone install refuses rather than resolve
+	// against a producer the lockfile has not materialized yet. ONE flag for
+	// every artefact kind of the sharing key: a caller that defers the order
+	// defers it for the whole manifest, and a per-kind flag would let a new
+	// kind resolve under a caller that never promised the order.
+	DeferSharedDeps bool
 }
 
 // Result is the structured outcome of an install.
@@ -129,6 +147,25 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("not a valid bot bundle at %s: %w", botDir, err)
 	}
 
+	// 3b. A bundle that declares a shared dependency — a fragment or a skill
+	//     — is refused here, BEFORE anything is written or an existing
+	//     target is removed: only the project lockfile knows the order its
+	//     producers materialize in. Every artefact kind of the sharing key
+	//     answers the same way, so adopting one never silently installs a
+	//     bundle whose other kind went unresolved.
+	if !opts.DeferSharedDeps && b.Manifest != nil {
+		declaredName := b.Manifest.Name
+		if declaredName == "" {
+			declaredName = filepath.Base(botDir)
+		}
+		if len(b.Manifest.Dependencies.Fragments) > 0 {
+			return nil, fragmentDependenciesRefusal(declaredName, b.Manifest.Dependencies.Fragments)
+		}
+		if len(b.Manifest.Dependencies.Skills) > 0 {
+			return nil, skillDependenciesRefusal(declaredName, b.Manifest.Dependencies.Skills)
+		}
+	}
+
 	// 4. Determine install name + destination.
 	name := opts.Name
 	if name == "" {
@@ -145,13 +182,17 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		if !opts.Force {
 			return nil, fmt.Errorf("%s already exists — pass --force to overwrite", target)
 		}
-		if err := os.RemoveAll(target); err != nil {
-			return nil, fmt.Errorf("remove existing %s: %w", target, err)
+		if err := refuseUnrecordedReplacement(target, opts); err != nil {
+			return nil, err
 		}
 	}
 
-	// 5. Copy the bundle directory into the workspace (git metadata excluded).
-	if err := copyTree(botDir, target); err != nil {
+	// 5. Make the workspace copy hold exactly what the bundle ships (git
+	//    metadata excluded), file by file and each under its own authoring
+	//    lock: a save of one of those files stops the install instead of
+	//    losing its bytes, and the bundle is never missing while it is
+	//    replaced (replaceTree).
+	if err := replaceTree(ctx, botDir, target); err != nil {
 		return nil, fmt.Errorf("install %s: %w", name, err)
 	}
 	origin := Origin{
@@ -171,12 +212,12 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 	//    so every consumer can show it.
 	catalogError := ""
 	if !opts.SkipCatalog {
-		if _, err := botregistry.RegenerateWhatsNextCatalog(workdir); err != nil {
+		if _, err := botregistry.RegenerateWhatsNextCatalog(ctx, workdir); err != nil {
 			catalogError = err.Error()
 		}
 	}
 
-	res := &Result{Name: name, Source: opts.Source, Ref: ref, InstalledPath: target, CatalogError: catalogError}
+	res := &Result{Name: name, Source: origin.Source, Ref: origin.Ref, InstalledPath: target, CatalogError: catalogError}
 	if installed, derr := bundle.OpenDir(target); derr == nil {
 		if installed.SkillsDir != "" {
 			if ents, _ := os.ReadDir(installed.SkillsDir); ents != nil {
@@ -190,6 +231,70 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// Checkout resolves opts.Source to a local checkout — it clones a git URL
+// into a temp dir and uses a local directory in place — and returns the
+// Options an Install of that checkout takes, with the cleanup that drops the
+// clone. The clone is an install's only network: Install of the returned
+// Options reads and writes local files alone, so a caller that orders its
+// writes of the workspace clones first, outside that order. The returned
+// Options keep the source the caller named — as the origin the install
+// records and the source its Result reports — never the temp checkout.
+func Checkout(ctx context.Context, opts Options) (Options, func(), error) {
+	if strings.TrimSpace(opts.Source) == "" {
+		return opts, func() {}, fmt.Errorf("a git URL or local path is required")
+	}
+	url, ref := splitSourceRef(opts.Source)
+	if opts.Ref != "" {
+		ref = opts.Ref
+	}
+	if info, err := os.Stat(url); err == nil && info.IsDir() {
+		return opts, func() {}, nil
+	}
+	repoRoot, cleanup, err := resolveRepoRoot(ctx, url, ref)
+	if err != nil {
+		return opts, func() {}, err
+	}
+	local := opts
+	local.Source, local.Ref = repoRoot, ""
+	if local.Origin == nil {
+		local.Origin = &Origin{Source: opts.Source, Ref: ref, SourcePath: opts.Path}
+	}
+	return local, cleanup, nil
+}
+
+// refuseUnrecordedReplacement holds --force to what the flag itself says it
+// does — "overwrite an existing install". A --force install REMOVES the
+// target whole (os.RemoveAll) before copying the source over it, so pointed
+// at a bundle this installer never installed it destroys work no installer
+// owns: `--dest bots` is the committable location `bots install --help`
+// names, and that is exactly where AUTHORED bundles live (#2689 item 2). No
+// lock, no version, no diff — the directory is simply gone.
+//
+// The record is the installer's OWN: Install writes an origin beside
+// everything it installs (writeOrigin), outside the bundle so it does not
+// alter the content hash. A target with no origin record beside it is
+// therefore not one of its installs, whatever else it is. An origin that
+// cannot be READ answers the same way: an unreadable ledger is not a licence
+// to delete, since whether the target is authored work is then unknown.
+//
+// Deliberately NOT extended to Remove: an uninstall destroys the bundle the
+// operator NAMED, which is the whole act, where a --force install destroys a
+// bundle to put a different one in its place.
+func refuseUnrecordedReplacement(target string, opts Options) error {
+	if opts.ReplaceUnrecorded {
+		return nil
+	}
+	_, err := ReadOrigin(target)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("refusing --force over %s: this installer has no record of installing it (no origin record beside it), so it is authored or hand-placed work that --force would delete whole; move it aside, install under another --name, or pass --replace-unrecorded to replace it anyway", target)
+	default:
+		return fmt.Errorf("refusing --force over %s: its install record cannot be read, so whether --force would delete authored work is unknown: %w — repair or remove the record, or pass --replace-unrecorded to replace it anyway", target, err)
+	}
 }
 
 // InstallFromBotzBytes extracts a `.botz` archive streamed from r into a
@@ -251,7 +356,7 @@ func InstallFromBotzBytes(ctx context.Context, r io.Reader, opts Options) (*Resu
 // refresh — which leaves the removal done and the catalog stale — comes
 // back on the RemoveResult instead, so no caller can read one as the
 // other.
-func Remove(_ context.Context, opts Options) (*RemoveResult, error) {
+func Remove(ctx context.Context, opts Options) (*RemoveResult, error) {
 	name := opts.Name
 	if err := validateRemoveName(name); err != nil {
 		return nil, err
@@ -284,7 +389,7 @@ func Remove(_ context.Context, opts Options) (*RemoveResult, error) {
 	}
 	_ = os.Remove(originPath(target))
 	res := &RemoveResult{}
-	if _, err := botregistry.RegenerateWhatsNextCatalog(workdir); err != nil {
+	if _, err := botregistry.RegenerateWhatsNextCatalog(ctx, workdir); err != nil {
 		res.CatalogError = err.Error()
 	}
 	return res, nil
@@ -515,71 +620,6 @@ func validateRemoveName(name string) error {
 	}
 	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("invalid remove name %q (no path separators)", name)
-	}
-	return nil
-}
-
-// copyTree recursively copies src into dst, skipping VCS and local-state
-// directories and any non-regular files (symlinks, devices).
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == ".iterion") {
-			return filepath.SkipDir
-		}
-		if bundle.IsDraftEntry(d.Name(), d.IsDir()) {
-			// An author document is never a member of a bundle: the archive
-			// path never carries one, and an install from a directory or a
-			// clone lands the same tree.
-			return nil
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		return copyFileTo(path, target)
-	})
-}
-
-func copyFileTo(src, dst string) (err error) {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	// Preserve the source file's permission bits so an executable shipped in
-	// the bundle (a tool script under skills/ or attachments/) stays runnable
-	// after install, rather than being flattened to 0644.
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	// Close explicitly and surface its error: on NFS / full disks
-	// io.Copy can succeed while the buffered write only fails at Close,
-	// so a deferred-and-ignored Close would hide a real write failure.
-	defer func() {
-		if cerr := out.Close(); cerr != nil && err == nil {
-			err = cerr
-		}
-	}()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 // names to a listener each reference it kept — the executor listens to
 // none, a dry run to all.
 func TestTemplateResolverNamesWhatItKeeps(t *testing.T) {
+	t.Parallel()
 	var kept []string
 	r := &TemplateResolver{Vars: map[string]any{"x": "1"}, Unresolved: func(ref string) { kept = append(kept, ref) }}
 	td := &TemplateData{Outputs: map[string]map[string]any{"n": {"f": "out"}}, RunID: "r1", LoopMaxIterations: map[string]int{"l": 3}}
@@ -36,6 +37,7 @@ func TestTemplateResolverNamesWhatItKeeps(t *testing.T) {
 // and fields, a loop counter, an artifact field — and keeps as written
 // what resolves to nothing, so the shell sees it.
 func TestCommandsResolveEveryNamespaceAPromptDoes(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{
 		Attachments:  map[string]AttachmentInfo{"spec": {Name: "spec", Path: "/tmp/spec.md", MIME: "text/markdown"}},
 		LoopCounters: map[string]int{"fix": 2},

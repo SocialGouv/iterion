@@ -7,6 +7,17 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 )
 
+// loginRouteBucket, refreshRouteBucket and registerRouteBucket are the
+// shapes the routes a witness measures are wrapped with. Declared here,
+// next to the wrapping, and read by the tests rather than copied into
+// them: a measurement asserted against a copy survives the shape it
+// reports.
+var (
+	loginRouteBucket    = authBucketCfg{rate: 1.0 / 12.0, burst: 5} // 5/min sustained, burst 5
+	refreshRouteBucket  = authBucketCfg{rate: 1.0 / 2.0, burst: 30} // 30/min — normal under long sessions
+	registerRouteBucket = authBucketCfg{rate: 1.0 / 30.0, burst: 3} // 2/min sustained
+)
+
 // registerAuthRoutes wires every /api/auth/* and /api/teams/*
 // endpoint. Called from routes() when AuthService is non-nil.
 func (s *Server) registerAuthRoutes() {
@@ -17,7 +28,7 @@ func (s *Server) registerAuthRoutes() {
 	// so a legitimate user with sticky-keyboard / multiple devices
 	// isn't surprised, but distributed brute-force is throttled.
 	loginLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 12.0, burst: 5}, // 5/min sustained, burst 5
+		"login", loginRouteBucket,
 		func(r *http.Request) string {
 			// Second tier: rate-limit by email so distributed IPs
 			// hammering one account also throttle. Extracted as a
@@ -30,14 +41,8 @@ func (s *Server) registerAuthRoutes() {
 			return "email:" + strings.ToLower(email)
 		},
 	)
-	registerLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 30.0, burst: 3}, // 2/min sustained
-		nil,
-	)
-	refreshLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 2.0, burst: 30}, // 30/min — normal under long sessions
-		nil,
-	)
+	registerLimit := s.limitRoute("register", registerRouteBucket, nil)
+	refreshLimit := s.limitRoute("refresh", refreshRouteBucket, nil)
 	// Anonymous routes (public via isPublicPath).
 	s.mux.HandleFunc("POST /api/auth/login", loginLimit(s.handleLogin))
 	// Complete a forced password rotation for a pending_password_change
@@ -77,7 +82,7 @@ func (s *Server) registerAuthRoutes() {
 	// credential that must not mint gets no offline-speed oracle on the
 	// account password.
 	passwordProofLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 12.0, burst: 5}, // the login bucket's shape
+		"pwproof", loginRouteBucket, // the login bucket's shape
 		func(r *http.Request) string {
 			if id, ok := auth.FromContext(r.Context()); ok {
 				return "user:" + id.UserID
@@ -97,7 +102,11 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("GET /api/teams", s.requireAuth(http.HandlerFunc(s.handleListTeams)))
 	s.mux.Handle("POST /api/teams", s.requireAuth(http.HandlerFunc(s.handleCreateTeam)))
 	s.mux.Handle("GET /api/teams/{id}/members", s.requireAuth(http.HandlerFunc(s.handleListTeamMembers)))
-	s.mux.Handle("POST /api/teams/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleCreateInvitation)))
+	// The mint of an invitation token — a membership whoever holds it joins
+	// with — goes through the derivation chokepoint (auth.MintTeamToken):
+	// the access token of a revoked session mints none (401), and a
+	// personal access token never does (403).
+	s.mux.Handle("POST /api/teams/{id}/invitations", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateInvitation))))
 	s.mux.Handle("GET /api/teams/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleListInvitations)))
 	s.mux.Handle("DELETE /api/teams/{id}/invitations/{invite_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteInvitation)))
 	s.mux.Handle("PATCH /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateMember)))
@@ -116,6 +125,9 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("GET /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetUser)))
 	s.mux.Handle("PATCH /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateUser)))
 	s.mux.Handle("POST /api/admin/users/{id}/reset-password", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminResetUserPassword)))
+	// Erasure by anonymization (GDPR art. 17): the one writer of the
+	// `erased` status.
+	s.mux.Handle("POST /api/admin/users/{id}/erase", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminEraseUser)))
 	s.registerAdminOrgRoutes()
 	s.registerAdminTeamRoutes()
 }

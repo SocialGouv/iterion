@@ -461,26 +461,45 @@ func TestNoRewriteOfADocumentEitherLosesACommentLineOrRefusesForNothing(t *testi
 	}
 }
 
-// The lines no node holds and no written form has a place for — the
-// explicit document markers, `---` opening a document and `...` closing it,
-// and the `%YAML`/`%TAG` directives of a stream — are what an author wrote
-// that a rewrite drops with no refusal: the author writer emits none of
-// them. Every COMMENT written around one rides its node or refuses the
-// rewrite; the marker's own characters are gone from the canonical form,
-// and the comment of a marker's own line lands above the node that follows
-// it.
-func TestTheDocumentsCanonicalFormDropsTheDocumentMarkersThemselves(t *testing.T) {
-	for name, src := range map[string]string{
-		"a document-start marker carrying a comment": "--- # start\n" + looseDoc,
-		"a document-end marker below a comment":      looseDoc + "# only\n...\n",
-		"a document-end marker alone":                looseDoc + "...\n",
-		"a %YAML directive":                          "%YAML 1.1\n---\n" + looseDoc,
-		"a %TAG directive":                           "%TAG !e! tag:example.com,2000:\n---\n" + looseDoc,
-	} {
+// The lines written AROUND a document marker — the comment on a `...`
+// marker's own line, a block above it, a block below it, a block a blank
+// line keeps off the document's foot, a second block, the same text twice,
+// the twin of a mid-document foot — hang on no node, and were fourteen
+// rows of the canonical form's REFUSAL table until #2359. The writer
+// re-emits the marker with the region it sits in, so each is a KEEP row
+// now: the rewrite goes through, every comment line of the source is in
+// the written form, and the written form is its own canonical form. Named
+// one by one, with the count announced, so none leaves in silence — the
+// lesson #1784 paid for building that table.
+func TestTheDocumentsCanonicalFormKeepsTheLinesWrittenAroundAMarker(t *testing.T) {
+	wasRefused := map[string]struct{ doc, tail string }{
+		"a comment on the marker's line":                             {looseDoc, "... # keep me\n"},
+		"a comment above the marker":                                 {looseDoc, "# keep me\n...\n# the foot\n"},
+		"a comment on the marker's line with a block below it":       {looseDoc, "...  # end\n# keep me\n"},
+		"a comment below the marker after a blank":                   {looseDoc, "...\n\n# keep me\n"},
+		"a second block below the marker":                            {looseDoc, "...\n# a\n\n# keep me\n"},
+		"a comment below a marker under an empty block scalar":       {emptyDoc, "...\n\n# keep me\n"},
+		"a comment below two markers under an empty block scalar":    {emptyDoc, "...\n...\n# keep me\n"},
+		"a second block below a marker under an empty block scalar":  {emptyDoc, "...\n# a\n\n# keep me\n"},
+		"a comment below a marker under an empty tool script":        {emptyScriptDoc, "...\n\n# keep me\n"},
+		"a block above the marker the one below it displaces":        {looseDoc, "\n# keep me\n\n...\n# the foot\n"},
+		"an indented block above the marker the one below displaces": {looseDoc, "  # keep me\n...\n# the foot\n"},
+		"the same text above the marker and on its line":             {looseDoc, "\n# keep me\n\n...  # keep me\n"},
+		"the text of a mid-document foot on the marker's line":       {footTwinDoc, "...  # twice\n"},
+		"the text of a mid-document foot below a blank":              {footTwinDoc, "...\n\n# twice\n"},
+	}
+	if len(wasRefused) != 14 {
+		t.Fatalf("the table holds %d rows, want the 14 the refusal table carried before #2359", len(wasRefused))
+	}
+	for name, tc := range wasRefused {
 		t.Run(name, func(t *testing.T) {
+			src := tc.doc + tc.tail
+			if markerLines(src) == 0 {
+				t.Fatalf("the row writes no marker line, so the count below proves nothing:\n%s", src)
+			}
 			out, err := Document("x.bot.yaml", []byte(src))
 			if err != nil {
-				t.Fatalf("a document whose markers carry no comment a rewrite loses was refused: %v", err)
+				t.Fatalf("a document whose marker region the writer re-emits was refused: %v", err)
 			}
 			if had, kept := commentMultiset(src, nil), commentMultiset(string(out), nil); had != kept {
 				t.Fatalf("the written form carries the comment lines %q, the source %q:\n%s", kept, had, out)
@@ -488,16 +507,119 @@ func TestTheDocumentsCanonicalFormDropsTheDocumentMarkersThemselves(t *testing.T
 			if had, kept := author.Comments([]byte(src)), author.Comments(out); strings.Join(had, "|") != strings.Join(kept, "|") {
 				t.Fatalf("the written form carries %q, the source %q:\n%s", kept, had, out)
 			}
-			// A marker is read at column 0 only, with or without a
-			// comment on its line (`--- # start`), and a directive is a
-			// `%` there: the guard takes every form the source carried.
-			for _, line := range strings.Split(string(out), "\n") {
-				if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "...") || strings.HasPrefix(line, "%") {
-					t.Fatalf("the canonical form kept a document marker or directive the writer does not emit:\n%s", out)
-				}
+			if got, want := markerLines(string(out)), markerLines(src); got != want {
+				t.Fatalf("the written form carries %d marker line(s), the source %d:\n%s", got, want, out)
+			}
+			again, err := Document("x.bot.yaml", out)
+			if err != nil || string(again) != string(out) {
+				t.Fatalf("the rewritten document is not its own canonical form: %v\n%s", err, again)
 			}
 		})
 	}
+}
+
+// The explicit document markers the author wrote come back: a `---` opening
+// the document, a `...` closing it, each with the comment written on its own
+// line. ADR-102 §5 promises the rewrite loses no author text in silence, and
+// since #2359 the writer keeps that promise for the markers themselves
+// rather than recording their loss: the count of marker lines at column 0
+// is the source's, the comments are all there, and the result is its own
+// canonical form.
+func TestTheDocumentsCanonicalFormKeepsTheDocumentMarkersTheAuthorWrote(t *testing.T) {
+	for name, src := range map[string]string{
+		"a document-start marker":                    "---\n" + looseDoc,
+		"a document-start marker carrying a comment": "--- # start\n" + looseDoc,
+		"a document-start marker below a comment":    "# above\n---\n" + looseDoc,
+		"a document-end marker alone":                looseDoc + "...\n",
+		"a document-end marker below a comment":      looseDoc + "# only\n...\n",
+		"both markers":                               "---\n" + looseDoc + "...\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if markerLines(src) == 0 {
+				t.Fatalf("the row writes no marker line, so the count below proves nothing:\n%s", src)
+			}
+			out, err := Document("x.bot.yaml", []byte(src))
+			if err != nil {
+				t.Fatalf("a document carrying an explicit marker was refused: %v", err)
+			}
+			if had, kept := commentMultiset(src, nil), commentMultiset(string(out), nil); had != kept {
+				t.Fatalf("the written form carries the comment lines %q, the source %q:\n%s", kept, had, out)
+			}
+			if had, kept := author.Comments([]byte(src)), author.Comments(out); strings.Join(had, "|") != strings.Join(kept, "|") {
+				t.Fatalf("the written form carries %q, the source %q:\n%s", kept, had, out)
+			}
+			// A marker is read at column 0 only: every one the source wrote
+			// is written back, and none is invented.
+			if got, want := markerLines(string(out)), markerLines(src); got != want {
+				t.Fatalf("the written form carries %d marker line(s), the source %d:\n%s", got, want, out)
+			}
+			again, err := Document("x.bot.yaml", out)
+			if err != nil || string(again) != string(out) {
+				t.Fatalf("the rewritten document is not its own canonical form: %v\n%s", err, again)
+			}
+		})
+	}
+}
+
+// The acceptance of #2359, on the document the ticket wrote: a document
+// already in the writer's own form, carrying a comment that hangs on
+// nothing but a `...` marker, comes back BYTE for byte — `iterion fmt`
+// formats it and loses nothing, where it used to delete the marker with no
+// refusal and no notice. The first row is the control: the same body with
+// no marker region at all.
+func TestAFormattedDocumentCarryingAMarkerComesBackByteForByte(t *testing.T) {
+	if out, err := Document("x.bot.yaml", []byte(blockDoc)); err != nil || string(out) != blockDoc {
+		t.Fatalf("the fixture is not the writer's own form, so the rows below prove nothing: %v\n%s", err, out)
+	}
+	for name, tc := range map[string]struct{ head, tail, want string }{
+		"no marker region":         {},
+		"a bare marker":            {tail: "...\n"},
+		"a comment above a marker": {tail: "# only\n...\n"},
+		"a comment on the marker":  {tail: "...  # only\n"},
+		"a comment below a marker": {tail: "...\n# only\n"},
+		"a blank and a comment":    {tail: "...\n\n# only\n"},
+		"a start marker":           {head: "---\n"},
+		"both markers":             {head: "---\n", tail: "...\n"},
+		"two end markers":          {tail: "...\n...\n"},
+		// The one shape the canonical form MOVES: a comment on the
+		// document-start marker's own line is one yaml.v3 hands over on the
+		// document's head, and the writer emits the marker bare with that
+		// head under it. The marker and the comment both survive; where the
+		// comment sits is the writer's, and the result is its own canonical
+		// form (TestTheDocumentsCanonicalFormKeepsTheDocumentMarkersTheAuthorWrote).
+		"a comment on the start marker": {head: "--- # start\n", want: "---\n# start\n" + blockDoc},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := tc.head + blockDoc + tc.tail
+			want := tc.want
+			if want == "" {
+				want = src
+			}
+			out, err := Document("x.bot.yaml", []byte(src))
+			if err != nil {
+				t.Fatalf("a formatted document carrying a marker was refused: %v", err)
+			}
+			if string(out) != want {
+				t.Fatalf("the canonical form of a document already in it is\n%q\nwant\n%q", out, want)
+			}
+		})
+	}
+}
+
+// markerLines counts the explicit document markers of text: a `---` or a
+// `...` at column 0, followed by a blank or the end of its line, which is
+// where YAML reads one.
+func markerLines(text string) int {
+	n := 0
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, "---") && !strings.HasPrefix(line, "...") {
+			continue
+		}
+		if len(line) == 3 || line[3] == ' ' || line[3] == '\t' {
+			n++
+		}
+	}
+	return n
 }
 
 // A ` #` ending a plain value is kept only while the written form reads the

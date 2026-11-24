@@ -10,10 +10,12 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -23,16 +25,157 @@ import (
 // nodeActiveMCPServers delegates to ir.NodeActiveMCPServers.
 var nodeActiveMCPServers = ir.NodeActiveMCPServers
 
+// internalMCPServerName reports whether `server` is one of iterion's own
+// in-process MCP families — iterion_board, iterion_runs, iterion_watch,
+// iterion_connectors — registered from a node's `capabilities:` grant
+// (pkg/backend/tool/claw_{board,run,watch}_tools.go, delegate's connector
+// facade) rather than resolved from the MCP catalog.
+//
+// Nothing can put one of them in a node's resolved `mcp:` set: the catalog
+// refuses a user or plugin server in this namespace. So the node's MCP
+// scope — whose job is to bound the servers the host may START — has no say
+// over them, and what decides them is the grant (internalMCPToolGrant).
+//
+// The predicate is the permission gate's own, so catalog admission, CLI
+// forwarding and this check cannot disagree: it normalises every separator
+// spelling a backend uses and keys on the NAMESPACE, where
+// delegate.IsIterionMCPTool is a three-name list that already misses
+// iterion_watch. Keying on the namespace also answers true for a bare
+// `iterion` and for an empty name; neither reaches here (ParseMCPName and
+// ParseMCPWildcard both reject an empty server, and no registrar creates a
+// bare `iterion` server), and the catalog refuses both anyway.
+func internalMCPServerName(server string) bool {
+	return permission.IsReservedMCPServerName(server)
+}
+
+// internalMCPToolGrant answers a node's access to a NAME in iterion's own
+// namespace: the capability that opens the tool must be in the node's
+// effective grant. nil means allowed.
+//
+// It answers a name the author WROTE, so it refuses — the "or its call
+// refused" half of what C328 prints at compile time ("names the host tool %q
+// but holds no %q capability — at run time the tool is dropped or its call
+// refused", pkg/dsl/ir/validate_host_tools.go) — and the error aborts the
+// node at build. The "dropped" half is expandInternalMCPWildcard's, which
+// answers what the node MAY have.
+//
+// The capability is read in the FAMILY that serves the tool: the exemption
+// above lifts the `mcp:` scope off the whole reserved namespace, which is far
+// more than the three shipped families, while a leaf name alone (`get_issue`,
+// `subscribe`, `run_get`) says nothing about who serves it — so a fourth
+// registrar's tool would be opened by another family's capability.
+//
+// The families are registered with every capability (pkg/runview/executor.go
+// passes boardops.AllCapabilities() so the whole surface exists in the
+// registry) and boardops re-reads those same all-caps when the tool
+// executes, so this is the one place a node's OWN grant is read for them.
+func (e *ClawExecutor) internalMCPToolGrant(node ir.Node, server, qualified string) error {
+	capability, ok := ir.HostToolCapabilityInFamily(server, qualified)
+	if !ok {
+		// No capability gates the name on this server and the `mcp:` scope no
+		// longer does either, so allowing it would hand a reserved-namespace
+		// tool out UNGATED — the drift this check exists to close, one new
+		// tool or one new family later. Only a REGISTERED tool reaches here
+		// (resolveSingleToolForNode resolves the reference first;
+		// expandInternalMCPWildcard walks the registry), so this names a
+		// family that grew a tool without a capability pin, or a family no
+		// capability table describes at all — never an author's typo.
+		return fmt.Errorf("model: node %q cannot access MCP tool %q: it is in iterion's reserved MCP "+
+			"namespace, where the node's `mcp:` scope has no say, and no capability gates it in the "+
+			"family of server %q — pin the tool in its family in ir.hostToolFamilies "+
+			"(pkg/dsl/ir/validate_host_tools.go) before registering it",
+			node.NodeID(), qualified, server)
+	}
+	for _, granted := range e.nodeCapabilities(node) {
+		if granted == capability {
+			return nil
+		}
+	}
+	refusal := fmt.Errorf("model: node %q cannot access MCP tool %q because it holds no %q capability "+
+		"(iterion's own servers are opened by the node's `capabilities:` list, not by its `mcp:` scope)",
+		node.NodeID(), qualified, capability)
+	// The refusal is TYPED, as the call-time check's is: the declaration and
+	// the trust decide it and neither changes between attempts, so the
+	// boundary classifies it permanent rather than spending its retry. A
+	// capability the node DECLARES and the workspace-trust floor withdrew is
+	// the floor's refusal, not the program's fault.
+	for _, declared := range e.nodeCapabilitiesDeclared(node) {
+		if declared == capability {
+			return fmt.Errorf("%w: %w", tool.ErrHostCapabilityWithdrawn, refusal)
+		}
+	}
+	return fmt.Errorf("%w: %w", tool.ErrHostCapabilityNotHeld, refusal)
+}
+
+// nodeCapabilities is the grant a node is held to, for every node kind:
+// its own declared `capabilities:` list through effectiveCapabilitiesOf (nil
+// inherits the workflow's, a declared `capabilities: []` grants nothing,
+// #1801; a workspace its tenant did not write holds none). An LLM node's
+// list is extractBackendFields' — the field buildTask reads; a tool node
+// declares its own (#78=A, ADR-151), read here for its registry recipe's
+// host tools and by its native action transport alike, so no recipe of a
+// tool node answers a different grant than another. A node kind that
+// carries no list of its own is held to the workflow's.
+func (e *ClawExecutor) nodeCapabilities(node ir.Node) []string {
+	return e.nodeCapabilitiesAs(node, e.WorkspaceTrust())
+}
+
+// nodeCapabilitiesDeclared is the same grant read as if the workspace were
+// trusted: what the PROGRAM declares, before the trust floor. The resolution
+// refusal reads it to say which of the two decided — a declared capability the
+// floor withdrew is the floor's refusal, an undeclared one the program's.
+func (e *ClawExecutor) nodeCapabilitiesDeclared(node ir.Node) []string {
+	return e.nodeCapabilitiesAs(node, store.RunTrustDefault)
+}
+
+func (e *ClawExecutor) nodeCapabilitiesAs(node ir.Node, trust store.RunTrust) []string {
+	held, _ := e.nodeCapabilitiesBoth(node, trust)
+	return held
+}
+
+// nodeCapabilitiesBoth is nodeCapabilitiesAs with the withdrawal kept: the
+// grant stamp (nodeHostCapabilities) reads both so a refusal can say the floor
+// took what the node declares.
+func (e *ClawExecutor) nodeCapabilitiesBoth(node ir.Node, trust store.RunTrust) (held, withdrawn []string) {
+	if tn, ok := node.(*ir.ToolNode); ok {
+		return effectiveCapabilitiesOf(tn.Capabilities, e.wfCapabilities, trust)
+	}
+	f, err := extractBackendFields(node)
+	if err != nil {
+		return effectiveCapabilitiesOf(nil, e.wfCapabilities, trust)
+	}
+	return effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, trust)
+}
+
 // resolveToolsForNode resolves a list of tool names to delegate.ToolDef
 // instances for a specific node, ensuring that only tools from the node's
 // active MCP servers are exposed. Wildcard entries like "mcp.<server>.*"
 // are expanded to all tools discovered from that server.
-func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, map[string]delegate.MCPLauncherRefusal, error) {
+//
+// authorship, when given (at most one), says which entries the node's own
+// `tools:` list contributed and which the runtime appended. A definition
+// resolved from an author entry (verbatim, or through a wildcard's
+// expansion, read from the registry after expandWildcards ensured the
+// servers) is marked AuthorDeclared — the fact a deferring node reads to
+// decide which tools leave the wire — UNLESS the runtime also asked for it
+// (runtimeAppends, read on the entry and on the qualified name): such a
+// tool serves the runtime's posture. Ambient splices are in neither set and
+// stay declared. Omitted, nothing is marked: a caller that cannot name the
+// author's contribution must not guess it.
+func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string, authorship ...toolAuthorship) ([]delegate.ToolDef, map[string]delegate.MCPLauncherRefusal, error) {
+	if len(authorship) > 1 {
+		return nil, nil, fmt.Errorf("model: resolveToolsForNode takes at most one authorship, got %d", len(authorship))
+	}
+	var who toolAuthorship
+	if len(authorship) == 1 {
+		who = authorship[0]
+	}
 	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
 	expanded, refused, err := e.expandWildcards(ctx, node, names)
 	if err != nil {
 		return nil, nil, err
 	}
+	author := authorResolvedNames(who.author, e.toolRegistry)
 
 	// Servers this launcher may not start (the run is sandboxed and their
 	// definition is not the operator's) are collected, not raised: the node
@@ -63,6 +206,15 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 			continue
 		}
 		t := definition.ToDelegateDef()
+		// The marker rides the ENTRY, not the qualified name: the author
+		// may have written a bare spelling (`search`) whose definition
+		// carries the qualified identity (`mcp.repo.search`), and the
+		// deferral demotes what the AUTHOR wrote, whatever it resolved to.
+		// A wildcard expansion is marked through its registry identity,
+		// which authorResolvedNames filled in. The runtime's record vetoes
+		// it, by entry and by identity alike.
+		fromRuntime := who.runtime[name] || who.runtime[definition.QualifiedName]
+		t.AuthorDeclared = (author[name] || author[definition.QualifiedName]) && !fromRuntime
 		if prior, exists := seen[t.Name]; exists {
 			if prior != definition.QualifiedName {
 				return nil, nil, fmt.Errorf("model: tools %q and %q have the same model tool name %q", prior, definition.QualifiedName, t.Name)
@@ -112,6 +264,39 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 	return tools, refused, nil
 }
 
+// toolAuthorship names, for one resolution, the entries the node's author
+// wrote and the names the runtime appended (assembleEffectiveToolsAndAppends
+// records them). The deferral's marker reads both: author-written and not
+// runtime-appended.
+type toolAuthorship struct {
+	author  []string
+	runtime runtimeAppends
+}
+
+// authorResolvedNames is the set of names a deferring node may demote:
+// the author's entries verbatim, plus what each author wildcard expands to,
+// read from the registry — which by the time this runs has every named
+// server ensured, since expandWildcards ran first over the superset. A bare
+// alias the author wrote stays in the set under its written spelling; the
+// resolution loop marks through the entry.
+func authorResolvedNames(authorNames []string, registry *tool.Registry) map[string]bool {
+	out := make(map[string]bool, len(authorNames))
+	for _, name := range authorNames {
+		out[name] = true
+		if !tool.IsMCPWildcard(name) {
+			continue
+		}
+		server, err := tool.ParseMCPWildcard(name)
+		if err != nil || registry == nil {
+			continue
+		}
+		for _, td := range registry.ListByServer(server) {
+			out[td.QualifiedName] = true
+		}
+	}
+	return out
+}
+
 // resolveTaskMCPServers projects the node's active MCP server names into
 // the transport-agnostic delegate.TaskMCPServer shape that CLI backends
 // (claude_code) forward to the agent CLI. Unknown names (not in the MCP
@@ -131,7 +316,7 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 		if !ok || cfg == nil {
 			continue
 		}
-		out = append(out, delegate.TaskMCPServer{
+		server := delegate.TaskMCPServer{
 			Name:      cfg.Name,
 			Transport: string(cfg.Transport),
 			Command:   cfg.Command,
@@ -139,9 +324,26 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 			URL:       cfg.URL,
 			Headers:   cfg.Headers,
 			Env:       cfg.Env,
-		})
+		}
+		if !e.WorkspaceTrust().Trusted() && cfg.Transport == mcp.TransportStdio {
+			server.Command, server.Args = neutralCwdLaunch(server.Command, server.Args)
+		}
+		out = append(out, server)
 	}
 	return out
+}
+
+// neutralCwdLaunch starts a stdio MCP server from the filesystem root instead
+// of the directory it is spawned in. claude_code and pi spawn the servers they
+// are handed with THEIR working directory — the checkout — and a launcher reads
+// its own configuration from there: `npx` a `.npmrc` whose `script-shell` runs
+// checkout code, `python -m` a directory shadowing the module. The CLI does not
+// honour a per-server cwd (measured: 2.1.220 starts a server declaring one in
+// its own directory), so the server is wrapped instead. The root exists in
+// every environment and no checkout can write to it; the server's own command
+// and arguments are passed through untouched.
+func neutralCwdLaunch(command string, args []string) (string, []string) {
+	return "/bin/sh", append([]string{"-c", `cd / && exec "$0" "$@"`, command}, args...)
 }
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
@@ -164,6 +366,19 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		// beside the launcher by then.
 		if !mcpServerActiveForNode(node, server) {
 			e.logger.Warn("wildcard %q names MCP server %q, which is not active for node %q — not started", name, server, node.NodeID())
+			continue
+		}
+		// One of iterion's own families: its tools are already in the
+		// registry and the MCP catalog has no entry for it, so the
+		// EnsureServers below would report "unknown server" and the node
+		// would die on a declared dependency that cannot boot. The grant
+		// expands it instead.
+		if internalMCPServerName(server) {
+			granted, err := e.expandInternalMCPWildcard(node, name, server)
+			if err != nil {
+				return nil, nil, err
+			}
+			expanded = append(expanded, granted...)
 			continue
 		}
 		// Ensure the server is connected so its tools are in the registry.
@@ -206,11 +421,80 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		if len(serverTools) == 0 {
 			e.logger.Warn("wildcard %q matched no tools (server %q may not be started or has no tools)", name, server)
 		}
+		// Sorted by name for prompt-cache stability, which the internal-family
+		// sibling below already does for the same reason. ListByServer ranges
+		// the registry's map and says its order is not guaranteed, and Go
+		// randomises that per iteration — so an unsorted splice reorders the
+		// tools array between two calls on an unchanged tree. The array's last
+		// element is where buildRequest puts the ephemeral cache breakpoint,
+		// so a reorder moves the breakpoint and the next turn re-bills the
+		// whole prefix instead of reading it.
+		//
+		// Sorted WITHIN the wildcard, never across the whole slice: the
+		// declared order of `tools:` is the author's and is preserved, so one
+		// wildcard's expansion cannot reshuffle the names around it.
+		qualified := make([]string, 0, len(serverTools))
 		for _, td := range serverTools {
-			expanded = append(expanded, td.QualifiedName)
+			qualified = append(qualified, td.QualifiedName)
 		}
+		sort.Strings(qualified)
+		expanded = append(expanded, qualified...)
 	}
 	return expanded, refused, nil
+}
+
+// expandInternalMCPWildcard expands a wildcard over one of iterion's own
+// in-process families to the tools the node's grant opens.
+//
+// A wildcard asks for what the node MAY have, so a tool the grant does not
+// open is DROPPED here instead of failing the node — the first half of what
+// C328 prints ("the tool is dropped or its call refused"); naming the tool
+// explicitly is what earns the refusal. assembleEffectiveTools narrows the
+// board/runs appends the same way, through BoardToolsFor(effectiveCaps).
+//
+// "The grant opens none of this family's tools" and "this family is not
+// registered on this route" are different answers and get different ones: the
+// first drops, the second fails the node on a dependency it declared.
+//
+// Ordered by name: the expansion feeds the node's advertised tool list, and
+// the registry lists a server's tools in map order.
+func (e *ClawExecutor) expandInternalMCPWildcard(node ir.Node, name, server string) ([]string, error) {
+	if e.toolRegistry == nil {
+		return nil, fmt.Errorf("model: wildcard %q requires a tool registry", name)
+	}
+	if node == nil {
+		return nil, fmt.Errorf("model: wildcard %q over iterion's own server %q requires a node context: the node's capabilities: grant decides it", name, server)
+	}
+	// The family is not on this route at all: the registrars are conditional
+	// on the stores a run actually has (pkg/runview/executor.go registers the
+	// board family only with a dispatcher store, watch and runs only with a
+	// run store, and the connector facade is delegate/HTTP-only), so an empty
+	// registry means the declared dependency cannot be served — not that the
+	// grant opens none of it. Said, never dropped: the wildcard is a name the
+	// author wrote, and before the namespace exemption the ensure below
+	// answered it with `unknown server`.
+	family := e.toolRegistry.ListByServer(server)
+	if len(family) == 0 {
+		return nil, fmt.Errorf("model: wildcard %q names iterion's own MCP server %q, which has no tool "+
+			"registered on this route: the in-process families register from the run's own stores "+
+			"(pkg/runview/executor.go), so this node declares a dependency the route cannot serve — no "+
+			"`capabilities:` grant can open it here", name, server)
+	}
+	var granted []string
+	for _, td := range family {
+		if err := e.checkNodeToolAccess(node, td.QualifiedName); err != nil {
+			e.logger.Info("wildcard %q: %s", name, err)
+			continue
+		}
+		granted = append(granted, td.QualifiedName)
+	}
+	if len(granted) == 0 {
+		// The family IS here and the grant opens none of it — a wildcard asks
+		// for what the node MAY have, so that is a drop, not a failure.
+		e.logger.Warn("wildcard %q matched no tool node %q's capabilities: grant opens (server %q is iterion's own: its tools are gated by capabilities:, not by mcp:)", name, node.NodeID(), server)
+	}
+	sort.Strings(granted)
+	return granted, nil
 }
 
 // resolveSingleToolForNode resolves one tool name in the context of a node.
@@ -475,6 +759,13 @@ func (e *ClawExecutor) bareNameMayBelongToARefusedServer(node ir.Node, name stri
 // is not restricted here — checkNodeToolAccess owns that rule; this is only
 // about not STARTING a server the node cannot reach anyway.
 func mcpServerActiveForNode(node ir.Node, server string) bool {
+	// An in-process family has no process to keep from starting, and the
+	// grant decides each of its tools (checkNodeToolAccess). A false answer
+	// here drops a `mcp.iterion_board.*` wildcard with a warning and no
+	// error, leaving a node that declares one with ZERO board tools.
+	if internalMCPServerName(server) {
+		return true
+	}
 	active := nodeActiveMCPServers(node)
 	if len(active) == 0 {
 		return true
@@ -559,6 +850,16 @@ func (e *ClawExecutor) checkNodeToolAccess(node ir.Node, qualified string) error
 	if node == nil {
 		return fmt.Errorf("model: MCP tool %q requires a node context", qualified)
 	}
+	// Iterion's own in-process families sit OUTSIDE the node's `mcp:` scope
+	// and are decided by the grant. Taken BEFORE the empty-set short-circuit
+	// so the answer does not depend on whether the run inherited an ambient
+	// server from the target repo's `.mcp.json` or the plugin catalog: that
+	// set can never name an in-process family, so the exact-match loop below
+	// refuses every one of them as soon as the set is non-empty, and reads
+	// as "unrestricted" when it is not.
+	if internalMCPServerName(server) {
+		return e.internalMCPToolGrant(node, server, qualified)
+	}
 	mcpServers := nodeActiveMCPServers(node)
 	if len(mcpServers) == 0 {
 		return nil
@@ -582,6 +883,12 @@ func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDe
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
+	// Only the static, read-only checkers have an audited parallel path.
+	switch policy.(type) {
+	case *tool.Policy, *tool.RulePolicy:
+	default:
+		t.ConcurrentSafe = false
+	}
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		if err := policy.CheckContext(e.toolPolicyContext(ctx, executionCtx, node, name, qualifiedName, input)); err != nil {
 			return "", err

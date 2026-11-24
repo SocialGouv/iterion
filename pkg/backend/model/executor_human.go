@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -15,12 +15,12 @@ import (
 // failure, in the shape the engine books from. Nil when nothing was served.
 // Keeping this map separate from answers lets interaction callers strip the
 // reserved namespace without losing the bill. Unreported usage is not zero.
-func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
+func meteredHumanFailure(ctx context.Context, modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
 	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0 && result.TotalUsage.UnreportedCalls == 0) {
 		return nil
 	}
 	output := map[string]any{}
-	annotateUsage(output, modelSpec, result.TotalUsage)
+	annotateUsage(ctx, output, modelSpec, result.TotalUsage)
 	return output
 }
 
@@ -60,21 +60,23 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 	// `${VAR:-default}` (recipes use the latter for model fallbacks like
 	// "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}").
 	modelSpec := e.resolveRoutingField(node.Model)
-	client, err := e.registry.Resolve(modelSpec)
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
 	}
 
-	// Build GenerationOptions.
+	// Build GenerationOptions: the arm's Spend rides the step events.
 	genOpts := GenerationOptions{
-		Model: modelSpec,
+		Model:      modelSpec,
+		Provider:   clawSpecProvider(modelSpec),
+		Credential: credential,
 	}
 
 	// Reasoning effort (dynamic override from input, then static node property).
 	// Coerce against the model's supported matrix so a recipe asking for "max"
 	// on an OpenAI model is silently clamped rather than rejected at the API.
 	if _, _, perr := ParseModelSpec(modelSpec); perr == nil {
-		if effort := coerceEffortForModel(e.effortForNode(node, "", input), modelroute.Parse(modelSpec).CapabilityID()); effort != "" {
+		if effort, _ := e.routeReasoningEffort(ctx, node.ID, modelSpec, coerceEffortForModel(e.effortForNode(node, "", input), modelroute.Parse(modelSpec).CapabilityID())); effort != "" {
 			genOpts.ProviderOptions = providerOptsForNode(effort)
 		}
 	}
@@ -133,14 +135,14 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 	}
 	genOpts.ExplicitSchema = jsonSchema
 
-	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
 	if err != nil {
 		// The llm half of a human node is a real LLM call, and the engine
 		// books what it burned from the map returned beside the error (it
 		// then degrades to the human pause). A bare nil made that booking
 		// inert: the attempt is over — the human answers next, and a human
 		// reports no tokens — so this figure is final or lost.
-		return nil, meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		return nil, meteredHumanFailure(ctx, modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object
@@ -148,15 +150,26 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 		output = make(map[string]any)
 	}
 
-	spend := meteredHumanFailure(modelSpec, result)
+	spend := meteredHumanFailure(ctx, modelSpec, result)
 	if spend == nil {
 		// A reported zero still replaces any model-written counters on a
 		// standalone human node; the booking guard ignores this zero bill.
 		spend = map[string]any{}
-		annotateUsage(spend, modelSpec, result.TotalUsage)
+		annotateUsage(ctx, spend, modelSpec, result.TotalUsage)
 	}
 	return output, spend, nil
 }
+
+// interactionIDSuffix turns a node's id into the id of the synthetic human
+// node its interaction generation runs under (ExecuteHumanLLMForInteraction):
+// the id every event of that generation carries. The credential plan (#2288)
+// reads it too — the interaction site's rows must key on the id the
+// runtime's observations join, never on the asking node's own.
+const interactionIDSuffix = "_interaction"
+
+// interactionNodeID names the runtime id of the synthetic node an
+// interaction generation for nodeID runs under.
+func interactionNodeID(nodeID string) string { return nodeID + interactionIDSuffix }
 
 // ExecuteHumanLLMForInteraction handles delegate interaction requests by
 // creating a synthetic HumanNode from the original node's InteractionFields
@@ -205,7 +218,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 
 	// Build synthetic HumanNode.
 	node := &ir.HumanNode{
-		BaseNode: ir.BaseNode{ID: nodeID + "_interaction"},
+		BaseNode: ir.BaseNode{ID: interactionNodeID(nodeID)},
 		SchemaFields: ir.SchemaFields{
 			OutputSchema: schemaName,
 		},

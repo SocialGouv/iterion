@@ -17,6 +17,21 @@ image:
   # given its own image must be pinned there too.
   # See docs/cloud-deployment.md#pinning-the-image.
   digest: ""
+  # Opt-in guard for a production install: when true the render FAILS unless
+  # every iterion pod image is a digest reference (`repo@sha256:<64 hex>`) —
+  # the server and runner (`digest` above), `runner.image`,
+  # `runnerPools[].image`, and, with runner.sandbox.enabled, the `sandbox:
+  # auto` image: a pool's own `env.ITERION_SANDBOX_DEFAULT_IMAGE`, and
+  # `config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE` whenever a pod reads it
+  # there (the shared runner, or a pool without its own). Out of its reach: the helm test pod (busybox), the
+  # devStack images (dev-only), and the platform setting `sandbox.default_image`
+  # (`iterion remote admin sandbox set --default-image`), which overrides the
+  # env at publish time from the DB — keep it unset or a digest reference. Helm
+  # has no warning channel, so the guard is a refusal, and opt-in is the escape
+  # hatch: false changes nothing. Set it true in the GitOps values that already
+  # pin by digest, so a hurried hotfix cannot slide an install back to a moving
+  # tag unnoticed.
+  requireDigest: false
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -34,6 +49,22 @@ server:
     rollingUpdate:
       maxSurge: 100%
       maxUnavailable: 0
+  # How long a server rollout may stay Progressing before k8s calls it
+  # Failed — and with it `helm install --wait` and an ArgoCD sync. Unset,
+  # so Kubernetes' own 600 s applies and an existing install keeps the
+  # behaviour it was deployed with. A cold cluster needs more: the kubelet
+  # serialises image pulls, so a store whose image waits behind the others
+  # fails the install while the pod turns Ready a minute later (measured on
+  # a fresh kind node: 7m15 of waiting for the nats image). values-dev.yaml
+  # raises it for that path; a production values file is free to set it
+  # explicitly, knowing the cost — a genuinely broken rollout (bad image,
+  # crash at boot) is reported as Progressing for as long as this says
+  # instead of failing at 10 minutes. A `0` is NOT how you remove the
+  # deadline: both templates render the key through a `with`, which skips a
+  # zero, so Kubernetes' default applies — a very large value is what
+  # practically removes it. Cloud mode only: mode=local renders a
+  # StatefulSet, which has no such field.
+  progressDeadlineSeconds:
   # Cloud-mode HTTP entry point — `iterion server` (T-30). Reads
   # ITERION_MODE + ITERION_MONGO_URI / ITERION_NATS_URL / ITERION_S3_*
   # from envFrom so no extra args are needed for the cloud wiring.
@@ -74,7 +105,42 @@ server:
   priorityClassName: ""
   nodeSelector: {}
   tolerations: []
+  # Keep the replicas apart (#2012). The chart renders a podAntiAffinity
+  # term and a topologySpreadConstraint from the server's OWN selector
+  # labels — never typed by hand, so the selector cannot name a label the
+  # pods do not carry: that dead-selector class is what `task chart:check`
+  # (internal/rendergate) refuses, after ovh-prod's valkeyha held its three
+  # replicas on three nodes by luck alone. antiAffinity: soft (preferred,
+  # the default — a one-node cluster still schedules), hard (required — a
+  # replica with no free node stays Pending), none. topologyKey is the node
+  # label both are spread over.
+  scheduling:
+    antiAffinity: soft
+    topologyKey: kubernetes.io/hostname
+    # The spread constraint over the same key: maxSkew 1 and ScheduleAnyway
+    # (soft) by default; DoNotSchedule makes it hard; enabled: false drops it.
+    spread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+  # Free-form affinity merged OVER the generated one, key by key: an
+  # operator's nodeAffinity is added, a term list of the OTHER kind
+  # (required next to the generated preferred, or the reverse) is kept, a
+  # term list of the SAME kind REPLACES the generated one — lists do not
+  # merge. scheduling.antiAffinity: none renders this block alone.
   affinity: {}
+  # The PodDisruptionBudget. enabled auto (default): rendered only when the
+  # server is guaranteed more than one replica — replicas > 1, or the HPA's
+  # minReplicas > 1 when the HPA owns the count — because minAvailable 1 on
+  # a single replica refuses every eviction and holds a node drain forever;
+  # true / false force it either way. One of minAvailable / maxUnavailable
+  # (maxUnavailable wins when set; 0 is a value — minAvailable 0 allows
+  # every disruption, maxUnavailable 0 none — "" and null are unset; with
+  # both unset the budget is minAvailable 1, never an empty one).
+  pdb:
+    enabled: auto
+    minAvailable: 1
+    maxUnavailable: ""
   hpa:
     enabled: true
     minReplicas: 1
@@ -97,11 +163,13 @@ runner:
   # image's `iterion` ENTRYPOINT runs and `args` becomes the subcommand.
   command: []
   args: ["runner"]
-  # image (optional, full "repo:tag") overrides the shared iterion.image for the
-  # RUNNER pods only — e.g. ghcr.io/socialgouv/iterion-runner-devbox:edge, the
-  # devbox-first-class runner where bots `devbox run` the target repo's toolchain
-  # (cross-language/version). Empty = the shared iterion.image (server + runner
-  # identical, today's behaviour).
+  # image (optional, full "repo:tag" or "repo@sha256:…") overrides the shared
+  # iterion.image for the RUNNER pods only — e.g.
+  # ghcr.io/socialgouv/iterion-runner-devbox:edge, the devbox-first-class runner
+  # where bots `devbox run` the target repo's toolchain (cross-language/version).
+  # Empty = the shared iterion.image (server + runner identical). Consumed
+  # verbatim: `image.digest` does not reach it, so a production install pins
+  # it as `repo@sha256:…` itself (image.requireDigest refuses a tag here).
   image: ""
   imagePullPolicy: ""
   # podSecurityContext / containerSecurityContext override the shared
@@ -115,6 +183,30 @@ runner:
   priorityClassName: ""
   podSecurityContext: {}
   containerSecurityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  # Same knobs as server.scheduling, on the runner's own labels: soft
+  # anti-affinity + a soft spread by default, so a KEDA-grown pool fills the
+  # nodes evenly instead of piling on the one that holds the image. hard
+  # leaves the replicas beyond the node count Pending — an operator's
+  # explicit choice.
+  scheduling:
+    antiAffinity: soft
+    topologyKey: kubernetes.io/hostname
+    spread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+  affinity: {}
+  # The runner's PodDisruptionBudget, same rule as server.pdb: auto renders
+  # it when the pool is guaranteed more than one replica (replicas > 1, or
+  # keda.minReplicas > 1 when KEDA owns the count). A KEDA pool whose floor
+  # is one replica gets none — the budget would hold every node drain while
+  # protecting a pod KEDA deletes without asking anyway.
+  pdb:
+    enabled: auto
+    minAvailable: 1
+    maxUnavailable: ""
   # Prometheus metrics port for the runner. Defaults to the same
   # value as server.metricsPort to keep dashboards uniform; override
   # if your platform requires distinct ports per component.
@@ -134,7 +226,9 @@ runner:
   # A lame-duck rollout stays "Progressing" until the last old pod drains
   # (possibly hours). Raise the Deployment progress deadline above the grace
   # period so k8s/ArgoCD don't flag the rollout degraded while the new pods
-  # already serve. 0 disables the deadline entirely.
+  # already serve. A `0` here renders nothing (the template's `with` skips
+  # it) and leaves Kubernetes' default in place, so it is not a way to
+  # remove the deadline — see the server's knob above.
   progressDeadlineSeconds: 30000
   keda:
     enabled: false
@@ -143,9 +237,11 @@ runner:
     cooldownPeriod: 60
     pollingInterval: 5
     lagThreshold: 1
-    # JetStream consumer name. Override per-release in multi-tenant
-    # installs to avoid collision when several iterion releases share
-    # a NATS cluster.
+    # Durable consumer the scaler measures. The runner always binds the
+    # constant iterion-runners (no runner setting renames it), so keep this
+    # value: any other name points the scaler at a consumer no runner binds.
+    # A consumer name is scoped to its stream, so renaming it separates
+    # nothing between releases that share a NATS cluster.
     consumerName: iterion-runners
     # JetStream account the stream lives in. Required by the KEDA scaler;
     # single-tenant JetStream (no NATS accounts) uses the global default "$G".
@@ -155,6 +251,8 @@ runner:
   # sibling pods via the kubernetes sandbox driver (Phase 5 V1).
   # Disabled by default for clusters that haven't opted into the
   # sandbox feature; turn on per-environment via values-prod.yaml.
+  # The release-wide flag: a runnerPools[] entry overrides it for that pool
+  # alone (runnerPools[].sandbox.enabled, below).
   sandbox:
     enabled: false
     # Scheduling policy the kubernetes sandbox driver stamps on every
@@ -237,26 +335,59 @@ runner:
 # Optional: replicas (default 1), image (default the shared runner
 # image), resources (default runner.resources), podAnnotations,
 # gateway.apiKeySecretKey (default OPENAI_COMPATIBLE_API_KEY), env (literal
-# pod env — the pool's routing dials, ITERION_VIBE_MODEL_* and friends).
+# pod env — the pool's routing dials for a bot that still reads one, e.g.
+# ITERION_PLAN_REVIEW_{MODEL,BACKEND}_GPT; a de-dialled bot, review-pr
+# included, is routed by llmroute cells, never by this block),
+# nodeSelector, tolerations, affinity, scheduling and pdb. nodeSelector and
+# tolerations are taken as the pool writes them when it spells the key (an
+# empty block opts out of the runner's), inherited otherwise; affinity,
+# scheduling and pdb are merged over the runner's block key by key (a key
+# set to null clears the runner's). The pool spreads its OWN replicas — its
+# selector carries the pool label — and gets a budget once it is guaranteed
+# more than one replica.
 # Every ITERION_ name in `env` is also rendered into ITERION_BOT_VARS_ENV_PINS:
 # the platform bot-vars record (PUT /api/admin/settings/bot-vars) does not
 # reach a pinned name, so a model pin stored for the shared fleet never
 # re-routes a pool on a name its block spells — spell EVERY dial the bots
-# the pool runs read (docs/sovereign-pools.md lists review-pr's). Tune a
-# pool here, in GitOps, not in the record. A block that spells
+# the pool runs read (docs/sovereign-pools.md says how a de-dialled bot is
+# routed instead). Tune a pool's dialled bots here, in GitOps, not in the
+# record. A block that spells
 # ITERION_BOT_VARS_ENV_PINS itself (an install whose chart predates the
 # rendering) gets the union of its spelling and its ITERION_ names.
+#
+# sandbox.enabled is runner.sandbox.enabled for ONE pool (ADR-162 Q3): unset,
+# the pool follows the release-wide flag; set, the pool resolves the
+# kubernetes sandbox (or opts out of it) on its own, with the release-wide
+# flag left as it is — so the fork review lane's pool can sandbox every run
+# without moving every trusted `sandbox:` bot of the deployment into sibling
+# pods. A boolean only, and `enabled` is the map's only key. Turning a
+# pool's sandbox ON where the release-wide flag is off FAILS the render until
+# the pool shape of ADR-154 (#2965) lands: that pool needs a sandbox Role
+# this chart renders only under runner.sandbox.enabled, and under
+# networkPolicy.enabled the release-wide policy closes its runner's egress
+# proxy to its siblings. The interim (serviceAccount.create=false with the
+# sandbox grants bound to the SHARED account, networkPolicy.enabled=false)
+# hands those grants to every pod of the release that mounts the account —
+# read docs/cloud-deployment.md § Sovereign runner pools before taking it.
+# An opted-out pool (false under a release-wide true) mounts no
+# ServiceAccount token. The pool's env block cannot also spell
+# ITERION_SANDBOX_OVERRIDE or ITERION_SANDBOX_HOST_STATE when its flag
+# differs from the release's, nor ITERION_SANDBOX_DEFAULT on an opted-in
+# pool (pinned to auto there).
 runnerPools: []
 #  - name: honorabilite
 #    replicas: 1
 #    # image: "ghcr.io/socialgouv/iterion-runner-devbox:v3.246.0"
+#    # (a digest reference, "…@sha256:…", under image.requireDigest)
 #    gateway:
 #      baseUrl: "https://<regional-gateway>"
 #      existingSecret: "iterion-pool-honorabilite-gateway"
 #      # apiKeySecretKey: "OPENAI_COMPATIBLE_API_KEY"
 #    env:
-#      ITERION_VIBE_MODEL_CLAUDE: "openai_compatible/<gateway model id>"
-#      ITERION_VIBE_PROVIDER_CLAUDE: "openai_compatible"
+#      ITERION_PLAN_REVIEW_MODEL_GPT: "openai_compatible/<gateway model id>"
+#      ITERION_PLAN_REVIEW_BACKEND_GPT: "claw"
+#    # sandbox:
+#    #   enabled: true   # this pool alone resolves the kubernetes sandbox
 
 # --- HTTP exposure --------------------------------------------------
 service:
@@ -305,7 +436,7 @@ config:
     # delay × (MaxDeliver-1) above the cold readiness time of the new fleet.
     epochMismatchDelay: 2m
   mongo:
-    uri: ""           # required when mode=cloud and mongodb.enabled=false
+    uri: ""           # required when mode=cloud, unless devStack.mongodb resolves it or the auth Secret carries ITERION_MONGO_URI
     database: iterion
     eventsTtlDays: 90
   nats:
@@ -322,7 +453,7 @@ config:
     # Clustered NATS needs this >1 for data-HA; CreateOrUpdateStream migrates existing streams in place at the next server boot.
     streamReplicas: 1
   s3:
-    endpoint: ""      # required when mode=cloud and minio.enabled=false
+    endpoint: ""      # required when mode=cloud, unless devStack.seaweedfs resolves it
     region: us-east-1
     bucket: iterion-artifacts
     usePathStyle: true
@@ -408,6 +539,102 @@ config:
     # the SPA is served from a different host than the API.
     cookieDomain: ""
     cookieSecure: true
+    # Whose forwarded client address the server believes: X-Forwarded-For,
+    # RFC 7239 Forwarded and X-Real-IP are read only from a peer inside one
+    # of these ranges. The default covers the private ranges a cluster's
+    # pod network comes from, so the ingress controller in front is trusted
+    # out of the box and the auth rate limiter keys on the address that
+    # ingress actually saw, rather than on one address for the whole
+    # instance. How far into the chain the server reads is
+    # `trustedProxyHops` below, and that count — not the ranges — is what
+    # keeps a client's own entries out of the identity.
+    #
+    # RESTRICT IT TO YOUR INGRESS CONTROLLER'S POD CIDR. Every address
+    # inside a trusted range is a proxy you vouch for: a workload that can
+    # dial the server port from there names any client it likes — a forged
+    # audit IP, and a victim's rate-limit bucket drained by naming the
+    # victim. `networkPolicy.enabled` (true in values-prod.yaml) is what
+    # keeps that reach to the controller namespaces and the release's own
+    # pods.
+    #
+    # Emptying it is supported and warned about at boot, never refused: it
+    # trusts no forwarded header at all, so the client of a request is the
+    # socket address — which behind an ingress is the controller's own, and
+    # the limiter then holds ONE bucket for the whole instance instead of
+    # one per client. Renders ITERION_AUTH_TRUSTED_PROXY_CIDRS when
+    # non-empty.
+    #
+    # The ranges make the identity unforgeable only for a header the proxy
+    # REWRITES or APPENDS on every request — name that header in
+    # `forwardedHeader` below. A proxy that passes the client's own
+    # header through untouched leaves the identity client-controlled, and
+    # narrowing the ranges does not change that: the ingress stays
+    # trusted, and the header is still the client's.
+    trustedProxyCidrs:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - fc00::/7
+    # How many APPENDING proxies of yours sit in front — the number of the
+    # forwarded chain's rightmost entries YOUR infrastructure wrote. 1 is
+    # this chart's shape: the one ingress controller its `ingress` block
+    # configures. 0 means the same (the server's own default).
+    #
+    # It is what tells a proxy's entry from a client's. The reader walks
+    # the chain right to left and stops here, so with the ranges above
+    # trusting all of private space — every LAN client, every in-cluster
+    # pod — a client that writes an entry of its own cannot push the
+    # identity past the hop its proxy appended. RAISING IT IS WHAT MOVES
+    # THAT LINE: declare more appending hops than are really in front and
+    # the entries a client wrote become the identity again, one fresh
+    # rate-limit bucket per value it invents. Raise it only for a chained
+    # front end — a CDN edge that appends with this chart's ingress
+    # appending behind it is 2, and the CDN's egress ranges go in
+    # `trustedProxyCidrs`. Renders ITERION_AUTH_TRUSTED_PROXY_HOPS when
+    # non-zero.
+    #
+    # 1 IS ONLY RIGHT WHEN THE CLIENT'S ADDRESS REACHES THE CONTROLLER.
+    # With the Kubernetes-default `externalTrafficPolicy: Cluster` on the
+    # LoadBalancer Service every packet is SNATed to the node that
+    # received it, so the controller sees a node address: a controller
+    # that replaces the chain writes that node as the client, one that
+    # appends leaves what arrived one entry beyond this bound, and
+    # either way the whole internet shares one bucket per node. No range
+    # and no count fixes it — `externalTrafficPolicy: Local` or the PROXY
+    # protocol do. `use-forwarded-headers: "true"` behind an L4 Service
+    # does NOT: nothing on that path writes the client into the header,
+    # so the one entry the controller writes is the client's own. It is
+    # for a managed L7 load balancer that writes the client ahead of the
+    # controller — then either `compute-full-forwarded-for: "true"`
+    # beside it, this count at 2 and, in `trustedProxyCidrs`, the range
+    # of the address the controller's TCP peer carries (the LB's egress
+    # range when the LB targets the pods directly, the NODE range — or
+    # `externalTrafficPolicy: Local` — behind a NodePort/instance
+    # target), or `proxy-real-ip-cidr` set to that same range with this
+    # count as shipped. The server says so once per process when the
+    # identity it reads is itself inside `trustedProxyCidrs`;
+    # docs/cloud-deployment.md has the shapes.
+    trustedProxyHops: 1
+    # The ONE header a trusted proxy names the client with. Empty is
+    # X-Forwarded-For, which every ingress controller writes — including
+    # the one this chart's `ingress` block configures.
+    #
+    # Name the header YOUR proxy writes on every request: the server reads
+    # that one and no other, so a client cannot pick the mechanism. A
+    # proxy that computes the client into X-Real-IP (the hand-written
+    # nginx `proxy_set_header X-Real-IP $remote_addr;` alone) or into
+    # RFC 7239 `Forwarded` (HAProxy, most CDNs) while passing the client's
+    # X-Forwarded-For through untouched needs this set, or the client's own
+    # header becomes its identity: a fresh rate-limit bucket per value it
+    # invents, and a chosen address in the audit row.
+    #
+    # `Forwarded` is read with the RFC 7239 grammar; any other field name
+    # is a comma-separated address list, so `X-Real-IP` and a CDN's
+    # `CF-Connecting-IP` or `True-Client-IP` work as themselves. A value
+    # that is not one field name is refused at boot, naming it. The server
+    # warns once when the header it is told to read is not the one the
+    # requests carry. Renders ITERION_AUTH_FORWARDED_HEADER when set.
+    forwardedHeader: ""
     # Access JWT lifetime. Refresh rotates on every use and lives
     # for refreshTtl.
     accessTtl: 15m
@@ -430,10 +657,12 @@ config:
         clientId: ""
         displayName: "SSO"
         scopes: "openid,email,profile"
-    # OAuth-forfait (Phase D) — public client ids the server uses
-    # to refresh user-supplied Claude Code / Codex subscription
-    # tokens. Empty disables refresh of that kind (the user must
-    # re-paste credentials.json on expiry).
+    # OAuth-forfait (Phase D) — public client ids the server uses to run
+    # the browser connect flow (Anthropic) and to refresh user-supplied
+    # Claude Code / Codex subscription tokens. Both are optional
+    # overrides: an empty Anthropic id defaults to the public Claude Code
+    # client, an empty Codex id defaults to the id carried by the uploaded
+    # auth.json. Neither disables forfaits (docs/oauth-forfait.md).
     oauthForfait:
       anthropicClientId: ""
       codexClientId: ""
@@ -462,6 +691,53 @@ config:
     monthlyCostCapUsd: 0
     maxConcurrentRuns: 0
     launchRatePerMin: 0
+    # The fork review lane's per-contributor monthly bound (ADR-162,
+    # docs/quotas-and-limits.md) is the one pair where unset is NOT
+    # unlimited: left unset, the server ships 20 runs / $20 per outside
+    # contributor. Set a positive cap, or the literal "unbounded" to open
+    # it; 0 refuses the server boot (it is not a spelling of unbounded).
+    # forkAuthorRunQuota: 20
+    # forkAuthorCostCapUsd: 20
+  # --- Legal pages (every mode) -------------------------------------
+  # The operator's legal surface (docs/adr/160-legal-content-is-deployment-configuration.md):
+  # the texts a public service owes its visitors are DEPLOYMENT
+  # configuration — the same image serves every operator, so an editor, a
+  # DPO or a hosting provider never lives in the bundle, and a legal text
+  # changes through a reviewed commit, never through an admin console.
+  # Everything is optional: a document left empty has no page and no link.
+  # Templates to fill with the DPO: docs/legal-templates/ in the repository.
+  legal:
+    # mailto: contact the pages offer (legal, privacy and accessibility
+    # feedback). Empty = no contact link.
+    contactEmail: ""
+    # Published accessibility conformance status (décret 2019-768):
+    # "" (not published) | non_compliant | partially_compliant | compliant.
+    # Publish non_compliant until a full RGAA audit gives a rate.
+    accessibilityStatus: ""
+    # Date the statement was established, YYYY-MM-DD (optional).
+    accessibilityDate: ""
+    # Conformance rate in percent from a full audit (e.g. "72.5"); required
+    # for partially_compliant, and it must match the status: compliant =
+    # 100, partially_compliant = 50 to under 100, non_compliant = under 50
+    # (the server refuses a contradiction at startup).
+    accessibilityRate: ""
+    # The documents, as markdown, keyed by slug — the address segment under
+    # /legal/. Rendered into the <release>-legal ConfigMap and mounted on the
+    # server pod; a key left empty is not published. Use a values file with
+    # block scalars (mentions-legales: |) rather than --set.
+    documents:
+      mentions-legales: ""
+      confidentialite: ""
+      cgu: ""
+      accessibilite: ""
+    # An out-of-band ConfigMap holding <slug>.md keys (sealed, GitOps-
+    # managed, …). When set, the chart mounts it instead of rendering the
+    # documents above, which must then stay empty (refused otherwise). The
+    # server reads the documents once at startup and the chart cannot see
+    # this ConfigMap's content: a change needs a rollout you trigger (a
+    # checksum of your own in server.podAnnotations, or kubectl rollout
+    # restart).
+    existingConfigMap: ""
 
 # --- Secrets --------------------------------------------------------
 # Two opt-in patterns:
@@ -483,7 +759,10 @@ secrets:
   # execute on the subscription instead of a metered API key. When enabled it
   # is mounted as an OPTIONAL envFrom on the runner (optional: true — a missing
   # secret never blocks startup). Enable per-environment; the secret's contents
-  # are set by hand (kubectl), not by values.
+  # are set by hand (kubectl), not by values. A forfait is an individual
+  # consumer licence, for development and testing: production automation runs
+  # on API keys (docs/oauth-forfait.md). This flag is one channel among
+  # several — docs/cloud-admin.md §7 lists the others.
   forfait:
     enabled: false
     existingSecret: ""
@@ -625,14 +904,54 @@ containerSecurityContext:
       - ALL
   readOnlyRootFilesystem: false  # node_modules + git index need rw
 
-# --- Network policy (egress allowlist) ------------------------------
+# --- Network policy (ingress scoping + egress allowlist) --------------
 networkPolicy:
   enabled: false
+  ingress:
+    # Namespaces whose pods may dial the server port directly — the ingress
+    # controller's namespaces. Matched on the
+    # kubernetes.io/metadata.name label the kube-apiserver stamps on every
+    # namespace since 1.22. Anything else in the cluster that reaches the
+    # server port can forge X-Forwarded-For (#2804), so this defaults to the
+    # common ingress-nginx namespace — override it with your controller's
+    # namespaces. Decided empty-config behaviour (#2804, question 51):
+    # emptying BOTH this and extraAllow keeps the historical admit-all rule
+    # — the render is never refused — but warns loudly: an
+    # iterion.io/ingress-admit-all annotation on the policy, a WARNING
+    # comment in the rendered manifest, and a helm note at
+    # install/upgrade.
+    controllerNamespaces: ["ingress-nginx"]
+    # Escape hatch, the twin of egress.extraAllow: extra ingress peers for
+    # the server port, as NetworkPolicyPeer objects (ipBlock for kubectl
+    # port-forward's node source, a namespaceSelector for a controller that
+    # lives elsewhere, ...).
+    extraAllow: []
   egress:
     # Chart users add their LLM endpoints, Mongo URI host, NATS host,
     # S3 endpoint host here. Empty list = deny-all egress (rarely
     # what you want; opt-out of NetworkPolicy entirely instead).
     extraAllow: []
+
+# --- Namespace compute ceiling ---------------------------------------
+# A ResourceQuota bounding the namespace's pod requests (plus the LimitRange
+# that gives request-less sidecars a default, so admission stays open).
+# Off by default; sizing is a deployment decision, not a chart constant:
+# fixed infra + runner slots × sandbox request (2 CPU / 4 Gi each) +
+# fan-out headroom. The runner pool size is the graceful concurrency lever;
+# the quota rejects overflow pods at admission instead of starving
+# co-hosted workloads. CPU stays limit-free (defaultRequest only). At the
+# ceiling, quota admission is PriorityClass-blind: the server/runner surge
+# pods are refused like any other pod, so keep replica headroom or drain
+# the fan-out before rolling. Note the LimitRange floor: a container
+# limited below the defaults (memory < 128Mi, cpu < 100m) without an
+# explicit request would be refused by admission — declare its requests.
+quota:
+  enabled: false
+  requestsCpu: ""    # required when enabled, e.g. "64"
+  requestsMemory: "" # required when enabled, e.g. 160Gi
+  pods: ""           # required when enabled, e.g. "150"
+  defaultRequestCpu: 100m
+  defaultRequestMemory: 128Mi
 
 # --- Observability --------------------------------------------------
 metrics:
@@ -642,31 +961,212 @@ metrics:
     namespace: ""
     interval: 30s
     labels: {}
-  # Starter alert pack (DLQ depth, heartbeat errors, orphan recoveries,
-  # launch denials, webhook throttling). Needs the PrometheusRule CRD
-  # (prometheus-operator).
+  # Alert packs: the control-plane starter (DLQ depth, heartbeat errors,
+  # orphan recoveries, launch denials, webhook throttling), the backup
+  # rules when backup.enabled, and the datastore pack below. Needs the
+  # PrometheusRule CRD (prometheus-operator).
   prometheusRule:
     enabled: false
     additionalLabels: {}
+    # The datastore alert pack (#2014): the replicated stores the
+    # deployment depends on. In the cloud deployment they are OTHER charts
+    # (MongoDB, NATS, valkey, SeaweedFS), so this block names them for YOUR
+    # cluster. A rule per store on kube_statefulset_status_replicas_ready <
+    # kube_statefulset_replicas (kube-state-metrics, present on any
+    # kube-prometheus) and on container restarts; then the store-level
+    # signals, each from the exporter that produces it; and, per exporter
+    # family, an absent() rule so a signal nobody scrapes pages instead of
+    # staying silent. These stores survive ONE loss (quorum of three,
+    # replication 002), not two: the alert must arrive during the first.
+    datastores:
+      enabled: false
+      # The namespace the stores run in; "" = the release namespace.
+      namespace: ""
+      # StatefulSets to watch. match is a regex on the StatefulSet name
+      # (grouped, then -[0-9]+ appended for its pod names); write it as a
+      # regex, a backslash stays a backslash.
+      statefulsets:
+        - name: mongodb
+          match: ".*-mongodb"
+        - name: nats
+          match: ".*-nats"
+        - name: valkeyha
+          match: ".*-valkeyha(-.*)?"
+        - name: valkeyfiler
+          match: ".*-valkeyfiler(-.*)?"
+        - name: seaweedfs
+          match: ".*-seaweedfs-(master|volume|filer|s3)"
+      # How long a replica may be missing before the page (a rolling
+      # update dips below the count for a minute or two).
+      forDuration: 10m
+      # Container restarts per hour, per pod, before the warning.
+      restartsPerHour: 3
+      # How long a store's series may be absent before the absent-signal
+      # warning: the exporter is not scraped, or not deployed at all.
+      absentFor: 30m
+      # Each family: the PromQL label matchers (inside the braces) that
+      # pick that exporter's series in your cluster — a pod regex, a job
+      # name — joined with namespace=<namespace>; written as PromQL (a
+      # backslash in a regex is doubled, as in any PromQL string).
+      valkey:
+        # valkeyfiler, the SeaweedFS filer store: redis_exporter series
+        # (Valkey supported). connected_slaves below this number on the
+        # primary, or an AOF write that failed.
+        enabled: true
+        selector: 'pod=~".*valkeyfiler.*"'
+        minConnectedReplicas: 2
+      seaweedfs:
+        # Volumes registered across the volume servers below this number,
+        # no master leader, volumes under their replica placement.
+        enabled: true
+        volumeSelector: 'pod=~".*seaweedfs-volume.*"'
+        masterSelector: 'pod=~".*seaweedfs-master.*"'
+        minVolumes: 4
+      mongodb:
+        # percona mongodb_exporter's view of replSetGetStatus — a member
+        # unhealthy or out of the set (neither PRIMARY, SECONDARY nor
+        # ARBITER), no primary at all. metricPrefix names the collector that
+        # produces the series: "mongodb_rs_" for the diagnosticdata
+        # collector (on by default: mongodb_rs_members_state{member_idx,
+        # member_state}), "mongodb_" for the replicasetstatus collector
+        # (--collector.replicasetstatus: mongodb_members_state).
+        enabled: true
+        selector: 'pod=~".*mongodb.*"'
+        metricPrefix: mongodb_rs_
 
-# --- Sub-charts (off by default; values-dev.yaml turns them on) ----
-mongodb:
+# --- Off-cluster copy of the artifact bucket (#2013) -----------------
+# One CronJob per tier copies config.s3.bucket — the artifact store the
+# server and runner write — to an S3-compatible bucket OUTSIDE the cluster
+# (another region, another provider) with rclone, the tool and the pinned
+# image of the production migration (ADR-107). Replication inside the
+# cluster protects a disk or a node, not a deletion, a bad deleteGone or
+# the loss of the cluster: this does. Off by default — the destination and
+# its credentials are the operator's (docs/cloud-backup.md § Blob backup);
+# no copy exists until they are set, and the render refuses an enabled
+# backup without them.
+backup:
   enabled: false
-  architecture: replicaset
-  replicaCount: 1
-  auth:
-    enabled: false
+  image:
+    repository: rclone/rclone
+    # Required, the digest alone (sha256:…): a moving tag would make every
+    # nightly copy a surprise. rclone 1.71.1, the release of the migration.
+    digest: sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc
+    pullPolicy: IfNotPresent
+  # The destination bucket. endpoint / region / provider / bucket are
+  # configuration; the credentials come ONLY from an existing Secret (never
+  # a value) carrying the two keys named below — sealed-secrets,
+  # external-secrets, a Secret applied by hand.
+  destination:
+    endpoint: ""
+    region: ""
+    bucket: ""
+    # The directory of the bucket this deployment copies into:
+    # <namespace>/<release fullname> by default, so two deployments sharing
+    # one backup bucket never mirror over each other (their syncs would
+    # move each other's copies into <prefix>-deleted and expire them).
+    # Set "" to copy into the bucket's root.
+    # path: ""
+    # rclone's S3 provider name: AWS, Ceph, Minio, Other (OVH, SeaweedFS…).
+    provider: Other
+    forcePathStyle: true
+    existingSecret: ""
+    accessKeyIdKey: RCLONE_CONFIG_DST_ACCESS_KEY_ID
+    secretAccessKeyKey: RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
+  # One CronJob per tier. sync keeps <bucket>/<prefix>/ a mirror of the
+  # source and moves what the sync would delete or overwrite under
+  # <prefix>-deleted/<timestamp>/ (rclone --backup-dir): a deletion in the
+  # source stays recoverable for keepDays. snapshot copies the whole bucket
+  # under <prefix>/<timestamp>/, a dated full copy kept keepDays. Every run
+  # ends with `rclone check` against the copy it made (checkArgs) — the Job
+  # is red when a source object is missing from the destination — and
+  # maxAgeHours is the staleness the alert pages on.
+  tiers:
+    - name: daily
+      schedule: "30 2 * * *"
+      mode: sync
+      prefix: current
+      keepDays: 7
+      maxAgeHours: 36
+    - name: weekly
+      schedule: "0 3 * * 0"
+      mode: snapshot
+      prefix: weekly
+      keepDays: 35
+      maxAgeHours: 192
+    - name: monthly
+      schedule: "0 4 1 * *"
+      mode: snapshot
+      prefix: monthly
+      keepDays: 400
+      maxAgeHours: 800
+  # rclone check flags: --one-way (every source object must exist at the
+  # destination), --size-only (a multipart ETag is not an MD5). The check
+  # always judges what existed when the copy started (--min-age): the
+  # bucket is live.
+  checkArgs: ["--one-way", "--size-only"]
+  # The most objects one sync run may delete from the mirror (rclone
+  # --max-delete): a source emptied by a bad deleteGone would otherwise be
+  # mirrored green and kept only keepDays; past the bound the sync aborts
+  # and the Job is red. -1 = unbounded. Raise it knowingly for a planned
+  # mass cleanup.
+  maxDelete: 1000
+  # Flags appended to every copy (--transfers, --bwlimit, --checksum…) — a
+  # filter here must be repeated in checkArgs, the check reads the source
+  # too. Verbosity flags are refused: rclone prints the credentials it read
+  # from the environment at debug level.
+  extraArgs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  # A copy running longer than this (seconds) is failed; 0 = no deadline.
+  activeDeadlineSeconds: 21600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  podAnnotations: {}
+
+# --- Sub-chart (off by default; values-dev.yaml turns it on) ---------
 nats:
   enabled: false
   config:
     jetstream:
       enabled: true
-minio:
-  enabled: false
-  # Credentials intentionally left empty — values-dev.yaml supplies
-  # the dev-only minioadmin/minioadmin pair. In prod set these via
-  # an existing Secret referenced from secrets.storage.existingSecret.
-  auth:
-    rootUser: ""
-    rootPassword: ""
-  defaultBuckets: iterion-artifacts
+
+# --- Dev-only in-cluster datastores (values-dev.yaml turns them on) ----
+# First-party, single-replica stores for `task chart:kind`, the cloud-e2e CI
+# job and ad-hoc experiments — the releases and digests of
+# docker-compose.cloud.yml. Never for production (no replication, fixed dev
+# identities); the cloud deployment's stores are their own charts.
+devStack:
+  mongodb:
+    # A ONE-member replica set (change streams and transactions need a
+    # replica set; failover does not exist here), initiated by its own
+    # readiness probe like the compose stack, no authentication. Resolves
+    # config.mongo.uri when that is empty.
+    enabled: false
+    image: mongo:8.3.13@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2
+    replicaSetName: rs0
+    resources: {}
+    # emptyDir by default (the data lives as long as the pod); a PVC on request.
+    persistence:
+      enabled: false
+      size: 8Gi
+      storageClass: ""
+  seaweedfs:
+    # The object store, as in prod: SeaweedFS in one process (master +
+    # volume + filer + S3 gateway). Its S3 identity is the chart's dev key
+    # pair (secrets.storage.s3AccessKeyId / s3SecretAccessKey, create=true
+    # required); the bucket config.s3.bucket is created by a post-install
+    # hook with the backup CronJob's pinned rclone. Resolves
+    # config.s3.endpoint when that is empty.
+    enabled: false
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    resources: {}
+    # emptyDir by default (the data lives as long as the pod); a PVC on request.
+    persistence:
+      enabled: false
+      size: 8Gi
+      storageClass: ""

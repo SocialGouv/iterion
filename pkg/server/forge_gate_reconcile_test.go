@@ -159,6 +159,11 @@ func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
 	gateOff["gate_enabled"] = "false"
 	gateOffBool := gatingInputs()
 	gateOffBool["gate_enabled"] = false
+	// Evaluation mode (publish_mode=off): the bot built its review and posted
+	// nothing by design. A synthetic failure would put a red check, then a
+	// relaunch, on a pull request the run was launched not to touch.
+	evaluation := gatingInputs()
+	evaluation["publish_mode"] = "off"
 	for _, tc := range []struct {
 		name   string
 		inputs map[string]any
@@ -168,6 +173,7 @@ func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
 		{"nothing at all", map[string]any{}},
 		{"gate disabled by pin", gateOff},
 		{"gate disabled by bool pin", gateOffBool},
+		{"evaluation mode", evaluation},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
@@ -345,7 +351,7 @@ func TestGateReconcile_SyntheticMarker(t *testing.T) {
 		{gateDLQDescription, true},
 		{gateDLQDescriptionReplay, true},
 		{"no blocking findings (≥high); 4 total", false},
-		{"supply-chain audit clean; no alignment needed, build verified", false},
+		{"supply-chain audit clean; nothing left to align, build verified", false},
 		{"", false},
 	} {
 		if got := isSyntheticGateInterruption(tc.desc); got != tc.want {

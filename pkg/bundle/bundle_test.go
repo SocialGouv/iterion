@@ -337,6 +337,7 @@ func TestDirForMainBot(t *testing.T) {
 		want    bool
 	}{
 		{"skills marker", "b/main.bot", []string{DirSkills}, true},
+		{"presets marker", "b/main.bot", []string{DirPresets}, true},
 		{"manifest marker", "b/main.bot", []string{ManifestFile}, true},
 		// The loader reads either spelling; a marker it reads but the
 		// promotion ignored gave the file and directory forms two verdicts.
@@ -357,7 +358,7 @@ func TestDirForMainBot(t *testing.T) {
 			}
 			for _, m := range tt.markers {
 				mp := filepath.Join(filepath.Dir(path), m)
-				if m == DirSkills {
+				if m == DirSkills || m == DirPresets {
 					if err := os.MkdirAll(mp, 0o755); err != nil {
 						t.Fatal(err)
 					}
@@ -381,14 +382,14 @@ func TestDirForMainBot(t *testing.T) {
 	}
 }
 
-// writeBundleMarker puts one marker in dir: a skills/ directory or an
+// writeBundleMarker puts one marker in dir: a resource directory or an
 // iterion manifest.
 func writeBundleMarker(t *testing.T, dir, marker string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if marker == DirSkills {
+	if marker == DirSkills || marker == DirPresets {
 		if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -406,7 +407,7 @@ func writeBundleMarker(t *testing.T, dir, marker string) {
 // promoted such a directory handed a loose file's floor to a manifest that
 // never asked (the migrator), and every walk-up now shares this answer.
 func TestOwningDir(t *testing.T) {
-	for _, marker := range []string{DirSkills, ManifestFile} {
+	for _, marker := range []string{DirSkills, DirPresets, ManifestFile} {
 		t.Run("a file under a real bundle, "+marker, func(t *testing.T) {
 			b := filepath.Join(t.TempDir(), "b")
 			writeBundleMarker(t, b, marker)
@@ -469,12 +470,31 @@ func TestOwningDir(t *testing.T) {
 // (`/api/validate` with the editor's path) and must get that bundle's
 // prompts; only the walk-ups (OwningDir) require the file.
 func TestDirForMainBot_AnswersForADraft(t *testing.T) {
-	for _, marker := range []string{DirSkills, ManifestFile} {
+	for _, marker := range []string{DirSkills, DirPresets, ManifestFile} {
 		t.Run(marker, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "b")
 			writeBundleMarker(t, dir, marker)
 			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != dir {
 				t.Errorf("DirForMainBot = %q for a draft main.bot beside a %s, want %q", got, marker, dir)
+			}
+		})
+	}
+}
+
+func TestResourceMarkerFilesDoNotClaimABundle(t *testing.T) {
+	for _, marker := range []string{DirSkills, DirPresets} {
+		t.Run(marker, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range []string{MainBotFile, marker} {
+				if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if claimed, _, reason := DirClaim(dir); claimed {
+				t.Fatalf("a file named %s claimed a bundle: %s", marker, reason)
+			}
+			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != "" {
+				t.Fatalf("a file named %s promoted main.bot to %s", marker, got)
 			}
 		})
 	}
@@ -486,8 +506,8 @@ func TestDirForMainBot_AnswersForADraft(t *testing.T) {
 // directory that no longer exists.
 func TestDirForMainBot_MarkersAreLayoutConstants(t *testing.T) {
 	for _, m := range dirMarkers {
-		if m != DirSkills && m != ManifestFile && m != ManifestFileAlt {
-			t.Errorf("marker %q is none of DirSkills, ManifestFile, ManifestFileAlt", m)
+		if m != DirSkills && m != DirPresets && m != ManifestFile && m != ManifestFileAlt {
+			t.Errorf("marker %q is none of DirSkills, DirPresets, ManifestFile, ManifestFileAlt", m)
 		}
 	}
 }

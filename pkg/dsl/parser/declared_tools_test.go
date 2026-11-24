@@ -56,23 +56,45 @@ func TestEmptyToolListParsesDeclaredWhileAnAbsentOneStaysNil(t *testing.T) {
 	}
 }
 
-// The tools arm is the ONLY list whose empty inline form is a declaration.
-// `capabilities: []` must keep parseBracketList's nil, because a nil
-// capability list is what makes a node INHERIT the workflow's
-// (executor_build_task.go: `if effectiveCaps == nil`). Reddens on the
-// mutation that widens the declared parse to every bracket list.
-func TestEmptyCapabilityListStaysNilSoTheNodeStillInheritsTheWorkflows(t *testing.T) {
+// `capabilities: []` is a value too — the author declaring that the node
+// holds NO capability (#1801): a declared empty list overrides the
+// workflow's, where an absent `capabilities:` line inherits it
+// (executor_build_task.go: `if effectiveCaps == nil`). The two are told
+// apart by nilness from here down, exactly like `tools:`. Reddens on the
+// mutation that sends the capabilities arm back through parseToolList's
+// nil-returning `[]` arm.
+func TestEmptyCapabilityListParsesDeclaredWhileAnAbsentOneStaysNil(t *testing.T) {
 	pr := parseLenient("declared.bot", declaredToolsSrc)
 	for _, j := range pr.File.Judges {
 		if j.Name != "empty_caps" {
 			continue
 		}
-		if j.Capabilities != nil {
-			t.Fatalf("`capabilities: []` must stay nil (inherit), got %#v", j.Capabilities)
+		if j.Capabilities == nil {
+			t.Fatal("`capabilities: []` must parse to a DECLARED empty list (no grant), got nil (inherit)")
+		}
+		if len(j.Capabilities) != 0 {
+			t.Fatalf("`capabilities: []` must be empty, got %#v", j.Capabilities)
 		}
 		return
 	}
 	t.Fatal("empty_caps not parsed")
+}
+
+// An agent without a `capabilities:` line holds nil — the inherit marker —
+// where the same declaration with `capabilities: []` holds the declared
+// empty list.
+func TestAbsentCapabilityListStaysNilSoTheNodeInheritsTheWorkflows(t *testing.T) {
+	pr := parseLenient("declared.bot", declaredToolsSrc)
+	for _, j := range pr.File.Judges {
+		if j.Name != "unset_tools" {
+			continue
+		}
+		if j.Capabilities != nil {
+			t.Fatalf("an absent `capabilities:` must stay nil (inherit the workflow's), got %#v", j.Capabilities)
+		}
+		return
+	}
+	t.Fatal("unset_tools not parsed")
 }
 
 type judgeTools struct {

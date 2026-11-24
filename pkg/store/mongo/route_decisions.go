@@ -26,17 +26,31 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 	d.ClaimedAt = time.Now().UTC()
 	stampTenantDecision(ctx, &d)
 	d.Attempts = 1
-	if _, err := s.routeDecisions.InsertOne(ctx, d); err != nil {
-		if !mongo.IsDuplicateKeyError(err) {
-			return false, nil, fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
+	if d.FinishedAt != nil {
+		finished := *d.FinishedAt
+		d.FinishedAt = &finished
+	}
+	var claimed bool
+	var existing *store.RouteDecision
+	err := s.withRunMetadataWrite(ctx, d.RunID, func(sc context.Context, _ *store.Run) error {
+		claimed, existing = false, nil
+		filter := withTenantFilter(sc, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq})
+		var current store.RouteDecision
+		err := s.routeDecisions.FindOne(sc, filter).Decode(&current)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			if _, err := s.routeDecisions.InsertOne(sc, d); err != nil {
+				return fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
+			}
+			claimed = true
+			return nil
 		}
-		// The episode has a row. Two re-claim arms (see the interface
-		// doc), BOTH bounded by the attempt cap: a stale "claimed" (the
-		// claimant died between claim and action) and a "failed" under
-		// the cap. The CAS is a conditional update, so replicas racing
-		// on the steal still elect exactly one winner.
-		res := s.routeDecisions.FindOneAndUpdate(ctx,
-			withTenantFilter(ctx, bson.M{
+		if err != nil {
+			return fmt.Errorf("store/mongo: read route decision %s: %w", d.ID, err)
+		}
+		// The parent WRITE serializes this read/conditional-reclaim against
+		// other new writers and deletion. Keep the original business CAS.
+		res := s.routeDecisions.FindOneAndUpdate(sc,
+			withTenantFilter(sc, bson.M{
 				"run_id": d.RunID, "outcome_seq": d.OutcomeSeq,
 				"attempts": bson.M{"$lt": store.MaxRouteDecisionAttempts},
 				"$or": bson.A{
@@ -50,19 +64,19 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 				"$inc": bson.M{"attempts": 1},
 			})
 		if res.Err() == nil {
-			return true, nil, nil
+			claimed = true
+			return nil
 		}
 		if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
-			return false, nil, fmt.Errorf("store/mongo: reclaim route decision %s: %w", d.ID, res.Err())
+			return fmt.Errorf("store/mongo: reclaim route decision %s: %w", d.ID, res.Err())
 		}
-		var existing store.RouteDecision
-		ferr := s.routeDecisions.FindOne(ctx, withTenantFilter(ctx, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq})).Decode(&existing)
-		if ferr != nil {
-			return false, nil, fmt.Errorf("store/mongo: route decision %s exists but is unreadable: %w", d.ID, ferr)
-		}
-		return false, &existing, nil
+		existing = &current
+		return errValuePublicationNoop
+	})
+	if err != nil {
+		return false, nil, err
 	}
-	return true, nil, nil
+	return claimed, existing, nil
 }
 
 // FinishRouteDecision moves the claimed row to its terminal state.
@@ -71,16 +85,18 @@ func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSe
 		return fmt.Errorf("store/mongo: finish route decision: invalid state %q", state)
 	}
 	now := time.Now().UTC()
-	res, err := s.routeDecisions.UpdateOne(ctx,
-		withTenantFilter(ctx, bson.M{"run_id": runID, "outcome_seq": outcomeSeq, "state": store.RouteDecisionClaimed}),
-		bson.M{"$set": bson.M{"state": state, "error": actionErr, "finished_at": now}})
-	if err != nil {
-		return fmt.Errorf("store/mongo: finish route decision %s:%d: %w", runID, outcomeSeq, err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("store/mongo: finish route decision %s:%d: no claimed row", runID, outcomeSeq)
-	}
-	return nil
+	return s.withRunMetadataWrite(ctx, runID, func(sc context.Context, _ *store.Run) error {
+		res, err := s.routeDecisions.UpdateOne(sc,
+			withTenantFilter(sc, bson.M{"run_id": runID, "outcome_seq": outcomeSeq, "state": store.RouteDecisionClaimed}),
+			bson.M{"$set": bson.M{"state": state, "error": actionErr, "finished_at": now}})
+		if err != nil {
+			return fmt.Errorf("store/mongo: finish route decision %s:%d: %w", runID, outcomeSeq, err)
+		}
+		if res.MatchedCount == 0 {
+			return fmt.Errorf("store/mongo: finish route decision %s:%d: no claimed row", runID, outcomeSeq)
+		}
+		return nil
+	})
 }
 
 // ListRouteDecisions returns a run's decisions, newest episode first.
@@ -116,7 +132,52 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 	}
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: notDeleted(bson.M{
-			"routing_policy": bson.M{"$exists": true, "$ne": nil},
+			// A run the router's merged gate declines before any verdict
+			// has no actionable episode: it must not occupy the batch.
+			"merge_status": bson.M{"$nin": bson.A{store.MergeStatusMerged}},
+			// Either routing carrier: a launch-frozen contract, or the
+			// launch intent itself — a run with neither is nobody's to
+			// route.
+			"$or": bson.A{
+				bson.M{"routing_policy": bson.M{"$exists": true, "$ne": nil}},
+				bson.M{
+					// Intent-only arm: the intent's declines are
+					// SILENT — no registry row settles them, so the
+					// anti-join cannot lift them out. The net itself
+					// refuses every shape the intent reading or a
+					// pre-claim gate declines (a failed, opted-out,
+					// finalize-refused or unbanked run admitted
+					// here rides the oldest-first page for its whole
+					// lookback and starves newer landable runs
+					// behind the cap). The preconditions mirror
+					// routing.EvaluateAutoMerge and the router's own
+					// gates — keep the two readings aligned.
+					"auto_merge":   true,
+					"status":       store.RunStatusFinished,
+					"merge_status": bson.M{"$nin": bson.A{store.MergeStatusSkipped}},
+					// The opt-out reads FOLDED — case-insensitive,
+					// whitespace-trimmed — the same reading
+					// pkg/store.MergeIntoOptOut gives the intent
+					// evaluator and the FS twin. An exact "none"
+					// would admit " None " and starve the page
+					// behind a decline the router settles silently
+					// before any claim.
+					"final_branch_error": bson.M{"$in": bson.A{"", nil}},
+					"$expr": bson.M{"$ne": bson.A{
+						bson.M{"$toLower": bson.M{"$trim": bson.M{"input": bson.M{"$ifNull": bson.A{"$merge_into", ""}}}}},
+						"none",
+					}},
+					// The router's bank gate declines the unbanked
+					// shape before the claim (the terminal status
+					// lands BEFORE the bank push, measured up to 10+
+					// minutes on large repos) — a banked run re-enters
+					// the page once its bank save refreshes updated_at;
+					// a never-banked one (a child no bank ever writes)
+					// must not occupy it at all.
+					"final_branch": bson.M{"$nin": bson.A{"", nil}},
+					"final_commit": bson.M{"$nin": bson.A{"", nil}},
+				},
+			},
 			"status": bson.M{"$in": bson.A{
 				store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable,
 			}},

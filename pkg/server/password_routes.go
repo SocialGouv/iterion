@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -54,11 +55,22 @@ func (s *Server) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusBadRequest, "token + password required")
 		return
 	}
+	// The redemption mints a session: a sign-in for the audit log, under
+	// the password_reset flow, beside the user.password_reset row below.
+	attempt := loginAttempt{method: loginMethodPassword, flow: loginFlowPasswordReset}
 	res, err := s.authSvc.ConfirmPasswordReset(r.Context(), req.Token, req.Password, r.UserAgent(), s.clientIP(r))
 	if err != nil {
+		// A reset committed without a session (ErrPasswordChangedSignIn)
+		// answers its account: both rows name it.
+		attempt.account = res.User.ID
+		s.auditLoginFailed(r, attempt, err)
+		if errors.Is(err, auth.ErrPasswordChangedSignIn) {
+			s.auditPlatform(r, "", "user.password_reset", "user", res.User.ID, nil)
+		}
 		s.credentialChangeError(w, r, err)
 		return
 	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.auditPlatform(r, res.ActiveTeamID, "user.password_reset", "user", res.User.ID, nil)
 	if s.cfg.Metrics != nil {
 		s.cfg.Metrics.AuthPasswordResetsTotal.WithLabelValues("confirmed").Inc()
@@ -83,11 +95,21 @@ func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "current_password + new_password required")
 		return
 	}
+	// The current password is the sign-in's proof, and the answer is a
+	// session: audited as a sign-in under the password_change flow, with
+	// the caller's identity as the actor on both outcomes.
+	attempt := loginAttempt{method: loginMethodPassword, flow: loginFlowPasswordChange}
 	res, err := s.authSvc.ChangePassword(r.Context(), id.UserID, req.CurrentPassword, req.NewPassword, r.UserAgent(), s.clientIP(r))
 	if err != nil {
+		s.auditLoginFailed(r, attempt, err)
+		if errors.Is(err, auth.ErrPasswordChangedSignIn) {
+			// The password IS changed; only the session is missing.
+			s.auditTenant(r, id.TeamID, "user.password_changed", "user", id.UserID, nil)
+		}
 		s.credentialChangeError(w, r, err)
 		return
 	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.auditTenant(r, id.TeamID, "user.password_changed", "user", id.UserID, nil)
 	s.writeSession(w, r, loginSession(res))
 }

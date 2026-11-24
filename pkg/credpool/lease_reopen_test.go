@@ -37,8 +37,8 @@ func testLeaseReopen(t *testing.T, ctx context.Context, s LeaseStore) {
 	}
 
 	put("superseded")
-	if err := s.AddCost(ctx, "superseded", 1); err != nil {
-		t.Fatal(err)
+	if landed, err := s.AddCost(ctx, "superseded", 1); err != nil || !landed {
+		t.Fatalf("add cost on an open lease = (%v, %v), want (true, nil)", landed, err)
 	}
 	closeAs("superseded", 0, OutcomeSuperseded, at)
 	if ok, err := s.Reopen(ctx, "superseded", at); err != nil || !ok {
@@ -86,6 +86,80 @@ func testLeaseReopen(t *testing.T, ctx context.Context, s LeaseStore) {
 	}
 }
 
+// testLeaseAddCost is the LeaseStore contract of AddCost: an interim spend
+// lands on a lease its attempt still reports against — open or superseded,
+// whose outcome it leaves alone, so the stamp stays for the final report and
+// the supersede stays undoable — and never on a lease reported, released or
+// abandoned.
+func testLeaseAddCost(t *testing.T, ctx context.Context, s LeaseStore) {
+	t.Helper()
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	put := func(id, outcome string) {
+		t.Helper()
+		if err := s.Put(ctx, Lease{ID: id, RunID: "run-" + id, PledgeID: "p", AcquiredAt: at.Add(-time.Minute), ExpiresAt: at.Add(time.Hour)}); err != nil {
+			t.Fatalf("put %s: %v", id, err)
+		}
+		if outcome != "" {
+			if won, err := s.Close(ctx, id, 0, outcome, at); err != nil || !won {
+				t.Fatalf("close %s: %v %v", id, won, err)
+			}
+		}
+	}
+	cases := []struct {
+		outcome string
+		adds    bool
+	}{
+		{"", true},
+		{OutcomeSuperseded, true},
+		{OutcomeSupersededGrantless, true},
+		{"ok", false},
+		{OutcomeSupersededReported, false},
+		{OutcomeNotLaunched, false},
+		{OutcomeAbandoned, false},
+	}
+	for _, c := range cases {
+		id := "addcost-" + c.outcome
+		put(id, c.outcome)
+		if c.outcome == OutcomeSupersededReported {
+			// Reached the way a report reaches it: superseded, then stamped.
+			put(id+"-src", "")
+			id = id + "-src"
+			if won, err := s.Close(ctx, id, 0, OutcomeSuperseded, at); err != nil || !won {
+				t.Fatalf("supersede %s: %v %v", id, won, err)
+			}
+			if won, err := s.StampSupersededReport(ctx, id, 2, at); err != nil || !won {
+				t.Fatalf("stamp %s: %v %v", id, won, err)
+			}
+		}
+		before, err := s.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		landed, err := s.AddCost(ctx, id, 1.5)
+		if err != nil {
+			t.Fatalf("add cost on a %q lease: %v", c.outcome, err)
+		}
+		if landed != c.adds {
+			t.Errorf("AddCost on a %q lease: landed=%v, want %v", c.outcome, landed, c.adds)
+		}
+		l, err := s.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := before.CostUSD
+		if c.adds {
+			want += 1.5
+		}
+		if l.CostUSD != want || l.Closed != before.Closed || l.Outcome != before.Outcome {
+			t.Errorf("AddCost on a %q lease: cost=%.2f closed=%v outcome=%q, want cost=%.2f and the state unchanged", c.outcome, l.CostUSD, l.Closed, l.Outcome, want)
+		}
+	}
+	// The interim spend leaves a superseded lease undoable at its instant.
+	if ok, err := s.Reopen(ctx, "addcost-"+OutcomeSuperseded, at); err != nil || !ok {
+		t.Fatalf("reopen a superseded lease after an interim spend = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
 // testAcquireUndoesItsSupersedeWithoutAGrant: an acquisition that grants
 // nothing — no enabled pool here — took over nothing, so the open lease of
 // the run's previous attempt it superseded is open again when it returns.
@@ -116,6 +190,7 @@ func testAcquireUndoesItsSupersedeWithoutAGrant(t *testing.T, ctx context.Contex
 
 func TestLeaseReopen_Memory(t *testing.T) {
 	testLeaseReopen(t, context.Background(), NewMemoryLeaseStore())
+	testLeaseAddCost(t, context.Background(), NewMemoryLeaseStore())
 	testAcquireUndoesItsSupersedeWithoutAGrant(t, context.Background(), NewMemoryLeaseStore())
 }
 
@@ -140,6 +215,12 @@ func TestLeaseReopen_Mongo(t *testing.T) {
 		_ = client.Disconnect(drop)
 	})
 	testLeaseReopen(t, ctx, NewMongoLeaseStore(db))
+	t.Run("add cost", func(t *testing.T) {
+		testLeaseAddCost(t, ctx, NewMongoLeaseStore(client.Database(db.Name()+"_addcost")))
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = client.Database(db.Name() + "_addcost").Drop(drop)
+	})
 	t.Run("an acquisition without a grant", func(t *testing.T) {
 		testAcquireUndoesItsSupersedeWithoutAGrant(t, ctx, NewMongoLeaseStore(client.Database(db.Name()+"_acq")))
 		drop, dropCancel := mongotest.TeardownCtx()

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -39,9 +40,23 @@ type CLIAgentProtocol struct {
 	// Result.BackendName / log lines (e.g. "kimi").
 	Name string
 
+	// UntrustedWorkspace is what this CLI does with a workspace its tenant did
+	// not write (ADR-162 U3). The zero value refuses the run; a backend earns
+	// UntrustedWorkspaceFlooredByBackend by withdrawing the checkout's own
+	// configuration itself, watched by a row of the guarantee bench.
+	UntrustedWorkspace UntrustedWorkspacePolicy
+
 	// DefaultBinary is the CLI executable to invoke when the backend's
 	// Command override is empty (e.g. "kimi").
 	DefaultBinary string
+
+	// Subcommand is the CLI's leading verb, emitted as the FIRST token of
+	// argv — before the prompt and every generated flag (e.g. opencode's
+	// `run`, whose 2.x parser refuses a flag it reads before the
+	// subcommand). POSITION is why this is a field rather than ExtraArgs:
+	// everything else a protocol declares is appended. Empty emits nothing,
+	// which is every CLI whose flags stand alone.
+	Subcommand string
 
 	// PromptFlag delivers the user prompt on the command line. When
 	// PromptViaStdin is false, the prompt is passed as the flag's value:
@@ -285,13 +300,79 @@ type CLIAgentParse struct {
 	// therefore silently absent from the reported token count and cost.
 	Notices []string
 
-	// Err is a failure the CLI reported *in its output stream* while exiting
-	// zero. The typed value (*ErrTransient, *ErrRateLimited, or a plain
-	// error) is returned verbatim from Execute so the executor's retry
-	// classifier keys on it — which is also why the CLIAgentBackend's own
-	// retry loop deliberately never re-runs on it: retry policy for a
-	// well-classified upstream failure belongs to the executor, not here.
+	// Err is a failure the CLI reported *in its output stream*, read on
+	// both exits. On a zero exit the typed value (*ErrTransient,
+	// *ErrRateLimited, or a plain error) is returned verbatim from Execute;
+	// on a non-zero exit it is wrapped beside the process error
+	// (failureReason), so errors.As reaches it either way and the
+	// executor's retry classifier keys on it — which is also why the
+	// CLIAgentBackend's own retry loop deliberately never re-runs on it:
+	// retry policy for a well-classified upstream failure belongs to the
+	// executor, not here.
 	Err error
+}
+
+// UntrustedWorkspacePolicy says how a CLI agent treats a workspace whose code
+// the tenant did not write. See CLIAgentProtocol.UntrustedWorkspace.
+type UntrustedWorkspacePolicy int
+
+const (
+	// UntrustedWorkspaceRefused: the backend does not run on an untrusted
+	// workspace at all. The zero value — an unanswered question refuses.
+	UntrustedWorkspaceRefused UntrustedWorkspacePolicy = iota
+	// UntrustedWorkspaceFlooredByBackend: the backend withdraws the checkout's
+	// own configuration itself — argv floors, or a screen that refuses what it
+	// cannot withdraw — and a row of the guarantee bench (e2e) watches it.
+	UntrustedWorkspaceFlooredByBackend
+)
+
+// ErrUntrustedWorkspaceRefused is the typed refusal of a backend that has no
+// floor for an untrusted workspace.
+var ErrUntrustedWorkspaceRefused = errors.New("delegate: this backend has no floor for a workspace its tenant did not write, and does not run on one")
+
+// refuseUntrustedWorkspace is the ONE refusal every backend without a floor
+// returns, so each names itself and the ways out the same way: the operator
+// either runs the node on a workspace the tenant wrote, or routes it to a
+// backend with a floor — and a backend earns a place on the untrusted lane by
+// declaring one, watched by a row of the guarantee bench (e2e).
+func refuseUntrustedWorkspace(backend string) error {
+	return fmt.Errorf("%w: %s. Run this node on a trusted workspace, or route it to a backend with a floor (%s)",
+		ErrUntrustedWorkspaceRefused, backend, strings.Join(flooredBackends(), ", "))
+}
+
+// untrustedWorkspacePolicies is every backend's answer to "does it run on a
+// workspace its tenant did not write?", in one table. The refusal's list of
+// backends with a floor is DERIVED from it: a hand-written list went stale the
+// day opencode was refused, and told its operators to route the node to
+// opencode. The CLI agents answer through their protocol, so a change there
+// changes this; a backend absent from the table has no floor.
+func untrustedWorkspacePolicies() map[string]UntrustedWorkspacePolicy {
+	return map[string]UntrustedWorkspacePolicy{
+		// Project and local setting sources withdrawn (settingSourcesFromEnv),
+		// iterion's own hooks passed inline, the project .mcp.json not loaded.
+		BackendClaudeCode: UntrustedWorkspaceFlooredByBackend,
+		// Floored in pkg/backend/model: settings hooks, the skill tool, memory.
+		BackendClaw: UntrustedWorkspaceFlooredByBackend,
+		// Refused in CodexBackend.Execute, before its binary is probed.
+		BackendCodex:    UntrustedWorkspaceRefused,
+		BackendPi:       piProtocol.UntrustedWorkspace,
+		BackendOpenCode: opencodeProtocol.UntrustedWorkspace,
+		BackendGrok:     grokProtocol.UntrustedWorkspace,
+		BackendKimi:     kimiProtocol.UntrustedWorkspace,
+	}
+}
+
+// flooredBackends lists, sorted, the backends that run on an untrusted
+// workspace — the ways out a refusal can honestly offer.
+func flooredBackends() []string {
+	var out []string
+	for name, policy := range untrustedWorkspacePolicies() {
+		if policy == UntrustedWorkspaceFlooredByBackend {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CLIAgentBackend is a delegate.Backend that drives a third-party agent CLI
@@ -318,13 +399,36 @@ const (
 	defaultCLIAgentTimeout = 20 * time.Minute
 	// cliAgentWaitDelay bounds the wait for the agent's output once the agent
 	// has exited, which a process it left running and holding the pipe would
-	// otherwise make endless.
+	// otherwise make endless. The DEFAULT: [proc.WaitDelayEnv] overrides it,
+	// and what the log names is the bound that ran.
 	cliAgentWaitDelay = 2 * time.Second
+	// permissionHookProbeDrainBound is the same bound for the probe that
+	// decides whether the hook binary is usable, and the probe family's
+	// default (the MCP stdio probe's): what this site reads is an EXIT
+	// STATUS, and nothing reads the output of a probe that passed, so the
+	// node's start is not held for it.
+	//
+	// Without a bound the probe's own 5 s context bounds nothing: it kills
+	// the probe, never a process the probe left holding the output, and a
+	// [exec.Cmd.Wait] with no bound then waits for that copy — so the start
+	// of every gated node parks for as long as the holder lives.
+	permissionHookProbeDrainBound = 500 * time.Millisecond
 )
 
 // Execute runs the target CLI for the given task and parses its output into a
 // delegate.Result.
 func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// Before anything reads the workspace. Every CLI agent reaches the checkout
+	// through here, so an unanswered policy cannot slip past on a path of its
+	// own; grok and kimi are refused because nobody has measured what their
+	// CLIs load from a project directory, not because a leak was observed.
+	if !task.WorkspaceTrust.Trusted() && b.Protocol.UntrustedWorkspace != UntrustedWorkspaceFlooredByBackend {
+		name := b.Protocol.Name
+		if name == "" {
+			name = "cli_agent"
+		}
+		return Result{BackendName: name, ExitCode: -1}, refuseUntrustedWorkspace(name)
+	}
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err
@@ -334,6 +438,25 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	backendName := proto.Name
 	if backendName == "" {
 		backendName = "cli_agent"
+	}
+
+	// The resolver's answer for this leg (ADR-161) before anything else of
+	// the dispatch: under the run's stamp an own-config CLI, and pi until its
+	// arm lands, is refused here, before any binary, overlay or spawn.
+	if err := dispatchRefusal(ctx, backendName, task); err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+
+	// Binary resolution and the image-gap refusal come FIRST: a refusal must
+	// precede the side effects below (the ambient overlay and the permission
+	// shadow home both write to disk), and a node whose CLI is absent cannot
+	// be served whatever its ambient or permission policy resolves to.
+	binary, err := b.resolveBinary(task)
+	if err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+	if err := refuseAbsentImageCLI(task, proto, backendName, binary, b.Command); err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
 	}
 
 	// Before the permission shadow: a gated node's shadow home is built from
@@ -349,11 +472,6 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		return Result{BackendName: backendName, ExitCode: -1}, err
 	}
 	defer permissionCleanup()
-
-	binary, err := b.resolveBinary(task)
-	if err != nil {
-		return Result{BackendName: backendName, ExitCode: -1}, err
-	}
 
 	systemPrompt := task.BuildSystemPrompt()
 	if proto.SystemPromptSuffix != nil {
@@ -423,12 +541,13 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		Stderr:      truncate(stderr, 8192),
 		BackendName: backendName,
 	}
-	if err != nil {
-		return result, err
-	}
-
-	// Parse the CLI's stdout into the assistant's final text, then apply the
-	// shared schema-aware fallback so `output:` schemas behave uniformly.
+	// ONE parse for both exits. The stream the CLI wrote is the same text
+	// whatever the OS reported about the process, and what it says about the
+	// turn — the session it minted, the tokens and the cost it spent — is
+	// observable on a FAILING node too: a turn that minted a session and
+	// then died mid-stream (a provider refusal, a quota) must still report
+	// that id, or `session: inherit` cannot continue the conversation the
+	// CLI actually holds, and the spend would be booked as zero.
 	parsed := b.parseStdout(proto, stdout)
 
 	if b.Logger != nil {
@@ -444,6 +563,32 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	result.ContextWindow = parsed.ContextWindow
 	result.PeakInputTokens = parsed.PeakInputTokens
 
+	if err != nil {
+		// The usage half of AnnotateResultUsage: the spend of a failing turn
+		// is still a spend. Its Output half has nothing to annotate here —
+		// the schema parse below belongs to a turn that finished.
+		AnnotateResultUsage(&result, task.Model, parsed.InputTokens, parsed.OutputTokens, parsed.CostUSD)
+		// An agent CLI can report WHY on its STDOUT stream while exiting
+		// non-zero, with nothing on stderr — opencode 2.x prints
+		// `{"type":"error",…,"error":{"message":"--fork requires --continue
+		// or --session"}}` there and leaves stderr empty. stderr is logged
+		// line by line and kept on the Result; stdout was dropped, so the
+		// node reported a bare `exit status 1` and the CLI's own sentence
+		// was lost. The output-schema parse stays on the zero-exit arm
+		// below: a partial transcript is not the turn's answer, and running
+		// it here would report a ParseFallback for a parse the node never
+		// reached.
+		if reason := failureReason(proto, parsed); reason != nil {
+			// Both wrapped: the process error for a caller matching on
+			// *exec.ExitError, the stream's typed reason for the executor's
+			// classifier (errors.As walks every %w).
+			return result, fmt.Errorf("%w: %w", err, reason)
+		}
+		return result, err
+	}
+
+	// Apply the shared schema-aware fallback so `output:` schemas behave
+	// uniformly.
 	text := parsed.Text
 	output, rawLen, fallback := parseSDKOutput(&text, nil, task.OutputSchema)
 	result.Output = output
@@ -454,7 +599,8 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 
 	// A failure the CLI encoded in its stream while exiting zero. Reported
 	// after the Result is filled in so the partial transcript, tokens and
-	// cost are still observable on the failing node.
+	// cost are still observable on the failing node — the same reason the
+	// non-zero arm above fills them before it returns.
 	if parsed.Err != nil {
 		return result, parsed.Err
 	}
@@ -477,7 +623,21 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		return nil, func() {}, nil
 	}
 	if proto.PermissionHook == nil {
-		return nil, nil, fmt.Errorf("delegate: %s: permission: %s is enabled but this CLI cannot enforce it", backendName, policy.Mode)
+		// Typed, like every other pre-dispatch capability refusal (the
+		// claude_code family): a gate this CLI cannot enforce is a
+		// deterministic defect of the ROUTE, and recovery must classify it
+		// CAPABILITY_UNSUPPORTED rather than retry a refusal that no attempt
+		// can change. opencode is the case today — its in-process policy
+		// could enforce a deny but is deliberately not wired until a live
+		// denial earns the gate (#1640).
+		return nil, nil, &ErrCapabilityUnsupported{
+			NodeID:     task.NodeID,
+			Backend:    backendName,
+			Capability: "permission-" + policy.Mode.String(),
+			Remedy: fmt.Sprintf(
+				"this CLI exposes no hook iterion can enforce the gate through; run the node ungated (`permission: off`), or route it to a backend that enforces permission: %s (%s)",
+				policy.Mode, strings.Join(enforcingBackendsFor("permission-"+policy.Mode.String()), ", ")),
+		}
 	}
 	if policy.CanAsk() {
 		return nil, nil, fmt.Errorf("delegate: %s: permission policy can ask for operator approval, but an external CLI hook cannot pause the iterion run; use permission: deny without ask rules", backendName)
@@ -549,7 +709,19 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if output, err := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe").CombinedOutput(); err != nil {
+	probe := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe")
+	// Before Start, which CombinedOutput performs.
+	probeBound := proc.SetWaitDelay(probe, permissionHookProbeDrainBound)
+	output, err := probe.CombinedOutput()
+	switch {
+	case proc.DrainCutShort(err):
+		// The probe RAN and exited 0 — exec reports this sentinel for no
+		// other status — and only the copy of its output was abandoned. The
+		// verdict here is that exit status, so the hook is usable and the
+		// gate arms; the drain is reported, never charged to the node.
+		b.Logger.Warn("[%s#%d/%s] the permission-hook probe exited but left its output held; abandoned the drain %s",
+			task.NodeID, task.Iteration, backendName, proc.WaitDelayHint(probeBound))
+	case err != nil:
 		return nil, nil, fmt.Errorf("delegate: %s: iterion hook binary %q is stale or unusable: %w (%s)", backendName, iterionBin, err, strings.TrimSpace(string(output)))
 	}
 
@@ -625,6 +797,21 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)
 	}
 	return []string{hook.HomeEnv + "=" + permissionHome}, cleanup, nil
+}
+
+// enforcingBackendsFor lists the registered backends that CAN enforce one
+// permission capability (shipped or partial in the derived registry), sorted
+// so a refusal's remedy reads the same on every run. The list is read from
+// the same cells the compiler's gate table is derived from, so a backend
+// that earns membership appears in the remedy the day its cell flips.
+func enforcingBackendsFor(capability string) []string {
+	set := backendcaps.Set(capability, backendcaps.Shipped, backendcaps.Partial)
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // externalHookPolicy derives the policy carried to a Kimi/Grok PreToolUse
@@ -709,6 +896,51 @@ func linkShadowHome(realHome, shadowHome string, excluded []string) error {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
+
+// failureReason is what the CLI said about its own failure, for a process
+// exit the OS reported as a failure. The protocol's parser owns the stream's
+// shape, so a CLI whose reason travels in its machine-readable stream is read
+// the same way whatever the exit code. The parsed error already names the
+// backend, which the wrapping error does too, so the duplicate prefix is
+// dropped from the TEXT while the parsed value stays on the chain through
+// Unwrap: a *ErrRateLimited or *ErrTransient the parser typed is still the
+// one errors.As finds (CLIAgentParse.Err's contract). Nil when the stream
+// says nothing: a transport failure keeps the error it has.
+//
+// The sentence lands in the error's TEXT, which [IsNetworkError] matches
+// against the full networkErrorSignatures list, so a stream reason can
+// re-type a non-zero exit as a network failure for the executor's retry
+// loop. That is the channel a zero exit already uses (parsed.Err is returned
+// verbatim there), and it is deliberate: a structured error EVENT is the
+// CLI's own claim, not the free-form stderr that transportErrorSignatures
+// exists to distrust. The price is the executor's TRANSIENT budget, not one
+// retry: a matching reason moves the node onto
+// pkg/backend/model.DefaultMaxAttemptsTransient — six attempts under an
+// exponential backoff, roughly a minute of retrying, so up to five further
+// CLI spawns — and the list holds phrases an application-level death also
+// produces (opencode 1.1.19 without credentials dies with "JSON Parse error:
+// Unexpected EOF", which matches "unexpected eof"), so such a death is
+// retried on that budget before it is reported. The gain is a provider blip
+// absorbed instead of aborting the run.
+func failureReason(proto CLIAgentProtocol, parsed CLIAgentParse) error {
+	if parsed.Err == nil {
+		return nil
+	}
+	return &streamReason{
+		text:  strings.TrimPrefix(parsed.Err.Error(), "delegate: "+proto.Name+": "),
+		cause: parsed.Err,
+	}
+}
+
+// streamReason is the parsed stream error with the backend prefix dropped
+// from its text; Unwrap keeps the parser's typed value on the chain.
+type streamReason struct {
+	text  string
+	cause error
+}
+
+func (r *streamReason) Error() string { return r.text }
+func (r *streamReason) Unwrap() error { return r.cause }
 
 // parseStdout applies the protocol's parser, preferring the rich contract.
 // A protocol with neither parser treats stdout as the assistant's text.
@@ -884,6 +1116,10 @@ func sanitizeFileSegment(s string) string {
 // returns the argument slice (excluding the binary itself) and the prompt to
 // pipe on stdin (empty unless the protocol uses stdin delivery).
 func (b *CLIAgentBackend) buildArgs(proto CLIAgentProtocol, task Task, promptArg, systemPrompt string) (args []string, stdinPrompt string) {
+	if proto.Subcommand != "" {
+		args = append(args, proto.Subcommand)
+	}
+
 	if proto.PromptViaStdin {
 		if proto.PromptFlag != "" {
 			args = append(args, proto.PromptFlag)
@@ -1007,6 +1243,9 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	}
 
 	var cmd *exec.Cmd
+	// The drain bound both arms apply, kept so the report below names the
+	// bound that actually ran and not this site's default.
+	var drainBound time.Duration
 	backend := b.Protocol.Name
 	if backend == "" {
 		backend = "cli_agent"
@@ -1029,7 +1268,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		})
 		// As on the host: once the exec has exited, what holds its output
 		// does not hold the node.
-		cmd.WaitDelay = cliAgentWaitDelay
+		drainBound = proc.SetWaitDelay(cmd, cliAgentWaitDelay)
 	} else {
 		cmd = exec.CommandContext(runCtx, binary, args...) // #nosec G204 — binary/args are backend-configured, not attacker-controlled.
 		// Host arm only. A CLI agent forks its own tools (shells, language
@@ -1047,10 +1286,8 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		cmd.Env = append(append([]string(nil), env...), proc.NodeSessionEntry(token))
 		// A process the agent detached may keep its stdout: once the agent has
 		// exited, its output is not waited for past this, and the run ends.
-		cmd.WaitDelay = cliAgentWaitDelay
-		if task.WorkDir != "" {
-			cmd.Dir = task.WorkDir
-		}
+		drainBound = proc.SetWaitDelay(cmd, cliAgentWaitDelay)
+		proc.SetWorkDir(cmd, task.WorkDir)
 		cmd.Stdin = stdin
 	}
 	cmd.Stdout = &outBuf
@@ -1069,12 +1306,12 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
-	if errors.Is(runErr, exec.ErrWaitDelay) {
+	if proc.DrainCutShort(runErr) {
 		// The agent exited successfully and its output was read; what kept
 		// the pipe open is a process it left, which the node session's end
 		// stops and reports.
-		b.Logger.Warn("[%s#%d/%s] the agent exited, and a process it left kept its output open: read what the agent wrote, stopped waiting after %s",
-			task.NodeID, task.Iteration, b.Protocol.Name, cliAgentWaitDelay)
+		b.Logger.Warn("[%s#%d/%s] the agent exited, and a process it left kept its output open: read what the agent wrote, stopped waiting %s",
+			task.NodeID, task.Iteration, b.Protocol.Name, proc.WaitDelayHint(drainBound))
 		runErr = nil
 	}
 	if runErr != nil {

@@ -9,6 +9,14 @@ the **fourth** tier of the credential resolution described there — below it
 sit only the deployment's own platform credentials (DB-backed) and the
 runner-pod env backstop.
 
+> **Named key pools (ADR-164)** generalise everything below: pools are now NAMED and
+> multi-owner (org / user / platform), `private` pools answer nothing without an explicit
+> attachment, and an attached pool fills per SLOT (a run holding its own credentials still
+> draws from the pool for the slots it lacks). This page describes the LEGACY draw — the
+> whole-bundle, empty-run tier and the audience walk — which stays byte-identical. Read
+> [ADR-164](adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md)
+> and the [key pools reference](agents/backends/key-pools.md) for the attached surface.
+
 ## The one-paragraph model
 
 A contributor connects a subscription through the ordinary personal OAuth
@@ -34,6 +42,35 @@ charges the donor's ledger and frees their concurrency slot.
 
 `CredentialSource.Metered()` is the single predicate every surface reads to
 decide whether to hedge a figure or state it.
+
+## Two keys of one provider
+
+A donor may hold several personal keys of one provider — two Anthropic keys
+bought on two plans, say — and lend both. Each key is **its own pledge**: an
+`api_key` pledge is identified by the key it lends, so its id carries the key
+(`lender|api_key|anthropic|<key id>`) and `PUT /api/me/pool/api_key/anthropic`
+sent twice with two `key_id`s stores two rows instead of the second write
+replacing the first.
+
+The broker then treats them as any other pair of eligible pledges.
+Eligibility matches on source and ref; ranking orders by what the pool's
+strategy says (an attached pool's priority first), then by the fraction of
+what each pledge offered that is spent today, then least-recently served. So
+when the first key cools down, fails authentication or reaches one of its
+ceilings, the second serves the next launch with no manual gesture.
+
+Everything a pledge bounds is bounded **per key**: the spend caps, the daily
+run unit, the concurrency slots and the ledger row are the pledge's, so
+lending two keys at `--max-usd-day 3` each is two $3 budgets, not $3 shared.
+Pausing or withdrawing one leaves the other untouched — `GET /api/me/pool`
+carries each pledge's `id` and `key_id`, `DELETE /api/me/pool/entries/{pledge}`
+addresses exactly one, and `--key-id` names the key on the `share`, `pause`,
+`resume` and `withdraw` commands.
+
+A subscription carries no such key: the OAuth store holds one connection per
+kind (its chain of ranks is the provider-side fallback of that connection,
+and the pool lends the primary), so an `oauth` pledge keeps the three-segment
+identity `lender|oauth|kind`.
 
 ## What this is not
 
@@ -212,13 +249,49 @@ They come back on three paths, and the distinction matters:
 | sweeper — the pod died without reporting | freed | **kept** (it ran) |
 
 `Report` closes the lease with a compare-and-set and charges the donor only
-if it wins, so a redelivered report cannot debit twice. A resumed run that
-**reported** *renews* its admission instead of taking a second one: it is
-the same run, and charging it again would let one flaky run that resumes a
-few times consume a contributor's whole day. Reporting is what earns the
-renewal — the runner's spend hand-off is deferred and fires on every
-outcome, `paused_waiting_human` included, so an ordinary pause/resume
-always qualifies.
+if it wins, so a redelivered report cannot debit twice. The report carries
+the attempt's spend **per credential** (#2288) on every pool-leased run, a
+whole-bundle grant as much as a door: the lease books only the slice that
+ran on its own fingerprint. On a door-served run, spend on the team's own
+credentials stays off the donor's ledger, and a rung the fallback never
+fired on books nothing. On a whole-bundle run the lent credential is
+usually the only one sealed, so its slice is the whole attempt — but the
+grant does not always seal alone: the pool tier only requires the default
+channels empty, so an org-tier key sealed for the routes that name a facade
+provider (`sealPinnedOnly`) can precede it, and the restore can put a
+refused key back for a wire family the grant does not cover. Spend on those
+stays off the donor's ledger, where the whole-attempt booking used to
+charge it. The per-credential table rides only when it places every call
+the attempt paid for: a walk the publisher cannot read (a template it
+cannot resolve, a provider outside its vocabulary) stamps no plan, and a
+call the runner cannot place on a planned credential at run time (a claw
+sub-agent's loop, a model the agent tool names, a route that drifted from
+its launch reading) voids the table at the report, in one warning naming
+the run. Either way the coarse whole-attempt booking stands: a table
+missing a slice would book the donor short of whatever of it ran on their
+credential. A fallback chain is no such call: the one event that ends it
+itemises what each abandoned route spent (`folded_spend`), and each slice
+books on its own route's credential — a primary that burned the donor's
+subscription before a rung served on the team's key charges the donor that
+slice alone. Spend on the deployment's own env-funded routes (its gateway, a
+pod's ambient Claude env) is placed on nobody by design and voids nothing.
+A claw call's events carry what it spent — `credential_channel`,
+`credential_slot`, `credential_fingerprint`, written where the call was
+built ([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)
+decision 8): for a sandboxed node, by the runner in the container, which
+names each of its calls — the node's and every subagent's — through the
+crossing's record of the env it composed, and the launcher relays them as
+they came. Its slice books on that fingerprint, never on the plan's
+prediction for its provider word: a call that spent another credential than
+the plan predicted (a gateway wire keeping a lent forfait home) books on its
+own, and the report names it in one warning. The spend ledger books those
+calls on the slot they name.
+A resumed run that **reported** *renews* its admission instead of taking a
+second one: it is the same run, and charging it again would let one flaky
+run that resumes a few times consume a contributor's whole day. Reporting
+is what earns the renewal — the runner's spend hand-off is deferred and
+fires on every outcome, `paused_waiting_human` included, so an ordinary
+pause/resume always qualifies.
 
 **One lease document per attempt**, never reused. A run that resumes —
 onto the same donor or another — leaves every finished attempt's record
@@ -293,6 +366,42 @@ the one failure mode this feature must not have.
 to lend again. If nobody pledged yet (the pool ships disabled, so this is
 the common case), there is nothing to do.
 
+## Upgrading to the key-carrying pledge id
+
+The pledge id of an `api_key` entry now names the key it lends
+(`lender|api_key|ref|key_id`, four segments), so a donor's two keys of one
+provider are two pledges. An `oauth` pledge keeps `lender|oauth|kind` byte
+for byte: nothing connected as a subscription moves.
+
+**Unlike the rename above, this one IS migrated.** `credpool.EnsureSchema`
+runs a backfill at boot, idempotently:
+
+- every `cred_pledges` document whose source is `api_key` moves to the id
+  its key computes;
+- its `cred_leases.pledge_id` follow, **closed leases included** — they are
+  the donor's history and the source of `HeldPledge`;
+- its `cred_pool_usage` rows (`<pledge>|d|<date>`, `<pledge>|w|<week>`) move
+  with their new id prefix; a row that already exists at the destination is
+  kept rather than merged, since summing the two would charge the lender
+  twice for spend a retry moved again;
+- the pledge document moves **last**: a crash then never leaves a pledge
+  addressable under the new id whose leases and ledger still speak the old
+  one. A self-repair pass replays the reference moves for every canonical
+  pledge, converging what an old replica wrote after the first pass; over a
+  migrated store it matches nothing, so every boot repeats it safely.
+
+A backfill error **aborts the boot**. Without the migration a write would
+miss the old document and insert a SECOND pledge for the same key: the
+broker could lease that key twice, each grant with its own concurrency slot
+and its own ceiling, while the lender's ledger stopped seeing its spend —
+the money cap would stop biting. That is why the identity and the backfill
+ship together.
+
+**Drain the replicas before rolling this release** (or stop-the-world on it;
+the corpus is tiny). An old replica can write an inherited id after the new
+pod's pass, and only the next boot's self-repair converges it — in between,
+the same key is reachable under two ids.
+
 ## Operator cookbook
 
 Admission is handled by the **existing GitHub team-gating**, not by anything
@@ -332,6 +441,11 @@ iterion remote pool history           # every run your quota served
 iterion remote pool pause             # keeps your terms for later
 iterion remote pool withdraw
 
+# Two keys of one provider are two pledges: --key-id names which one.
+iterion remote pool pause    --source api_key --ref anthropic --key-id <key id>
+iterion remote pool resume   --source api_key --ref anthropic --key-id <key id>
+iterion remote pool withdraw --source api_key --ref anthropic --key-id <key id>
+
 # 4. Operator: who is lending, and how they are doing.
 iterion remote pool donors
 ```
@@ -343,9 +457,10 @@ Studio equivalents: **Account settings → Share my quota** for a contributor,
 
 | Endpoint | Who | Purpose |
 |---|---|---|
-| `GET /api/me/pool` | donor | Own pledges + today/this-week consumption |
-| `PUT /api/me/pool/{source}/{ref}` | donor | Create/update terms. Clears a parked health state ONLY when the credential was genuinely re-connected since — the signal is the record's `created_at` (stamped by connect/paste), never `updated_at`, which the token-refresh worker bumps hourly for a subscription the provider may have revoked |
-| `DELETE /api/me/pool/{source}/{ref}` | donor | Withdraw |
+| `GET /api/me/pool` | donor | Own pledges + today/this-week consumption. Each entry carries its `id` and, for an api_key pledge, its `key_id` |
+| `PUT /api/me/pool/{source}/{ref}` | donor | Create/update terms. The body's `key_id` completes an api_key pledge's identity — two keys of one provider are two rows. Clears a parked health state ONLY when the credential was genuinely re-connected since — the signal is the record's `created_at` (stamped by connect/paste), never `updated_at`, which the token-refresh worker bumps hourly for a subscription the provider may have revoked |
+| `DELETE /api/me/pool/entries/{pledge}` | donor | Withdraw one contribution by its own id — the only address that names one of two keys of one provider. A pledge of somebody else answers 404 |
+| `DELETE /api/me/pool/{source}/{ref}` | donor | Withdraw, kept one release as a shim. Exact for an `oauth` pair; an api_key pair takes `?key_id=`, and without it a single match is withdrawn while several answer 400 rather than guess |
 | `GET /api/me/pool/history` | donor | The runs this quota served |
 | `GET /api/teams/{id}/pool` | member | Pool policy. The donor roster is included only for org admins — who lends, and how much, is the contributors' business |
 | `PUT /api/teams/{id}/pool` | **org** admin | Enable/disable + audience. The pool document is org-keyed, so this is an org-level decision and is audited on the org |
@@ -394,6 +509,26 @@ A donor's credential is never returned by any of these — it stays sealed in
   would stay first in the rotation, pausing run after run at a run unit
   each. The runner watches the engine's own `node_recovery` classification
   for this.
+- **A chain's verdicts are each a credential's.** An exhausted fallback chain
+  can meet a usage window on one route and a dead credential on another, and
+  the node then parks on the window (#3032). Each route verdict on
+  `node_recovery` names the route it is about — its backend, provider,
+  session label and credential keys; a route skipped on a remembered cooldown
+  names those of the call that armed the cooldown, whose verdict it carries —
+  and the runner places it on the credential that route spent, in the order
+  it books the route's spend: the keys, else nobody for a call that rode the
+  pod's environment (an ambient session), else the credential plan's row — a
+  gateway route included, which the plan names when a sealed key funds it —
+  else nobody for a gateway the environment funds. The report carries that table
+  (`Outcome.Conditions`), and each lease takes its own credential's row: a
+  donor whose subscription met the window rests on it while the dead team key
+  beside it takes no donor down, in either order of the walk. A verdict the
+  runner cannot place keeps the coarse answer — a dead credential anywhere in
+  the attempt counts for every lease — so a dead donor is never rested on a
+  window and handed back still dead. Guarded by
+  `TestRecordPoolSpend_theDonorTakesTheVerdictOfItsOwnRoute`,
+  `TestRecordPoolSpend_aKeylessGatewayVerdictIsTheLeaseThePlanNames` and
+  `TestErrChainExhaustedNamesTheCredentialOfASkippedRoute`.
 - **The spend signal must be live.** Delegate backends only report cost
   because `DelegateInfo.CostUSD` rides the `delegate_finished` event into
   the runner's per-run totals. If a future change drops that field, every

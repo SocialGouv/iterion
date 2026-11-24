@@ -101,7 +101,24 @@ type PodManifestInput struct {
 	FriendlyName   string
 	Spec           sandbox.Spec
 	WorkspaceMount string // in-pod path; defaults to /workspace
-	ProxyEndpoint  string // optional HTTPS_PROXY URL
+	// SeedMounts are the container paths the driver will copy a host
+	// directory into after start (RunInfo.SeedDirs): each gets an emptyDir,
+	// so the copy lands on a volume the sandbox user can write.
+	SeedMounts    []string
+	ProxyEndpoint string // optional HTTPS_PROXY URL
+	// HostGatewayAlias, when true, tells the manifest the runtime will bind
+	// per-run host services (the board/runs MCP listener — C082/#2632 — and
+	// the ask-user listener — ADR-082) on the runner pod, advertised to the
+	// sandbox at RunnerPodIP. The pod IP joins NO_PROXY so calls to those
+	// listeners go DIRECT, never through the egress proxy (the docker twin
+	// adds host.docker.internal the same way; pkg/sandbox/docker).
+	HostGatewayAlias bool
+	// RunnerPodIP is this runner pod's own IP (downward API), the address
+	// the per-run listeners advertise. Read by the manifest only when
+	// HostGatewayAlias is set; empty simply adds no NO_PROXY entry — the
+	// listener bind itself fails closed on a missing IP
+	// (Driver.ProxyConfig), so the run degrades rather than misroutes.
+	RunnerPodIP string
 	// CASecretName, when non-empty, is the name of a Secret (created by
 	// the driver before the pod) holding the egress TLS-inspection CA
 	// under key caSecretKey. The manifest mounts it and points the
@@ -317,6 +334,18 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 		envSlice = upsertEnv(envSlice, "NO_PROXY", sandbox.LoopbackNoProxy)
 		envSlice = upsertEnv(envSlice, "no_proxy", sandbox.LoopbackNoProxy)
 	}
+	if in.HostGatewayAlias && in.RunnerPodIP != "" {
+		// The per-run host MCP listeners (board/runs, ask-user) advertise
+		// the runner pod IP: calls to them MUST go direct, never through
+		// the egress proxy — the allowlist judges the pod's bare IP an
+		// egress destination and would refuse it (the docker twin exempts
+		// host.docker.internal the same way). The NetworkPolicy already
+		// scopes the pod's egress to this /32, so the carve-out opens no
+		// new destination.
+		for _, k := range []string{"NO_PROXY", "no_proxy"} {
+			envSlice = upsertEnv(envSlice, k, sandbox.MergeNoProxy(envValue(envSlice, k), in.RunnerPodIP))
+		}
+	}
 
 	// Git safe.directory for the workspace. The emptyDir mountpoint is
 	// created root-owned by kubelet (fsGroup only sets the group), while
@@ -359,6 +388,15 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	for _, vm := range extraVolumeMounts {
 		volumeMounts = append(volumeMounts, vm)
 	}
+	seedVolumes := make([]any, 0, len(in.SeedMounts))
+	for i, target := range in.SeedMounts {
+		if !path.IsAbs(target) {
+			return nil, fmt.Errorf("kubernetes: seed mount %q: the container path must be absolute", target)
+		}
+		name := fmt.Sprintf("seed-%d", i)
+		volumeMounts = append(volumeMounts, map[string]any{"name": name, "mountPath": target})
+		seedVolumes = append(seedVolumes, map[string]any{"name": name, "emptyDir": map[string]any{}})
+	}
 	volumeMounts = append(volumeMounts, secretFileVolumeMounts...)
 	volumeMounts = append(volumeMounts, caVolumeMounts...)
 
@@ -371,6 +409,7 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	for _, v := range extraVolumes {
 		volumes = append(volumes, v)
 	}
+	volumes = append(volumes, seedVolumes...)
 	volumes = append(volumes, secretFileVolumes...)
 	volumes = append(volumes, caVolumes...)
 
@@ -760,6 +799,22 @@ func upsertEnv(env []any, name, value string) []any {
 		}
 	}
 	return append(env, map[string]any{"name": name, "value": value})
+}
+
+// envValue reads the current value of an env var on the slice upsertEnv
+// maintains, "" when absent. The NO_PROXY merge reads before it writes.
+func envValue(env []any, name string) string {
+	for _, e := range env {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if existing, _ := m["name"].(string); existing == name {
+			v, _ := m["value"].(string)
+			return v
+		}
+	}
+	return ""
 }
 
 // appendEnv appends value to an existing space-separated env var

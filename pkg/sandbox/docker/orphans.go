@@ -25,13 +25,13 @@ type OrphanContainer struct {
 // ListManagedContainers returns every container — running or exited —
 // labelled iterion.io/managed=true. Used both by the reaper and by
 // `iterion sandbox doctor`-style introspection.
-func ListManagedContainers(ctx context.Context, rt Runtime) ([]OrphanContainer, error) {
+func (c CLI) ListManagedContainers(ctx context.Context) ([]OrphanContainer, error) {
 	args := []string{
 		"ps", "-a",
 		"--filter", "label=" + LabelManaged,
 		"--format", "{{.ID}}\t{{.Names}}\t{{.Label \"" + strings.TrimSuffix(LabelRunIDPrefix, "=") + "\"}}",
 	}
-	out, err := runtimeCmdContext(ctx, rt, args...).Output()
+	out, err := c.cmdContext(ctx, args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker: list managed containers: %w", err)
 	}
@@ -74,27 +74,27 @@ func parseManagedPsOutput(s string) []OrphanContainer {
 // left containers up without the in-process Driver.Run.Cleanup ever
 // firing. Safe to call from multiple processes (force-remove of a
 // missing container is treated as success).
-func ReapOrphanContainers(ctx context.Context, rt Runtime, isTerminal func(runID string) bool) ([]string, error) {
+func (c CLI) ReapOrphanContainers(ctx context.Context, isTerminal func(runID string) bool) ([]string, error) {
 	if isTerminal == nil {
 		return nil, fmt.Errorf("docker: ReapOrphanContainers: isTerminal predicate is required")
 	}
-	containers, err := ListManagedContainers(ctx, rt)
+	containers, err := c.ListManagedContainers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var reaped []string
 	var firstErr error
-	for _, c := range containers {
-		if !isTerminal(c.RunID) {
+	for _, oc := range containers {
+		if !isTerminal(oc.RunID) {
 			continue
 		}
-		if rmErr := forceRemoveContainer(ctx, rt, c.ID); rmErr != nil {
+		if rmErr := c.forceRemoveContainer(ctx, oc.ID); rmErr != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("docker: reap %s: %w", containerShortID(c.ID), rmErr)
+				firstErr = fmt.Errorf("docker: reap %s: %w", containerShortID(oc.ID), rmErr)
 			}
 			continue
 		}
-		reaped = append(reaped, c.ID)
+		reaped = append(reaped, oc.ID)
 	}
 	return reaped, firstErr
 }

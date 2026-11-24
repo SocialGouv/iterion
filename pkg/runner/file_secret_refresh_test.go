@@ -81,7 +81,7 @@ func TestRefreshFileSecretsOnce_RewritesRotatedValue(t *testing.T) {
 	last := map[string]string{"forge_token": "token-v1"}
 
 	// Unchanged store value → file untouched.
-	r.refreshFileSecretsOnce(context.Background(), "team-1", refs, files, last)
+	r.refreshFileSecretsOnce(context.Background(), "team-1", refs, files, last, nil)
 	if got, _ := os.ReadFile(path); string(got) != "token-v1" {
 		t.Fatalf("file changed without rotation: %q", got)
 	}
@@ -95,7 +95,7 @@ func TestRefreshFileSecretsOnce_RewritesRotatedValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r.refreshFileSecretsOnce(context.Background(), "team-1", refs, files, last)
+	r.refreshFileSecretsOnce(context.Background(), "team-1", refs, files, last, nil)
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestRefreshFileSecretsOnce_RewritesRotatedValue(t *testing.T) {
 	if err := os.WriteFile(orphan, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r.refreshFileSecretsOnce(context.Background(), "team-1", map[string]string{}, map[string]string{"other": orphan}, map[string]string{})
+	r.refreshFileSecretsOnce(context.Background(), "team-1", map[string]string{}, map[string]string{"other": orphan}, map[string]string{}, nil)
 	if got, _ := os.ReadFile(orphan); string(got) != "keep" {
 		t.Fatalf("ref-less secret rewritten: %q", got)
 	}
@@ -147,12 +147,12 @@ func TestRefreshSandboxFileSecretsOnce_PushesRotationToDriver(t *testing.T) {
 	last := map[string]string{}
 
 	// First tick reads v1 and pushes it once.
-	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
+	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last, nil)
 	if got := fake.got["forge_token"]; len(got) != 1 || got[0] != "token-v1" {
 		t.Fatalf("first push = %v, want [token-v1]", got)
 	}
 	// Unchanged store value → no re-push.
-	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
+	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last, nil)
 	if got := fake.got["forge_token"]; len(got) != 1 {
 		t.Fatalf("unchanged value re-pushed: %v", got)
 	}
@@ -165,7 +165,7 @@ func TestRefreshSandboxFileSecretsOnce_PushesRotationToDriver(t *testing.T) {
 	if err := mem.Update(tctx, secrets.GenericSecret{ID: id, TenantID: "team-1", ScopeTeamID: "team-1", Name: "forge_token", SealedSecret: sealed2}); err != nil {
 		t.Fatal(err)
 	}
-	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
+	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last, nil)
 	if got := fake.got["forge_token"]; len(got) != 2 || got[1] != "token-v2" {
 		t.Fatalf("after rotation, pushes = %v, want [...token-v2]", got)
 	}
@@ -191,7 +191,7 @@ func TestRefreshFileSecretsOnce_StoreErrorKeepsFile(t *testing.T) {
 	r.refreshFileSecretsOnce(context.Background(), "team-1",
 		map[string]string{"forge_token": "unknown-id"},
 		map[string]string{"forge_token": path},
-		map[string]string{})
+		map[string]string{}, nil)
 	if got, _ := os.ReadFile(path); string(got) != "last-good" {
 		t.Fatalf("file mutated on store error: %q", got)
 	}

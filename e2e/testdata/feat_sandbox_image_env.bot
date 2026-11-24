@@ -1,0 +1,63 @@
+## Feature fixture: the env a repository-authored IMAGE bakes in (#2317).
+##
+## A tool-only workflow (no LLM) runs inside the image the test builds, whose
+## `ENV` plants four names of the credential/routing sub-class. The runtime
+## screens that image once it is local and starts the container with
+## `--env NAME=`, so the container's OWN env carries them EMPTY (the
+## `PID1_*` layer below). The image's kept code channels re-open the road
+## inside the container — the residue ARB-121 documents — so the exec
+## layer is expected to read the planted values back.
+##
+## The probe reports the ORIGIN of what it reads, never "non-empty": iterion
+## forwards a run-level env into every in-container `docker exec`, and that
+## layer may legitimately carry the OPERATOR's value for one of these names —
+## the reviewed channel winning, and the point of the guard. Only an exact
+## match on the planted text is a failure.
+##
+## It reads TWO layers, because the guard acts on one of them:
+##   - `/proc/1/environ` — the env `docker run` CREATED the container with (the
+##     image's own `ENV` plus `--env`). This is the layer the screen overrides.
+##   - its own `env` — what a command actually runs under.
+##
+## Two shell constraints, both measured on this fixture:
+##   - bare `$NAME` and `$(…)` only, never `${NAME}` or `${x%%=*}` — the engine
+##     expands BRACED forms in a tool body on the HOST (expandBracedEnv), which
+##     would read the runner's environment instead of the container's;
+##   - no `\"` anywhere — a `\"` in a `command:` string reaches the shell as a
+##     LITERAL quote character, so `echo \"$pair\"` prints the quotes and every
+##     verdict word came out as `PID1_CLEAN_"NAME`. `\\0` and `\\n` do survive as
+##     `\0` / `\n`, which is why the `tr` below keeps them. Emptiness is tested
+##     with the quote-free `case x$VAR in x)` idiom.
+##
+## The image also points BASH_ENV at a script that re-exports the four: bash reads
+## it for every NON-interactive shell, which is what this very tool node is. The
+## channel is KEPT and reported (ARB-121: an image a repository chooses is the
+## repository's code, and its files re-open no matter what the screen empties),
+## so the script runs in this very process — the residue proven, not assumed.
+##
+## The image also bakes ONE name of the REPORTED half (`KUBECONFIG`, whose value
+## iterion never sets on a sandbox), read as an exact pair at both layers: that
+## half KEEPS the image's value by design, and docs/sandbox.md's promise is scoped
+## to the neutralised sub-class because of it.
+##
+## The image also points NODE_OPTIONS at a module that re-exports the four and
+## NODE_PATH at a directory of its own: node reads both at startup, inside the
+## process every agent CLI and every `npx`-started MCP server is. The probe asks
+## NODE ITSELF what it reads, so the verdict comes from the runtime that would
+## have been subverted; a base image without node answers NODE_ABSENT, which the
+## test logs rather than reads as clean. The sentinel travels in an env var and
+## the verdict comes from node's EXIT CODE: a `"` in a `command:` would reach
+## the shell as a literal quote character, so the node script carries no string
+## literal at all.
+##
+## The probe prints verdict words and never a value — a planted credential that
+## survived must not become a log line.
+
+tool env_probe:
+  command: "env > /tmp/exec.env; tr '\\0' '\\n' < /proc/1/environ > /tmp/pid1.env 2>/dev/null || echo PID1_UNREADABLE; for pair in CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_BASE_URL=https://collector.invalid AWS_SECRET_ACCESS_KEY=e2e-planted-sentinel AZURE_OPENAI_API_KEY=e2e-planted-sentinel; do n=$(echo $pair | cut -d= -f1); grep -qxF $pair /tmp/pid1.env && echo PID1_PLANTED_$n || echo PID1_CLEAN_$n; grep -qxF $pair /tmp/exec.env && echo EXEC_PLANTED_$n || echo EXEC_CLEAN_$n; grep -qxF $n= /tmp/pid1.env && echo PID1_EMPTY_$n || echo PID1_NOTEMPTY_$n; done; cut -d= -f1 < /tmp/exec.env | grep -qx CLAUDE_CODE_USE_BEDROCK && echo NAME_STILL_SET || echo NAME_ABSENT; grep -q '^PATH=/' /tmp/pid1.env && echo PID1_PATH_KEPT || echo PID1_PATH_EMPTIED; case x$PATH in x) echo PATH_EMPTIED;; *) echo PATH_KEPT;; esac; case x$BASH_ENV in x) echo BASH_ENV_EMPTIED;; *) echo BASH_ENV_KEPT;; esac; grep -qxF KUBECONFIG=/tmp/iterion-e2e-reported-sentinel /tmp/pid1.env && echo PID1_REPORTED_KEPT || echo PID1_REPORTED_LOST; grep -qxF KUBECONFIG=/tmp/iterion-e2e-reported-sentinel /tmp/exec.env && echo EXEC_REPORTED_KEPT || echo EXEC_REPORTED_LOST; case x$NODE_OPTIONS in x) echo NODE_OPTIONS_EMPTIED;; *) echo NODE_OPTIONS_KEPT;; esac; if command -v node > /dev/null 2>&1; then if SENT=https://collector.invalid node -e 'process.exit(process.env.ANTHROPIC_BASE_URL === process.env.SENT ? 1 : 0)'; then echo NODE_CLEAN; else echo NODE_PLANTED; fi; else echo NODE_ABSENT; fi"
+
+workflow main:
+  sandbox:
+    image: "iterion-e2e-image-env:planted"
+  entry: env_probe
+  env_probe -> done

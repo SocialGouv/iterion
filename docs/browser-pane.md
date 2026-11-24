@@ -28,6 +28,12 @@ echo "[iterion] preview_url=http://localhost:3000 kind=dev-server scope=internal
 echo "[iterion] preview_url=https://my-preview.example.com"
 ```
 
+A node that declares `output:` prints its JSON object beside the directive:
+the directive lines are the engine's and are read out of the answer
+([the output contract](dsl.md#tool)). A node with a `postcondition:` is the
+exception — its stdout is not read this way — so print the directive on
+stderr there, which the runtime scans too.
+
 - `kind` is a free-form hint: `dev-server`, `deploy`, `artifact-html`.
 - `scope=external` (default) loads the URL directly in the iframe and
   relies on the target's framing permissions
@@ -35,8 +41,9 @@ echo "[iterion] preview_url=https://my-preview.example.com"
 - `scope=internal` routes through `/api/runs/:id/preview`, which strips
   frame-blocking headers and re-frames with a strict CSP sandbox. Only
   use it for URLs the run itself published — in cloud mode the proxy
-  refuses RFC1918, link-local, cloud-metadata, and `*.svc.cluster.local`
-  addresses to mitigate SSRF.
+  refuses RFC1918, CGNAT, link-local and cloud-metadata addresses, and
+  the names no public host carries (`*.svc.cluster.local`, a single
+  label, …), to mitigate SSRF.
 
 ### Headline result-links (`kind=pr` / `deploy` / `app` / `deliverable`)
 

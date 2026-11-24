@@ -150,6 +150,7 @@ func nothingLandsUnderDone(t *testing.T, ws, base, rel string, got landed) {
 const rewriteCheck = `sed -i 's#"check": "sh ci/runtime-gate.sh"#"check": "true"#' .modernize/outcomes.json`
 
 func TestModernizeContractIsJudgedOnWhatLands(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 
 	t.Run("a gate command commits a rewrite after the early check", func(t *testing.T) {
@@ -253,6 +254,7 @@ func TestModernizeContractIsJudgedOnWhatLands(t *testing.T) {
 // writes the gate's word on exactly those or refuses — a commit or an edit
 // arriving after the verdict is not what the verdict answered for.
 func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 
 	t.Run("HEAD moved after the verdict", func(t *testing.T) {

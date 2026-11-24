@@ -191,7 +191,7 @@ export default function FilesPanel({
                   No commits in this run yet. Live edits are in the{" "}
                   <button
                     type="button"
-                    className="underline text-info-fg hover:text-info-hover"
+                    className="underline text-info-fg hover:text-info"
                     onClick={() => setUserMode("uncommitted")}
                   >
                     Uncommitted

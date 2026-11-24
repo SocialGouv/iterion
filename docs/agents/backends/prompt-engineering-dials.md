@@ -86,8 +86,9 @@ section, and is **reliable only on Opus 4.8 and the Claude 5 family**
 mid-conversation system messages). The runtime remaps `ultracode` to
 `xhigh` on the wire
 ([model.wireEffort](../../../pkg/backend/model/effort.go)), grants the `agent`
-subagent tool (on claw it is granted and **typed-refused** — iterion wires no
-subagent runner, so the node orchestrates within itself; C159), and emits
+subagent tool (on claw it is granted and **served**: iterion wires the subagent
+runner at both hosts, and the child runs within the node's own tools, policy
+and budget — [#1940](https://github.com/SocialGouv/iterion/issues/1940)), and emits
 diagnostic **C089** (warning) when
 the node's model is neither — degrading to plain `xhigh`. Adaptive
 thinking rides the claw backend. The studio effort picker offers

@@ -7,6 +7,25 @@ fold the fields, never counters read from `Output`. The sandbox wire carries
 the same fields. Custom backends and runners must implement this contract;
 putting a counter only in `Output` no longer reports spend.
 
+Recovery retries book tokens and per-call costs on every attempt, including
+failed structured-output validation. `CostIsSessionTotal` projects to
+`_cost_is_session_total`: only that cost is deduplicated, by backend and
+non-empty session ID, against readings already booked in the same in-place
+recovery sequence. A fork stamps `_session_forked_from` from the executed task. Its restored
+parent total is deducted using the already booked parent output; an unknown
+external parent uses the recovery sequence's highest reading. A fresh session
+adds its cost. Recovery retries spend money and tokens without consuming an
+extra graph iteration. The sequence ends after the
+successful attempt is booked; checkpoint budgets already carry failed spend.
+`pkg/runtime/claw_retry_spend_test.go` exercises two paid claw calls through
+the real executor, and `failed_node_spend_test.go` contrasts cumulative costs
+with per-call costs and a changed session.
+
+Interaction pauses use a separate deferred accounting path in
+`execLoopRunNode`. A backend reporting only the new invocation can lose the
+pre-pause call's spend there; recovery retry accounting does not cover that
+path.
+
 `stampDelegateOutputMeta` owns the reserved `_` output namespace. It removes
 unknown keys and stale metadata, then projects the typed result, including zero
 tokens. Success, failure, schema retry, structured recovery, router and sandbox

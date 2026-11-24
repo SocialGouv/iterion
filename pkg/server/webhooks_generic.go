@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/generic"
 )
@@ -47,7 +48,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	// over the raw body before any side effect. Token-mode webhooks
 	// were already verified by the middleware.
 	if cfg.SignMode == webhooks.SignModeHMAC {
-		if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, r.Header.Get("X-Iterion-Webhook-Signature")) {
+		if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, webhookHMACSignature(webhooks.ProviderGeneric, r)) {
 			if s.logger != nil {
 				s.logger.Warn("webhooks: generic bad HMAC for %s from %s", cfg.ID, s.clientIP(r))
 			}
@@ -106,7 +107,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	for k, v := range req.Vars {
 		vars[k] = v
 	}
-	applyWebhookVarLayers(vars, cfg)
+	applyWebhookVarLayers(vars, cfg, store.RunTrustDefault)
 
 	// The generic JSON trigger names its own repo and has no fork lane:
 	// trusted, stated rather than defaulted.

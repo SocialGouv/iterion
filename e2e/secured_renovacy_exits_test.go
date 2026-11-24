@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -245,7 +244,7 @@ func TestSecuredRenovacyBudgetDeclinedSoloGoesToPhase2(t *testing.T) {
 		return nil, errors.New("drive stopped at emit_sbom")
 	})
 
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 	const runID = "e2e-renovacy-budget-declined-solo"
 	err = eng.Run(context.Background(), runID, map[string]any{
 		"scope": "patch,minor", "max_packages_per_run": 2, "update_scope": "libraries",

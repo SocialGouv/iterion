@@ -229,3 +229,40 @@ describe("defaultStringFor", () => {
     ).toBe("false");
   });
 });
+
+describe("VarFieldInput bool — the caller owns the name", () => {
+  // Every caller labels the control it asks for (`<label htmlFor={id}>`):
+  // VarFieldsSection, AutoManagedVarsSection, BotArgsForm and
+  // AddTaskDialog's VarRow all do. A second label rendered HERE would make
+  // two, and the one a browser picks is not the var's name but the value
+  // beside the box — so the field can announce itself as "false".
+  function renderLabelled(value: string) {
+    return render(
+      <>
+        <label htmlFor="bot-arg-dry_run">dry_run</label>
+        <VarFieldInput
+          field={{ name: "dry_run", type: "bool" }}
+          id="bot-arg-dry_run"
+          value={value}
+          onChange={() => {}}
+        />
+      </>,
+    );
+  }
+
+  it("leaves the checkbox with exactly one label, the caller's", () => {
+    const { container } = renderLabelled("false");
+    const box = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(box.labels ? [...box.labels].map((l) => l.textContent) : []).toEqual(["dry_run"]);
+    // The value mirror is still on screen, and still outside the name.
+    expect(container.textContent).toContain("false");
+    expect(screen.getByRole("checkbox", { name: "dry_run" })).toBe(box);
+  });
+
+  it("mirrors the state visually without adding it to the name", () => {
+    renderLabelled("true");
+    const box = screen.getByRole("checkbox", { name: "dry_run" }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: /true/ })).toBeNull();
+  });
+});

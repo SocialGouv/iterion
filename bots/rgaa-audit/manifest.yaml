@@ -1,7 +1,35 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.0.3
+version: 3.2.0
+## 3.2.0 — the board publication is deterministic (#2388): the transcription
+## judge is gone, and with it the self-report publish_verify held it to. The
+## plan is filed by native board actions on tool nodes (ADR-151:
+## publish_list reads, publish_diff de-duplicates by exact title,
+## publish_create files each missing item with its labels verbatim) and
+## publish_verify reads the board BACK — the guarantee is a read, not a
+## report. BOARD_PUBLISH_FOREIGN goes with the judge: the instance's board
+## is shared, and coverage is the verdict. The manifest drops board.label,
+## which no node grants anymore (C220).
+## 3.1.1 — rewind safety and honest batch accounting. A ledger copy found at
+## ledger_replay's entry belongs to the current audit (static_audit drops it
+## with every fresh audit it writes), so a run rewound before the fold
+## re-emits the recorded replay instead of replaying over a folded audit —
+## which read every landed entry as obsolete and emptied the fold's copy
+## (#2438). static_audit also removes the previous generation's
+## audit-latest.json before calling the engine (the engine swallows a failed
+## write: the old folded document could stand in for the new one), and purges
+## the workspace's .ultra11y/pages/ so a previous run's captures are never
+## ingested (#2623). The adjudicate and refute prompts spell each batch's
+## absolute item and brief paths (a null brief path names a criterion the
+## engine decided statically) and the node's exact tool set; the read-only
+## agents attempt no MCP server of the audited repository; a batch that
+## answered only part of its criteria is reported as partial, apart from a
+## lost one, and each unanswered criterion is re-asked with the reason
+## (#2675).
+## 3.1.0 — ultra11y 5.45.0: business summary and technical annex flow
+## through both readers and integrity checks; export also preserves HTML
+## and the JSON page grid. Historical runs keep their original engine.
 ## 3.0.3 — a citation snippet the adjudicator retyped is folded with its
 ## anchor's text (#2453): the fold accepted it through a fallback to the
 ## anchor, and every later trial, which grounds a conformity's citations as
@@ -70,7 +98,7 @@ tags: [a11y, read-only]
 schema_version: 1
 triggers: [rgaa, wcag, accessibilité, accessibility, a11y, ultra11y]
 
-capabilities: [board.create, board.label, board.read]
+capabilities: [board.create, board.read]
 
 dispatch_vars:
   scope_notes: |-

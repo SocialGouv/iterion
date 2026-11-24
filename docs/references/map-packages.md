@@ -12,8 +12,12 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `cmd/corpus-reading` | Command corpus-reading checks, or rewrites, the committed corpus reading internal/mdcode's witness pins. | — |
 | `cmd/iterion` | Command iterion is the CLI for the iterion workflow engine. | — |
 | `cmd/iterion-desktop` | the Iterion Desktop binary. | — |
+| `cmd/iterion-execenv-guest` | — | — |
 | `cmd/iterion-live-status` | Command iterion-live-status is the entry point behind `task test:live:status`. | — |
 | `cmd/release-floors` | Command release-floors realigns the syntax-floor pins to the release being cut: release-it runs it with --apply from its before:git:beforeRelease… | — |
+| `cmd/render-gate` | Command render-gate reads a rendered Kubernetes manifest stream (`helm template`, `kustomize build`, an Argo CD manifest dump) and refuses every… | — |
+| `cmd/skill-share` | Command skill-share writes, checks, or re-pins the shared skills of the bot catalogue. | — |
+| `connectors` | exposes the connector packages shipped with iterion as an fs.FS, so the binary serves them from any working directory — the BAKED floor of the… | — |
 | `contrib/mattermost-clarify` | Command mattermost-clarify is a chat channel adapter that wires a Mattermost bot ("@clarify-bot") to iterion's run-completion webhook (pkg/notify),… | `ChannelDriver`, `RelevanceFilter` |
 | `e2e/fixtures/feature-dev-go-service` | a small in-memory user service used as a realistic fixture for iterion's feature_dev bot live test. | — |
 | `e2e/fixtures/feature-dev-go-service/handlers` | wires HTTP handlers against a *store.Store. | — |
@@ -29,48 +33,66 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `examples/mcp_test_server` | Tiny MCP stdio server used by the live tests. | — |
 | `internal/automaintguard` | holds the acceptance witness of scripts/auto-maintenance-check.sh — the preflight that decides whether a repository's dependency loop is safe to… | — |
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
-| `internal/corpusreading` | reads the committed corpus the way internal/mdcode's four first-party readers do — every tracked .md, .yaml and .yml outside the skipped trees,… | — |
+| `internal/clawfold` | computes and applies the fold of claw-code-go into pkg/claw, with a per-file proof that each moved file is the pinned source byte for byte except on… | `GoTool` |
+| `internal/corpusreading` | reads the committed corpus the way internal/mdcode's four first-party readers do — every tracked .md, .yaml and .yml outside the skipped trees that… | — |
+| `internal/credheader` | reads ANTHROPIC_CUSTOM_HEADERS-format text — the newline-separated "Name: Value" lines a Claude-Code-compatible CLI applies LAST on every request… | — |
+| `internal/credparity` | ADR-161's parity table: one row per shape of "which credential does this call spend?", and the one answer every reader of that question owes it —… | — |
+| `internal/detecttest` | stages the host pkg/backend/detect probes, for a witness whose verdict follows a host detection report: the provider keys it names and a claude_code… | — |
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
+| `internal/dotenv` | parses dotenv files the way every iterion loader plants them: ONE Go reader for the CLI's cwd walk (cmd/iterion applyDotEnv), the studio's… | — |
 | `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |
 | `internal/floortest` | derives, for a syntax-floor test, the release below a floor from the floor itself. | — |
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — |
+| `internal/goroutinetest` | identifies the live goroutines a test is answerable for by the FRAME they run, read out of the runtime's own dump. | — |
 | `internal/hometest` | keeps a test binary off the operator's homes: the iterion home (ITERION_HOME) and the user home (HOME). | — |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — |
+| `internal/isolationenv` | the ONE reader of every environment variable that can LOWER the isolation of the operator's run. | — |
+| `internal/liveenv` | reads the launch knobs of the live e2e harness from the environment: the route every LLM node of a run is re-targeted at, the credential route that… | — |
 | `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — |
 | `internal/modtypes` | type-checks this module's packages as the compiler sees them, for the guard tests that hold a rule over the whole tree: which code references a door,… | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
+| `internal/rendergate` | judges a rendered Kubernetes manifest stream — the output of `helm template`, `kustomize build` or an Argo CD manifest dump — for selectors that… | — |
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
+| `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
+| `internal/stdiotest` | captures process stdout/stderr without depending on pipe capacity. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
-| `internal/testfs` | removes only scratch paths inside a test-owned root. | — |
+| `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
+| `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
+| `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
-| `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` |
+| `internal/yamlx` | centralizes the repository's yaml.v3 entry points so the canonical style lives in one place: strict unmarshaling (unknown fields rejected) and… | — |
+| `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `ObservedLane`, `Sink` |
 | `pkg/artifactlabels` | derives semantic labels for a published artifact from the SHAPE of its output data — so an artifact groups under "Plans", "Verdicts", etc. | — |
 | `pkg/askusermcp` | holds the ask-user MCP tool surface shared by the two transports that expose it to a claude_code session: - the stdio server (`iterion`… | — |
 | `pkg/assistantmission` | persists bounded, host-authorized control loops between a conversational assistant and one target run. | `Store` |
 | `pkg/audit` | persists control-plane mutations into a queryable, tenant-scoped log. | `Store` |
 | `pkg/auth` | implements the multitenant authentication core: password hashing, JWT issuance/verification, refresh token rotation, and the per-request Identity… | `JWTDenylist`, `PasswordResetStore`, `SessionStore` |
-| `pkg/auth/desktopsso` | holds the single-use, TTL-bounded ticket store that carries a login result between the OIDC callback (which MINTS a ticket for a desktop SSO flow)… | `Store` |
+| `pkg/auth/desktopsso` | holds the single-use, TTL-bounded ticket store that carries a DEFERRED login between the OIDC callback (which MINTS a ticket for a desktop SSO flow)… | `Store` |
 | `pkg/auth/oidc` | owns the SSO connectors: Google, GitHub, and a generic OIDC discovery-based provider. | `Connector`, `StateStore` |
 | `pkg/auth/orgsso` | owns the per-tenant (per-org) SSO provider configuration: the rows an iterion org admin self-serves to enable login via their own Keycloak (a… | `DomainStore`, `Store` |
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` |
+| `pkg/authoringlock` | owns the lock that serializes the writers of one stored bot file: its identity (where it lives and what it is called), its exclusive take, and the… | — |
 | `pkg/backend/ambient` | iterion's switch for what an agent node inherits from its surroundings besides its prompt (ADR-119). | — |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — |
+| `pkg/backend/auxllm` | the ONE credential channel a server-side auxiliary LLM surface resolves through: the merge-conflict resolver (pkg/runview/conflict_agent.go), a… | — |
 | `pkg/backend/backendcaps` | owns the declarative inventory of built-in backends. | — |
 | `pkg/backend/compatgw` | serves `openai_compatible/<gateway model id>` from the deployment's environment: OPENAI_COMPATIBLE_BASE_URL names an OpenAI-compatible gateway… | — |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — |
+| `pkg/backend/credroute` | ADR-161's one resolver: which credential a call spends. | — |
 | `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend`, `SessionLedger` |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — |
 | `pkg/backend/detect` | probes the host environment for available LLM credentials and CLI binaries, producing a Report consumed by the studio (UI hints) and the runtime… | — |
+| `pkg/backend/effortlevel` | orders the reasoning-effort levels and coerces one onto a model's accepted set: the one rule the claw backend sends by (model.coerceEffortForModel)… | — |
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |
-| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` |
+| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `ActionTransport`, `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `CodemodeState`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `SinkSecretRefResolver`, `ToolBlobWriter`, `ToolContractViolation`, `TurnWriter` |
 | `pkg/backend/modelroute` | the one reading of a model spec: which provider routes it, which id goes on the wire, and which id names its capabilities. | — |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — |
@@ -89,6 +111,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/benchmark/asymptote` | computes per-iteration quality scores from persisted runs and compares groups of runs (e.g. | — |
 | `pkg/benchmark/discovery` | measures what a run spent on ORIENTATION — the reads, searches and listings an agent performs to find its way around a repository — as opposed to… | — |
 | `pkg/benchmark/quality` | the subjective quality + value-for-money assessment layer for iterion's live e2e tests. | — |
+| `pkg/boardcaps` | the vocabulary of the native kanban board's capability names: the ONE list the DSL compiler validates a `capabilities:` entry against and the board… | — |
 | `pkg/botdeps` | manages project-pinned shared bot dependencies. | — |
 | `pkg/botimport` | converts Claude-Code workflow scripts (.claude/workflows/*.js — the `export const meta` + `agent()` / `phase()` / `log()` shape) into DRAFT .bot… | — |
 | `pkg/botinstall` | imports a bot bundle from a git URL or local path into a workspace so `iterion bots list`, the dispatcher, and the studio discover it. | — |
@@ -101,21 +124,84 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/budgetfloor` | holds capacity back from unreserved work so a named workload keeps a shared credential longer — a PREFERENCE at admission, and deliberately not… | — |
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — |
-| `pkg/cli` | implements the iterion command-line interface. | — |
+| `pkg/claw/hooks` | — | `HookProgressReporter` |
+| `pkg/claw/internal/api` | — | `APIClient`, `EffortWire`, `ImageGenerator`, `Provider` |
+| `pkg/claw/internal/api/httputil` | holds tiny formatting helpers shared by every HTTP-based provider (openai, foundry, vertex, bedrock-on-HTTP, ...). | — |
+| `pkg/claw/internal/api/providers/anthropic` | implements the Anthropic direct API provider. | — |
+| `pkg/claw/internal/api/providers/bedrock` | implements the AWS Bedrock provider using the Anthropic "Messages" payload shape via InvokeModelWithResponseStream. | — |
+| `pkg/claw/internal/api/providers/foundry` | implements the Microsoft Azure AI Foundry / Azure OpenAI Service provider. | — |
+| `pkg/claw/internal/api/providers/moonshot` | implements the Moonshot provider: Kimi models reached through Moonshot's Anthropic-compatible endpoint. | — |
+| `pkg/claw/internal/api/providers/openai` | implements the api.Provider and api.APIClient interfaces for OpenAI's chat completions API with streaming support. | — |
+| `pkg/claw/internal/api/providers/openaiwire` | holds the wire-level JSON types shared by every provider that speaks the OpenAI Chat Completions protocol. | — |
+| `pkg/claw/internal/api/providers/vertex` | implements the Google Cloud Vertex AI provider for Anthropic models. | — |
+| `pkg/claw/internal/api/providers/zai` | implements the z.ai provider: GLM models reached through z.ai's Anthropic-compatible endpoint (the Coding Plan's /api/anthropic wire). | — |
+| `pkg/claw/internal/api/sseutil` | holds tiny helpers shared between providers that translate OpenAI-style SSE tool_call streams into the Anthropic-shaped api.StreamEvent vocabulary. | — |
+| `pkg/claw/internal/apikit` | provides API transport infrastructure: telemetry, error classification, retry logic, context-window preflight checks, proxy support, and prompt… | `TelemetrySink` |
+| `pkg/claw/internal/apikit/telemetry/otlpgrpc` | implements an OTLP/gRPC exporter for apikit.TelemetryEvent using the official OpenTelemetry SDK (sdk/log + otlploggrpc). | — |
+| `pkg/claw/internal/auth` | reads the Codex CLI's credentials for claw's OpenAI provider. | — |
+| `pkg/claw/internal/commands` | — | `ConfigSwitcher`, `PluginManagerProvider`, `SessionDirProvider`, `SessionManager`, `UsageTracker` |
+| `pkg/claw/internal/config` | — | `DiagnosticKind` |
+| `pkg/claw/internal/context` | — | — |
+| `pkg/claw/internal/hooks` | provides an in-process programmatic hook system for the claw-code-go runtime. | — |
+| `pkg/claw/internal/hooks/hookstesting` | provides test helpers for the hooks package. | — |
+| `pkg/claw/internal/lsp` | — | — |
+| `pkg/claw/internal/mcp` | — | `FlushWriter`, `Provider`, `ResourceClient`, `Transport` |
+| `pkg/claw/internal/mcp/oauth` | implements an OAuth 2.0 Authorization Code + PKCE broker for authenticated remote MCP servers, with an on-disk token cache. | — |
+| `pkg/claw/internal/permissions` | — | `Classifier`, `ClassifierLogger`, `PermissionPrompter` |
+| `pkg/claw/internal/plugins` | implements the plugin lifecycle: discovery via a remote marketplace, fetch + checksum verification, install/uninstall state on disk, and the slash… | `SignatureVerifier` |
+| `pkg/claw/internal/runtime` | — | — |
+| `pkg/claw/internal/runtime/lane` | implements lane-level event tracking, commit provenance, branch locking, and freshness analysis for multi-lane orchestration. | `GitRunner`, `LaneEventData` |
+| `pkg/claw/internal/runtime/task` | — | — |
+| `pkg/claw/internal/runtime/team` | — | — |
+| `pkg/claw/internal/runtime/trust` | implements centralized trust-prompt detection and resolution. | — |
+| `pkg/claw/internal/runtime/worker` | — | — |
+| `pkg/claw/internal/strutil` | provides small string helpers shared across packages. | — |
+| `pkg/claw/internal/testutil` | — | — |
+| `pkg/claw/internal/testutil/schematest` | supplies the offline schema guarantee to transport tests. | — |
+| `pkg/claw/internal/tools` | Ported from rust/crates/runtime/src/bash_validation.rs — pipeline and security gate extensions. | `Asker` |
+| `pkg/claw/internal/usage` | provides token usage tracking and best-effort cost estimation. | — |
+| `pkg/claw/pkg/api` | re-exports the internal/api surface via type aliases. | — |
+| `pkg/claw/pkg/api/commands` | exposes the `.claude/commands/` workspace-command convention on the public API surface, so an in-process embedder resolves a `/name` prompt the way… | — |
+| `pkg/claw/pkg/api/hooks` | the public façade over the internal lifecycle hooks runner. | — |
+| `pkg/claw/pkg/api/lsp` | the public façade over the internal LSP subsystem that backs the `lsp` tool. | — |
+| `pkg/claw/pkg/api/mcp` | the public façade over the internal MCP subsystem that backs the list_mcp_resources / read_mcp_resource / mcp_auth tools and the SSE/HTTP transports. | — |
+| `pkg/claw/pkg/api/mcp/oauth` | the public façade over the internal MCP OAuth broker. | — |
+| `pkg/claw/pkg/api/providers/anthropic` | re-exports the internal Anthropic provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/bedrock` | re-exports the internal Bedrock provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/foundry` | re-exports the internal Azure AI Foundry provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/moonshot` | re-exports the internal Moonshot provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/openai` | re-exports the internal OpenAI provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/vertex` | re-exports the internal Vertex AI provider via type alias. | — |
+| `pkg/claw/pkg/api/task` | the public façade over the internal task subsystem that backs the task_* tools. | — |
+| `pkg/claw/pkg/api/team` | the public façade over the internal team subsystem that backs the team_* and cron_* tools. | — |
+| `pkg/claw/pkg/api/tools` | exposes a stable public-API surface over the built-in tool implementations that ship with claw-code-go. | — |
+| `pkg/claw/pkg/api/worker` | the public façade over the internal worker subsystem that backs the worker_* tools. | — |
+| `pkg/claw/pkg/apikit` | re-exports selected symbols from internal/apikit via type aliases. | — |
+| `pkg/claw/pkg/apikit/telemetry/otlpgrpc` | the public façade over the OTLP/gRPC log exporter implemented in internal/apikit/telemetry/otlpgrpc. | — |
+| `pkg/claw/pkg/permissions` | re-exports the internal permissions package via type aliases so external consumers (e.g. | — |
+| `pkg/claw/pkg/runtime` | re-exports selected provider factory functions from claw-code-go's internal runtime. | — |
+| `pkg/claw/plugin` | Package plugin: remote marketplace fetch + verify. | `Plugin` |
+| `pkg/cli` | implements the iterion command-line interface. | `ReliabilityRunSource` |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` |
 | `pkg/cloud/metrics` | centralises the Prometheus metrics exposed by the cloud-mode iterion server and runner pods. | — |
-| `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | — |
+| `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | `RunStore` |
 | `pkg/cloud/tracing` | wires the OpenTelemetry trace SDK so the spans emitted by pkg/runtime, pkg/runner, and pkg/server are actually exported. | — |
 | `pkg/cloudsched` | the cloud-mode recurring-bot scheduler: a per-org store of cron-scheduled bots and a multi-replica-safe ticker that fires each due schedule exactly… | `Store` |
 | `pkg/config` | loads iterion runtime configuration from environment variables and an optional YAML file. | — |
 | `pkg/configshare` | the scoped, self-service config-file editor: a per-(bot × repo × config-file × category) grant, addressed by a dynamic URL and authenticated by… | `Store` |
-| `pkg/connection` | what authenticates a connector call: the binding between a tenant, a connector package, an instance of that vendor, and the credential to reach it. | `Catalog`, `Store` |
+| `pkg/connection` | what authenticates a connector call: the binding between a tenant, a connector package, an instance of that vendor, and the credential to reach it. | `Catalog`, `ForgeStore`, `PackageStore`, `Store` |
+| `pkg/connector/binding` | reads a stored connector event the way a subscription binds it (ADR-168 §6, §9): which subscriptions an event matches, and the vars a matched one… | — |
 | `pkg/connector/exec` | turns a declared operation into an HTTP call and its answer into a typed result. | — |
+| `pkg/connector/facade` | the MCP offer over a connector package (ADR-098 §2, #2758): a connector's operations exposed to an agent as MCP tools, with the model choosing among… | — |
 | `pkg/connector/gen` | turns a vendor API description into a connector package. | — |
 | `pkg/connector/identity` | preserves the meaning of connector names across generation. | — |
+| `pkg/connector/ingress` | reads one inbound delivery the way a connector package declares it (ADR-168 §3, §4): bounded extraction of the credential, the verification of the… | — |
+| `pkg/connector/intake` | holds what a connector source owes after it answered a vendor (ADR-168 §8): the durable INTAKE row a delivery or a polled item becomes, and the… | `Matcher`, `Store`, `Submitter` |
 | `pkg/connector/overlay` | the AUTHORED half of a connector package. | — |
-| `pkg/connector/spec` | the connector catalog's declarative model: what a connector package IS, independent of where it came from (a generated vendor OpenAPI description, a… | — |
-| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` |
+| `pkg/connector/poller` | holds the durable state of a connector source that iterion reads instead of being called (ADR-168 §7): one record per poller — a query against one… | `Store` |
+| `pkg/connector/polling` | runs a connector source iterion reads instead of being called (ADR-168 §7): each poller's tick calls its trigger's read operation through the… | — |
+| `pkg/connector/spec` | stores and judges the catalog identity a connector package may declare about its icon: the load-time sanitation, size cap and digest that let a route… | — |
+| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `AttachmentStore`, `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` |
 | `pkg/credusage` | meters per-CREDENTIAL monthly LLM spend — the question the org bucket cannot answer. | `Counter` |
 | `pkg/deeplink` | builds the URLs that point a human at a page of the studio. | — |
 | `pkg/dispatcher` | implements iterion's long-running dispatcher. | `ManagedRunner`, `RunLauncher`, `Runner` |
@@ -137,19 +223,22 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — |
 | `pkg/dsl/parser` | — | — |
 | `pkg/dsl/parser/parsertest` | how a test outside pkg/dsl/parser reads a source in one value: the strict reading (parser.Parse). | — |
+| `pkg/dsl/readbudget` | resolves the read budget: how much one bot may ask its readers to record. | — |
+| `pkg/dsl/secretsink` | names the materialization sinks a declared secret may be granted to — the `sinks:` vocabulary of a `.bot` secret declaration… | — |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — |
 | `pkg/dsl/unit/unittest` | how a test outside pkg/dsl/unit takes a loader's two answers as one unit: the whole load. | — |
 | `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — |
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — |
-| `pkg/errtrack` | iterion's optional error-tracking seam. | — |
+| `pkg/errtrack` | iterion's optional error-tracking seam. | `AmbiguousEffect` |
 | `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` |
-| `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AutoMergeArmer`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `ConnectionStore`, `FileClient`, `IssueClient`, `MergeApprover`, `MergeabilityReader`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProjectBotMinter`, `ProvisionApprovalStore`, `PullClient`, `PullReviewerSetter`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `SelfRotator`, `TokenRefresher` |
+| `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AutoMergeArmer`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `FileClient`, `IssueClient`, `MergeApprover`, `MergeabilityReader`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProjectBotMinter`, `ProvisionApprovalStore`, `PullClient`, `PullReviewerSetter`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `SelfRotator`, `TokenRefresher`, `WorkflowDispatcher` |
 | `pkg/forge/forgejo` | the Forgejo/Gitea implementation of forge.Admin. | — |
 | `pkg/forge/github` | the GitHub implementation of forge.Admin: the outbound write-side client the orchestrator uses to list repos and create/update/delete the iterion… | — |
 | `pkg/forge/gitlab` | the GitLab implementation of forge.Admin: the OUTBOUND write-side client the orchestrator uses to list a connection's projects and… | — |
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — |
+| `pkg/hostmcp` | serves the host-owned MCP HTTP transports a SANDBOXED run reaches over the per-run gateway listener (C082): the board tools (/api/v1/mcp/board) and… | `TokenStore` |
 | `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` |
 | `pkg/internal/appinfo` | — | — |
 | `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — |
@@ -162,75 +251,90 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/internal/strutil` | holds tiny string helpers that have no direct stdlib equivalent and were otherwise copy-pasted across packages. | — |
 | `pkg/knowledge` | defines the backend-agnostic contract for iterion's shared memory / knowledge system: the MemoryStore interface, the SpaceRef identity model (the… | `MemoryStore` |
 | `pkg/lease` | elects one holder per named lease across the replicas of a deployment, so a periodic net runs on ONE replica instead of every one. | `Store` |
+| `pkg/legal` | the operator's legal surface: the documents a deployment publishes (legal notice, privacy policy, terms of use, accessibility statement), the contact… | — |
 | `pkg/liveledger` | keeps a committed, single-file record of the LAST run of every `task test:live:*` target. | `TB` |
 | `pkg/llmroute` | the adaptive-routing contract (ADR-121): the multi-level policy that picks which (harness, credential) pair a run may occupy. | — |
 | `pkg/log` | provides a leveled logger with emoji-rich console output for the iterion workflow engine. | — |
 | `pkg/mail` | iterion's minimal transactional mailer: stdlib SMTP (explicit STARTTLS) + embedded templates for the two flows that need email — invitations and… | `Mailer` |
 | `pkg/marketplace` | the hosted bot registry that sits on top of pkg/botinstall. | `Store` |
+| `pkg/memlimit` | derives the Go GC's memory limit from the container's cgroup ceiling at startup (#2693), so the collector works harder as the pod nears its limit… | — |
 | `pkg/memory` | provides the per-workspace iterion memory tree at ~/.iterion/projects/<encoded-workdir>/memory/<scope>/. | — |
 | `pkg/modelcatalog` | crosses the four sources that together answer "which models can I actually use here": 	model.KnownModelSpecs() — what iterion knows about (curated… | — |
 | `pkg/modelprefs` | persists an operator's chosen model/backend/effort for a long-lived surface, so the choice survives the surface rather than being re-made every time… | `Store` |
 | `pkg/notify` | delivers run-completion webhooks — a generic "this run reached a terminal state, here is its final answer" callback POSTed to a URL supplied at… | — |
+| `pkg/numeric` | reads materialized numbers without rounding their integer domain or order. | — |
 | `pkg/operatormcp` | implements the operator-facing iterion MCP tool surface served by `iterion mcp` — the seam that lets any MCP client (Claude Code, the desktop, an… | — |
 | `pkg/orgusage` | meters per-org (tenant) monthly run launches and LLM spend, and enforces the launch-time caps. | `Counter` |
 | `pkg/pat` | implements personal access tokens — long-lived bearer credentials for programmatic API access (CI jobs, SDKs, curl) where the 15-minute JWT +… | `Store` |
-| `pkg/platformcfg` | holds platform-scoped runtime-settings families beyond the usage caps that established the doctrine (ADR-090): env var = deployment default, DB… | `CASDeleter`, `CASStore`, `Deleter`, `Store` |
+| `pkg/platformcfg` | holds platform-scoped runtime-settings families beyond the usage caps that established the doctrine (ADR-090): env var = deployment default, DB… | `CASDeleter`, `CASStore`, `Deleter`, `RunnerPoolsReader`, `Store` |
 | `pkg/plugin` | implements iterion's plugin ecosystem: declarative, out-of-process extensions described by a `plugin.yaml` manifest with typed contribution points. | — |
 | `pkg/pluginsource` | persists ORG-PRIVATE plugin bindings: "this team's runs get the plugin living in this git repository". | `Store` |
+| `pkg/pricefeed` | — the gateway price feed (ADR-163): operator pricing that syncs into the database and rides the existing IPC, while the operator table stays the… | `ConfigStore`, `Source`, `StateStore`, `StaticSource` |
 | `pkg/projectenv` | builds immutable per-project process environments for a unified local Studio. | — |
 | `pkg/queue` | defines the message contract exchanged between the iterion server (publisher) and the iterion runner (consumer). | — |
 | `pkg/queue/nats` | wraps the NATS / JetStream / KV layer for iterion's cloud queue. | — |
+| `pkg/recordcodec` | adapts explicitly selected record fields to exact-value frames. | `Codec` |
 | `pkg/reliability` | centralises the staged rollout knobs and the small compatibility/baseline reports operators need while enabling workflow reliability contracts. | — |
 | `pkg/repograph` | builds one deterministic graph of this repository: Go packages and the symbols they declare, the calls between them, the links between documentation… | — |
 | `pkg/repomap` | generates this repository's discoverability commons: small, committed indexes that let an agent — one working on the repo, or a bot running inside… | `Extractor` |
 | `pkg/retrycoord` | contains the policy shared by runner replicas when deciding whether a retry wave should be admitted. | — |
 | `pkg/retrypolicy` | the shared "should this failed run be retried, and when?" contract — the after-the-failure counterpart to pkg/schedgate's before-the-launch gate. | — |
-| `pkg/reviewtopology` | resolves the mono/dual review topology for bi-model review-loop bots (whole-improve-loop, branch-improve-loop, feature-dev, docs-refresh,… | — |
+| `pkg/reviewtopology` | resolves the review topology for review-loop bots (review-pr, evolve) and injects the resolved review_mode var into a run's inputs when the target… | — |
 | `pkg/routing` | evaluates a run's launch-frozen RoutingPolicy against its terminal state. | — |
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveFallbackResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber`, `UndecidedRouteReporter` |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `CapabilityDenial`, `Compactor`, `EffectiveBackendResolver`, `EffectiveFallbackResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber`, `UndecidedRouteReporter` |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
-| `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `ObservedEventFeed`, `RunLoader` |
+| `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `BoundObservationSource`, `EventCursorSource`, `EventSubscription`, `LogSubscription`, `MongoSelection`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
-| `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `HostRun`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
+| `pkg/sandbox` | defines the iterion sandboxing abstraction. | `BindPathIdentity`, `Builder`, `CommandCancellationOwner`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `RootOpener`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
 | `pkg/sandbox/devcontainer` | parses the subset of devcontainer.json fields iterion's sandbox driver consumes. | — |
 | `pkg/sandbox/docker` | implements the Docker/Podman sandbox driver. | — |
+| `pkg/sandbox/execenv` | owns the dedicated host relay, separate from the guest leaf. | — |
+| `pkg/sandbox/execenv/protocol` | owns the leaf wire contract shared by the host relay and the Linux guest. | — |
+| `pkg/sandbox/imageclass` | holds the operator-controlled vocabulary of stock sandbox image classes: the bare names a workflow's `sandbox: { image: … }` may declare instead of… | — |
 | `pkg/sandbox/kubernetes` | implements iterion's sandbox driver for cloud (in-cluster) deployments. | — |
 | `pkg/sandbox/netproxy` | implements iterion's HTTP CONNECT proxy that enforces the workflow's sandbox network policy. | `SecretRewriter` |
 | `pkg/sandbox/noop` | provides the always-available passthrough sandbox driver. | — |
 | `pkg/sandbox/registry` | centralises the iterion-shipped sandbox-driver constructor list. | — |
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` |
+| `pkg/scripthost` | runs model-authored JavaScript in a child process that holds no credential and no capability. | `BudgetRefusalObserver`, `ToolServer` |
+| `pkg/scripthost/toolindex` | codemode's discovery surface (CM-3, ADR-165): the catalogue of the tools a program may call, their TypeScript declarations, a BM25 index over them,… | — |
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `KeyedSealer`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |
+| `pkg/secure/hostfold` | folds a URL hostname to the name a dial resolves. | — |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | `HostResolver` |
 | `pkg/server` | Admin team console: the super-admin surface for team-scoped settings an org admin must not touch. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `BudgetFloorSource`, `RunnerPoolResolver`, `TeamResolver` |
 | `pkg/server/projects` | manages the studio's per-user project registry. | — |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` |
 | `pkg/skilllib` | implements iterion's first-class skill library: a standalone, operator-curated store of Claude-Code-style SKILL.md skills, stored globally… | — |
-| `pkg/store` | implements the file-backed persistence layer for iterion runs. | `AttemptStore`, `BackendSessionStore`, `IRBlobStore`, `InteractionAnswerCAS`, `OutputCorrectionStore`, `PIDStore`, `ParentedRunCreator`, `PlanStore`, `QueuedAttemptClaimer`, `QueuedAttemptStore`, `QueuedFlipper`, `QueuedInboxVersioner`, `QueuedMessageInsertOnceStore`, `QueuedResumeReleaser`, `QueuedRunCreator`, `RetryCircuitStore`, `RouteDecisionStore`, `RunBudgetOverridesPatcher`, `RunDiffBlobStore`, `RunFilesStore`, `RunFilesUploader`, `RunGitMetaStore`, `RunListingStore`, `RunLock`, `RunLogStore`, `RunNoteStore`, `RunRetryStore`, `RunStore`, `RunTagStore`, `ScratchBankStore`, `SpendStore`, `ToolBlobStore`, `TurnStore`, `Unwrapper`, `WatcherCursorStore` |
-| `pkg/store/blob` | defines the artifact-blob interface implemented by S3 (cloud) and (potentially) a local filesystem variant for testing. | `Client`, `ScratchBanker` |
+| `pkg/store` | implements the file-backed persistence layer for iterion runs. | `AttemptStore`, `BackendSessionStore`, `BoundObservationStore`, `CodemodeQuotaResumeClaimer`, `CodemodeScratchStore`, `ContextIdentityStore`, `ContextPIDStore`, `CredSlotStore`, `EventAppender`, `EventObservationSelection`, `FilesystemStreamSelection`, `FilesystemStreamStore`, `IRBlobStore`, `InteractionAnswerCAS`, `ObservedEventProducer`, `ObservedExecutionStore`, `ObservedFilesystemEventDecoder`, `OutputCorrectionCASStore`, `OutputCorrectionStore`, `PIDStore`, `ParentedRunCreator`, `PlanStore`, `PreEngineRefusalRecorder`, `PresignedAttachmentReader`, `QueuedAttemptClaimer`, `QueuedAttemptStore`, `QueuedFlipper`, `QueuedInboxVersioner`, `QueuedMessageInsertOnceStore`, `QueuedResumeReleaser`, `QueuedRunCreator`, `ResumePauseHandoffStore`, `RetryCircuitStore`, `RevisionQueuedFlipper`, `RouteDecisionStore`, `RunBirthReservation`, `RunBirthStore`, `RunBudgetOverridesPatcher`, `RunDataHeaderStore`, `RunDiffBlobStore`, `RunExecutionStore`, `RunFilesGrant`, `RunFilesGrantStore`, `RunFilesGrantUploader`, `RunFilesStore`, `RunFilesUploader`, `RunGitMetaStore`, `RunInvocationPreparation`, `RunListingStore`, `RunLock`, `RunLogStore`, `RunNoteStore`, `RunOutcomeCASStore`, `RunProbeAnswerStore`, `RunRetryStore`, `RunStore`, `RunTagStore`, `RunValueFormatCreator`, `ScopedQueuedInboxVersioner`, `ScratchBankStore`, `SpendStore`, `StagingStore`, `TeamAliveRunsReader`, `ToolApprovalSpender`, `ToolBlobStore`, `TurnStore`, `Unwrapper`, `WatcherCursorStore` |
+| `pkg/store/blob` | defines the artifact-blob interface implemented by S3 (cloud) and (potentially) a local filesystem variant for testing. | `ArtifactObjects`, `Client`, `IRObjects`, `IncarnationArtifacts`, `IncarnationIR`, `IncarnationRunObjects`, `RunObjects`, `ScratchBanker`, `ValueFormatArtifacts`, `ValueFormatRunObjects` |
 | `pkg/store/mongo` | implements the cloud-mode RunStore on top of MongoDB for run metadata + events + interactions, paired with an external blob.Client (S3) for artifact… | `LockProvider` |
 | `pkg/store/storetest` | exposes the conformance suite that every store.RunStore backend must satisfy. | — |
 | `pkg/subbotcontracts` | reads the `subbot` children of a workflow for the contracts they keep — what bundlelint holds a parent's `with:` to (C255). | — |
 | `pkg/subbotsource` | resolves the source reference carried by a subbot node. | — |
 | `pkg/supervise` | implements LLM-driven supervisor agents that watch a running iterion workflow from a separate goroutine/process and enqueue steering messages the… | `Evaluator`, `IdempotentInjector`, `Injector`, `Observer`, `WatcherProgressStoreProvider` |
+| `pkg/testinventory` | reads Go's runnable test names without executing their bodies. | — |
 | `pkg/treenoise` | the canonical list of "tree noise": paths the run's own setup and tooling write into the workspace, which never count as the pass's work — the… | — |
 | `pkg/trigger` | the unifying spine for event-driven runs. | `BoardEffect`, `EffectLabelConsumer`, `EffectOutbox`, `LabelConsumer`, `Launcher`, `Nudger`, `ProjectionBindings`, `ProjectionEffect`, `Publisher`, `SubscriptionStore` |
 | `pkg/usagecap` | stops a deployment from spending its LLM subscription down to the provider's own wall. | `PolicySource`, `SettingsStore`, `Store` |
 | `pkg/usernotify` | delivers user-addressed notifications for run lifecycle moments — a run pausing on a human form, finishing, failing — to per-user channels (web… | `PrefsStore`, `SentStore`, `Sink` |
 | `pkg/usernotify/webpush` | the Web Push (RFC 8030 + VAPID) usernotify.Sink: it delivers a Notification to every browser PushSubscription registered by each recipient, via the… | `SubscriptionStore` |
 | `pkg/valkey` | wraps a go-redis client used to share ephemeral server state across replicas (forge OAuth/CSRF state, board-MCP run tokens, auth rate-limit buckets). | — |
+| `pkg/valuecodec` | preserves structured values across explicitly versioned transports. | — |
 | `pkg/webhooks` | iterion's inbound-webhook spine: long-lived, per-org webhook tokens that authenticate an external caller (a forge, CI, a script) and authorize it to… | `CommandDiscovery`, `ConfigStore`, `Counter`, `DeferredLaunchStore`, `DeliveryStore` |
 | `pkg/webhooks/generic` | decodes the bot-agnostic JSON shape iterion accepts on /api/webhooks/generic/{id}. | — |
 | `pkg/webhooks/gitlab` | decodes GitLab webhook payloads into the narrow, normalized shape iterion's inbound handler consumes. | — |
 | `pkg/webhooks/prforge` | decodes pull_request webhook payloads from PR-over-forge providers — GitHub and Forgejo/Gitea — which share the same wire shape for the… | — |
 | `pkg/workspacetrack` | versions a run's workspace: it captures what the files look like at a point in execution and can put them back. | `Tracker` |
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
+| `scripts/ci/inpodbench` | Command inpodbench reports what a codemode child actually confines itself to under the posture it is GIVEN, whether that confinement REFUSES, and… | — |
 | `scripts/ci/testcaps` | Command testcaps publishes a deterministic source census of test skips and sleeps, plus optional observations of the runner's literal prerequisites. | — |
 | `scripts/ci/testshards` | Command testshards prints the Go test packages of one deterministic shard, the mechanism the CI matrix legs use to split `./...` across runners (the… | — |
+| `scripts/clawfold` | Command clawfold plans, applies and proves the fold of claw-code-go into pkg/claw (see internal/clawfold). | — |
 | `scripts/docslinks` | Command docslinks checks every relative link and `#anchor` in the repository's tracked markdown against the real tree, the way GitHub resolves them… | — |
 | `scripts/modelsnapshot` | Command modelsnapshot regenerates the embedded models.dev snapshot (pkg/backend/modelspecs/snapshot/models-dev.json): fetch, parse, render… | — |
 | `third_party/codex-agent-sdk-go` | provides a Go SDK for interacting with the Codex CLI agent. | `Client`, `Tool` |
@@ -255,7 +359,6 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `third_party/codex-agent-sdk-go/examples/quick_start` | — | — |
 | `third_party/codex-agent-sdk-go/examples/sdk_tools` | demonstrates the high-level Tool API with WithSDKTools. | — |
 | `third_party/codex-agent-sdk-go/examples/service_tier` | — | — |
-| `third_party/codex-agent-sdk-go/examples/sessions` | — | — |
 | `third_party/codex-agent-sdk-go/examples/stderr_callback` | — | — |
 | `third_party/codex-agent-sdk-go/examples/structured_output` | — | — |
 | `third_party/codex-agent-sdk-go/examples/system_prompt` | — | — |
@@ -275,7 +378,8 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `third_party/codex-agent-sdk-go/internal/protocol` | implements bidirectional control message handling for the Codex CLI. | `Transport` |
 | `third_party/codex-agent-sdk-go/internal/sandbox` | provides sandbox configuration types for the Codex CLI. | — |
 | `third_party/codex-agent-sdk-go/internal/schema` | provides JSON Schema normalization helpers for the Codex Agent SDK. | — |
-| `third_party/codex-agent-sdk-go/internal/session` | provides SQLite-based session lookup for Codex CLI threads. | — |
 | `third_party/codex-agent-sdk-go/internal/subprocess` | provides subprocess-based transport for the Codex CLI. | — |
 | `third_party/codex-agent-sdk-go/internal/userinput` | provides types for the item/tool/requestUserInput protocol. | — |
 | `third_party/codex-agent-sdk-go/internal/version` | — | — |
+| `third_party/tiktoken-go-tokenizer` | — | `Codec` |
+| `third_party/tiktoken-go-tokenizer/codec` | — | — |

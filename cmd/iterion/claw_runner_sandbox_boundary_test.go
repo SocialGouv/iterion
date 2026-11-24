@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -164,7 +168,7 @@ func newBoundaryProbe(t *testing.T, advertised []string) (map[string]delegate.To
 
 	dispatcher, stub := newStubLauncher(t)
 
-	hybrid, err := makeHybridToolDefs(advertise(advertised), dispatcher, t.TempDir())
+	hybrid, err := makeHybridToolDefs(advertise(advertised), dispatcher, t.TempDir(), sandboxScratchScope{}, model.NewRegistry(), model.EventHooks{}, 0, nil, false, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("makeHybridToolDefs refused the advertised set, so the probe cannot tell the paths apart: %v", err)
 	}
@@ -317,7 +321,7 @@ func TestHybridToolDefs_RefusesWhatTheContainerCannotExecute(t *testing.T) {
 		// refused, never proxied.
 		{"some_future_claw_tool", "no sandbox placement is declared"},
 	} {
-		_, err := makeHybridToolDefs(advertise([]string{tc.name}), dispatcher, t.TempDir())
+		_, err := makeHybridToolDefs(advertise([]string{tc.name}), dispatcher, t.TempDir(), sandboxScratchScope{}, model.NewRegistry(), model.EventHooks{}, 0, nil, false, store.RunTrustDefault)
 		if err == nil {
 			t.Errorf("%q was accepted by the runner; it has no in-container form, so accepting it means proxying it to the host", tc.name)
 			continue
@@ -390,7 +394,7 @@ func TestHybridToolDefs_LocalRegistrationFailureIsFatal(t *testing.T) {
 // refuses a node it should have run.
 func TestRegisterSandboxLocalTools_CoversTheWholeSandboxSet(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, t.TempDir()); err != nil {
+	if err := registerSandboxLocalTools(reg, t.TempDir(), sandboxScratchScope{}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 
@@ -411,5 +415,48 @@ func TestRegisterSandboxLocalTools_CoversTheWholeSandboxSet(t *testing.T) {
 		placement, _ := tool.SandboxPlacementOf(name)
 		t.Errorf("the runner registers %q locally but its placement is %s — a tool executed in-container "+
 			"while the launcher believes it owns it is the mirror of the escape this routing exists to stop", name, placement)
+	}
+}
+
+// The ceiling the launcher resolved is the one the in-container `command`
+// tool registers with (#1716): the dial is a host-side read, so this is the
+// only way an operator's bound reaches the registration that executes in a
+// sandboxed run. Mutant: pass tool.DefaultWorkspaceCommandMaxBytes instead
+// of commandMaxBytes in registerSandboxLocalTools → the tightened reading
+// below reddens, and a 4 KiB bound becomes 256 KiB inside every container.
+func TestRegisterSandboxLocalTools_CommandRegistersWithTheLaunchersCeiling(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, ".claude", "commands")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := strings.Repeat("x", 200) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "wide.md"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	answer := func(t *testing.T, ceiling int) string {
+		t.Helper()
+		reg := tool.NewRegistry()
+		if err := registerSandboxLocalTools(reg, ws, sandboxScratchScope{}, nil, ceiling, nil, false, store.RunTrustDefault); err != nil {
+			t.Fatalf("registerSandboxLocalTools(ceiling=%d): %v", ceiling, err)
+		}
+		td, err := reg.Resolve("command")
+		if err != nil {
+			t.Fatalf("resolve command: %v", err)
+		}
+		out, err := td.Execute(context.Background(), json.RawMessage(`{"name":"wide"}`))
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		return out
+	}
+	// Tightened by the operator, below this body: refused as text.
+	if out := answer(t, 64); !strings.Contains(out, "ceiling") {
+		t.Errorf("under a 64-byte ceiling the answer is %q, want the refusal — the launcher's dial did not reach the registration", out)
+	}
+	// A launcher that names no ceiling (0): the built-in default, which this
+	// body is far below, so it is served.
+	if out := answer(t, 0); !strings.Contains(out, strings.TrimSpace(body)) {
+		t.Errorf("with no dial the answer is %q, want the body under the built-in default", out)
 	}
 }

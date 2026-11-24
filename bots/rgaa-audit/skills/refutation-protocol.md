@@ -12,13 +12,17 @@ description: |
 You receive a batch of CLAIMS. Each is one line of the draft report with its
 anchor: `n` (the claim number — your key), `criteriaId`, `file`, `line`,
 `selector`, `claim` (the sentence under trial), and for a landed conformity
-`kind: "c"` with the `citations[]` the agent relied on.
+`kind: "c"` with the `citations[]` the agent relied on. The batch input
+also lists the absolute paths of the draft report, the technical annex and
+one brief per claim's criterion: open exactly those, never a path
+reconstructed from memory or rebuilt from a directory name.
 
 ## For every claim
 
 1. Open the cited file at the cited line and read the surrounding element.
-2. Read the brief for the criterion (`<briefs_dir>/<criteriaId>.md`): the
-   numbered tests the claim rests on.
+2. Read the criterion's brief at its listed path (null means the criterion
+   was decided statically and carries no brief — the claim then rests on
+   the engine's own finding): the numbered tests the claim rests on.
 3. Rule, and write a one-line `note` in French saying what you saw.
 
 | verdict | for a non-conformity claim | for a conformity claim (`kind: "c"`) |

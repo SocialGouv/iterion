@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,6 +23,10 @@ func TestLive_Feat_BudgetResume(t *testing.T) {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
+	// Both phases assert on the fixture's own caps (the $0.0001 that trips,
+	// the raise that lets writer2 run): the operator's ceiling would replace
+	// them at the chokepoint and turn a healthy target red.
+	refuseCapOnBudgetSubject(t)
 	requireOpenAI(t)
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-budget-resume-*")
@@ -51,7 +54,7 @@ func TestLive_Feat_BudgetResume(t *testing.T) {
 	res.wf.Budget.MaxCostUSD = 10.0
 	exec2 := newLiveExecutor(t, res.wf, res.store, res.runID, workspaceDir)
 	defer exec2.Close()
-	eng2 := runtime.New(res.wf, res.store, exec2)
+	eng2 := newLiveEngine(t, res.wf, res.store, exec2)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	rerr := eng2.Resume(ctx, res.runID, nil)

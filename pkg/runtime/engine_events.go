@@ -28,7 +28,14 @@ func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, no
 // redacted copy. A pause's questions, an author's rendered instructions or
 // a node error may quote a secret the run was launched with; the data the
 // engine reads back — checkpoint, interaction records — keeps the values.
-func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) error {
+func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) (result error) {
+	if w := terminationScope(ctx); w != nil {
+		if w.refusal != nil {
+			return w.refusal
+		}
+		defer func() { w.observe(result) }()
+	}
+
 	// The recorded-answers event is scrubbed narrowly, in answersEventData:
 	// its interaction_id is the key the studio and the interaction records
 	// flip on, and it must survive even when it happens to hold a

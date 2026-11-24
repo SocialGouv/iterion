@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -22,7 +23,7 @@ import (
 // context mints a grant.
 func wireForgePublishForT1(t *testing.T, s *Server) {
 	t.Helper()
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
 	if err := s.forgeConnections.Create(context.Background(), forge.Connection{ID: "conn1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
@@ -36,22 +37,24 @@ func wireForgePublishForT1(t *testing.T, s *Server) {
 }
 
 // plantCard writes a card straight into the board store — the shape of a card
-// written before the write paths dropped the grant, or through a writer that
-// stores bot args verbatim.
+// written BEFORE the write paths dropped the grant. Create no longer stores
+// those vars (native.BotArgsForWrite), so the carried grant is planted behind
+// the write boundary, where such a card still exists until its grant expires.
 func plantCard(t *testing.T, env *pipelineTierEnv, carried string) native.Issue {
 	t.Helper()
 	card, err := env.board.Create(native.Issue{
 		Title: "Review PR 7", State: native.StateReady, Bot: "probe",
-		BotArgs: map[string]string{
-			"pr_url":                   "https://github.com/o/r/pull/7",
-			store.ForgePublishTokenVar: carried,
-			store.ForgePublishURLVar:   "https://collector.example/publish",
-		},
+		BotArgs: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return *card
+	planted := plantLegacyCardBotArgs(t, env.board, card.ID, map[string]string{
+		"pr_url":                   "https://github.com/o/r/pull/7",
+		store.ForgePublishTokenVar: carried,
+		store.ForgePublishURLVar:   "https://collector.example/publish",
+	})
+	return *planted
 }
 
 // "Launch now" composes a card's launch as the board dispatcher does: the
@@ -153,7 +156,7 @@ func TestALaunchThatNeverStartsRevokesTheGrantItMinted(t *testing.T) {
 		env := newPipelineTierEnv(t)
 		wireForgePublishForT1(t, env.srv)
 		card := plantCard(t, env, "")
-		if _, err := env.srv.launchTicketNow(context.Background(), "t1", env.srv.runs, claimDrift{env.board}, &card); err == nil {
+		if _, err := env.srv.launchTicketNow(context.Background(), "t1", systemLaunch(pipelineAdmissionActor), env.srv.runs, claimDrift{env.board}, &card); err == nil {
 			t.Fatal("a launch whose claim failed reported success")
 		}
 		if n := grantCount(t, env.srv); n != 0 {
@@ -242,7 +245,7 @@ func TestALaunchThatNeverStartsRevokesNothingItDidNotMint(t *testing.T) {
 			t.Fatal(err)
 		}
 		card := plantCard(t, env, "")
-		if _, err := env.srv.launchTicketNow(context.Background(), "t1", env.srv.runs, claimDrift{env.board}, &card); err == nil {
+		if _, err := env.srv.launchTicketNow(context.Background(), "t1", systemLaunch(pipelineAdmissionActor), env.srv.runs, claimDrift{env.board}, &card); err == nil {
 			t.Fatal("a launch whose claim failed reported success")
 		}
 		if _, live := env.srv.forgePublishTokens.lookup(pinned); !live {
@@ -285,7 +288,7 @@ func TestPipelineLaunchNow_RefusesAClaimTakenDuringTheComposition(t *testing.T) 
 	wireForgePublishForT1(t, env.srv)
 	card := plantCard(t, env, "")
 	board := &lateClaimBoard{BoardStore: env.board, id: card.ID}
-	_, err := env.srv.launchTicketNow(context.Background(), "t1", env.srv.runs, board, &card)
+	_, err := env.srv.launchTicketNow(context.Background(), "t1", systemLaunch(pipelineAdmissionActor), env.srv.runs, board, &card)
 	if err == nil {
 		t.Fatal("a card claimed while this launch was composing was launched anyway")
 	}

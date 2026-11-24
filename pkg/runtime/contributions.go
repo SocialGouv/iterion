@@ -129,7 +129,7 @@ func CollectSkillRefs(wf *ir.Workflow) []string {
 // (kind, name) reaching here is a defence-in-depth signal that the payload
 // was built without dedup — the winner is publisher-order (queue.Contributions
 // order), we WARN with the destination, and it is reported once.
-func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger *iterlog.Logger) (owned []string, complete bool, err error) {
+func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, pass *mirrorPass, logger *iterlog.Logger) (owned []string, complete bool, err error) {
 	// complete mirrors the local plugin path's contract (R0ab502): BOTH
 	// error classes are soft here — plugin contributions are ambient, and
 	// a hostile checkout planting an obstruction at a skill path must not
@@ -171,7 +171,7 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		markerDir := filepath.Join(destDir, bundleMirrorMarkerDir)
 		if !ready[f.Kind] {
 			for _, d := range []string{destDir, markerDir} {
-				if err := os.MkdirAll(d, 0o755); err != nil {
+				if err := pass.root().MkdirAll(d, 0o755); err != nil {
 					return nil, false, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
 				}
 			}
@@ -181,7 +181,7 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		if err := os.WriteFile(tmpPath, f.Content, 0o644); err != nil {
 			return nil, false, err
 		}
-		outcome, destPath, err := mirrorInjectedContribFile(destDir, markerDir, tmpPath, f.Kind, f.Name, logger)
+		outcome, destPath, err := mirrorInjectedContribFile(destDir, markerDir, tmpPath, f.Kind, f.Name, pass, logger)
 		if err != nil {
 			// Both classes soft (see the function comment): name the
 			// class in the WARN, skip the entry, keep mirroring — and
@@ -228,13 +228,13 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 // ("skill"). Skills route through mirrorFileSkill (both discovery shapes) so
 // the wire arrival cannot leave a plugin skill invisible to claude_code;
 // commands and agents keep their flat form.
-func mirrorInjectedContribFile(destDir, markerDir, tmpPath, kindDir, name string, logger *iterlog.Logger) (skillReconcileOutcome, string, error) {
+func mirrorInjectedContribFile(destDir, markerDir, tmpPath, kindDir, name string, pass *mirrorPass, logger *iterlog.Logger) (skillReconcileOutcome, string, error) {
 	if kindDir == "skills" {
 		_, destPath, _, err := skillDestDirForm(destDir, markerDir, name)
 		if err != nil {
 			return skillOutcomeShadowed, "", err
 		}
-		outcome, err := mirrorFileSkill(destDir, markerDir, tmpPath, name, skillTierPlugin, logger)
+		outcome, err := mirrorFileSkill(destDir, markerDir, tmpPath, name, skillTierPlugin, pass, logger)
 		if err != nil {
 			return outcome, "", err
 		}
@@ -242,7 +242,7 @@ func mirrorInjectedContribFile(destDir, markerDir, tmpPath, kindDir, name string
 	}
 	destPath := filepath.Join(destDir, name)
 	markerPath := filepath.Join(markerDir, name+".sha256")
-	outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
+	outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, pass, logger)
 	if err != nil {
 		return outcome, destPath, err
 	}
@@ -253,7 +253,7 @@ func mirrorInjectedContribFile(destDir, markerDir, tmpPath, kindDir, name string
 // <workDir>/.claude/skills/<name>/SKILL.md (the directory form — the only shape
 // claude_code's Skill tool discovers) and returns the name→description hints,
 // matching mirrorLibrarySkills' contract exactly.
-func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logger *iterlog.Logger) (map[string]string, []string, error) {
+func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, pass *mirrorPass, logger *iterlog.Logger) (map[string]string, []string, error) {
 	if workDir == "" || len(skills) == 0 {
 		return nil, nil, nil
 	}
@@ -275,7 +275,7 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 	dest := filepath.Join(workDir, ".claude", "skills")
 	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 	for _, d := range []string{dest, markerDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := pass.root().MkdirAll(d, 0o755); err != nil {
 			return nil, nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
 		}
 	}
@@ -298,7 +298,7 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		if err := os.WriteFile(tmpPath, s.Content, 0o644); err != nil {
 			return nil, nil, err
 		}
-		outcome, err := mirrorFileSkill(dest, markerDir, tmpPath, mfName, skillTierLibrary, logger)
+		outcome, err := mirrorFileSkill(dest, markerDir, tmpPath, mfName, skillTierLibrary, pass, logger)
 		if err != nil {
 			// I/O errors on a declared library skill stay fatal on the
 			// cloud path too. The runner's `.bot` still declared the

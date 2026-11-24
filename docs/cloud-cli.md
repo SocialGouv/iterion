@@ -47,8 +47,17 @@ the team's UUID; it is refused with `--token` (a token's team is fixed at
 its mint) and with the browser flow (the approval pins the studio's active
 team).
 
-`iterion remote status` shows the logged-in instance + account;
-`iterion remote logout` forgets the credential.
+`iterion remote status` shows the logged-in instance + account, the
+version and commit the instance runs (read from its public
+`GET /api/server/info`) and this client's own version — so a session sees
+whether a roll is due without reading the code. An instance that does not
+tell its version (a release older than the route, an error, an answer that
+is not the server's info, no answer within 5 s —
+`ITERION_REMOTE_SERVER_INFO_TIMEOUT` raises it) leaves it unknown with the
+reason, and the status still succeeds. `--json` prints the whole answer,
+the one the operator MCP's `remote_status` gives: `server.version`,
+`server.commit`, `client_version`, or `server_info_error` in place of
+`server`. `iterion remote logout` forgets the credential.
 
 ### CI / scripting (environment only)
 
@@ -71,22 +80,44 @@ bindings, and the run reads — `runs list`, `runs stats`, `runs repos`,
 1. `--team <id|slug>` flag (a slug resolves against the org tree, an
    unknown one is refused naming it)
 2. `ITERION_REMOTE_TEAM`
-3. the default persisted by a `--team` login (or by `teams switch` from a session credential)
+3. the default persisted by a `--team` login (or by `teams switch`)
 4. the account's active team (from `/api/auth/me`)
 
 A PAT's *identity* team is pinned at mint time, and a PAT may not mint
-another credential (the instance answers `403`), so `teams switch` cannot
-run from a stored token: pin the team at login —
-`iterion remote login <url> --email <you> --team <id>` — or switch team in
-the studio and run `iterion remote login <url>` (the browser approval pins
-the studio's active team). From a session credential it still mints a new
-token pinned to the target team, stores it, and revokes the previous CLI
-token (matched by fingerprint — tokens you minted for other purposes are
-never touched). `iterion remote tokens create` is refused the same way
+another credential (the instance answers `403`). So `teams switch` re-opens
+the browser approval (the studio's `/cli-auth` page) with the team pinned:
+the approving live session mints the team-pinned token — never the stored
+PAT — and the CLI stores it and revokes the previous CLI token (matched by
+fingerprint — tokens you minted for other purposes are never touched).
+Headless, pin the team at login instead:
+`iterion remote login <url> --email <you> --team <id>`. From a session
+credential the switch still mints directly, stores, and revokes the same
+way. `iterion remote tokens create` is refused the same way
 from a stored token: create the token in the studio (Account → Access
-tokens) or from a fresh login. Both refusals happen before anything is
-sent. Org-scoped commands (`--org` / `ITERION_REMOTE_ORG` /
-`orgs switch`) need no re-minting (org scope is path-based).
+tokens) or from a fresh login.
+
+The same rule reaches every command whose route mints a **team token** — a
+token that outlives the credential it is minted from. Three of them mint one
+on every call, so the CLI states the refusal itself, before anything is sent
+— not even the `/api/auth/me` the team and org scope resolution would read:
+`webhooks create`, `webhooks rotate` and `teams|orgs invitations create`.
+The advice names the **studio**, not a login: a login stores another personal
+access token, which mints no more than this one. Reads and the gestures that
+mint nothing stay available — `webhooks list`, the invitation list and
+`DELETE`, `repo-bots preview|delete`, `orgs approvals reject`. Org-scoped
+commands (`--org` / `ITERION_REMOTE_ORG` / `orgs switch`) need no re-minting
+(org scope is path-based).
+
+The repo-bot provisioning is the one the CLI does **not** pre-judge, and must
+not: whether it mints depends on state only the instance holds. A repo's
+FIRST enable reserves its hook identity and mints the `iwh_` token, so it is
+refused (403) from a stored token. A **reconcile** of a repo already
+provisioned, a settings-only `repo-bots update`, and an `orgs approvals
+approve` standing for such an update reuse the integration's sealed secret,
+mint nothing, and go through — which is why `forge repo-bots create|update`,
+`orgs approvals approve` and the same calls through `remote api` all send,
+and the instance decides. The question is asked where the mint is decided, so
+a refusal that does come back carries the same studio advice.
 
 ## The launch → follow → inspect recipe
 
@@ -141,20 +172,23 @@ the staging step alone and prints the upload id.
 | `labels` / `board` | `list · rename · merge · delete` / `get · set · bind · show · unbind` |
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
-| `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
+| `schedules` | `list · create · update · delete` (team-scoped, cloud recurring bots; `update <id> --data` is the PATCH — a field left out is kept; `key_overrides` pins a BYOK key per provider, see [scheduling.md](scheduling.md#notes--limits)) |
 | `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` |
 | `orgs` | `list · switch · members · invitations · usage · teams · add-member · approvals · credential-audience · oauth · settings` |
-| `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
+| `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` (from the studio, or from a CLI holding a session credential: the invitation is a team token, which a stored personal access token does not mint) and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
 | `me` | `password · sessions-revoke-all · sso-links` |
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
-| `webhooks` | `list · get · create · update · delete · rotate · deliveries` |
+| `price-feeds` | `list · set · delete · sync [feed] · declare <name>` (`--platform \| --org \| --team`) · `effective [--team] [--model …]` — the gateway price feed (ADR-163, ADR-166): a gateway model's prices, window, output cap and accepted reasoning efforts in the database. The platform, org and team levels fold with the more specific level answering per id: a price entry answers whole from one feed (window and output cap included, never merged), accepted efforts fold apart, and the runner's `OPENAI_COMPATIBLE_*` env tables are fallbacks. `sync` reports what changed per id. Sources: `modelsdev · scaleway · litellm · exec · declared`. `exec` is super-admin only and runs only where the deployment exports `ITERION_PRICE_FEED_EXEC=1`. `declared` is the table itself, never fetched and never stale: `declare --file F` or `--models-file M [--efforts-file E]` (a pool's env tables as written) prints the per-id diff, then writes the scope's list back under the stamp it read, or writes nothing with `--dry-run`. `--platform` is super-admin. `effective` is the table a team's run seals, each answer with its feed and level. `interval`/`timeout` are in seconds. See [backends.md](backends.md#the-gateway-price-feed-auto-synced-operator-pricing-adr-163). |
+| `webhooks` | `list · get · create · update · delete · rotate · deliveries` (`create` and `rotate` mint a team token on every call: studio only from a stored token) |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
 | `memory` | `docs · doc get\|put\|delete · export · import` (`--name` space) — `usage` carries no space flags, so the server refuses it |
-| `admin users` | `users` alone lists (`--q` matches an email PREFIX or an exact id); `get <user-id>` returns one account's file — status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was actually granted; `update <user-id> --data`; `reset-password <user-id>` mints a one-shot temporary password and revokes every session — refused (`403`) for your own account when the CLI presents a personal access token, which is what a login stores: change your own password from the studio (Account → Profile → Change password). See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing). |
-| `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
+| `admin users` | `users` alone lists (`--q` matches an email PREFIX or an exact id); `get <user-id>` returns one account's file — status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was actually granted; `update <user-id> --data`; `reset-password <user-id>` mints a one-shot temporary password and revokes every session — refused (`403`) for your own account when the CLI presents a personal access token, which is what a login stores: change your own password from the studio (Account → Profile → Change password); `erase <user-id> --yes` erases an account by anonymization (GDPR art. 17) — irreversible, so refused without `--yes`; refused on your own account and for the last owner of a shared organization, safe to repeat; see [cloud-admin-guide.md §1.11](cloud-admin-guide.md#111-erase-an-account-right-to-erasure-gdpr-art-17). See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing). |
+| `admin` | `orgs · users · teams · runner-pools · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
+| `admin runner-pools` / `admin teams` | `runner-pools list` and `set --data` replace the registry; `teams runner-pool TEAM --pool NAME\|--clear [--force]` and `teams llm-fallback TEAM --policy none\|platform\|--clear` use the audited mapping/policy routes. See [pool cutover and host projection](sovereign-pools.md#operations). |
+| `admin dlq` | `list · show · replay · delete`, each with optional `--pool NAME`; sequence arguments are positive integers. Omit the flag for the shared DLQ. |
 | `sso` | `providers · domains` (org-scoped) |
 | `plugins` | `list · enable · disable · install · uninstall · config` |
 | `pool` | `status · history · share · pause · resume · withdraw · donors · policy` — lend your own LLM subscription or personal metered key to the shared [credential pool](credential-pool.md), bounded by ceilings you set on `share` (`--max-usd-day/-week`, `--max-runs-day`, `--max-concurrent`, `--from-hour/--to-hour`, `--bots`). `donors` is the operator view of the pool's policy and its lenders; `policy` is the operator write side (`--enabled`, `--name`, audience flags — the audience is replaced whole). |
@@ -226,8 +260,8 @@ read the value from `--from-env VAR`, `--from-file path`, or stdin:
 ```sh
 printf '%s' "$GITLAB_TOKEN" | iterion remote secrets set gitlab-token
 iterion remote api-keys create --provider anthropic --name prod --from-env ANTHROPIC_API_KEY
-# a tenant-owned OpenAI-compatible gateway, restricted to one repository (stored and
-# listed; no run spends it until #2005 PR-C')
+# a tenant-owned OpenAI-compatible gateway, restricted to one repository (the
+# credential walk seals it, with its URL, for that repository's launches — ADR-131 §5)
 iterion remote api-keys create --provider openai_compatible --name pliage --base-url https://gateway.example.test --repos owner/repo --from-env PLIAGE_KEY
 # moving a gateway key is a rotation: the secret rides the same write, never a JSON blob
 iterion remote api-keys rotate <key-id> --base-url https://gateway-2.example.test --from-env PLIAGE_KEY

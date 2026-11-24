@@ -28,7 +28,7 @@ import (
 // rewrite of a tracked file, the #1364 shape.
 func mirrorKeepSkill(t *testing.T, ws, skillsSrc string) {
 	t.Helper()
-	if _, err := mirrorBundleSkills(ws, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(ws, &bundle.Bundle{SkillsDir: skillsSrc}, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror pass: %v", err)
 	}
 }
@@ -51,7 +51,7 @@ func keepSkillRepo(t *testing.T) (ws, skillsSrc string) {
 
 func porcelainOf(t *testing.T, dir string) string {
 	t.Helper()
-	porcelain, err := runGit(dir, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(dir, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +130,8 @@ func TestAgentEditAfterTheMirrorIsWork(t *testing.T) {
 // candidate, and the tracked one still matches its marker.
 func TestPrunerDeletionOfATrackedMirrorFileIsNoise(t *testing.T) {
 	ws, _ := keepSkillRepo(t)
-	ClearMirroredTierMarkers(ws, nil)
-	pruneWorkspaceMirror(ws, true, nil)
+	ClearMirroredTierMarkers(ws, testTrustedPass(t), nil)
+	pruneWorkspaceMirror(ws, testTrustedPass(t), true, nil)
 	if _, err := os.Lstat(filepath.Join(ws, ".claude", "skills", "keep", "SKILL.md")); !os.IsNotExist(err) {
 		t.Fatalf("the pruner did not remove the orphan: %v", err)
 	}
@@ -484,7 +484,11 @@ func TestChildInPlaceRestoreResyncsTheManifest(t *testing.T) {
 		eng := New(wf, st, ex, WithWorkDir(work), WithBundle(bundles[name]), WithParentRunID(parent), WithSandboxOverride("none"), WithSubbotRunner(func(ctx context.Context, req SubbotRequest) (map[string]any, error) {
 			return map[string]any{}, launch(ctx, req.Source, req.ParentRunID)
 		}))
-		return eng.Run(ctx, name, nil)
+		inv, err := prepareResourceInvocation(ctx, st, name, parent)
+		if err != nil {
+			return err
+		}
+		return eng.Run(inv.Context, name, nil)
 	}
 	if err := launch(context.Background(), "parent", ""); err != nil {
 		t.Fatal(err)

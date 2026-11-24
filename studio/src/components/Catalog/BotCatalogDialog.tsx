@@ -14,6 +14,7 @@ import { botVisual } from "@/lib/personas";
 import { catalogToggleToast } from "@/lib/catalogStale";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { HiddenFileInput } from "@/components/shared/HiddenFileInput";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 
@@ -196,11 +197,11 @@ export function BotCatalogDialog({
             >
               New bot
             </Button>
-            <input
-              ref={botzFileRef}
-              type="file"
+            {/* Driven by the "Import .botz…" button beside it, never
+                reached directly — out of the a11y tree. */}
+            <HiddenFileInput
+              inputRef={botzFileRef}
               accept=".botz"
-              className="hidden"
               onChange={(e) => void onUploadBotz(e)}
             />
             <Button
@@ -312,7 +313,16 @@ export function BotCatalogDialog({
                         setLocation(`/bots/${encodeURIComponent(b.name)}`);
                       }}
                       title={`Open ${label || b.name}'s bot page`}
-                      className={`truncate text-sm font-medium hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded ${identity.color}`}
+                      className="text-sm font-medium hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded"
+                      tabIndex={0}
+                      onFocus={(e) => {
+                        (e.currentTarget as HTMLElement).style.whiteSpace = "normal";
+                        (e.currentTarget as HTMLElement).style.overflow = "visible";
+                      }}
+                      onBlur={(e) => {
+                        (e.currentTarget as HTMLElement).style.overflow = "hidden";
+                      }}
+                      style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     >
                       {label || b.name}
                     </button>

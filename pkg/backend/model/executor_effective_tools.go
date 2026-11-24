@@ -66,10 +66,9 @@ func (e *ClawExecutor) EffectiveToolNamesOnRoutes(node ir.Node, mayEscalateToUlt
 	if err != nil {
 		return nil
 	}
-	caps := f.capabilities
-	if caps == nil {
-		caps = e.wfCapabilities
-	}
+	// The same seam as buildTask, read through the same helper: a declared
+	// empty `capabilities: []` (#1801) is no grant, not an inheritance.
+	caps, _ := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, e.WorkspaceTrust())
 	// An incoming edge may raise this node to ultracode at dispatch:
 	// `_reasoning_effort` is a mapped input and `ultracode` IS a member of
 	// ir.ValidReasoningEfforts (docs/ultracode.md documents that edge). That
@@ -163,6 +162,9 @@ func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 		staticProgramOnly: true,
 		defaultBackend:    wf.DefaultBackend,
 		wfAutoMemory:      wf.AutoMemory,
+		wfCodemode:        wf.Codemode,
+		wfCodemodeDefer:   wf.CodemodeDefer,
+		wfCodemodeBounds:  wf.CodemodeBounds,
 		wfCapabilities:    wf.Capabilities,
 		// The image-attachment append is decided by the PROGRAM — a
 		// workflow's `attachments:` and the prompt body that references one —
@@ -186,4 +188,10 @@ func imageAttachmentNames(wf *ir.Workflow) map[string]bool {
 		}
 	}
 	return names
+}
+
+// ImageAttachmentNames names the workflow's image-typed attachments — the
+// set IsImageAttachmentRef matches against.
+func ImageAttachmentNames(wf *ir.Workflow) map[string]bool {
+	return imageAttachmentNames(wf)
 }

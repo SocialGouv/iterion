@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -116,17 +117,23 @@ func (c *stopClock) stopped() time.Time { return time.Unix(0, c.at.Load()) }
 
 // The point of the package: N replicas campaign, ONE serves, and it keeps
 // serving — renewals hold the lease across several TTLs, so the term never
-// changes hands while its holder is healthy.
+// changes hands while its holder is healthy. The scenario runs in a synctest
+// bubble: on the wall clock a scheduler stall longer than the step-down
+// margin ends the holder's term under a loaded -race shard, and a peer
+// takes the lease — the runner's red, not the lease's (the #2854 class).
 func TestRun_OneCandidateServesAndKeepsServing(t *testing.T) {
+	synctest.Test(t, testRunOneCandidateServesAndKeepsServing)
+}
+
+func testRunOneCandidateServesAndKeepsServing(t *testing.T) {
 	st := NewMemoryStore()
 	var tr terms
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	const candidates = 5
-	// Renewal every 1s against a 2.5s step-down: a scheduler stall under a
-	// loaded -race run has to exceed 1.5s to end the term. The stall budget
-	// is TTL/2 against a renewal pace of TTL/3, so the TTL itself is the
-	// margin — and the 3 TTLs of dead hold below are its price.
+	// Renewal every TTL/3 against a step-down at TTL·5/6: the stall budget is
+	// TTL/2. The clock is virtual, so no scheduler stall can spend it; the
+	// three TTLs of hold below cost nothing on the wall.
 	const leaseTTL = 3 * time.Second
 	for i := 0; i < candidates; i++ {
 		owner := fmt.Sprintf("replica-%d", i)
@@ -287,6 +294,11 @@ func (f *flakyStore) sent() time.Time {
 // expired, starts sweeping too — and it must keep the TTL/6 margin that
 // absorbs clock skew between the replicas, not merely stop "in time".
 func TestRun_AHolderThatCannotRenewStepsDownWithTheSkewMarginLeft(t *testing.T) {
+	// Keep the deadline assertion independent of CI scheduling pauses.
+	synctest.Test(t, testRunHolderStepsDownWithSkewMargin)
+}
+
+func testRunHolderStepsDownWithSkewMargin(t *testing.T) {
 	fs := &flakyStore{Store: NewMemoryStore()}
 	log := &logSink{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -370,26 +382,28 @@ func TestRun_TheStepDownCountsFromWhenTheCallWasSent(t *testing.T) {
 		{"slow renewal", &slowStore{Store: NewMemoryStore(), renewDelay: slow, okRenewals: 1}, func(f *slowStore) time.Time { return f.renewSent }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var clock stopClock
-			started := make(chan struct{})
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				_ = Run(ctx, c.store, spec("a", leaseTTL, nil), clock.serve(started))
-			}()
-			<-started
-			until(t, 15*time.Second, "a to step down", func() bool { return clock.at.Load() != 0 })
-			c.store.mu.Lock()
-			expiry := c.sent(c.store).Add(leaseTTL)
-			c.store.mu.Unlock()
-			if stopped := clock.stopped(); !stopped.Before(expiry.Add(-leaseTTL / 12)) {
-				t.Errorf("a stopped %s before its lease's expiry in the store — want at least %s: the deadline was counted from the answer, not the send",
-					expiry.Sub(stopped), leaseTTL/12)
-			}
-			cancel()
-			<-done
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var clock stopClock
+				started := make(chan struct{})
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_ = Run(ctx, c.store, spec("a", leaseTTL, nil), clock.serve(started))
+				}()
+				<-started
+				until(t, 15*time.Second, "a to step down", func() bool { return clock.at.Load() != 0 })
+				c.store.mu.Lock()
+				expiry := c.sent(c.store).Add(leaseTTL)
+				c.store.mu.Unlock()
+				if stopped := clock.stopped(); !stopped.Before(expiry.Add(-leaseTTL / 12)) {
+					t.Errorf("a stopped %s before its lease's expiry in the store — want at least %s: the deadline was counted from the answer, not the send",
+						expiry.Sub(stopped), leaseTTL/12)
+				}
+				cancel()
+				<-done
+			})
 		})
 	}
 }
@@ -411,10 +425,17 @@ func (f *blipStore) Renew(ctx context.Context, name, owner string, now time.Time
 // its term through a blip shorter than the step-down, and a new term — for
 // the gate sweep, a new deep pass over days of runs — is not paid for nothing.
 func TestRun_ASingleFailedRenewalKeepsTheTerm(t *testing.T) {
+	// This checks lease behavior, not whether a loaded CI scheduler runs the
+	// retry within the 500ms wall-clock margin before the safety deadline.
+	synctest.Test(t, testRunSingleFailedRenewalKeepsTheTerm)
+}
+
+func testRunSingleFailedRenewalKeepsTheTerm(t *testing.T) {
 	fs := &blipStore{Store: NewMemoryStore()}
 	log := &logSink{}
 	var tr terms
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	const leaseTTL = 3 * time.Second // renew every 1s, hold 2.5s: 500ms of slack for the renewal after the blip
 	done := make(chan struct{})
 	go func() {
@@ -714,25 +735,39 @@ func (f *renewSignalStore) Renew(ctx context.Context, name, owner string, now ti
 }
 
 // The refused renewal stops the holder BEFORE its log line: a slow log sink
-// must not keep a deposed holder serving beside its successor.
+// must not keep a deposed holder serving beside its successor. The sink here
+// delivers the lost-lease line only once the holder has stopped, so the term
+// cannot end while the line stalls unless the stop already happened — a
+// holder whose stop waited for the line would deadlock against this sink and
+// leave the term to its step-down timer, and the step-down line it then
+// emits is the confession. Read after the scenario's own step-down window
+// has fully passed; no wall-clock budget for a loaded scheduler to eat.
 func TestRun_TheLossStopsTheHolderBeforeItsLogLine(t *testing.T) {
 	inner := NewMemoryStore()
 	st := &renewSignalStore{Store: inner, renewed: make(chan struct{}, 1)}
 	const leaseTTL = 3 * time.Second // renewals 1s apart; step-down 2.5s after the last
-	sp := spec("a", leaseTTL, nil)
+	lines := &logSink{}
+	sp := spec("a", leaseTTL, lines)
+	sink := sp.Warn
+	holderGone := make(chan struct{})
 	sp.Warn = func(format string, args ...any) {
+		sink(format, args...) // recorded first, then the pipe stalls below
 		if strings.Contains(fmt.Sprintf(format, args...), "lost the lease") {
-			time.Sleep(leaseTTL) // a log pipe that stalls
+			<-holderGone // a log pipe that delivers only once the holder is gone
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var clock stopClock
 	started := make(chan struct{})
+	serve := clock.serve(started)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Run(ctx, st, sp, clock.serve(started))
+		_ = Run(ctx, st, sp, func(c context.Context) {
+			serve(c)
+			close(holderGone)
+		})
 	}()
 	<-started
 	<-st.renewed // steal right after a renewal: the next one, ~1s away, is refused
@@ -740,11 +775,16 @@ func TestRun_TheLossStopsTheHolderBeforeItsLogLine(t *testing.T) {
 	if ok, err := inner.Acquire(context.Background(), "sweeper", "thief", time.Now().Add(2*leaseTTL), time.Hour); err != nil || !ok {
 		t.Fatalf("thief Acquire = %v, %v", ok, err)
 	}
-	until(t, 10*time.Second, "a to stop", func() bool { return clock.at.Load() != 0 })
-	// Refusal ~1s after the steal; a log-first holder would stop only at its
-	// step-down, ~2.5s after it.
-	if after := clock.stopped().Sub(stolen); after > 1750*time.Millisecond {
-		t.Errorf("a stopped %s after losing its lease: the stop waited for the log line", after)
+	until(t, 10*time.Second, "a to stop while its lost-lease line is still stalled (a stop that waits for the line deadlocks against this sink and the term falls to the step-down)", func() bool { return clock.at.Load() != 0 })
+	// Let the step-down window (2.5s past the last renewal, so under leaseTTL
+	// past the steal) close before reading the log: a step-down line in it
+	// means the term ended on the timer, not on the refusal.
+	time.Sleep(time.Until(stolen.Add(leaseTTL)))
+	if n := lines.count("no renewal it can prove"); n != 0 {
+		t.Errorf("the step-down timer fired %d time(s): the stop waited for its log line and a deposed holder served beside its successor", n)
+	}
+	if !lines.has("lost the lease to another owner") {
+		t.Errorf("the refused renewal never reached its log line")
 	}
 	cancel()
 	<-done
@@ -843,5 +883,64 @@ func TestRun_RejectsAnUnusableSpec(t *testing.T) {
 		if err := Run(ctx, c.st, c.sp, noop); err == nil {
 			t.Errorf("%s: Run returned nil, want an error", name)
 		}
+	}
+}
+
+// stopsInFlight answers an Acquire the way a call already in flight does when
+// its caller stops: the store read a live context and its write landed, and
+// the stop arrives before the answer.
+type stopsInFlight struct {
+	Store
+	stop context.CancelFunc
+}
+
+func (s stopsInFlight) Acquire(ctx context.Context, name, owner string, now time.Time, ttl time.Duration) (bool, error) {
+	ok, err := s.Store.Acquire(context.WithoutCancel(ctx), name, owner, now, ttl)
+	s.stop()
+	return ok, err
+}
+
+// A campaign stopped while the acquire that takes the lease is in flight
+// serves no term: fn would start on a cancelled context, and a pass that runs
+// before it reads its context is work done by a replica that was stopping —
+// the peer pass that flaked the idle-holder witness (#3400). The lease it was
+// granted goes back at once, for Run and for TryRun.
+func TestRun_aCampaignStoppedWhileItsAcquireIsInFlightServesNoTerm(t *testing.T) {
+	for _, entry := range []struct {
+		name string
+		run  func(ctx context.Context, st Store, sp Spec, fn func(context.Context)) error
+	}{
+		{"Run", Run},
+		{"TryRun", func(ctx context.Context, st Store, sp Spec, fn func(context.Context)) error {
+			ran, err := TryRun(ctx, st, sp, fn)
+			if ran {
+				return errors.New("TryRun reported a term served")
+			}
+			if !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("TryRun = %v, want the stop named (context.Canceled)", err)
+			}
+			return nil
+		}},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			mem := NewMemoryStore()
+			sp := spec("replica-0", 150*time.Millisecond, &logSink{})
+			served := 0
+			if err := entry.run(ctx, stopsInFlight{Store: mem, stop: stop}, sp, func(context.Context) { served++ }); err != nil {
+				t.Fatal(err)
+			}
+			if served != 0 {
+				t.Fatalf("a campaign stopped while its acquire was in flight served %d term(s) on a cancelled context", served)
+			}
+			h, held, err := mem.Holder(context.Background(), sp.Name)
+			if err != nil {
+				t.Fatalf("Holder: %v", err)
+			}
+			if held {
+				t.Fatalf("the lease the late answer granted is still held by %q: a live peer waits out the TTL", h.Owner)
+			}
+		})
 	}
 }

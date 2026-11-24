@@ -299,6 +299,7 @@ var (
 	pOutput         = prop("output", Ident, "Schema the node's structured output must match")
 	pPublish        = prop("publish", Ident, "Artifact name the output is published under (read back as {{artifacts.<name>}})")
 	pArtifactLabels = prop("artifact_labels", ToolList, "Labels stamped on the published artifact; a quoted element is the literal label")
+	pDeliverables   = prop("deliverables", StringList, "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive")
 	pAwait          = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
 	pDescription    = prop("description", String, "Free-text description shown by the studio and the reports")
 	pNeeds          = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
@@ -312,10 +313,12 @@ var (
 	pPermission     = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
 	pAutoMemory     = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
 	pAmbientContext = checked("ambient_context", "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)", "none", "workspace", "operator", "all")
-	pInteraction    = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
-	pInteractionP   = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
-	pInteractionM   = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pReasoning      = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
+	pCodemode       = Property{Name: "codemode", Form: BlockOrIdent, Body: "codemode", Values: []string{"on", "off"},
+		Doc: "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"}
+	pInteraction  = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
+	pInteractionP = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
+	pInteractionM = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pReasoning    = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
 		Doc: "Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},
 		Doc: "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"}
@@ -333,13 +336,13 @@ var llmProperties = []Property{
 	pDescription,
 	pModel, pBackend, pProvider,
 	word(prop("command", String, "Executable that drives a CLI backend, overriding its default binary")),
-	pInput, pOutput, pPublish, pArtifactLabels,
+	pInput, pOutput, pPublish, pArtifactLabels, pDeliverables,
 	pSystem, pUser,
 	enum("session", "How the node's LLM session relates to the previous node's", "fresh", "inherit", "inherit_if_available", "fork", "artifacts_only", "persist"),
-	prop("session_slot", Ident, "Named durable session slot; requires session: persist"),
-	prop("tools", ToolList, "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)"),
+	prop("session_slot", Ident, "Named durable session slot; requires session: persist; must not be named like another node (C314)"),
+	prop("tools", ToolList, "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)"),
 	prop("tool_policy", ToolList, "Tool-policy entries applied on top of tools"),
-	prop("capabilities", ToolList, "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)"),
+	prop("capabilities", ToolList, "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it"),
 	prop("skills", SkillList, "Skill-library skills mirrored into the run's .claude/skills"),
 	prop("tool_max_steps", Int, "Upper bound on tool-call rounds in one execution"),
 	prop("max_tokens", Int, "Output-token cap per call"),
@@ -350,8 +353,8 @@ var llmProperties = []Property{
 	prop("images", StringList, "Image paths sent with the prompt"),
 	pInteraction, pInteractionP, pInteractionM,
 	pAwait,
-	pCompress, pAutoMemory, pAmbientContext, pPermission,
-	prop("allow", StringList, "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)"),
+	pCompress, pAutoMemory, pAmbientContext, pCodemode, pPermission,
+	prop("allow", StringList, "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none)"),
 	prop("ask", StringList, "Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it)"),
 	prop("deny", StringList, "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)"),
 	pNeeds,
@@ -455,6 +458,7 @@ var Kinds = append([]Kind{
 			word(prop("env", StringOrIdent, "Environment variable that receives the value")),
 			prop("optional", Bool, "A missing secret does not fail the launch"),
 			prop("hosts", StringList, "Hosts the secret may be sent to"),
+			prop("sinks", StringList, "Materialization sinks the secret may reach — prompt, agent, command, params, file, egress; omitted = every sink (docs/secrets.md)"),
 			pDescription,
 		}},
 
@@ -498,13 +502,14 @@ var Kinds = append([]Kind{
 			prop("script", String, "Inline script run by the interpreter language: names"),
 			checked("language", "Interpreter for script:", "js", "node", "py", "python", "python3", "sh", "bash"),
 			checked("env_expansion", "What the engine expands in this node's bodies before they run: the braced environment forms (braced, the default) or nothing (none), which hands `${NAME}` and `${NAME:-default}` to the body's own reader as written — ADR-130; another word, or the property on an `action:` node that has no body, is refused (C004)", "braced", "none"),
-			pInput, pOutput, pPublish, pArtifactLabels,
+			pInput, pOutput, pPublish, pArtifactLabels, pDeliverables,
 			pAwait,
 			pSandbox,
 			pCompress,
 			prop("permission", Ident, "Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's"),
 			pNeeds,
 			prop("parallel_safe", Bool, "Declares the node safe to run beside a mutating branch"),
+			prop("capabilities", ToolList, "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport (a board.* action gates on it) and by a registry recipe naming an iterion host tool (`mcp.iterion_board.*`, held to it like an agent's tools:, C328); on a command:/script: node, an HTTP action or any other registry tool the list is inert (C332)"),
 			prop("goal", String, "Verified action: what the command is for, in one line"),
 			prop("postcondition", String, "Verified action: command whose exit code is the truth oracle at every rung"),
 			checked("policy", "Verified action: required (default), recover or best_effort (C103–C106)", "required", "recover", "best_effort"),
@@ -523,7 +528,7 @@ var Kinds = append([]Kind{
 			prop("max_repair_attempts", Int, "Self-repair rungs before the agent rung"),
 			prop("max_agent_attempts", Int, "Agent rungs before the policy decides"),
 			pModel,
-			prop("agent_tools", ToolList, "Tools the recovery agent may call"),
+			prop("agent_tools", ToolList, "Tools the recovery agent may call — its whole tool list, handed verbatim; on claw none declared is none served (C352)"),
 		}},
 	{Name: "compute", Role: Node, Doc: "A deterministic expression node: each expr entry is evaluated by the bounded expression language into an output field.",
 		Properties: []Property{
@@ -543,6 +548,9 @@ var Kinds = append([]Kind{
 			pOutput,
 			pNeeds,
 			prop("isolated", Bool, "Asserts the child runs in its own workspace"),
+			prop("auto_merge", Bool, "Lands the child when its own workflow completes: its own worktree finalization merges its branch; refused at launch where the child owns no worktree (`worktree: none`, or a run store with no filesystem root); requires isolated (C329)"),
+			word(prop("merge_strategy", StringOrIdent, "auto_merge: squash (default) or merge; another word is refused at compile")),
+			word(prop("merge_into", StringOrIdent, "auto_merge: current (default), none or a branch name; read only under auto_merge (C330)")),
 		}},
 	{Name: "emit", Role: Node, Doc: "Publishes a named run-scoped event with an immutable payload (ADR-051).",
 		Properties: []Property{
@@ -578,6 +586,7 @@ var Kinds = append([]Kind{
 			prop("contract", Ident, "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)"),
 			block("vars", "vars", "Workflow-scoped vars (merged with the file's)"),
 			block("attachments", "attachments", "Workflow-scoped attachments"),
+			block("business_stores", "business_stores", "Expected business-store identities, normalized at launch and inherited by children"),
 			block("budget", "budget", "Run caps, each overridable by the matching run flag"),
 			block("resources", "resources", "Named semaphores and pools nodes lease with needs:"),
 			block("mcp", "mcp", "MCP servers active for the run"),
@@ -585,7 +594,7 @@ var Kinds = append([]Kind{
 			pSandbox,
 			checked("worktree", "auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place", "auto", "none"),
 			word(prop("default_backend", String, "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")),
-			pCompress, pAutoMemory, pAmbientContext,
+			pCompress, pAutoMemory, pAmbientContext, pCodemode,
 			checked("loop_budget_guard", "Decline a loop's back-edge the budget cannot fund: on (default) or off (C133)", "on", "off"),
 			checked("repo_devbox", "Load the target repo's devbox.json toolchain: on (default) or off (C134)", "on", "off"),
 			checked("workspace_checkpoint", "Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139)", "on", "off"),
@@ -594,9 +603,17 @@ var Kinds = append([]Kind{
 			prop("ask", StringList, "Permission rules that pause for approval"),
 			prop("deny", StringList, "Permission rules always blocked"),
 			prop("tool_policy", ToolList, "Run-wide tool-policy entries"),
-			prop("capabilities", ToolList, "Run-wide board capabilities"),
+			prop("capabilities", ToolList, "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none"),
 			prop("skills", SkillList, "Run-wide skill-library skills"),
 			enum("interaction", "Default interaction mode for the run's nodes that set none", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host"),
+		}},
+	{Name: "business_stores", Role: BlockRole, Opener: "business_stores", Hosts: []string{"workflow"}, Doc: "Declared business stores; no inference from accessed files. A bare block declares none.",
+		Entries: &Entries{Key: StringOrIdent, KeyName: "id", Body: "business_store", SequenceKey: "id", Doc: "One store per entry; the same id may name stores in different namespaces"}},
+	{Name: "business_store", Role: Entry, Opener: "business_stores", Hosts: []string{"business_stores"}, Doc: "Expected store identity; launch refuses missing id/kind and duplicate kind/namespace/id declarations.",
+		Properties: []Property{
+			prop("kind", StringOrIdent, "Store kind"),
+			prop("namespace", StringOrIdent, "Logical namespace"),
+			prop("required", Bool, "The declared store is required (default false); does not itself add an admission gate"),
 		}},
 	{Name: "budget", Role: BlockRole, Opener: "budget", Hosts: []string{"workflow"}, Doc: "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
 		Properties: []Property{
@@ -636,10 +653,25 @@ var Kinds = append([]Kind{
 			prop("servers", IdentList, "mcp_server declarations activated"),
 			prop("disable", IdentList, "Servers removed from the ambient set"),
 		}},
+	{Name: "codemode", Role: BlockRole, Opener: "codemode", Hosts: []string{"workflow", "agent", "judge"}, Doc: "Bounds one codemode program runs under (ADR-165): the short form names a mode, the block form declares bounds and IMPLIES on — declaring bounds for a capability that is off is not a thing to express. Every bound is clamped to the platform ceiling in the parent (scripthost.Ceiling), with C347 at compile where a declared value is above it. Durations are quoted, the way timeout: is; byte sizes and counts are bare integers, because this DSL has no byte-size form and inventing one is its own lot.",
+		Properties: []Property{
+			checked("mode", "on or off — the short form's value, written out (C337 on another word)", "on", "off"),
+			checked("defer", "Defer this node's own `tools:` list to the codemode catalogue: on or off, off the default (C354 on another word). On, the author's tools are not declared to the model on the wire — the program discovers them with call.search, reads a declaration with call.describe and calls one by name — while the runtime's own appends (interaction, board, runs, agent, todo_write, memory) and the withheld classes stay declared, as does any tool the node's permission policy can ask about or the catalogue bound does not keep whole. Applied only to unsandboxed execution: a sandboxed runner declares every tool, and the build warns. Inert as written beside `mode: off` (C355). A block holding only `defer:` still implies `mode: on`, like any block", "on", "off"),
+			prop("tool_calls", Int, "How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal"),
+			prop("concurrent_tool_calls", Int, "How many nested tool calls ONE program may run at once (default 1, ceiling 4; 0 means inherit). This does not change the total tool_calls budget"),
+			prop("wall", String, "How long the child may live, e.g. \"60s\" (default \"30s\", ceiling \"10m\") — the parent's backstop, including for a child that never starts"),
+			prop("cpu", String, "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP"),
+			prop("memory", Int, "Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement"),
+			prop("script_bytes", Int, "Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn"),
+			prop("result_bytes", Int, "Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced"),
+			prop("tool_result_bytes", Int, "Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports"),
+			prop("store_entries", Int, "Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit)"),
+			prop("store_bytes", Int, "Workflow scope only: total UTF-8 key and stored JSON bytes in the run's codemode bank (default 131072, ceiling 524288; 0 means inherit)"),
+		}},
 	{Name: "sandbox", Role: BlockRole, Opener: "sandbox", Hosts: []string{"workflow", "agent", "judge", "tool"}, Doc: "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
 		Properties: []Property{
 			checked("mode", "none, auto (devcontainer.json or the published slim image) or inline (C044 on another word)", "none", "auto", "inline"),
-			word(prop("image", String, "Container image (exclusive with build)")),
+			word(prop("image", String, "Container image (exclusive with build): a full reference (registry/repo:tag), or a bare stock-class name (slim, full, sec, browser, rgaa) resolved at launch to the published variant — an unknown bare word passes through verbatim, with C325")),
 			block("build", "sandbox.build", "Dockerfile build, local docker only (V2-6)"),
 			word(prop("user", String, "Container user")),
 			word(prop("workspace_folder", String, "Mount point of the workspace inside the container")),

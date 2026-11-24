@@ -36,8 +36,10 @@ import (
 // metadata. The property is what it produces, never how it is spelled.
 //
 // THE FIXTURES ARE A DOUBLE, so the shapes they carry were checked against the
-// real producer rather than assumed — deepsec 2.0.12, the version this bot's
-// image pins (bots/sec-audit-source/sandbox/sec/Dockerfile):
+// real producer rather than assumed — deepsec 2.0.12, the version the
+// published sec image pins (sandbox/sec/Dockerfile, DEEPSEC_VERSION — the
+// local-dogfood augmentation Dockerfile that used to carry the pin is gone,
+// the pin lives in the published image now, #2350):
 //
 //   - createdAt is `new Date().toISOString()` at BOTH run-meta write sites
 //     (packages/core/src/run.ts:81 and :109), so it is always an ISO-8601

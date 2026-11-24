@@ -53,8 +53,10 @@ func TestExpansionStillPrecedesSubstitution(t *testing.T) {
 			want  string
 		}{
 			{"command", shell(), "echo '" + payload + "'"},
-			{"script", script(), `x = "` + payload + `"`},
-			{"postcondition", e.postconditionBody(ctx, node, input), "test '" + payload + "'"},
+			// A sh script (the node's default language) reads the value
+			// from its environment: the text holds a variable's read.
+			{"script", readShape(script()), "x = ${R}"},
+			{"postcondition", e.postconditionBody(ctx, node, input).shown(), "test '" + payload + "'"},
 		} {
 			if tc.got != tc.want {
 				t.Errorf("the %s resolved to %q, want %q — a substituted value must reach the reader as inert text", tc.where, tc.got, tc.want)
@@ -163,7 +165,7 @@ func runBodies(t *testing.T, node *ir.ToolNode) map[string]string {
 	return map[string]string{
 		"command":       shell(),
 		"script":        script(),
-		"postcondition": e.postconditionBody(ctx, node, nil),
+		"postcondition": e.postconditionBody(ctx, node, nil).shown(),
 	}
 }
 

@@ -49,15 +49,14 @@ func modernizeAutoMaintenanceEnv() (map[string]string, error) {
 // modernizeRepo builds a throwaway git repository carrying one committed
 // contract and returns its path, the base commit, and a git runner bound to
 // it. Shared by the mark_done and lot_verify tests.
+//
+// It installs NOTHING on the process: the auto-maintenance refusal its
+// children need rides on each command (modernizeChildEnv), and the git this
+// helper runs itself gets it as `-c` flags from gittest.Cmd. That is what
+// makes this family parallelisable — a t.Setenv here would panic every test
+// below it the moment they declare themselves parallel (#2564 P2b).
 func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...string) string) {
 	t.Helper()
-	env, err := modernizeAutoMaintenanceEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for key, value := range env {
-		t.Setenv(key, value)
-	}
 	ws := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -79,6 +78,12 @@ func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...
 	return ws, git("rev-parse", "HEAD"), git
 }
 
+// TestModernizeRepoPythonInheritsAutoMaintenanceOff is the witness of the
+// family's environment carrier (modernizeChildEnv): the entries the fixture
+// appends reach a python child's git, win over entries already there, and
+// leave the pre-existing ones alone — and the redirection variables do NOT
+// cross. It drives the PROCESS environment on purpose, which is why it is the
+// one test of the family that stays serial (modernizeSerial names it).
 func TestModernizeRepoPythonInheritsAutoMaintenanceOff(t *testing.T) {
 	requireModernizeTools(t)
 	t.Setenv("GIT_CONFIG_COUNT", "3")
@@ -88,6 +93,10 @@ func TestModernizeRepoPythonInheritsAutoMaintenanceOff(t *testing.T) {
 	t.Setenv("GIT_CONFIG_VALUE_1", "true")
 	t.Setenv("GIT_CONFIG_KEY_2", "gc.auto")
 	t.Setenv("GIT_CONFIG_VALUE_2", "1")
+	// An inherited GIT_DIR beats the `git -C <workspace>` every harness of
+	// this family runs, so it would have the child answer about another
+	// repository: the carrier drops it, and the child asserts that below.
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "somebody-elses.git"))
 	ws, _, _ := modernizeRepo(t, "version: 1\nlots: []\n")
 	trace := filepath.Join(t.TempDir(), "git.trace")
 	script := `import os
@@ -111,6 +120,9 @@ expected_env = {
 for key, want in expected_env.items():
     if os.environ.get(key) != want:
         raise SystemExit(f"{key}: got {os.environ.get(key)!r}, want {want!r}")
+for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+    if key in os.environ:
+        raise SystemExit(f"{key}={os.environ[key]!r} crossed into the child: it redirects every 'git -C' below")
 
 def config(key, *scope):
     return subprocess.check_output(
@@ -137,8 +149,7 @@ for command in ("maintenance run --auto", "gc --auto"):
     if command in traced:
         raise SystemExit(f"auto-maintenance escaped the fixture: {command}\n{traced}")
 `
-	cmd := exec.Command("python3", "-c", script, ws, trace)
-	cmd.Env = gittest.Env()
+	cmd := modernizeChild(t, "python3", "-c", script, ws, trace)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("python did not inherit fixture git config: %v\n%s", err, out)
 	}
@@ -274,7 +285,7 @@ func judgedNow(t *testing.T, ws string) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := exec.Command("python3", "-c", "import hashlib,json,sys\n"+
+	digest := modernizeChild(t, "python3", "-c", "import hashlib,json,sys\n"+
 		"d=json.load(sys.stdin)\n"+
 		"sys.stdout.write(hashlib.sha256(json.dumps(d,sort_keys=True,separators=(',',':')).encode()).hexdigest())")
 	digest.Stdin = strings.NewReader(string(raw))
@@ -307,7 +318,7 @@ func modernizeMarkDoneJudged(t *testing.T, script, ws, lotID, base, judgedHead, 
 	if err := os.WriteFile(scriptPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("python3", scriptPath)
+	cmd := modernizeChild(t, "python3", scriptPath)
 	// stderr quoted in every failure message, never merged into the parsed
 	// stream — the blind spot #2232 names, closed for the whole family.
 	var sbuf strings.Builder
@@ -337,6 +348,7 @@ func modernizeMarkDoneJudged(t *testing.T, script, ws, lotID, base, judgedHead, 
 // this node is the only place the programme's "accepted" ever gets written,
 // and a landing has exactly one commit to check for it.
 func TestModernizeMarkDone(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "mark_done")
 	const plan = `version: 1
@@ -486,6 +498,7 @@ lots:
 // INSIDE an `intent: |` block scalar. Both sit deeper than the item's key
 // column, so neither is the key the gate flips nor the boundary of the block.
 func TestModernizeMarkDoneAnchorsOnIndentation(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "mark_done")
 	const plan = `version: 1

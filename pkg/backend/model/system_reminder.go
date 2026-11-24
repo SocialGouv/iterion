@@ -3,7 +3,7 @@ package model
 import (
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // systemReminder wraps harness-origin guidance in the <system-reminder>

@@ -41,7 +41,7 @@ func TestMirrorBundleSkillsRefusesAClaudeSymlink(t *testing.T) {
 	skillsSrc := t.TempDir()
 	writeFile(t, filepath.Join(skillsSrc, "skill.md"), "# a bundle skill\n")
 
-	_, err := mirrorBundleSkills(ws, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	_, err := mirrorBundleSkills(ws, &bundle.Bundle{SkillsDir: skillsSrc}, testTrustedPass(t), nil)
 	var linkErr *claudeSymlinkError
 	if !errors.As(err, &linkErr) {
 		t.Fatalf("mirrorBundleSkills through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
@@ -86,7 +86,7 @@ func TestMirrorBundleSkillsAllowsAWorkspaceReachedThroughASymlink(t *testing.T) 
 	skillsSrc := t.TempDir()
 	writeFile(t, filepath.Join(skillsSrc, "skill.md"), "# a bundle skill\n")
 
-	if _, err := mirrorBundleSkills(link, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(link, &bundle.Bundle{SkillsDir: skillsSrc}, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirrorBundleSkills into a workspace reached through a symlink: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(real, ".claude", "skills", "skill", "SKILL.md")); err != nil {
@@ -138,7 +138,7 @@ func TestMirrorSingleSkillRefusesAClaudeSymlink(t *testing.T) {
 	skillsSrc := t.TempDir()
 	writeFile(t, filepath.Join(skillsSrc, "skill.md"), "# a bundle skill\n")
 
-	err := MirrorSingleSkill(ws, &bundle.Bundle{SkillsDir: skillsSrc}, "skill.md", nil)
+	err := MirrorSingleSkill(ws, &bundle.Bundle{SkillsDir: skillsSrc}, "skill.md", testTrustedPass(t), nil)
 	var linkErr *claudeSymlinkError
 	if !errors.As(err, &linkErr) {
 		t.Fatalf("MirrorSingleSkill through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
@@ -160,7 +160,7 @@ func TestMirrorPluginContributionsSkipsAClaudeSymlink(t *testing.T) {
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 
-	owned, complete, err := mirrorPluginContributions(ws, nil, false, logger)
+	owned, complete, err := mirrorPluginContributions(ws, nil, false, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions through a .claude symlink = %v, want a soft skip, not an error", err)
 	}
@@ -190,7 +190,7 @@ func TestMirrorInjectedPluginFilesSkipsAClaudeSymlink(t *testing.T) {
 
 	owned, complete, err := mirrorInjectedPluginFiles(ws, []ContributionFile{
 		{Kind: "skills", Name: "plug.md", Content: []byte("# an injected plugin skill\n")},
-	}, logger)
+	}, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorInjectedPluginFiles through a .claude symlink = %v, want a soft skip, not an error", err)
 	}
@@ -214,7 +214,7 @@ func TestMirrorInjectedPluginFilesEmptyPayloadStillVetoesPruneOnAClaudeSymlink(t
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 
-	owned, complete, err := mirrorInjectedPluginFiles(ws, nil, logger)
+	owned, complete, err := mirrorInjectedPluginFiles(ws, nil, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorInjectedPluginFiles with no files through a .claude symlink = %v, want a soft skip, not an error", err)
 	}
@@ -246,7 +246,7 @@ func TestClearMirroredTierMarkersSkipsAClaudeSymlink(t *testing.T) {
 	writeFile(t, witness, "bundle")
 
 	var buf bytes.Buffer
-	ClearMirroredTierMarkers(ws, iterlog.New(iterlog.LevelWarn, &buf))
+	ClearMirroredTierMarkers(ws, testTrustedPass(t), iterlog.New(iterlog.LevelWarn, &buf))
 
 	if _, err := os.Lstat(witness); err != nil {
 		t.Fatalf("the tier sidecar in the link's target was wiped through the symlink: %v", err)
@@ -266,7 +266,7 @@ func TestMergePluginHooksSkipsAClaudeSymlink(t *testing.T) {
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 
-	complete, err := mergePluginHooks(ws, logger)
+	_, complete, err := mergePluginHooks(ws, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mergePluginHooks through a .claude symlink = %v, want a soft skip, not an error", err)
 	}
@@ -291,7 +291,7 @@ func TestMirrorLibrarySkillsRefusesAClaudeSymlinkWithDeclaredSkills(t *testing.T
 	ws, target := claudeSymlinkWorkspace(t)
 	wf := &ir.Workflow{Skills: []string{"some-skill"}}
 
-	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), wf, nil, nil, nil)
+	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), wf, nil, nil, testTrustedPass(t), nil)
 	var linkErr *claudeSymlinkError
 	if !errors.As(err, &linkErr) {
 		t.Fatalf("mirrorLibrarySkills with declared skills through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
@@ -307,7 +307,7 @@ func TestMirrorLibrarySkillsSymlinkWithoutDeclaredSkillsVetoesThePruner(t *testi
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 
-	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), &ir.Workflow{}, nil, nil, logger)
+	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), &ir.Workflow{}, nil, nil, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorLibrarySkills with no declared skills through a .claude symlink = %v, want a soft skip, not an error", err)
 	}
@@ -328,7 +328,7 @@ func TestMirrorInjectedLibrarySkillsRefusesAClaudeSymlink(t *testing.T) {
 
 	_, _, err := mirrorInjectedLibrarySkills(ws, []LibrarySkillFile{
 		{Name: "some-skill", Content: []byte("# an injected library skill\n")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	var linkErr *claudeSymlinkError
 	if !errors.As(err, &linkErr) {
 		t.Fatalf("mirrorInjectedLibrarySkills through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
@@ -348,7 +348,7 @@ func TestPruneWorkspaceMirrorSkipsAClaudeSymlink(t *testing.T) {
 	installMirroredFile(t, orphan, filepath.Join(target, "skills", bundleMirrorMarkerDir, "gone.md.sha256"), "orphan\n", "")
 
 	var buf bytes.Buffer
-	pruneWorkspaceMirror(ws, true, iterlog.New(iterlog.LevelWarn, &buf))
+	pruneWorkspaceMirror(ws, testTrustedPass(t), true, iterlog.New(iterlog.LevelWarn, &buf))
 
 	raw, err := os.ReadFile(orphan)
 	if err != nil || string(raw) != "orphan\n" {
@@ -369,7 +369,7 @@ func TestMirrorLibrarySkillsRefusesAClaudeSymlinkOnAnInjectedPayload(t *testing.
 		{Name: "some-skill", Content: []byte("# shipped by the launching instance\n")},
 	}}
 
-	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), &ir.Workflow{}, nil, inj, nil)
+	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), &ir.Workflow{}, nil, inj, testTrustedPass(t), nil)
 	var linkErr *claudeSymlinkError
 	if !errors.As(err, &linkErr) {
 		t.Fatalf("mirrorLibrarySkills with an injected payload through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)

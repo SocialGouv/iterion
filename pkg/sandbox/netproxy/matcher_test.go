@@ -1,6 +1,11 @@
 package netproxy
 
-import "testing"
+import (
+	"net/url"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
+)
 
 func TestCompileRejectsInvalidMode(t *testing.T) {
 	_, err := Compile(Mode("nope"), nil)
@@ -261,6 +266,14 @@ func TestPresetIterionDefault(t *testing.T) {
 		"get.jetify.com",
 		"devbox.sh",
 		"docs.devbox.sh",
+		// Bedrock lives on regional endpoints (and their FIPS and control-plane
+		// forms); Vertex on aiplatform.googleapis.com and its regional hosts.
+		"bedrock-runtime.us-east-1.amazonaws.com",
+		"bedrock-runtime.eu-west-3.amazonaws.com",
+		"bedrock-runtime-fips.us-gov-west-1.amazonaws.com",
+		"bedrock.us-east-1.amazonaws.com",
+		"aiplatform.googleapis.com",
+		"us-central1-aiplatform.googleapis.com",
 	}
 	for _, h := range allowed {
 		if !p.Allow(h) {
@@ -270,6 +283,8 @@ func TestPresetIterionDefault(t *testing.T) {
 	denied := []string{
 		"evil.site",
 		"169.254.169.254",
+		"s3.us-east-1.amazonaws.com", // the rest of AWS stays shut
+		"evil.bedrock-runtime.us-east-1.amazonaws.com",
 	}
 	for _, h := range denied {
 		if p.Allow(h) {
@@ -283,26 +298,50 @@ func TestPresetIterionDefault(t *testing.T) {
 // structured-output validator reports "missing required field" on an empty
 // payload rather than a network refusal. That is how z.ai landed on this
 // list; every Anthropic-wire facade belongs on it for the same reason.
+//
+// The hosts are READ from the blessed set rather than spelled out here
+// (secrets.FacadeVendorEndpoints, the ensemble the facade-substitution
+// verdict treats as the vendor's own wiring): a guard that names them cannot
+// catch the vendor it does not know about, and the mainland half of the z.ai
+// family was blessed by the verdict while no rule carried it.
 func TestDefaultRulesAllowEveryAnthropicWireFacade(t *testing.T) {
-	rules := iterionDefaultRules()
-	has := func(host string) bool {
-		for _, r := range rules {
-			if r == host {
-				return true
-			}
-		}
-		return false
+	p, err := Compile(ModeAllowlist, iterionDefaultRules())
+	if err != nil {
+		t.Fatalf("the iterion-default preset does not compile: %v", err)
 	}
-	for _, host := range []string{
-		"api.anthropic.com",
-		"api.z.ai",
-		"api.moonshot.ai",
-		"api.moonshot.cn",
-	} {
-		if !has(host) {
+	hosts := blessedFacadeHosts(t)
+	// api.anthropic.com publishes no facade — the real wire answers the id it
+	// is asked for — so the blessed set does not name it and this list does.
+	for _, host := range append(hosts, "api.anthropic.com") {
+		if !p.Allow(host) {
 			t.Errorf("iterionDefaultRules() does not allow %q — a sandboxed node routed there dies on an empty payload, not on a credential error", host)
 		}
 	}
+}
+
+// blessedFacadeHosts is the host of every endpoint an Anthropic-wire facade
+// publishes, read from pkg/secrets so a vendor added there cannot drift out
+// of the sandbox's reach.
+func blessedFacadeHosts(t *testing.T) []string {
+	t.Helper()
+	var hosts []string
+	for _, provider := range secrets.FacadeProviders() {
+		endpoints := secrets.FacadeVendorEndpoints(provider)
+		if len(endpoints) == 0 {
+			t.Fatalf("secrets.FacadeProviders() names %q, which publishes no endpoint — the two readers of the table disagree", provider)
+		}
+		for _, endpoint := range endpoints {
+			u, err := url.Parse(endpoint)
+			if err != nil || u.Hostname() == "" {
+				t.Fatalf("published endpoint %q of %q has no host to allow: %v", endpoint, provider, err)
+			}
+			hosts = append(hosts, u.Hostname())
+		}
+	}
+	if len(hosts) == 0 {
+		t.Fatal("no facade publishes an endpoint — the guard would pass by checking nothing")
+	}
+	return hosts
 }
 
 // claw's OpenAI provider dials one of two hosts: api.openai.com with a key,
@@ -318,6 +357,41 @@ func TestDefaultRulesAllowEveryOpenAIWireHost(t *testing.T) {
 	for _, host := range []string{"api.openai.com", "chatgpt.com"} {
 		if !p.Allow(host) {
 			t.Errorf("the iterion-default preset refuses %q — a sandboxed claw node spending its credential there fails on egress", host)
+		}
+	}
+}
+
+// A `*` between two fixed label runs matches exactly one label there — the
+// shape of a regional endpoint, `bedrock-runtime.<region>.amazonaws.com`,
+// which no leading wildcard can name without opening the whole domain.
+func TestAnInteriorStarMatchesExactlyOneLabel(t *testing.T) {
+	p, err := Compile(ModeAllowlist, []string{"bedrock-runtime.*.amazonaws.com"})
+	if err != nil {
+		t.Fatalf("an interior single-label wildcard must compile: %v", err)
+	}
+	cases := map[string]bool{
+		"bedrock-runtime.us-east-1.amazonaws.com":      true,
+		"bedrock-runtime.eu-west-3.amazonaws.com":      true,
+		"BEDROCK-RUNTIME.EU-WEST-3.AMAZONAWS.COM:443":  true,
+		"bedrock-runtime.amazonaws.com":                false, // zero labels
+		"bedrock-runtime.a.b.amazonaws.com":            false, // two labels
+		"evil.bedrock-runtime.us-east-1.amazonaws.com": false, // another prefix
+		"bedrock-runtime.us-east-1.amazonaws.com.evil": false, // another suffix
+		"s3.us-east-1.amazonaws.com":                   false, // another service
+	}
+	for host, want := range cases {
+		if got := p.Allow(host); got != want {
+			t.Errorf("Allow(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// The wildcard grammar stays small: one `*` or `**` segment, a whole label,
+// `**` leading only. Everything else is refused at compile time, as before.
+func TestCompileRefusesEveryOtherWildcardShape(t *testing.T) {
+	for _, raw := range []string{"a*b.com", "github.com.*", "*.x.*.com", "bedrock.**.amazonaws.com", "**.x.*.com", "a.*"} {
+		if _, err := Compile(ModeAllowlist, []string{raw}); err == nil {
+			t.Errorf("Compile(%q) accepted a wildcard shape the grammar does not define", raw)
 		}
 	}
 }

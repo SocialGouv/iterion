@@ -31,6 +31,7 @@ func newThinkingHooks(t *testing.T, runID string) (EventHooks, *bytes.Buffer) {
 // body, the shape the studio's LogBlockRow collapses). The text is log-only
 // by design — events.jsonl stays bounded to small payloads.
 func TestStoreEventHooks_ThinkingFoldsInRunLog(t *testing.T) {
+	t.Parallel()
 	hooks, logBuf := newThinkingHooks(t, "run-thinking")
 
 	const thinking = "Let me reason about this carefully."
@@ -53,6 +54,7 @@ func TestStoreEventHooks_ThinkingFoldsInRunLog(t *testing.T) {
 // Without thinking text, the metrics-only 🧠 line must remain (fallback for
 // backends that report counts but not content).
 func TestStoreEventHooks_ThinkingMetricsOnlyFallback(t *testing.T) {
+	t.Parallel()
 	hooks, logBuf := newThinkingHooks(t, "run-thinking-metrics")
 
 	hooks.OnLLMStepFinish("n1", LLMStepInfo{Number: 2, ReasoningTokens: 9, ThinkingMs: 50})

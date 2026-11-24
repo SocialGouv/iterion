@@ -101,6 +101,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","num
 `
 
 type ledgerRun struct {
+	result Result
 	stdin  string
 	ledger *MemorySessionLedger
 }
@@ -122,12 +123,12 @@ func runLedgerExecute(t *testing.T, task Task, entries map[string][]string, repo
 	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelWarn, io.Discard)}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	_, _ = b.Execute(ctx, task)
+	result, _ := b.Execute(ctx, task)
 	raw, err := os.ReadFile(stdinLog)
 	if err != nil {
 		t.Fatalf("the stand-in CLI was never spawned: %v", err)
 	}
-	return ledgerRun{stdin: string(raw), ledger: ledger}
+	return ledgerRun{stdin: string(raw), ledger: ledger, result: result}
 }
 
 // The wiring, which the helpers' own tests cannot show: Execute must SEND the
@@ -137,8 +138,8 @@ func TestExecuteTellsTheResumedSessionWhatDiedAndSettlesIt(t *testing.T) {
 	if !strings.Contains(run.stdin, "This session resumes in a new process") || !strings.Contains(run.stdin, "auditor (local_agent, t1)") {
 		t.Fatalf("the prompt sent did not carry the note:\n%s", run.stdin)
 	}
-	if got := run.ledger.Terminated("s1"); got != nil {
-		t.Fatalf("s1 = %v after a process that was told and left nothing, want cleared", got)
+	if got := run.ledger.Terminated("s1"); !slices.Equal(got, run.result.TerminatedBackgroundTasks) || slices.Contains(got, "auditor (local_agent, t1)") {
+		t.Fatalf("s1 = %v, want only this execution's lost work %v", got, run.result.TerminatedBackgroundTasks)
 	}
 	if got := run.ledger.Terminated("other"); !reflect.DeepEqual(got, []string{"x"}) {
 		t.Fatalf("another session's entry = %v, want it untouched", got)
@@ -161,8 +162,8 @@ func TestExecuteForkIsToldTheParentsDeadWorkAndLeavesItsEntry(t *testing.T) {
 	if got := run.ledger.Terminated("parent"); !reflect.DeepEqual(got, []string{"auditor (local_agent, t1)"}) {
 		t.Fatalf("parent = %v, want its entry kept: the fork did not touch its transcript", got)
 	}
-	if got := run.ledger.Terminated("child"); got != nil {
-		t.Fatalf("child = %v, want nothing: it left no work running", got)
+	if got := run.ledger.Terminated("child"); !slices.Equal(got, run.result.TerminatedBackgroundTasks) || slices.Contains(got, "auditor (local_agent, t1)") {
+		t.Fatalf("child = %v, want only this execution's lost work %v", got, run.result.TerminatedBackgroundTasks)
 	}
 }
 

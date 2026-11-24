@@ -1,7 +1,121 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.6
+version: 0.2.0
+## 0.2.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
+## effort from the process environment are gone, each replaced by the
+## default it carried, so a run with no pin set routes exactly as before. A
+## deployment that pinned one (pod env, `ITERION_BOT_VARS_ENV_PINS`, a
+## bot-var override) re-expresses it as a routing cell, an `llmroute`
+## override at the platform, org, team, binding or launch level: the pin
+## alone no longer moves the bot.
+## 0.1.11 — precomputed scope + a 20-step bound + a byte-stable system
+## prompt (#3283). The workflow OPENS with converse_scope, a deterministic
+## tool node: the reviewed head, the merge-base with a best-effort
+## refreshed base_ref (a failed fetch says base_is_current: false in the
+## block), workspace anomalies, the changed files with their stat, and the
+## hunk the thread's anchor names — capped at 48000 characters with a
+## visible marker. Its facts repeat review-pr's diff_precheck machinery
+## (the bots suite runs both scripts on the same fixture repos and
+## compares the common ones), and the sentinel survives: changed_files -1
+## means "the scope is unknown", never "no files". converse_agent then
+## reads that block instead of spending steps re-deriving it, and its tool
+## loop is bounded at 20 steps (was 60; [20,24] is the re-cut window): the
+## loop reads what the block lacks, and running out costs grounding, never
+## the publication — whatever the bound cut short rides the new
+## converse_output.unchecked field, and publish_reply renders it in the
+## thread as a "Lecture partielle" note. It is an admission the operator
+## reads, not a claim: converse_health reads nothing of it, and the runs
+## stopped by the bound are counted in the measurement (delegate_finished's
+## formatting_pass_used), not by the gates. The system prompt lost its
+## {{vars.*}} — the workspace path, the base ref and every per-run fact
+## moved to the user message (scope, thread, question, path, in that
+## order) — so the provider's prefix cache serves the next run from this
+## one's bytes; the workspace is named in the user message as the working
+## directory the shell starts in (claw guarantees the cwd), so plain git
+## replaces git -C. New launch vars thread_anchor_* (hidden): the thread
+## ROOT's diff position — path, old path (a rename), the current line and
+## its side ("new"/"old"), the PRE-IMAGE hint the forge keeps (GitHub's
+## original_line, GitLab's paired old_line — never a current line), and
+## the commit the anchor was taken on — set by the webhook lanes on both
+## GitLab entries (a plain reply and a command inside a thread) and the
+## GitHub/Forgejo review-thread reply, from the forges' position payloads.
+## The scope tool isolates the anchored hunk only when that commit is the
+## head under review; stale, removed-side or line-less it shows the
+## file's whole diff and says so.
+## 0.1.10 — converse_agent inherits no MCP server (`mcp: inherit: false`): it
+## answers from the diff and the repository through its four declared tools.
+## The ambient set — every enabled plugin's servers, the repository's
+## `.mcp.json` — put their tools in every request of the loop: on the team
+## gateway's claw lane 31 tool schemas where the node declares 4, and a code
+## question sent to a web search (#3283). On claude_code the `--mcp-config`
+## the CLI gets names none of those servers, and `--strict-mcp-config` stays
+## on for this node even where ITERION_CLAUDE_CODE_STRICT_MCP=0 lifts it, so
+## the CLI's own scopes (~/.claude.json, the repository's .mcp.json) add none;
+## codex, whose own configuration (CODEX_HOME's config.toml, a trusted
+## project's .codex/config.toml) the engine cannot switch off through the
+## pinned SDK, refuses the node, typed, when that configuration lists a
+## server, so a route can take over. No native web tool replaces them. What the workflow-wide resolution and its pre-run health
+## check do with the ambient servers is unchanged — the opt-out takes the
+## tools off this node, not the servers off the run.
+## 0.1.9 — evaluation mode: `publish_mode: off` (a hidden launch var:
+## operators set it — --var, bot_args, a remote launch, an integration's
+## pinned launch vars — and so can a bot holding board.create, through a
+## card's bot_args; a pull request's author or a webhook payload never can,
+## since the webhook lanes write fixed payload keys and no manifest channel
+## they layer may carry it) runs the agent and drafts the answer, and
+## publish_reply sends nothing — no duplicate read, no POST, no token
+## needed — reporting `evaluation: true` and a reason that says so;
+## converse_health reads it as `evaluation mode`, neither OK nor degraded.
+## The server reads the literal (a `$` expansion is refused at its launch
+## admission) and holds the run to it: its merge-gate arms owe it nothing,
+## it mints it no publish grant, and its hand-off walk skips it. The floor
+## rises to the release carrying that server half (`>= next`). For
+## measuring cost and quality on a live thread without answering in it
+## (#3283).
+## 0.1.8 — the agent drafts, a deterministic node posts. converse_agent
+## hands its answer back in converse_output.answer and never writes on the
+## forge; publish_reply (no LLM) posts it in the thread with the forge_token
+## — a GitHub review-thread reply or PR comment, a GitLab discussion note or
+## MR note, a Forgejo PR comment — with the anti-trigger and GitLab
+## quick-action guards and the run footer, then re-reads the note by its id;
+## converse_health reads its result. Posting no longer depends on how many
+## steps the model spent reading: on VAO !48 a reply that took 61 steps was
+## drafted and never posted, the POST being the agent's last step. The
+## forge-reply skill is folded into the prompt as reading and answer-shape
+## guidance. publish_reply is a python `script:`, so a draft of any size or
+## byte content reaches it (a NUL is dropped before posting), and it is safe
+## to execute twice: one bounded read of the thread finds a note that is an
+## exact copy of this run's reply and reports it instead of posting again. A
+## drafted answer is posted whatever its skipped_reason says ("N/A" from a
+## step-limited model); the reason speaks for an empty draft, or a filler one
+## beside it ("N/A", "none", "-", no run of three letters), and rides into the
+## summary whenever given. The forge token is not posted in a body:
+## forge_token is granted the `file` sink only (a placeholder the answer
+## quotes is defused before the body runs, never materialised), and the body
+## refuses a text carrying the placeholder, the token, or its percent, base64
+## or hex encoding — as written or as a forge renders it, and run together
+## past any separator for a long token (requires.iterion rises to 4.7.0, the
+## release that reads the grant). Every field it reports drops NUL bytes, and
+## an unreadable token file is a reason, not a crash. The webhook's pinned
+## forge base reaches the run as forge_base_url (hidden): a forge connection's
+## base URL keeps its sub-path, so a GitLab or Forgejo under one is reached
+## where it lives (a pin set through the webhook API keeps scheme://host). And the run's duration budget follows the agent's tool loop:
+## 30 minutes, not 10 — with tool_max_steps 60 (0.1.7) a step on the team
+## gateway's deepseek takes ~10-15 s, and a question that needed ~50 steps
+## died on its 10-minute budget before it posted (VAO !48).
+## 0.1.7 — the converse agent declares its tools (bash, read_file, glob,
+## grep): a routing cell that moves it to claw (the team gateway lanes) gave
+## it NO tool, so it could neither read the diff nor post and answered a
+## placeholder. Its tool loop is bounded at 60 steps, review-pr's
+## reviewer_claude bound: claw's default of 5 stopped short of the
+## forge-reply skill's VERIFY. converse_health reads a question as answered
+## only when the agent posted AND returned an http(s) reply_url on the PR's
+## host (it now receives pr_url): an unanswered question is always degraded
+## (its skipped_reason, when given, is the banner), and a claimed post whose
+## reply_url is not such a URL ("placeholder", another host) reads
+## UNVERIFIED instead of OK.
 ## 0.1.6 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
@@ -67,13 +181,21 @@ invocations:
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
-## out of the form (still settable via --var / bot_args).
+## out of the form (still settable via --var / bot_args). publish_mode is
+## an operator's evaluation switch, hidden so no form offers to silence a
+## reply.
 launch:
   primary: [converse_question, pr_url]
-  hidden: [discussion_id, trigger_note, thread_context, replier]
+  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url, publish_mode, thread_anchor_path, thread_anchor_old_path, thread_anchor_line, thread_anchor_old_line, thread_anchor_side, thread_anchor_commit]
 
-## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
-## release that reads the profile would refuse the header as an unknown
-## declaration — the floor keeps such a runner from admitting the bundle.
+## Profile 2 (`dsl: 2` at the head of main.bot) needs 3.225.0, and the
+## `sinks:` grant on forge_token needs 4.7.0, the release that reads it (the
+## grant is what keeps a quoted placeholder from being materialised in
+## publish_reply's body): the floor keeps an older runner from admitting the
+## bundle. Evaluation mode (0.1.9) needs the release whose server reads
+## publish_mode — its gate arms, its publish-grant mint, its hand-off walk;
+## below it the server claims and repairs the gate for a run that publishes
+## nothing. `next` until that release is cut, when the release-floors hook
+## writes its number (docs/agents/workflow/release.md).
 requires:
-  iterion: ">= 3.225.0"
+  iterion: ">= 7.2.0"

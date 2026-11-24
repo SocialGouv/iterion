@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -78,6 +79,7 @@ func EffortDialBackends() []string {
 
 // clawBackendName comes from the shared leaf; ir never imports delegate.
 const clawBackendName = backendcaps.Claw
+const codexBackendName = backendcaps.Codex
 
 // validateFallbacks checks every LLM node's `fallbacks:` block.
 //
@@ -98,7 +100,16 @@ const clawBackendName = backendcaps.Claw
 //
 // Everything else is a warning: the run proceeds, degraded but visible.
 func (c *compiler) validateFallbacks(w *Workflow) {
-	for _, n := range w.Nodes {
+	// In id order: the nodes' fallback `when:` readings spend the bot's
+	// budget as they are read, so the node a refusal falls on is the same
+	// from one compile to the next, never the one a map yields last.
+	ids := make([]string, 0, len(w.Nodes))
+	for id := range w.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		n := w.Nodes[id]
 		nn, ok := n.(LLMNode)
 		if !ok {
 			continue
@@ -136,9 +147,9 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		for i, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
-			c.checkFallbackWhen(w, kind, id, fb)
+			c.checkFallbackWhen(w, kind, id, i, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, EffectiveAskRules(nn, w))
+			c.checkFallbackCrossing(w, kind, id, fb, nn, nodeBackend)
 		}
 	}
 }
@@ -177,11 +188,12 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 	}
 
 	// claw enforces the gate sandboxed too (the policy crosses the IPC as
-	// a pre-task envelope) — EXCEPT an Ask decision, which has no seam to
-	// pause the parent run from inside the container. A policy that can
-	// ever produce one (mode ask, or any explicit ask rule, which
-	// outranks mode deny) fails a sandboxed claw route at run time; warn
-	// here so the coupling is learned before launch. Same
+	// a pre-task envelope), and since the approval channel (#3513) a
+	// sandboxed claw route SERVES an Ask decision — the launcher pauses
+	// the run and the human answers on resume. The served scope is
+	// launcher-placed tools (MCP, in-memory registries): a node whose
+	// container-executed tools can be asked about still fails at run
+	// time, which is what this warning teaches before launch. Same
 	// warning-not-error rationale as above: --sandbox none and
 	// ITERION_SANDBOX_DEFAULT=none make the run legal without the
 	// workflow saying anything.
@@ -198,7 +210,7 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 		}
 		if len(clawRoutes) > 0 {
 			c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
-				"%s %q: the permission policy can produce an Ask decision (mode %s%s), which a sandboxed claw route cannot pause for — this node will FAIL at run time on %s unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
+				"%s %q: the permission policy can produce an Ask decision (mode %s%s). A sandboxed claw route serves the pause for launcher-placed tools (MCP, in-memory registries); if a container-executed tool (bash, the file tools) can be asked about, the node FAILS at run time on %s — scope ask rules to launcher-placed tools, or declare sandbox: none (or run with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
 				kind, id, mode, askRuleSuffix(len(askRules)), strings.Join(dedupeStrings(clawRoutes), ", "))
 		}
 	}
@@ -261,12 +273,23 @@ func (c *compiler) checkFallbackAction(kind, id string, fb Fallback, isLast bool
 // gate is evaluated (a route has no node input or outputs of its own) —
 // and only DECLARED vars: at runtime an absent var evaluates to nil →
 // false, so a typo would silently disarm the policy the route encodes.
-func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, fb Fallback) {
+func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, i int, fb Fallback) {
 	if fb.When == "" {
 		return
 	}
-	astExpr, err := expr.Parse(fb.When)
+	astExpr, err := expr.ParseOn(fb.When, c.exprBudget)
+	// Read once, on the bot's budget: validateVarListDefaults reads the
+	// same text later and takes this reading (nil when refused), so a bot
+	// accepted here is never refused — nor read again — there.
+	if c.fallbackWhens == nil {
+		c.fallbackWhens = map[string]*expr.AST{}
+	}
+	c.fallbackWhens[fallbackWhenKey(id, i)] = astExpr
 	if err != nil {
+		if pastReadBudget(err) {
+			c.errorfAt(DiagExprPastReadBudget, id, "", "%s %q: fallback %s when: %v", kind, id, fallbackLabel(fb), err)
+			return
+		}
 		c.errorfAt(DiagFallbackMalformed, id, "",
 			"%s %q: fallback %s has an unparseable when: expression (note: string literals use single quotes, e.g. vars.policy == 'skip'): %v",
 			kind, id, fallbackLabel(fb), err)
@@ -335,10 +358,11 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 }
 
 // checkFallbackCrossing validates what the route changes about the
-// node's capabilities, using the same predicates the launch-time
-// run-level route is screened by — so an operator cannot reach through
-// `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, askRules []string) {
+// node's capabilities through RouteCrossingReasons — the body the launch
+// screens run too, on a run-level `--fallback` stage (ApplyRunFallback) and
+// on a route a routing cell re-pins (runview) — so an operator cannot reach
+// through either a crossing the compiler refuses in the .bot.
+func (c *compiler) checkFallbackCrossing(w *Workflow, kind, id string, fb Fallback, nn LLMNode, nodeBackend string) {
 	// The route's backend, read as the run reads it: a dial's default is
 	// the route this chain takes, and screening only the literal spelling
 	// left every dialled route unscreened.
@@ -347,27 +371,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 		return
 	}
 	label := fallbackLabel(fb)
-
-	// The permission gate is the anti-prompt-injection boundary. Whether
-	// a ROUTE can enforce it is a property of the route's own backend,
-	// so this check does NOT depend on the node's backend being
-	// statically knowable — the auto-resolved shape is the shipped
-	// default and must not escape it.
-	if reason := UngatedCrossingReasonForAskRules(routeBackend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
-		c.errorfAt(DiagFallbackUnsafeCross, id, "",
-			"%s %q: fallback %s %s", kind, id, label, reason)
-	}
-
-	// The remaining checks compare the two backends, so they need the
-	// node's own to be knowable.
-	if nodeBackend == "" {
-		return
-	}
-	if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
-		c.errorfAt(DiagFallbackUnsafeCross, id, "",
-			"%s %q: fallback %s %s", kind, id, label, reason)
-	}
-	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+	for _, reason := range RouteCrossingReasons(nn, w, nodeBackend, routeBackend, EffectivePermission(nn.GetPermission(), w.Permission)) {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -377,11 +381,40 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// the crossing, and it applies to the node's own backend too.
 
 	// Reasoning effort degrades rather than misleads, so it warns.
+	if nodeBackend == "" {
+		return
+	}
 	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[routeBackend] {
 		c.warnfAt(DiagFallbackDrift, id, "",
 			"%s %q: fallback %s runs on backend %q, which has no reasoning-effort dial; the node's reasoning_effort: %s is ignored on that route",
 			kind, id, label, routeBackend, effort)
 	}
+}
+
+// RouteCrossingReasons is C176's verdict on one route of a node: why the
+// route's backend may not serve it, one reason per refused crossing, nil
+// when it may. permission is the gate in force for the node, resolved by
+// the caller (the compiler's node-then-workflow reading, or a launch's
+// run-level override first).
+//
+// The permission gate is the anti-prompt-injection boundary. Whether a
+// ROUTE can enforce it is a property of the route's own backend, so that
+// check does NOT depend on the node's backend being statically knowable —
+// the auto-resolved shape is the shipped default and must not escape it.
+// The claw⇄CLI tools inversion and the session-continuity crossing compare
+// the two backends, so they need both: an empty one skips them.
+func RouteCrossingReasons(nn LLMNode, w *Workflow, nodeBackend, routeBackend, permission string) []string {
+	var out []string
+	if reason := UngatedCrossingReasonForAskRules(routeBackend, permission, EffectiveAskRules(nn, w)); reason != "" {
+		out = append(out, reason)
+	}
+	if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
+		out = append(out, reason)
+	}
+	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+		out = append(out, reason)
+	}
+	return out
 }
 
 // EffectivePermission resolves a node's gate mode: its own override
@@ -510,7 +543,7 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 		return ""
 	}
 	if nodeClaw {
-		return "routes a claw node to a CLI backend, where the tools: list does not mean what it means on claw — claude_code narrows only its own 14-name native roster (every MCP tool and every name outside it survives), codex maps the list onto a sandbox mode, and pi/kimi/grok never receive it at all — so the route changes what this node can do, and the parallel-branch admission was already decided on the claw reading; declare the node on the CLI backend instead, or route to another claw model"
+		return "routes a claw node to a CLI backend, where the tools: list does not mean what it means on claw — claude_code narrows only its own native roster (every MCP tool and every name outside it survives), codex maps the list onto a sandbox mode, and pi/kimi/grok never receive it at all — so the route changes what this node can do, and the parallel-branch admission was already decided on the claw reading; declare the node on the CLI backend instead, or route to another claw model"
 	}
 	// A DECLARED list — `tools: []` included — says the same thing on both
 	// sides, so there is nothing to invert. Only an UNDECLARED list does:
@@ -619,9 +652,9 @@ var (
 // route to the next step of the chain instead of naming where the node runs:
 // a field that resolved to nothing, and the explicit `auto`.
 //
-// It is the ONE spelling of that rule. Dispatch reads it as its step 1 — the
+// It is the ONE spelling of that rule. Dispatch reads it at steps 1 and 2 — the
 // node's own `backend:` wins unless it falls through, and then the workflow's
-// `default_backend:` answers (model.ClawExecutor.resolveBackendName) — the
+// `default_backend:` answers or falls through (model.ClawExecutor.resolveBackendName) — the
 // source reading of a node's route reads it (backendReader.field, and
 // SourceNodeBackendName over it), and so does the IR-only tool-surface reading
 // in pkg/runtime, which asks for the route a pre-run analysis must judge.
@@ -806,6 +839,20 @@ func SourceNodeBackendName(nodeBackend, workflowDefault string) string {
 	return effectiveNodeBackend(nodeBackend, workflowDefault)
 }
 
+// RunNodeBackendName is the RUN's reading of a node's primary route: the
+// node's `backend:` resolved against the process environment, the workflow's
+// `default_backend:` where that field falls through (empty, `auto`), and ""
+// for a field this reading cannot decide — a `{{vars.…}}` only the dispatch
+// resolves, a `${X}` nothing answers.
+//
+// It is what a pre-run admission in the engine keys on. The SOURCE reading
+// would take a dial's DEFAULT for the route (`${B:-kimi}` with B=claude_code
+// in the environment reads as kimi there), and a refusal on that is a refusal
+// of a run that would have worked.
+func RunNodeBackendName(nodeBackend, workflowDefault string) string {
+	return runBackend.effective(nodeBackend, workflowDefault)
+}
+
 // effectiveNodeBackend is the compile-time reading of a node's route.
 //
 // Copied from validateCommand rather than validateProviders, which
@@ -813,6 +860,12 @@ func SourceNodeBackendName(nodeBackend, workflowDefault string) string {
 // inherits `default_backend:`.
 func effectiveNodeBackend(nodeBackend, workflowDefault string) string {
 	return sourceBackend.effective(nodeBackend, workflowDefault)
+}
+
+// fallbackWhenKey names one fallback route's `when:` reading in
+// compiler.fallbackWhens: the node and the route's position in its block.
+func fallbackWhenKey(id string, i int) string {
+	return fmt.Sprintf("%s\x00%d", id, i)
 }
 
 // fallbackLabel renders a route for a diagnostic message.

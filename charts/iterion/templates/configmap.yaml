@@ -8,8 +8,34 @@ data:
   ITERION_MODE: {{ .Values.mode | quote }}
   ITERION_LOG_FORMAT: {{ .Values.config.log.format | quote }}
   ITERION_LOG_LEVEL: {{ .Values.config.log.level | quote }}
+  {{- with .Values.config.auth.trustedProxyCidrs }}
+  # Whose forwarded client address the server believes. Restrict it to
+  # your ingress controller's pod CIDR: every address inside a trusted
+  # range can name any client it likes. Absent — the list emptied on
+  # purpose — trusts no forwarded header, so every request behind the
+  # ingress is keyed on the controller's own address and the auth rate
+  # limiter shares one bucket across the instance
+  # (docs/environment-variables.md).
+  ITERION_AUTH_TRUSTED_PROXY_CIDRS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.config.auth.trustedProxyHops }}
+  # How many APPENDING proxies of the operator's own sit in front, so how
+  # many of the forwarded chain's rightmost entries are theirs rather than
+  # a client's. 1 is this chart's shape — one ingress controller. Raising
+  # it without that many appending hops really in front hands the identity
+  # back to whatever a client writes (docs/environment-variables.md).
+  ITERION_AUTH_TRUSTED_PROXY_HOPS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.auth.forwardedHeader }}
+  # The ONE header a trusted proxy names the client with — the server
+  # reads that one and no other, so a client cannot pick the mechanism by
+  # sending a header the proxy does not rewrite. Absent is
+  # X-Forwarded-For, what every ingress controller writes
+  # (docs/environment-variables.md).
+  ITERION_AUTH_FORWARDED_HEADER: {{ . | quote }}
+  {{- end }}
   {{- if eq .Values.mode "cloud" }}
-  ITERION_MONGO_URI: {{ .Values.config.mongo.uri | quote }}
+  ITERION_MONGO_URI: {{ include "iterion.mongo.uri" . | quote }}
   ITERION_MONGO_DB: {{ .Values.config.mongo.database | quote }}
   ITERION_MONGO_EVENTS_TTL_DAYS: {{ .Values.config.mongo.eventsTtlDays | quote }}
   ITERION_NATS_URL: {{ .Values.config.nats.url | quote }}
@@ -17,7 +43,7 @@ data:
   ITERION_NATS_KV_BUCKET: {{ .Values.config.nats.kvBucket | quote }}
   ITERION_NATS_DLQ_STREAM: {{ .Values.config.nats.dlqStream | quote }}
   ITERION_NATS_STREAM_REPLICAS: {{ .Values.config.nats.streamReplicas | quote }}
-  ITERION_S3_ENDPOINT: {{ .Values.config.s3.endpoint | quote }}
+  ITERION_S3_ENDPOINT: {{ include "iterion.s3.endpoint" . | quote }}
   ITERION_S3_REGION: {{ .Values.config.s3.region | quote }}
   ITERION_S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
   ITERION_S3_USE_PATH_STYLE: {{ .Values.config.s3.usePathStyle | quote }}
@@ -77,8 +103,48 @@ data:
   # (written for local runs) hard-errors the kubernetes driver mid-run.
   ITERION_SANDBOX_OVERRIDE: "none"
   {{- end }}
+  {{- if .Values.image.requireDigest }}
+  {{- /* Every per-run sandbox pod of a `sandbox: auto` bot runs the image
+     ITERION_SANDBOX_DEFAULT_IMAGE names; left unset, the binary falls back
+     to a version TAG of iterion-sandbox-slim (pkg/runtime/sandbox_default_image.go),
+     so the guard needs the name spelled in config.extraEnv — but only when a
+     pod that resolves the sandbox reads it from here: the shared runner under
+     runner.sandbox.enabled, or a pool whose sandbox is on (its own
+     sandbox.enabled, the release's otherwise) and whose env block does not
+     set its own (that one is guarded at the pool's site). A pools-only
+     install with every sandboxed pool pinned has no reader to guard. */ -}}
+  {{- $readsShared := and .Values.runner.sandbox.enabled .Values.runner.enabled }}
+  {{- range .Values.runnerPools }}
+  {{- if and (include "iterion.poolSandbox" (dict "root" $ "pool" .)) (not (hasKey (.env | default dict) "ITERION_SANDBOX_DEFAULT_IMAGE")) }}
+  {{- $readsShared = true }}
+  {{- end }}
+  {{- end }}
+  {{- if $readsShared }}
+  {{- $sandboxImage := get (.Values.config.extraEnv | default dict) "ITERION_SANDBOX_DEFAULT_IMAGE" | default "" | toString }}
+  {{- $_ := include "iterion.pinnedImage" (dict "root" . "field" "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE (the sandbox: auto image of the shared runner under runner.sandbox.enabled and of every sandboxed pool without its own env.ITERION_SANDBOX_DEFAULT_IMAGE, required under image.requireDigest)" "ref" $sandboxImage) }}
+  {{- end }}
+  {{- end }}
   {{- if .Values.config.disableAuth }}
   ITERION_DISABLE_AUTH: "true"
+  {{- end }}
+  {{- with .Values.config.legal }}
+  {{- if (include "iterion.legal.mounted" $) }}
+  # --- Legal pages (ADR-160) -----------------------------------------
+  # The documents ConfigMap is mounted here by server-deployment.yaml.
+  ITERION_LEGAL_DOCUMENTS_DIR: {{ include "iterion.legal.mountPath" $ | quote }}
+  {{- end }}
+  {{- with .contactEmail }}
+  ITERION_LEGAL_CONTACT_EMAIL: {{ . | quote }}
+  {{- end }}
+  {{- with .accessibilityStatus }}
+  ITERION_LEGAL_ACCESSIBILITY_STATUS: {{ . | quote }}
+  {{- end }}
+  {{- with .accessibilityDate }}
+  ITERION_LEGAL_ACCESSIBILITY_DATE: {{ . | quote }}
+  {{- end }}
+  {{- with .accessibilityRate }}
+  ITERION_LEGAL_ACCESSIBILITY_RATE: {{ . | quote }}
+  {{- end }}
   {{- end }}
   {{- if eq .Values.mode "cloud" }}
   # --- Auth (Phase A) ---------------------------------------------
@@ -118,6 +184,16 @@ data:
   {{- end }}
   {{- if .launchRatePerMin }}
   ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN: {{ .launchRatePerMin | quote }}
+  {{- end }}
+  {{- /* The fork review lane's per-contributor bound (ADR-162 Q4) inverts the
+  "0 = unlimited" convention above: unset ships the server's 20 runs / $20,
+  so the key is rendered whenever the operator WROTE one — 0 included, which
+  the server refuses at boot rather than read as a second "unbounded". */}}
+  {{- if not (kindIs "invalid" .forkAuthorRunQuota) }}
+  ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA: {{ .forkAuthorRunQuota | quote }}
+  {{- end }}
+  {{- if not (kindIs "invalid" .forkAuthorCostCapUsd) }}
+  ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD: {{ .forkAuthorCostCapUsd | quote }}
   {{- end }}
   {{- end }}
   {{- if .Values.secrets.auth.oidc.google.enabled }}

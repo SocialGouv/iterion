@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -21,6 +22,11 @@ import (
 // bought nothing over a plain re-run.
 func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 	t.Parallel()
+	reliabilityRewindCheckpoint(t)
+}
+
+func reliabilityRewindCheckpoint(t *testing.T) {
+	t.Helper()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	storeDir := t.TempDir()
@@ -128,6 +134,11 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 // against the real store rather than a hand-built run doc.
 func TestRewind_RefusesRunningRun_E2E(t *testing.T) {
 	t.Parallel()
+	reliabilityRewindRefusesRunning(t)
+}
+
+func reliabilityRewindRefusesRunning(t *testing.T) {
+	t.Helper()
 	storeDir := t.TempDir()
 	st, err := store.New(storeDir)
 	if err != nil {
@@ -142,6 +153,10 @@ func TestRewind_RefusesRunningRun_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	before, err := st.LoadRun(t.Context(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = svc.Rewind(context.Background(), runview.RewindSpec{
 		RunID:      runID,
 		NodeID:     "implement",
@@ -149,5 +164,12 @@ func TestRewind_RefusesRunningRun_E2E(t *testing.T) {
 	})
 	if !errors.Is(err, runview.ErrRewindNotRewindable) {
 		t.Fatalf("Rewind on a running run: err = %v, want ErrRewindNotRewindable", err)
+	}
+	after, err := st.LoadRun(t.Context(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("rewind refusal changed durable run: before=%+v after=%+v", before, after)
 	}
 }

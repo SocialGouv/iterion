@@ -68,10 +68,37 @@ authorise the bot to invent. See
 ```
 catalog_ingest ─▶ route_table ─▶ diagram ─▶ scan_hints ─▶ campaign ─▶ scope_check
                ─▶ page_lint ─▶ diagram_lint ─▶ coverage_check ─▶ gate
-gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
+gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ delivery_gate ──(paths owned)──▶ finalize_mr
                                           ─▶ surface_pr_link ─▶ done
+delivery_gate ─▶ delivery_paths_refused     (typed fail: DELIVERY_PATHS_REFUSED)
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
 ```
+
+**What the delivery owns, and what it refuses:** the push carries `.md`
+pages under the product directory and nothing else — never the editorial
+charter, never a path under `.github/workflows/` (as narrow as the
+credential's own refusal: the rest of `.github/` is markdown it pushes),
+never a symlink, and never a file the run committed under `.claude/` — and a
+run that still touches anything else when the loop is spent ends on
+`DELIVERY_PATHS_REFUSED` with every offending path named: no pull request is
+opened and nothing is delivered. The series is not lost and not secret
+either — the commits stay on the run's own branch, and a repo-targeted
+**cloud** run banks them to its storage branch `iterion/run-<run id>`, which
+the refusal's message names. `scope_check` carries the same rule in the same
+window, so a pass is asked to revert exactly what the tail would refuse. The
+window is the base `catalog_ingest` recorded before the campaign wrote — on
+an unborn HEAD, a freshly created docs repository the engine runs in place,
+git's empty tree, so the first commit is judged rather than refused for want
+of a base — and the engine's own mirror is skipped only while the run has
+not committed it: the state in which no pass can revert it, and in which the
+most it reaches is the run's own bank, never the pull request. A symlink is
+read in both windows — the worktree and the committed series — so removing
+the link after committing it does not disarm the term; the term is keyed on
+the destination mode, so a stale link the run removes is a cleanup the
+delivery carries. The gate's scrub covers git state the campaign can plant,
+not the toolchain it runs on: this bundle declares `repo_devbox: off`, so no
+workspace-owned directory sits on the run's PATH.
+
 
 - **`catalog_ingest`** (deterministic, once, outside the loop) — resolves
   the product from the catalog, clones its source repos out of tree,

@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
@@ -180,7 +181,7 @@ func (s *Server) ListenAndServe() error {
 			case "/readyz":
 				s.handleReadyz(w, r)
 			default:
-				http.Error(w, "server generation superseded", http.StatusServiceUnavailable)
+				s.httpErrorCode(w, r, http.StatusServiceUnavailable, "server_generation_superseded", "server generation superseded")
 			}
 		})
 		return s.server.Serve(ln)
@@ -207,12 +208,14 @@ func (s *Server) ListenAndServe() error {
 		s.logger.Info("Recovery-passive editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 		return s.server.Serve(ln)
 	}
-	// Sweep abandoned upload staging dirs in the background. Without
-	// this, attachments uploaded for runs that never launched (operator
-	// closed the modal, browser crashed mid-upload, etc.) accumulate
-	// under <store>/uploads/ until the disk fills. The reaper itself
-	// is best-effort — it walks the staging root, deletes dirs older
-	// than uploadStagingTTL, and stops when s.shutdown closes.
+	// Sweep abandoned staged uploads in the background. Without this,
+	// attachments uploaded for runs that never launched (operator closed
+	// the modal, browser crashed mid-upload, etc.) accumulate — under
+	// <store>/uploads/ on a local store, as staged_uploads records and
+	// their blobs in cloud — until the disk or the bucket fills. The reaper
+	// sweeps through the run store's staging seam (store.StagingStore),
+	// removing what is older than uploadStagingTTL, says a failure at warn
+	// level, and stops when s.shutdown closes.
 	if s.runs != nil {
 		s.goUntilShutdown("server.stagedUploadReaper", s.runStagedUploadReaper)
 	}
@@ -282,7 +285,9 @@ func (s *Server) ListenAndServe() error {
 	s.startBoardSync()
 	s.startGateAutofix()
 	s.startOutcomeRouter()
-	s.startScheduleOutcome()
+	s.startRunOutcomeSpine()
+	s.startConnectorWorker()
+	s.startConnectorPollers()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to
 	// trigger the lazy eviction inside Take, so without this the
@@ -310,13 +315,8 @@ func (s *Server) ListenAndServe() error {
 		// tokens, then the per-repository bots whose expiry falls within the
 		// rotation lead — the same ticker, since each sweep is one cheap
 		// expiry query when nothing is due.
-		sweep := func(ctx context.Context) {
-			if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-				s.logger.Warn("forge token refresh: %v", err)
-			}
-			if _, err := s.forgeOrchestrator.RotateDueProjectBots(ctx, 0); err != nil && s.logger != nil {
-				s.logger.Warn("forge project bot rotation: %v", err)
-			}
+		sweep := func(ctx context.Context) lease.PassVerdict {
+			return s.forgeCredentialSweep(ctx, worker)
 		}
 		s.goUntilShutdown("server.forgeTokenRefresh", func(ctx context.Context) {
 			s.runElectedForgeTokenRefresh(ctx, forgeRefreshTick, sweep)
@@ -331,6 +331,24 @@ func (s *Server) ListenAndServe() error {
 	if s.boardIssueSyncStarts() {
 		s.goUntilShutdown("server.forgeBoardIssueSync", func(ctx context.Context) {
 			s.runBoardSyncWorker(ctx, forgeBoardSyncInterval)
+		})
+	}
+	// Price-feed refresh sweep (cloud only, ADR-163): one elected
+	// replica refreshes every due feed on its own period and writes the
+	// durable state; a feed's staleness steps down to the operator floor
+	// with a warning, never a refusal. Off unless both tenant stores are
+	// wired — local mode has no feed and the operator table is the floor.
+	if s.priceFeedSyncStarts() {
+		s.goUntilShutdown("server.priceFeedSync", func(ctx context.Context) {
+			s.runElectedPriceFeedSync(ctx)
+		})
+	}
+	// Key pools' signal reconciler (ADR-164, cloud only): warms the
+	// attached pools' OAuth entries' usage readings so the launch-path
+	// margin predicate pays no probe latency. Election inside the loop.
+	if s.poolSignalSyncStarts() {
+		s.goUntilShutdown("server.poolSignalSync", func(ctx context.Context) {
+			s.runElectedPoolSignalSync(ctx)
 		})
 	}
 	// Orphan-run sweeper (cloud only): flips queued/running rows whose
@@ -366,6 +384,13 @@ func (s *Server) ListenAndServe() error {
 		s.warnf("retry sweeper NOT started: the store does not implement ListRunsDueForRetry — " +
 			"runs parked on a provider quota window will never resume on their own")
 	}
+	// Platform-override shadow observer: polls whether a stored platform
+	// override is holding back a newer baked bundle, and publishes it as a
+	// gauge an alert can read. The two reporters it sits on are passive —
+	// the admin inventory waits for a caller, the resolve-time warning for a
+	// launch — so a bot nobody launches rots unseen (#2354). Gauge-only, no
+	// durable state, hence no election and no cloud twin owed.
+	s.startOverrideShadowObserver()
 	// Merge-gate sweeper (cloud only): the reconciliation net under the
 	// reconciler's lossy outcome event. Same cadence as the retry sweeper next
 	// door, and needed for the same reason — a required check nobody answers
@@ -408,11 +433,10 @@ func (s *Server) ListenAndServe() error {
 		})
 	}
 	// Org purge sweeper: nightly hard-purge of soft-deleted orgs past their
-	// grace. Idempotent across replicas (no leader election needed).
-	if s.cfg.OrgPurgeSweeper != nil {
-		s.goUntilShutdown("server.orgPurgeSweeper", func(ctx context.Context) {
-			s.cfg.OrgPurgeSweeper.Run(ctx)
-		})
+	// grace, on the ONE replica holding its lease (runElectedOrgPurge): the
+	// purge is idempotent, its S3 cost is not.
+	if s.orgPurgeStarts() {
+		s.goUntilShutdown("server.orgPurgeSweeper", s.runElectedOrgPurge)
 	}
 	// Cloud board dispatcher: claim + run eligible cards across all tenants.
 	// Multi-replica-safe via the per-card Claim CAS (no leader election).
@@ -464,6 +488,41 @@ func (s *Server) ListenAndServe() error {
 	}
 	s.logger.Info("Editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 	return s.server.Serve(ln)
+}
+
+// forgeCredentialSweep is one pass of the elected forge token refresh: both
+// credential families, the connections' own tokens then the per-repository
+// bots, on the same ticker since each is one cheap expiry query when nothing
+// is due. The pass reports what it did, which is what decides whether this
+// replica keeps the term (#2685): both workers already count what they
+// renewed and name the first failure they met, so the verdict travels from
+// the pass instead of being guessed from the absence of progress — nothing
+// due is (0, nil), an idle pass, which says nothing about this replica's
+// reach and is the normal state of a fleet whose tokens are all fresh.
+//
+// Both workers answer how many credentials they renewed and the FIRST failure
+// they met, not how many they tried — so an error means at least one more
+// item was attempted and did not succeed. The recorder is AttemptedUnlessDone:
+// the ctx is the term's, and its end reaches a worker mid-sweep as the
+// cancellation of its store and forge calls — that cancellation records
+// nothing (pkg/lease UnlessDone).
+func (s *Server) forgeCredentialSweep(ctx context.Context, worker *forge.RefreshWorker) lease.PassVerdict {
+	var pass lease.Pass
+	record := func(what string, renewed int, err error) {
+		if err != nil && s.logger != nil {
+			s.logger.Warn("%s: %v", what, err)
+		}
+		attempted := renewed
+		if err != nil {
+			attempted++
+		}
+		pass.AttemptedUnlessDone(ctx, attempted, renewed, err)
+	}
+	renewed, err := worker.RunOnce(ctx)
+	record("forge token refresh", renewed, err)
+	rotated, err := s.forgeOrchestrator.RotateDueProjectBots(ctx, 0)
+	record("forge project bot rotation", rotated, err)
+	return pass.Verdict()
 }
 
 // oauthRefreshWorker builds the forfait refresh sweep, or nil when this
@@ -826,9 +885,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.outcomeRouterCancel(subCancelCtx)
 		s.outcomeRouterCancel = nil
 	}
-	if s.scheduleOutcomeCancel != nil {
-		s.scheduleOutcomeCancel(subCancelCtx)
-		s.scheduleOutcomeCancel = nil
+	if s.runOutcomeSpineCancel != nil {
+		s.runOutcomeSpineCancel(subCancelCtx)
+		s.runOutcomeSpineCancel = nil
 	}
 	if s.boardSyncCancel != nil {
 		s.boardSyncCancel()

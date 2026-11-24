@@ -1,13 +1,16 @@
 package model
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // resetEnvForResolve scrubs every env var that influences backend resolution
@@ -23,10 +26,14 @@ func resetEnvForResolve(t *testing.T) {
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 		"RESCUE_PROVIDER",
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY",
+		"ITERION_PI_BIN", "ITERION_OPENCODE_BIN",
 	} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("ITERION_PI_AGENT_DIR", t.TempDir())
 	// Point PATH at an empty dir so the detector can't discover the host's
 	// real `claude`/`codex` binaries. Without this, the claude_code probe's
 	// `claude auth status` fallback would spawn the real CLI during these
@@ -163,6 +170,178 @@ func TestResolveBackend_FallbackToClawWhenNothing(t *testing.T) {
 	got := e.resolveBackendName(&ir.AgentNode{})
 	if got != delegate.BackendClaw {
 		t.Fatalf("got %q, want claw (last-resort)", got)
+	}
+}
+
+// primeClaudeCodeDetection arms the detector so claude_code wins
+// auto-selection: a discoverable `claude` binary plus an OAuth credential
+// file, the shape the common operator machine presents (#2785).
+func primeClaudeCodeDetection(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	if err := os.WriteFile(filepath.Join(dir, "credentials.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeExecOnPath(t, "claude")
+}
+
+// #2785: a node naming an openai_compatible gateway route and no backend
+// must not be handed to whatever auto-detection finds first — every backend
+// but claw is refused that route at task build, so selecting it aborts the
+// run 80 ms in. Detection's answer is a guess for an author who named
+// nothing; the one backend that can serve the route wins it instead.
+func TestResolveBackend_GatewayRouteSelectsClawOverDetection(t *testing.T) {
+	gatewayNode := func(mutate func(*ir.AgentNode)) *ir.AgentNode {
+		n := &ir.AgentNode{}
+		n.Model = "openai_compatible/scaleway/gpt-oss-120b"
+		if mutate != nil {
+			mutate(n)
+		}
+		return n
+	}
+
+	t.Run("a gateway model detects claw, not the CLI on PATH", func(t *testing.T) {
+		resetEnvForResolve(t)
+		primeClaudeCodeDetection(t)
+		e := newExecutorForResolveTest("")
+		if got := e.resolveBackendName(gatewayNode(nil)); got != delegate.BackendClaw {
+			t.Fatalf("got %q, want claw — detection picked a backend the node's own route cannot run on", got)
+		}
+		// Control: the SAME detection answers claude_code for a route it can
+		// serve, so the redirect above is the route's doing, not a detection
+		// that never fires.
+		plain := &ir.AgentNode{}
+		plain.Model = "anthropic/claude-opus-4-6"
+		if got := e.resolveBackendName(plain); got != detect.BackendClaudeCode {
+			t.Fatalf("control: got %q, want claude_code — the detection this test primes is not winning", got)
+		}
+	})
+
+	t.Run("the gateway provider hint is the same route", func(t *testing.T) {
+		resetEnvForResolve(t)
+		primeClaudeCodeDetection(t)
+		e := newExecutorForResolveTest("")
+		if got := e.resolveBackendName(gatewayNode(func(n *ir.AgentNode) { n.Provider = "openai_compatible" })); got != delegate.BackendClaw {
+			t.Fatalf("got %q, want claw — the hint names the gateway as surely as the model does", got)
+		}
+	})
+
+	t.Run("a head chain element pinning the gateway model is the same route", func(t *testing.T) {
+		resetEnvForResolve(t)
+		primeClaudeCodeDetection(t)
+		e := newExecutorForResolveTest("")
+		n := &ir.AgentNode{}
+		n.Provider = "openai_compatible:scaleway/gpt-oss-120b"
+		if got := e.resolveBackendName(n); got != delegate.BackendClaw {
+			t.Fatalf("got %q, want claw — the head element's own model pin is the route detection concretises for", got)
+		}
+	})
+
+	t.Run("an explicit backend is the operator's choice, never rewritten", func(t *testing.T) {
+		resetEnvForResolve(t)
+		primeClaudeCodeDetection(t)
+		e := newExecutorForResolveTest("")
+		n := gatewayNode(func(n *ir.AgentNode) { n.Backend = "claude_code" })
+		if got := e.resolveBackendName(n); got != "claude_code" {
+			t.Fatalf("got %q, want claude_code — an explicit pin keeps its answer and its build-time refusal", got)
+		}
+	})
+
+	t.Run("the workflow's default_backend is explicit too", func(t *testing.T) {
+		resetEnvForResolve(t)
+		primeClaudeCodeDetection(t)
+		e := newExecutorForResolveTest("claude_code")
+		if got := e.resolveBackendName(gatewayNode(nil)); got != "claude_code" {
+			t.Fatalf("got %q, want claude_code — default_backend: is the author's choice, judged at build", got)
+		}
+	})
+}
+
+// #2785, adversarial round: the class is a gateway route ANYWHERE in the
+// chain. A gateway model carried by a `fallbacks:` route (or a later
+// `provider:` step) that inherits the node's backend is refused at its own
+// build under a detected claude_code — the walk falls past it and the rescue
+// route never fires, which is the one case a fallback exists for. Detection
+// reads the whole chain and answers claw.
+func TestResolveBackend_GatewayRouteAnywhereInTheChainSelectsClaw(t *testing.T) {
+	primed := func(t *testing.T) *ClawExecutor {
+		resetEnvForResolve(t)
+		primeClaudeCodeDetection(t)
+		return newExecutorForResolveTest("")
+	}
+	plainNode := func() *ir.AgentNode {
+		n := &ir.AgentNode{}
+		n.Model = "anthropic/claude-opus-4-6"
+		return n
+	}
+
+	t.Run("a fallbacks route pinning a gateway model reroutes detection to claw", func(t *testing.T) {
+		e := primed(t)
+		n := plainNode()
+		n.Fallbacks = []ir.Fallback{{Name: "rescue", Model: "openai_compatible/scaleway/gpt-oss-120b"}}
+		if got := e.resolveBackendName(n); got != delegate.BackendClaw {
+			t.Fatalf("got %q, want claw — the gateway rescue route inherits the node's backend and could never serve under the detected one", got)
+		}
+		// Control: the same node without the gateway route keeps the detected
+		// backend — the reroute is the chain's doing, not detection never
+		// firing.
+		if got := e.resolveBackendName(plainNode()); got != detect.BackendClaudeCode {
+			t.Fatalf("control: got %q, want claude_code", got)
+		}
+	})
+
+	t.Run("a later provider: step pinning a gateway model reroutes detection to claw", func(t *testing.T) {
+		e := primed(t)
+		n := plainNode()
+		n.Provider = "anthropic,openai_compatible:scaleway/gpt-oss-120b"
+		if got := e.resolveBackendName(n); got != delegate.BackendClaw {
+			t.Fatalf("got %q, want claw — the second step's gateway model inherits the node's backend exactly like a fallbacks route's", got)
+		}
+	})
+
+	t.Run("a route pinning its OWN backend is judged at its own build, not here", func(t *testing.T) {
+		e := primed(t)
+		n := plainNode()
+		n.Fallbacks = []ir.Fallback{{Name: "rescue", Backend: "codex", Model: "openai_compatible/scaleway/gpt-oss-120b"}}
+		if got := e.resolveBackendName(n); got != detect.BackendClaudeCode {
+			t.Fatalf("got %q, want claude_code — an element with its own backend: does not inherit the detected answer, so detection's incapacity is not its problem", got)
+		}
+	})
+
+	t.Run("an action: skip route runs no model and asks nothing", func(t *testing.T) {
+		e := primed(t)
+		n := plainNode()
+		n.Fallbacks = []ir.Fallback{{Name: "give_up", Action: ir.FallbackActionSkip, Model: "openai_compatible/scaleway/gpt-oss-120b"}}
+		if got := e.resolveBackendName(n); got != detect.BackendClaudeCode {
+			t.Fatalf("got %q, want claude_code — a skip route executes nothing, its model field never reaches a wire", got)
+		}
+	})
+}
+
+// The redirect says so once per node: resolveBackendName is asked by several
+// seams (admission, the route walk, dispatch), and one redirect is one fact.
+func TestResolveBackend_GatewayRerouteWarnsOnceAndNamesClaw(t *testing.T) {
+	resetEnvForResolve(t)
+	primeClaudeCodeDetection(t)
+	e := newExecutorForResolveTest("")
+	var buf bytes.Buffer
+	e.logger = iterlog.New(iterlog.LevelWarn, &buf)
+
+	n := &ir.AgentNode{}
+	n.ID = "gw"
+	n.Model = "openai_compatible/scaleway/gpt-oss-120b"
+	for i := 0; i < 3; i++ {
+		if got := e.resolveBackendName(n); got != delegate.BackendClaw {
+			t.Fatalf("call %d: got %q, want claw", i+1, got)
+		}
+	}
+	out := buf.String()
+	if got := strings.Count(out, "auto-detection picked"); got != 1 {
+		t.Errorf("the redirect warned %d times over 3 resolutions of one node, want 1: %q", got, out)
+	}
+	if !strings.Contains(out, "backend: claw") {
+		t.Errorf("the remedy must name the one spelling that changes anything: %q", out)
 	}
 }
 

@@ -28,7 +28,7 @@ func TestExecutorSpecBindsInboxAndAsyncAsk(t *testing.T) {
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 	msg := &queue.RunMessage{RunID: "run-spec", WorkflowName: "wf", Permission: "deny"}
 
-	spec, usage, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, "", iterlog.Nop(), nil)
+	spec, usage, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestExecutorSpecNamesTheEnginesWorkDirForTheSandboxProbe(t *testing.T) {
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase}}
 	msg := &queue.RunMessage{RunID: "run-probe", WorkflowName: "wf"}
 
-	spec, _, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, clone, iterlog.Nop(), nil)
+	spec, _, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, clone, iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec: %v", err)
 	}
@@ -108,13 +108,18 @@ func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
 			Fallbacks: []ir.Fallback{{Name: "rescue", Backend: "codex", Provider: "zai"}},
 		},
 	}}
-	spec, _, err := r.executorSpec(context.Background(), msg, wf, "", iterlog.Nop(), nil)
+	spec, _, err := r.executorSpec(context.Background(), msg, wf, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec: %v", err)
 	}
 	if !slices.Equal(spec.LLMProviders, msg.LLMProviders) {
 		t.Fatalf("ExecutorSpec.LLMProviders = %v, want the run's frozen list — the pod's filter rides this seam", spec.LLMProviders)
 	}
+	inv, err := store.PrepareRunInvocation(t.Context(), r.cfg.Store, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: msg.RunID, WorkflowName: wf.Name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Ctx = inv.Context
 	ex, err := runview.BuildExecutor(spec)
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
@@ -126,10 +131,15 @@ func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
 	// The class twin: no list on the message, the same rescue is in the
 	// answer — the drop is the allowlist's doing.
 	msg2 := &queue.RunMessage{RunID: "run-plain", WorkflowName: "wf"}
-	spec2, _, err := r.executorSpec(context.Background(), msg2, wf, "", iterlog.Nop(), nil)
+	spec2, _, err := r.executorSpec(context.Background(), msg2, wf, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec (no list): %v", err)
 	}
+	inv2, err := store.PrepareRunInvocation(t.Context(), r.cfg.Store, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: msg2.RunID, WorkflowName: wf.Name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec2.Ctx = inv2.Context
 	ex2, err := runview.BuildExecutor(spec2)
 	if err != nil {
 		t.Fatalf("BuildExecutor (no list): %v", err)

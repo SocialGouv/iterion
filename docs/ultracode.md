@@ -32,21 +32,41 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    section is backend-neutral: how a subagent's report comes back is the
    backend's to state.
 3. **Makes the subagent tool available.** On the `claw` backend, the `agent`
-   subagent tool is added to the node's allowlist when the node restricts its
-   tools (an unrestricted set already exposes the claw builtins) — but claw
-   **cannot serve it**: a child conversation needs a host-wired subagent
-   runner, iterion wires none, and the call returns the typed refusal
-   `backend "claw" cannot serve the agent tool (subagents)` naming
-   `claude_code`, whose native `Agent` tool serves it, as the way out
-   (compile-time warning on a declared `agent`:
-   C159; real wiring tracked in
-   [#1940](https://github.com/SocialGouv/iterion/issues/1940)). So an
-   ultracode claw node orchestrates **within itself** — the prerogative to
-   decompose the work stands, the delegation does not, and the `## Workflow
-   Orchestration` grant says so where it grants it: a refused `agent` call
-   is final, so the model
-   keeps the decomposition and runs the parts in its own thread instead of
-   retrying. The
+   subagent tool is added to the node's allowlist when the node already holds
+   one — there is no "unrestricted set" on claw, where the list IS the surface,
+   and appending to an empty one would make `agent` the node's whole
+   surface — and claw
+   **serves it**: a child conversation needs a host-wired subagent runner,
+   and iterion wires one at both hosts (in process and in the sandbox
+   container), so the dispatch returns the child's real answer
+   ([#1940](https://github.com/SocialGouv/iterion/issues/1940)). The child
+   runs SYNCHRONOUSLY, within the node's own effective tools, permission
+   policy and step budget, and its spend is debited to the node — an
+   ultracode claw node orchestrates for real, and pays for its subagents
+   out of its own ceiling. `agent` is withheld from the child, so a
+   decomposition is one level deep — and so is the ask channel: the child
+   holds no `ask_user`/`ask_user_async`/`await_answers`, since a question
+   raised from inside a tool call would pause the run unattributed, with no
+   child conversation persisted for the resume
+   ([#2812](https://github.com/SocialGouv/iterion/issues/2812)); the child
+   reports the question to its parent, whose own channel is intact. The
+   policy's ask VERDICT takes the same route
+   ([#2877](https://github.com/SocialGouv/iterion/issues/2877)): an `ask`
+   rule matching a tool the child holds degrades to a refusal naming the
+   rule at the delegation's gate, instead of pausing the run from inside
+   the parent's tool call. Holding
+   `agent` also reads the node as MUTATING to the parallel-branch
+   workspace-safety guard: that the shipped runner bounds the child to the
+   node's own list is the host's wiring, which the guard's name reading
+   cannot see, so an ultracode claw node shares no worktree unless it
+   declares `readonly:`
+   ([#2811](https://github.com/SocialGouv/iterion/issues/2811)). An embedding
+   that wires no runner earns
+   the typed refusal `backend "claw" cannot serve the agent tool
+   (subagents)` instead, and the `## Workflow Orchestration` grant says
+   what to do with it where it grants the dispatch: a refused `agent` call
+   is final, so the model keeps the decomposition and runs the parts in its
+   own thread instead of retrying. The
    `claude_code` backend orchestrates through its native `Agent` tool, and
    every subagent runs in the **foreground**: each spawn sets
    `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (unless the operator asks for

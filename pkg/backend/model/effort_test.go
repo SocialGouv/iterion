@@ -3,6 +3,7 @@ package model
 import "testing"
 
 func TestCoerceEffortWithNone(t *testing.T) {
+	t.Parallel()
 	// Capabilities are a set: their order must not change the nearest lower
 	// effort or the minimum used for an unrecognised value.
 	orders := [][]string{
@@ -36,6 +37,7 @@ func TestCoerceEffortWithNone(t *testing.T) {
 }
 
 func TestCoerceEffort(t *testing.T) {
+	t.Parallel()
 	openaiSupported := []string{"minimal", "low", "medium", "high"}
 	anthropicOpus47 := []string{"low", "medium", "high", "xhigh", "max"}
 
@@ -122,6 +124,7 @@ func TestCoerceEffort(t *testing.T) {
 }
 
 func TestCoerceEffortForModel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		effort string
@@ -176,6 +179,7 @@ func TestCoerceEffortForModel(t *testing.T) {
 }
 
 func TestWireEffortUltracode(t *testing.T) {
+	t.Parallel()
 	if got := wireEffort("ultracode"); got != "xhigh" {
 		t.Errorf("wireEffort(ultracode) = %q, want xhigh", got)
 	}
@@ -192,6 +196,7 @@ func TestWireEffortUltracode(t *testing.T) {
 }
 
 func TestCoerceEffortForModelUltracode(t *testing.T) {
+	t.Parallel()
 	// ultracode must collapse to the model's xhigh, never drop to the lowest
 	// supported level (the unknown-token-rank-0 trap).
 	if got := coerceEffortForModel("ultracode", "claude-opus-4-8"); got != "xhigh" {

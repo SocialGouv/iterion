@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -21,7 +22,7 @@ func launchPRContextServer(t *testing.T, connTeam string) *Server {
 	t.Helper()
 	s := newQueueOutageHTTPTestServer(t)
 	s.cfg.PublicURL = "https://iterion.test"
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
 	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
 		ID: "conn1", TenantID: connTeam, Provider: forge.ProviderGitHub, Status: forge.StatusActive,

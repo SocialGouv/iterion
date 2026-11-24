@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -32,11 +34,16 @@ func (s *Server) registerWebhookRoutes() {
 		s.authLimiter = newAuthRateLimiter()
 	}
 	s.mux.Handle("GET /api/teams/{id}/webhooks", s.requireAuth(http.HandlerFunc(s.handleListWebhooks)))
-	s.mux.Handle("POST /api/teams/{id}/webhooks", s.requireAuth(http.HandlerFunc(s.handleCreateWebhook)))
+	// The create and the rotate mint a self-authenticating token that
+	// outlives the credential it is minted from: they go through the
+	// derivation chokepoint (auth.MintTeamToken), so the access token of a
+	// revoked session mints none (401) and a personal access token never
+	// does (403).
+	s.mux.Handle("POST /api/teams/{id}/webhooks", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateWebhook))))
 	s.mux.Handle("GET /api/teams/{id}/webhooks/{webhook_id}", s.requireAuth(http.HandlerFunc(s.handleGetWebhook)))
 	s.mux.Handle("PATCH /api/teams/{id}/webhooks/{webhook_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateWebhook)))
 	s.mux.Handle("DELETE /api/teams/{id}/webhooks/{webhook_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteWebhook)))
-	s.mux.Handle("POST /api/teams/{id}/webhooks/{webhook_id}/rotate", s.requireAuth(http.HandlerFunc(s.handleRotateWebhook)))
+	s.mux.Handle("POST /api/teams/{id}/webhooks/{webhook_id}/rotate", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleRotateWebhook))))
 	s.mux.Handle("GET /api/teams/{id}/webhooks/{webhook_id}/deliveries", s.requireAuth(http.HandlerFunc(s.handleListWebhookDeliveries)))
 }
 
@@ -77,6 +84,68 @@ type webhookConfigReq struct {
 	AuthorizedRepliers  []string          `json:"authorized_repliers,omitempty"`
 	MinReplierRole      *string           `json:"min_replier_role,omitempty"`
 	ForgeBaseURL        *string           `json:"forge_base_url,omitempty"`
+	// ConnectorConnectionID binds the webhook to a pkg/connection record:
+	// set, the inbound handler is the connector lane (#2761). An explicit
+	// empty string clears the binding.
+	ConnectorConnectionID *string `json:"connector_connection_id,omitempty"`
+	// Installation is the installation value a connector ingress is bound
+	// to, required exactly when its package reads one (ADR-168 §3).
+	Installation *string `json:"installation,omitempty"`
+	// VendorSecret is the vendor's secret a connector ingress verifies with,
+	// when its package declares `secret: vendor`: accepted at creation and
+	// rotation, sealed, never answered back.
+	VendorSecret *string `json:"vendor_secret,omitempty"`
+	// ContractDigest is the operator's consent to a connector ingress's
+	// contract: the digest of the package's `ingress:` block they read. On a
+	// create it must be the contract the package resolves to; on an update
+	// it moves the pin to it — the only way it moves.
+	ContractDigest *string `json:"contract_digest,omitempty"`
+	// ForkLane opts the config into the fork review lane at CREATION
+	// (ADR-162 decision 1). Github-only, checked at creation with a typed
+	// refusal per other provider; IMMUTABLE afterwards — the PATCH arm
+	// below refuses any change, so a value present on the request is
+	// honoured only when it restates the stored one.
+	ForkLane *bool `json:"fork_lane,omitempty"`
+	// ForkLanePool names the runner pool every run of the fork lane executes
+	// on (ADR-162 Q3, decision 10). Required at creation with fork_lane,
+	// refused without it, IMMUTABLE afterwards on the same terms as
+	// fork_lane: the PATCH arm honours it only as a restatement.
+	ForkLanePool *string `json:"fork_lane_pool,omitempty"`
+}
+
+// forkLanePoolCreationRefusal is the creation's word on fork_lane_pool: a
+// fork-lane config names the pool its runs execute on, an ordinary config
+// names none, and the name is a pool name. "" admits. The pool's registry
+// state, and whether a team other than this one holds it, are judged where
+// the run is published (cloudpublisher's fork-lane pool rule), because both
+// can move after the config is created.
+func forkLanePoolCreationRefusal(forkLane bool, pool string) string {
+	switch {
+	case forkLane && pool == "":
+		return "fork_lane requires fork_lane_pool: the runner pool every run of the lane executes on — a pool whose runners resolve the kubernetes sandbox for every run (ADR-162 decision 10). It is set at creation only and immutable afterwards"
+	case !forkLane && pool != "":
+		return "fork_lane_pool names the runner pool of a fork-lane config, and this config is not one (fork_lane is not set): an ordinary config's runs execute on their team's own mapping"
+	case pool != "" && !queue.ValidPoolName(pool):
+		return fmt.Sprintf("fork_lane_pool %q is not a runner pool name (1–31 chars [a-z0-9-], alphanumeric at both ends — the registry's grammar)", pool)
+	}
+	return ""
+}
+
+// forkLaneProviderRefusal is the typed creation refusal for a fork-lane
+// config on a provider whose lane does not exist, one arm per provider
+// because each names the witness it lacks — the row an operator can act
+// on rather than a generic "not supported".
+func forkLaneProviderRefusal(provider webhooks.Provider) error {
+	switch provider {
+	case webhooks.ProviderGitLab:
+		return errors.New("fork_lane is github-only: GitLab's merge-request head ref (refs/merge-requests/<iid>/head) is unwired — the seam is named in docs/webhooks.md, nothing launches on it")
+	case webhooks.ProviderForgejo:
+		return errors.New("fork_lane is github-only: Forgejo's head-repository proof, author id and pull-request ref have no witness — the admission would take the payload's word for all three")
+	case webhooks.ProviderGeneric:
+		return errors.New("fork_lane is github-only: the generic webhook has no pull request to admit")
+	default:
+		return fmt.Errorf("fork_lane is github-only (provider %q)", provider)
+	}
 }
 
 // overlapOrEmpty resolves an optional overlap policy. Empty is meaningful
@@ -97,6 +166,9 @@ var supportedProviders = map[webhooks.Provider]bool{
 	webhooks.ProviderGitHub:  true,
 	webhooks.ProviderForgejo: true,
 	webhooks.ProviderGeneric: true,
+	// A connector ingress (ADR-168 §6): its package says how a delivery is
+	// verified and read.
+	webhooks.ProviderConnector: true,
 }
 
 // defaultSignMode picks the right SignatureMode for a provider when the
@@ -105,6 +177,12 @@ var supportedProviders = map[webhooks.Provider]bool{
 // caller explicitly opts in to HMAC (generic-only). Centralised here so
 // the create handler stays readable.
 func defaultSignMode(provider webhooks.Provider, req *string) (webhooks.SignatureMode, error) {
+	if provider == webhooks.ProviderConnector {
+		if req != nil && *req != "" {
+			return "", fmt.Errorf("sign_mode does not apply to a connector ingress: its package's `ingress:` block declares how a delivery is verified")
+		}
+		return webhooks.SignModeToken, nil
+	}
 	if req != nil && *req != "" {
 		mode := webhooks.SignatureMode(*req)
 		switch mode {
@@ -137,9 +215,16 @@ func defaultSignMode(provider webhooks.Provider, req *string) (webhooks.Signatur
 	}
 }
 
+// webhookWithToken is the create and rotate answer: the row and the one
+// plaintext of its token. PinsUnreconciled names, on a create, the record
+// ids its landed pins name that the route could not re-check after the row
+// was stored (see reconcileLandedPins) — a receipt the client acts on by
+// re-reading those records and clearing a pin naming a dead one; absent
+// when every pin was vouched for.
 type webhookWithToken struct {
-	Config webhooks.Config `json:"config"`
-	Token  string          `json:"token"`
+	Config           webhooks.Config `json:"config"`
+	Token            string          `json:"token"`
+	PinsUnreconciled []string        `json:"pins_unreconciled,omitempty"`
 }
 
 // normalizeBotScope validates the bot-scope inputs: a wildcard scope
@@ -163,12 +248,34 @@ func normalizeBotScope(botIDs []string, wildcard bool) ([]string, bool, error) {
 	return botIDs, false, nil
 }
 
-// webhookForTenant fetches a config and asserts it belongs to teamID
-// (defence in depth on top of the role gate). Returns ok=false having
-// already written the response.
+// readWebhookForTenant is the foreignness clause itself, in ONE place: a
+// config addressed by a CALLER-supplied id serves a team only when it is
+// stamped with that team — the gate above only proves standing in the team
+// named in the path, so without this an admin of team A would read, patch,
+// delete and rotate team B's webhook by guessing its id.
+//
+// A foreign config is indistinguishable from an absent one, which is what
+// keeps ids from being enumerable across tenants: both answer
+// webhooks.ErrNotFound. A read that FAILED returns the store's own error, so
+// a caller that must tell a transient fault from a refusal can
+// (handleCredentialPreview answers that one 503).
+func (s *Server) readWebhookForTenant(ctx context.Context, teamID, webhookID string) (webhooks.Config, error) {
+	cfg, err := s.webhookConfigs.Get(ctx, webhookID)
+	if err != nil {
+		return webhooks.Config{}, err
+	}
+	if cfg.TenantID != teamID {
+		return webhooks.Config{}, webhooks.ErrNotFound
+	}
+	return cfg, nil
+}
+
+// webhookForTenant is the by-id CRUD's rendering of that clause: one 404 for
+// an absent id, a foreign config and an unreadable store alike. Returns
+// ok=false having already written the response.
 func (s *Server) webhookForTenant(w http.ResponseWriter, r *http.Request, teamID, webhookID string) (webhooks.Config, bool) {
-	cfg, err := s.webhookConfigs.Get(r.Context(), webhookID)
-	if err != nil || cfg.TenantID != teamID {
+	cfg, err := s.readWebhookForTenant(r.Context(), teamID, webhookID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "webhook not found")
 		return webhooks.Config{}, false
 	}
@@ -229,7 +336,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		provider = webhooks.Provider(*req.Provider)
 	}
 	if !supportedProviders[provider] {
-		httpError(w, http.StatusBadRequest, "unsupported provider %q (gitlab|github|forgejo|generic)", provider)
+		httpError(w, http.StatusBadRequest, "unsupported provider %q (gitlab|github|forgejo|generic|connector)", provider)
 		return
 	}
 	signMode, err := defaultSignMode(provider, req.SignMode)
@@ -237,13 +344,42 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	// The fork review lane is github-only (ADR-162 decision 1), checked
+	// HERE at creation rather than at delivery: a config that could be
+	// created on another provider would sit enabled with no lane behind
+	// it, silently swallowing deliveries. Typed per provider — the refusal
+	// names the witness the provider lacks, which is the fact an operator
+	// needs before asking for that lane.
+	if req.ForkLane != nil && *req.ForkLane && provider != webhooks.ProviderGitHub {
+		httpError(w, http.StatusBadRequest, "%s", forkLaneProviderRefusal(provider).Error())
+		return
+	}
+	// The lane's pool is set HERE or never (ADR-162 Q3): a fork-lane config
+	// created without one could never launch — the field is immutable — and
+	// would sit enabled swallowing every gesture as a filtered row.
+	forkLanePool := ""
+	if req.ForkLanePool != nil {
+		forkLanePool = strings.TrimSpace(*req.ForkLanePool)
+	}
+	if reason := forkLanePoolCreationRefusal(req.ForkLane != nil && *req.ForkLane, forkLanePool); reason != "" {
+		httpError(w, http.StatusBadRequest, "%s", reason)
+		return
+	}
 	wildcard := req.WildcardBots != nil && *req.WildcardBots
-	botIDs, wildcard, err := normalizeBotScope(req.BotIDs, wildcard)
-	if err != nil {
+	var botIDs []string
+	if provider == webhooks.ProviderConnector {
+		// A connector ingress launches no bot itself: a subscription binds a
+		// bot to its triggers (ADR-168 §6), so a bot scope here would be a
+		// setting nothing reads.
+		if len(req.BotIDs) > 0 || wildcard || deref(req.DefaultBotID) != "" {
+			httpError(w, http.StatusBadRequest, "bot_ids, wildcard_bots and default_bot_id do not apply to a connector ingress: a trigger subscription binds a bot to its events")
+			return
+		}
+	} else if botIDs, wildcard, err = normalizeBotScope(req.BotIDs, wildcard); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	plaintext, hash, last4, fp, err := webhooks.MintToken()
+	plaintext, hash, last4, fp, err := webhooks.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint token: %v", err)
 		return
@@ -306,6 +442,34 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.ForgeBaseURL = normalized
 	}
+	shown := plaintext
+	if provider == webhooks.ProviderConnector {
+		pkg, err := s.bindConnectorIngress(r.Context(), teamID, &cfg, deref(req.ConnectorConnectionID), deref(req.Installation), req.ContractDigest)
+		if err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+		if shown, err = s.sealIngressSecret(&cfg, pkg.Ingress.Credential.Secret, plaintext, req.VendorSecret); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+	} else {
+		if req.Installation != nil || req.VendorSecret != nil || req.ContractDigest != nil {
+			httpError(w, http.StatusBadRequest, "installation, vendor_secret and contract_digest apply to a connector ingress only (provider connector)")
+			return
+		}
+		if req.ConnectorConnectionID != nil && *req.ConnectorConnectionID != "" {
+			if _, err := s.validateConnectorBinding(r.Context(), teamID, provider, *req.ConnectorConnectionID); err != nil {
+				httpError(w, connectorBindingStatus(err), "%s", err.Error())
+				return
+			}
+			cfg.ConnectorConnectionID = *req.ConnectorConnectionID
+		}
+	}
+	if req.ForkLane != nil {
+		cfg.ForkLane = *req.ForkLane
+	}
+	cfg.ForkLanePool = forkLanePool
 	// HMAC-mode webhooks need the minted plaintext sealed at rest so a
 	// later request can recompute HMAC(body) — the operator pastes the
 	// same iwh_ value into the forge's "secret" field.
@@ -317,7 +481,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.HMACSecretSealed = sealed
 	}
-	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, cfg.KeyOverrides); err != nil {
+	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, webhookActor(cfg.ID), cfg.KeyOverrides); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -329,12 +493,34 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// The pins just landed; close the born-mid-delete window before the
+	// answer — reconcileLandedPins sweeps a record revoked between this
+	// write's validation and its landing, the row the delete's sweep
+	// never listed (see credential_pin_sweep.go). The row is stored and
+	// the token below is its only copy, so a failed re-check is a receipt
+	// on the 201 (pins_unreconciled, cause in the log), never a 5xx that
+	// would lose the token and send the retry minting a second webhook.
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pins := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
+	meta := map[string]any{"name": cfg.Name, "provider": string(cfg.Provider), "wildcard_bots": cfg.WildcardBots}
+	if len(pins.Cleared) > 0 {
+		meta["pins_cleared"] = pins.Cleared
+	}
+	if pins.Err != nil {
+		meta["pins_unreconciled"] = pins.Unreconciled
+		s.logUnreconciledPins("webhook", cfg.ID, pins)
+	}
 	if wildcard && s.logger != nil {
 		s.logger.Warn("webhooks: org %s created a wildcard-bot webhook %s (by %s)", teamID, cfg.ID, id.UserID)
 	}
-	s.auditTenant(r, teamID, "webhook.created", "webhook", cfg.ID, map[string]any{"name": cfg.Name, "provider": string(cfg.Provider), "wildcard_bots": cfg.WildcardBots})
+	s.auditTenant(r, teamID, "webhook.created", "webhook", cfg.ID, meta)
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(cfg.KeyOverrides)
+	pins.strip(cfg.SecretOverrides)
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, webhookWithToken{Config: cfg, Token: plaintext})
+	writeJSON(w, webhookWithToken{Config: cfg, Token: shown, PinsUnreconciled: pins.Unreconciled})
 }
 
 // sealWebhookHMAC is the thin wrapper around webhooks.SealHMACSecret —
@@ -364,11 +550,49 @@ func validateForgeBaseURL(raw string) (string, error) {
 	return "https://" + u.Host, nil
 }
 
-// validateKeyOverrides rejects a webhook key override that references a BYOK
-// key the webhook's tenant doesn't own, or whose provider doesn't match. The
-// resolver is already tenant-scoped (a foreign key_id silently won't match in
-// secrets.Resolve), so this is a fail-fast UX guard, not the security boundary.
-func (s *Server) validateKeyOverrides(ctx context.Context, tenantID string, overrides map[string]string) error {
+// validateCredentialPinKeys rejects a pin name a Mongo path cannot address.
+// Both stores hold the pins as one subdocument and the sweep's $unset
+// addresses each entry as "<field>.<name>", so a name holding a dot reads
+// as a nested path — the $unset matches nothing, the clear reports nothing
+// removed, and the dead pin stands while the delete answers 204 — and a $
+// names an operator or an unstashable field. It runs inside the validators,
+// before their store-nil early return: addressability holds whether or not
+// the record store is wired, and both machine lanes' routes pass through
+// this one guard. New names are therefore always addressable; the stores'
+// clears keep a rewrite arm for names stored before this guard existed
+// (storekit.PinNameAddressable is the one definition of the shape).
+func validateCredentialPinKeys(field string, pins map[string]string) error {
+	for name := range pins {
+		if name == "" {
+			return fmt.Errorf("%s: a pin name is required", field)
+		}
+		if !storekit.PinNameAddressable(name) {
+			return fmt.Errorf("%s[%q]: a pin name must not hold '.' or '$' — the pin sweep addresses each entry as a Mongo path", field, name)
+		}
+	}
+	return nil
+}
+
+// validateKeyOverrides rejects a machine lane's key override that references
+// a BYOK key the caller's tenant doesn't own, whose provider doesn't match,
+// or that the lane's own actor could never spend. The resolver is already
+// tenant-scoped (a foreign key_id silently won't match in secrets.Resolve),
+// so the cross-org arm is a fail-fast UX guard, not the security boundary;
+// the spendability arm is the opposite — it is the ONLY place that arm can be
+// enforced, because an unspendable pin produces no refusal downstream at all.
+// Every machine lane that carries pins shares it: the webhook routes, the
+// trigger subscription routes and the schedule routes.
+//
+// actor is the identity the launch will resolve credentials under
+// (webhookActor / triggerSpineActor / scheduledLaunchOwner for the machine
+// lanes). It fails CLOSED:
+// an empty actor matches no key's scope, so an unknown lane is treated as a
+// machine lane rather than skipping the arm — a credential guard with an
+// unused opt-out is a seam for the next caller's false negative.
+func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor string, overrides map[string]string) error {
+	if err := validateCredentialPinKeys("key_overrides", overrides); err != nil {
+		return err
+	}
 	if len(overrides) == 0 || s.apiKeys == nil {
 		return nil
 	}
@@ -377,21 +601,40 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID string, over
 		if err != nil {
 			return fmt.Errorf("key_overrides[%s]: api key %q not found", prov, keyID)
 		}
-		if k.TenantID != tenantID {
-			return fmt.Errorf("key_overrides[%s]: api key %q belongs to another org", prov, keyID)
+		if err := keyPinFault(prov, keyID, k, tenantID, actor); err != nil {
+			return err
 		}
-		if string(k.Provider) != prov {
-			return fmt.Errorf("key_overrides[%s]: api key %q is for provider %q", prov, keyID, k.Provider)
-		}
-		// A gateway key is storable but no run spends it until the walk
-		// learns the provider (#2005 PR-C', which lifts this refusal and
-		// makes such a pin exclusive, ADR-131 §6). Until then a pin on one
-		// would be dropped at launch without a word — refused at write
-		// instead, so the operator's explicit choice is never replaced in
-		// silence.
-		if k.Provider == secrets.ProviderOpenAICompatible {
-			return fmt.Errorf("key_overrides[%s]: api key %q is an openai_compatible gateway key, which no run spends yet (#2005) — a pin on it would be dropped at launch", prov, keyID)
-		}
+	}
+	return nil
+}
+
+// keyPinFault judges one key pin against the key it names, read: the key
+// must be the tenant's, of the pinned provider, and spendable by the actor
+// the lane launches under. The write validator above asks it, and so does the
+// scheduled tick for the schedule's own pins (judgeScheduleKeyPins), so the
+// pin a write admitted is held to the same rule when it is spent.
+func keyPinFault(prov, keyID string, k secrets.ApiKey, tenantID, actor string) error {
+	if k.TenantID != tenantID {
+		return fmt.Errorf("key_overrides[%s]: api key %q belongs to another org", prov, keyID)
+	}
+	if string(k.Provider) != prov {
+		return fmt.Errorf("key_overrides[%s]: api key %q is for provider %q", prov, keyID, k.Provider)
+	}
+	// A gateway key pins like any key of the team: the walk spends it, and
+	// the launch keeps such a pin exclusive (ADR-131 §6 — a pinned gateway
+	// key the run cannot seal refuses the launch by name, cloudpublisher's
+	// gatewayPinRefusal), so nothing here judges the provider.
+	//
+	// The one key a launch cannot spend is refused here: a machine lane fires
+	// under a synthetic actor no key is scoped to, so secrets.Resolve never
+	// even lists a user-scoped key as a candidate — a vendor pin is dropped
+	// and the run seals the team's default instead. Resolve cannot report it
+	// (an invisible key never reaches onWithheld, which answers for the bot
+	// and repository audiences only), so the pin is refused here, and the
+	// operator's explicit choice is never replaced in silence. The secret
+	// twin below has always refused the same shape.
+	if !secrets.SpendableBy(k, tenantID, actor) {
+		return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this lane — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
 	}
 	return nil
 }
@@ -401,6 +644,9 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID string, over
 // key-override guard, the resolver is already tenant-scoped (a foreign id
 // silently won't bind), so this is a fail-fast UX check.
 func (s *Server) validateSecretOverrides(ctx context.Context, tenantID string, overrides map[string]string) error {
+	if err := validateCredentialPinKeys("secret_overrides", overrides); err != nil {
+		return err
+	}
 	if len(overrides) == 0 || s.genericSecrets == nil {
 		return nil
 	}
@@ -429,6 +675,27 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	var req webhookConfigReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// The lane KIND is immutable on an existing config (ADR-162 decision
+	// 1). A flip would re-read every parked debounce target of the other
+	// kind through the disjointness gate — silently terminally, since the
+	// stored provenance cannot change with the config — and the
+	// per-author budget's rows were written under the kind the config
+	// carried. A restatement of the stored value is a no-op, so the field
+	// stays round-trippable for a client that echoes the row back.
+	if req.ForkLane != nil && *req.ForkLane != cfg.ForkLane {
+		httpError(w, http.StatusConflict,
+			"fork_lane is immutable on an existing webhook: flipping the lane kind would re-read its parked debounce targets as the other kind and re-interpret the per-author budget's rows — delete and recreate the webhook instead")
+		return
+	}
+	// The lane's pool is immutable on the same terms: moving it would split
+	// one lane's runs across two pools, the in-flight ones resuming on the
+	// pool their documents froze and the next ones launching on the other.
+	// A restatement is a no-op, as for fork_lane.
+	if req.ForkLanePool != nil && strings.TrimSpace(*req.ForkLanePool) != cfg.ForkLanePool {
+		httpError(w, http.StatusConflict,
+			"fork_lane_pool is immutable on an existing webhook: the lane's runs are stamped with the pool at launch and every resume follows that stamp, so a new pool would split the lane across two — delete and recreate the webhook instead")
 		return
 	}
 	// An explicit overlap clear IS a deliberate gesture, and it must be a
@@ -460,7 +727,11 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// whose approval flow is the governed path. Tightenings and neutral
 	// fields (launch vars, rate limits, names) stay direct.
 	if strings.HasPrefix(cfg.ProvisionedBy, "forge:") {
-		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+		// The CRUD writes no pool block, but a managed config CARRIES the
+		// integration's: an expanding patch (more bots, a wildcard) widens
+		// who draws that pool, so a live block disarms the self-funded
+		// exemption exactly as on the repo-bots API.
+		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, cfg.Pool != nil && cfg.Pool.Enabled)
 		if gerr != nil {
 			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
 			return
@@ -532,7 +803,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.LaunchVars = req.LaunchVars
 	}
 	if req.KeyOverrides != nil {
-		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, req.KeyOverrides); err != nil {
+		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, webhookActor(cfg.ID), req.KeyOverrides); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}
@@ -562,6 +833,33 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.ForgeBaseURL = normalized
 	}
+	if req.VendorSecret != nil {
+		httpError(w, http.StatusBadRequest, "vendor_secret is set at creation and changed by a rotation (POST …/rotate), never by an update")
+		return
+	}
+	if cfg.Provider == webhooks.ProviderConnector {
+		if req.BotIDs != nil || req.WildcardBots != nil || req.DefaultBotID != nil {
+			httpError(w, http.StatusBadRequest, "bot_ids, wildcard_bots and default_bot_id do not apply to a connector ingress: a trigger subscription binds a bot to its events")
+			return
+		}
+		if err := s.rebindConnectorIngress(r.Context(), teamID, &cfg, req.ConnectorConnectionID, req.Installation, req.ContractDigest); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+	} else if req.Installation != nil || req.ContractDigest != nil {
+		httpError(w, http.StatusBadRequest, "installation and contract_digest apply to a connector ingress only (provider connector)")
+		return
+	} else if req.ConnectorConnectionID != nil {
+		// An explicit empty string clears the binding — the webhook returns
+		// to the legacy provider lane.
+		if *req.ConnectorConnectionID != "" {
+			if _, err := s.validateConnectorBinding(r.Context(), teamID, cfg.Provider, *req.ConnectorConnectionID); err != nil {
+				httpError(w, connectorBindingStatus(err), "%s", err.Error())
+				return
+			}
+		}
+		cfg.ConnectorConnectionID = *req.ConnectorConnectionID
+	}
 	// Re-normalise bot scope only when the caller touched it.
 	if req.BotIDs != nil || req.WildcardBots != nil {
 		wildcard := cfg.WildcardBots
@@ -581,10 +879,42 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.UpdatedAt = time.Now().UTC()
 	if err := s.webhookConfigs.Update(r.Context(), cfg); err != nil {
+		if errors.Is(err, webhooks.ErrConflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditTenant(r, teamID, "webhook.updated", "webhook", cfg.ID, map[string]any{"name": cfg.Name, "enabled": cfg.Enabled})
+	// Same closure as the create route: the landed pins are re-checked
+	// against their records — a pin that validated while its record lived
+	// but landed after the record's delete sweep listed would otherwise
+	// stand unreconciled (see credential_pin_sweep.go). The re-check reads
+	// every pin the stored row holds, the ones this patch left untouched
+	// (never validated above) included. Unlike the create, a failed
+	// re-check answers 5xx here: the edit is stored and nothing one-time is
+	// lost, and the mend is the retry's own pass of this re-check, not a
+	// validation — only a pin map the retry re-sends is validated again
+	// (reconcileLandedPins).
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pins := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
+	meta := map[string]any{"name": cfg.Name, "enabled": cfg.Enabled}
+	if len(pins.Cleared) > 0 {
+		meta["pins_cleared"] = pins.Cleared
+	}
+	if pins.Err != nil {
+		meta["pins_unreconciled"] = pins.Unreconciled
+	}
+	s.auditTenant(r, teamID, "webhook.updated", "webhook", cfg.ID, meta)
+	if pins.Err != nil {
+		httpError(w, http.StatusInternalServerError, "webhook %s updated, but re-checking the records its pins name failed: %v — a pin may name a record deleted in flight and stand until it is cleared", cfg.ID, pins.Err)
+		return
+	}
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(cfg.KeyOverrides)
+	pins.strip(cfg.SecretOverrides)
 	writeJSON(w, cfg)
 }
 
@@ -625,11 +955,29 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 	if cfg.ProvisionedBy != "" {
 		// Rotating a managed webhook's token without re-pushing it to the
 		// forge hook would silently brick delivery — re-provision via the
-		// Integrations tab instead (it re-mints + UpdateHook atomically).
+		// Integrations tab instead (a new endpoint gets a distinct identity).
 		httpError(w, http.StatusConflict, "this webhook is managed by a forge integration — rotate it by disabling and re-enabling the bot in the Integrations tab")
 		return
 	}
-	plaintext, hash, last4, fp, err := webhooks.MintToken()
+	// A connector ingress's secret comes from where its package declares:
+	// a vendor's is pasted again, a minted one is minted again below.
+	var origin string
+	var vendorSecret *string
+	if cfg.Provider == webhooks.ProviderConnector {
+		var err error
+		if origin, err = s.ingressSecretOrigin(cfg); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+		var req struct {
+			VendorSecret *string `json:"vendor_secret,omitempty"`
+		}
+		if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+			return
+		}
+		vendorSecret = req.VendorSecret
+	}
+	plaintext, hash, last4, fp, err := webhooks.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint token: %v", err)
 		return
@@ -637,6 +985,12 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	cfg.TokenHash, cfg.TokenLast4, cfg.Fingerprint = hash, last4, fp
 	cfg.RotatedAt = &now
+	if cfg.Provider == webhooks.ProviderConnector {
+		if plaintext, err = s.sealIngressSecret(&cfg, origin, plaintext, vendorSecret); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+	}
 	cfg.UpdatedAt = now
 	// Reseal the HMAC plaintext under the new token so an hmac-mode
 	// webhook keeps verifying after rotate. The operator must update
@@ -650,6 +1004,10 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.HMACSecretSealed = sealed
 	}
 	if err := s.webhookConfigs.Update(r.Context(), cfg); err != nil {
+		if errors.Is(err, webhooks.ErrConflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}

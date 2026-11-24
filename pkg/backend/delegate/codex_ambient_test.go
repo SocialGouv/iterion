@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 )
 
@@ -174,6 +175,35 @@ func TestCodexSpawnEnvMovesTheHomeOnlyWithoutTheOperator(t *testing.T) {
 		if err := release(); err != nil {
 			t.Errorf("%v: release: %v", c.policy, err)
 		}
+	}
+}
+
+// TestCodexSpawnEnvNamesTheWorkspaceAsPWD: the SDK owns codex's exec.Cmd, so
+// the gesture every host spawn of an agent CLI crosses (proc.SetWorkDir)
+// travels through the environment both passes receive — the child's PWD is
+// the workspace, never the engine's checkout; a task with no workspace pins
+// nothing, as SetWorkDir leaves such a spawn alone.
+func TestCodexSpawnEnvNamesTheWorkspaceAsPWD(t *testing.T) {
+	dir := t.TempDir()
+	env, release, err := codexSpawnEnv(context.Background(), Task{WorkDir: dir, AmbientContext: ambient.All})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if env[proc.WorkDirEnvKey] != dir {
+		t.Fatalf("%s = %q, want the workspace %q", proc.WorkDirEnvKey, env[proc.WorkDirEnvKey], dir)
+	}
+	env, release, err = codexSpawnEnv(context.Background(), Task{AmbientContext: ambient.All})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := env[proc.WorkDirEnvKey]; ok {
+		t.Fatalf("%s = %q on a task with no workspace, want the entry absent", proc.WorkDirEnvKey, got)
 	}
 }
 

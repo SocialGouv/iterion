@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"embed"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/assistantmission"
@@ -19,6 +20,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
@@ -28,12 +32,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/lease"
+	"github.com/SocialGouv/iterion/pkg/legal"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
@@ -137,6 +143,13 @@ type Config struct {
 	// CLI and the SDK keep answering on every host.
 	CanonicalRedirect bool
 
+	// Legal is the operator's published legal surface (ADR-160): the
+	// documents loaded at startup from ITERION_LEGAL_DOCUMENTS_DIR, the
+	// contact address and the accessibility declaration. Served public on
+	// GET /api/legal/{slug} and summarised in /api/server/info; the zero
+	// value publishes nothing (404, no link).
+	Legal legal.Surface
+
 	// SignupMode is "open" or "invite_only"; surfaced to the SPA.
 	SignupMode string
 
@@ -170,6 +183,21 @@ type Config struct {
 	// window (the push debounce, ITERION_WEBHOOK_SYNC_DEBOUNCE). nil →
 	// every push launches immediately, as before.
 	WebhookDeferred webhooks.DeferredLaunchStore
+	// ConnectorIntakes is the durable intake a connector ingress writes an
+	// accepted delivery to (ADR-168 §8). Non-nil alongside WebhookConfigs →
+	// POST /api/webhooks/c/{id} is registered.
+	ConnectorIntakes intake.Store
+	// ConnectorPollers is the durable state of the connector pollers
+	// (ADR-168 §7): non-nil alongside ConnectorIntakes, the trigger store and
+	// the connection plane → the elected poller runs, and a subscription to
+	// a polled trigger may be saved.
+	ConnectorPollers poller.Store
+	// ConnectorIntakeRetention is how long an intake row is kept, its dedup
+	// window included (ITERION_CONNECTOR_INTAKE_RETENTION; 0 keeps rows).
+	ConnectorIntakeRetention time.Duration
+	// ConnectorIntakeBacklogMax caps a tenant's unprocessed intakes
+	// (ITERION_CONNECTOR_INTAKE_BACKLOG_MAX; 0 = no cap).
+	ConnectorIntakeBacklogMax int
 
 	// OrgUsage is the per-org monthly run/cost metering counter. When
 	// non-nil, every launch (REST, resume, webhook) passes the
@@ -192,6 +220,16 @@ type Config struct {
 	CredPoolPledges credpool.PledgeStore
 	CredPoolLeases  credpool.LeaseStore
 	CredPoolLedger  credpool.Ledger
+	// CredPoolAttachments is the scope-scoped pool attachment store
+	// (ADR-164). Non-nil together with the broker: nil → no attachment
+	// ever resolves, the fold answers nil, and every run keeps today's
+	// pool behavior.
+	CredPoolAttachments credpool.AttachmentStore
+	// PoolUsageProbe is the subscription usage probe the pool-signal-sync
+	// reconciler refreshes the attached pools' readings with — the same
+	// probe the launch path's stale-but-suggestive fallback runs, wired
+	// beside CredPoolAttachments. nil → the reconciler never starts.
+	PoolUsageProbe cloudpublisher.UsageProbe
 
 	// Audit, when non-nil, persists control-plane mutations (org
 	// status, secrets/bindings/webhooks CRUD, member changes…) and
@@ -240,8 +278,28 @@ type Config struct {
 	// when a bot is enabled on it. Both (plus WebhookConfigs + GenericSecrets
 	// + Sealer + the auth stack) must be present for /api/teams/:id/forge/*
 	// and the OAuth callback to register.
-	ForgeConnections  forge.ConnectionStore
+	ForgeConnections  connection.ForgeStore
 	ForgeIntegrations forge.RepoIntegrationStore
+	// Connections + ConnectorCatalog wire the connector-connection CRUD
+	// (pkg/connection, ADR-098): /api/teams/:id/connections, tenant-scoped in
+	// the store's signature. The catalog resolves the package a credential is
+	// pinned against at creation; Sealer (above) seals it. All three plus the
+	// auth stack must be present for the routes to register — cloud wires the
+	// Mongo twin and the baked catalog; local mode leaves them nil, where
+	// `iterion connections` is the surface.
+	Connections      connection.Store
+	ConnectorCatalog connection.Catalog
+	// ConnectorPackageStore wires the durable distribution tiers (#2757):
+	// when set, the facade's per-grant catalog composes team → platform →
+	// baked (connection.CloudCatalogs) for the grant's tenant. Nil leaves the
+	// static ConnectorCatalog serving every call.
+	ConnectorPackageStore connection.PackageStore
+	// ConnectorCatalogForRun builds the catalog ONE run's facade calls
+	// resolve through, from that run's own workspace and trust — the shape
+	// runview.LocalConnectors already resolves nodes through. Local launches
+	// wire it; nil (cloud) leaves ConnectorCatalog serving every call, whose
+	// catalog holds no workspace tier at all.
+	ConnectorCatalogForRun func(workDir string, trust connection.ActionTrust) (connection.Catalog, error)
 	// BoardBindings ties each team to one forge PROJECT board (ADR-097).
 	// Absent (local mode) self-disables the board endpoints and the periodic
 	// reconciliation worker.
@@ -287,6 +345,14 @@ type Config struct {
 	// webhook lanes, and the runtime-mutable sandbox default image. Nil
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
+	// PriceFeedConfigs / PriceFeedStates are the gateway price feed's
+	// stores (ADR-163): one feed-list document per scope (the platform,
+	// each org, each team), one state document per (scope, feed). Nil
+	// (local mode) disables the feed entirely — the operator table is the
+	// floor, the reconciler does not campaign, and the routes answer the
+	// empty view.
+	PriceFeedConfigs pricefeed.ConfigStore
+	PriceFeedStates  pricefeed.StateStore
 	// RunnerPoolsSettings is the sovereign-pool registry (#2029): which
 	// pools exist and their lifecycle state. Nil = no pools (every team
 	// reads unmapped).
@@ -366,11 +432,16 @@ type Config struct {
 	// `claude login` or pasting a credentials.json file.
 	OAuthPending secrets.OAuthPendingStore
 
-	// AnthropicOAuthClientID is the OAuth client id used to refresh
-	// Claude Code subscription tokens. Empty disables refresh of
-	// the claude_code kind (the user must re-upload on expiry).
+	// AnthropicOAuthClientID is the OAuth client id used to run the
+	// browser connect flow and to refresh Claude Code subscription
+	// tokens. Empty refuses the connect route and skips the refresh of
+	// the claude_code kind; the config layer defaults it to the public
+	// Claude Code client, so it is empty only by explicit override.
 	AnthropicOAuthClientID string
-	// CodexOAuthClientID is the equivalent for Codex.
+	// CodexOAuthClientID is the operator override for Codex refreshes;
+	// empty, the refresh derives the id from the uploaded credential.
+	// The periodic sweep starts when either id is set, so with both
+	// empty no kind is swept (oauthRefreshWorker).
 	CodexOAuthClientID string
 
 	// Store overrides the default filesystem store with a caller-
@@ -455,14 +526,48 @@ type Config struct {
 	// final durable rollout state for this process. Nil is the local-mode path.
 	ClaimRunnerEpoch func() (highWater uint64, superseded bool, err error)
 
-	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose
-	// X-Forwarded-For headers we believe. Empty (the default) means
-	// we never trust forwarded headers — audit IPs come from
-	// r.RemoteAddr only, defeating spoofing by an unprivileged
-	// client that sends its own X-Forwarded-For. Set this only when
-	// the server sits behind a known L7 proxy/ingress and the proxy
-	// rewrites the header on every request.
+	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose forwarded
+	// client address we believe — X-Forwarded-For, RFC 7239 Forwarded and
+	// X-Real-IP. Empty (the default) means no forwarded header is ever
+	// trusted: the client of a request is the socket address, which
+	// defeats spoofing by an unprivileged client that sends its own
+	// header. Set it only when the server sits behind a known L7
+	// proxy/ingress that rewrites the header on every request, and no
+	// wider than that proxy's own range.
+	//
+	// It is also what makes the auth rate limiter per-client behind such
+	// a proxy: left empty, every request carries the proxy's address and
+	// the whole instance shares one bucket (#2673). Filled from
+	// ITERION_AUTH_TRUSTED_PROXY_CIDRS (cmd/iterion/server.go); the local
+	// studio leaves it empty, nothing sitting in front of a loopback
+	// listener.
 	TrustedProxyCIDRs []string
+
+	// TrustedProxyHops is how many APPENDING proxies of the operator's own
+	// sit in front — the number of the forwarded chain's rightmost entries
+	// our infrastructure wrote. 0 is one, the shape the chart ships.
+	//
+	// It is the bound the right-to-left chain reader stops at, and so the
+	// bound on how far a client's own entries reach: a client inside a
+	// trusted range writes entries of its own, and only the count tells
+	// them from a proxy's (#2673). Filled from
+	// ITERION_AUTH_TRUSTED_PROXY_HOPS (cmd/iterion/server.go).
+	TrustedProxyHops int
+
+	// ForwardedHeader is the ONE header a trusted peer names the client
+	// with — the mechanism the OPERATOR declares, never the one a request
+	// picks. Empty is X-Forwarded-For, what every ingress controller
+	// writes. "Forwarded" is read with the RFC 7239 grammar; any other
+	// name is a comma-separated address list, so X-Real-IP and a CDN's
+	// CF-Connecting-IP or True-Client-IP work as themselves.
+	//
+	// Reading whichever mechanism a request happens to carry would hand
+	// the choice to the client: a proxy that computes the client into
+	// X-Real-IP and passes X-Forwarded-For through untouched loses to the
+	// header the client wrote (#2673). Filled from
+	// ITERION_AUTH_FORWARDED_HEADER (cmd/iterion/server.go), which
+	// pkg/config refuses at boot when it is not a single field name.
+	ForwardedHeader string
 
 	// Metrics, when non-nil, lets the server publish iterion_ws_connections
 	// gauge updates as run-console clients connect / disconnect. Other
@@ -535,6 +640,12 @@ type Config struct {
 	// tracked kanban card on that tenant's board (in addition to launching the
 	// run). nil in self-hosted/local mode — board-mode then just launches.
 	CloudBoardFor func(tenantID string) native.BoardStore
+	// IssueTenantResolver resolves the team ONE board issue lives in,
+	// across teams — the by-id capability of the board routes (ADR-141).
+	// Cloud mode wires it beside CloudBoardFor; nil keeps the board routes
+	// OUT of the by-id class (self-hosted's single store has no tenancy to
+	// decouple).
+	IssueTenantResolver func(ctx context.Context, issueID string) (string, error)
 
 	// CloudBoardCoordinator, when set, activates the cloud board DISPATCHER:
 	// Serve starts a CAS-based loop (no leader election) that claims eligible
@@ -550,7 +661,8 @@ type Config struct {
 	ScheduledBots cloudsched.Store
 
 	// OrgPurgeSweeper, when set (cloud mode), runs a nightly sweep that
-	// hard-purges orgs whose soft-delete grace has elapsed. nil disables it.
+	// hard-purges orgs whose soft-delete grace has elapsed, on the one replica
+	// holding its lease (runElectedOrgPurge). nil disables it.
 	OrgPurgeSweeper *orgsweep.Sweeper
 
 	// Bots configures the /api/v1/bots endpoints used by the studio

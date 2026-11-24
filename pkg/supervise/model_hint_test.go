@@ -91,7 +91,7 @@ func TestSpecsFromWorkflowDeriveProviderHint(t *testing.T) {
 				f := llm.GetLLMFields()
 				assertNoHostAnsweredDial(t, f.Model, f.Backend, f.Provider)
 			}
-			specs := SpecsFromWorkflow(wf(tc.node), nil, iterlog.Nop())
+			specs := SpecsFromWorkflow(wf(tc.node), nil, model.ModelOverrides{}, iterlog.Nop())
 			if len(specs) != 1 {
 				t.Fatalf("specs = %d, want 1", len(specs))
 			}
@@ -134,7 +134,7 @@ func TestSpecsFromWorkflowPinnedModelSkipsHint(t *testing.T) {
 			Watches: []string{"campaign"},
 		}},
 	}
-	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "" {
 		t.Fatalf("pinned model must not derive a hint, got %+v", specs)
 	}
@@ -165,6 +165,23 @@ func TestResolveModelWithHintPrecedence(t *testing.T) {
 	}
 	if _, err := resolveModelWith("", "anthropic", nil, noCtx); err == nil {
 		t.Fatal("no providers at all must return ErrNoSupervisorModel")
+	}
+}
+
+// The local gateway row (#2646) carries no suggested model — a gateway's
+// model id is the deployment's own naming — so a host whose ONLY detected
+// credential is the gateway must still resolve no supervisor model rather
+// than invent one.
+func TestResolveModelWithGatewayRowSuggestsNothing(t *testing.T) {
+	providers := []detect.ProviderStatus{
+		{Name: "openai_compatible", Available: true, Source: "OPENAI_COMPATIBLE_BASE_URL"},
+	}
+	noCtx := func(string) bool { return false }
+	if _, err := resolveModelWith("", "", providers, noCtx); !errors.Is(err, ErrNoSupervisorModel) {
+		t.Errorf("gateway-only host: err = %v, want ErrNoSupervisorModel", err)
+	}
+	if got, err := resolveModelWith("", "openai_compatible", providers, noCtx); err == nil || got != "" {
+		t.Errorf("a gateway hint with no suggested model must not resolve, got (%q, %v)", got, err)
 	}
 }
 
@@ -248,13 +265,13 @@ func TestCtxFundsProvider(t *testing.T) {
 // — the env-only path — cannot build it). The runner wires the
 // credentials lookup at boot; the test wires the same canonical closure.
 func TestEvaluatorClientResolvesFromCtxCredentials(t *testing.T) {
-	model.SetCredentialsLookup(func(ctx context.Context) (func(provider string) string, bool) {
+	t.Cleanup(model.SetCredentialsLookup(func(ctx context.Context) (func(provider string) string, bool) {
 		creds, ok := secrets.CredentialsFromContext(ctx)
 		if !ok {
 			return nil, false
 		}
 		return func(provider string) string { return creds.APIKeys[secrets.Provider(provider)] }, true
-	})
+	}))
 	e := NewLLMEvaluator()
 	ctx := secrets.WithCredentials(context.Background(),
 		secrets.Credentials{APIKeys: map[secrets.Provider]string{"anthropic": "sk-test"}})
@@ -275,7 +292,7 @@ func TestProviderHintWholeRunDerivesFromAllNodes(t *testing.T) {
 		},
 		Supervisors: []*ir.Supervisor{{Name: "persy"}},
 	}
-	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("whole-run supervisor must derive its hint from the workflow's LLM nodes, got %+v", specs)
 	}
@@ -290,7 +307,7 @@ func TestProviderHintWalksProviderChain(t *testing.T) {
 		},
 		Supervisors: []*ir.Supervisor{{Name: "persy", Watches: []string{"campaign"}}},
 	}
-	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("provider chain must be walked to the first claw-routable entry, got %+v", specs)
 	}
@@ -306,7 +323,7 @@ func TestProviderHintSkipsBogusPrefixAndContinues(t *testing.T) {
 		},
 		Supervisors: []*ir.Supervisor{{Name: "persy", Watches: []string{"scout", "campaign"}}},
 	}
-	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("bogus alias prefix must be skipped and the next watched node consulted, got %+v", specs)
 	}

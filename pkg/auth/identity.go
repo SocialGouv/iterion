@@ -66,6 +66,50 @@ type Identity struct {
 	// synthetic principal) — the common case, and every pre-existing
 	// construction site keeps it empty.
 	Via string
+	// TeamPin and OrgPin name the team the CREDENTIAL ITSELF is bound to and
+	// that team's organization: a personal access token minted with an
+	// explicit team pin (pkg/pat Token.TeamID). They are a property of the
+	// credential, not of the request — TeamID follows the team a request
+	// acts in and the run-by-id re-scope moves it, while the pin does not
+	// move at all — so they are carried alongside the credential's kind,
+	// expiry and row (withCredentialOf) and read by PinRefusesTeam /
+	// PinRefusesOrg at every authorization gate.
+	//
+	// Empty for every credential that binds no team: an access token (its
+	// session switches teams), an unpinned token (it only follows its
+	// owner's default team, which the owner may change), a synthetic or
+	// machine principal. An OrgPin empty beside a non-empty TeamPin is a
+	// pin on a team with no parent org — it reaches no organization at all,
+	// which is the fail-closed reading of a pin, not a missing fact.
+	TeamPin string
+	OrgPin  string
+}
+
+// PinRefusesTeam reports whether the credential's own team pin forbids this
+// principal from acting on teamID. It is the ONE gate of the pin: every
+// team-addressed authorization check in pkg/server asks it (auth_authz.go's
+// gates and the run-by-id re-scope), so a pinned token leaks no team of its
+// owner through a route whose own guard was never taught about pins.
+//
+// A super-admin passes: by default the platform authority sees everything
+// (D19), and this predicate is the one named place a future team-level
+// opt-in shield inserts for it.
+func (i Identity) PinRefusesTeam(teamID string) bool {
+	if i.TeamPin == "" || i.IsSuperAdmin {
+		return false
+	}
+	return teamID != i.TeamPin
+}
+
+// PinRefusesOrg is PinRefusesTeam's twin for an org-addressed check: a
+// credential pinned to a team reaches that team's organization and no other.
+// A pin on a team with no parent org reaches none (OrgPin is empty and every
+// named org differs from it).
+func (i Identity) PinRefusesOrg(orgID string) bool {
+	if i.TeamPin == "" || i.IsSuperAdmin {
+		return false
+	}
+	return orgID != i.OrgPin
 }
 
 // IdentityKind distinguishes a real authenticated user (JWT or PAT — full

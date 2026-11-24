@@ -33,7 +33,7 @@ func valuesOnly(t *testing.T, before, after []byte) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("python3", "-I", script, b, a)
+	cmd := exec.Command("python3", "-I", scriptUnderTest(t, script), b, a)
 	cmd.Env = scriptEnv(t)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

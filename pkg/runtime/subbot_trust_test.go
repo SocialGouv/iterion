@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // A sub-bot child inherits its parent's queue message wholesale (the runner
@@ -17,6 +18,8 @@ import (
 func TestRunResolveDocStampsTrustOntoTheChildDocument(t *testing.T) {
 	newEngine := func(opts ...EngineOption) (*Engine, store.RunStore) {
 		st := tmpStore(t)
+		storetest.SeedParentRun(t, st, "parent-run-1")
+		storetest.SeedParentRun(t, st, "parent-run-2")
 		return New(&ir.Workflow{Name: "child_wf"}, st, nil, opts...), st
 	}
 
@@ -25,7 +28,7 @@ func TestRunResolveDocStampsTrustOntoTheChildDocument(t *testing.T) {
 			WithParentRunID("parent-run-1"),
 			WithTrust(store.RunTrustFork, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
 		)
-		run, err := e.runResolveDoc(context.Background(), "child-trust-1", map[string]any{})
+		_, run, err := e.runResolveDoc(context.Background(), "child-trust-1", map[string]any{})
 		if err != nil {
 			t.Fatalf("runResolveDoc: %v", err)
 		}
@@ -42,7 +45,7 @@ func TestRunResolveDocStampsTrustOntoTheChildDocument(t *testing.T) {
 	// acquires a marker it never had.
 	t.Run("a trusted child is unchanged", func(t *testing.T) {
 		e, _ := newEngine(WithParentRunID("parent-run-2"), WithTrust("", ""))
-		run, err := e.runResolveDoc(context.Background(), "child-trust-2", map[string]any{})
+		_, run, err := e.runResolveDoc(context.Background(), "child-trust-2", map[string]any{})
 		if err != nil {
 			t.Fatalf("runResolveDoc: %v", err)
 		}

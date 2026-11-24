@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/store"
-	"os"
 	"reflect"
 	"time"
 
@@ -41,7 +40,7 @@ import (
 const defaultCloudBoardTickInterval = 3 * time.Second
 
 func cloudBoardTickInterval() time.Duration {
-	if v := os.Getenv("ITERION_CLOUD_BOARD_TICK"); v != "" {
+	if v := envOperator("ITERION_CLOUD_BOARD_TICK"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
@@ -84,7 +83,12 @@ func (c *cloudBoardEffect) Promote(_ context.Context, plan trigger.LaunchPlan) (
 		return id, nil // already pinned — no churn
 	}
 	bot := plan.BotID
-	args := plan.Vars
+	// The promotion is a wholesale bot-args replace: the subscription's own
+	// vars land, the card's SERVER-stamped launch context comes back on top
+	// — a webhook-carried card promoted by another bot's subscription keeps
+	// the repo identity, BYOK overrides and integration id its run is
+	// metered, bounded and keyed by (card_launch_args.go, #2371).
+	args := native.KeepStoredLaunchContext(iss.BotArgs, native.DropReservedLaunchArgs(plan.Vars))
 	if _, err := st.Update(id, native.Patch{Bot: &bot, BotArgs: &args}); err != nil {
 		return "", fmt.Errorf("trigger: stamp bot on card %s: %w", id, err)
 	}

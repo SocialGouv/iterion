@@ -20,6 +20,7 @@ import (
 // or copied for one backend only) would leave them all green while pi received
 // nothing — the exact shape of the MCP-forwarding regression next door.
 func TestBuildTaskCarriesMirroredSkills(t *testing.T) {
+	t.Parallel()
 	owned := []string{"/w/.claude/skills/doc-enrichment", "/w/.claude/skills/changelog-writer.md"}
 
 	e := &ClawExecutor{logger: iterlog.Nop()}
@@ -51,6 +52,7 @@ func TestBuildTaskCarriesMirroredSkills(t *testing.T) {
 // An executor that was never told carries nothing — the backend must not fall
 // back to guessing paths from the workspace.
 func TestBuildTaskMirroredSkillsDefaultsEmpty(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{logger: iterlog.Nop()}
 	node := &ir.AgentNode{}
 	node.ID = "n"

@@ -3,7 +3,9 @@
 Every change lands through a pull request whose `revi/review` gate is green.
 The documented exceptions are the admin bypass below — which allows a direct
 push to `main`, not just a queue skip — the **operator direct-landing lane**
-(§ below, decided 2026-10-22), and the release bot, whose
+(§ below, decided 2026-10-22), the **admin merge a parked gate opens**
+(§ [A parked gate is a rerouting signal](#a-parked-gate-is-a-rerouting-signal-not-a-wait),
+decided 2026-11-10), and the release bot, whose
 `chore: release` commits land on `main` with no PR and no gate.
 The loop is:
 
@@ -38,16 +40,28 @@ The loop is:
 For operator-led chantiers where the queue's wall clock is the bottleneck, the
 operator (admin) may land a change **without a PR**, by push to `main`. This
 amends the sentence above for that lane only — every existing PR keeps
-`revi/review` as its blocking gate, and the queue keeps serialising the PRs
+`revi/review` as its blocking gate, save where a parked gate opens the admin
+merge (§ below), and the queue keeps serialising the PRs
 that exist. The lane's blocking proof replaces the PR's:
 
 1. **The gate, locally reproduced.** The full required-check set a workflow
    job can express — everything but `revi/review`, which item 2 replaces —
-   runs locally. Its definition is `task ci:gate`, and the lane is CLOSED
-   until that stream lands: no direct landing before the checked-in
-   exhaustive mapping from `tests.yml` jobs to local members exists in this
-   tree (the mapping lives with the chantier's evidence until then). Exit
-   codes are read per member, never piped.
+   runs locally. Its definition is `task ci:gate`, over the checked-in map
+   [`.github/ci-gate-map.yaml`](../../../.github/ci-gate-map.yaml): one row per
+   `tests.yml` job, keyed by job id, read by the runner AND by
+   `internal/ciguard`'s `TestTheCIGateMapIsTotalAndHonest`. Exit codes are read
+   per member, never piped, and the runner prints `ran N of N` against its own
+   plan — two members of three cannot read as three.
+   **Every required and staged context is now COVERED** — by a member, or,
+   for the two pure aggregators, by every leg's — so **exit 3**, green
+   members over incomplete coverage, is no longer the standing answer. What a
+   0 does NOT claim: the verdict NAMES the reached rows that are `partial`
+   (`brand`, plus the four legs `test` and `race` speak for), because a
+   member is not an equivalence and each row's `residual` says what it leaves
+   to CI. **A verdict of 0 satisfies this item and nothing else**: items 2 to
+   5 are still owed, a gate short of 0 is how you see the distance rather
+   than a proof you may land, and a green gate reads "every member passed",
+   never "CI can find nothing this did not run".
 2. **A converged local adversarial loop.** Per
    [the loop](adversarial-review-loop.md): rounds until no unassumed
    high/critical finding stands, the fixes re-attacked, the budget respected.
@@ -60,7 +74,14 @@ that exist. The lane's blocking proof replaces the PR's:
    directory — a bypass that cannot be grepped is a bypass that did not happen.
 5. **The witnesses, post-hoc.** The GitHub CI still fires on every push to
    `main`; a cancelled or missing witness run is NOT success in the landing
-   record; a red `main` outranks every other work until green.
+   record; a red `main` outranks every other work until green. **Do not read the
+   run for your exact sha** — `tests.yml` holds
+   `concurrency: ${{ github.workflow }}-${{ github.ref }}` with
+   `cancel-in-progress: true`, so on `main` the next commit cancels your run and
+   that cancellation means nothing about your change (measured 2026-11-10: 15 of
+   the last 30 `main` runs cancelled). The witness is the first run that
+   **completes** on a `main` tip containing your commit
+   (`git merge-base --is-ancestor <sha> <tip>`).
 
 Courtesies that are duties: warn the sessions with PRs in flight before the
 first push of a wave (a direct push invalidates their merge groups), and warn
@@ -139,10 +160,20 @@ request is fine — the credential is not. Waiting for the window to reset is th
    `iterion remote admin llm api-keys create --provider <p> --name <n>
    --from-env <VAR>`. Any credential write to a shared deployment waits for the
    operator's explicit go, with the exact command in the question.
-3. **Keep the review pressure locally.** Run the
+3. **Run the loop, and know what it buys.** The
    [local adversarial loop](adversarial-review-loop.md) on a forfait you hold
-   while the gate is parked; it does NOT replace the required status — the
-   merge still waits for a real `revi/review` verdict.
+   carries **the gate's own weight** once it reaches the bar that page states —
+   a round on the diff, each finding AND its proposed fix verified
+   independently, a bounded closing round on the corrections (operator
+   arbitration, 2026-11-11). At the bar the merge does not wait for
+   `revi/review`; below it the residual is assumed explicitly, and
+   `Adversarial-Rounds:` is where a reader sees which of the two happened.
+   `revi/review` stays a required context either way, so the merge is still the
+   admin one and still owes the other six checks green: its conditions and the
+   queue guarantee it gives up are in
+   [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+   Steps 1 and 2 stay the first moves; this is for when they are unavailable
+   or refused.
 
 
 ## Billy, and the release path

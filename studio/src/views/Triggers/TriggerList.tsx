@@ -8,6 +8,7 @@ import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { humanizeCron } from "@/lib/humanizeCron";
+import LastRunOutcome from "@/components/shared/LastRunOutcome";
 import {
   deleteTrigger,
   setTriggerEnabled,
@@ -99,6 +100,7 @@ export default function TriggerList({ subs, onChanged, hideBotColumn = false }: 
             {!hideBotColumn && <Th>Bot</Th>}
             <Th>When</Th>
             <Th>Mode</Th>
+            <Th>Last run</Th>
             <Th>Origin</Th>
             <Th align="right" srLabel="Actions" />
           </THead>
@@ -123,6 +125,15 @@ export default function TriggerList({ subs, onChanged, hideBotColumn = false }: 
                 )}
                 <Td className="text-fg-muted">{matchSummary(sub)}</Td>
                 <Td className="text-fg-muted">{sub.mode || "direct"}</Td>
+                {/* The outcome of the run this trigger launched, not just the
+                    fact that it fired (#1501): a trigger whose run died read
+                    exactly like one whose run worked. */}
+                <Td className="text-fg-muted">
+                  <LastRunOutcome
+                    record={sub}
+                    trailer={sub.enabled ? "The trigger stays armed. Disable it while fixing the cause if needed." : "Trigger disabled."}
+                  />
+                </Td>
                 <Td className="text-fg-muted">{sub.origin || "operator"}</Td>
                 <Td align="right">
                   <Button variant="ghost" size="sm" onClick={() => setEditing(sub)}>

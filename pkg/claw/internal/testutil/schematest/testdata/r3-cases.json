@@ -1,0 +1,735 @@
+[
+  {
+    "name": "R3-6-MY-collision-keeps-modern-half",
+    "input": {
+      "dependencies": {
+        "a": [
+          "b"
+        ],
+        "c": {
+          "required": [
+            "d"
+          ]
+        }
+      },
+      "dependentRequired": {
+        "a": [
+          "e"
+        ]
+      },
+      "dependentSchemas": {
+        "c": {
+          "required": [
+            "f"
+          ]
+        }
+      }
+    },
+    "valid": [
+      {
+        "a": 1,
+        "b": 2,
+        "e": 3,
+        "c": 1,
+        "d": 2,
+        "f": 3
+      }
+    ],
+    "invalid": [
+      {
+        "a": 1,
+        "b": 2
+      },
+      {
+        "c": 1,
+        "d": 2
+      }
+    ]
+  },
+  {
+    "name": "R3-6-MX-draft07-ref-siblings-ignored-in-properties",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n",
+          "type": "string"
+        }
+      }
+    },
+    "valid": [
+      {
+        "x": 1
+      }
+    ],
+    "invalid": [
+      {
+        "x": "s"
+      }
+    ]
+  },
+  {
+    "name": "R3-6-MW-draft07-ref-siblings-ignored-in-items",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "items": {
+        "$ref": "#/definitions/n",
+        "type": "string"
+      }
+    },
+    "valid": [
+      [
+        1
+      ]
+    ],
+    "invalid": [
+      [
+        "s"
+      ]
+    ]
+  },
+  {
+    "name": "R3-6-ML-draft07-ref-sibling-description-kept",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n",
+          "description": "d"
+        }
+      }
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n",
+          "description": "d"
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-6-MK-draft07-ref-sibling-$defs-kept",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$defs": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/$defs/n"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "s"
+    ]
+  },
+  {
+    "name": "R3-6-MG-pointer-rewrite-relative-to-nested-resource",
+    "input": {
+      "$defs": {
+        "r": {
+          "$id": "https://x.test/r",
+          "properties": {
+            "t": {
+              "items": [
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "first": {
+              "$ref": "#/properties/t/items/0"
+            }
+          }
+        }
+      },
+      "$ref": "https://x.test/r"
+    },
+    "valid": [
+      {
+        "first": 1
+      }
+    ],
+    "invalid": [
+      {
+        "first": "s"
+      }
+    ]
+  },
+  {
+    "name": "R3-6-MP-mixed-tuple-intersects-existing-prefixItems",
+    "input": {
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ],
+      "items": [
+        {
+          "type": "integer"
+        }
+      ]
+    },
+    "valid": [
+      []
+    ],
+    "invalid": [
+      [
+        1
+      ],
+      [
+        "a"
+      ]
+    ]
+  },
+  {
+    "name": "R3-6-MA-existing-$id-wins-over-id",
+    "input": {
+      "id": "https://a.test/x",
+      "$id": "https://b.test/y"
+    },
+    "want": {
+      "id": "https://a.test/x",
+      "$id": "https://b.test/y"
+    }
+  },
+  {
+    "name": "R3-6-MB-existing-$anchor-wins-over-id-fragment",
+    "input": {
+      "id": "#a",
+      "$anchor": "b"
+    },
+    "want": {
+      "$anchor": "b"
+    }
+  },
+  {
+    "name": "R3-6-MD-2019-09-ref-siblings-apply",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2019-09/schema",
+      "$defs": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/$defs/n",
+      "minimum": 5
+    },
+    "valid": [
+      7
+    ],
+    "invalid": [
+      1
+    ]
+  },
+  {
+    "name": "R3-6-ME-2019-09-relabeled",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2019-09/schema",
+      "type": "string"
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string"
+    }
+  },
+  {
+    "name": "R3-6-MF-draft-06-relabeled",
+    "input": {
+      "$schema": "http://json-schema.org/draft-06/schema#",
+      "type": "string"
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string"
+    }
+  },
+  {
+    "name": "R3-1-C1",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "a": {
+          "id": "field-a",
+          "type": "object",
+          "properties": {
+            "b": {
+              "$ref": "#/definitions/n"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-1-C1b",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "$defs": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "a": {
+          "id": "field-a",
+          "type": "object",
+          "properties": {
+            "b": {
+              "$ref": "#/$defs/n"
+            }
+          }
+        }
+      }
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "$defs": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "a": {
+          "id": "field-a",
+          "type": "object",
+          "properties": {
+            "b": {
+              "$ref": "#/$defs/n"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-1-C2",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "definitions": {
+        "n": {
+          "$id": "#n",
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#n"
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-1-C2b",
+    "input": {
+      "type": "object",
+      "definitions": {
+        "n": {
+          "$id": "#n",
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#n"
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-3-C3",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n",
+          "const": 5
+        }
+      }
+    },
+    "valid": [
+      {
+        "x": 3
+      },
+      {
+        "x": 5
+      }
+    ],
+    "invalid": [
+      {
+        "x": "s"
+      }
+    ]
+  },
+  {
+    "name": "R3-1-C4",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$id": "https://probe.test/root.json",
+      "type": "object",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$id": "https://other.test/x.json",
+          "$ref": "#/definitions/n"
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-4-C5",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "q": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "q": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "valid": [
+      {
+        "q": "s"
+      }
+    ],
+    "invalid": [
+      {
+        "q": null
+      }
+    ]
+  },
+  {
+    "name": "R3-2-C7",
+    "input": {
+      "type": "object",
+      "dependencies": {
+        "c": {
+          "required": [
+            "d"
+          ]
+        }
+      },
+      "dependentSchemas": {
+        "c": {
+          "required": [
+            "f"
+          ]
+        }
+      },
+      "properties": {
+        "p": {
+          "$ref": "#/dependentSchemas/c"
+        }
+      }
+    },
+    "valid": [
+      {
+        "p": {
+          "f": 1
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "p": {
+          "d": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "R3-2-prefixItems-pointer",
+    "input": {
+      "$defs": {
+        "t": {
+          "prefixItems": [
+            {
+              "type": "string"
+            }
+          ],
+          "items": [
+            {
+              "type": "integer"
+            }
+          ]
+        }
+      },
+      "properties": {
+        "modern": {
+          "$ref": "#/$defs/t/prefixItems/0"
+        },
+        "legacy": {
+          "$ref": "#/$defs/t/items/0"
+        }
+      }
+    },
+    "valid": [
+      {
+        "modern": "s",
+        "legacy": 1
+      }
+    ],
+    "invalid": [
+      {
+        "modern": 1
+      },
+      {
+        "legacy": "s"
+      }
+    ]
+  },
+  {
+    "name": "R3-2-dependencies-both-pointers",
+    "input": {
+      "dependencies": {
+        "c": {
+          "required": [
+            "d"
+          ]
+        }
+      },
+      "dependentSchemas": {
+        "c": {
+          "required": [
+            "f"
+          ]
+        }
+      },
+      "properties": {
+        "modern": {
+          "$ref": "#/dependentSchemas/c"
+        },
+        "legacy": {
+          "$ref": "#/dependencies/c"
+        }
+      }
+    },
+    "valid": [
+      {
+        "modern": {
+          "f": 1
+        },
+        "legacy": {
+          "d": 1
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "modern": {
+          "d": 1
+        }
+      },
+      {
+        "legacy": {
+          "f": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "R3-1-draft06-base-and-anchor",
+    "input": {
+      "$schema": "http://json-schema.org/draft-06/schema#",
+      "definitions": {
+        "n": {
+          "$id": "https://fixture.test/n#n",
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "https://fixture.test/n#n"
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-1-draft04-ref-id-sibling",
+    "input": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "properties": {
+        "x": {
+          "id": "field-x",
+          "$ref": "#/definitions/n"
+        }
+      }
+    }
+  },
+  {
+    "name": "R3-5-prefixItems-open-tail",
+    "input": {
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ],
+      "items": {}
+    },
+    "valid": [
+      [
+        "a",
+        1
+      ]
+    ],
+    "invalid": [
+      [
+        1
+      ]
+    ]
+  },
+  {
+    "name": "R3-5-tuple-open-tail",
+    "input": {
+      "items": [
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ],
+      "items": {}
+    },
+    "valid": [
+      [
+        "a",
+        1
+      ]
+    ],
+    "invalid": [
+      [
+        1
+      ]
+    ]
+  },
+  {
+    "name": "R3-2-multiple-collisions",
+    "input": {
+      "dependencies": {
+        "a": {
+          "type": "integer"
+        },
+        "b": {
+          "type": "boolean"
+        }
+      },
+      "dependentSchemas": {
+        "a": {
+          "type": "string"
+        },
+        "b": {
+          "type": "null"
+        }
+      },
+      "properties": {
+        "aRef": {
+          "$ref": "#/dependentSchemas/a"
+        },
+        "bRef": {
+          "$ref": "#/dependentSchemas/b"
+        }
+      }
+    },
+    "valid": [
+      {
+        "aRef": "s",
+        "bRef": null
+      }
+    ],
+    "invalid": [
+      {
+        "aRef": 1
+      },
+      {
+        "bRef": false
+      }
+    ]
+  },
+  {
+    "name": "N3-custom-dialect-leading-x",
+    "input": {
+      "$schema": "https://xjson-schema.org/draft-07/schema",
+      "type": "string"
+    },
+    "want": {
+      "$schema": "https://xjson-schema.org/draft-07/schema",
+      "type": "string"
+    },
+    "resources": {
+      "https://xjson-schema.org/draft-07/schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    }
+  }
+]

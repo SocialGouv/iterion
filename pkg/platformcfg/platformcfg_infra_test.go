@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,11 +14,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// TestInfraNamesCoverTheEnforcementSwitches: botVarsInfraExact exists so a
-// stored bot var can never become an infra override. The two project-trust
+// TestInfraNamesCoverTheEnforcementSwitches: the operator-grade inventory
+// (envtrust's, asked through InfraGradeName) exists so a stored bot var can
+// never become an infra override. The two project-trust
 // switches are the ones that matter most — each lifts a refusal that stops an
 // agent CLI from executing code out of the repository under review — and the
 // two binary pins decide which binary runs.
@@ -28,7 +31,7 @@ func TestInfraNamesCoverTheEnforcementSwitches(t *testing.T) {
 		"ITERION_PI_BIN",
 		"ITERION_OPENCODE_BIN",
 	} {
-		if !botVarsInfraExact[name] {
+		if !envtrust.InfraGradeName(name) {
 			t.Errorf("%s is writable as a bot var; it decides what runs or whether a refusal holds", name)
 		}
 		if botVarNameOK(name) {
@@ -48,11 +51,14 @@ var guardNames = []string{
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK",
 	// Private-network reach and host allowlists.
 	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE", "ITERION_CONNECTOR_ALLOW_PRIVATE",
+	// Refusals a process may lift: the connector-action admission screen.
+	"ITERION_CONNECTOR_ADMISSION",
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "ITERION_OPENAI_COMPATIBLE_RESOLVED",
 	"ITERION_RUNNER_CLONE_ALLOW_PRIVATE", "ITERION_WEBHOOK_FORGE_HOSTS",
 	// Code and configuration loaded from the repository or the host.
 	"ITERION_MCP_AUTOLOAD", "ITERION_MCP_HEALTHCHECK", "ITERION_SKIP_MCP_HEALTH", "ITERION_PI_MCP_SERVERS",
-	"ITERION_MCP_EXPAND_UNTRUSTED_ENV",
+	"ITERION_PI_MCP_SERVERS_FILE",
+	"ITERION_MCP_EXPAND_UNTRUSTED_ENV", "ITERION_MCP_SERVER_ENV_PASSTHROUGH",
 	"ITERION_PLUGINS_ENABLE", "ITERION_PLUGINS_DISABLE", "ITERION_PLUGIN_FIRECRAWL_API_URL",
 	"ITERION_CLAUDE_CODE_SETTING_SOURCES", "ITERION_CLAUDE_CODE_STRICT_MCP",
 	"ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "ITERION_PI_NO_CONTEXT_FILES",
@@ -64,7 +70,7 @@ var guardNames = []string{
 	// Defaults an unpinned node inherits: its backend, and hermetic auto-memory.
 	"ITERION_DEFAULT_BACKEND", "ITERION_BACKEND_PREFERENCE", "ITERION_AUTO_MEMORY",
 	// Bounds on work that spends.
-	"ITERION_NODE_MAX_RETRIES", "ITERION_OUTPUT_CORRECTION_BUDGET",
+	"ITERION_NODE_MAX_RETRIES", "ITERION_NODE_MAX_IDENTICAL_FAILURES", "ITERION_OUTPUT_CORRECTION_BUDGET",
 	"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT", "ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS",
 	// Spend and quota ceilings and brakes.
 	"ITERION_FORBID_SUBSCRIPTION_OAUTH", "ITERION_OPENAI_USE_OAUTH", "ITERION_LOOP_BUDGET_GUARD",
@@ -76,12 +82,13 @@ var guardNames = []string{
 	"ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS", "ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN",
 	"ITERION_FORFAIT_CAP_PCT", "ITERION_BUDGET_EXIT_GRACE", "ITERION_PLAN_REVIEW",
 	"ITERION_RETRY_CIRCUIT_THRESHOLD", "ITERION_RETRY_CIRCUIT_COOLDOWN", "ITERION_ROUTE_COOLDOWN",
-	"ITERION_RETRY_PROBE_FLOOR", "ITERION_RETRY_PROBE_BUDGET",
+	"ITERION_RETRY_PROBE_FLOOR", "ITERION_RETRY_PROBE_BUDGET", "ITERION_RETRY_PROBE_BEFORE_WINDOW",
 	"ITERION_MODEL_SPECS", "ITERION_BOARD_LAUNCH_ATTEMPTS",
 	"ITERION_MEMORY_QUOTA_ORG_TOTAL", "ITERION_MEMORY_MAX_DOC",
 	// Bounds on what untrusted input may cost.
 	"ITERION_BUNDLE_MAX_BYTES", "ITERION_BUNDLE_MAX_ENTRIES", "ITERION_CLAW_SLASH_COMMAND_MAX_BYTES",
 	"ITERION_ASSISTANT_AUTHORING_MAX_TOTAL_BYTES", "ITERION_ASSISTANT_EDITOR_MAX_SOURCE",
+	"ITERION_DSL_READ_ADMISSION_MAX_BYTES", "ITERION_DSL_READ_ADMISSION_WAIT", "ITERION_MEMLIMIT",
 	// Workspace safety.
 	"ITERION_WORKSPACE_TRACK", "ITERION_WORKSPACE_CHECKPOINT", "ITERION_WORKSPACE_MAX_FILE_MB",
 	"ITERION_PRUNE_MIRROR_IN_CHECKOUT", "ITERION_WORKTREE_POOL_MAX", "ITERION_SCRATCH_RETENTION",
@@ -105,7 +112,8 @@ var guardNames = []string{
 	"ITERION_PI_CTRL", "ITERION_PI_NODE_ID", "ITERION_RUN_ID", "ITERION_PARENT_RUN_ID",
 	"ITERION_WORKSPACE", "ITERION_ISSUE_ID", "ITERION_SCHEDULE", "ITERION_TENANT",
 	"ITERION_RUN_SHELL_MAX_LIFETIME", "ITERION_PI_RUN_ID", "ITERION_TOOL_NAME", "ITERION_TOOL_INPUT",
-	"ITERION_DOTENV_PLANTED",
+	"ITERION_DOTENV_PLANTED", "ITERION_ENGINE_CHILD", "ITERION_DOTENV_FORCE",
+	"ITERION_DOTENV_ENDPOINTS",
 	// Credential-shaped by a whole segment, one witness per word.
 	"ITERION_GH_PAT", "ITERION_GH_PATS", "ITERION_REVIEW_BEARER", "ITERION_MAIL_PASS",
 	"ITERION_DB_PASSWD", "ITERION_DB_PASSPHRASE", "ITERION_VAULT_PASSCODE", "ITERION_WEB_HTPASSWD",
@@ -118,6 +126,11 @@ var guardNames = []string{
 	"ITERION_SLACK_WEBHOOK_URL",
 	// Covered by a namespace rather than by name.
 	"ITERION_AUTH_TRUSTED_AUTO_LINK_PROVIDERS", "ITERION_PLATFORM_FACADE_DEFAULT",
+	// Whose forwarded header names the client of a request — the audit IP
+	// and the auth rate-limit key both come from it (#2673). Covered by
+	// the ITERION_AUTH_ namespace, like its auto-link sibling above.
+	"ITERION_AUTH_TRUSTED_PROXY_CIDRS", "ITERION_AUTH_FORWARDED_HEADER",
+	"ITERION_AUTH_TRUSTED_PROXY_HOPS",
 }
 
 func TestGuardNamesAreNeverBotVars(t *testing.T) {
@@ -150,6 +163,7 @@ var writableBotVars = map[string]string{
 	"ITERION_VERIFIED_ACTION_MODEL":      whyModel,
 
 	"ITERION_COMPRESS":                     whyMode,
+	"ITERION_REWRITE_SANDBOX":              "where the rewriter chain runs for a sandboxed task: skip (the default) or host, which can only restore the token saving at the boundary's expense, never lift a guard",
 	"ITERION_CLAW_COMPACT_PRESERVE_RECENT": whyMode,
 	"ITERION_CLAW_COMPACT_THRESHOLD_RATIO": whyMode,
 	"ITERION_SUPERVISORS":                  "whether a bot's declared supervisors spawn, under the run-level --supervisors override",
@@ -195,12 +209,32 @@ var writableBotVars = map[string]string{
 // would make the scan depend on whether `task test` ran first.
 var buildOutputs = []string{"../../pkg/cli/templates/dispatch_bots", "../../pkg/server/static"}
 
+// classificationTables are the declarations whose own spellings are cut out
+// of the scan before it reads a file: a name a CLASSIFICATION spells is not
+// a name the engine reads, and a table that enters the inventory it is
+// judged against certifies itself. The value is the prefix of the variables
+// to blank in that file — envtrust's operator-grade inventory, which every
+// gate asks, and the image screen's answer for the engine's own namespace,
+// whose family keys (`ITERION_PLATFORM_`, …) the literal regex otherwise
+// reads as four names nothing reads.
+//
+// Every file here must blank at least one declaration: a list that moved or
+// was renamed is a scan reading a classification as an inventory again, and
+// engineEnvNames fatals on it rather than counting it. pkg/platformcfg's own
+// file is not here because it declares no such list — the bot-var gate asks
+// envtrust's inventory, and `platformSecretName` indexes
+// config.PlatformSecretEnv rather than spelling names.
+var classificationTables = map[string]string{
+	"../../internal/envtrust/operator.go":                "operatorInfra",
+	"../../pkg/sandbox/devcontainer/image_env_engine.go": "engineEnv",
+}
+
 // engineEnvNames maps every ITERION_ name the engine spells to the files that
-// spell it: the string literals of its Go source and of the vendored claw it
-// links — a name, or the head of an assignment such as "ITERION_SHARD_INDEX=%d"
+// spell it: the string literals of its Go source, the claw runtime under
+// pkg/claw included — a name, or the head of an assignment such as "ITERION_SHARD_INDEX=%d"
 // — and every name written in the manifests and scripts it embeds under pkg
-// (plugin manifests, the pi extension). The deny lists themselves are cut out
-// of platformcfg.go first: a name they spell is not a name the engine reads.
+// (plugin manifests, the pi extension). The classification tables themselves
+// are cut out first, wherever they live ([classificationTables]).
 func engineEnvNames(t *testing.T) map[string][]string {
 	t.Helper()
 	literal := regexp.MustCompile(`"(ITERION_[A-Z0-9_]+)["=]`)
@@ -234,15 +268,24 @@ func engineEnvNames(t *testing.T) map[string][]string {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
 	}
-	for _, dir := range []string{"../../pkg", "../../cmd", "../../internal", "../../vendor/github.com/SocialGouv/claw-code-go"} {
+	blanked := map[string]int{}
+	for _, dir := range []string{"../../pkg", "../../cmd", "../../internal"} {
 		walk(dir, []string{".go"}, func(path, src string) {
-			if filepath.ToSlash(path) == "../../pkg/platformcfg/platformcfg.go" {
-				src = withoutDenyLists(t, src)
+			slash := filepath.ToSlash(path)
+			if prefix, classifies := classificationTables[slash]; classifies {
+				var cut int
+				src, cut = withoutDenyLists(t, path, src, prefix)
+				blanked[slash] += cut
 			}
 			for _, m := range literal.FindAllStringSubmatch(src, -1) {
 				note(m[1], path)
 			}
 		})
+	}
+	for _, file := range slices.Sorted(maps.Keys(classificationTables)) {
+		if blanked[file] == 0 {
+			t.Fatalf("blanked no %s* declaration of %s: the classification moved or was renamed, and the scan is reading its own answer back as an inventory of names the engine reads", classificationTables[file], strings.TrimPrefix(file, "../../"))
+		}
 	}
 	walk("../../pkg", []string{".yaml", ".yml", ".js", ".mjs", ".cjs", ".json"}, func(path, src string) {
 		for _, name := range bare.FindAllString(src, -1) {
@@ -254,12 +297,29 @@ func engineEnvNames(t *testing.T) map[string][]string {
 	for anchor, tree := range map[string]string{
 		"ITERION_PERMISSION":  "pkg/",
 		"ITERION_SHARD_INDEX": "cmd/",
-		"ITERION_TOOL_INPUT":  "vendor/github.com/SocialGouv/claw-code-go/",
+		"ITERION_TOOL_INPUT":  "pkg/claw/",
 		"ITERION_RTK_BIN":     "pkg/plugin/builtin/",
 		"ITERION_PI_RUN_ID":   "pkg/backend/delegate/piext/asset/",
 	} {
 		if !slices.ContainsFunc(seen[anchor], func(p string) bool { return strings.HasPrefix(p, tree) }) {
 			t.Fatalf("the walk did not find %s under %s (found in %v) — it is not reading what the engine ships", anchor, tree, seen[anchor])
+		}
+	}
+	// And no name's ONLY source is a file that classifies names: such an
+	// entry is the scan reading an answer back as a question, and the gates
+	// then judge their own tables — a row excusing a name nothing reads
+	// passes on its own reason. [classificationTables] blanks the
+	// declarations; this is the measurement that they were the right ones.
+	for name, files := range seen {
+		classifiedOnly := true
+		for _, file := range files {
+			if _, classifies := classificationTables["../../"+file]; !classifies {
+				classifiedOnly = false
+				break
+			}
+		}
+		if classifiedOnly {
+			t.Fatalf("%s is spelled only by %v, which classify names rather than read them: the scan is feeding a gate its own table (blank the declaration in classificationTables, or store the key so the literal is not a name)", name, files)
 		}
 	}
 	return seen
@@ -282,16 +342,19 @@ func TestTheScanSkipsOnlyGitignoredBuildOutputs(t *testing.T) {
 	}
 }
 
-// withoutDenyLists blanks every botVars… declaration of platformcfg.go: a
-// name the lists spell is not a name the engine reads, and counting it would
+// withoutDenyLists blanks every classification declaration of the named file
+// whose variable name starts with prefix — the operatorInfra… inventory in
+// envtrust's operator.go, the engineEnv… tables of the image screen: a name a
+// classification spells is not a name the engine reads, and counting it would
 // let every refused name find itself. Parsed, not pattern-matched, so a new
-// list — however it is written — is blanked too.
-func withoutDenyLists(t *testing.T, src string) string {
+// list — however it is written — is blanked too, as long as it carries the
+// family's prefix.
+func withoutDenyLists(t *testing.T, path, src, prefix string) (string, int) {
 	t.Helper()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "platformcfg.go", src, parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
 	if err != nil {
-		t.Fatalf("parse platformcfg.go: %v", err)
+		t.Fatalf("parse %s: %v", path, err)
 	}
 	out := []byte(src)
 	cut := 0
@@ -302,7 +365,9 @@ func withoutDenyLists(t *testing.T, src string) string {
 		}
 		for _, spec := range gen.Specs {
 			vs := spec.(*ast.ValueSpec)
-			if !slices.ContainsFunc(vs.Names, func(n *ast.Ident) bool { return strings.HasPrefix(n.Name, "botVars") }) {
+			if !slices.ContainsFunc(vs.Names, func(n *ast.Ident) bool {
+				return strings.HasPrefix(n.Name, prefix)
+			}) {
 				continue
 			}
 			for i := fset.Position(vs.Pos()).Offset; i < fset.Position(vs.End()).Offset; i++ {
@@ -313,10 +378,7 @@ func withoutDenyLists(t *testing.T, src string) string {
 			cut++
 		}
 	}
-	if cut < 2 {
-		t.Fatalf("blanked %d botVars declarations in platformcfg.go, want the prefix and exact lists at least", cut)
-	}
-	return string(out)
+	return string(out), cut
 }
 
 func TestEveryEngineEnvNameIsClassified(t *testing.T) {
@@ -332,7 +394,7 @@ func TestEveryEngineEnvNameIsClassified(t *testing.T) {
 		case refused && listed:
 			t.Errorf("%s is refused as a bot var and listed in writableBotVars — drop one", name)
 		case !refused && !listed:
-			t.Errorf("%s (%s) is writable as a bot var and unclassified: if it lifts or weakens a guard, configures the process, names an endpoint or identity, or is written by the engine for a child, refuse it (botVarsInfraExact/botVarsInfraPrefixes); otherwise list it in writableBotVars with the reason", name, seen[name][0])
+			t.Errorf("%s (%s) is writable as a bot var and unclassified: if it lifts or weakens a guard, configures the process, names an endpoint or identity, or is written by the engine for a child, refuse it (envtrust's operator inventory); otherwise list it in writableBotVars with the reason", name, seen[name][0])
 		}
 	}
 	for name := range writableBotVars {

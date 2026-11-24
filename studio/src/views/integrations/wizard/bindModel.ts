@@ -1,4 +1,5 @@
 import type { ForgeEnablePreview } from "@/api/forgeConnections";
+import { isLocalPath } from "@/auth/returnTo";
 
 // Pure model for the bind-bot wizard (/integrations/bind): URL-driven step
 // resolution with prefill skipping, back navigation that honours arrival
@@ -72,13 +73,14 @@ export function prevBindStep(
 }
 
 /**
- * Only accept an in-app path as returnTo — "/x…" but not "//host" (a
- * protocol-relative URL would be an open redirect). Null = no return.
+ * Only accept an in-app path as returnTo — "/x…", never a URL that leaves the
+ * origin once a browser normalizes it (isLocalPath: "//host", "/\host", a
+ * scheme). A return target becomes a link's href, where any of those is an
+ * open redirect. Null = no return.
  */
 export function sanitizeReturnTo(raw: string | null | undefined): string | null {
   const v = (raw ?? "").trim();
-  if (!v.startsWith("/") || v.startsWith("//")) return null;
-  return v;
+  return isLocalPath(v) ? v : null;
 }
 
 /** Existing bound bots + the newly selected one, deduplicated, order kept. */

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,6 +68,15 @@ type headEnumerations struct {
 // TestSeedZeroMove compares with literals extracted from pre-migration HEAD,
 // not with expectations generated from registry.json. Changes to this oracle
 // are explicit verdict changes too, and require the same review as the golden.
+//
+// One row has moved since the migration, and it is the only one: `native_tools`
+// for claude_code, from the fourteen names pre-migration HEAD carried to twenty
+// (#1651). The six added — Agent, AskUserQuestion, BashOutput, KillShell,
+// ScheduleWakeup, SlashCommand — were tools the roster had drifted away from
+// while iterion rendered headers for them, which made each one a tool no
+// `tools:` list could remove. The oracle was edited by hand for it, because
+// there is deliberately no flag that regenerates it: its diff is the review.
+// Every other row still reads pre-migration HEAD verbatim.
 func TestSeedZeroMove(t *testing.T) {
 	var seed headEnumerations
 	readJSON(t, "testdata/head-enumerations.json", &seed)
@@ -216,7 +226,7 @@ func TestInventoryIntegrity(t *testing.T) {
 				}
 				seen[c.Name] = true
 				if group == "implementation" {
-					if !slices.Contains([]string{Shipped, Partial, TypedRefused, Inert, Unknown, "unwired (gap)", "unwired (no image)"}, c.Verdict) {
+					if !slices.Contains([]string{Shipped, Partial, TypedRefused, Inert, Unknown, "unwired (gap)", UnwiredNoImage}, c.Verdict) {
 						t.Errorf("%s/%s invalid implementation verdict %q", b.Name, c.Name, c.Verdict)
 					}
 					gotKeys = append(gotKeys, c.Name)
@@ -283,5 +293,47 @@ func TestCopiesAndUnknowns(t *testing.T) {
 	}
 	if !slices.Equal(nativeBefore, NativeTools(ClaudeCode)) {
 		t.Fatal("a caller mutates the native roster through its projection")
+	}
+}
+
+// TestThePublishedCellCountsMatchTheRegistry is a canary for a class that
+// rotted silently: docs/backend-capability-registry.md publishes the size of
+// this registry in prose, and an adversarial round found the number four
+// cells stale after a capability was added — nothing read it, so nothing
+// said so.
+//
+// It reads the numbers out of the page rather than restating them, so the
+// page stays the publication and this stays the check.
+func TestThePublishedCellCountsMatchTheRegistry(t *testing.T) {
+	const page = "../../../docs/backend-capability-registry.md"
+	data, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, proof := 0, 0
+	for _, b := range Snapshot().Backends {
+		impl += len(b.Cells)
+		proof += len(b.Proof)
+	}
+	for _, c := range []struct {
+		kind string
+		want int
+		re   *regexp.Regexp
+	}{
+		{"implementation", impl, regexp.MustCompile(`\*\*(\d+) implementation cells\*\*`)},
+		{"published proof", proof, regexp.MustCompile(`\*\*(\d+) published proof cells\*\*`)},
+	} {
+		m := c.re.FindSubmatch(data)
+		if m == nil {
+			t.Errorf("%s: the page no longer publishes a count in the shape this check reads (%v) — if the sentence moved, move this check with it", c.kind, c.re)
+			continue
+		}
+		got, err := strconv.Atoi(string(m[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("%s cells: the page says %d, the registry holds %d — update %s", c.kind, got, c.want, page)
+		}
 	}
 }

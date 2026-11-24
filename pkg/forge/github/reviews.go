@@ -46,7 +46,8 @@ func renderGitHubCommentBody(c forge.ReviewComment) string {
 //
 // CommentsPosted is re-fetched from the created review's comment listing
 // (Verified true); when that confirmation read fails the submitted count is
-// reported with Verified false.
+// reported with Verified false. A listing shorter than the submission reports
+// Fallback "partial": a shortfall, with nothing folded into the body.
 func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number int, in forge.NewReview) (forge.ReviewResult, error) {
 	prPath := "/repos/" + repo + "/pulls/" + strconv.Itoa(number)
 

@@ -219,13 +219,18 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
               value={draft.name}
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               required
+              // A text input followed by a password input is the shape of a
+              // login form: without the hint a browser offers the saved
+              // username here.
+              autoComplete="off"
             />
           </div>
           {draft.provider === "openai_compatible" && (
             <>
               <InlineBanner tone="info" layout="inline">
-                A gateway key is stored, listed and audited, but no run spends it yet: the
-                credential walk learns this provider in a later release (#2005).
+                A gateway key funds the gateway routes (openai_compatible/…) of the runs
+                whose bot and repository it serves: the credential walk seals it with this
+                base URL.
               </InlineBanner>
               <Input
                 size="md"
@@ -235,6 +240,9 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
                 value={draft.base_url}
                 onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
                 required
+                // For a gateway key this is the input right above the secret,
+                // the place a browser takes for the username of a login form.
+                autoComplete="off"
               />
             </>
           )}
@@ -246,7 +254,10 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
             value={draft.secret}
             onChange={(e) => setDraft({ ...draft, secret: e.target.value })}
             required
-            autoComplete="off"
+            // "new-password", not "off": a browser ignores "off" on a password
+            // input and fills the saved login's password into it, which this
+            // form would then seal as the API key.
+            autoComplete="new-password"
           />
           <label className="flex items-center gap-2 text-sm">
             <Checkbox

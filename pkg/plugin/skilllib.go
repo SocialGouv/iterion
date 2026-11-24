@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 )
 
 // SynthesizeSkillsManifest builds a skills-only Manifest for a directory that
@@ -110,7 +110,7 @@ func NormalizeName(src string) string {
 // WriteManifest marshals m to <dir>/plugin.yaml. Used by the install path to
 // persist a synthesized manifest into an installed skill library.
 func WriteManifest(dir string, m *Manifest) error {
-	data, err := yaml.Marshal(m)
+	data, err := yamlx.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("plugin: marshal synthesized manifest: %w", err)
 	}

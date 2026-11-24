@@ -191,14 +191,24 @@ func lnResult(r resultSpec) string {
 }
 
 type bgRun struct {
-	rm      *claudesdk.ResultMessage
-	meta    sessionMeta
-	err     error
-	stdin   string
-	spawn   string // the fake CLI's argv and CLAUDE_CODE_* environment
-	events  []BackgroundWork
-	warns   []string
-	elapsed time.Duration
+	rm     *claudesdk.ResultMessage
+	meta   sessionMeta
+	err    error
+	stdin  string
+	spawn  string // the fake CLI's argv and CLAUDE_CODE_* environment
+	events []BackgroundWork
+	// at is when each event of events fired, engine-side, on the same clock
+	// as startedAt — the wall time a scenario's ORDER claims are held to.
+	at []time.Time
+	// startedAt is when runSession was called: before the fake CLI played a
+	// single line of its script.
+	startedAt time.Time
+	warns     []string
+	elapsed   time.Duration
+	// The real background timer's final Reset argument, independent of how
+	// long process startup or OS scheduling actually took.
+	bgTimerResets    int
+	lastBgTimerDelay time.Duration
 }
 
 func (r bgRun) phases() []BackgroundPhase {
@@ -327,9 +337,51 @@ func bgSessionSafetyNet(t *testing.T, script []string, mergedEnv map[string]stri
 	return wedgeCeiling
 }
 
+// scriptSleepsBetween sums the "@sleep" seconds a script runs between two of
+// its own lines — the slice the wedge net (bgSessionSafetyNet) sums in full,
+// cut to the stretch between an anchor line and the first end line after it.
+// A judge held to the script's own clock derives its floor here, never from a
+// hand-copied constant: a constant goes stale both ways when the sleeps move
+// (shrunk, an honest settle lands under the stale floor — a false red; grown,
+// the floor weakens silently and a regression settling between the stale and
+// the true floor passes). An "@sleep" inside the window that does not parse
+// as positive seconds is a broken scenario, named loudly: a floor that
+// silently dropped a sleep would be weaker than the clock it claims to judge.
+func scriptSleepsBetween(t *testing.T, script []string, anchor, end func(string) bool) time.Duration {
+	t.Helper()
+	start := slices.IndexFunc(script, anchor)
+	if start < 0 {
+		t.Fatalf("scriptSleepsBetween: the script never plays its anchor line — broken scenario")
+	}
+	endIdx := slices.IndexFunc(script[start+1:], end)
+	if endIdx < 0 {
+		t.Fatalf("scriptSleepsBetween: the script never plays its end line after the anchor — broken scenario")
+	}
+	var floor time.Duration
+	for _, step := range script[start+1 : start+1+endIdx] {
+		s, ok := strings.CutPrefix(step, "@sleep ")
+		if !ok {
+			continue
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil || f <= 0 {
+			t.Fatalf("scriptSleepsBetween: %q does not parse as positive @sleep seconds — the floor would silently drop it", step)
+		}
+		floor += time.Duration(f * float64(time.Second))
+	}
+	return floor
+}
+
 // runBgSession plays script through runSession. env sets iterion's knobs (the
 // test's own values win over the short defaults applied here).
 func runBgSession(t *testing.T, script []string, env map[string]string, task Task) bgRun {
+	t.Helper()
+	return runBgSessionWithTimer(t, script, env, task, nil)
+}
+
+// runBgSessionWithTimer keeps the real CLI and select loop while allowing a
+// scenario to synchronize its timer with an observed subprocess boundary.
+func runBgSessionWithTimer(t *testing.T, script []string, env map[string]string, task Task, factory func(context.Context, string, func() bool) backgroundSessionTimer) bgRun {
 	t.Helper()
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-claude")
@@ -375,6 +427,7 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	task.Hooks.OnBackgroundWork = func(w BackgroundWork) {
 		mu.Lock()
 		defer mu.Unlock()
+		run.at = append(run.at, time.Now())
 		run.events = append(run.events, w)
 	}
 	logger := iterlog.New(iterlog.LevelWarn, io.Discard)
@@ -396,7 +449,27 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	ctx, cancel := context.WithTimeout(context.Background(), bgSessionSafetyNet(t, script, defaults))
 	defer cancel()
 	start := time.Now()
-	rm, meta, err := b.runSession(ctx, "do the work", task, opts)
+	var bgTimer *observedBackgroundTimer
+	rm, meta, err := b.runSessionWithBackgroundTimer(ctx, "do the work", task, opts, func() backgroundSessionTimer {
+		var timer backgroundSessionTimer
+		if factory != nil {
+			timer = factory(ctx, stdinLog, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return slices.ContainsFunc(run.events, func(w BackgroundWork) bool { return w.Phase == BackgroundFinalizing })
+			})
+		} else {
+			timer = newBackgroundSessionTimer()
+		}
+		bgTimer = &observedBackgroundTimer{backgroundSessionTimer: timer}
+		return bgTimer
+	})
+	if bgTimer != nil {
+		run.bgTimerResets, run.lastBgTimerDelay = bgTimer.resets, bgTimer.last
+	}
+	mu.Lock()
+	run.startedAt = start
+	mu.Unlock()
 	run.elapsed = time.Since(start)
 	logger.SetHook(nil)
 	raw, _ := os.ReadFile(stdinLog)
@@ -495,9 +568,7 @@ func TestBackground_WorkFinishedMidTurnEndsAtTheFirstResult(t *testing.T) {
 	if got := run.resultText(); got != "GOT: MANGO" {
 		t.Fatalf("final text = %q", got)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: it waited for a turn that was never coming", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 }
 
 func TestBackground_ANotificationDuringTheLastRequestIsNotDelivered(t *testing.T) {
@@ -570,9 +641,7 @@ func TestBackground_SubagentNestedNotificationDoesNotHoldTheParent(t *testing.T)
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: a subagent-owned notification held the parent", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 	if strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("iterion nudged the parent for a subagent's notification:\n%s", run.stdin)
 	}
@@ -598,9 +667,7 @@ func TestBackground_ForegroundTaskNotificationDoesNotHoldTheParent(t *testing.T)
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: a foreground task's notification held the parent", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 }
 
 func TestBackground_ErrorResultEndsTheLifecycleAndReportsTheLostWork(t *testing.T) {
@@ -615,9 +682,7 @@ func TestBackground_ErrorResultEndsTheLifecycleAndReportsTheLostWork(t *testing.
 	if run.rm == nil || run.rm.Subtype != claudesdk.ResultErrorMaxTurns {
 		t.Fatalf("the error result must be returned as is, got %+v", run.rm)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: an error result must not wait for background work", run.elapsed)
-	}
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
 	if len(run.meta.terminatedBackground) != 1 || !strings.Contains(run.meta.terminatedBackground[0], "t1") {
 		t.Fatalf("terminated work = %v, want t1", run.meta.terminatedBackground)
 	}
@@ -1112,7 +1177,8 @@ func TestBackground_AmbientHousekeepingIsNotWorkTheAgentLaunched(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second || len(run.phases()) != 0 || strings.Contains(run.stdin, "[iterion]") {
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+	if len(run.phases()) != 0 || strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("housekeeping held the session: elapsed=%s phases=%v stdin:\n%s", run.elapsed, run.phases(), run.stdin)
 	}
 	if len(run.meta.terminatedBackground) != 0 {
@@ -1149,7 +1215,8 @@ func TestBackground_AmbientSubagentsDoNotHoldTheSession(t *testing.T) {
 			if run.err != nil {
 				t.Fatalf("runSession: %v", run.err)
 			}
-			if run.elapsed > 3*time.Second || len(run.phases()) != 0 {
+			assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+			if len(run.phases()) != 0 {
 				t.Fatalf("an ambient worker held the session: elapsed=%s phases=%v", run.elapsed, run.phases())
 			}
 		})
@@ -1176,7 +1243,8 @@ func TestBackground_AnOpenEndedShellDoesNotHoldTheSession(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second || strings.Contains(run.stdin, "[iterion]") {
+	assertBackgroundEndsAtIdle(t, script, run)
+	if strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("a background server held the session: elapsed=%s stdin:\n%s", run.elapsed, run.stdin)
 	}
 	if so, _ := run.rm.StructuredOutput.(map[string]any); so["answer"] != "served" {
@@ -1298,18 +1366,20 @@ func TestBackground_AWrapUpTheCLINeverTakesIsAFastNamedError(t *testing.T) {
 	// take runs on the answer wait, so the session ends on a named error well
 	// before the (here 30× longer) silence watchdog it would otherwise park to
 	// (#2202). The error's identity convicts, never the wall clock: a loaded
-	// runner stretches both.
+	// runner stretches both. The take tick may only close this fixture after
+	// the CLI has actually logged the wrap-up: a pipe write alone cannot prove
+	// the subprocess was scheduled to read it before Close kills it.
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
 		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 		// The wrap-up is read, never taken: no replay, no turn, no word.
 		"@drain",
 	)
-	run := runBgSession(t, script, map[string]string{
+	run := runBgSessionWithTimer(t, script, map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":        "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT": "1s",
 		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT":    "30s",
-	}, Task{})
+	}, Task{}, wrapUpInputBeforeTakeTimer(t))
 	if !strings.Contains(run.stdin, "background wait budget") {
 		t.Fatalf("no wrap-up on stdin (scenario broken):\n%s", run.stdin)
 	}
@@ -1558,6 +1628,11 @@ func TestExecuteHandsTheDeadWorkToTheTurnHook(t *testing.T) {
 	if err := os.WriteFile(fake, []byte(fakeClaudeScripted), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	executeDeadWorkTurn(t, fake, dir)
+}
+
+func executeDeadWorkTurn(t *testing.T, fake, dir string) Result {
+	t.Helper()
 	scriptPath := filepath.Join(dir, "script")
 	script := []string{
 		lnInit("2.1.280"),
@@ -1585,15 +1660,29 @@ func TestExecuteHandsTheDeadWorkToTheTurnHook(t *testing.T) {
 	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelWarn, io.Discard)}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if _, err := b.Execute(ctx, task); err != nil {
+	result, err := b.Execute(ctx, task)
+	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(got.TerminatedBackgroundTasks) != 1 || !strings.Contains(got.TerminatedBackgroundTasks[0], "npm run dev") {
-		t.Fatalf("turn hook got %+v, want the server that died with the process", got)
+	// Execute joins protocol tasks with processes stopped by the node sweep.
+	// The expected task must survive that union on every publication surface.
+	const taskLabel = "npm run dev (local_bash, b1)"
+	count := 0
+	for _, label := range got.TerminatedBackgroundTasks {
+		if label == taskLabel {
+			count++
+		}
 	}
-	if entry := ledger.Terminated("s1"); len(entry) != 1 || !strings.Contains(entry[0], "npm run dev") {
-		t.Fatalf("ledger s1 = %v, want the server recorded", entry)
+	if got.SessionID != "s1" || count != 1 {
+		t.Fatalf("turn hook got %+v, want exactly one %q under s1", got, taskLabel)
 	}
+	if !slices.Equal(result.TerminatedBackgroundTasks, got.TerminatedBackgroundTasks) {
+		t.Fatalf("result = %v, turn hook = %v", result.TerminatedBackgroundTasks, got.TerminatedBackgroundTasks)
+	}
+	if entry := ledger.Terminated("s1"); !slices.Equal(entry, got.TerminatedBackgroundTasks) {
+		t.Fatalf("ledger s1 = %v, turn hook = %v", entry, got.TerminatedBackgroundTasks)
+	}
+	return result
 }
 
 func TestBackground_AFreshReportFromBeforeTheWrapUpIsNotKept(t *testing.T) {
@@ -2057,9 +2146,7 @@ func TestBackground_NoAutoTurnGraceWithNothingLeftEndsAtOnce(t *testing.T) {
 	if run.err != nil || run.resultText() != "GOT t1: FINAL" {
 		t.Fatalf("err = %v, text = %q", run.err, run.resultText())
 	}
-	if run.elapsed > 4*time.Second {
-		t.Fatalf("session took %s: a parent at rest waited the silence watchdog out", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 }
 
 func TestBackground_ASecretInATaskDescriptionNeverLeavesTheBoundary(t *testing.T) {
@@ -2873,8 +2960,9 @@ func TestBackground_AnErrorResultMarkedSuccessStillEndsTheLifecycle(t *testing.T
 		"@drain",
 	)
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s"}, Task{})
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: an error result waited for background work", run.elapsed)
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+	if run.err != nil || run.rm == nil || !run.rm.IsError || run.rm.Subtype != claudesdk.ResultSuccess || run.resultText() != "API Error: 529 overloaded" {
+		t.Fatalf("err = %v, result = %+v: the original error result must end the real CLI session", run.err, run.rm)
 	}
 	if got := run.meta.terminatedBackground; len(got) != 1 || !strings.Contains(got[0], "t1") {
 		t.Fatalf("lost = %v, want t1", got)
@@ -3488,6 +3576,38 @@ func TestBackground_TheColdWatchdogGovernsAHungStart(t *testing.T) {
 func TestBackground_NoWrapUpInsideATurnTheCLIStarted(t *testing.T) {
 	// The wave budget is spent after the CLI started a turn (its init) and
 	// before the agent spoke in it: the wrap-up waits for that turn's close.
+	t.Run("the close owns an expired budget", func(t *testing.T) {
+		h := newLifecycleAt(t, backgroundLifecycleConfig{wait: time.Second}, 0)
+		t0 := time.Now()
+		h.feedAt(t0, launchAgent()...)
+		if act := h.close(t0, "WAITING"); act != bgReenter {
+			t.Fatalf("initial close: action %v, want a wait for held work", act)
+		}
+		h.l.reentries = 1
+		if d, kind, _ := h.l.timer(t0, false, false); kind != bgTimerWait || d != time.Second {
+			t.Fatalf("before the new turn: timer %v, remaining %s", kind, d)
+		}
+		h.feedAt(t0.Add(100*time.Millisecond), lnInit("2.1.280"))
+		for _, spoke := range []bool{false, true} {
+			at := t0.Add(2 * time.Second)
+			if spoke {
+				h.feedAt(at, lnAssistant("next", "", cText("work still in progress")))
+			}
+			if _, kind, _ := h.l.timer(at, false, true); kind != bgTimerNone {
+				t.Fatalf("inside the turn (spoke=%v): armed timer %v", spoke, kind)
+			}
+			if msg, send := h.l.waitExpired(at); send || h.l.wrapUpSent {
+				t.Fatalf("inside the turn (spoke=%v): sent wrap-up %q", spoke, msg)
+			}
+		}
+		if act := h.close(t0.Add(3*time.Second), "turn complete"); act != bgReenterAfterSend || !h.l.wrapUpSent {
+			t.Fatalf("closed turn past its budget: action %v, wrap-up sent %v", act, h.l.wrapUpSent)
+		}
+	})
+	// Keep the subprocess round trip too. Its sleep starts when the CLI
+	// writes, whereas WaitedFor starts when the driver consumes the result;
+	// reader scheduling can shorten that measured interval without an early
+	// wrap-up. The lifecycle assertions above prove the ordering directly.
 	shell := map[string]any{"task_id": "b1", "task_type": "local_bash", "description": "npm test"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := []string{
@@ -3521,10 +3641,8 @@ func TestBackground_NoWrapUpInsideATurnTheCLIStarted(t *testing.T) {
 	if run.err != nil || run.resultText() != "FINAL" {
 		t.Fatalf("err = %v, text = %q", run.err, run.resultText())
 	}
-	for _, e := range run.events {
-		if e.Phase == BackgroundFinalizing && e.WaitedFor < 1800*time.Millisecond {
-			t.Fatalf("the wrap-up was written %s after the first result — inside the turn the CLI started", e.WaitedFor)
-		}
+	if !slices.Contains(run.phases(), BackgroundFinalizing) || !strings.Contains(run.stdin, "background wait budget") {
+		t.Fatalf("the spent budget did not request a wrap-up: phases=%v, stdin=%s", run.phases(), run.stdin)
 	}
 }
 
@@ -4206,7 +4324,11 @@ func TestBackground_ADeliveredResultNoLongerHoldsTheGrace(t *testing.T) {
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "20s",
 	}, Task{})
-	if run.err != nil || run.elapsed > 4*time.Second || !restWrapUpAsked(run, "past the grace") {
+	// The 4 s ceiling measured 4.15 s on a saturated ARC shard (main witness
+	// on dfd8c8db4, 2026-11-01, flake register): the regression this prices —
+	// the grace HELD past the delivery — parks the run for the 20 s result
+	// wait, so 10 s keeps the signal decisive and drops the weather's.
+	if run.err != nil || run.elapsed > 10*time.Second || !restWrapUpAsked(run, "past the grace") {
 		t.Fatalf("err = %v, elapsed = %s: a delivered result still held the grace", run.err, run.elapsed)
 	}
 }
@@ -4417,6 +4539,16 @@ func TestBackground_AShellsEndAtRestIsNotOwed(t *testing.T) {
 // t1 leaves the CLI's set 0.3 s after the first result, its notification comes
 // 1.2 s later: the wave came back then — not when t1 left the set, its result
 // still on its way.
+//
+// The judge is the script's OWN clock, never a duration measured engine-side:
+// WaitedFor runs from the wave's start, and a loaded shard reaches that start
+// late (1.28 s read on race-shard (1) of 2026-10-29, #2858, for a settle the
+// script placed past its 1.5 s of sleeps). The script's sleeps are real
+// seconds on the fake CLI's wall clock, and the session starts before the
+// CLI plays a single line, so a settle that honoured the notification cannot
+// land before 0.3 s + 1.2 s after startedAt on ANY load — while the settle
+// the bug produces, at the snapshot that removes t1 from the set, lands near
+// 0.3 s. Load stretches both ends alike; the floor holds.
 func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
@@ -4431,20 +4563,38 @@ func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 		lnIdle(),
 		"@drain",
 	)
+	// The floor derives from the script slice itself — the sleeps it runs
+	// between the WAITING result and t1's notification (the same lines the
+	// wedge net sums) — never a hand-copied constant: it moves when the
+	// sleeps move, and a broken scenario names its missing anchor.
+	scriptFloor := scriptSleepsBetween(t, script,
+		func(line string) bool {
+			return strings.Contains(line, `"type":"result"`) && strings.Contains(line, `"result":"WAITING"`)
+		},
+		func(line string) bool {
+			return strings.Contains(line, `"subtype":"task_notification"`)
+		})
 	// RESULT_WAIT pins the CLI's own patience for a result on its way: the
 	// grace's fire is suppressed while t1's is, so the 1.2s gap never races
-	// a nudge (#2201). The wave's settle time is read off the event.
+	// a nudge (#2201).
 	run := runBgSession(t, script, map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "10s",
 	}, Task{})
 	var settled *BackgroundWork
+	// ANY settle before the floor is the bug, not only the last one: judged
+	// last-wins, an early bogus settle followed by an honest one is masked
+	// by the later event's timestamp.
 	for i, e := range run.events {
-		if e.Phase == BackgroundSettled {
-			settled = &run.events[i]
+		if e.Phase != BackgroundSettled {
+			continue
 		}
+		if waited := run.at[i].Sub(run.startedAt); waited < scriptFloor {
+			t.Fatalf("settled event #%d fired %s into the session (WaitedFor %s), before the script's own %s of sleeps between the result and t1's notification: the wave was settled when t1 left the set, its result still on its way", i, waited, e.WaitedFor, scriptFloor)
+		}
+		settled = &run.events[i]
 	}
-	if run.err != nil || settled == nil || settled.WaitedFor < 1400*time.Millisecond {
+	if run.err != nil || settled == nil {
 		t.Fatalf("err = %v, settled = %+v: the wave was settled while t1's result was still on its way", run.err, settled)
 	}
 }
@@ -4534,7 +4684,8 @@ func TestBackground_AShellLeavingTheSetIsNeverAwaited(t *testing.T) {
 		"@drain",
 	)
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "1s"}, Task{})
-	if strings.Contains(run.stdin, backgroundAutoTurnNudge) || run.err != nil || run.resultText() != "GOT t1" || run.elapsed > 900*time.Millisecond {
+	assertBackgroundEndsAtIdle(t, script, run)
+	if strings.Contains(run.stdin, backgroundAutoTurnNudge) || run.err != nil || run.resultText() != "GOT t1" {
 		t.Fatalf("nudged = %v, err = %v, text = %q, elapsed = %s: a shell leaving the CLI's set held the session",
 			strings.Contains(run.stdin, backgroundAutoTurnNudge), run.err, run.resultText(), run.elapsed)
 	}
@@ -4570,7 +4721,8 @@ func TestBackground_ANestedAgentLeavingTheSetIsNeverAwaited(t *testing.T) {
 		"@drain",
 	}
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s"}, Task{})
-	if run.err != nil || run.resultText() != "GOT t1" || run.elapsed > 1500*time.Millisecond {
+	assertBackgroundEndsAtIdle(t, script, run)
+	if run.err != nil || run.resultText() != "GOT t1" {
 		t.Fatalf("err = %v, text = %q, elapsed = %s: a nested agent leaving the set held the main agent's session",
 			run.err, run.resultText(), run.elapsed)
 	}
@@ -5502,7 +5654,8 @@ func TestBackground_AForegroundAgentAloneDoesNotEngage(t *testing.T) {
 		"@drain",
 	}
 	run := runBgSession(t, script, nil, Task{})
-	if run.err != nil || run.resultText() != "DONE" || run.elapsed > time.Second || len(run.events) != 0 || strings.Contains(run.stdin, "[iterion]") {
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+	if run.err != nil || run.resultText() != "DONE" || len(run.events) != 0 || strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("err = %v, text = %q, elapsed = %s, events = %v: a foreground agent engaged the lifecycle", run.err, run.resultText(), run.elapsed, run.phases())
 	}
 }
@@ -5701,8 +5854,8 @@ func TestTheRewriteHookLeavesACommandNamingASecretToTheMaterialisation(t *testin
 	stdinLog := filepath.Join(dir, "stdin.log")
 	opts := []claudesdk.Option{claudesdk.WithCLIPath(fake), claudesdk.WithEnv("FAKE_CLAUDE_SCRIPT", scriptPath), claudesdk.WithEnv("FAKE_CLAUDE_STDIN_LOG", stdinLog)}
 	opts = installMaterializeSecretsHook(task, opts)
-	opts = installRewriteHook(task, opts)
 	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	opts = b.installRewriteHook(task, opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if _, _, err := b.runSession(ctx, "do it", task, opts); err != nil {

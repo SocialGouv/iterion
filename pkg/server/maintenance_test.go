@@ -40,8 +40,8 @@ func TestFenceHTTPLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := armTestFence(t, s)
-	req := func() *httptest.ResponseRecorder {
-		w := httptest.NewRecorder()
+	req := func() *errorRecorder {
+		w := newServerErrorRecorder(s)
 		s.handleLaunchRun(w, httptest.NewRequest("POST", "/api/runs", strings.NewReader(string(body))).WithContext(ctx))
 		return w
 	}
@@ -50,7 +50,7 @@ func TestFenceHTTPLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := req()
-	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), denyMaintenanceFence) || !strings.Contains(w.Body.String(), "schema rollout") || !strings.Contains(w.Body.String(), rec.UpdatedAt.Format(time.RFC3339Nano)) {
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), denyMaintenanceFence) || !strings.Contains(w.Diagnostic(t), "schema rollout") || !strings.Contains(w.Diagnostic(t), rec.UpdatedAt.Format(time.RFC3339Nano)) {
 		t.Fatalf("armed: %d %s", w.Code, w.Body.String())
 	}
 	if meteredRuns(t, counter) != 0 {
@@ -98,7 +98,7 @@ func TestFenceResumeExistingRun(t *testing.T) {
 	installQueueOutageTestPublisher(t, s, nil)
 	const source = "workflow fence_resume:\n  entry: done\n"
 	path := filepath.Join(s.cfg.WorkDir, "fence_resume.bot")
-	_, hash, err := runview.CompileWorkflowFromSource(path, source)
+	_, hash, err := runview.CompileWorkflowFromSource(path, source, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,8 +251,14 @@ func TestFenceRetryExistingRun(t *testing.T) {
 		armTestFence(t, s)
 		at := time.Now().UTC().Add(-time.Minute)
 		s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-a", at)}}, resumer, time.Now().UTC())
-		if len(resumer.calls) != 1 || len(st.abandoned) != 0 {
-			t.Fatalf("unreadable=%v: resumes=%d abandoned=%v", unreadable, len(resumer.calls), st.abandoned)
+		// An unreadable run doc is an unknown trust, which admission defers
+		// (resume_run_unreadable, transient) — never a fence abandonment.
+		wantResumes := 1
+		if unreadable {
+			wantResumes = 0
+		}
+		if len(resumer.calls) != wantResumes || len(st.abandoned) != 0 {
+			t.Fatalf("unreadable=%v: resumes=%d (want %d) abandoned=%v", unreadable, len(resumer.calls), wantResumes, st.abandoned)
 		}
 	}
 }

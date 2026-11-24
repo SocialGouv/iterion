@@ -87,7 +87,7 @@ func TestCopilot_BudgetDeclinedHandoffKeepsThePlanAtTheChat(t *testing.T) {
 	wf.Budget.MaxCostUSD = 1.0
 	s := tmpStore(t)
 	const runID = "e2e-copi-handoff-budget"
-	err := runtime.New(wf, s, exec).Run(context.Background(), runID, nil)
+	err := engineWithScenarioSchema(wf, s, exec).Run(context.Background(), runID, nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected the chat pause after the declined hand-off, got: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestCopilot_SpentHandoffCycleDropsThePlanAtTheChat(t *testing.T) {
 	wf.Loops["terra_plan_execution_cycle"].MaxIterations = 1
 	s := tmpStore(t)
 	const runID = "e2e-copi-handoff-cap"
-	err := runtime.New(wf, s, exec).Run(context.Background(), runID, nil)
+	err := engineWithScenarioSchema(wf, s, exec).Run(context.Background(), runID, nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected the chat pause after the spent cycle, got: %v", err)
 	}

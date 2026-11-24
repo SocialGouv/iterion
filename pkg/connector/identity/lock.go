@@ -11,7 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
@@ -78,7 +79,7 @@ func Parse(data []byte) (*Lock, error) {
 		return nil, fmt.Errorf("identity lock: schema_version %d is newer than supported %d (upgrade iterion)", probe.SchemaVersion, SchemaVersion)
 	}
 	var lock Lock
-	if err := yaml.UnmarshalStrict(data, &lock); err != nil {
+	if err := yamlx.UnmarshalStrict(data, &lock); err != nil {
 		return nil, fmt.Errorf("identity lock: %w", err)
 	}
 	if err := lock.Validate(); err != nil {
@@ -91,7 +92,7 @@ func (l *Lock) Write(dir string) error {
 	if err := l.Validate(); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(l)
+	data, err := yamlx.Marshal(l)
 	if err != nil {
 		return err
 	}

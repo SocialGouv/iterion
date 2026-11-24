@@ -17,9 +17,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/legal"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
@@ -57,6 +61,10 @@ type StudioOptions struct {
 	// concurrently with their own Run loop.
 	OnReady func(addr string)
 
+	// Legal is the operator's legal surface (ADR-160) the server
+	// publishes under /legal; the zero value publishes nothing.
+	Legal legal.Surface
+
 	// Mode, when set, advertises the deployment context in
 	// /api/server/info and tunes upload defaults ("desktop" raises
 	// the per-file cap to 1 GB; "" / "local" / "web" keep the 50 MB
@@ -71,6 +79,29 @@ type StudioOptions struct {
 	MaxTotalUploadSize int64
 	MaxUploadsPerRun   int
 	AllowUploadMime    []string
+
+	// TrustedProxyCIDRs are the ranges whose forwarded client address the
+	// server believes (ITERION_AUTH_TRUSTED_PROXY_CIDRS). Empty for the
+	// desktop studio — nothing sits in front of a loopback listener — and
+	// filled by `iterion server --mode local`, which is a shipped
+	// deployment shape behind the same Service as the cloud one, so its
+	// auth limiter needs the same per-client key (#2673).
+	TrustedProxyCIDRs []string
+
+	// TrustedProxyHops is how many APPENDING proxies of the operator's own
+	// sit in front (ITERION_AUTH_TRUSTED_PROXY_HOPS); 0 is one. Threaded
+	// from `iterion server --mode local` with the ranges above: the ranges
+	// say WHO may name the client, the header says WHERE, and this says
+	// how many of the chain's rightmost entries are theirs rather than the
+	// client's.
+	TrustedProxyHops int
+
+	// ForwardedHeader is the ONE header a trusted proxy names the client
+	// with (ITERION_AUTH_FORWARDED_HEADER); empty is X-Forwarded-For.
+	// Threaded from `iterion server --mode local` with the ranges above:
+	// the ranges say WHO may name the client, this says WHERE they name
+	// it, and only the declared header is read.
+	ForwardedHeader string
 
 	// MaxConcurrentPipelines caps how many ROOT pipelines run at once
 	// (0 = unlimited). Over the cap, launches wait in the pipeline
@@ -257,11 +288,15 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		StoreDir:               opts.StoreDir,
 		OpenBrowser:            !opts.NoBrowser,
 		Mode:                   opts.Mode,
+		Legal:                  opts.Legal,
 		MaxUploadSize:          opts.MaxUploadSize,
 		MaxTotalUploadSize:     opts.MaxTotalUploadSize,
 		MaxUploadsPerRun:       opts.MaxUploadsPerRun,
 		AllowedUploadMIMEs:     opts.AllowUploadMime,
 		MaxConcurrentPipelines: opts.MaxConcurrentPipelines,
+		TrustedProxyCIDRs:      opts.TrustedProxyCIDRs,
+		TrustedProxyHops:       opts.TrustedProxyHops,
+		ForwardedHeader:        opts.ForwardedHeader,
 		ShutdownDelay:          shutdownDelay,
 		// Local mode: the studio process is implicitly trusted to
 		// its TTY user. CSRF protection still gates write endpoints
@@ -323,6 +358,38 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			cfg.GenericSecrets = lstore
 			cfg.Sealer = secrets.NewLazyLocalSealer(store.GlobalIterionDataDir(), logger.Warn)
 		}
+		// Connector connections, local tier (#2758): the SAME file `iterion
+		// connections` writes and the SAME layered catalog a run resolves —
+		// with the baked floor appended, so the facade serves the shipped
+		// Forgejo package on a machine with no install — so an agent node's
+		// facade call in a studio run resolves exactly what the CLI manages.
+		// The CRUD routes stay CLOUD-only (team-scoped paths); here the store
+		// feeds the MCP facade under connection.LocalTenant.
+		//
+		// The catalog the facade serves is built PER RUN, from that run's
+		// workspace and trust — the same shape the node path resolves through
+		// (runview.LocalConnectors). Pinned at startup it read as "trusted"
+		// in hard code and rooted at THIS process's cwd: a fork run was then
+		// served the project tier its trust withdraws (the workspace tier is
+		// exactly where a repository under review can plant a package), and
+		// two runs over different checkouts resolved the same packages — the
+		// daemon's — while their own nodes resolved their own. The fallback
+		// catalog is the trust-independent floor: the operator's home tier
+		// and the baked packages, with NO workspace tier, which is the shape
+		// safe for whichever run reaches it.
+		if cfg.Sealer != nil {
+			if connStore, cerr := connection.NewFileStore(connection.DefaultPath(resolvedStoreDir)); cerr != nil {
+				logger.Warn("studio: connector connections disabled (%v)", cerr)
+			} else {
+				cfg.Connections = connStore
+				cfg.ConnectorCatalog, cfg.ConnectorCatalogForRun = LocalConnectorPlane(dir, store.GlobalIterionDataDir())
+				// The local scope's durable intake, beside its connections: the
+				// connector worker drains it like the cloud's (ADR-168 §8).
+				cfg.ConnectorIntakes = intake.NewFileStore(filepath.Join(resolvedStoreDir, "connector", "intakes.json"))
+				// And its pollers' state, beside it (ADR-168 §7).
+				cfg.ConnectorPollers = poller.NewFileStore(filepath.Join(resolvedStoreDir, "connector", "pollers.json"))
+			}
+		}
 	}
 	// The operator's remembered model choice, one small JSON file next to the
 	// run store. Nothing else in the config gates it: a model preference is
@@ -377,11 +444,10 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			} else {
 				logger.Warn("studio: dispatcher manager init: %v", mgrErr)
 			}
-			// Activate the event-driven trigger spine when any discovered bot
-			// declares a board: invocation. The server then promotes matching
-			// cards the moment they transition (the dispatcher claims them now,
-			// not at the next poll). nil = no board triggers → spine stays off.
-			cfg.TriggerStore = buildLocalTriggerStore(botsPaths, logger)
+			// The event-driven trigger spine over the local subscription
+			// journal: the bots' manifest invocations and the operator's own
+			// subscriptions, persisted across restarts.
+			cfg.TriggerStore = openLocalTriggerStore(resolvedStoreDir, botsPaths, logger)
 		}
 	} else {
 		// Without the native store, cfg.NativeTrackerStore AND cfg.Dispatcher

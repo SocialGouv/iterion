@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // remoteIssue mirrors the native tracker's Issue wire shape.
@@ -14,6 +15,14 @@ type remoteIssue struct {
 	Priority int      `json:"priority,omitempty"`
 	Assignee string   `json:"assignee,omitempty"`
 	Bot      string   `json:"bot,omitempty"`
+	// The outcome of the run this card launched (#1501), not just the fact
+	// that it was launched: a board whose state column says "in progress"
+	// over a run that died hides the one thing the operator came for. Only
+	// the status and its classifier are carried here — the message belongs to
+	// the detail surfaces (`iterion issue show`, the studio card).
+	LastRunStatus    string     `json:"last_run_status,omitempty"`
+	LastRunErrorCode string     `json:"last_run_error_code,omitempty"`
+	LastRunAt        *time.Time `json:"last_run_at,omitempty"`
 }
 
 // RemoteIssuesListOptions filter the board issue list.
@@ -47,9 +56,10 @@ func RemoteIssuesList(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	}
 	rows := make([][]string, 0, len(issues))
 	for _, i := range issues {
-		rows = append(rows, []string{i.ID, i.Title, i.State, strings.Join(i.Labels, ","), i.Assignee, i.Bot})
+		rows = append(rows, []string{i.ID, i.Title, i.State, strings.Join(i.Labels, ","), i.Assignee, i.Bot,
+			FormatRunOutcome(i.LastRunStatus, i.LastRunErrorCode, i.LastRunAt)})
 	}
-	p.Table([]string{"ID", "TITLE", "STATE", "LABELS", "ASSIGNEE", "BOT"}, rows)
+	p.Table([]string{"ID", "TITLE", "STATE", "LABELS", "ASSIGNEE", "BOT", "LAST RUN"}, rows)
 	return nil
 }
 

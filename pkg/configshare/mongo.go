@@ -2,6 +2,7 @@ package configshare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -131,4 +132,23 @@ func (s *MongoStore) ListDeliveries(ctx context.Context, shareID string, limit i
 		out = append(out, &rows[i])
 	}
 	return out, nil
+}
+
+// ScrubActor clears the two fields in one UpdateMany filtered on the rows
+// that still carry one of them, so the count is of rows changed — the
+// memory twin's reading.
+func (s *MongoStore) ScrubActor(ctx context.Context, actor string) (int64, error) {
+	if actor == "" {
+		return 0, errors.New("configshare: scrub actor: no actor")
+	}
+	res, err := s.deliveries.UpdateMany(ctx,
+		bson.M{"actor": actor, "$or": bson.A{
+			bson.M{"source_ip": bson.M{"$nin": bson.A{"", nil}}},
+			bson.M{"user_agent": bson.M{"$nin": bson.A{"", nil}}},
+		}},
+		bson.M{"$set": bson.M{"source_ip": "", "user_agent": ""}})
+	if err != nil {
+		return 0, fmt.Errorf("configshare: scrub the deliveries of %s: %w", actor, err)
+	}
+	return res.ModifiedCount, nil
 }

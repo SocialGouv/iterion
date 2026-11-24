@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/permissions"
 )
 
 type stubClassifier struct {

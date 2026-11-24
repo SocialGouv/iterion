@@ -115,8 +115,11 @@ func (a ForgeOAuthApp) DeriveLogoUploadURL() string {
 
 // OAuthAppStore persists per-tenant, per-instance forge OAuth-app credentials.
 // GetByInstance backs the connect-flow resolver (which app to use for a given
-// tenant + provider + base URL). Like ConnectionStore, Get is keyed by id only
-// — the HTTP layer asserts tenant ownership before mutating.
+// tenant + provider + base URL). Get is keyed by id only — the HTTP layer
+// asserts tenant ownership before mutating. This is the one forge-era store
+// read the #2760 contract did NOT make tenant-scoped: it keys OAuth apps, not
+// connections, and closing its hole is the connection store's sibling
+// follow-up, not part of the move.
 type OAuthAppStore interface {
 	Create(ctx context.Context, a ForgeOAuthApp) error
 	Get(ctx context.Context, id string) (ForgeOAuthApp, error)

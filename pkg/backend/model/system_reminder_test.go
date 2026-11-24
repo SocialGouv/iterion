@@ -8,6 +8,7 @@ import (
 )
 
 func TestSystemReminderEnvelope(t *testing.T) {
+	t.Parallel()
 	got := systemReminder("  hello  ")
 	if got != "<system-reminder>\nhello\n</system-reminder>" {
 		t.Errorf("unexpected envelope: %q", got)
@@ -15,6 +16,7 @@ func TestSystemReminderEnvelope(t *testing.T) {
 }
 
 func TestTodoReseedMessageShape(t *testing.T) {
+	t.Parallel()
 	msg := todoReseedMessage()
 	if msg.Role != "user" {
 		t.Errorf("role = %q, want user", msg.Role)
@@ -26,6 +28,7 @@ func TestTodoReseedMessageShape(t *testing.T) {
 }
 
 func TestHasTodoTool(t *testing.T) {
+	t.Parallel()
 	if hasTodoTool(nil) {
 		t.Error("nil tools must not report todo_write")
 	}
@@ -38,6 +41,7 @@ func TestHasTodoTool(t *testing.T) {
 }
 
 func TestCustomInteractionRestoresCapabilityAnswerAtPromptStart(t *testing.T) {
+	t.Parallel()
 	answer := "[page context: bot/bots/demo/main.bot]\n<active-editor-document>{\"complete\":true}</active-editor-document>\n\ncorrige le buffer"
 	got := prependPriorAskUser("Operator message:\nold request", map[string]any{
 		delegate.PriorInteractionQuestionsKey: map[string]any{

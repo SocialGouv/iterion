@@ -27,7 +27,7 @@ var _ ScratchBanker = (*S3Client)(nil)
 const ScratchBankRef = "scratch.tgz"
 
 func (c *S3Client) PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error {
-	key, err := backendSessionKey(runID, ScratchBankRef)
+	key, err := c.backendSessionKey(runID, ScratchBankRef)
 	if err != nil {
 		return err
 	}
@@ -47,7 +47,7 @@ func (c *S3Client) PutScratchBank(ctx context.Context, runID string, body io.Rea
 }
 
 func (c *S3Client) OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error) {
-	key, err := backendSessionKey(runID, ScratchBankRef)
+	key, err := c.backendSessionKey(runID, ScratchBankRef)
 	if err != nil {
 		return nil, err
 	}

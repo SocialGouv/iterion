@@ -19,6 +19,7 @@ import (
 // the exact scenario the veille bot hit before the fix
 // (path_ref='/run/iterion/secrets/webhooks' MISSING).
 func TestExecutorHostFileSecret_MaterialisesAndReadsBack(t *testing.T) {
+	t.Parallel()
 	const payload = "https://hook.example/w1"
 	guard := secretguard.New([]secretguard.Secret{{
 		Name:     "webhooks",
@@ -78,6 +79,7 @@ func TestExecutorHostFileSecret_MaterialisesAndReadsBack(t *testing.T) {
 // gate: two Execute calls reuse the same host tempfile, so the guard is
 // rewritten exactly once.
 func TestExecutorHostFileSecret_OnceAcrossExecutions(t *testing.T) {
+	t.Parallel()
 	guard := secretguard.New([]secretguard.Secret{{
 		Name:     "tok",
 		Value:    "v-abcdef",
@@ -112,6 +114,7 @@ func TestExecutorHostFileSecret_OnceAcrossExecutions(t *testing.T) {
 // at the sandbox mount, no tempdir is created, and Close has nothing to
 // clean up.
 func TestExecutorHostFileSecret_SandboxPathUnchanged(t *testing.T) {
+	t.Parallel()
 	guard := secretguard.New([]secretguard.Secret{{
 		Name:     "webhooks",
 		Value:    "sandbox-owned",
@@ -140,6 +143,7 @@ func TestExecutorHostFileSecret_SandboxPathUnchanged(t *testing.T) {
 // executor with no secret guard sees ensureHostSecretFiles as a no-op
 // (nil-safe) and installs no cleanup.
 func TestExecutorHostFileSecret_NoGuardNoOp(t *testing.T) {
+	t.Parallel()
 	exec := newTestClawExecutor(NewRegistry(), &ir.Workflow{})
 	t.Cleanup(func() { _ = exec.Close() })
 	if err := exec.ensureHostSecretFiles(); err != nil {

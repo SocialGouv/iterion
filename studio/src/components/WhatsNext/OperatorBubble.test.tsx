@@ -21,6 +21,12 @@ describe("the operator's bubble", () => {
     expect(screen.getByText("dis moi bonjour")).toBeTruthy();
   });
 
+  it("the You chip is not hidden from assistive tech (RGAA 10.8)", () => {
+    render(<OperatorBubble text="coucou" />);
+    const chip = screen.getByText("You");
+    expect(chip.getAttribute("aria-hidden")).toBeNull();
+  });
+
   it("hides the page-context line the studio prepended", () => {
     render(<OperatorBubble text={"[page context: view/editor]\nsalut"} />);
     expect(screen.getByText("salut")).toBeTruthy();

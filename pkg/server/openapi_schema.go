@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"reflect"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // This file turns the v1 route inventory (openapi.go) into a typed spec: a
@@ -63,7 +66,7 @@ var ifMatchVersionParam = queryParam{
 // still honored (the identity is judged, the freshest version is deleted).
 var botIDParam = queryParam{
 	name:        "bot_id",
-	description: "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+	description: "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check.",
 	schemaType:  "string",
 }
 
@@ -98,6 +101,94 @@ func routeSchemas() map[string]routeOp {
 			Links []ssoLinkView `json:"links"`
 		}{}},
 
+		// The gateway price feed (ADR-163): a scope's feed list and the
+		// manual sync; the state view derives staleness at read time. The
+		// PUTs declare NO request schema, like the routing-policy PUTs: the
+		// feeds field is a one-of(list, null) the handler decodes from a
+		// json.RawMessage, which the generator would render as a base64
+		// string and teach every generated client to send base64.
+		"GET /api/admin/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Super-admin only. The platform's feed list, folded below every org and team.",
+		},
+		"PUT /api/admin/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Super-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the platform's feed list, null clears it; audited as platform.price_feeds.updated.",
+		},
+		"POST /api/admin/price-feeds/sync": {
+			request:     priceFeedsSyncReq{},
+			response:    priceFeedsSyncResponse{},
+			description: "Super-admin only. Forces one platform feed's refresh (name) or every enabled one's, answering what changed per id.",
+		},
+		"GET /api/orgs/{id}/price-feeds": {response: priceFeedsView{}},
+		"PUT /api/orgs/{id}/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Org-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the org's feed list, null clears it.",
+		},
+		"POST /api/orgs/{id}/price-feeds/sync": {
+			request:     priceFeedsSyncReq{},
+			response:    priceFeedsSyncResponse{},
+			description: "Org-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.",
+		},
+		// Key pools (ADR-164): named pools of provider credentials, their
+		// entries (pledges with an entry-level route binding) and the
+		// per-scope attachments that opt a cascade level into one pool.
+		"POST /api/me/pools":                      {request: poolCreateRequest{}, response: namedPoolView{}},
+		"GET /api/me/pools":                       {response: []namedPoolView{}},
+		"POST /api/orgs/{id}/pools":               {request: poolCreateRequest{}, response: namedPoolView{}},
+		"GET /api/orgs/{id}/pools":                {response: []namedPoolView{}},
+		"POST /api/admin/llm/pools":               {request: poolCreateRequest{}, response: namedPoolView{}},
+		"GET /api/admin/llm/pools":                {response: []namedPoolView{}},
+		"PUT /api/pools/{id}":                     {request: poolPutRequest{}, response: namedPoolView{}},
+		"DELETE /api/pools/{id}":                  {response: map[string]string{}},
+		"PUT /api/pools/{id}/entries":             {request: poolEntryRequest{}, response: poolEntryView{}},
+		"GET /api/pools/{id}/entries":             {response: []poolEntryView{}},
+		"DELETE /api/pools/{id}/entries/{pledge}": {response: map[string]string{}},
+		"POST /api/pools/{id}/entries/import": {
+			request:     poolImportRequest{},
+			response:    poolEntryView{},
+			description: "Pool-manager only. Seals a subscription credentials blob verbatim under the pool's lender key and pledges it; a shape with no funding lane answers inert with a named reason.",
+		},
+		"POST /api/pools/{id}/entries/{pledge}/reset": {
+			request:     nil,
+			response:    poolEntryView{},
+			description: "Pool-manager only. Clears the provider cooldown, forgets the stale readings the margin skip acted on, resets held state.",
+		},
+		"GET /api/admin/llm/pool-attachment":                {response: attachmentView{}},
+		"PUT /api/admin/llm/pool-attachment":                {request: poolAttachmentRequest{}, response: attachmentView{}},
+		"DELETE /api/admin/llm/pool-attachment":             {response: map[string]string{}},
+		"GET /api/orgs/{id}/pool-attachment":                {response: attachmentView{}},
+		"PUT /api/orgs/{id}/pool-attachment":                {request: poolAttachmentRequest{}, response: attachmentView{}},
+		"DELETE /api/orgs/{id}/pool-attachment":             {response: map[string]string{}},
+		"GET /api/teams/{id}/pool-attachment":               {response: attachmentView{}},
+		"PUT /api/teams/{id}/pool-attachment":               {request: poolAttachmentRequest{}, response: attachmentView{}},
+		"DELETE /api/teams/{id}/pool-attachment":            {response: map[string]string{}},
+		"GET /api/teams/{id}/bots/{bot}/pool-attachment":    {response: attachmentView{}},
+		"PUT /api/teams/{id}/bots/{bot}/pool-attachment":    {request: poolAttachmentRequest{}, response: attachmentView{}},
+		"DELETE /api/teams/{id}/bots/{bot}/pool-attachment": {response: map[string]string{}},
+		"POST /api/admin/llm/pools/sync": {
+			request:     nil,
+			response:    map[string]string{},
+			description: "Super-admin only. Runs one pool-signal-sync sweep inline (the onboarding proof).",
+		},
+		"GET /api/teams/{id}/price-feeds": {response: priceFeedsView{}},
+		"PUT /api/teams/{id}/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Team-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the team's feed list, null clears it.",
+		},
+		"GET /api/teams/{id}/price-feeds/effective": {
+			response:    priceFeedEffectiveView{},
+			description: "Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.",
+			query: []queryParam{
+				{name: "model", description: "A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets.", schemaType: "string"},
+			},
+		},
+		"POST /api/teams/{id}/price-feeds/sync": {
+			request:     priceFeedsSyncReq{},
+			response:    priceFeedsSyncResponse{},
+			description: "Team-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.",
+		},
+
 		// OAuth metadata projections exclude provider UUIDs and sealed secrets.
 		"GET /api/me/oauth/connections":         {response: oauthConnectionsView{}},
 		"GET /api/teams/{id}/oauth/connections": {response: oauthConnectionsView{}},
@@ -131,6 +222,23 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/admin/orgs/{id}":   {response: orgView{}},
 		"PATCH /api/admin/orgs/{id}": {request: updateOrgReq{}, response: orgView{}},
 
+		// Platform runs view (super-admin, #2148): the cross-org runs
+		// list. Read-only; opening ONE run rides the ADR-103 choke
+		// point, not this route.
+		"GET /api/admin/runs": {
+			response:    adminRunsResponse{},
+			description: "Every org's runs in one super-admin view. Filters combine (org_id, team_id, status, since). Paginated server-side across orgs: pass the previous page's next_cursor back as cursor; an absent next_cursor is the last page.",
+			query: []queryParam{
+				{name: "org_id", description: "Narrow to the runs of one org (all its teams).", schemaType: "string"},
+				{name: "team_id", description: "Narrow to one team's runs. Combines with org_id: a team outside the org answers an empty page.", schemaType: "string"},
+				{name: "status", description: "Exact run status (running, queued, paused_waiting_human, paused_operator, finished, failed, failed_resumable, cancelled).", schemaType: "string"},
+				{name: "since", description: "Only runs updated at or after this RFC3339 instant.", schemaType: "string"},
+				{name: "limit", description: "Page size, 1..500 (default 50).", schemaType: "integer"},
+				{name: "cursor", description: "Keyset token from the previous page's next_cursor. A malformed value is refused with 400.", schemaType: "string"},
+			},
+			errors: map[int]string{401: "Authentication required", 403: "Super-admin required", 500: "Run store unavailable"},
+		},
+
 		// User administration (super-admin). The detail route is one
 		// account's file — provenance, granted memberships, SSO links.
 		"GET /api/admin/users": {
@@ -143,12 +251,24 @@ func routeSchemas() map[string]routeOp {
 		},
 		"GET /api/admin/users/{id}":   {response: adminUserDetailView{}},
 		"PATCH /api/admin/users/{id}": {request: adminUpdateUserReq{}, response: UserView{}},
+		"POST /api/admin/users/{id}/erase": {
+			response:    adminEraseUserResponse{},
+			description: "Erase an account by anonymization (GDPR art. 17): the row keeps its id under an erased-<id>@erased.invalid marker with status `erased`; name, password, GitHub orgs, SSO links, memberships, pending invitations, sessions, personal access tokens and push subscriptions go; the audit rows naming the account lose their IP, user agent and address (the invitation rows addressed to it lose the address); the account's personal org is scheduled for the nightly purge. Idempotent: a second call answers 200 with already_erased. Refused on the caller's own account (422 self_erasure) and when the account is the last owner of a shared org (409 last_org_owner).",
+			errors:      map[int]string{401: "Authentication required", 403: "Super-admin required", 404: "No such user", 409: "The account is the last owner of an organization: transfer its ownership or delete the organization first", 422: "The caller's own account", 500: "A step of the erasure failed: the message names it; repeat the request"},
+		},
 
 		// One org / one team, for anyone who may view them. The pair is
 		// what lets a console resolve a tenant by id instead of by the
 		// caller's own membership tree.
 		"GET /api/orgs/{id}":  {response: orgView{}},
 		"GET /api/teams/{id}": {response: teamSummaryView{}},
+
+		// The operator's legal pages (ADR-160) — public reads.
+		"GET /api/legal/{slug}": {
+			response:    legalDocumentView{},
+			description: "Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.",
+			errors:      map[int]string{404: "no such legal document, or not published on this deployment", 429: "Rate limit exceeded; Retry-After says when"},
+		},
 
 		// Platform LLM credentials (super-admin) — the DB-backed env fallback.
 		"GET /api/admin/llm/api-keys": {
@@ -204,11 +324,30 @@ func routeSchemas() map[string]routeOp {
 		}{}},
 
 		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
-		"GET /api/admin/bots":              {response: botSourceListView{}},
-		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
-		"PUT /api/admin/bots/{slug}":       {request: botSourcePutReq{}, response: botSourceView{}},
-		"DELETE /api/admin/bots/{slug}":    {},
+		"GET /api/admin/bots":        {response: botSourceListView{}},
+		"GET /api/admin/bots/{slug}": {response: botSourceView{}},
+		"PUT /api/admin/bots/{slug}": {request: botSourcePutReq{}, response: botSourceView{}},
+		// The whole-bot deletion takes the same two if-match tokens as the
+		// per-file one below: the heaviest write of the family cannot be the
+		// one with the weakest guarantee (#2689).
+		"DELETE /api/admin/bots/{slug}":    {query: []queryParam{ifMatchVersionParam, botIDParam}},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
+
+		// The program a launch naming a bot runs. Typed because its sha256 is
+		// a token of the launch contract: POST /api/runs takes it back as
+		// expect_source_sha256, and a client that cannot see it launches
+		// unpinned.
+		"GET /api/v1/bots/{name}/launch-source": {
+			response:    botLaunchSourceResponse{},
+			description: "The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/<name>.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.",
+			errors: map[int]string{
+				http.StatusForbidden:           "a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected",
+				http.StatusNotFound:            "the name resolves on no tier",
+				http.StatusUnprocessableEntity: "the bot resolves but not to a launchable program — the refusal a launch of it would draw",
+				http.StatusServiceUnavailable:  "a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry",
+				http.StatusInternalServerError: "the resolution or the reading itself failed",
+			},
+		},
 
 		// Team bot sources — the SAME handler (listBotSourcesFor), so the same
 		// payload, including the shadow fields docs/platform-bots.md promises
@@ -216,6 +355,53 @@ func routeSchemas() map[string]routeOp {
 		// documented-but-unverifiable is the exact shape this family exists
 		// to end.
 		"GET /api/teams/{id}/bot-sources": {response: botSourceListView{}},
+
+		// Bot bindings (ADR-018, ADR-147) — the operator's per-bot policy
+		// record. A binding of kind `secret` (or kind ABSENT — the pre-kinds
+		// wire) makes a stored team-scoped secret resolvable under the name
+		// the workflow declares in `secrets:`; a binding of kind `context`
+		// pins a git source (context.git_url + context.ref — pin a tag or
+		// sha — + context.path, read credential by reference in
+		// context.secret_id) whose document materialises as a run attachment
+		// of every run of the bot under the name the workflow declares in
+		// `attachments:`. The record carries the launch-time readout
+		// (degraded_reason / degraded_at): a context that cannot be
+		// materialised is skipped loudly, never silently.
+		"GET /api/teams/{id}/bots/{bot_id}/bindings": {response: struct {
+			Bindings []secrets.BotSecretBinding `json:"bindings"`
+		}{}},
+		"POST /api/teams/{id}/bots/{bot_id}/bindings": {
+			request:        botBindingReq{},
+			response:       secrets.BotSecretBinding{},
+			responseStatus: http.StatusCreated,
+			description:    "Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.",
+			errors: map[int]string{
+				http.StatusBadRequest:     "the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org",
+				http.StatusForbidden:      "admin or owner required",
+				http.StatusConflict:       "a binding for this workflow name already exists on this bot",
+				http.StatusNotImplemented: "context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op",
+			},
+		},
+		"PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
+			request:         botBindingPatchReq{},
+			requestOptional: true, // every field is a partial update
+			response:        secrets.BotSecretBinding{},
+			description:     "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.",
+			errors: map[int]string{
+				http.StatusBadRequest: "the merged record contradicts its kind, or the referenced credential is not bindable",
+				http.StatusForbidden:  "admin or owner required",
+				http.StatusNotFound:   "no binding with this id on this bot",
+				http.StatusConflict:   "the new name is already bound on this bot",
+			},
+		},
+		"DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
+			responseStatus: http.StatusNoContent,
+			description:    "Delete a binding. 204 on success.",
+			errors: map[int]string{
+				http.StatusForbidden: "admin or owner required",
+				http.StatusNotFound:  "no binding with this id on this bot",
+			},
+		},
 
 		// The per-file writes of a bundle, and the if-match token they read.
 		// The PUT takes it in its body; the DELETE carries no body of its own
@@ -239,11 +425,43 @@ func routeSchemas() map[string]routeOp {
 			query:    []queryParam{ifMatchVersionParam, botIDParam},
 		},
 
+		// The WHOLE-bot deletion, on the same two tokens as the per-file one
+		// above: a bodyless route, so the tokens ride the query. A client
+		// generated from a spec that hid them would delete a bot it never
+		// read with no error anywhere (#2689).
+		"DELETE /api/teams/{id}/bot-sources/{slug}": {
+			query: []queryParam{ifMatchVersionParam, botIDParam},
+		},
+
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {
 			response: struct {
 				Connections []forge.Connection `json:"connections"`
 			}{},
+		},
+		// Connector connections (ADR-098, #2759): a tenant's pkg/connection
+		// records. The response DTO never carries a credential.
+		"GET /api/teams/{id}/connections": {
+			response: struct {
+				Connections []connectionDTO `json:"connections"`
+			}{},
+			query: []queryParam{{
+				name:        "connector",
+				description: "Restrict the listing to one connector id (e.g. forgejo). Absent lists every connector's connections.",
+				schemaType:  "string",
+			}},
+		},
+		"POST /api/teams/{id}/connections": {request: connectionCreateReq{}, response: connectionDTO{}},
+		"GET /api/teams/{id}/connections/{conn_id}": {
+			response: connectionDTO{},
+			errors:   map[int]string{404: "connection not found (including another tenant's)"},
+		},
+		"PATCH /api/teams/{id}/connections/{conn_id}": {
+			request: connectionPatchReq{}, response: connectionDTO{}, requestOptional: true,
+			errors: map[int]string{404: "connection not found (including another tenant's)"},
+		},
+		"DELETE /api/teams/{id}/connections/{conn_id}": {
+			errors: map[int]string{404: "connection not found (including another tenant's)"},
 		},
 		"POST /api/teams/{id}/forge/connections": {request: forgeConnectReq{}, response: forgeConnectResp{}},
 		"GET /api/teams/{id}/forge/connections/{conn_id}/repos": {
@@ -290,6 +508,7 @@ func routeSchemas() map[string]routeOp {
 			request:  previewCostRequest{},
 			response: previewCostResponse{},
 		},
+		"POST /api/runs/{id}/resume": {request: resumeRunRequest{}},
 
 		// Model registry — known x usable x capabilities x pricing. Typed so
 		// the studio's picker (and every LaunchView node row) reads the same
@@ -340,6 +559,22 @@ func routeSchemas() map[string]routeOp {
 			request:  pipelineRecomputeDepsRequest{},
 			response: pipelineRecomputeDepsResponse{},
 		},
+
+		// Trigger subscriptions — the standing launch orders. Typed on the
+		// READ routes because the record now reports the OUTCOME of the run
+		// it launched (last_run_id/status/error/error_code/at, #1501) beside
+		// the launch-time last_error: a subscription that fired and whose run
+		// died must not read like one that fired and worked, and a client
+		// generated from an untyped spec cannot see the difference at all.
+		// The writes stay untyped — they carry no outcome, and their request
+		// body (triggerSubscriptionReq) accepts matcher shapes the generator
+		// would flatten into a wrong contract.
+		"GET /api/v1/triggers": {
+			response: struct {
+				Subscriptions []trigger.Subscription `json:"subscriptions"`
+			}{},
+		},
+		"GET /api/v1/triggers/{id}": {response: trigger.Subscription{}},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		// Platform forge OAuth apps (super-admin): the deployment's own

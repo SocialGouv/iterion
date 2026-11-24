@@ -35,9 +35,14 @@ this bot is a deterministic node.
 
 | file | what it is |
 |---|---|
-| `<items_dir>/<id>.json` | the engine's harvest for one criterion: `evidence[]` (`file`, `line`, `selector`, `snippet`, `note`), `signals[]` (rule hits), `population` (`classes`, `occurrences`, `files`, `pages` — how many subjects it found), `testIds`, `needsRenderedEvidence`, `evidenceComplete` |
-| `<briefs_dir>/<id>.md` | the criterion's own numbered tests, the standard's testing methodology and glossary, rendered by the engine at run time — the ONLY normative text in the run |
+| one evidence file per criterion | the engine's harvest for one criterion: `evidence[]` (`file`, `line`, `selector`, `snippet`, `note`), `signals[]` (rule hits), `population` (`classes`, `occurrences`, `files`, `pages` — how many subjects it found), `testIds`, `needsRenderedEvidence`, `evidenceComplete` |
+| one brief per criterion | the criterion's own numbered tests, the standard's testing methodology and glossary, rendered by the engine at run time — the ONLY normative text in the run |
 | the `contract` in your input | the verdict vocabulary and what each verdict must carry; it wins over this page if the two ever disagree |
+
+Your batch input lists the absolute path of every evidence file and brief
+it hands you (a null brief path names a criterion the engine decided
+statically): open exactly those, never a path reconstructed from memory or
+rebuilt from a directory of the run.
 
 A `population` of zeros means the engine found no subject for the criterion
 in the audited scope: NA is the expected verdict, confirmed by one grep.
@@ -48,17 +53,18 @@ The engine's `verify --apply` is the gate on your work, and it is partial:
 every acceptable verdict lands, every refusal is named — a C without a
 citation, an NC without a groundable finding, a NA without a justification,
 a `manual` without one of the two reasons, a word outside the vocabulary.
-Named refusals come back to you once, with the engine's reason. Two things
-the gate cannot see and the bot checks instead:
+Named refusals come back to you once, with the engine's reason. The bot
+also checks that:
 
 - a citation must be one of the anchors of THIS criterion's own `evidence[]`
   (the engine grounds a citation on the source file, which would accept a
   stray line);
-- a `manual` on a criterion the engine marks "no subject" leaves the report
-  inconsistent (the engine counts it twice); decide NA there.
+- report counts and the RGAA rate agree with the audit document.
+  ultra11y 5.45.0 leaves coverage gaps open without marking them NA.
 
-The fold also crashes on a verdict for a criterion it already decided, so
-verdicts outside your batch are discarded before it runs.
+The fold refuses a verdict for a criterion it already decided with structured
+JSON. Verdicts outside your batch are discarded before it runs. A NA on a
+criterion with harvested evidence must cite that evidence.
 
 ## The run directory
 
@@ -69,7 +75,7 @@ verdicts outside your batch are discarded before it runs.
 `adjudication.json` (the merged verdicts), `fragments/` (one file per batch),
 `probe/` (the folds on copies), `ledger/` (the replayed ledger, then the
 merged one), `draft/` and `refute/` (the draft report and its trial),
-`out/` (the deliverables), `layers/` (one status file per layer, the source
+`out/` (the business summary, technical annex and other deliverables), `layers/` (one status file per layer, the source
 of the coverage annex).
 
 ## Reporting a drift

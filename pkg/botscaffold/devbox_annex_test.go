@@ -83,7 +83,7 @@ func TestShapesThatNeedJqShipAPinnedDevbox(t *testing.T) {
 			t.Fatalf("%s: devbox.lock resolves jq %s, the config asks for %s", shape, entry.Version, want)
 		}
 	}
-	if needs != 2 {
-		t.Fatalf("%d shapes run jq, want the two that do (campaign-loop, scheduled-digest); update this count with the shape", needs)
+	if needs != 3 {
+		t.Fatalf("%d shapes run jq, want the three that do (campaign-loop, scheduled-digest, goal-loop); update this count with the shape", needs)
 	}
 }

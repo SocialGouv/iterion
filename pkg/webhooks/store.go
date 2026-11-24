@@ -10,6 +10,7 @@ import (
 var (
 	ErrNotFound  = errors.New("webhooks: not found")
 	ErrDuplicate = errors.New("webhooks: duplicate idempotency key")
+	ErrConflict  = errors.New("webhooks: config changed concurrently; re-read and retry")
 )
 
 // ConfigStore persists webhook configs. Get is intentionally NOT
@@ -20,7 +21,28 @@ var (
 type ConfigStore interface {
 	Create(ctx context.Context, c Config) error
 	Get(ctx context.Context, id string) (Config, error)
+	// Update compares Version and increments it atomically. Legacy rows start at zero.
 	Update(ctx context.Context, c Config) error
+	// DisableProvision disables one immutable endpoint without replacing policy.
+	// It also works on a frozen migration source; authority must match.
+	DisableProvision(ctx context.Context, id, integrationID string) error
+	// ClearCredentialPins removes, from the config as the store holds it
+	// NOW, every key_overrides / secret_overrides entry whose value names
+	// recordID, reporting whether it removed any. The judgment happens at
+	// write time against the stored row — never against the caller's
+	// listing copy — so a pin edit or a second record's sweep landing
+	// between the caller's list and this clear survives untouched, and a
+	// swept pin cannot resurrect through a writer that validates after the
+	// delete — the write-time validators refuse a dead record's id; a write
+	// that validated while the record lived can still land after the
+	// sweep's listing, and that write's own route re-checks the records its
+	// landed pins name and calls this clear for a revoked one (the delete's
+	// listing never saw the row). Each real removal bumps version, so an
+	// editor holding a pre-sweep snapshot conflicts and re-reads instead of
+	// writing the swept pin back; a clear that removes nothing writes
+	// nothing and moves no version. ErrNotFound when the config is gone; a
+	// config holding no such entry is a no-op, not an error.
+	ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Config, error)
 	MarkUsed(ctx context.Context, id string, t time.Time) error
@@ -55,6 +77,25 @@ type DeliveryStore interface {
 	// another caller got there first, and the loser must answer as a
 	// duplicate rather than launch. ErrNotFound when the row is gone.
 	ClaimFailedRetry(ctx context.Context, d Delivery, expectAttempts int) (claimed bool, err error)
+	// MarkRunOutcome stamps the OUTCOME of the run this delivery launched —
+	// the run-terminal counterpart of the delivery's own launch verdict, and
+	// the twin of cloudsched.Store.MarkRunOutcome,
+	// trigger.SubscriptionStore.MarkRunOutcome and
+	// native.BoardStore.SetRunOutcome (#1501). Called by the run-outcome
+	// spine, which holds no copy of the row, so it is a TARGETED field write.
+	//
+	// runID is a MATCH KEY, not a value to store: the stamp lands only while
+	// the row's own RunID still names that run. A retry of a failed delivery
+	// reuses the row and relaunches under a NEW run id, so the predecessor's
+	// late terminal must not describe the successor — the same discipline the
+	// board card's SetRunOutcome keys on.
+	//
+	// errMsg/errCode empty CLEAR the stored failure: a successful run must
+	// not leave the previous one's error on the row. `at` is the run
+	// document's instant and carries a MONOTONICITY GUARD — an out-of-order
+	// delivery is a silent no-op, never a backwards move. ErrNotFound when
+	// the row is gone.
+	MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error
 	ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error)
 	// CountLaunched counts the deliveries of one event kind on one subject
 	// that actually launched a run (RunID set). This is a CEILING query —
@@ -165,5 +206,9 @@ type Limits struct {
 // call does NOT consume quota.
 type Counter interface {
 	Allow(ctx context.Context, tenantID, webhookID string, when time.Time, limits Limits) (bool, error)
+	// Release gives back the unit an Allow granted under the same arguments
+	// — a call the caller charged and then did not accept (a write that
+	// failed, a delivery that met its stored row).
+	Release(ctx context.Context, tenantID, webhookID string, when time.Time, limits Limits) error
 	OrgCount(ctx context.Context, tenantID string, when time.Time) (int, error)
 }

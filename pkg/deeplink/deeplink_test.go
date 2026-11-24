@@ -193,3 +193,64 @@ func TestStudioBaseMatchesTheStudioConstant(t *testing.T) {
 		t.Errorf("STUDIO_BASE = %q in %s, but deeplink.StudioBase = %q — server-built links and client routes would disagree", got, path, StudioBase)
 	}
 }
+
+// TestRunAttachmentAddressesTheRouteThatServesTheBytes pins the one
+// spelling of a run attachment's download address, and the escaping a
+// caller-chosen run id needs.
+func TestRunAttachmentAddressesTheRouteThatServesTheBytes(t *testing.T) {
+	cases := []struct {
+		name        string
+		base, runID string
+		handle      string
+		want        string
+	}{
+		{"plain", "https://iterion.example", "run-1", "report", "https://iterion.example/api/runs/run-1/attachments/report"},
+		{"trailing slash on the base", "https://iterion.example/", "run-1", "report", "https://iterion.example/api/runs/run-1/attachments/report"},
+		{"base served under a path prefix", "https://host/iterion", "run-1", "report", "https://host/iterion/api/runs/run-1/attachments/report"},
+		// SanitizePathComponent rejects "..", a separator and control
+		// characters — a space reaches this builder, and unescaped it
+		// truncates the link at the first space wherever it is pasted.
+		{"a run id holding a space", "https://iterion.example", "run 1", "report", "https://iterion.example/api/runs/run%201/attachments/report"},
+		{"a handle holding a hash", "https://iterion.example", "run-1", "a#b", "https://iterion.example/api/runs/run-1/attachments/a%23b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RunAttachment(tc.base, tc.runID, tc.handle); got != tc.want {
+				t.Errorf("RunAttachment(%q, %q, %q) = %q, want %q",
+					tc.base, tc.runID, tc.handle, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunAttachmentFromEnvPublishesNothingItCannotStandBehind: the
+// empty-string policy, one case per refusal. A link that resolves
+// against the wrong origin is worse than no link, because nothing in it
+// says so.
+func TestRunAttachmentFromEnvPublishesNothingItCannotStandBehind(t *testing.T) {
+	cases := []struct {
+		name   string
+		env    string
+		runID  string
+		handle string
+		want   string
+	}{
+		{"usable origin", "https://iterion.example", "run-1", "report", "https://iterion.example/api/runs/run-1/attachments/report"},
+		{"unset", "", "run-1", "report", ""},
+		{"no scheme", "iterion.example", "run-1", "report", ""},
+		{"whitespace", "https://iterion.example /x", "run-1", "report", ""},
+		{"userinfo", "https://admin:pw@iterion.example", "run-1", "report", ""},
+		{"query", "https://iterion.example?utm=x", "run-1", "report", ""},
+		{"no run id", "https://iterion.example", "  ", "report", ""},
+		{"no handle", "https://iterion.example", "run-1", "  ", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(PublicBaseEnv, tc.env)
+			if got := RunAttachmentFromEnv(tc.runID, tc.handle); got != tc.want {
+				t.Errorf("RunAttachmentFromEnv(%q, %q) with %s=%q = %q, want %q",
+					tc.runID, tc.handle, PublicBaseEnv, tc.env, got, tc.want)
+			}
+		})
+	}
+}

@@ -4,10 +4,30 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "backup": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "tiers": {
+          "type": "array"
+        },
+        "checkArgs": {
+          "type": "array"
+        },
+        "extraArgs": {
+          "type": "array"
+        }
+      }
+    },
     "config": {
       "type": "object"
     },
     "containerSecurityContext": {
+      "type": "object"
+    },
+    "devStack": {
       "type": "object"
     },
     "fullnameOverride": {
@@ -17,7 +37,13 @@
       "type": "object"
     },
     "image": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "requireDigest": {
+          "type": "boolean",
+          "description": "Opt-in render guard: every iterion pod image must be a repo@sha256 reference. Typed because the string \"false\" is truthy to the templates and would refuse the whole render."
+        }
+      }
     },
     "imagePullSecrets": {
       "type": "array"
@@ -29,7 +55,14 @@
       "type": "object"
     },
     "minio": {
-      "type": "object"
+      "type": ["object", "null"],
+      "description": "Retired sub-chart (4.4): accepted only in its off form (an empty, disabled or nulled block) so a values file that merely disabled it keeps rendering; anything else is refused.",
+      "properties": {
+        "enabled": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
     },
     "mode": {
       "type": "string",
@@ -39,7 +72,14 @@
       ]
     },
     "mongodb": {
-      "type": "object"
+      "type": ["object", "null"],
+      "description": "Retired sub-chart (4.4): accepted only in its off form (an empty, disabled or nulled block) so a values file that merely disabled it keeps rendering; anything else is refused.",
+      "properties": {
+        "enabled": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
     },
     "nameOverride": {
       "type": "string"
@@ -54,6 +94,9 @@
       "type": "object"
     },
     "probes": {
+      "type": "object"
+    },
+    "quota": {
       "type": "object"
     },
     "runner": {

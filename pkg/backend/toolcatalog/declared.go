@@ -1,6 +1,7 @@
 package toolcatalog
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -38,19 +39,21 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // The default answer for an unknown backend is therefore the SAFE one — a
 // backend is assumed not to receive the list until someone proves it does and
 // names it here. `opencode` (#1640) is the worked example: it drives
-// `opencode --format json run` with the prompt on stdin and reads no tool
+// `opencode run --format json` with the prompt on stdin and reads no tool
 // list at all, so `tools: [Bash, Read]` on such a node used to validate with
 // zero diagnostics.
 //
 // It says the list ARRIVES, never that the node ends up holding nothing —
-// and it is deliberately NOT a workspace-safety predicate. `claudeNativeTools`
-// is a hardcoded enumeration of a roster iterion does not own: the same
-// package's `orchestrationTools` (Agent, TaskOutput, Monitor) and
-// `headlessWithheldTools` name tools outside it. Which of those survive a
-// `tools: []` is the CLI's call (the pinned one resolves the roster's legacy
-// `Task` to `Agent`; `Monitor` survives), and every MCP tool survives, being
-// on no roster. (`Workflow` is withheld separately, from every spawn whatever
-// its list.) On claw the runtime's
+// and it is deliberately NOT a workspace-safety predicate. The claude_code
+// roster is `backendcaps.NativeTools(ClaudeCode)`, a declaration of a surface
+// iterion does not own, held against iterion's own second enumeration of it
+// by delegate's anchoring guard (#1651): every tool it renders a header for
+// is on the roster or excluded with a reason. Sibling lists still name tools
+// the roster does not — `orchestrationTools` carries `TaskOutput` and
+// `Monitor`, `headlessWithheldTools` carries `Workflow`, the cron family and
+// `RemoteTrigger` — and every MCP tool survives any list, being on no roster.
+// Which roster names survive a `tools: []` is the CLI's call, and some names
+// are withheld from every spawn whatever the list says. On claw the runtime's
 // own interaction and auto-memory appends can put `write_file` back. Anything that must know what
 // a node can DO reads the effective surface, not this.
 //
@@ -59,4 +62,90 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // turns advisory CLI-backend names into blocking C135 errors on shipped bots.
 func ReceivesToolList(backend string) bool {
 	return backendcaps.Offers(strings.TrimSpace(backend), backendcaps.ToolList)
+}
+
+// DurableWriteSpellingsOn are the names ONE backend can send for a durable
+// write when nothing bounds its tool surface — the question a reader asks
+// about a node whose `tools:` declaration does not reach, or does not bound,
+// that route, where the agent keeps its own roster.
+//
+// It answers in NAMES a gate can match, never in canonical keys: a permission
+// rule is evaluated against the name the backend's model emits, and a reader
+// that handed the gate a bare concept key asked about a call no backend makes
+// — which read `deny: ["Write*"]` as leaving a writer it removes
+// (iterion#2832 round 3). Two sources, in this order:
+//
+//   - the backend's own roster where the registry declares one
+//     (backendcaps.NativeTools — claude_code's twenty names, the seed
+//     delegate's `--disallowedTools` projection is built from): those ARE the
+//     names that route sends;
+//   - otherwise every SPELLING of the shared table that folds onto a durable
+//     write. A roster iterion does not declare is one it cannot name, so the
+//     honest candidate set is the names the catalogue knows for the concept,
+//     and a reader asking "does the gate leave a writer" takes them
+//     existentially: every known spelling denied is a writer gone, one
+//     surviving is a writer this reading cannot call bounded.
+//
+// The store's own builtin (`memory_write`) is in NEITHER: it has no spelling
+// row and is on no roster, which is exactly what makes it claw's and the
+// `memory:` block's — a reader asking about a block asks about that name
+// directly.
+func DurableWriteSpellingsOn(backend string) []string {
+	writers := DurableWriteCanonicals()
+	var out []string
+	for _, native := range backendcaps.NativeTools(strings.TrimSpace(backend)) {
+		if slices.Contains(writers, CanonicalToolName(native)) {
+			out = append(out, native)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for spelling, canonical := range canonicalToolNames {
+		if slices.Contains(writers, canonical) {
+			out = append(out, spelling)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// DeclaredListBounds reports whether a node's `tools:` declaration is what
+// decides the tool surface of a run on this backend. It is the second
+// parameter of the shared per-backend durable-write question iterion#2882
+// names (the first is ReadonlyWithholdsDurableWrite): a reader crediting a
+// write path asks it before reading anything into the list.
+//
+//   - a backend that never RECEIVES the list (ReceivesToolList — pi, kimi,
+//     grok and opencode, driven through the CLI-agent seam) is bounded by
+//     nothing the node declares: a declared writer-free list is a bound
+//     their run does not have, and reading it as one was the hole this arm
+//     closes — the run keeps its native roster, writers included;
+//   - on claw the list IS the surface: buildTask resolves the ToolDefs
+//     behind `len(effectiveTools) > 0 && claw` and claw_backend sets
+//     opts.Tools from ToolDefs alone, so an UNDECLARED list is no tool at
+//     all there. Reading it as "no restriction" credited a claw-only bundle
+//     with a native write surface the engine never installs (iterion#2832);
+//   - everywhere else the list reaches, an UNDECLARED list is no
+//     restriction — claude_code disallows only the natives a DECLARED list
+//     omits (delegate.claudeNativeDisallowedTools returns nil with no
+//     declaration) — while `tools: []` IS a declaration (ToolsDeclared), and
+//     reading the two alike is what let a node asking for no tools keep the
+//     whole roster.
+//
+// Every route a caller asks about is expected to be a NAMED backend: the
+// durable-memory reading expands the route the engine cannot resolve into
+// the candidates dispatch would pick from, so this predicate never answers
+// for "" and never has to guess which side of the readings above an
+// undecided route falls on. An UNREGISTERED name answers false — the safe
+// side, and ReceivesToolList's own default.
+
+func DeclaredListBounds(backend string, tools []string) bool {
+	if !ReceivesToolList(backend) {
+		return false
+	}
+	if strings.TrimSpace(backend) == backendcaps.Claw {
+		return true
+	}
+	return ToolsDeclared(tools)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -115,6 +116,12 @@ type launchBot struct {
 	// BundleDir is the server-side materialization used for compilation.
 	// Cloud catalog and stored bots both use it; Cleanup owns the collection.
 	BundleDir string
+	// BundleEntry is the launched entry's base name inside BundleDir when it
+	// is not the canonical main.bot: a bundle's promoted sibling entry, or
+	// the loose catalogue file the snapshot froze alone (#1896). The compile
+	// opens BundleDir WITH it (bundle.OpenDirEntry) — opening for main.bot
+	// would refuse the dir a loose entry froze.
+	BundleEntry string
 	// Ref carries the snapshot and, for stored origins, the row provenance.
 	Ref *runview.BotBundleRef
 	// sourceRowID is the botsource row id a STORED origin resolved from —
@@ -149,16 +156,46 @@ func (lb *launchBot) Stamp(spec *runview.LaunchSpec) {
 	lb.StampBundle(spec)
 }
 
-// StampBundle stamps the compile dir, the runner ref and the tier that served
-// the launch, for callers that resolved path/source separately (the studio
+// StampBundle stamps the compile dir, the runner ref, the tier that served
+// the launch and the served manifest's name, for callers that resolved path/source separately (the studio
 // derives an absolute path first). Nil-safe.
 func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 	if lb == nil {
 		return
 	}
 	spec.BundleDir = lb.BundleDir
+	spec.BundleEntry = lb.BundleEntry
 	spec.BotBundle = lb.Ref
 	spec.BotSourceTier = lb.Tier()
+	spec.BotManifestName = lb.manifestName()
+}
+
+// manifestName is the served manifest's name, the second spelling the
+// routing cells' bot dimension reaches this bot by (a team fork keeps its
+// catalogue bot's name under its own slug): "" when the manifest names
+// none, or names the bot id itself.
+func (lb *launchBot) manifestName() string {
+	if lb == nil || lb.Manifest == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(lb.Manifest.Name); name != lb.BotID {
+		return name
+	}
+	return ""
+}
+
+// botIdentity is the bot a launch of lb folds the routing cells for.
+func (lb *launchBot) botIdentity() llmroute.BotIdentity {
+	return llmroute.BotIdentity{ID: lb.BotID, Name: lb.manifestName()}
+}
+
+// stampResumeBundle is StampBundle for a ResumeSpec: the same bundle facts,
+// from the same resolution, so a resume compiles against the entry the
+// launch named. Callers nil-check lb before calling.
+func (lb *launchBot) stampResumeBundle(spec *runview.ResumeSpec) {
+	spec.BundleDir = lb.BundleDir
+	spec.BundleEntry = lb.BundleEntry
+	spec.BotBundle = lb.Ref
 }
 
 // Cleanup removes the materialized bundle dir, if any. Safe on nil.
@@ -179,22 +216,131 @@ func (lb *launchBot) Cleanup() {
 // materialize is an explicit error, never a silent fall-through to the baked
 // tier (that would pair this launch with resources the operator replaced).
 func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath string) (*launchBot, error) {
-	lb, err := s.resolveBotTieredRaw(ctx, teamID, botID, filePath)
-	if err != nil || lb == nil || s.cfg.Mode != "cloud" {
+	hit, found, err := s.resolveBotTier(ctx, teamID, botID, filePath)
+	if err != nil || !found {
+		return nil, err
+	}
+	return s.launchBotOfTier(ctx, teamID, hit)
+}
+
+// launchBotOfTier is the launch-ready bot of a tier decision: the tier's
+// bundle materialized, and in cloud frozen with its collection. A launch
+// (resolveBotTiered) and the read of a bot's launch program
+// (handleBotLaunchSource) both come through here, so the program one reads is
+// the program the other runs.
+func (s *Server) launchBotOfTier(ctx context.Context, teamID string, hit botTierHit) (*launchBot, error) {
+	lb, err := s.rawLaunchBotOfTier(ctx, hit)
+	if err != nil || s.cfg.Mode != "cloud" {
 		return lb, err
 	}
 	return s.snapshotLaunchBot(ctx, teamID, lb)
 }
 
+// launchProgramOf is what a launch of lb hands the compile as its entry: the
+// label and the inline source, or — a local catalog bot, onDisk — the real
+// file alone, so its bundle-relative skills and prompts remain adjacent. The
+// ONE rule the launch (handleLaunchRun) and the read of a bot's program
+// (handleBotLaunchSource) both apply, so the identity one issues is the
+// identity the other compiles.
+func (s *Server) launchProgramOf(lb *launchBot) (path, source string, onDisk bool) {
+	if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
+		return lb.Path, lb.Source, false
+	}
+	return lb.Path, "", true
+}
+
+// tierReadGuard is asked about every tier whose bundle a resolution is about
+// to materialize — the bot itself and, in a freeze, each bundle it builds on
+// (a fragment's or a skill's producer, a child bundle) — BEFORE anything of
+// it is read. It rides the context of a resolution made to SHOW a program, or
+// to hold a launch to a pin only a reader can have been issued
+// (withTierReadGuard); a resolution that carries none reads every tier, as a
+// launch always has.
+type tierReadGuard func(hit botTierHit) error
+
+// tierUnavailableError is a stored tier that did not answer the tier
+// decision — its store failed on anything but an absence. The name may or may
+// not resolve there: transient, where an absence or a refusal is the bot as
+// stored. The message is the wrapped error's.
+type tierUnavailableError struct{ err error }
+
+func (e *tierUnavailableError) Error() string { return e.err.Error() }
+func (e *tierUnavailableError) Unwrap() error { return e.err }
+
+type tierReadGuardKey struct{}
+
+func tierReadGuardOf(ctx context.Context) tierReadGuard {
+	guard, _ := ctx.Value(tierReadGuardKey{}).(tierReadGuard)
+	return guard
+}
+
 // Raw resolution is also used while collecting a snapshot's child bundles;
 // recursively snapshotting each child would lose the shared collection root.
 func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePath string) (*launchBot, error) {
+	hit, found, err := s.resolveBotTier(ctx, teamID, botID, filePath)
+	if err != nil || !found {
+		return nil, err
+	}
+	return s.rawLaunchBotOfTier(ctx, hit)
+}
+
+// rawLaunchBotOfTier materializes the tier a resolution chose, unfrozen. It
+// is the one door every bundle of a resolution comes through, which is where
+// the context's read guard, when there is one, refuses a tier.
+func (s *Server) rawLaunchBotOfTier(ctx context.Context, hit botTierHit) (*launchBot, error) {
+	if guard := tierReadGuardOf(ctx); guard != nil {
+		if err := guard(hit); err != nil {
+			return nil, err
+		}
+	}
+	if hit.origin != "catalog" {
+		return s.storedLaunchBot(hit.row, hit.origin)
+	}
+	path := hit.entry.MainFile()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		// The id RESOLVED but its source cannot be read — a real error, not
+		// an absence.
+		return nil, fmt.Errorf("read bot %q: %w", hit.slug, err)
+	}
+	m, err := loadCatalogManifest(hit.slug, path)
+	if err != nil {
+		return nil, err
+	}
+	// The discovered name, not the requested spelling: the stored tiers hand
+	// back the row's canonical slug, so the catalog tier must answer with the
+	// same kind of value or the identical launch carries one id with a team
+	// fork and another without. Run documents, bot-scoped memory, board
+	// attribution, secret bindings, pledges and the BYOK audience all key on
+	// it (docs/byok.md: a credential's write edge and its read edge must
+	// agree — fold both, or fold neither).
+	return &launchBot{BotID: hit.entry.Name, Origin: "catalog", Path: path, Source: string(b), Manifest: m}, nil
+}
+
+// botTierHit is the tier a bot id resolves through, before anything is
+// materialized: the stored row of the team or platform tier, or the baked
+// catalogue entry.
+type botTierHit struct {
+	origin string // "team" | "platform" | "catalog", launchBot.Origin's words
+	slug   string // the id as asked, for error messages
+	row    botsource.BotSource
+	entry  botregistry.Entry
+}
+
+// resolveBotTier is THE tier decision of the automated launch surfaces —
+// team row, then platform row, then the baked catalogue — taken without
+// materializing anything. resolveBotTieredRaw launches what it answers, and
+// servingBotManifest reads the manifest of what it answers, so a lane that
+// mints from a bot's manifest reads the bundle the launch runs rather than a
+// second lookup with its own fall-through. found is false only for a genuine
+// absence: a store that cannot answer is an error, never the next tier.
+func (s *Server) resolveBotTier(ctx context.Context, teamID, botID, filePath string) (botTierHit, bool, error) {
 	slug := strings.TrimSpace(botID)
 	if slug == "" {
 		slug = inferCatalogBotID(filePath)
 	}
 	if slug == "" {
-		return nil, nil
+		return botTierHit{}, false, nil
 	}
 	// The catalog tier tolerates spelling variants (feature_dev /
 	// Feature-Dev / "feature dev" → feature-dev; ResolveBotEntry normalizes
@@ -225,18 +371,18 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 			bs, found, err := s.teamBotRow(ctx, teamID, slug)
 			switch {
 			case err != nil:
-				return nil, fmt.Errorf("resolve bot %q (team tier): %w", slug, err)
+				return botTierHit{}, false, &tierUnavailableError{fmt.Errorf("resolve bot %q (team tier): %w", slug, err)}
 			case found:
-				return s.storedLaunchBot(bs, "team")
+				return botTierHit{origin: "team", slug: slug, row: bs}, true, nil
 			}
 		}
 		pctx := store.WithTenant(ctx, botsource.PlatformTenantID)
 		bs, err := s.botSources.GetBySlug(pctx, botsource.PlatformTenantID, platformSlug)
 		switch {
 		case err == nil:
-			return s.storedLaunchBot(bs, "platform")
+			return botTierHit{origin: "platform", slug: slug, row: bs}, true, nil
 		case !errors.Is(err, botsource.ErrNotFound):
-			return nil, fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)
+			return botTierHit{}, false, &tierUnavailableError{fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)}
 		}
 	}
 	paths, captured := ctx.Value(assistantWatchBotPathsKey{}).([]string)
@@ -246,34 +392,43 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 	entry, err := botregistry.ResolveBotEntry(slug, paths)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil // unknown id = not found here, the caller decides
+			return botTierHit{}, false, nil // unknown id = not found here, the caller decides
 		}
 		// A matching malformed bundle is not absence: preserve the discovery
 		// diagnostic so studio/webhook launches explain why it is unavailable.
-		return nil, err
+		return botTierHit{}, false, err
 	}
-	path := entry.MainFile()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		// The id RESOLVED but its source cannot be read — a real error, not
-		// an absence.
-		return nil, fmt.Errorf("read bot %q: %w", slug, err)
-	}
-	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFile))
+	return botTierHit{origin: "catalog", slug: slug, entry: entry}, true, nil
+}
+
+// loadCatalogManifest reads the manifest beside a catalogue bot's main file,
+// under either accepted name. Nil (no error) for a bundle that ships none.
+func loadCatalogManifest(slug, mainFile string) (*bundle.Manifest, error) {
+	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(mainFile), bundle.ManifestFile))
 	if err == nil && m == nil {
-		m, err = bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFileAlt))
+		m, err = bundle.LoadManifest(filepath.Join(filepath.Dir(mainFile), bundle.ManifestFileAlt))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read bot %q manifest: %w", slug, err)
 	}
-	// The discovered name, not the requested spelling: the stored tiers hand
-	// back the row's canonical slug, so the catalog tier must answer with the
-	// same kind of value or the identical launch carries one id with a team
-	// fork and another without. Run documents, bot-scoped memory, board
-	// attribution, secret bindings, pledges and the BYOK audience all key on
-	// it (docs/byok.md: a credential's write edge and its read edge must
-	// agree — fold both, or fold neither).
-	return &launchBot{BotID: entry.Name, Origin: "catalog", Path: path, Source: string(b), Manifest: m}, nil
+	return m, nil
+}
+
+// servingBotManifest is the manifest of the bundle teamID's automated launch
+// of botID would run: resolveBotTier's answer, never a separate lookup. A
+// stored row without a manifest WINS resolution, so it answers nil — it does
+// not fall through to a same-slug platform or catalogue manifest that would
+// describe code that is not running. A store that cannot answer is an error.
+// Nil, nil when the id resolves nowhere.
+func (s *Server) servingBotManifest(ctx context.Context, teamID, botID string) (*bundle.Manifest, error) {
+	hit, found, err := s.resolveBotTier(ctx, teamID, botID, "")
+	if err != nil || !found {
+		return nil, err
+	}
+	if hit.origin != "catalog" {
+		return hit.row.Manifest(), nil
+	}
+	return loadCatalogManifest(hit.slug, hit.entry.MainFile())
 }
 
 // teamBotRow finds teamID's OWN botsource row for a bot id, tolerating the
@@ -792,6 +947,43 @@ func (s *Server) bakedFindByName(name string) (botregistry.EntryWithSchema, bool
 	}
 	entry, found := findEntryByName(entries, name)
 	return entry, found, nil
+}
+
+// botVisibleForLaunch answers whether botID is enabled to a door that
+// judges visibility — the label door joins the card launch door (#2676).
+// The tier that answers is the tier the launch would serve from, in launch
+// precedence: a team row, then a platform row, each through its OWN live
+// row's manifest (no workspace overlay there), then the baked catalog read
+// FAIL-CLOSED through the overlay — a refused overlay starts nothing, the
+// card door's rule. A bot no tier describes is not launchable through a
+// visibility-judging door.
+func (s *Server) botVisibleForLaunch(ctx context.Context, teamID, botID string) (bool, error) {
+	if s.botSources != nil {
+		if teamID != "" {
+			entry, found, err := s.storedBotEntry(ctx, teamID, botID)
+			if err != nil {
+				return false, err
+			}
+			if found {
+				return entry.Enabled, nil
+			}
+		}
+		entry, found, err := s.storedBotEntry(ctx, botsource.PlatformTenantID, botID)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return entry.Enabled, nil
+		}
+	}
+	entry, found, err := s.bakedFindByName(botID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	return entry.Enabled, nil
 }
 
 // findEntryByName is the launcher's name match, one implementation for every

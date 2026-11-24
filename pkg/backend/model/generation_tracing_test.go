@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	sentry "github.com/getsentry/sentry-go"
 
 	"github.com/SocialGouv/iterion/pkg/errtrack"

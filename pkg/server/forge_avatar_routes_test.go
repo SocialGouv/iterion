@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/brand"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
@@ -75,7 +76,7 @@ func (m *mockGitLabAvatar) count() int {
 func connectGitLabPAT(t *testing.T, s *Server, baseURL string) forge.Connection {
 	t.Helper()
 	body := `{"provider":"gitlab","mode":"pat","forge_base_url":"` + baseURL + `","pat":"glpat-token"}`
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleConnectForge(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/connections", body, "t1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("connect: code=%d body=%s", w.Code, w.Body.String())
@@ -112,7 +113,7 @@ func TestForgeConnect_BotIdentityGetsTheAvatar(t *testing.T) {
 	if !bytes.Equal(gl.gotBytes, brand.BotAvatar(brand.VariantPlain)) {
 		t.Error("the connect uploaded something other than the plain iterion-bot avatar")
 	}
-	stored, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	stored, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestForgeConnect_AvatarFailureIsRecordedNotFatal(t *testing.T) {
 	if !strings.Contains(conn.AvatarError, "is too big") {
 		t.Errorf("avatar_error = %q, want GitLab's reason quoted", conn.AvatarError)
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), conn.ID)
+	stored, _ := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if stored.AvatarError != conn.AvatarError {
 		t.Errorf("persisted avatar_error = %q", stored.AvatarError)
 	}
@@ -181,7 +182,7 @@ func TestForgeConnect_AvatarFailureIsRecordedNotFatal(t *testing.T) {
 func seedAvatarConn(t *testing.T, s *Server, c forge.Connection) forge.Connection {
 	t.Helper()
 	if c.Kind == forge.KindPAT {
-		sealed, err := forge.SealPAT(s.sealer, c.ID, "tok")
+		sealed, err := connection.SealForgePAT(s.sealer, c.ID, "tok")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -195,10 +196,10 @@ func seedAvatarConn(t *testing.T, s *Server, c forge.Connection) forge.Connectio
 	return c
 }
 
-func avatarReq(s *Server, connID, body string) *httptest.ResponseRecorder {
+func avatarReq(s *Server, connID, body string) *errorRecorder {
 	r := forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/connections/"+connID+"/avatar", body, "t1")
 	r.SetPathValue("conn_id", connID)
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgeConnectionAvatar(w, r)
 	return w
 }
@@ -224,7 +225,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	glUser := seedAvatarConn(t, s, forge.Connection{ID: "c-gl-user", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "iterion-bot", AccountKind: forge.AccountKindUser, ForgeBaseURL: srv.URL})
 	glBot := seedAvatarConn(t, s, forge.Connection{ID: "c-gl-bot", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL, AvatarError: "earlier refusal"})
 
-	decode := func(w *httptest.ResponseRecorder) map[string]any {
+	decode := func(w *errorRecorder) map[string]any {
 		var m map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &m)
 		return m
@@ -232,29 +233,29 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 
 	t.Run("oauth is a person — refused, no override", func(t *testing.T) {
 		w := avatarReq(s, oauth.ID, `{"force":true}`)
-		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "personal account") {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Diagnostic(t), "personal account") {
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("github PAT — no API, points at the logo", func(t *testing.T) {
 		w := avatarReq(s, ghPAT.ID, "")
 		m := decode(w)
 		if w.Code != http.StatusUnprocessableEntity || m["logo_url"] != "/brand/iterion-bot.png" {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("github App — no API, deep-links the App's settings page", func(t *testing.T) {
 		w := avatarReq(s, ghApp.ID, "")
 		m := decode(w)
 		if w.Code != http.StatusUnprocessableEntity || m["manage_url"] != "https://github.com/organizations/acme/settings/apps/iterion-forge-1234" {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("gitlab PAT of an unflagged account — needs force", func(t *testing.T) {
 		w := avatarReq(s, glUser.ID, "")
 		m := decode(w)
 		if w.Code != http.StatusConflict || m["needs_force"] != true || m["account_login"] != "iterion-bot" {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 		if gl.count() != 0 {
 			t.Error("a refusal must not touch the forge")
@@ -263,12 +264,12 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	t.Run("gitlab PAT forced — applied", func(t *testing.T) {
 		w := avatarReq(s, glUser.ID, `{"force":true,"variant":"circle"}`)
 		if w.Code != http.StatusOK {
-			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 		var resp forgeAvatarResp
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
 		if resp.AvatarURL != "https://gl/uploads/avatar.png" || resp.Connection == nil || resp.Connection.AvatarAppliedAt == nil {
-			t.Errorf("resp = %s", w.Body.String())
+			t.Errorf("resp = %s", w.Diagnostic(t))
 		}
 		if !bytes.Equal(gl.gotBytes, brand.BotAvatar(brand.VariantCircle)) {
 			t.Error("variant circle was asked, the plain bytes were uploaded")
@@ -277,9 +278,9 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	t.Run("gitlab bot — applied, earlier error cleared", func(t *testing.T) {
 		w := avatarReq(s, glBot.ID, "")
 		if w.Code != http.StatusOK {
-			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
-		stored, _ := s.forgeConnections.Get(context.Background(), glBot.ID)
+		stored, _ := s.forgeConnections.Get(context.Background(), glBot.TenantID, glBot.ID)
 		if stored.AvatarError != "" || stored.AvatarAppliedAt == nil || time.Since(*stored.AvatarAppliedAt) > time.Minute {
 			t.Errorf("persisted = error %q applied_at %v", stored.AvatarError, stored.AvatarAppliedAt)
 		}
@@ -289,7 +290,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	})
 	t.Run("unknown variant is a 400", func(t *testing.T) {
 		if w := avatarReq(s, glBot.ID, `{"variant":"square"}`); w.Code != http.StatusBadRequest {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("forge refusal is a 502 and kept on the connection", func(t *testing.T) {
@@ -297,10 +298,10 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 		gl.status = http.StatusBadRequest
 		gl.mu.Unlock()
 		w := avatarReq(s, glBot.ID, "")
-		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "is too big") {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "is too big") {
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
-		stored, _ := s.forgeConnections.Get(context.Background(), glBot.ID)
+		stored, _ := s.forgeConnections.Get(context.Background(), glBot.TenantID, glBot.ID)
 		if !strings.Contains(stored.AvatarError, "is too big") {
 			t.Errorf("persisted avatar_error = %q", stored.AvatarError)
 		}
@@ -316,7 +317,7 @@ func TestForgeConnectionAvatar_RequiresManager(t *testing.T) {
 	memberCtx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u2", TeamID: "t1", Role: identity.RoleMember})
 	r := forgeReq(memberCtx, "POST", "/api/teams/t1/forge/connections/c1/avatar", "", "t1")
 	r.SetPathValue("conn_id", "c1")
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgeConnectionAvatar(w, r)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("a plain member could rebrand: code=%d", w.Code)
@@ -331,7 +332,7 @@ func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
 	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
 		// The concurrent writer, replayed verbatim from the orchestrator: a
 		// full-document update carrying the managed secret id.
-		c, err := s.forgeConnections.Get(context.Background(), "c-race")
+		c, err := s.forgeConnections.Get(context.Background(), "t1", "c-race")
 		if err != nil {
 			t.Errorf("get during upload: %v", err)
 		}
@@ -348,7 +349,7 @@ func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
 	if w := avatarReq(s, "c-race", ""); w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-race")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-race")
 	if stored.ManagedSecretID != "sec-managed-forge-token" {
 		t.Fatalf("the avatar apply lost a concurrent write: managed_secret_id=%q", stored.ManagedSecretID)
 	}
@@ -360,7 +361,7 @@ func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
 // cancelAwareStore is the memory store with the one behaviour Mongo has and
 // the memory store lacks: a write on a dead context fails.
 type cancelAwareStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	updates int
 }
 
@@ -369,7 +370,7 @@ func (c *cancelAwareStore) Update(ctx context.Context, conn forge.Connection) er
 		return err
 	}
 	c.updates++
-	return c.ConnectionStore.Update(ctx, conn)
+	return c.ForgeStore.Update(ctx, conn)
 }
 
 // The apply owns its own context: an operator who closes the tab mid-click
@@ -378,7 +379,7 @@ func (c *cancelAwareStore) Update(ctx context.Context, conn forge.Connection) er
 // hence the cancel-aware wrapper).
 func TestForgeConnectionAvatar_CompletesOnACancelledRequest(t *testing.T) {
 	s := newForgeTestServer(t)
-	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
+	cs := &cancelAwareStore{ForgeStore: s.forgeConnections}
 	s.forgeConnections = cs
 	gl := &mockGitLabAvatar{bot: true}
 	srv := gl.server()
@@ -389,12 +390,12 @@ func TestForgeConnectionAvatar_CompletesOnACancelledRequest(t *testing.T) {
 	cancel() // the client is gone before the upload starts
 	r := forgeReq(ctx, "POST", "/api/teams/t1/forge/connections/c-cancel/avatar", "", "t1")
 	r.SetPathValue("conn_id", "c-cancel")
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgeConnectionAvatar(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-cancel")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-cancel")
 	if stored.AvatarAppliedAt == nil || stored.AvatarError != "" || cs.updates != 1 || gl.count() != 1 {
 		t.Fatalf("not completed and recorded: applied_at=%v error=%q updates=%d uploads=%d", stored.AvatarAppliedAt, stored.AvatarError, cs.updates, gl.count())
 	}
@@ -424,7 +425,7 @@ func TestForgeConnectionAvatar_LegacyConnectionLearnsItsKind(t *testing.T) {
 			if w.Code != tc.wantCode {
 				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 			}
-			stored, _ := s.forgeConnections.Get(context.Background(), "c-legacy")
+			stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-legacy")
 			if stored.AccountKind != tc.wantKind {
 				t.Errorf("account_kind = %q, want %q recorded from WhoAmI", stored.AccountKind, tc.wantKind)
 			}
@@ -482,7 +483,7 @@ func TestForgeConnect_AutoApplyIsAudited(t *testing.T) {
 // connection even though the round-trips' context has expired.
 func TestForgeConnectionAvatar_RecordsWhenTheForgeHangs(t *testing.T) {
 	s := newForgeTestServer(t)
-	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
+	cs := &cancelAwareStore{ForgeStore: s.forgeConnections}
 	s.forgeConnections = cs
 	release := make(chan struct{})
 	mux := http.NewServeMux()
@@ -506,7 +507,7 @@ func TestForgeConnectionAvatar_RecordsWhenTheForgeHangs(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-hang")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-hang")
 	if !strings.Contains(stored.AvatarError, "deadline exceeded") || cs.updates != 1 {
 		t.Fatalf("the timeout was not recorded: avatar_error=%q updates=%d", stored.AvatarError, cs.updates)
 	}
@@ -524,7 +525,7 @@ func TestForgeConnectionAvatar_RefusalRecordsOnlyTheKind(t *testing.T) {
 	if w := avatarReq(s, "c-legacy2", ""); w.Code != http.StatusConflict {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-legacy2")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-legacy2")
 	if stored.AccountKind != forge.AccountKindUser || stored.AvatarAppliedAt == nil || !stored.AvatarAppliedAt.Equal(then) || stored.AvatarError != "kept as is" {
 		t.Fatalf("refusal rewrote more than the kind: %+v", stored)
 	}
@@ -568,10 +569,10 @@ func TestForgeConnectionAvatar_ForcedApplyBailsWhenWhoAmIHangs(t *testing.T) {
 	s.avatarApplyTimeout = 200 * time.Millisecond
 
 	w := avatarReq(s, "c-slow-user", `{"force":true}`)
-	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
-		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-slow-user")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-slow-user")
 	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d error=%q applied=%v", uploads, stored.AvatarError, stored.AvatarAppliedAt)
 	}
@@ -607,7 +608,7 @@ func TestForgeConnectionAvatar_UnreadableAccountAsksForTheWord(t *testing.T) {
 	if body["needs_force"] != true || body["account_login"] != "svc" || !strings.Contains(msg, "would not say whether @svc") || !strings.Contains(msg, "insufficient scope") {
 		t.Fatalf("refusal must offer the forced retry, name the account and the forge's reason: %v", body)
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreadable")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-unreadable")
 	if uploads != 0 || stored.AccountKind != "" || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("a refusal to vouch must upload and record nothing: uploads=%d stored=%+v", uploads, stored)
 	}
@@ -636,7 +637,7 @@ func TestForgeConnectionAvatar_RejectedCredentialIsAReconnectProblem(t *testing.
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect it first") || strings.Contains(w.Body.String(), "needs_force") {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-dead-token")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-dead-token")
 	if stored.Status != forge.StatusRevoked || !strings.Contains(stored.StatusReason, "401") {
 		t.Fatalf("a live 401 must mark the connection revoked with the reason: status=%q reason=%q", stored.Status, stored.StatusReason)
 	}
@@ -671,11 +672,11 @@ func TestForgeConnectionAvatar_SpentBudgetOutranksTheForgesAnswer(t *testing.T) 
 	s.avatarApplyTimeout = 200 * time.Millisecond
 	for _, body := range []string{"", `{"force":true}`} {
 		w := avatarReq(s, "c-stalled-403", body)
-		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
-			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
+			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Diagnostic(t))
 		}
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-stalled-403")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-stalled-403")
 	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d stored=%+v", uploads, stored)
 	}
@@ -697,27 +698,64 @@ func TestForgeConnectionAvatar_SpentBudgetErrorMeansTheExpiryNotTheSentinel(t *t
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	conn := seedAvatarConn(t, s, forge.Connection{ID: "c-meaning", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL})
-	s.avatarApplyTimeout = 200 * time.Millisecond
 
+	// The apply budget is TEST ERGONOMICS — the route's contract is
+	// defaultAvatarApplyTimeout, and avatarApplyTimeout exists to shorten it
+	// against a forge that hangs — so this witness does not borrow a clock it
+	// cannot control. What a spent budget MEANS holds whatever the forge
+	// managed to send, and is judged on every attempt; that the partial
+	// answer is RENDERED needs the partial answer to have arrived first, so
+	// the budget GROWS until it has. A fixed 200 ms read the shard instead:
+	// under the race detector on a loaded runner the 403 arrives after it,
+	// and the test blamed the route for dropping an answer it never received
+	// (CI run 40902722060, race-shard (2)). Load now changes how long this
+	// test takes and never what it decides.
+	for budget := avatarPartialAnswerBudget; ; budget *= 2 {
+		s.avatarApplyTimeout = budget
+		err := spentAvatarBudgetMeaning(t, s, conn)
+		// The forge's partial answer stays readable: diagnostic, not routing.
+		if strings.Contains(err.Error(), "insufficient scope") {
+			return
+		}
+		if budget >= avatarPartialAnswerCeiling {
+			t.Fatalf("up to a %s budget, no attempt carried the forge's partial answer: it was dropped instead of rendered, or this machine never delivered the 403 the witness needs: %v", budget, err)
+		}
+	}
+}
+
+// avatarPartialAnswerBudget is where the search for a budget that expires
+// AFTER the forge's partial answer starts — enough on a quiet machine — and
+// avatarPartialAnswerCeiling is where the witness stops doubling it and calls
+// the premise unobtainable: a ceiling, not an expectation.
+const (
+	avatarPartialAnswerBudget  = 200 * time.Millisecond
+	avatarPartialAnswerCeiling = 5 * time.Second
+)
+
+// spentAvatarBudgetMeaning applies the avatar against a forge that never
+// finishes answering and asserts what a spent budget MEANS, whatever the forge
+// managed to send: the error carries the expiry and never the forge's
+// sentinel, which the shared classifier routes on. Returns the error so the
+// caller can read what it rendered. The apply records nothing on this path, so
+// one attempt leaves the connection exactly as the next one needs it.
+func spentAvatarBudgetMeaning(t *testing.T, s *Server, conn forge.Connection) error {
+	t.Helper()
 	_, _, err := s.applyBotAvatar(context.Background(), conn, brand.VariantPlain, false)
 	if err == nil {
 		t.Fatal("a forge that never finishes answering must fail the apply")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("the error does not carry the expiry it is about: %v", err)
+		t.Fatalf("the error does not carry the expiry it is about: %v", err)
 	}
 	for name, sentinel := range map[string]error{"ErrForbidden": forge.ErrForbidden, "ErrUnauthorized": forge.ErrUnauthorized} {
 		if errors.Is(err, sentinel) {
-			t.Errorf("a spent budget still matches forge.%s (%v) — the shared classifier would answer the forge's status for a dead context", name, err)
+			t.Fatalf("a spent budget still matches forge.%s (%v) — the shared classifier would answer the forge's status for a dead context", name, err)
 		}
 	}
 	if code, _ := forgeUpstreamStatus(err); code != 0 {
-		t.Errorf("forgeUpstreamStatus(%v) = %d, want 0 — an expiry is not an answer the forge gave", err, code)
+		t.Fatalf("forgeUpstreamStatus(%v) = %d, want 0 — an expiry is not an answer the forge gave", err, code)
 	}
-	// The forge's partial answer stays readable: diagnostic, not routing.
-	if !strings.Contains(err.Error(), "insufficient scope") {
-		t.Errorf("the forge's partial answer was dropped instead of rendered: %v", err)
-	}
+	return err
 }
 
 // A forge that does not answer at all is not a vouch matter either: the
@@ -731,11 +769,11 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 	seedAvatarConn(t, s, forge.Connection{ID: "c-unreachable", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: url})
 	for _, body := range []string{"", `{"force":true}`} {
 		w := avatarReq(s, "c-unreachable", body)
-		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
-			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
+			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Diagnostic(t))
 		}
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreachable")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-unreachable")
 	if stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("an unreachable forge must record nothing: %+v", stored)
 	}
@@ -744,17 +782,17 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 	noUser := httptest.NewServer(http.NotFoundHandler())
 	defer noUser.Close()
 	seedAvatarConn(t, s, forge.Connection{ID: "c-wrong-base", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: noUser.URL})
-	if w := avatarReq(s, "c-wrong-base", ""); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "does not serve the user endpoint") || strings.Contains(w.Body.String(), "hook") {
-		t.Fatalf("404 on /user: code=%d body=%s", w.Code, w.Body.String())
+	if w := avatarReq(s, "c-wrong-base", ""); w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "does not serve the user endpoint") || strings.Contains(w.Diagnostic(t), "hook") {
+		t.Fatalf("404 on /user: code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
 }
 
-// failingUpdateStore wraps the memory ConnectionStore and injects a caller-
+// failingUpdateStore wraps the memory ForgeStore and injects a caller-
 // controlled failure on Update. It exists to prove that a persist error
 // AFTER a successful forge round-trip does not answer 502 — the doctrine
 // forgeUpstreamStatus writes down: only an iterion fault reaches 500.
 type failingUpdateStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	failOnUpdate error
 }
 
@@ -762,7 +800,7 @@ func (f *failingUpdateStore) Update(ctx context.Context, conn forge.Connection) 
 	if f.failOnUpdate != nil {
 		return f.failOnUpdate
 	}
-	return f.ConnectionStore.Update(ctx, conn)
+	return f.ForgeStore.Update(ctx, conn)
 }
 
 // A persist that fails AFTER SetAvatar succeeded is iterion's own state
@@ -774,8 +812,8 @@ func (f *failingUpdateStore) Update(ctx context.Context, conn forge.Connection) 
 func TestForgeConnectionAvatar_StoreFailAfterUploadIsIterionFault500(t *testing.T) {
 	s := newForgeTestServer(t)
 	failing := &failingUpdateStore{
-		ConnectionStore: s.forgeConnections,
-		failOnUpdate:    errors.New("mongo: connection reset by peer"),
+		ForgeStore:   s.forgeConnections,
+		failOnUpdate: errors.New("mongo: connection reset by peer"),
 	}
 	s.forgeConnections = failing
 	gl := &mockGitLabAvatar{bot: true}
@@ -785,13 +823,13 @@ func TestForgeConnectionAvatar_StoreFailAfterUploadIsIterionFault500(t *testing.
 
 	w := avatarReq(s, "c-persist-fail", "")
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a store write that failed AFTER a successful upload must answer 500 (iterion's own), got %d: body=%s", w.Code, w.Body.String())
+		t.Fatalf("a store write that failed AFTER a successful upload must answer 500 (iterion's own), got %d: body=%s", w.Code, w.Diagnostic(t))
 	}
-	if !strings.Contains(w.Body.String(), "c-persist-fail") {
-		t.Errorf("body must name the connection to act on it: body=%s", w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "c-persist-fail") {
+		t.Errorf("body must name the connection to act on it: body=%s", w.Diagnostic(t))
 	}
-	if !strings.Contains(w.Body.String(), "connection reset by peer") {
-		t.Errorf("body must carry the underlying cause: body=%s", w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "connection reset by peer") {
+		t.Errorf("body must carry the underlying cause: body=%s", w.Diagnostic(t))
 	}
 	if gl.count() != 1 {
 		t.Errorf("uploads = %d, want 1 — the upload landed before persist failed", gl.count())
@@ -896,7 +934,7 @@ func TestForgeConnect_AvatarInspectionFailurePreservesConnectionAndImage(t *test
 	if conn.Status != forge.StatusActive || conn.AvatarAppliedAt != nil || conn.AvatarError == "" || gl.count() != 0 {
 		t.Fatalf("inspection failure: status=%s applied=%v error=%q uploads=%d", conn.Status, conn.AvatarAppliedAt, conn.AvatarError, gl.count())
 	}
-	stored, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	stored, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil || stored.AvatarError != conn.AvatarError {
 		t.Fatalf("inspection failure not recorded: %v", err)
 	}

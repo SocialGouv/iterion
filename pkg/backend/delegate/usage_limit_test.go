@@ -56,11 +56,13 @@ func TestClassifyRateLimit(t *testing.T) {
 			wantReset: time.Date(2026, 7, 18, 10, 30, 0, 0, time.UTC), // 10:30 already past 14:00 → next day
 		},
 		{
+			// The notice names its zone: 9pm in Paris in July (CEST,
+			// UTC+2) is 19:00Z.
 			name:       "weekly limit with pm clock (feed-watch runner 019f7eee)",
 			text:       "You've hit your weekly limit · resets 9pm (Europe/Paris)",
 			wantKind:   RateLimitKindUsageWindow,
 			wantWindow: string(usagecap.WindowSevenDay),
-			wantReset:  time.Date(2026, 7, 17, 21, 0, 0, 0, time.UTC),
+			wantReset:  time.Date(2026, 7, 17, 19, 0, 0, 0, time.UTC),
 		},
 		{
 			name:      "zai 5h facade",
@@ -103,12 +105,12 @@ func TestClassifyRateLimit(t *testing.T) {
 		},
 		{
 			// An explicit absolute instant needs no year inference, so it is
-			// taken verbatim. Previously the clock pattern chewed the "20" out
-			// of "2026" and produced hour 20 of TODAY.
+			// taken verbatim — in the facade's zone, UTC+8 — and not chewed
+			// by the clock pattern into hour 20 of TODAY.
 			name:      "zai absolute reset instant",
 			text:      "Usage limit reached for 5 hour. Your limit will reset at 2026-05-13 07:38:08",
 			wantKind:  RateLimitKindUsageWindow,
-			wantReset: time.Date(2026, 5, 13, 7, 38, 8, 0, time.UTC),
+			wantReset: time.Date(2026, 5, 12, 23, 38, 8, 0, time.UTC),
 		},
 	}
 	for _, tt := range tests {
@@ -179,7 +181,7 @@ func TestClassifyRateLimit_TheDurationShapeIsResolvedAgainstTheMomentItIsRead(t 
 		t.Fatalf("the captured refusal's ResetAt moved between readings (%s -> %s): the text freezes its instant, and the reader that calls the provenance from a re-reading counts a frozen-in-text rendering as the provider's own date",
 			frozen.Format(time.RFC3339), stillFrozen.Format(time.RFC3339))
 	}
-	renderedFor := time.Date(2026, 5, 13, 2, 38, 8, 0, time.UTC) // the instant's own now+5h
+	renderedFor := time.Date(2026, 5, 12, 18, 38, 8, 0, time.UTC) // the instant (07:38:08 UTC+8 = 23:38:08Z) minus 5h
 	if _, dated, ok := ParseResetHintDated(captured, renderedFor); !ok || dated {
 		t.Fatalf("ParseResetHintDated read at the moment it was rendered for = dated=%v, want the duration's own rendering: not dated", dated)
 	}
@@ -305,9 +307,11 @@ func TestParseResetHintDated(t *testing.T) {
 		},
 		{
 			// The zai facade's captured sentence, refused at the window's
-			// start: the instant is the duration's own rendering.
+			// start: the instant is the duration's own rendering, written in
+			// the facade's zone — t0+5h = 19:00:07Z is 03:00:07 the next day
+			// in UTC+8.
 			name:      "a rendered absolute beside its duration is that duration, not a date",
-			text:      "usage limit reached for 5 hour. your limit will reset at 2026-07-17 19:00:07",
+			text:      "usage limit reached for 5 hour. your limit will reset at 2026-07-18 03:00:07",
 			now:       t0,
 			wantAt:    time.Date(2026, 7, 17, 19, 0, 7, 0, time.UTC),
 			wantDated: false,
@@ -320,7 +324,7 @@ func TestParseResetHintDated(t *testing.T) {
 			name:      "a rendered-shape instant far from now+duration is the provider's date",
 			text:      "usage limit reached for 5 hour. your limit will reset at 2026-07-20 14:00:00",
 			now:       t0,
-			wantAt:    time.Date(2026, 7, 20, 14, 0, 0, 0, time.UTC),
+			wantAt:    time.Date(2026, 7, 20, 6, 0, 0, 0, time.UTC),
 			wantDated: true,
 			wantOK:    true,
 		},
@@ -330,7 +334,7 @@ func TestParseResetHintDated(t *testing.T) {
 			name:      "an absolute alone is the provider's own date",
 			text:      "weekly/monthly limit exhausted. your limit will reset at 2026-07-19 18:14:59",
 			now:       t0,
-			wantAt:    time.Date(2026, 7, 19, 18, 14, 59, 0, time.UTC),
+			wantAt:    time.Date(2026, 7, 19, 10, 14, 59, 0, time.UTC),
 			wantDated: true,
 			wantOK:    true,
 		},

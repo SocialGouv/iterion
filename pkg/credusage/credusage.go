@@ -79,7 +79,7 @@ const (
 // both real questions. Summing across tenants answers the first.
 type Key struct {
 	// Fingerprint is the credential's audit identity
-	// (secrets.FingerprintSHA256 for a key, the connect-time stamp for a
+	// (secrets.APIKeyFingerprint for a key, the connect-time stamp for a
 	// forfait). Required.
 	Fingerprint string
 	// Provider is the credential slot — a provider name ("anthropic") or an

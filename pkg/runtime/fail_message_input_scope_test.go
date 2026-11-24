@@ -64,7 +64,9 @@ workflow w:
 			t.Fatalf("%s: fixture does not compile: %v", tc.name, cr.Diagnostics)
 		}
 		s := tmpStore(t)
-		eng := New(cr.Workflow, s, newStubExecutor())
+		exec := newStubExecutor()
+		exec.on("lead", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+		eng := New(cr.Workflow, s, exec)
 		runID := "fail-msg-" + tc.name
 		if err := eng.Run(context.Background(), runID, tc.inputs); err == nil {
 			t.Fatalf("%s: the run succeeded; the graph routes to a fail node", tc.name)

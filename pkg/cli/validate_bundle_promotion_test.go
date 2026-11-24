@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestRunValidate_BareMainBotOfABundleSeesItsPrompts(t *testing.T) {
 	// The model and backend are pinned: `validate` does not waive C018
 	// (no model and no credential the host can detect), and a bare CI has
 	// no credential — the test measures the bundle promotion, not the host.
-	if err := BotsCreate(BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	for _, target := range []string{filepath.Join("bots", "mf", "main.bot"), filepath.Join("bots", "mf")} {
@@ -56,7 +57,7 @@ func TestRunValidate_BareMainBotKeepsTheBundleDirName(t *testing.T) {
 	p, _ := testPrinter()
 	// Pinned model and backend: `validate` does not waive C018, and a bare
 	// CI has no credential to detect — the test measures the lint's dir name.
-	if err := BotsCreate(BotsCreateOptions{Slug: "memo", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "memo", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	// Arm checkBundleNameStability: it only speaks for a bot that actually

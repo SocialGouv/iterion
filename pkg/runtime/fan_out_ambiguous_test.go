@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -62,91 +63,104 @@ func TestFanOutStopsOnUndecidedEffects(t *testing.T) {
 		for _, trigger := range []string{"cancel", "drain", "deadline", "sibling", "budget", "pause"} {
 			for _, late := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/late=%v", topology, trigger, late), func(t *testing.T) {
+					// The outer test owns scratch cleanup; synctest joins every run
+					// goroutine before returning to that cleanup.
+					s := doneRefusingResumableStore{doneRefusingStore{tmpStore(t)}}
 					old := branchCancelGracePeriod
 					branchCancelGracePeriod = 25 * time.Millisecond
 					defer func() { branchCancelGracePeriod = old }()
-					wf := fanOutWorkflow(ir.AwaitBestEffort)
-					if trigger == "sibling" {
-						wf = fanOutWorkflow(ir.AwaitWaitAll)
-					}
-					branchID := "branch_router_agent_a"
-					if topology == "each" {
-						await := ir.AwaitBestEffort
+					synctest.Test(t, func(t *testing.T) {
+						wf := fanOutWorkflow(ir.AwaitBestEffort)
 						if trigger == "sibling" {
-							await = ir.AwaitWaitAll
+							wf = fanOutWorkflow(ir.AwaitWaitAll)
 						}
-						wf = fanOutEachWorkflow(false, await, 2)
-						branchID = "branch_dispatch_0"
-					}
-					if topology == "multi" {
-						r := wf.Nodes["router"].(*ir.RouterNode)
-						r.RouterMode, r.RouterMulti, r.Model = ir.RouterLLM, true, "test-model"
-					}
-					ctx, cancel := context.WithCancelCause(context.Background())
-					defer cancel(nil)
-					stop := func() { cancel(context.Canceled) }
-					var triggerErr error
-					switch trigger {
-					case "drain":
-						stop = func() { cancel(ErrRunInterrupted) }
-					case "deadline":
-						var deadlineCancel context.CancelFunc
-						ctx, deadlineCancel = context.WithTimeout(ctx, 200*time.Millisecond)
-						defer deadlineCancel()
-						stop = func() {}
-					case "sibling":
-						stop = func() {}
-						triggerErr = errors.New("sibling fails")
-					case "budget":
-						stop = func() {}
-						triggerErr = ErrBudgetExceeded
-					case "pause":
-						stop = func() {}
-						triggerErr = ErrRunPaused
-					}
-					x := &residualFanExecutor{stubExecutor: newStubExecutor(), started: make(chan struct{}), release: make(chan struct{}), stop: stop, trigger: triggerErr, late: late}
-					x.on("entry", func(map[string]any) (map[string]any, error) {
-						return map[string]any{"summary": "input", "items": []any{item("A"), item("B")}}, nil
+						if topology == "each" {
+							await := ir.AwaitBestEffort
+							if trigger == "sibling" {
+								await = ir.AwaitWaitAll
+							}
+							wf = fanOutEachWorkflow(false, await, 2)
+						}
+						if topology == "multi" {
+							r := wf.Nodes["router"].(*ir.RouterNode)
+							r.RouterMode, r.RouterMulti, r.Model = ir.RouterLLM, true, "test-model"
+						}
+						ctx, cancel := context.WithCancelCause(context.Background())
+						defer cancel(nil)
+						stop := func() { cancel(context.Canceled) }
+						var triggerErr error
+						switch trigger {
+						case "drain":
+							stop = func() { cancel(ErrRunInterrupted) }
+						case "deadline":
+							// Real deadline semantics, driven by the synctest clock: loaded
+							// filesystem/setup work cannot consume virtual budget.
+							var deadlineCancel context.CancelFunc
+							ctx, deadlineCancel = context.WithTimeout(ctx, 2*time.Second)
+							defer deadlineCancel()
+							stop = func() {}
+						case "sibling":
+							stop = func() {}
+							triggerErr = errors.New("sibling fails")
+						case "budget":
+							stop = func() {}
+							triggerErr = ErrBudgetExceeded
+						case "pause":
+							stop = func() {}
+							triggerErr = ErrRunPaused
+						}
+						x := &residualFanExecutor{stubExecutor: newStubExecutor(), started: make(chan struct{}), release: make(chan struct{}), stop: stop, trigger: triggerErr, late: late}
+						x.on("entry", func(map[string]any) (map[string]any, error) {
+							return map[string]any{"summary": "input", "items": []any{item("A"), item("B")}}, nil
+						})
+						x.on("router", func(map[string]any) (map[string]any, error) {
+							return map[string]any{"selected_routes": []any{"agent_a", "agent_b"}}, nil
+						})
+						// Release the late branch before the bubble joins all producers.
+						defer close(x.release)
+						err := New(wf, s, x).Run(ctx, "r", nil)
+						if trigger == "deadline" {
+							if !errors.Is(ctx.Err(), context.DeadlineExceeded) || !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+								t.Fatalf("deadline became cancellation: Err=%v Cause=%v", ctx.Err(), context.Cause(ctx))
+							}
+							// A deadline that fired before the branches were up
+							// measured the budget, not the classification: say so
+							// instead of failing on a verdict this run never had
+							// the chance to reach.
+							select {
+							case <-x.started:
+							default:
+								t.Fatalf("the deadline fired before the fan-out started (err = %v) — this run measured the 2s budget, not the undecided-effect classification; the machine, not the code, is what to look at", err)
+							}
+						}
+						var rt *RuntimeError
+						if !errors.As(err, &rt) || rt.Code != ErrCodeAmbiguousEffect {
+							t.Errorf("returned %v, want AMBIGUOUS_EFFECT", err)
+						}
+						r, loadErr := s.LoadRun(context.Background(), "r")
+						if loadErr != nil {
+							t.Fatal(loadErr)
+						}
+						if r.Status != store.RunStatusFailedResumable || r.FailureCode != ErrCodeAmbiguousEffect {
+							t.Errorf("recorded %s/%s, want failed_resumable/AMBIGUOUS_EFFECT", r.Status, r.FailureCode)
+						}
+						events, loadErr := s.LoadEvents(context.Background(), "r")
+						if loadErr != nil {
+							t.Fatal(loadErr)
+						}
+						found := false
+						for _, ev := range events {
+							if ev.Type == store.EventRunFailed && ev.Data["code"] == string(ErrCodeAmbiguousEffect) {
+								found = true
+							}
+							if ev.Type == store.EventNodeStarted && (ev.NodeID == "finalize" || ev.NodeID == "collect") {
+								t.Error("join executes beside an undecided effect")
+							}
+						}
+						if !found {
+							t.Error("no run_failed event carries AMBIGUOUS_EFFECT")
+						}
 					})
-					x.on("router", func(map[string]any) (map[string]any, error) {
-						return map[string]any{"selected_routes": []any{"agent_a", "agent_b"}}, nil
-					})
-					s := doneRefusingResumableStore{doneRefusingStore{tmpStore(t)}}
-					// Join the late branch before its store's owned scratch is removed.
-					defer func() {
-						close(x.release)
-						if late {
-							waitBranchFinished(t, s, "r", branchID)
-						}
-					}()
-					err := New(wf, s, x).Run(ctx, "r", nil)
-					var rt *RuntimeError
-					if !errors.As(err, &rt) || rt.Code != ErrCodeAmbiguousEffect {
-						t.Errorf("returned %v, want AMBIGUOUS_EFFECT", err)
-					}
-					r, loadErr := s.LoadRun(context.Background(), "r")
-					if loadErr != nil {
-						t.Fatal(loadErr)
-					}
-					if r.Status != store.RunStatusFailedResumable || r.FailureCode != ErrCodeAmbiguousEffect {
-						t.Errorf("recorded %s/%s, want failed_resumable/AMBIGUOUS_EFFECT", r.Status, r.FailureCode)
-					}
-					events, loadErr := s.LoadEvents(context.Background(), "r")
-					if loadErr != nil {
-						t.Fatal(loadErr)
-					}
-					found := false
-					for _, ev := range events {
-						if ev.Type == store.EventRunFailed && ev.Data["code"] == string(ErrCodeAmbiguousEffect) {
-							found = true
-						}
-						if ev.Type == store.EventNodeStarted && (ev.NodeID == "finalize" || ev.NodeID == "collect") {
-							t.Error("join executes beside an undecided effect")
-						}
-					}
-					if !found {
-						t.Error("no run_failed event carries AMBIGUOUS_EFFECT")
-					}
 				})
 			}
 		}

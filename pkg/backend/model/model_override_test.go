@@ -381,3 +381,50 @@ func TestMergeOver_ALayeredTopKeepsItsInnerOrder(t *testing.T) {
 		t.Fatalf("chat Model = %q, want the operator's flag (the layered top keeps its rank above the re-stamped base)", got.Model)
 	}
 }
+
+// The rung-4 agent `<tool>__recover` is a node dispatch applies ForNode to:
+// a selector reaching it reaches something. A ladder with no rung 4
+// dispatches no agent, so the same selector reaches nothing there.
+func TestSelectorReaches_TheRecoveryAgentRung(t *testing.T) {
+	agent := &ir.RecoverySpec{MaxAgentAttempts: 1, Model: "openai/gpt-5.4-mini"}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"t": recoveryToolWith("t", ir.PolicyRecover, agent)}}
+	for _, sel := range []string{"t__recover", "*__recover", "agent", "*"} {
+		if !SelectorReaches(wf, sel) {
+			t.Errorf("SelectorReaches(%q) = false, want the rung-4 agent t__recover", sel)
+		}
+	}
+	if SelectorReaches(wf, "t") {
+		t.Error("SelectorReaches(\"t\") = true: a tool node takes no override")
+	}
+	noRung := &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "openai/gpt-5.4-mini"}
+	wf = &ir.Workflow{Nodes: map[string]ir.Node{"t": recoveryToolWith("t", ir.PolicyRecover, noRung)}}
+	if SelectorReaches(wf, "t__recover") {
+		t.Error("SelectorReaches(\"t__recover\") = true on a ladder with no rung 4")
+	}
+}
+
+// A launch's own rows carry no bot dimension and obey the per-class field
+// rules (a route row pins no effort, a supervisor row a model only): the
+// CLI flags refuse what dispatch would never honour.
+func TestParseModelOverrides_RefusesFlagsTheGrammarCannotHonour(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		model, backend, effort []string
+	}{
+		{"a bot-scoped model", []string{"review-pr/converge=zai/glm-5.3"}, nil, nil},
+		{"effort on a route", nil, nil, []string{"converge#glm=high"}},
+		{"backend on a supervisor", nil, []string{"supervisor:pacer=claw"}, nil},
+		{"a route glob", []string{"converge#*=zai/glm-5.3"}, nil, nil},
+	} {
+		if _, err := ParseModelOverrides(tc.model, tc.backend, tc.effort); err == nil {
+			t.Errorf("%s: ParseModelOverrides accepted it", tc.name)
+		}
+	}
+	ov, err := ParseModelOverrides([]string{"converge#glm=zai/glm-5.3", "supervisor:pacer=anthropic/claude-opus-5", "reviewer_*=x"}, []string{"converge#glm=claw", "claw"}, []string{"agent=high"})
+	if err != nil {
+		t.Fatalf("honoured flags refused: %v", err)
+	}
+	if m := ov.ForRoute("converge", 0, "glm").Model; m != "zai/glm-5.3" {
+		t.Errorf("route model = %q", m)
+	}
+}

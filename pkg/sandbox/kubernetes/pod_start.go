@@ -168,8 +168,8 @@ type podContainerStatusJSON struct {
 // the Events the autoscaler writes (`TriggeredScaleUp`) would say the
 // same thing about capacity but need an RBAC verb the runner's namespaced
 // Role deliberately does not grant.
-func probePodStart(ctx context.Context, namespace, podName string) podStartState {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "get", "pod", podName, "-o", "json")
+func (k Kubectl) probePodStart(ctx context.Context, namespace, podName string) podStartState {
+	cmd := k.cmdContext(ctx, "--namespace", namespace, "get", "pod", podName, "-o", "json")
 	out, err := cmd.Output()
 	if err != nil {
 		return podStartState{}

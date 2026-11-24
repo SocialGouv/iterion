@@ -90,6 +90,7 @@ func (w *probeWorld) snapshot(t *testing.T) retryprobetest.Snapshot {
 		Row:          doc.RetryState,
 		Status:       doc.Status,
 		Continuation: doc.ContinuationState,
+		Record:       doc,
 		Blocked:      int(counterValue(t, w.reg.RunsUsageWindowBlocked)),
 		Scheduled:    int(counterValue(t, w.reg.RunsRetryScheduled)),
 		Armings:      w.st.PaidArmings + w.st.FreeRearms,

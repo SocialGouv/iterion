@@ -57,4 +57,27 @@ func TestTheLocateVariableIsReadFromTheOperatorsEnvironmentOnly(t *testing.T) {
 				got, theirs)
 		}
 	})
+
+	// The PATH fallback answers the same authority question: a project .env
+	// planting PATH (applyDotEnv fills only names that were UNSET) would
+	// choose the binary locate.bin resolves — #2809. Under a planted PATH
+	// the fallback finds nothing; the operator's own PATH still resolves.
+	t.Run("a planted PATH chooses no binary", func(t *testing.T) {
+		dir := t.TempDir()
+		newBinary(t, dir, "rtk")
+		envtrust.ResetForTest()
+		t.Cleanup(envtrust.ResetForTest)
+		t.Setenv(envtrust.EnvPlantedNames, "")
+		t.Setenv("PATH", dir)
+
+		if got := locate(plugin.LocateSpec{Bin: "rtk"}); got == "" {
+			t.Fatal("the operator's own PATH must resolve locate.bin")
+		}
+
+		envtrust.MarkPlanted("PATH")
+		if got := locate(plugin.LocateSpec{Bin: "rtk"}); got != "" {
+			t.Errorf("locate chose %q under a PATH a repository planted — the launcher would exec it, "+
+				"host-side, on a sandboxed node's every Bash call", got)
+		}
+	})
 }

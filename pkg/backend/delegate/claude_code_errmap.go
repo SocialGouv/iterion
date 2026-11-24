@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,12 @@ func isTransientAPIErrorResult(s string) bool {
 // model's own prose that happens to discuss "selected model".
 func isModelUnavailableResult(s string) bool {
 	t := strings.TrimSpace(s)
+	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil {
+		status, _ := strconv.Atoi(m[1])
+		if ModelAccessDenied(status, t) {
+			return true
+		}
+	}
 	if t == "" || len(t) >= 400 {
 		return false
 	}
@@ -100,6 +107,9 @@ func isModelUnavailableResult(s string) bool {
 // credential; the caller fails fast with a legible auth error.
 func isAuthErrorResult(s string) bool {
 	t := strings.TrimSpace(s)
+	if isModelUnavailableResult(t) {
+		return false
+	}
 	// A malformed Authorization value (a secret that is not a token at
 	// all — the paid case embedded a whole CLI login transcript) renders
 	// as an API Error whose length is unbounded because the garbage value

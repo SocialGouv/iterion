@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -37,6 +41,9 @@ var ErrListingOutsidePrefix = errors.New("blob: the S3 gateway listed a key outs
 type S3Client struct {
 	client *s3.Client
 	bucket string
+	// Set only on private copies owned by a bound RunObjects view.
+	runObjectsFormat store.ValueFormat
+	runObjectsScope  *store.IncarnationDataScope
 }
 
 // NewS3 constructs an S3-backed Client from the connection settings.
@@ -88,6 +95,29 @@ func NewS3(ctx context.Context, cfg Config) (*S3Client, error) {
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
+	// Bound the connection and response-header phases. net/http ships
+	// with no default timeouts, so an endpoint that accepts the TCP
+	// connection but never answers hangs the caller forever — the
+	// 2026-10-31 incident wedged every cloud run at its first
+	// attachment upload for hours (issue #2890). Body streaming stays
+	// unbounded: GetAttachment returns a reader the caller drains at
+	// its own pace, and ResponseHeaderTimeout stops at the headers.
+	dialTimeout := cfg.DialTimeout
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
+	respHeaderTimeout := cfg.ResponseHeaderTimeout
+	if respHeaderTimeout <= 0 {
+		respHeaderTimeout = 60 * time.Second
+	}
+	clientOpts = append(clientOpts, func(o *s3.Options) {
+		o.HTTPClient = awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+			t.DialContext = (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext
+			t.TLSHandshakeTimeout = 10 * time.Second
+			t.ResponseHeaderTimeout = respHeaderTimeout
+		})
+	})
+
 	return &S3Client{
 		client: s3.NewFromConfig(awsCfg, clientOpts...),
 		bucket: cfg.Bucket,
@@ -133,7 +163,11 @@ func (c *S3Client) PutArtifact(ctx context.Context, runID, nodeID string, versio
 	if err != nil {
 		return err
 	}
-	_, err = c.client.PutObject(ctx, &s3.PutObjectInput{
+	return c.putArtifactKey(ctx, key, body)
+}
+
+func (c *S3Client) putArtifactKey(ctx context.Context, key string, body []byte) error {
+	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(body),
@@ -153,6 +187,10 @@ func (c *S3Client) GetArtifact(ctx context.Context, runID, nodeID string, versio
 	if err != nil {
 		return nil, err
 	}
+	return c.getArtifactKey(ctx, key)
+}
+
+func (c *S3Client) getArtifactKey(ctx context.Context, key string) ([]byte, error) {
 	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -177,7 +215,14 @@ func (c *S3Client) GetArtifact(ctx context.Context, runID, nodeID string, versio
 // prefix has no objects so callers don't need to special-case empty
 // slices vs missing nodes.
 func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID string) ([]int, error) {
-	prefix := fmt.Sprintf("artifacts/%s/%s/", runID, nodeID)
+	prefix, err := artifactNodePrefixForFormat(1, runID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	return c.listArtifactPrefix(ctx, prefix)
+}
+
+func (c *S3Client) listArtifactPrefix(ctx context.Context, prefix string) ([]int, error) {
 	versions := []int{}
 
 	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
@@ -261,7 +306,7 @@ func isS3NotFound(err error) bool {
 // PutAttachment uploads attachment bytes under the canonical key.
 // Idempotent: re-PUTting the same key replaces the bytes.
 func (c *S3Client) PutAttachment(ctx context.Context, runID, name, filename, contentType string, body []byte) error {
-	key, err := attachmentKey(runID, name, filename)
+	key, err := c.attachmentKey(runID, name, filename)
 	if err != nil {
 		return err
 	}
@@ -282,7 +327,7 @@ func (c *S3Client) PutAttachment(ctx context.Context, runID, name, filename, con
 
 // GetAttachment streams the attachment bytes back. Callers must Close.
 func (c *S3Client) GetAttachment(ctx context.Context, runID, name, filename string) (io.ReadCloser, AttachmentMeta, error) {
-	key, err := attachmentKey(runID, name, filename)
+	key, err := c.attachmentKey(runID, name, filename)
 	if err != nil {
 		return nil, AttachmentMeta{}, err
 	}
@@ -315,7 +360,7 @@ func (c *S3Client) PresignAttachment(ctx context.Context, runID, name, filename 
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	key, err := attachmentKey(runID, name, filename)
+	key, err := c.attachmentKey(runID, name, filename)
 	if err != nil {
 		return "", err
 	}
@@ -334,7 +379,7 @@ func (c *S3Client) PresignAttachment(ctx context.Context, runID, name, filename 
 // missing key returns nil so callers performing rollback don't error
 // on a write that never reached S3.
 func (c *S3Client) DeleteAttachment(ctx context.Context, runID, name, filename string) error {
-	key, err := attachmentKey(runID, name, filename)
+	key, err := c.attachmentKey(runID, name, filename)
 	if err != nil {
 		return err
 	}
@@ -350,11 +395,81 @@ func (c *S3Client) DeleteAttachment(ctx context.Context, runID, name, filename s
 // DeleteRunAttachments sweeps every blob under attachments/<runID>/, with
 // deleteUnder's batched, best-effort semantics.
 func (c *S3Client) DeleteRunAttachments(ctx context.Context, runID string) error {
-	prefix, err := attachmentRunPrefix(runID)
+	prefix, err := c.attachmentRunPrefix(runID)
 	if err != nil {
 		return err
 	}
 	return c.deleteUnder(ctx, prefix, "attachment")
+}
+
+// ---------------------------------------------------------------------------
+// Staged uploads (cloud StagingStore twin)
+// ---------------------------------------------------------------------------
+
+// PutUpload streams a staged upload under uploads/<uploadID>/<filename>.
+func (c *S3Client) PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.ReadSeeker, size int64) error {
+	key, err := uploadKey(uploadID, filename)
+	if err != nil {
+		return err
+	}
+	if body == nil {
+		return fmt.Errorf("blob: put upload %s: nil body", key)
+	}
+	if size < 0 {
+		return fmt.Errorf("blob: put upload %s: negative size %d", key, size)
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if _, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(c.bucket),
+		Key:           aws.String(key),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
+	}); err != nil {
+		return fmt.Errorf("blob: put upload %s: %w", key, err)
+	}
+	return nil
+}
+
+// GetUpload streams a staged upload's bytes, or ErrArtifactNotFound.
+func (c *S3Client) GetUpload(ctx context.Context, uploadID, filename string) (io.ReadCloser, AttachmentMeta, error) {
+	key, err := uploadKey(uploadID, filename)
+	if err != nil {
+		return nil, AttachmentMeta{}, err
+	}
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, AttachmentMeta{}, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
+		}
+		return nil, AttachmentMeta{}, fmt.Errorf("blob: get upload %s: %w", key, err)
+	}
+	meta := AttachmentMeta{}
+	if out.ContentType != nil {
+		meta.ContentType = *out.ContentType
+	}
+	if out.ContentLength != nil {
+		meta.Size = *out.ContentLength
+	}
+	if out.LastModified != nil {
+		meta.LastModified = *out.LastModified
+	}
+	return out.Body, meta, nil
+}
+
+// DeleteUpload sweeps uploads/<uploadID>/ with deleteUnder's batched,
+// best-effort semantics.
+func (c *S3Client) DeleteUpload(ctx context.Context, uploadID string) error {
+	prefix, err := uploadPrefix(uploadID)
+	if err != nil {
+		return err
+	}
+	return c.deleteUnder(ctx, prefix, "upload")
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +480,7 @@ func (c *S3Client) DeleteRunAttachments(ctx context.Context, runID string) error
 // key. Idempotent: re-PUTting the same (run, tool_use_id, kind) replaces
 // the bytes.
 func (c *S3Client) PutToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) error {
-	key, err := toolBlobKey(runID, toolUseID, kind)
+	key, err := c.toolBlobKey(runID, toolUseID, kind)
 	if err != nil {
 		return err
 	}
@@ -387,7 +502,7 @@ func (c *S3Client) PutToolBlob(ctx context.Context, runID, toolUseID, kind strin
 // don't want to parse), then issues a bounded Range GET. offset past the
 // end returns (nil, total, true, nil) without a second request.
 func (c *S3Client) GetToolBlobRange(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
-	key, err := toolBlobKey(runID, toolUseID, kind)
+	key, err := c.toolBlobKey(runID, toolUseID, kind)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -444,7 +559,11 @@ func (c *S3Client) PutIRBlob(ctx context.Context, runID string, body []byte) err
 	if err != nil {
 		return err
 	}
-	_, err = c.client.PutObject(ctx, &s3.PutObjectInput{
+	return c.putIRBlobKey(ctx, key, body)
+}
+
+func (c *S3Client) putIRBlobKey(ctx context.Context, key string, body []byte) error {
+	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(body),
@@ -465,6 +584,10 @@ func (c *S3Client) GetIRBlob(ctx context.Context, storageKey string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	return c.getIRBlobKey(ctx, key)
+}
+
+func (c *S3Client) getIRBlobKey(ctx context.Context, key string) ([]byte, error) {
 	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -483,23 +606,33 @@ func (c *S3Client) GetIRBlob(ctx context.Context, storageKey string) ([]byte, er
 	return body, nil
 }
 
-// DeleteRunIR removes the ir/<runID>.json blob. Idempotent, best-effort.
+// DeleteRunIR removes every IR object of the run: the ir/<runID>.json blob
+// and the bundle snapshots under ir/<runID>-bundle-. Both are attempted; the
+// failures come back joined. Idempotent.
 func (c *S3Client) DeleteRunIR(ctx context.Context, runID string) error {
 	key, err := irBlobKey(runID)
 	if err != nil {
 		return err
 	}
+	bundles, err := IRBundleSnapshotPrefix(runID)
+	if err != nil {
+		return err
+	}
+	var errs []error
 	if _, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	}); err != nil {
-		return fmt.Errorf("blob: delete IR blob %s: %w", key, err)
+		errs = append(errs, fmt.Errorf("blob: delete IR blob %s: %w", key, err))
 	}
-	return nil
+	if err := c.deleteUnder(ctx, bundles, "IR bundle snapshot"); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (c *S3Client) PutBackendSession(ctx context.Context, runID, ref string, body []byte) error {
-	key, err := backendSessionKey(runID, ref)
+	key, err := c.backendSessionKey(runID, ref)
 	if err != nil {
 		return err
 	}
@@ -516,7 +649,7 @@ func (c *S3Client) PutBackendSession(ctx context.Context, runID, ref string, bod
 }
 
 func (c *S3Client) GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error) {
-	key, err := backendSessionKey(runID, ref)
+	key, err := c.backendSessionKey(runID, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -539,7 +672,7 @@ func (c *S3Client) GetBackendSession(ctx context.Context, runID, ref string) ([]
 }
 
 func (c *S3Client) DeleteBackendSession(ctx context.Context, runID, ref string) error {
-	key, err := backendSessionKey(runID, ref)
+	key, err := c.backendSessionKey(runID, ref)
 	if err != nil {
 		return err
 	}
@@ -553,7 +686,7 @@ func (c *S3Client) DeleteBackendSession(ctx context.Context, runID, ref string) 
 }
 
 func (c *S3Client) DeleteRunBackendSessions(ctx context.Context, runID string) error {
-	prefix, err := backendSessionRunPrefix(runID)
+	prefix, err := c.backendSessionRunPrefix(runID)
 	if err != nil {
 		return err
 	}
@@ -563,7 +696,7 @@ func (c *S3Client) DeleteRunBackendSessions(ctx context.Context, runID string) e
 // DeleteRunToolBlobs sweeps every blob under tools/<runID>/, with
 // deleteUnder's batched, best-effort semantics.
 func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {
-	prefix, err := toolBlobRunPrefix(runID)
+	prefix, err := c.toolBlobRunPrefix(runID)
 	if err != nil {
 		return err
 	}
@@ -579,7 +712,7 @@ func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {
 // so the caller's reader is passed directly to the S3 client instead of first
 // materialising the complete body in runner memory.
 func (c *S3Client) PutRunFile(ctx context.Context, runID, relPath, contentType string, body io.Reader, size int64) error {
-	key, err := runFileKey(runID, relPath)
+	key, err := c.runFileKey(runID, relPath)
 	if err != nil {
 		return err
 	}
@@ -608,7 +741,7 @@ func (c *S3Client) PutRunFile(ctx context.Context, runID, relPath, contentType s
 // ListRunFiles enumerates artifact files under runfiles/<runID>/,
 // returning area-relative paths. Empty slice (no error) when none.
 func (c *S3Client) ListRunFiles(ctx context.Context, runID string) ([]RunFileObject, error) {
-	prefix, err := runFileRunPrefix(runID)
+	prefix, err := c.runFileRunPrefix(runID)
 	if err != nil {
 		return nil, err
 	}
@@ -654,7 +787,7 @@ func (c *S3Client) ListRunFiles(ctx context.Context, runID string) ([]RunFileObj
 // GetRunFile streams one artifact file. Callers must Close. Returns
 // ErrArtifactNotFound when the key is absent.
 func (c *S3Client) GetRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, RunFileObject, error) {
-	key, err := runFileKey(runID, relPath)
+	key, err := c.runFileKey(runID, relPath)
 	if err != nil {
 		return nil, RunFileObject{}, err
 	}
@@ -670,7 +803,8 @@ func (c *S3Client) GetRunFile(ctx context.Context, runID, relPath string) (io.Re
 	}
 	// relPath was validated by runFileKey; report the cleaned prefix-
 	// relative path so callers get a stable, area-relative value.
-	rel := strings.TrimPrefix(key, fmt.Sprintf("runfiles/%s/", runID))
+	prefix, _ := c.runFileRunPrefix(runID)
+	rel := strings.TrimPrefix(key, prefix)
 	info := RunFileObject{Path: rel}
 	if out.ContentLength != nil {
 		info.Size = *out.ContentLength
@@ -684,7 +818,7 @@ func (c *S3Client) GetRunFile(ctx context.Context, runID, relPath string) (io.Re
 // DeleteRunFiles sweeps every blob under runfiles/<runID>/, with
 // deleteUnder's batched, best-effort semantics.
 func (c *S3Client) DeleteRunFiles(ctx context.Context, runID string) error {
-	prefix, err := runFileRunPrefix(runID)
+	prefix, err := c.runFileRunPrefix(runID)
 	if err != nil {
 		return err
 	}

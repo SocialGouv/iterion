@@ -51,6 +51,9 @@ func orgMemberKey(userID, orgID string) string { return userID + "|" + orgID }
 func oidcKey(provider, sub string) string      { return provider + "|" + sub }
 
 func (m *MemoryStore) CreateUser(_ context.Context, u User) (User, error) {
+	if IsErasedEmail(u.Email) {
+		return User{}, ErrReservedEmail
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	email := NormalizeEmail(u.Email)
@@ -111,11 +114,14 @@ func (m *MemoryStore) UpdateUser(_ context.Context, u User) error {
 
 // PatchUser mirrors the Mongo $set and its filter: only the named fields
 // move, and the precondition is read under the same write lock the race
-// would want, so a deactivation committed between a caller's read and its
-// write refuses the write instead of being reverted by it.
+// would want, so a deactivation or an erasure committed between a caller's
+// read and its write refuses the write instead of being reverted by it.
 func (m *MemoryStore) PatchUser(_ context.Context, id string, p UserPatch) (User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := p.validate(); err != nil {
+		return User{}, err
+	}
 	cur, ok := m.users[id]
 	if !ok {
 		return User{}, ErrNotFound
@@ -168,6 +174,58 @@ func (m *MemoryStore) PatchUser(_ context.Context, id string, p UserPatch) (User
 	return cur, nil
 }
 
+// MarkUserErased sets the erased status and keeps every other field — see
+// Store.MarkUserErased.
+func (m *MemoryStore) MarkUserErased(_ context.Context, id string) (User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	if cur.Status == UserStatusErased {
+		return cur, nil
+	}
+	cur.Status = UserStatusErased
+	cur.UpdatedAt = time.Now().UTC()
+	m.users[id] = cur
+	return cur, nil
+}
+
+// EraseUser anonymizes the row under its marker — see Store.EraseUser; the
+// Mongo twin spells the same fields as one update (eraseUserUpdate).
+func (m *MemoryStore) EraseUser(_ context.Context, id string) (User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	marker := ErasedEmail(id)
+	if cur.Email == marker {
+		return cur, nil
+	}
+	if holder, taken := m.emails[marker]; taken && holder != id {
+		return User{}, ErrEmailAlreadyTaken
+	}
+	delete(m.emails, cur.Email)
+	m.users[id] = erasedUser(cur, marker, time.Now().UTC())
+	m.emails[marker] = id
+	return m.users[id], nil
+}
+
+// erasedUser is the row u becomes once erased: what EraseUser keeps and
+// clears, as one function both twins' tests compare against.
+func erasedUser(u User, marker string, at time.Time) User {
+	return User{
+		ID:        u.ID,
+		Email:     marker,
+		Status:    UserStatusErased,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: at,
+	}
+}
+
 // getByIDs collects the entries of m matching ids into a fresh map.
 // Missing ids are simply absent — the bulk analogue of a per-id
 // ErrNotFound. Callers must hold the store's read lock. Shared by the
@@ -180,6 +238,16 @@ func getByIDs[T any](m map[string]T, ids []string) map[string]T {
 		}
 	}
 	return out
+}
+
+// createdBefore is the paged lists' total order — created_at, then id —
+// the Mongo twin's (mongoutil.FindPageSorted): consecutive pages agree on
+// where rows tied on created_at sit.
+func createdBefore(a time.Time, aID string, b time.Time, bID string) bool {
+	if !a.Equal(b) {
+		return a.Before(b)
+	}
+	return aID < bID
 }
 
 // paginate applies a Page's offset/limit to items, clamping limit to a
@@ -217,7 +285,9 @@ func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error)
 		}
 		users = append(users, u)
 	}
-	sort.Slice(users, func(i, j int) bool { return users[i].CreatedAt.Before(users[j].CreatedAt) })
+	sort.Slice(users, func(i, j int) bool {
+		return createdBefore(users[i].CreatedAt, users[i].ID, users[j].CreatedAt, users[j].ID)
+	})
 	return paginate(users, f.Page), nil
 }
 
@@ -428,6 +498,9 @@ func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team
 	if p.LLMFallback != nil {
 		cur.LLMFallback = *p.LLMFallback
 	}
+	if p.RunVisibility != nil {
+		cur.RunVisibility = *p.RunVisibility
+	}
 	if p.OrgID != nil {
 		cur.OrgID = *p.OrgID
 	}
@@ -449,7 +522,9 @@ func (m *MemoryStore) ListTeams(_ context.Context, page Page) ([]Team, error) {
 	for _, t := range m.teams {
 		teams = append(teams, t)
 	}
-	sort.Slice(teams, func(i, j int) bool { return teams[i].CreatedAt.Before(teams[j].CreatedAt) })
+	sort.Slice(teams, func(i, j int) bool {
+		return createdBefore(teams[i].CreatedAt, teams[i].ID, teams[j].CreatedAt, teams[j].ID)
+	})
 	return paginate(teams, page), nil
 }
 
@@ -585,7 +660,9 @@ func (m *MemoryStore) ListOrgs(_ context.Context, page Page) ([]Org, error) {
 	for _, o := range m.orgs {
 		orgs = append(orgs, o)
 	}
-	sort.Slice(orgs, func(i, j int) bool { return orgs[i].CreatedAt.Before(orgs[j].CreatedAt) })
+	sort.Slice(orgs, func(i, j int) bool {
+		return createdBefore(orgs[i].CreatedAt, orgs[i].ID, orgs[j].CreatedAt, orgs[j].ID)
+	})
 	return paginate(orgs, page), nil
 }
 
@@ -759,6 +836,47 @@ func (m *MemoryStore) DeleteInvitation(_ context.Context, id string) error {
 		delete(m.invHash, inv.TokenHash)
 	}
 	return nil
+}
+
+func (m *MemoryStore) DeleteInvitationsByEmail(_ context.Context, email string) (int64, error) {
+	addr := NormalizeEmail(email)
+	if addr == "" {
+		return 0, errors.New("identity: delete invitations by email: no address")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, inv := range m.invitations {
+		if !inv.AddressedTo(addr) {
+			continue
+		}
+		delete(m.invitations, id)
+		if inv.TokenHash != "" {
+			delete(m.invHash, inv.TokenHash)
+		}
+		n++
+	}
+	return n, nil
+}
+
+func (m *MemoryStore) DeleteInvitationsByInviter(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("identity: delete invitations by inviter: no user id")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, inv := range m.invitations {
+		if inv.InvitedBy != userID {
+			continue
+		}
+		delete(m.invitations, id)
+		if inv.TokenHash != "" {
+			delete(m.invHash, inv.TokenHash)
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (m *MemoryStore) ListInvitationsByTeam(_ context.Context, teamID string) ([]Invitation, error) {

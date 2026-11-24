@@ -137,6 +137,24 @@ func TestMarkGateInFlight_GateDisabledPinClaimsNothing(t *testing.T) {
 	}
 }
 
+// A run launched in evaluation mode (publish_mode=off) posts no verdict at
+// all, so its claim would be the only status it leaves — a pending nothing
+// resolves, on a pull request the run was launched not to touch. Only the
+// exact literal "off" withholds, the one the engine admits: the default
+// publishes and claims, and so does a spelling the bot would never read.
+func TestMarkGateInFlight_EvaluationModeClaimsNothing(t *testing.T) {
+	for mode, want := range map[string]int{"off": 0, " OFF ": 1, "": 1} {
+		gc := &listingGateClient{}
+		s := inFlightFixture(t, gc)
+		vars := inFlightVars()
+		vars["publish_mode"] = mode
+		s.markGateInFlight(context.Background(), "team1", "review-pr", vars, "run-42")
+		if gc.setCalls != want {
+			t.Errorf("publish_mode=%q: posted %d statuses, want %d", mode, gc.setCalls, want)
+		}
+	}
+}
+
 func TestMarkGateInFlight_NoOpsWithoutAGateOrARevision(t *testing.T) {
 	cases := map[string]func(map[string]string){
 		"no gate context": func(v map[string]string) { delete(v, "gate_context") },

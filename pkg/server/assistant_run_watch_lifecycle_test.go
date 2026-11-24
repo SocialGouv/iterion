@@ -81,7 +81,10 @@ func TestAssistantWatchTerminalPostBurstUsesBoundedWorker(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan struct{})
-	go func() { defer close(done); f.coord.sweepLoop(ctx, nil) }()
+	// No handover policy: this isolate is about the loop's wake-up
+	// coalescing, and a nil *lease.Health is the shape of a sweep whose
+	// campaign never armed one.
+	go func() { defer close(done); f.coord.sweepLoop(ctx, nil, nil) }()
 	t.Cleanup(func() { cancel(); awaitWatchSignal(t, done) })
 	if n := awaitWatchSignal(t, gated.entered); n != 1 {
 		t.Fatalf("initial pass %d", n)

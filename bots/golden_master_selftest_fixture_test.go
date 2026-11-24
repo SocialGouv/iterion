@@ -12,6 +12,7 @@ import (
 // Exercise the real selftest, interrupting the sixth extension commit: this
 // used to discard Git's failure, then panic at acted[0] on an empty ledger.
 func TestGoldenMasterSelftestReportsBrokenGitFixture(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}

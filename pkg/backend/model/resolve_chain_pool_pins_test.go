@@ -56,7 +56,7 @@ func TestResolveChain_PoolPinsBeatThePlatformRecord(t *testing.T) {
 	if chain[1].Provider != "zai" || chain[1].Model != "openai_compatible/scaleway/glm-5.3" {
 		t.Errorf("pinned pod: rescue = %+v, want the authored zai hint on the rescue dial's value", chain[1])
 	}
-	if err := refuseGatewayCrossing("claw", chain[0].Provider, e.baselineModel(node)); err != nil {
+	if err := GatewayCrossingRefusal("claw", chain[0].Provider, e.baselineModel(node)); err != nil {
 		t.Errorf("pinned pod: the node's own route is refused: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestResolveChain_PoolPinsBeatThePlatformRecord(t *testing.T) {
 	if got := e.baselineModel(node); got != "zai/glm-5.3" {
 		t.Fatalf("unpinned pod: baseline model = %q, want the record's %q — the test no longer stages the crossing", got, "zai/glm-5.3")
 	}
-	if err := refuseGatewayCrossing("claw", e.resolveChain(node)[0].Provider, e.baselineModel(node)); err == nil {
+	if err := GatewayCrossingRefusal("claw", e.resolveChain(node)[0].Provider, e.baselineModel(node)); err == nil {
 		t.Errorf("unpinned pod: the vendor id under the gateway hint must be refused")
 	}
 }

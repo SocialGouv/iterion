@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
 
+	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // proxyDispatcher is the runner-side counterpart to the launcher-side
@@ -33,6 +37,14 @@ type proxyDispatcher struct {
 	pending map[string]chan delegate.Envelope
 
 	nextID atomic.Uint64
+
+	// approvalInFlight / approvalCh hold the approval ask currently
+	// blocking (guarded by mu). While one blocks, mid-stream traffic that
+	// names no pending call is a protocol breach: the dispatcher refuses
+	// THIS ask instead of ignoring it — a decision can never be trusted
+	// after unknown traffic on the channel the decision rides.
+	approvalInFlight string
+	approvalCh       chan delegate.Envelope
 
 	done chan struct{} // closed AFTER failAllPending — see start()
 }
@@ -100,17 +112,63 @@ func (d *proxyDispatcher) start() {
 // (V2-4) session_replay; all carry the ID of their corresponding
 // outbound request.
 func (d *proxyDispatcher) route(env delegate.Envelope) {
-	if env.ID == "" {
+	if env.ID != "" {
+		d.mu.Lock()
+		ch, ok := d.pending[env.ID]
+		if ok {
+			delete(d.pending, env.ID)
+		}
+		d.mu.Unlock()
+		if ok {
+			ch <- env
+			return
+		}
+	}
+	// The correlated permission_decision for the approval ask in flight:
+	// the ask holds its own channel (not in pending), so route() delivers
+	// here. A decision for any OTHER id is a stale reply to a consumed or
+	// cancelled ask — dropped below.
+	if env.Type == delegate.EnvelopePermissionDecision {
+		d.mu.Lock()
+		ch := d.approvalCh
+		inFlight := d.approvalInFlight
+		if ch != nil && env.ID == inFlight {
+			d.approvalInFlight = ""
+			d.approvalCh = nil
+		} else {
+			ch = nil
+		}
+		d.mu.Unlock()
+		if ch != nil {
+			ch <- env
+			return
+		}
+	}
+	// A mid-stream envelope that names no pending call. While an approval
+	// ask blocks, this is a protocol breach — refuse THIS ask instead of
+	// ignoring it: unknown traffic on the channel the decision rides makes
+	// the channel untrustworthy, and a decision accepted after it would
+	// authorize a call on corrupted grounds. Correlated reply types with
+	// an unknown ID are stale replies to already-consumed asks — dropped
+	// as before.
+	switch env.Type {
+	case delegate.EnvelopeToolResult, delegate.EnvelopeAskUserAnswer, delegate.EnvelopePermissionDecision:
 		return
 	}
 	d.mu.Lock()
-	ch, ok := d.pending[env.ID]
-	if ok {
-		delete(d.pending, env.ID)
+	id := d.approvalInFlight
+	var refusal chan delegate.Envelope
+	if id != "" {
+		refusal = d.approvalCh
+		d.approvalInFlight = ""
+		d.approvalCh = nil
 	}
 	d.mu.Unlock()
-	if ok {
-		ch <- env
+	if refusal != nil {
+		// Forward the real envelope: the round trip rejects any
+		// non-decision reply and reads the reason from its payload, so
+		// the failure carries what actually arrived.
+		refusal <- env
 	}
 }
 
@@ -129,6 +187,18 @@ func (d *proxyDispatcher) failAllPending(err error) {
 		env, _ := delegate.NewToolResultEnvelope(id, "", err.Error())
 		ch <- env
 		delete(d.pending, id)
+	}
+	// The approval ask holds its own channel (it is not in pending): fail
+	// it too, so a dying channel unblocks the gate mid-ask with the same
+	// synthetic shape route() refuses on.
+	if d.approvalCh != nil {
+		ch := d.approvalCh
+		id := d.approvalInFlight
+		d.approvalInFlight = ""
+		d.approvalCh = nil
+		ch <- delegate.Envelope{Type: delegate.EnvelopeResult, ID: id,
+			Data: json.RawMessage(fmt.Sprintf(`{"error":%q}`,
+				fmt.Sprintf("runner: envelope channel closed while the permission ask %s was pending: %v", id, err)))}
 	}
 }
 
@@ -181,9 +251,16 @@ func (d *proxyDispatcher) call(ctx context.Context, env delegate.Envelope) (dele
 // loop's existing pause/resume flow triggers identically to the
 // unsandboxed case (without this the ask_user tool could only ever
 // surface as a generic error and the engine wouldn't know to pause).
+//
+// The call's run-event identity travels with it (model.ExecutingToolCallFrom):
+// a refusal the launcher records then names the same call, under the same
+// parent, as the tool_error this runner emits for it.
 func (d *proxyDispatcher) callTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
 	id := "call-" + strconv.FormatUint(d.nextID.Add(1), 10)
-	env, err := delegate.NewToolCallEnvelope(id, name, input)
+	toolUseID, parent := model.ExecutingToolCallFrom(ctx)
+	env, err := delegate.NewToolCallEnvelopeFor(id, delegate.ToolCallData{
+		Name: name, Input: input, ToolUseID: toolUseID, ParentToolUseID: parent,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -321,30 +398,89 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 //
 // workspace is the runner's cwd (docker exec lands at the bind-mount target).
 //
+// scratch is the container's scratch read scope the launcher crossed on
+// the task envelope (delegate.IOTask.ScratchReadRoots and ScratchAnchor,
+// or ScratchDir alone from a launcher that predates the list): the read
+// tools accept each root as a read-only root beside the workspace (#2650)
+// so a sandboxed node can read the run's own briefs — the run family's
+// subtree first, the shared project scratch behind it only while the
+// workflow still references it (#2869). A root beneath the anchor
+// attaches nested (tool.ReadScope.AddExtraRootBeneath): other runs write
+// the shared scratch, and a link planted at runs/<id> must contain
+// nothing rather than become the root. Empty keeps the workspace-only
+// scope.
+//
 // bashExtraEnv is nil here on purpose: a sandboxed task carries no env
 // additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
 // field) — bash sees the container's environment, settled at its creation.
-func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
-	if err := tool.RegisterClawBuiltinsWithEnv(reg, workspace, nil); err != nil {
+//
+// commandMaxBytes is the launcher's resolved ceiling for `command`
+// (delegate.IOTask.SlashCommandMaxBytes): 0 — a launcher that predates the
+// field — leaves the built-in default, as it did.
+//
+// skillAllowlist is the launcher's pinned skill set, workspace-relative
+// (delegate.IOTask.SkillAllowlist): when skillArmed, the `skill` tool serves
+// exactly those entries — joined against THIS container's workspace — and
+// refuses everything else, so a checkout under review cannot plant a skill
+// under a walked root (iterion#1719). Disarmed, the workspace walk stands.
+func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratch sandboxScratchScope, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool, trust store.RunTrust) error {
+	readScope := tool.NewReadScope(workspace)
+	for _, root := range scratch.roots {
+		if scratch.anchor == "" {
+			readScope.AddExtraRoot(root)
+			continue
+		}
+		if err := readScope.AddExtraRootBeneath(scratch.anchor, root); err != nil {
+			return fmt.Errorf("scratch read root: %w", err)
+		}
+	}
+	if err := tool.RegisterClawBuiltinsWithScope(reg, readScope, nil); err != nil {
 		return err
 	}
-	if err := tool.RegisterClawWorkspaceDiagnostics(reg, workspace, nil); err != nil {
+	if err := tool.RegisterClawWorkspaceDiagnosticsWithScope(reg, readScope, nil); err != nil {
 		return err
 	}
 	if err := tool.RegisterClawSimple(reg); err != nil {
 		return err
 	}
-	if err := tool.RegisterClawSkill(reg, workspace); err != nil {
+	skillProvider := tool.SkillAllowlistProvider(func() (map[string]string, bool) {
+		if !skillArmed {
+			return nil, false
+		}
+		joined := make(map[string]string, len(skillAllowlist))
+		for name, p := range skillAllowlist {
+			if filepath.IsAbs(p) {
+				// An entry that would not relativize crossed absolute: its
+				// in-container read fails loudly rather than resolving to
+				// whatever the workspace holds at a mis-joined path.
+				joined[name] = p
+				continue
+			}
+			joined[name] = filepath.Join(workspace, p)
+		}
+		return joined, true
+	})
+	if err := tool.RegisterClawSkillWithSources(reg, func() string { return workspace }, skillProvider); err != nil {
 		return err
 	}
-	// No subagent runner: the `agent` tool registers and refuses every call
-	// with the typed capability refusal, in-container as on the host. One
-	// wired here would run its child conversation against this container's
-	// tools.
-	if err := tool.RegisterClawSubagents(reg, nil); err != nil {
+	// The `command` tool reads the CONTAINER's workspace through the same
+	// contained lookup, under the ceiling the LAUNCHER resolved: this
+	// process reads no dial of its own (the container's environment carries
+	// none, and the sandbox env-classification guard holds that line), and
+	// the kill switch's answer arrives as the tool's absence from the
+	// advertised set.
+	if err := tool.RegisterClawCommandWithTrust(reg, func() string { return workspace }, commandMaxBytes, func() store.RunTrust { return trust }); err != nil {
 		return err
 	}
-	return tool.RegisterClawReadImage(reg)
+	// The subagent runner spawns its child conversation against THIS
+	// container's tools and this container's API keys, which is what the
+	// placement of `agent` asks for. A nil one still registers the tool and
+	// refuses every call in the open — the shape a host that wires none
+	// keeps.
+	if err := tool.RegisterClawSubagents(reg, subagent); err != nil {
+		return err
+	}
+	return tool.RegisterClawReadImage(reg, readScope)
 }
 
 // makeHybridToolDefs builds the runner's tool set, routing each tool the
@@ -361,8 +497,79 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
 // cwd and filesystem, so every failure here is fatal rather than a fallback to
 // the proxy. The boundary itself is held on the launcher side, which refuses
 // any tool that is not launcher-placed whatever this routing asks for.
-func makeHybridToolDefs(defs []delegate.IOToolDef, d *proxyDispatcher, workspace string) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, registerSandboxLocalTools)
+func makeHybridToolDefs(
+	defs []delegate.IOToolDef,
+	d *proxyDispatcher,
+	workspace string,
+	scratch sandboxScratchScope,
+	modelReg *model.Registry,
+	hooks model.EventHooks,
+	commandMaxBytes int,
+	skillAllowlist map[string]string,
+	skillArmed bool,
+	trust store.RunTrust,
+) ([]delegate.ToolDef, error) {
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratch, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed, trust))
+}
+
+// sandboxScratchScope is the scratch read scope a task crossed: the roots
+// in narrowing order and the project scratch they lie beneath ("" from a
+// launcher that predates the anchor — every root then attaches plain).
+type sandboxScratchScope struct {
+	anchor string
+	roots  []string
+}
+
+// ensureSandboxScratchRoots creates the scope's roots in the container: the
+// anchor as a directory, and every root beneath it as a chain of REAL
+// directories (safepath.EnsureRealBindSourceDir), checked before and after
+// the creation — other runs write the shared scratch, and a MkdirAll
+// through a link they planted at runs/ would create the subtree wherever
+// the link points. A root from a launcher that named no anchor is left as
+// it is. The returned error names every root not created; the caller
+// reports it and carries on — reads under a missing root refuse, a write
+// creates it.
+func ensureSandboxScratchRoots(scratch sandboxScratchScope) error {
+	if scratch.anchor == "" {
+		return nil
+	}
+	if err := os.MkdirAll(scratch.anchor, 0o700); err != nil {
+		return fmt.Errorf("create the scratch anchor %s: %w", scratch.anchor, err)
+	}
+	var errs []error
+	for _, root := range scratch.roots {
+		if filepath.Clean(root) == filepath.Clean(scratch.anchor) {
+			continue
+		}
+		if err := safepath.EnsureRealBindSourceDir(scratch.anchor, root, 0o700); err != nil {
+			errs = append(errs, fmt.Errorf("create the scratch read root %s: %w", root, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// sandboxLocalToolRegistrar closes the in-container registration over what a
+// child conversation needs: the model registry that resolves this container's
+// API clients, and the hooks that relay the child's turns to the launcher so
+// a sandboxed delegation is metered and auditable like an unsandboxed one.
+// scratch is the container's scratch read scope for the local read tools
+// (#2650) — the run family's subtree first, then the shared project
+// scratch while the workflow still references it, both anchored on the
+// project scratch (#2869).
+// commandMaxBytes is the launcher's own answer for the `command` tool's
+// ceiling, carried by the task (delegate.IOTask.SlashCommandMaxBytes).
+//
+// The subagent runner is built per registration, over the very registry it is
+// registered into: a child spawned in here draws from the container's own
+// tools when no parent node bounds it, and from the node's effective set when
+// one does (model.ParentLoop, which the in-container Execute fills from the
+// forwarded task). Lifecycle hooks are nil, as they are for this runner's own
+// loop — the launcher owns that layer.
+func sandboxLocalToolRegistrar(scratch sandboxScratchScope, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool, trust store.RunTrust) func(*tool.Registry, string) error {
+	return func(reg *tool.Registry, workspace string) error {
+		return registerSandboxLocalTools(reg, workspace, scratch,
+			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes, skillAllowlist, skillArmed, trust)
+	}
 }
 
 // buildHybridToolDefs is makeHybridToolDefs with the local registration
@@ -395,9 +602,10 @@ func buildHybridToolDefs(
 			}
 			localExec := local.Execute
 			out[i] = delegate.ToolDef{
-				Name:        name,
-				Description: td.Description, // keep launcher's description verbatim — it carries any per-recipe wording
-				InputSchema: td.InputSchema, // and the launcher's schema is the contract the LLM was prompted against
+				ConcurrentSafe: local.ToDelegateDef().ConcurrentSafe,
+				Name:           name,
+				Description:    td.Description, // keep launcher's description verbatim — it carries any per-recipe wording
+				InputSchema:    td.InputSchema, // and the launcher's schema is the contract the LLM was prompted against
 				Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 					return localExec(ctx, input)
 				},

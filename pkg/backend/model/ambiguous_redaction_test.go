@@ -21,6 +21,7 @@ import (
 // structure walk. The real executor redacts the text without exposing Unwrap;
 // recovery must still refuse every undecided cause, including a later sibling.
 func TestRedactionPreservesUndecidedEffects(t *testing.T) {
+	t.Parallel()
 	const token = "synthetic-secret-2660"
 	unknown := &sandbox.ExecStatusUnknownError{Detail: "sweep fails " + token}
 	settled := &sandbox.ExecStatusUnknownError{Swept: true, Detail: token}

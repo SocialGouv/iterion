@@ -19,6 +19,7 @@ import (
 // Grep in one step — it could only ask a question, which is precisely what it
 // then did.
 func TestAssembleEffectiveTools_InteractionDoesNotRestrictAnUnrestrictedNode(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{botID: "tester"}
 	f := backendFields{id: "n", interaction: ir.InteractionHuman}
 
@@ -33,6 +34,7 @@ func TestAssembleEffectiveTools_InteractionDoesNotRestrictAnUnrestrictedNode(t *
 // restrict its tools gets `ask_user` appended, so a restricted agent can still
 // escalate without the author having to remember to declare it.
 func TestAssembleEffectiveTools_InteractionGrantsAskUserToARestrictedNode(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{botID: "tester"}
 	f := backendFields{id: "n", tools: []string{"read"}, interaction: ir.InteractionHuman}
 
@@ -58,6 +60,7 @@ func TestAssembleEffectiveTools_InteractionGrantsAskUserToARestrictedNode(t *tes
 // Without interaction, nothing is added either way — the guard must not be
 // read as "interaction now does nothing".
 func TestAssembleEffectiveTools_NoInteractionAddsNothing(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{botID: "tester"}
 	f := backendFields{id: "n", tools: []string{"read"}}
 
@@ -80,6 +83,7 @@ func TestAssembleEffectiveTools_NoInteractionAddsNothing(t *testing.T) {
 // `!sameStringSlice` condition, and it is that join — not the helper — which
 // decided the agent had no tools.
 func TestAssembleEffectiveTools_UnrestrictedInteractiveNodeLeavesAllowedToolsEmpty(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{botID: "tester"}
 	f := backendFields{id: "n", interaction: ir.InteractionHuman}
 
@@ -104,6 +108,7 @@ func TestAssembleEffectiveTools_UnrestrictedInteractiveNodeLeavesAllowedToolsEmp
 // granted ask_user, or the tool loop that carries it never exists — the
 // assignment site says as much: "claw needs the tool loop active for ask_user".
 func TestAssembleEffectiveTools_ClawKeepsAskUserOnAToolLessNode(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{botID: "tester"}
 	f := backendFields{id: "n", interaction: ir.InteractionHuman}
 
@@ -126,6 +131,7 @@ func TestAssembleEffectiveTools_ClawKeepsAskUserOnAToolLessNode(t *testing.T) {
 // while the async pair has no fallback — the model is instructed to call
 // tools that were never bound.
 func TestAssembleEffectiveTools_ClawKeepsTheAsyncPairOnAToolLessNode(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{botID: "tester"}
 	f := backendFields{id: "n", interaction: ir.InteractionAsync}
 

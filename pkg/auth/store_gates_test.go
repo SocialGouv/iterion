@@ -58,6 +58,11 @@ func (g *nthCallGate) disarm() {
 	g.failOn = map[string]map[int]bool{}
 }
 
+// raw is the identity store BEHIND the gate — the shape inviteFixture.raw
+// has: a test seeds rows, and asserts on the rows a call wrote, while the
+// gate stays armed on the one call under test.
+func (g *nthCallGate) raw() identity.Store { return g.Store }
+
 func (g *nthCallGate) count(method string) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -129,6 +134,24 @@ func (g *nthCallGate) ListTeamsByOrg(ctx context.Context, orgID string) ([]ident
 		return nil, err
 	}
 	return g.Store.ListTeamsByOrg(ctx, orgID)
+}
+
+func (g *nthCallGate) GetUserByEmail(ctx context.Context, email string) (identity.User, error) {
+	if err := g.hit("GetUserByEmail"); err != nil {
+		return identity.User{}, err
+	}
+	return g.Store.GetUserByEmail(ctx, email)
+}
+
+// PatchUser is the one WRITE the gate carries: the landing defaults and the
+// login stamp of a path that has already committed its account are written
+// with it, so a test needs to fail that write alone — every read of the same
+// call still answering.
+func (g *nthCallGate) PatchUser(ctx context.Context, id string, p identity.UserPatch) (identity.User, error) {
+	if err := g.hit("PatchUser"); err != nil {
+		return identity.User{}, err
+	}
+	return g.Store.PatchUser(ctx, id, p)
 }
 
 // gatedSessions is the in-memory session store with a per-operation latency

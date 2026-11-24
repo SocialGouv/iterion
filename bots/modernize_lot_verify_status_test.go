@@ -72,9 +72,10 @@ func modernizeLotVerify(t *testing.T, script, ws, lotID, base, exitGate string) 
 	return res
 }
 
-// modernizeLotVerifyEnv runs lot_verify with an optional environment override
-// and returns the parsed report plus the exit code (1 = typed refusal, the
-// contract could not be read).
+// modernizeLotVerifyEnv runs lot_verify with optional environment OVERRIDES
+// (entries added on top of the family's carrier, modernizeChildEnv — not a
+// replacement for it) and returns the parsed report plus the exit code
+// (1 = typed refusal, the contract could not be read).
 // credPath, when given, is what the platform credential's reference renders:
 // a file secret renders its MOUNTED PATH. Omitted, it renders the opaque
 // placeholder the engine emits for an unresolved optional secret — which is
@@ -113,10 +114,12 @@ func modernizeLotVerifyRaw(t *testing.T, script, ws, lotID, base, exitGate strin
 	if err := os.WriteFile(scriptPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("python3", scriptPath)
-	if env != nil {
-		cmd.Env = env
-	}
+	cmd := modernizeChild(t, "python3", scriptPath)
+	// env ADDS to the carrier rather than replacing it: os/exec keeps the last
+	// value of a duplicated key, so a caller overrides what it names (a
+	// restricted PATH) and cannot drop the auto-maintenance refusal by
+	// accident — the one entry of this family no test of its own would miss.
+	cmd.Env = append(modernizeChildEnv(t), env...)
 	// stderr rides along, never into the parsed stream: the script reports
 	// its verdict as JSON on stdout and diagnoses on stderr, and a harness
 	// that hears only stdout leaves the next red occurrence as opaque as
@@ -155,6 +158,7 @@ func modernizeLotVerifyRaw(t *testing.T, script, ws, lotID, base, exitGate strin
 // into a relaunch, which finished green at zero minutes having proven
 // nothing (measured, four times in 24 h on a live campaign).
 func TestModernizeLotVerifyRefusesWorkerWrittenDone(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -252,6 +256,7 @@ lots:
 // status moved is refused BEFORE any gate command runs, with the rewrites
 // named. Adding a lot is a proposal, not a rewrite, and passes.
 func TestModernizeLotVerifyRefusesContractRewrite(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -361,6 +366,7 @@ lots:
 // in its own devbox profile is refused like no yq at all (#1799): the
 // profile's binary is the audited checkout's, not the run's.
 func TestModernizeLotVerifyReadsTheContractOrRefuses(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -402,7 +408,7 @@ lots:
 		if err := os.WriteFile(filepath.Join(profile, "yq"), []byte(hostile), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		env := append(os.Environ(), "PATH="+restrictedPATH(t, "python3", "git", "sh"))
+		env := append(modernizeChildEnv(t), "PATH="+restrictedPATH(t, "python3", "git", "sh"))
 		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, gate, env)
 		if exit != 0 || !res.Unreadable {
 			t.Fatalf("exit=%d contract_unreadable=%v — a yq the TARGET repository ships must be refused like no yq at all: report %+v", exit, res.Unreadable, res)
@@ -417,7 +423,7 @@ lots:
 
 	t.Run("no yq anywhere: refused, typed — never a verdict that skipped its checks", func(t *testing.T) {
 		ws, base, _ := selfWrittenDone(t)
-		env := append(os.Environ(), "PATH="+restrictedPATH(t, "python3", "git", "sh"))
+		env := append(modernizeChildEnv(t), "PATH="+restrictedPATH(t, "python3", "git", "sh"))
 		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, gate, env)
 		if exit != 0 || !res.Unreadable {
 			t.Fatalf("exit=%d contract_unreadable=%v, want the typed refusal as a verdict — report %+v", exit, res.Unreadable, res)
@@ -491,6 +497,7 @@ lots:
 // certifier returned no usable verdict", which refused every lot on every
 // older net. A certifier that EXISTS and cannot answer stays a refusal.
 func TestModernizeLotVerifyOlderNetIsNotRefused(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -557,6 +564,7 @@ lots:
 // `lot_blocked`, a GATE_TIMEOUT block_reason — the run stops with its work
 // banked instead of paying four passes against the same wall.
 func TestModernizeLotVerifyGateTimeoutIsAVerdict(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -655,6 +663,7 @@ lots:
 // there to touch — which is not a term. The absent oracle already reads red;
 // this keeps the second conjunct honest on its own.
 func TestModernizeLotVerifyRefsNeedANetAtBase(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -685,6 +694,7 @@ lots:
 // diff exempts. A dirty net converged and the gate committed `done` (review
 // finding, executed).
 func TestModernizeLotVerifyDirtyNetVoidSurvives(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
@@ -745,6 +755,7 @@ lots:
 // The gate's answer does not change. What changes is that the reader is told
 // which path spent the certificate.
 func TestModernizeLotVerifyNamesWhatVoidedTheExtensionCertificate(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1

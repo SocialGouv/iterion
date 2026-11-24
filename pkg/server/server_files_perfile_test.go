@@ -376,7 +376,7 @@ func TestAPerFileRequestOnACloudBundleReadsItsFilesMap(t *testing.T) {
 // JSON `null`, and the studio's UnitFileInfo[] declares itself non-nullable
 // (#1581: the transport erases nil-from-empty, so prove the round trip).
 func TestAUnitAlwaysCarriesAFilesArray(t *testing.T) {
-	raw, err := json.Marshal(unitInfoOf(unit.Salvage(&unit.Unit{Main: "main.bot"}, nil), "main.bot"))
+	raw, err := json.Marshal(unitInfoOf(unit.Salvage(&unit.Unit{Main: "main.bot"}, nil), "main.bot", fragmentDependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}

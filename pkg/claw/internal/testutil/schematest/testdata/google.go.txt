@@ -1,0 +1,3 @@
+package main
+import("encoding/json"; "os"; "github.com/google/jsonschema-go/jsonschema")
+func main(){s,err:=jsonschema.For[struct{}](nil);if err!=nil{panic(err)};if err=json.NewEncoder(os.Stdout).Encode(s);err!=nil{panic(err)}}

@@ -142,9 +142,6 @@ if err != nil {
 | `ListModelsResponse(ctx, opts...)` | Returns the complete discovered model-list payload across all CLI pages |
 | `NewClient()` | Creates a stateful client for interactive sessions |
 | `WithClient(ctx, fn, opts...)` | Helper that runs `Start()` + callback + `Close()` |
-| `StatSession(ctx, sessionID, opts...)` | Read session metadata from local SQLite database |
-| `ListSessions(ctx, opts...)` | List persisted local sessions from the Codex state database |
-| `GetSessionMessages(ctx, sessionID, opts...)` | Read parsed persisted rollout messages, including task lifecycle events |
 
 ### `Client` methods
 
@@ -170,7 +167,6 @@ if err != nil {
 - Message types: `AssistantMessage`, `UserMessage`, `SystemMessage`, `TaskStartedMessage`, `TaskCompleteMessage`, `ThreadRolledBackMessage`, `ResultMessage`, `StreamEvent`
 - Content blocks: `TextBlock`, `InputImageBlock`, `InputLocalImageBlock`, `InputMentionBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `UnknownBlock`
 
-`GetSessionMessages` returns the typed persisted rollout events as recorded on disk. Task lifecycle records remain `TaskStartedMessage` and `TaskCompleteMessage`; they are not converted into `ResultMessage`.
 
 `ListModels` returns the fully aggregated model list across all internal `model/list` pages. `ListModelsResponse` returns the same complete model set plus response metadata. Extra provider-specific `model/list` fields are preserved in `ModelInfo.Metadata`. The SDK also decorates known models when Codex does not return them directly:
 
@@ -282,7 +278,7 @@ Options are backend-dependent. Unsupported combinations fail fast with `ErrUnsup
 | `WithIncludePartialMessages(true)` | Emit streaming deltas as `StreamEvent` |
 | `WithAddDirs("/extra/path")` | Additional accessible directories |
 | `WithExtraArgs(map[string]*string{...})` | Raw CLI flags |
-| `WithCodexHome("/path/.codex")` | Override Codex home directory for `StatSession` |
+| `WithCodexHome("/path/.codex")` | Accepted for compatibility, inert in this fork (session APIs removed, see FORK.md) |
 
 ### Important caveats
 

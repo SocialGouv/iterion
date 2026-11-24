@@ -31,13 +31,13 @@ func TestBuildExecutor_UsesExplicitWorkDirForRelativeClawTools(t *testing.T) {
 			},
 		},
 	}
-	exec, err := BuildExecutor(ExecutorSpec{
+	exec, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Workflow: wf,
 		Store:    st,
 		RunID:    "workspace-tools",
 		StoreDir: t.TempDir(),
 		WorkDir:  workspace,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -149,13 +149,17 @@ func TestTheLaunchPickerDisclosesTheRouteThatNeverReceivesTheToolList(t *testing
 	}
 }
 
-// TestC270DoesNotAdvertiseARefusedSpawnerAsACapability: the claw arm lists what
-// the re-populated list unlocks, the `agent` spawner among them — and every
-// call to `agent` on claw earns a typed capability refusal (C159, #1940). An
-// author reading that their node "unlocks" a spawner would drop one of the two
-// declarations to avoid a capability the engine never serves, so the message
-// says which of the appends it names is refused.
-func TestC270DoesNotAdvertiseARefusedSpawnerAsACapability(t *testing.T) {
+// TestC270SaysWhatTheUnlockedSpawnerIsBoundedBy: the claw arm lists what the
+// re-populated list unlocks, the `agent` spawner among them — and since #1940
+// that spawner RUNS: it starts a real child conversation. An author reading
+// that their node "unlocks" a spawner needs the bound in the same breath (the
+// child inherits this node's tools, policy and budget), or the sentence reads
+// as an unbounded capability appearing on a node that declared none.
+//
+// Until #1940 the qualifier was the opposite one — every call was
+// typed-refused (C159) — and a message left saying so would send authors
+// dropping a declaration to avoid a capability that now works.
+func TestC270SaysWhatTheUnlockedSpawnerIsBoundedBy(t *testing.T) {
 	r := compileSrc(t, emptyToolsBotWith("claw", "", "  interaction: human\n"))
 	var msg string
 	for _, d := range r.Diagnostics {
@@ -168,8 +172,11 @@ func TestC270DoesNotAdvertiseARefusedSpawnerAsACapability(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("the message no longer names the spawner; this test is about HOW it names it: %q", msg)
 	}
-	if !strings.Contains(msg[i:], string(DiagToolRefusedOnClaw)) {
-		t.Errorf("C270 names the `agent` spawner as unlocked without saying every call to it is refused on claw (%s): %q",
+	if strings.Contains(msg[i:], string(DiagToolRefusedOnClaw)) {
+		t.Errorf("C270 still calls the `agent` spawner refused (%s); it spawns a real subagent since #1940: %q",
 			DiagToolRefusedOnClaw, msg)
+	}
+	if !strings.Contains(msg[i:], "bounded by this node") {
+		t.Errorf("C270 names the `agent` spawner as unlocked without saying what bounds the child it spawns: %q", msg)
 	}
 }

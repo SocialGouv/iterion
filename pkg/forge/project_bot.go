@@ -167,7 +167,7 @@ func (o *Orchestrator) undoProjectBot(ctx context.Context, conn Connection, repo
 
 // revokeProjectBot revokes an integration's minted credential on the forge.
 func (o *Orchestrator) revokeProjectBot(ctx context.Context, ri RepoIntegration) error {
-	conn, err := o.Connections.Get(ctx, ri.ConnectionID)
+	conn, err := o.Connections.Get(ctx, ri.TenantID, ri.ConnectionID)
 	if err != nil {
 		return err
 	}

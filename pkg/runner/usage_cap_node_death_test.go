@@ -29,11 +29,19 @@ func (s *nodeDeathStore) UpdateRunOutcome(_ context.Context, _ string, status st
 	return true, nil
 }
 
+func (s *nodeDeathStore) RecordPreEngineRefusal(ctx context.Context, id string, q store.PreEngineRefusalRequest) (store.PreEngineRefusalResult, error) {
+	if err := q.Validate(); err != nil {
+		return store.PreEngineRefusalResult{}, err
+	}
+	changed, err := s.UpdateRunOutcome(ctx, id, q.TargetStatus(), q.Message, q.Outcome(), store.PreEngineRefusalFromStatuses(q))
+	return store.PreEngineRefusalResult{Changed: changed, Status: q.TargetStatus()}, err
+}
+
 func assertNodeDeathPark(t *testing.T, caps usagecap.Store, wf *ir.Workflow, vars map[string]any, wantPark bool) {
 	t.Helper()
 	s := &nodeDeathStore{cancelAwareStore: cancelAwareStore{run: &store.Run{ID: "node-death", Status: store.RunStatusQueued}}}
 	r := capRunner(capTestPolicy(), caps, s)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	err := r.usageCapPreflight(ctx, wf, &queue.RunMessage{RunID: s.run.ID, Vars: vars}, iterlog.Nop())
 	if (err != nil) != wantPark {
 		t.Errorf("pre-flight error = %v, want park=%v", err, wantPark)

@@ -42,7 +42,9 @@ func renderForgejoCommentBody(c forge.ReviewComment) string {
 // comments. Like GitHub, the create call is all-or-nothing: on a 422 the
 // review is retried once summary-only with the comments folded into the
 // body (Fallback "summary"). CommentsPosted is re-fetched from the created
-// review's comment listing when possible (Verified true).
+// review's comment listing when possible (Verified true); a listing shorter
+// than the submission reports Fallback "partial": a shortfall, with nothing
+// folded into the body.
 func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number int, in forge.NewReview) (forge.ReviewResult, error) {
 	prPath := "/repos/" + repo + "/pulls/" + strconv.Itoa(number)
 

@@ -33,6 +33,7 @@ func usageHook(t *testing.T, guard *usagecap.Guard, hooks EventHooks) func(usage
 // provider raises at its own wall, so the run parks and a durable retry
 // brings it back — no new recovery path to get right.
 func TestUsageGuardBridge_HardCapRaisesAUsageWindowError(t *testing.T) {
+	t.Parallel()
 	resets := time.Date(2026, 8, 18, 21, 0, 0, 0, time.UTC)
 	hook := usageHook(t, usagecap.NewGuard(capPolicy(), nil), EventHooks{})
 
@@ -62,6 +63,7 @@ func TestUsageGuardBridge_HardCapRaisesAUsageWindowError(t *testing.T) {
 // Soft is the promise that a half-finished run is never sacrificed to save
 // minutes of a window that refills soon.
 func TestUsageGuardBridge_SoftCapLetsTheRunFinish(t *testing.T) {
+	t.Parallel()
 	hook := usageHook(t, usagecap.NewGuard(capPolicy(), nil), EventHooks{})
 	if err := hook(usagecap.Reading{
 		Window:      usagecap.WindowFiveHour,
@@ -73,6 +75,7 @@ func TestUsageGuardBridge_SoftCapLetsTheRunFinish(t *testing.T) {
 }
 
 func TestUsageGuardBridge_UnderTheCapIsSilent(t *testing.T) {
+	t.Parallel()
 	var fired []UsageCapInfo
 	hook := usageHook(t, usagecap.NewGuard(capPolicy(), nil), EventHooks{
 		OnUsageCap: func(_ string, info UsageCapInfo) { fired = append(fired, info) },
@@ -88,6 +91,7 @@ func TestUsageGuardBridge_UnderTheCapIsSilent(t *testing.T) {
 // The timeline must be able to tell "the provider refused us" from "we
 // stopped ourselves" — both end a run the same way otherwise.
 func TestUsageGuardBridge_EmitsTheCrossing(t *testing.T) {
+	t.Parallel()
 	var fired []UsageCapInfo
 	hooks := EventHooks{OnUsageCap: func(_ string, info UsageCapInfo) { fired = append(fired, info) }}
 	hook := usageHook(t, usagecap.NewGuard(capPolicy(), nil), hooks)
@@ -110,6 +114,7 @@ func TestUsageGuardBridge_EmitsTheCrossing(t *testing.T) {
 }
 
 func TestUsageGuardBridge_NoGuardNoHook(t *testing.T) {
+	t.Parallel()
 	e := NewClawExecutor(NewRegistry(), &ir.Workflow{})
 	if h := e.delegateHooksFor("implement", delegate.BackendClaudeCode, 0); h.OnUsageWindow != nil {
 		t.Fatal("a run with no cap must not carry a usage hook at all")
@@ -121,6 +126,7 @@ func TestUsageGuardBridge_NoGuardNoHook(t *testing.T) {
 // that came FROM the provider keeps its historical in-place budget (the
 // fallback chain of ADR-087 depends on it).
 func TestSelfImposedRefusalIsNotLocallyRetried(t *testing.T) {
+	t.Parallel()
 	capped := &delegate.ErrRateLimited{
 		Kind:        delegate.RateLimitKindUsageWindow,
 		SelfImposed: true,
@@ -141,6 +147,7 @@ func TestSelfImposedRefusalIsNotLocallyRetried(t *testing.T) {
 // The bridge must stamp it, or the run burns its retry budget against the
 // cap before parking.
 func TestUsageGuardBridge_MarksTheErrorSelfImposed(t *testing.T) {
+	t.Parallel()
 	hook := usageHook(t, usagecap.NewGuard(capPolicy(), nil), EventHooks{})
 	err := hook(usagecap.Reading{Window: usagecap.WindowSevenDay, Utilization: 0.99})
 	var rl *delegate.ErrRateLimited

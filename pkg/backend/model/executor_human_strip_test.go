@@ -11,6 +11,7 @@ import (
 // delegate actually asked — including questions whose sanitized key starts
 // with `_`, which sanitizeSchemaKey produces from any leading punctuation.
 func TestStripInteractionMetadata(t *testing.T) {
+	t.Parallel()
 	t.Run("drops the metadata namespace", func(t *testing.T) {
 		answers := map[string]any{"which_db": "postgres"}
 		// Exactly what the real path stamps, via the real annotator.

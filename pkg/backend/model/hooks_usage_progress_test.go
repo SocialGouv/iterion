@@ -40,6 +40,7 @@ func newUsageHooks(t *testing.T, runID string) (EventHooks, func() []store.Event
 // the first sample past the floor emits with an estimated USD "used",
 // insignificant growth is debounced, significant growth emits again.
 func TestUsageProgress_PricedDebounce(t *testing.T) {
+	t.Parallel()
 	hooks, load := newUsageHooks(t, "run-up-priced")
 
 	// ~$0.6 on opus input pricing — comfortably past the $0.05 floor.
@@ -82,6 +83,7 @@ func TestUsageProgress_PricedDebounce(t *testing.T) {
 // never a "used" of 0, which would read as "free" to a cost_gt monitor
 // (zero means unknown, never free).
 func TestUsageProgress_UnpricedTokensOnly(t *testing.T) {
+	t.Parallel()
 	hooks, load := newUsageHooks(t, "run-up-unpriced")
 
 	hooks.OnUsageProgress("review", UsageProgressInfo{
@@ -101,6 +103,7 @@ func TestUsageProgress_UnpricedTokensOnly(t *testing.T) {
 
 // A sample under both floors (cost and tokens) is noise — no event.
 func TestUsageProgress_UnderFloorIsSilent(t *testing.T) {
+	t.Parallel()
 	hooks, load := newUsageHooks(t, "run-up-floor")
 	hooks.OnUsageProgress("review", UsageProgressInfo{
 		Model: "totally-unknown-model", InputTokens: 100, OutputTokens: 10,
@@ -114,6 +117,7 @@ func TestUsageProgress_UnderFloorIsSilent(t *testing.T) {
 // node's llm_request reported (the step payload carries no model), and a
 // new loop iteration starts a fresh accumulation.
 func TestUsageProgress_ClawStepFeed(t *testing.T) {
+	t.Parallel()
 	hooks, load := newUsageHooks(t, "run-up-claw")
 
 	hooks.OnLLMRequest("review", LLMRequestInfo{Model: "claude-opus-5"})
@@ -148,6 +152,7 @@ func TestUsageProgress_ClawStepFeed(t *testing.T) {
 // every sample of the new call until it out-spent it, blinding cost_gt
 // on exactly the later loop passes a pacer exists for.
 func TestUsageProgress_WatermarkResetsOnNewCall(t *testing.T) {
+	t.Parallel()
 	hooks, load := newUsageHooks(t, "run-up-reset")
 
 	// Call 1 climbs to a large cumulative.

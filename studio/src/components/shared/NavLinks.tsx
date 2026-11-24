@@ -7,6 +7,7 @@ import {
   ListBulletIcon,
   ViewGridIcon,
   RocketIcon,
+  GlobeIcon,
   LightningBoltIcon,
   PaperPlaneIcon,
   ArchiveIcon,
@@ -50,6 +51,36 @@ interface LinkDef {
   label: string;
   icon: typeof HomeIcon;
 }
+
+export interface NavRegistryGroup {
+  label: string | null;
+  hrefs: { href: string; label: string }[];
+}
+
+export const NAV_REGISTRY_LOCAL: NavRegistryGroup[] = [
+  { label: null, hrefs: [{ href: "/", label: "Home" }] },
+  { label: "What's Next", hrefs: [{ href: "/whats-next", label: "What's Next" }] },
+  { label: "Editor", hrefs: [{ href: "/editor", label: "Editor" }] },
+  { label: "Runs", hrefs: [{ href: "/runs", label: "Runs" }] },
+  { label: "Bots", hrefs: [{ href: "/bots", label: "Bots" }] },
+  { label: "Insights", hrefs: [{ href: "/insights", label: "Insights" }] },
+  { label: "Pipelines", hrefs: [{ href: "/pipelines", label: "Pipelines" }] },
+  { label: "Config editor", hrefs: [{ href: "/config-editor", label: "Config editor" }] },
+  { label: "Dispatcher", hrefs: [{ href: "/dispatcher", label: "Dispatcher" }] },
+  { label: "Secrets", hrefs: [{ href: "/secrets", label: "Secrets" }] },
+  { label: "Skills", hrefs: [{ href: "/skills", label: "Skills" }] },
+  { label: "Triggers", hrefs: [{ href: "/triggers", label: "Triggers" }, { href: "/sources", label: "Sources" }] },
+  { label: "Plugins", hrefs: [{ href: "/plugins", label: "Plugins" }] },
+  { label: "Marketplace", hrefs: [{ href: "/marketplace", label: "Marketplace" }] },
+  { label: "Integrations", hrefs: [{ href: "/integrations", label: "Integrations" }] },
+  { label: "Sitemap", hrefs: [{ href: "/sitemap", label: "Plan du site" }] },
+];
+export const NAV_REGISTRY_CLOUD: NavRegistryGroup[] = [
+  { label: null, hrefs: [{ href: "/", label: "Home" }] },
+  { label: "What's Next", hrefs: [{ href: "/whats-next", label: "What's Next" }] },
+  { label: "Runs", hrefs: [{ href: "/runs", label: "Runs" }] },
+  { label: "Bots", hrefs: [{ href: "/bots", label: "Bots" }] },
+];
 
 const BASE_LINKS_LOCAL: LinkDef[] = [
   { section: "home", href: "/", label: "Home", icon: HomeIcon },
@@ -120,6 +151,7 @@ export default function NavLinks({ collapsed }: Props) {
   // even with the event-trigger store off.
   if (info?.triggers_enabled || info?.mode === "cloud") {
     operate.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
+    operate.push({ section: "triggers", href: "/sources", label: "Sources", icon: GlobeIcon });
   }
 
   const extend: LinkDef[] = [];
@@ -179,7 +211,9 @@ export default function NavLinks({ collapsed }: Props) {
 
   return (
     <nav className="flex flex-col gap-3" aria-label="Primary navigation">
-      {groups.map((group, gi) => (
+      {groups.map((group, gi) => {
+        const captionId = `nav-group-${gi}`;
+        return (
         <div key={group.label ?? "workspace"} className="flex flex-col gap-0.5">
           {group.label &&
             (collapsed ? (
@@ -192,10 +226,20 @@ export default function NavLinks({ collapsed }: Props) {
                 />
               )
             ) : (
-              <div className="px-2 pb-0.5 pt-1 text-caption font-semibold uppercase tracking-wider text-fg-subtle">
+              <div
+
+                id={captionId}
+                className="px-2 pb-0.5 pt-1 text-caption font-semibold uppercase tracking-wider text-fg-subtle"
+              >
                 {group.label}
               </div>
             ))}
+          <ul
+            className="flex flex-col gap-0.5"
+            
+            aria-labelledby={group.label && !collapsed ? captionId : undefined}
+            aria-label={group.label && collapsed ? group.label : undefined}
+          >
           {group.links.map(({ section, href, label, icon: Icon }) => {
             const isActive = active === section;
             const withSublist =
@@ -232,8 +276,10 @@ export default function NavLinks({ collapsed }: Props) {
               />
             );
           })}
-        </div>
-      ))}
+          </ul>
+          </div>
+        );
+      })}
     </nav>
   );
 }
@@ -284,7 +330,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
 
   return (
     <>
-      <div className={`${base} ${layout} ${state} ${collapsed ? "" : "flex"} relative`}>
+      <li className={`${base} ${layout} ${state} ${collapsed ? "" : "flex"} relative`}>
         {/* Signature "you are here" indicator: a short accent bar pinned to
             the left edge of the active row (expanded only — the collapsed
             rail relies on the accent-soft fill + tinted icon instead). */}
@@ -331,7 +377,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
               />
             )}
           </span>
-          {!collapsed && <span className="truncate">{label}</span>}
+          {!collapsed && <span className="min-w-0 break-words">{label}</span>}
           {!collapsed && badgeCount > 0 && (
             <span
               className="ml-auto shrink-0 rounded-full bg-warning-soft border border-warning/40 px-1.5 text-caption font-semibold text-fg-default leading-4"
@@ -345,7 +391,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
           <button
             type="button"
             onClick={toggle}
-            className="ml-1 inline-flex items-center gap-0.5 text-caption text-fg-subtle hover:text-fg-default rounded px-1 py-0.5 hover:bg-surface-3"
+            className="ml-1 inline-flex items-center gap-0.5 text-caption text-fg-muted hover:text-fg-default rounded px-1 py-0.5 hover:bg-surface-3"
             aria-expanded={!folded}
             title={folded ? `Show ${tabs.length} open tab${tabs.length === 1 ? "" : "s"}` : "Hide open tabs"}
           >
@@ -357,7 +403,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
             )}
           </button>
         )}
-      </div>
+      </li>
       {sublistKind && !folded && tabs.length > 0 && (
         <SidebarTabList tabs={tabs} kind={sublistKind} />
       )}
@@ -477,7 +523,7 @@ function SidebarTabRow({
       <button
         type="button"
         onClick={handleClose}
-        className="inline-flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg-default hover:bg-surface-3 opacity-0 group-hover:opacity-100 focus:opacity-100"
+        className="inline-flex items-center justify-center w-4 h-4 rounded text-fg-muted hover:text-fg-default hover:bg-surface-3 opacity-0 group-hover:opacity-100 focus:opacity-100"
         title="Close tab"
         aria-label={`Close tab ${tab.label}`}
       >

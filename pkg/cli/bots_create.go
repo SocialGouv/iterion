@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -40,7 +41,7 @@ type BotsCreateOptions struct {
 // is routable. It is the CLI half of the studio's "New bot" flow — both
 // call the same botscaffold engine, so a bot created either way is
 // byte-identical.
-func BotsCreate(opts BotsCreateOptions, p *Printer) error {
+func BotsCreate(ctx context.Context, opts BotsCreateOptions, p *Printer) error {
 	workdir := opts.Workdir
 	if workdir == "" {
 		wd, err := os.Getwd()
@@ -110,7 +111,7 @@ func BotsCreate(opts BotsCreateOptions, p *Printer) error {
 	// refreshed at the start of its next run (and every owner's by
 	// `iterion bots regen-catalog`). Failing the command here would
 	// contradict the "Bot created" we just printed.
-	catalog, catErr := BotsRegenCatalog(workdir)
+	catalog, catErr := BotsRegenCatalog(ctx, workdir)
 	catalogError := ""
 	if catErr != nil {
 		catalogError = catErr.Error()

@@ -44,6 +44,21 @@ patches as this fork. Once #24 is merged and released: delete
    `local_image` spelling with `unknown variant `local_image`, expected one
    of `text`, `image`, `localImage`, `skill`, `mention``; it remains accepted
    on input for backward compatibility.
+6. Session lookup APIs removed with their storage stack — `internal/session/`,
+   `sessions.go`, `session_stat.go` (+ their tests, `examples/sessions/`,
+   `integration/session_persistence_test.go`) and the
+   `github.com/glebarez/go-sqlite` requirement. `StatSession`/`ListSessions`/
+   `GetSessionMessages` were a read-only lookup of the Codex CLI's own state
+   database; iterion never calls them — its resume path is the JSON-RPC
+   `resume` field resolved by the codex binary itself, and run state lives in
+   Mongo. The removal takes the ~5.6M-line modernc sqlite stack out of
+   iterion's linked closure (`task deps:closure`, ADR-138). `WithCodexHome`
+   stays accepted and inert.
+
+   **Re-apply on resync:** this is NOT an upstream patch — it is a deletion.
+   Resyncing onto upstream v0.0.14+ re-imports the session APIs and the
+   sqlite stack; re-delete the cluster (the closure metric flags the
+   regression the day it re-enters).
 
 Regression tests added: `internal/subprocess/appserver_bigline_test.go`
 (fake app-server emitting a 3 MB notification line) and

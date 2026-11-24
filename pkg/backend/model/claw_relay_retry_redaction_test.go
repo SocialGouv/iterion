@@ -14,14 +14,15 @@ import (
 // A relayed `llm_retry` carries the container's own account of why a provider
 // call was retried — a 401 body, a gateway error — and the launcher re-fires
 // its own OnLLMRetry with it, so the text lands on the operator's "LLM retry"
-// line. That line is the one relayed-text sink of the store hooks that does
-// not put its argument through the run's redaction: every other one (the
-// step text, the thinking, a tool error, a tool's input) already does.
+// line. Since #2458 no store-hook sink runs a pass of its own for the log:
+// the run logger's redactor (wired by BuildExecutor from the run's guard,
+// mirrored here) scrubs every record it keeps.
 //
 // Driven through the real chain — the crossing's event handler, the relay
 // decoder, the production store hooks — because the leak is in what the SINK
 // does with text the relay hands it, not in either half alone.
 func TestClawRelay_RedactsARelayedRetryForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-RELAY0123456789abcdefghijklmnopqrs"
 	g := secretguard.New([]secretguard.Secret{{Name: "OPENAI_API_KEY", Value: secret}}, secretguard.DefaultConfig())
 	placeholder := g.Redact(secret)
@@ -30,17 +31,18 @@ func TestClawRelay_RedactsARelayedRetryForTheOperatorLog(t *testing.T) {
 	}
 
 	var runLog strings.Builder
+	logger := iterlog.New(iterlog.LevelInfo, &runLog).WithRedactor(g.Redact)
 	hooks := NewStoreEventHooks(context.Background(), &captureEmitter{}, "run-relay-retry",
-		iterlog.New(iterlog.LevelInfo, &runLog), g, nil)
+		logger, g, nil)
 	b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{},
-		WithClawLogger(iterlog.New(iterlog.LevelInfo, &runLog)))
+		WithClawLogger(logger))
 
-	b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}).
-		OnEvent(string(store.EventLLMRetry), map[string]any{
-			"attempt":  1,
-			"delay_ms": 250,
-			"error":    "openai: 401 unauthorized (Authorization: Bearer " + secret + ")",
-		})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}, newCrossingApprovalState())
+	handler.OnEvent(string(store.EventLLMRetry), map[string]any{
+		"attempt":  1,
+		"delay_ms": 250,
+		"error":    "openai: 401 unauthorized (Authorization: Bearer " + secret + ")",
+	})
 
 	if !strings.Contains(runLog.String(), "LLM retry") {
 		t.Fatalf("scenario broken: no LLM-retry line in %q", runLog.String())

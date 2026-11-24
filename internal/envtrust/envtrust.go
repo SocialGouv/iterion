@@ -28,6 +28,17 @@
 // The marker is not a secret and does not need to be unforgeable: listing a
 // name can only REMOVE trust from it. A process that arrives with a forged
 // marker distrusts more than it must, which is the safe direction.
+//
+// # Who loads a `.env` at all
+//
+// The convenience is the CLI's, so it is the human invocation's: a process
+// the engine spawned against a workspace already holds the environment the
+// engine handed it, and reading the repository's `.env` on top would let the
+// tree under review fill in the names nobody set on purpose. EnvEngineChild
+// is the invocation-class marker the engine writes on such a child, and
+// EnvDotEnvForce the operator's way back in — except under EnvRunTrust, which
+// a child of a run whose workspace its tenant did not write carries, and
+// which no hatch reopens.
 package envtrust
 
 import (
@@ -64,6 +75,39 @@ func MarkPlanted(names ...string) {
 	// answer from its own environment, which is what happened before this
 	// existed. Failing the run over it would be worse than the narrowing.
 	_ = os.Setenv(EnvPlantedNames, marker)
+}
+
+// UnmarkPlanted drops these variables from the planted set and re-exports
+// the marker, unsetting it when nothing remains planted. The re-export is
+// not optional: the marker is process-global state of its own, so a cleanup
+// that only clears the set leaves the next ResetForTest to re-seed from the
+// exported marker — and the plant outlives the test that made it. TESTS ONLY.
+func UnmarkPlanted(names ...string) {
+	if len(names) == 0 {
+		return
+	}
+	mu.Lock()
+	ensurePlantedLocked()
+	for _, name := range names {
+		delete(planted, CanonicalName(name))
+	}
+	marker := markerLocked()
+	mu.Unlock()
+	if marker == "" {
+		_ = os.Unsetenv(EnvPlantedNames)
+		return
+	}
+	_ = os.Setenv(EnvPlantedNames, marker)
+}
+
+// MarkPlantedForTest is MarkPlanted for the rest of tb. The planted set and
+// the exported marker are process-global, so a test that plants and walks
+// away leaves every later test — and every later -count pass — answering
+// for names nobody planted. TESTS ONLY.
+func MarkPlantedForTest(tb testing.TB, names ...string) {
+	tb.Helper()
+	MarkPlanted(names...)
+	tb.Cleanup(func() { UnmarkPlanted(names...) })
 }
 
 // Exportable reports whether a name is one a shell could export, which is
@@ -119,6 +163,38 @@ func Inherited(name string) string {
 		return ""
 	}
 	return os.Getenv(name)
+}
+
+// MergePlantedMarker renders the EnvPlantedNames value for a process whose
+// inherited marker read baseMarker, with names added. The studio's project
+// snapshot plants a `.env`'s values straight into a CHILD's environment —
+// the returned slice, not this process's own — so the mark has to travel in
+// the bytes rather than through MarkPlanted, which would record names this
+// process does not even carry. The rules are the marker's own: names the
+// marker cannot carry (not Exportable) are dropped, names already in the
+// inherited marker are kept once, the result is sorted so a child inherits
+// the same string twice in a row. Empty when nothing survives to carry.
+func MergePlantedMarker(baseMarker string, names ...string) string {
+	set := map[string]bool{}
+	for _, name := range strings.Split(baseMarker, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			set[CanonicalName(name)] = true
+		}
+	}
+	for _, name := range names {
+		set[CanonicalName(name)] = true
+	}
+	merged := make([]string, 0, len(set))
+	for name := range set {
+		if Exportable(name) {
+			merged = append(merged, name)
+		}
+	}
+	if len(merged) == 0 {
+		return ""
+	}
+	sortStrings(merged)
+	return strings.Join(merged, ",")
 }
 
 // ensurePlantedLocked seeds the set from the marker an ancestor exported.
@@ -201,4 +277,69 @@ func ResetForTest() {
 	mu.Lock()
 	defer mu.Unlock()
 	planted = nil
+}
+
+// EnvEngineChild marks a process the engine spawned against a workspace: a
+// tool node's command or script, the in-container claw runner, a CLI agent —
+// and, by inheritance, everything they spawn in turn, including an iterion
+// that re-enters the CLI (sandbox.EngineBinaryEnvVar names the binary for
+// it).
+//
+// Such a process is handed its environment by the engine that spawned it. It
+// must not ALSO read the `.env` of the workspace it was pointed at: that file
+// belongs to the repository under review, and the names it would fill in are
+// the ones nobody set on purpose — the provider endpoints a credential is
+// spent against first among them. The CLI convenience it gives up is the
+// operator's, and the operator's own `.env` already reached this process the
+// way every other variable did, through the environment its parent passed on.
+//
+// Like EnvPlantedNames the marker is not a secret and does not need to be
+// unforgeable: carrying it can only COST the process the convenience, which
+// is the safe direction.
+const EnvEngineChild = "ITERION_ENGINE_CHILD"
+
+// EnvDotEnvForce is the named escape hatch on that skip: an operator who
+// wants engine children to honour the workspace `.env` too sets it to 1 or
+// true in the environment they launch from.
+//
+// Only an INHERITED value counts (Inherited, not os.Getenv): a `.env` that
+// voted itself back in would be the hole with an extra step, and a stored bot
+// var cannot spell the name at all (pkg/platformcfg botVarsInfraExact).
+const EnvDotEnvForce = "ITERION_DOTENV_FORCE"
+
+// EnvRunTrust carries an untrusted run's workspace trust (the string form of
+// store.RunTrust) to every process a node of that run starts: a tool node's
+// command or script, a delegate's CLI and what it spawns, the in-container
+// claw runner. It is written only for an untrusted run — the trusted value is
+// the empty string, which is never written — so any non-empty value means "a
+// workspace its tenant did not write".
+//
+// Cooperative, like EnvEngineChild: it holds for the processes that pass
+// their environment on (iterion's helpers, a bot's scripts), not against an
+// agent writing its own command line, which can unset it. Carrying it can
+// only LOWER trust: an `iterion run` started with it adopts it for its
+// compile and its engine, and main never loads the working directory's `.env`
+// under it — EnvDotEnvForce included, since the operator's hatch was granted
+// for the operator's own workspaces, not for one an outsider wrote.
+const EnvRunTrust = "ITERION_RUN_TRUST"
+
+// CarriedRunTrust is the run trust this process was started under (the raw
+// EnvRunTrust value), "" when it carries none.
+func CarriedRunTrust() string { return os.Getenv(EnvRunTrust) }
+
+// EngineChildEnvEntry is the KEY=value entry an engine hands every child it
+// spawns against a workspace, in the shape exec.Cmd.Env and the sandbox
+// ExecOpts both take.
+func EngineChildEnvEntry() string { return EnvEngineChild + "=1" }
+
+// SpawnedByEngine reports whether this process arrived with the engine's
+// invocation-class marker — set by the engine on the child, so a nested
+// iterion knows it is not a human's CLI call.
+func SpawnedByEngine() bool { return os.Getenv(EnvEngineChild) != "" }
+
+// DotEnvForced reports whether the operator asked for the workspace `.env`
+// to be loaded even where this package says to skip it.
+func DotEnvForced() bool {
+	v := Inherited(EnvDotEnvForce)
+	return v == "1" || strings.EqualFold(v, "true")
 }

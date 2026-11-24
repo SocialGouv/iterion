@@ -38,14 +38,21 @@ const (
 	// caller-chosen run id never lands raw in the label.
 	runLinkNoHostRule = "Never substitute a host"
 	runLinkIDRule     = "CALLER-CHOSEN at launch"
+	// A bundle whose `.bot` hands a node the mounted forge token can write
+	// on the forge with it — a deterministic publish node (revi-converse's
+	// publish_reply) as much as an agent following a posting skill.
+	forgeTokenMarker = "secrets.forge_token"
 )
 
 // forgeFacingBots are the bundles whose run posts text on a forge: the
-// server publishes for them (their `.bot` names forge_publish_url), or they
-// post through the forge API themselves (they ship a `skills/forge-*.md`).
-// The expected membership is pinned below, so a bundle that LEAVES the class
-// — a renamed marker, a deleted skill — reddens instead of quietly dropping
-// out of every check.
+// server publishes for them (their `.bot` names forge_publish_url), they
+// post through the forge API themselves (they ship a `skills/forge-*.md`),
+// or a node of theirs is handed the mounted forge token (their `.bot` names
+// `secrets.forge_token` — revi-converse's deterministic publish_reply posts
+// with it, and no skill of that bundle posts any more). The expected
+// membership is pinned below, so a bundle that LEAVES the class — a renamed
+// marker, a deleted skill — reddens instead of quietly dropping out of
+// every check.
 var forgeFacingExpected = []string{
 	"app-dev", "branch-improve-loop", "dep-update-guard", "docs-refresh",
 	"feature-dev", "gitops-warden", "instrument", "product-docs",
@@ -86,7 +93,8 @@ func forgeFacingBots(t *testing.T) map[string][]string {
 		sort.Strings(sources)
 		facing := len(postingSkills(t, dir)) > 0
 		for _, src := range sources {
-			if strings.Contains(string(readFileOrFail(t, src)), "forge_publish_url") {
+			text := string(readFileOrFail(t, src))
+			if strings.Contains(text, "forge_publish_url") || strings.Contains(text, forgeTokenMarker) {
 				facing = true
 			}
 		}
@@ -246,7 +254,7 @@ func TestEveryForgePostingSkillMandatesTheRunFooter(t *testing.T) {
 			t.Errorf("%s mandates the run footer in %v, but no prompt or tool body of %s/main.bot renders {{run.url}} — the agent is told to publish an address it is never given", dir, skills, dir)
 		}
 	}
-	if seen != 10 {
-		t.Errorf("%d forge-posting skills walked, want 10 — the skills/forge-*.md discovery no longer finds the class, so this test is green and blind", seen)
+	if seen != 9 {
+		t.Errorf("%d forge-posting skills walked, want 9 — the skills/forge-*.md discovery no longer finds the class, so this test is green and blind", seen)
 	}
 }

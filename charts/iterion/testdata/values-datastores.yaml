@@ -1,0 +1,8 @@
+# Render fixture for the chart tests: the datastore alert pack on, with the
+# five stores of the cloud deployment and every exporter family.
+metrics:
+  enabled: true
+  prometheusRule:
+    enabled: true
+    datastores:
+      enabled: true

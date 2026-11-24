@@ -55,7 +55,7 @@ Diagnose:
 3. `kubectl logs -l app.kubernetes.io/component=runner --tail=200 | grep -E 'lock|claim|mongo|blob'`
 
 Fix:
-- KEDA scaled to 0 with no runs queued is normal. Submit a run; KEDA should scale up within ~30s. If it doesn't: check `kubectl describe scaledobject iterion-runner` for KEDA controller errors.
+- Without KEDA (`runner.keda.enabled: false`, the chart default) the pool stays at `runner.replicas`. Under `runner.keda.enabled`, with no run queued, KEDA holds the pool at `runner.keda.minReplicas`; submit a run and, from zero, KEDA wakes the pool on its next poll (`runner.keda.pollingInterval`), after which the pod still has to start. If it doesn't: check `kubectl describe scaledobject -l app.kubernetes.io/component=runner` for KEDA controller errors — on KEDA 2.20+ a floor of 0 on a stream whose `iterion-runners` durable does not exist never scales up, because only a runner creates it; before 2.20 the scaler counts the stream's last sequence number as the lag and scales up instead ([the runner pool and KEDA](code-architecture.md#the-runner-pool-and-keda)).
 - Lock contention (multiple runners racing on the same run): the loser will see `ErrLockHeld` in logs and Nak the message. Expected — JetStream redelivers. If *all* runners loop on `ErrLockHeld`, the run was leased and orphaned; wait for the 60s TTL or `nats kv del iterion-run-locks <run-id>` to force release.
 - Mongo / blob unreachable: NetworkPolicy or firewall. See [networkpolicy-egress example](../charts/iterion/examples/networkpolicy-egress.yaml).
 
@@ -99,7 +99,6 @@ Diagnose:
 Fix:
 - Rotate the access key + secret in the secret backing `ITERION_S3_ACCESS_KEY_ID` / `ITERION_S3_SECRET_ACCESS_KEY` and roll the deployment.
 - For SeaweedFS: the identity holding the key (the JSON the gateway reads: `-config` for `weed s3`, `-s3.config` for `weed server -s3`) needs the `Read`, `Write` and `List` actions — never add an identity named `anonymous`, it is how unsigned requests get served. With `-autoCreateBucket` (`-s3.autoCreateBucket` under `weed server -s3`) left at its default (true), a PUT into a missing bucket CREATES it for an `Admin` identity: a wrong `ITERION_S3_BUCKET` then fills a new, empty bucket instead of failing.
-- For MinIO: ensure the access key has `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket` on the configured bucket.
 - For AWS: prefer IAM Roles for Service Accounts (IRSA) over static keys — set `serviceAccount.annotations.eks.amazonaws.com/role-arn` in your values overlay and unset the `*_ACCESS_KEY_ID` env vars.
 
 ### Editor frontend connects but no events stream in

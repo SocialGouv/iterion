@@ -2,6 +2,7 @@ package sessionboard
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -49,6 +50,12 @@ type Config struct {
 	Model    string        // claw model spec; empty => auto-detect a cheap model
 	Cooldown time.Duration // min wall-clock between evaluations; 0 => default
 	MaxEvals int           // hard LLM-call budget; 0 => default
+	// GatewayWatched is true when a route of the observed run may be served
+	// by the OpenAI-compatible gateway (supervise.WorkflowNamesGateway).
+	// Curation then REFUSES to resolve a vendor default for that content:
+	// unpinned, the evaluator declines with ErrGatewayBoardNeedsPin and the
+	// coordinator parks — the run itself is untouched.
+	GatewayWatched bool
 	// Initial seeds the board from a previously-persisted spec (resume),
 	// so curation continues from where it left off instead of redrawing.
 	Initial Spec
@@ -88,6 +95,10 @@ type Coordinator struct {
 	lastSeq    int64
 	evalCount  int
 	lastEvalAt time.Time
+	// parked is set when evaluation refused for a reason no retry can fix
+	// (ErrGatewayBoardNeedsPin: a missing pin on a gateway-served run) —
+	// curation stops rather than re-refusing on every wake.
+	parked bool
 }
 
 // New builds a Coordinator. eval may be nil (a production LLMEvaluator is
@@ -99,7 +110,9 @@ func New(obs Observer, emit Emitter, runID string, cfg Config, eval Evaluator, l
 	}
 	cfg = cfg.withDefaults()
 	if eval == nil {
-		eval = NewLLMEvaluator(cfg.Model)
+		e := NewLLMEvaluator(cfg.Model)
+		e.gatewayWatched = cfg.GatewayWatched
+		eval = e
 	}
 	return &Coordinator{
 		obs:    obs,
@@ -216,6 +229,9 @@ func (c *Coordinator) ingest(evt *store.Event) {
 // true for the terminal wake; turn-boundary wakes honour the cooldown
 // floor. Both honour the hard MaxEvals budget.
 func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
+	if c.parked {
+		return
+	}
 	if c.evalCount >= c.cfg.MaxEvals {
 		if c.evalCount == c.cfg.MaxEvals {
 			c.info("sessionboard: eval budget exhausted (%d) on run %s — curation paused", c.cfg.MaxEvals, c.runID)
@@ -238,6 +254,15 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 	c.lastEvalAt = time.Now()
 	c.evalCount++
 	if err != nil {
+		if errors.Is(err, ErrGatewayBoardNeedsPin) {
+			// Park, don't retry: the refusal is a missing pin, not a
+			// transient failure — every wake would refuse the same way and
+			// warn again. One line names the remedy; curation stops and the
+			// run is untouched.
+			c.parked = true
+			c.warn("sessionboard: curation parked on run %s: %v", c.runID, err)
+			return
+		}
 		c.warn("sessionboard: evaluation failed on run %s: %v", c.runID, err)
 		return
 	}

@@ -25,11 +25,17 @@ import (
 // Requires: OpenAI (the scheduled bot is claw openai/gpt-5.5). Expected:
 // ~2-5 min.
 func TestLive_Feat_Schedule(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tracker := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
+	// The scheduled bot launches through cli.RunScheduleRun, which builds its
+	// own engine: neither the re-target nor the ceiling can reach it. Refused
+	// here, with the reason on the row, rather than spent on the fixture's
+	// pinned vendor, unbounded by the operator's ceiling — and asked before
+	// the credential guard, which a re-target would otherwise wave.
+	refuseRetargetWithoutSeam(t, "cli.RunScheduleRun")
 	requireOpenAI(t)
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-schedule-*")
@@ -81,6 +87,9 @@ func TestLive_Feat_Schedule(t *testing.T) {
 	}
 	finished := false
 	for _, id := range runs {
+		// The fixture launches ONE run; what served it and what it cost go
+		// on the row from the isolated store's own events.
+		feedLedgerCost(t, tracker, s, id)
 		if r, _ := s.LoadRun(context.Background(), id); r != nil && r.Status == store.RunStatusFinished {
 			finished = true
 		}

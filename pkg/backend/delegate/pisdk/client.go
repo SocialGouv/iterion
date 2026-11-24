@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // Ported from packages/coding-agent/src/modes/rpc/rpc-client.ts, whose
@@ -51,6 +53,9 @@ type ClientOptions struct {
 	Env []string
 	// Spawn overrides process construction (sandbox routing, wrappers).
 	Spawn Spawner
+	// PreserveCommandCancellation delegates cancellation to Spawn. The command
+	// must own its process group and Cancel hook; unmarked spawns keep SDK hardening.
+	PreserveCommandCancellation bool
 	// OnEvent receives every event line, in order, on a dedicated goroutine.
 	// It must not block for long: pi gates its own stdout on reader
 	// backpressure, so a slow consumer slows the agent. The client decouples
@@ -154,19 +159,23 @@ func (c *Client) Start(ctx context.Context) error {
 			return errors.New("pisdk: no binary configured")
 		}
 		c.cmd = exec.CommandContext(ctx, c.opts.Binary, argv...) // #nosec G204 — argv is caller-configured, not attacker-controlled
-		if c.opts.Dir != "" {
-			c.cmd.Dir = c.opts.Dir
-		}
 		if c.opts.Env != nil {
 			c.cmd.Env = c.opts.Env
 		}
+		// Env BEFORE the working directory: the shared gesture appends PWD
+		// to whatever environment the child will get, and pi — a TS/Bun
+		// harness like opencode, which resolves its project from the
+		// variable — must not read the ENGINE's checkout from a stale PWD.
+		proc.SetWorkDir(c.cmd, c.opts.Dir)
 	}
 
-	// Both arms: cancellation must reach pi's own children, not just pi.
-	// (The sandboxed Spawn returns a `docker exec`/`kubectl exec` client
-	// whose subtree lives in the container — that arm has its own kill;
-	// hardening the host-side client on top costs nothing.)
-	hardenSubtreeTermination(c.cmd)
+	// Unmarked commands retain SDK group hardening. A declared transport
+	// owns coordinated cancellation across its local process groups.
+	if c.opts.Spawn == nil || !c.opts.PreserveCommandCancellation {
+		hardenSubtreeTermination(c.cmd)
+	} else if c.cmd.Err == nil && c.cmd.Cancel == nil {
+		return errors.New("pisdk: owned cancellation requires a Cancel hook")
+	}
 
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
@@ -485,7 +494,11 @@ func (c *Client) Close() error {
 		if c.cmd.Process != nil {
 			// The subtree, not the leader: a tool pi left running would
 			// keep the pipes open and the reap goroutine blocked.
-			_ = killSubtree(c.cmd.Process.Pid)
+			if c.opts.Spawn != nil && c.opts.PreserveCommandCancellation {
+				_ = c.cmd.Cancel()
+			} else {
+				_ = killSubtree(c.cmd.Process.Pid)
+			}
 		}
 		select {
 		case <-c.exited:

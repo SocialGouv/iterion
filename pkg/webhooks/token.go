@@ -1,10 +1,13 @@
 package webhooks
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -17,9 +20,18 @@ const TokenPrefix = "iwh_"
 
 // MintToken returns a fresh webhook token plaintext (shown to the
 // operator exactly once) plus the at-rest fields persisted on a Config:
-// a salted hash, the last 4 chars, and a fingerprint. Reuses the same
-// random-token + hash primitives as operator session/invitation tokens.
-func MintToken() (plaintext, hash, last4, fingerprint string, err error) {
+// an unsalted SHA-256 hash (the token is 256 random bits; ADR-156), the
+// last 4 chars, and a fingerprint. Reuses the same random-token + hash
+// primitives as operator session/invitation tokens.
+//
+// A webhook token is a team token (auth.MintTeamToken): it outlives the
+// credential it is minted from, so the context must carry the derivation
+// chokepoint's verdict for it — the gate stamped it after its ask granted —
+// and a call whose context carries none is refused, whatever calls this.
+func MintToken(ctx context.Context) (plaintext, hash, last4, fingerprint string, err error) {
+	if _, err := auth.RequireMintVerdict(ctx, auth.MintTeamToken, "webhooks.MintToken"); err != nil {
+		return "", "", "", "", err
+	}
 	tok, _, err := auth.GenerateRandomToken(32)
 	if err != nil {
 		return "", "", "", "", err
@@ -53,6 +65,26 @@ func SealHMACSecret(sealer secrets.Sealer, webhookID, plaintext string) ([]byte,
 		return nil, secrets.ErrSealedFormat // surfaces as a server error; never reached in tests because the test sealer is always wired.
 	}
 	return sealer.Seal([]byte(plaintext), hmacSecretAAD(webhookID))
+}
+
+// OpenHMACSecret unseals a webhook's secret under the AAD binding it to
+// webhookID — the key a connector ingress verifies a delivery with, whatever
+// the package's scheme.
+func OpenHMACSecret(sealer secrets.Sealer, webhookID string, sealed []byte) ([]byte, error) {
+	if sealer == nil {
+		return nil, errors.New("webhooks: no sealer to open the secret of webhook " + webhookID)
+	}
+	if len(sealed) == 0 {
+		return nil, errors.New("webhooks: webhook " + webhookID + " holds no sealed secret")
+	}
+	plaintext, err := sealer.Open(sealed, hmacSecretAAD(webhookID))
+	if err != nil {
+		return nil, fmt.Errorf("webhooks: open the secret of webhook %s: %w", webhookID, err)
+	}
+	if len(plaintext) == 0 {
+		return nil, errors.New("webhooks: webhook " + webhookID + " holds an empty secret")
+	}
+	return plaintext, nil
 }
 
 // VerifyHMACSignature recomputes HMAC-SHA256(body, plaintext) and

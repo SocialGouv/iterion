@@ -115,7 +115,8 @@ type devboxSkip struct {
 // Reasons a devbox source is declined. Named so the event payload and
 // the log line cannot drift apart.
 const (
-	devboxSkipRepoOff = "repo_devbox off"
+	devboxSkipRepoOff   = "repo_devbox off"
+	devboxSkipUntrusted = "untrusted workspace (trust floor)"
 )
 
 // A driver with no host bind mount used to be a decline of its own — the
@@ -291,11 +292,15 @@ func resolveDevboxProjects(
 	var skipped []devboxSkip
 
 	repoCfg := devboxConfigIn(p.WorkspacePath, "workspace", logger)
-	if repoCfg != "" && !resolveRepoDevbox(p.RepoDevboxOverride, p.Workflow) {
+	if repoCfg != "" && !resolveRepoDevbox(p.RepoDevboxOverride, p.Workflow, p.Trust) {
+		reason := devboxSkipRepoOff
+		if !p.Trust.Trusted() {
+			reason = devboxSkipUntrusted
+		}
 		if logger != nil {
 			logger.Info("runtime: sandbox devbox: repo_devbox is off — %s is NOT installed for this run; the packages the target repo pins are unavailable (the bot's own devbox.json still is)", repoCfg)
 		}
-		skipped = append(skipped, devboxSkip{label: "repo", config: repoCfg, reason: devboxSkipRepoOff})
+		skipped = append(skipped, devboxSkip{label: "repo", config: repoCfg, reason: reason})
 		repoCfg = ""
 	}
 	if cfg := repoCfg; cfg != "" {

@@ -21,6 +21,7 @@ func loopExecutor() *ClawExecutor {
 }
 
 func TestRetryDelegateLoop_NetworkUsesTransientBudget(t *testing.T) {
+	t.Parallel()
 	e := loopExecutor()
 	calls := 0
 	_, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
@@ -36,6 +37,7 @@ func TestRetryDelegateLoop_NetworkUsesTransientBudget(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_SignalUsesStandardBudget(t *testing.T) {
+	t.Parallel()
 	e := loopExecutor()
 	calls := 0
 	_, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
@@ -51,6 +53,7 @@ func TestRetryDelegateLoop_SignalUsesStandardBudget(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_PermanentNoRetry(t *testing.T) {
+	t.Parallel()
 	e := loopExecutor()
 	calls := 0
 	_, _ = e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
@@ -63,6 +66,7 @@ func TestRetryDelegateLoop_PermanentNoRetry(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_RecoversMidBudget(t *testing.T) {
+	t.Parallel()
 	e := loopExecutor()
 	calls := 0
 	res, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
@@ -84,6 +88,7 @@ func TestRetryDelegateLoop_RecoversMidBudget(t *testing.T) {
 }
 
 func TestEffectiveMaxAttempts(t *testing.T) {
+	t.Parallel()
 	rp := RetryPolicy{} // defaults: 3 standard, 6 transient
 	if got := rp.effectiveMaxAttempts(errors.New("fetch failed")); got != DefaultMaxAttemptsTransient {
 		t.Fatalf("network err: effectiveMaxAttempts = %d, want %d", got, DefaultMaxAttemptsTransient)
@@ -97,6 +102,7 @@ func TestEffectiveMaxAttempts(t *testing.T) {
 }
 
 func TestMaxAttemptsTransientNeverSmallerThanStandard(t *testing.T) {
+	t.Parallel()
 	rp := RetryPolicy{MaxAttempts: 10, MaxAttemptsTransient: 2}
 	if got := rp.maxAttemptsTransient(); got != 10 {
 		t.Fatalf("transient budget must clamp up to standard: got %d, want 10", got)
@@ -104,6 +110,7 @@ func TestMaxAttemptsTransientNeverSmallerThanStandard(t *testing.T) {
 }
 
 func TestIsDelegateRetryableNetwork(t *testing.T) {
+	t.Parallel()
 	// A connectivity failure stringified through the claude_code wrapper.
 	netErr := errors.New("delegate: claude-code failed: claude session ended without result message; fetch failed")
 	if !isDelegateRetryable(netErr) {
@@ -118,6 +125,7 @@ func TestIsDelegateRetryableNetwork(t *testing.T) {
 }
 
 func TestIsRetryableRawNetError(t *testing.T) {
+	t.Parallel()
 	if !isRetryable(errors.New("dial tcp: lookup api.anthropic.com: no such host")) {
 		t.Fatal("expected raw net error to be retryable for the claw backend")
 	}

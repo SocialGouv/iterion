@@ -14,12 +14,8 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
-	"strings"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-
-	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
@@ -180,6 +176,18 @@ func CapabilityUnsupportedRecipe() Recipe {
 	})
 }
 
+// CapabilityDeniedRecipe: no retry at all. The node's declared grant was
+// refused — the same IR meets the same `capabilities:` on every attempt, so
+// a re-run hears the same no. The cure is the declaration, then a resume.
+func CapabilityDeniedRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node named something its `capabilities:` grant does not open — declare the capability on the node (or the workflow), then resume",
+		}
+	})
+}
+
 // ModelUnavailableRecipe: no retry at all. The provider answered about
 // the MODEL, not about this request, so a second call from the same
 // image asks the same question and is told the same thing — and the
@@ -188,7 +196,7 @@ func ModelUnavailableRecipe() Recipe {
 	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
 		return Action{
 			Kind:   ActionFailTerminal,
-			Reason: "the provider does not serve this model to this client (unknown id, no access, or a client release it gates on) — change the model or the image, then resume",
+			Reason: "the model is not available for this credential or client (unknown id, no model access, or a required client release) — choose an accessible model, grant model access, or update the client, then resume",
 		}
 	})
 }
@@ -221,6 +229,25 @@ func PermanentToolRecipe() Recipe {
 		return Action{
 			Kind:   ActionFailTerminal,
 			Reason: "tool failure is permanent (e.g. missing file, invalid arguments); not retrying",
+		}
+	})
+}
+
+// NodeTimeoutRecipe: the node ran out the bound its own `timeout:`
+// declared, so it is NOT re-run. A retry starts a FRESH bound, which turns
+// the one duration the author wrote into N of them — and a node that could
+// not answer within d is not more likely to answer within the next d. The
+// cure is the author's or the operator's: a larger `timeout:`, or a resume.
+//
+// FailTerminal still checkpoints (failRunWithCheckpoint), so the run parks
+// at failed_resumable and TIMEOUT is already inside `--auto-resume`'s
+// allow-list of engine codes (docs/resume.md) — the bound ends this
+// attempt, it does not end the run's chances.
+func NodeTimeoutRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node ran out the timeout it declared; not retrying — a retry would run it under a fresh bound",
 		}
 	})
 }
@@ -345,11 +372,16 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeToolFailedTransient:   TransientToolRecipe(2),
 		runtime.ErrCodeToolFailedPermanent:   PermanentToolRecipe(),
 		runtime.ErrCodeExecutionFailed:       ExecutionFailedRecipe(1),
+		runtime.ErrCodeTimeout:               NodeTimeoutRecipe(),
 		runtime.ErrCodeNetworkTransient:      NetworkTransientRecipe(6),
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
 		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
+		runtime.ErrCodeProviderRequestInvalid: RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
+			return Action{Kind: ActionFailTerminal, Reason: runtime.ProviderRequestRemedy(err)}
+		}),
 		runtime.ErrCodeCapabilityUnsupported: CapabilityUnsupportedRecipe(),
+		runtime.ErrCodeCapabilityDenied:      CapabilityDeniedRecipe(),
 		runtime.ErrCodeAmbiguousEffect:       AmbiguousEffectRecipe(),
 	}
 }
@@ -386,211 +418,5 @@ func Dispatch(recipes map[runtime.ErrorCode]Recipe) runtime.RecoveryDispatch {
 	}
 }
 
-// Classify inspects err and returns the canonical RuntimeError code
-// for it. It recognises:
-//
-//   - *runtime.RuntimeError → its declared Code
-//   - *delegate.ErrRateLimited → RATE_LIMITED (CLI-backend rate-limit
-//     signal raised when the assistant text matches the provider's
-//     quota wording; not an api.APIError because the CLI's wire is
-//     pre-parsed JSON, so the 429 never reaches the SDK as such)
-//   - *api.APIError with StatusCode 429 → RATE_LIMITED
-//   - *api.APIError with body containing "context_length_exceeded"
-//     or "context length" → CONTEXT_LENGTH_EXCEEDED
-//   - any other *api.APIError → EXECUTION_FAILED
-//
-// Hosts that want richer classification can wrap or replace this
-// function.
-func Classify(err error) runtime.ErrorCode {
-	if err == nil {
-		return ""
-	}
-	// An UNDECIDED remote effect, checked before everything else including
-	// the RuntimeError code: a failure that may have already committed a
-	// mutation must not be reclassified into any bucket that retries. The
-	// transport wording of such a failure ("connection reset", "i/o
-	// timeout") matches the network-transient needles below almost by
-	// definition, so any later position would hand it to the exponential
-	// backoff — retrying the exact call whose effect is unknown.
-	if runtime.IsAmbiguousEffect(err) {
-		return runtime.ErrCodeAmbiguousEffect
-	}
-	var rerr *runtime.RuntimeError
-	if errors.As(err, &rerr) {
-		return rerr.Code
-	}
-	// A credential the provider rejected. Checked by TYPE, before any
-	// message matching: the needles below only catch the wordings that
-	// happen to be in the list today, so a backend that reports "upstream
-	// 401" instead of "API error 401" would be retried against a dead
-	// credential rather than paused for re-auth.
-	var authFailed *delegate.ErrAuthFailed
-	if errors.As(err, &authFailed) {
-		return runtime.ErrCodeAuthFailed
-	}
-	// The node's own declaration is what the backend refused. Checked by
-	// TYPE first, like the credential above: the needle below only
-	// catches today's wording.
-	var unsupported *delegate.ErrCapabilityUnsupported
-	if errors.As(err, &unsupported) {
-		return runtime.ErrCodeCapabilityUnsupported
-	}
-	var schemaUnusable *delegate.ErrSchemaUnusable
-	if errors.As(err, &schemaUnusable) {
-		return runtime.ErrCodeSchemaUnusable
-	}
-	var rateLimited *delegate.ErrRateLimited
-	if errors.As(err, &rateLimited) {
-		if rateLimited.Kind == delegate.RateLimitKindUsageWindow {
-			return runtime.ErrCodeUsageLimitBlocked
-		}
-		return runtime.ErrCodeRateLimited
-	}
-	var apiErr *api.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == 429 {
-			return runtime.ErrCodeRateLimited
-		}
-		body := strings.ToLower(apiErr.Message)
-		if strings.Contains(body, "context_length_exceeded") || strings.Contains(body, "context length") {
-			return runtime.ErrCodeContextLengthExceeded
-		}
-		// 5xx and 408 (Request Timeout) from the upstream API are
-		// textbook transient failures: gateway timeouts, upstream
-		// connection resets, service overload, deploys mid-rollout.
-		// Route them to NETWORK_TRANSIENT so the longer exponential
-		// backoff recipe (~10 min) absorbs the outage instead of the
-		// catch-all 1-shot ExecutionFailed retry. 409 is intentionally
-		// excluded — it's usually a logical conflict, not a transient
-		// network issue.
-		if apiErr.StatusCode == 408 || (apiErr.StatusCode >= 500 && apiErr.StatusCode <= 599) {
-			return runtime.ErrCodeNetworkTransient
-		}
-		// 401/403: credential rejected (expired/invalid token, missing
-		// scope). Non-transient — pause for human re-auth rather than
-		// retrying. See AuthFailedRecipe.
-		if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
-			return runtime.ErrCodeAuthFailed
-		}
-		// A model this caller may not have. 404 says it by status; the
-		// wordings say it under a 400, which the backends use for a
-		// model gated on a minimum client release. A bare 400 is NOT
-		// included: one raised mid-turn can be the model's own tool
-		// arguments, and those differ on the next sample.
-		if apiErr.StatusCode == 404 || matchesModelUnavailable(body) {
-			return runtime.ErrCodeModelUnavailable
-		}
-		return runtime.ErrCodeExecutionFailed
-	}
-	// String-pattern fallback for unstructured errors that bubble up
-	// from out-of-process backends (claude_code CLI, iterion sandbox
-	// drivers). The Anthropic CLI emits "API Error: Unable to connect
-	// to API (FailedToOpenSocket)" when the host loses the socket
-	// mid-request; OpenAI tools emit variations on "connection refused"
-	// / "connection reset"; Go's net/http surface prints "no such host"
-	// for DNS failures + "i/o timeout" for read/dial timeouts. None of
-	// these arrive as *api.APIError because the upstream never produced
-	// an HTTP response; the wrapping layers stringify the lower-level
-	// error and we don't have a typed channel for it. Match the known
-	// phrases case-insensitively and route to NETWORK_TRANSIENT so the
-	// recovery dispatcher applies the longer exponential backoff
-	// instead of the catch-all 1-shot retry.
-	msg := strings.ToLower(err.Error())
-	// Credential rejections often arrive as plain strings: the claw
-	// runner is an out-of-process subprocess whose typed *api.APIError is
-	// flattened to text by the time it bubbles up through the backend
-	// wrappers (e.g. "claw backend: ... openai: API error 401: Provided
-	// authentication token is expired. Please try signing in again").
-	// Match those before the network needles so they pause-for-reauth
-	// instead of falling to the 1-shot ExecutionFailed retry.
-	for _, needle := range authFailedNeedles {
-		if strings.Contains(msg, needle) {
-			return runtime.ErrCodeAuthFailed
-		}
-	}
-	// The out-of-process host (the claw runner) flattens the typed error
-	// above into text before it reaches here, so the wording is read too
-	// — this is the shape that was actually measured in the cloud.
-	if strings.Contains(msg, "parse explicitschema") {
-		return runtime.ErrCodeSchemaUnusable
-	}
-	// Checked through the SAME list the typed branch reads, and after
-	// the credential needles: a rejection that names both a credential
-	// and a model is a credential to re-authenticate first.
-	if matchesModelUnavailable(msg) {
-		return runtime.ErrCodeModelUnavailable
-	}
-	for _, needle := range networkTransientNeedles {
-		if strings.Contains(msg, needle) {
-			return runtime.ErrCodeNetworkTransient
-		}
-	}
-	return runtime.ErrCodeExecutionFailed
-}
-
-// modelUnavailableNeedles enumerates lowercase substrings that say the
-// provider will not serve the MODEL, whatever the request contains. ALL
-// entries MUST be lowercase — both callers lowercase first.
-var modelUnavailableNeedles = []string{
-	// Scoped to the MODEL on purpose: a bare "requires a newer version"
-	// is any tool announcing a version floor, and a false positive here
-	// PARKS a run — the disposition is deterministic.
-	"model requires a newer version",
-	"api error 404",   // claw/openai verbatim: the model id reached no endpoint
-	"model_not_found", // OpenAI error code field
-	"unknown model",   // gateway wording for an id no backend claims
-}
-
-// matchesModelUnavailable is the ONE reading of that list. Both the
-// typed *api.APIError branch and the flattened-string fallback call it,
-// because an out-of-process backend (the claw runner) stringifies its
-// typed error before it reaches here — the same reason the credential
-// needles exist twice over.
-func matchesModelUnavailable(msg string) bool {
-	for _, needle := range modelUnavailableNeedles {
-		if strings.Contains(msg, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-// authFailedNeedles enumerates lowercase substrings that indicate the
-// model provider rejected our credentials (not a transient fault). ALL
-// entries MUST be lowercase — Classify lowercases the err string first.
-var authFailedNeedles = []string{
-	"authentication token is expired", // OpenAI/ChatGPT-forfait expired OAuth access token
-	"please try signing in",           // OpenAI/codex re-auth prompt
-	"error 401",                       // "API error 401:" verbatim from claw/openai
-	"error 403",                       // forbidden (missing scope / disabled key)
-	"invalid api key",                 // OpenAI/Anthropic bad key
-	"incorrect api key",               // OpenAI verbatim
-	"invalid_api_key",                 // OpenAI error code field
-	"authentication_error",            // Anthropic error type field
-	"oauth token has expired",         // Anthropic OAuth (claude_code) expiry
-}
-
-// networkTransientNeedles enumerates the lowercase substrings that
-// indicate a transient connectivity failure to the upstream model API.
-// Kept as a plain slice so hosts patching this file can append site-
-// specific phrases (corporate proxy timeouts, etc.) without touching
-// the matcher logic. ALL entries MUST be lowercase — Classify lowercases
-// the err string before checking.
-var networkTransientNeedles = []string{
-	"failedtoopensocket",        // anthropic claude CLI verbatim ("Unable to connect to API (FailedToOpenSocket)")
-	"unable to connect to api",  // anthropic claude CLI prefix
-	"connection refused",        // tcp refused (host present, port closed / firewall)
-	"connection reset",          // tcp reset by peer (mid-request drop)
-	"no such host",              // dns failure (transient resolver outage)
-	"i/o timeout",               // go net package timeouts (dial / read / write)
-	"context deadline exceeded", // request-level timeout in upstream client
-	"network is unreachable",    // host has no route (eg vpn dropped)
-	"no route to host",          // routing-table drop (often transient)
-	"tls handshake timeout",     // tls negotiation hung (proxy / mitm flap)
-	"unexpected eof",            // SSE / streaming response cut short by peer
-	"http: eof",                 // net/http verbatim: server hung up mid-stream
-	"http2: timeout",            // golang.org/x/net/http2: "http2: timeout awaiting response headers"
-	"http2: server sent goaway", // http/2 graceful shutdown signal from upstream mid-request
-	"upstream connect error",    // envoy / cloudfront gateway: e.g. "upstream connect error or disconnect/reset before headers"
-	"server closed idle connection",
-}
+// Classify uses the engine's shared classifier on every execution surface.
+func Classify(err error) runtime.ErrorCode { return runtime.ClassifyError(err) }

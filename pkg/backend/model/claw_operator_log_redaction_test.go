@@ -28,6 +28,7 @@ func sinkRedaction(secret, placeholder string) func(string) string {
 // which is this backend's own duty. A run whose secrets are known must not
 // read one of them in clear.
 func TestSandboxDispatch_RedactsTheRunnersStderrForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-api03-WITNESS-0123456789abcdefghijklmnopqrstuvwxyz"
 	const placeholder = "__ITERION_SECRET_api_key__"
 
@@ -72,8 +73,10 @@ func TestSandboxDispatch_RedactsTheRunnersStderrForTheOperatorLog(t *testing.T) 
 // A refused forwarded call is recorded on the launcher's side with the
 // ARGUMENT the agent wrote — permission.DenyMessage quotes it — so an agent
 // that put a secret value in a denied call writes it into the operator's log
-// unless this sink redacts too.
+// unless the log redacts it. Since #2458 that pass is the run logger's
+// chokepoint (WithRedactor), which BuildExecutor wires from the run's guard.
 func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "ghp_WITNESS0123456789abcdefghijklmnopqrstuv"
 	const placeholder = "__ITERION_SECRET_deploy_token__"
 
@@ -83,7 +86,7 @@ func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T
 	}
 	var logs strings.Builder
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{},
-		WithClawLogger(iterlog.New(iterlog.LevelInfo, &logs)))
+		WithClawLogger(iterlog.New(iterlog.LevelInfo, &logs).WithRedactor(sinkRedaction(secret, placeholder))))
 	task := delegate.Task{
 		NodeID: "deploy", Iteration: 1, Permission: pol,
 		ToolDefs: []delegate.ToolDef{{
@@ -93,8 +96,8 @@ func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T
 		RedactSecrets: sinkRedaction(secret, placeholder),
 	}
 	input := json.RawMessage(`{"body":"deploy token: ` + secret + `"}`)
-	if _, err := b.multiplexerHandler(context.Background(), task, sessionSeed{}).
-		OnToolCall(context.Background(), "mcp_github_create_issue", input); err == nil {
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+	if _, err := handler.OnToolCall(context.Background(), "mcp_github_create_issue", input); err == nil {
 		t.Fatal("a denied forwarded call was not refused — this witness no longer reaches the refusal it watches")
 	}
 	if strings.Contains(logs.String(), secret) {
@@ -107,21 +110,23 @@ func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T
 
 // A relayed event this host cannot decode is reported with the decoder's
 // error, and that error quotes the payload the runner sent whenever the field
-// parses its own text (a timestamp). The payload crossed the boundary, so the
-// report crosses the run's redaction.
+// parses its own text (a timestamp). The payload crossed the boundary, and the
+// report is redacted by the run logger's chokepoint (#2458) — the pass the
+// production run gets from BuildExecutor wiring the guard onto the logger.
 func TestClawRelay_RedactsAnUndecodableEventForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESS0123456789abcdefghijklmnop"
 	const placeholder = "__ITERION_SECRET_openai_key__"
 
 	var logs strings.Builder
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{},
-		WithClawLogger(iterlog.New(iterlog.LevelWarn, &logs)))
+		WithClawLogger(iterlog.New(iterlog.LevelWarn, &logs).WithRedactor(sinkRedaction(secret, placeholder))))
 	task := delegate.Task{
 		NodeID: "plan_review", Iteration: 1,
 		RedactSecrets: sinkRedaction(secret, placeholder),
 	}
-	b.multiplexerHandler(context.Background(), task, sessionSeed{}).
-		OnEvent(string(store.EventLLMRequest), map[string]any{"timestamp": secret})
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+	handler.OnEvent(string(store.EventLLMRequest), map[string]any{"timestamp": secret})
 	t.Logf("operator log: %q", logs.String())
 	if logs.Len() == 0 {
 		t.Fatal("an undecodable relayed event is reported to nobody — this witness no longer reaches the report it watches")
@@ -135,13 +140,14 @@ func TestClawRelay_RedactsAnUndecodableEventForTheOperatorLog(t *testing.T) {
 }
 
 // A relayed event re-enters the host as an event, so Layer 0 scrubs the event
-// copy and the LOG line is the store hook's own duty (h.red). The names the
-// far side chose ride that line beside the content it already redacts — the
-// model the container says it called, the name it gave each tool call — and a
-// half-redacted line, the error scrubbed and the name in clear, is the shape
-// that hides a leak. Driven through the real chain the sibling retry witness
-// uses: the crossing's event handler, the relay decoder, the production store
-// hooks with the run's own guard.
+// copy at the emitter, and the LOG line is the run logger's chokepoint
+// (#2458): the names the far side chose ride that line beside the content —
+// the model the container says it called, the name it gave each tool call —
+// and a half-redacted line, the error scrubbed and the name in clear, is the
+// shape that hides a leak. Driven through the real chain the sibling retry
+// witness uses: the crossing's event handler, the relay decoder, the
+// production store hooks, and the logger wired as BuildExecutor wires it —
+// the run's own guard on the run's own logger.
 //
 // A relayed tool call is four far-side values at three records, not one name:
 // the name, the one-line detail [tooldisplay.HeaderDetail] reads out of the
@@ -155,6 +161,7 @@ func TestClawRelay_RedactsAnUndecodableEventForTheOperatorLog(t *testing.T) {
 // named in reach: a scenario that stops producing one of them is a witness
 // that stopped watching a sink, and says so instead of passing.
 func TestClawRelay_RedactsTheNamesOfARelayedEventForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		secret  string
@@ -212,13 +219,13 @@ func TestClawRelay_RedactsTheNamesOfARelayedEventForTheOperatorLog(t *testing.T)
 				t.Fatalf("the guard does not know the witness value — this witness no longer watches a redaction")
 			}
 			var logs strings.Builder
-			logger := iterlog.New(iterlog.LevelDebug, &logs)
+			logger := iterlog.New(iterlog.LevelDebug, &logs).WithRedactor(g.Redact)
 			b := NewClawBackend(NewRegistry(),
 				NewStoreEventHooks(context.Background(), &captureEmitter{}, "run-relay-names", logger, g, nil),
 				RetryPolicy{}, WithClawLogger(logger))
 
-			b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}).
-				OnEvent(string(tc.event), tc.payload(tc.secret))
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}, newCrossingApprovalState())
+			handler.OnEvent(string(tc.event), tc.payload(tc.secret))
 
 			for _, want := range tc.reach {
 				if !strings.Contains(logs.String(), want) {
@@ -237,19 +244,22 @@ func TestClawRelay_RedactsTheNamesOfARelayedEventForTheOperatorLog(t *testing.T)
 
 // The other branch of the same sink: an event type this host does not consume
 // is reported at DEBUG with the TYPE the container sent — a name the far side
-// chose, so it crosses the pass like the decoder's complaint above.
+// chose, scrubbed by the run logger's chokepoint like the decoder's complaint
+// above.
 func TestClawRelay_RedactsAnUnconsumedEventTypeForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESS0123456789abcdefghijklmnop"
 	const placeholder = "__ITERION_SECRET_openai_key__"
 
 	var logs strings.Builder
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{},
-		WithClawLogger(iterlog.New(iterlog.LevelDebug, &logs)))
+		WithClawLogger(iterlog.New(iterlog.LevelDebug, &logs).WithRedactor(sinkRedaction(secret, placeholder))))
 	task := delegate.Task{
 		NodeID: "plan_review", Iteration: 1,
 		RedactSecrets: sinkRedaction(secret, placeholder),
 	}
-	b.multiplexerHandler(context.Background(), task, sessionSeed{}).OnEvent("vendor_metric_"+secret, nil)
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+	handler.OnEvent("vendor_metric_"+secret, nil)
 	t.Logf("operator log: %q", logs.String())
 	if logs.Len() == 0 {
 		t.Fatal("an unconsumed relayed event is reported to nobody — this witness no longer reaches the report it watches")
@@ -262,17 +272,17 @@ func TestClawRelay_RedactsAnUnconsumedEventTypeForTheOperatorLog(t *testing.T) {
 	}
 }
 
-// Ask the sink before the pass — at every far-side ARGUMENT of a crossing log
+// Ask the sink before the pass — at every far-side record of a crossing log
 // line, not just the one the stderr report builds.
 //
-// The pass is the run's secret guard over text the container chose, and the
-// logger drops a record above its level before it ever formats the line
-// (pkg/log). A pass computed as an argument therefore runs for records nobody
-// keeps: the decoder's complaint quotes a relayed field, bounded only by
-// relayFieldBudget, and a refused call quotes whatever argument the far side
-// sent. [farSideForLog] moves each one behind the sink's own gate; the three
-// sites are independent, so each subtest reddens alone.
+// Since #2458 the pass is the run LOGGER's redactor, not a per-site helper:
+// pkg/log drops a record above the logger's level before it is formatted AND
+// before it is redacted, so an operator log that keeps nothing pays no pass
+// over text the container chose. The three sites below are independent, so
+// each subtest reddens alone — and each drives its line through a logger
+// wired as BuildExecutor wires the run's, which is the wiring under test.
 func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESSLAZY0123456789abcdefghijk"
 
 	pol, err := permission.NewPolicy(permission.ModeDeny, []string{"*"}, nil, []string{"mcp_github_create_issue"})
@@ -293,7 +303,8 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 			drops: iterlog.LevelInfo,
 			keeps: iterlog.LevelDebug,
 			drive: func(t *testing.T, b *ClawBackend, task delegate.Task) {
-				b.multiplexerHandler(context.Background(), task, sessionSeed{}).OnEvent("vendor_metric_"+secret, nil)
+				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+				handler.OnEvent("vendor_metric_"+secret, nil)
 			},
 		},
 		{
@@ -301,8 +312,8 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 			drops: iterlog.LevelError,
 			keeps: iterlog.LevelWarn,
 			drive: func(t *testing.T, b *ClawBackend, task delegate.Task) {
-				b.multiplexerHandler(context.Background(), task, sessionSeed{}).
-					OnEvent(string(store.EventLLMRequest), map[string]any{"timestamp": secret})
+				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+				handler.OnEvent(string(store.EventLLMRequest), map[string]any{"timestamp": secret})
 			},
 		},
 		{
@@ -316,8 +327,8 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 					Execute: func(context.Context, json.RawMessage) (string, error) { return "", nil },
 				}}
 				input := json.RawMessage(`{"body":"token: ` + secret + `"}`)
-				if _, err := b.multiplexerHandler(context.Background(), task, sessionSeed{}).
-					OnToolCall(context.Background(), "mcp_github_create_issue", input); err == nil {
+				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+				if _, err := handler.OnToolCall(context.Background(), "mcp_github_create_issue", input); err == nil {
 					t.Fatal("a denied forwarded call was not refused — this witness no longer reaches the refusal it watches")
 				}
 			},
@@ -327,14 +338,15 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 			drive := func(level iterlog.Level) int {
 				var passes int
 				var logs strings.Builder
+				redactor := func(s string) string {
+					passes++
+					return strings.ReplaceAll(s, secret, "__ITERION_SECRET_openai_key__")
+				}
 				b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{},
-					WithClawLogger(iterlog.New(level, &logs)))
+					WithClawLogger(iterlog.New(level, &logs).WithRedactor(redactor)))
 				tc.drive(t, b, delegate.Task{
 					NodeID: "plan_review", Iteration: 1,
-					RedactSecrets: func(s string) string {
-						passes++
-						return strings.ReplaceAll(s, secret, "__ITERION_SECRET_openai_key__")
-					},
+					RedactSecrets: redactor,
 				})
 				return passes
 			}
@@ -356,6 +368,7 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 // Driven over the spellings a container could send, against a payload no host
 // decoder accepts.
 func TestClawRelay_OnlyAHostEventTypeReachesTheDecodeFailureArm(t *testing.T) {
+	t.Parallel()
 	breaks := map[string]any{"timestamp": "sk-proj-NOTATIME0123456789abcdefghijkl"}
 	for _, typ := range []string{
 		"vendor_metric_sk-proj-SECRET", "sk-proj-SECRET",

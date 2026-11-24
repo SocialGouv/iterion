@@ -114,6 +114,18 @@ const (
 
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
+	DiagInvalidLoopClauseGuard DiagCode = "C178" // a loop clause's guard: value not one of on|off (error)
+	DiagInvalidLoopSizedBy     DiagCode = "C326" // a loop clause's sized_by signal: template braces, unparseable expression, a reference outside vars/outputs, or a provably non-numeric type (error)
+
+	// C179 sits in the C178/C180 gap and belongs to the Verified Action
+	// family (C103-C106, declared where they are emitted, in
+	// validate_verified_action.go): since #2783 the self-repair rung is
+	// gated on the recipe's genre, and a registry recipe (a bare tool name)
+	// has no command to correct — so a node under policy: recover that
+	// budgets ONLY max_repair_attempts reaches no rung at all. The other
+	// inert-recovery shape, bounds under a policy other than recover, is
+	// C106's.
+	DiagRepairRungUnreachable DiagCode = "C179" // policy: recover budgets only max_repair_attempts on a registry recipe — rung 3 is skipped by genre and rung 4 is off, no recovery rung is reachable (warning)
 
 	// Target-repo devbox provisioning switch diagnostics.
 	DiagInvalidRepoDevbox DiagCode = "C134" // repo_devbox: value not one of on|off (error)
@@ -169,7 +181,7 @@ const (
 	// C154 is allocated from the free C154-C169 band: C113-C119 belong to the
 	// fan_out_each/groups epic and C120-C122 are taken, so the permission
 	// family cannot grow contiguously from C112.
-	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
+	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw whose ask-capable policy can reach a container-executed tool (the approval channel serves launcher-placed asks only), and the workflow does not opt out of the sandbox (warning)
 	DiagIndexOnScalar          DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 	DiagInvalidNodeTimeout     DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	DiagFileFieldNotHuman      DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
@@ -206,13 +218,19 @@ const (
 	DiagUnknownRunMember DiagCode = "C153" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
 	// The tree-noise channel in an EXECUTABLE body (#1555, the #1464/#1530
 	// class): the prompt rendering lands as ONE word no file matches
-	// (shell-escaped in a command, JSON-quoted in a shell script), and the
+	// (shell-escaped in a command, one quoted variable read in a shell script), and the
 	// quoted env var collapses the same way — or never expands at all under
 	// single quotes. Both shell bodies only: a js/py script consumes the ref
 	// as data. Both warnings — the catalogue carries zero instances (the
 	// tree_noise_channel tests prove it), so the change is additive.
 	DiagTreeNoiseRefInExecBody DiagCode = "C157" // {{run.tree_noise}} (not the bang form) in a shell-bound tool command/script/postcondition (warning; use {{!run.tree_noise}} or $ITERION_TREE_NOISE unquoted)
 	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // a standalone quoted word holding exactly $ITERION_TREE_NOISE in a shell-bound tool body (warning; double quotes collapse the list to one pathspec, single quotes never expand — only that unambiguous shape is named: tests, assignments, concatenations, comments, heredocs and \$ escapes stay silent by design)
+	// C169 takes the last slot of the free C154-C169 band, beside the
+	// tree-noise family it siblings: the bang form of a ref inside a PROMPT
+	// body is parsed and then ignored — a prompt has no shell to escape, so
+	// the value renders whatever the prefix says. The warning keeps a shell
+	// spelling from reading as a decision the prompt took.
+	DiagBangRefInPromptBody DiagCode = "C169" // {{!ns.x}} in a prompt body — the bang is a tool-body spelling, ignored here; the value renders either way (warning)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).
@@ -294,7 +312,7 @@ const (
 	// at run time).
 	DiagWithInputRefNoSchema    DiagCode = "C149" // `{{input.x}}` in a subbot/emit `with:` or a fail `message:` — the kind has no `input:` surface, so the reference resolves against the RUN's inputs at run time; warning, because the launch payload may legitimately carry an undeclared key
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
-	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
+	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a compute `expr:` — `pkg/dsl/expr` has no attachments resolver (a data mapping resolves the namespace since #2864, secrets stay refused there)
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
 
 	// C180+ — the var-typing wave (#1604, #1610). Kept in one contiguous
@@ -344,4 +362,198 @@ const (
 	// read it, so the author chooses — philosophy #1: never silently replace
 	// an operator's explicit choice.
 	DiagHumanClauseIgnoredInMode DiagCode = "C313" // a human node declares a clause its interaction mode ignores (system/model with no companion model, review-gate config outside `review`) — the value is dropped at compile time (warning)
+	// A persisted conversation is keyed on `session_slot:` when the node
+	// declares one and on the node id otherwise, in ONE keyspace: a slot
+	// spelt like another node's id reads and writes that node's session
+	// (#2460). The class is closed where it is written — an error, not a
+	// launch-time warning an author can miss.
+	DiagSessionSlotNamesANode DiagCode = "C314" // session_slot equals the id of another node of the same workflow (error)
+
+	// ADR-132's compile-time half, stage 1 of its staged transition: a run
+	// reads no environment. A route field, a var default or a tool body that
+	// consults `${NAME}` makes a run setting depend on the process the run
+	// starts in — the one source no tenant can write and no record can
+	// audit. Named on ANY env name, not on an `ITERION_` prefix: 22 of the
+	// names the catalogue dials in a routing field carried another family
+	// when this guard was written (`VETTY_`, `BMADY_`, `FEED_`, `REARCHI_`,
+	// `RESCUE_PROVIDER`, `DEVBOX_SETUP_MODEL`), and a doctrine with a
+	// prefix-shaped hole only moves the next dial to a different spelling.
+	//
+	// Stage 1 changes nothing at runtime, so a deployment's pins keep
+	// working while the catalogue is de-dialled; the hard catalogue floor
+	// arrives with the last de-dialled bot group.
+	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field incl. a supervisor's model, var default, tool body, cursor setting, budget max_duration) reads the process environment instead of its authored literal and the levels above it (warning)
+
+	// On codex a `tools:` list is not an allowlist: codex runs its built-in
+	// shell outside the SDK's per-name callbacks, so the list buys a SANDBOX
+	// MODE and nothing else — read-only when every name it carries reads,
+	// workspace-write otherwise. A list that buys workspace-write bounds
+	// nothing, and the author learned it only when a fan-out refused the node
+	// (#2427). A warning: the node runs, and `readonly:` is the author's lock.
+	DiagCodexToolsListBoundsNothing DiagCode = "C316" // a node routed to codex (primary or fallback) declares a tools: list that buys the workspace-write sandbox — the list bounds nothing (warning)
+
+	// A `deliverables:` entry names a file the run collects from the node's
+	// WORKSPACE and serves under its base name. A path the collector could
+	// never resolve — absolute, escaping upwards, naming a directory, empty
+	// — is refused where it is written: the declaration IS the contract,
+	// and a promise no run can keep is worth less than a compile error.
+	// A value carrying a template or an environment form is judged on the
+	// text as written, like any other: no rendering makes an absolute path
+	// relative; only what it renders TO is the collector's to refuse.
+	DiagDeliverableNotWorkspacePath DiagCode = "C317" // a deliverables: entry is not a workspace-relative file path (absolute, `..` escape, directory, empty) (error)
+
+	// Two entries of one node with the same base name would be served
+	// under the same handle, and the run store refuses every one after the
+	// first rather than overwrite it (the `name_taken` loss): the reviewer
+	// of pass N-1 would otherwise read the bytes of pass N. Same doctrine
+	// as C314 — a collision that cannot be authored needs no runtime guard.
+	// Said once per node, each shared name with its entries.
+	DiagDeliverableNameCollision DiagCode = "C318" // two deliverables: entries of the same node are served under the same base name (error)
+
+	// The instance-wide `global` memory space is read by every org, so a
+	// mutation there is a PLATFORM act: it answers to platform authority on
+	// the context (knowledge.AuthorizeSpaceWrite), and a run carries none. So
+	// a node declaring `visibility: "global"` with `write: true` gets the
+	// read/list tools and NOT memory_write. A warning, not an error — the
+	// combination stays expressible and will install the tool the day a
+	// super-admin run's authority reaches the engine (philosophy #1: warn
+	// rather than reject, and never remove a capability to close a hole).
+	DiagMemoryGlobalWriteGated DiagCode = "C319" // memory: visibility: "global" with write: true — memory_write is NOT installed for a run (warning)
+	// An expression lives inside one string, which the lexer counts as a
+	// single record of the read budget: a 10 MiB `a+a+…` passed the budget
+	// unseen and built millions of nodes at compile time (#2627). The
+	// expression parser spends the same budget on its tokens, the
+	// expressions of a bot together (expr.ParseOn), and refuses the one
+	// the count runs out on — before the tree it would have built.
+	DiagExprPastReadBudget DiagCode = "C320" // an expression past the read budget (ITERION_DSL_READ_BUDGET): its tokens, with the bot's other expressions, exceed the count (error)
+	// A node's backend runs a CLI no sandbox image iterion publishes puts on
+	// PATH (#1643): kimi, grok and opencode, which no image carries, and
+	// codex, in the stock sandbox's pinned tree but outside its PATH. A
+	// warning, never a refusal: the limit is the IMAGE's contents, and the
+	// compiler knows neither the image the run resolves nor whether it will
+	// be sandboxed at all, so an operator whose own image bakes the CLI keeps
+	// a bot that compiles. The refusal lives where the image is known and
+	// names it (pkg/runtime's admitSandboxImageBackends).
+	DiagBackendAbsentFromSandboxImage DiagCode = "C321" // a node's backend has no CLI in the published sandbox images (warning — refused at start only where the resolved image is one of them)
+
+	// Secret sink grants (ADR-146): a secret's `sinks:` names the
+	// materialization sinks it may reach — prompt, agent, command, params,
+	// file, egress (pkg/dsl/secretsink); an absent list grants every sink.
+	// The compiler refuses the grants it can read (C322) and the references
+	// it can see reach an ungranted sink (C323); the guard honours the two
+	// sinks the compiler cannot see (a model's own tool input, the wire).
+	DiagSecretSinkInvalid    DiagCode = "C322" // a `sinks:` entry outside the vocabulary or named twice, `prompt` alone, a file secret whose grants lack `file`, a value secret granting `file` (error)
+	DiagSecretSinkUngranted  DiagCode = "C323" // a `{{secrets.X}}` reference in a prompt body, a tool command/postcondition/script or an action param whose secret does not grant that sink (error)
+	DiagSecretEgressUnscoped DiagCode = "C324" // a `sinks:` list granting `egress` on a secret with no `hosts:` — the proxy substitutes it toward any host (warning)
+
+	// A bare image name (`image: foo`) is a class only when it names one
+	// (pkg/sandbox/imageclass); otherwise the runtime honours it verbatim —
+	// it may be a locally built image, and re-pointing it at a registry
+	// would be the silent replacement philosophy #1 refuses. The warning is
+	// what tells the two bare-word readings apart before the pull does.
+	DiagSandboxImageClassUnknown DiagCode = "C325" // sandbox.image is a bare word that names no stock image class — passed through verbatim at launch (warning)
+
+	DiagGroupExpansionPastBudget DiagCode = "C327" // a `use`'s {{params.*}} substitution expands one field past the 10 MiB size cap or spends past the read budget (ITERION_DSL_READ_BUDGET) — the lexer counts a marker and its value as one record each, so K markers × an S-byte value built a K·S-byte string no budget saw (error)
+
+	DiagHostToolWithoutCapability DiagCode = "C328" // a node names an iterion host tool (board/watch/runs) without the capability that opens it — dropped or refused at run time (warning)
+
+	// A subbot's landing intent (`auto_merge:`, `merge_into:`,
+	// `merge_strategy:`) only acts through the child's own finalization: a
+	// child running in the parent's workspace has none, so the intent would
+	// arm a landing that never fires — the converged run waits for a human,
+	// the exact incident the intent exists to close. Closed where it is
+	// written, like C314: an error, not a terminal an author never sees.
+	DiagSubbotLandingWithoutIsolated DiagCode = "C329" // a subbot declares a landing intent (auto_merge/merge_into/merge_strategy) without `isolated: true` — the child runs in this run's workspace and has no finalization of its own to land from (error)
+
+	// A landing configuration whose arming flag is absent would be dropped
+	// in silence: the author wrote a target or a strategy the child never
+	// reads. The pairing is refused at compile so the declaration either
+	// arms a landing or is not written.
+	DiagSubbotLandingWithoutAutoMerge DiagCode = "C330" // a subbot declares `merge_into:` or `merge_strategy:` without `auto_merge: true` — the value would be dropped in silence (error)
+
+	// A `{{vars.x}}` naming a credential the server mints for a run, in a
+	// tool node's `script:` body: the run refuses the reference before the
+	// script's temp file is written (a rendered bearer would rest in that
+	// file in clear), and no placeholder→env swap exists for a body in
+	// another language. A warning, because the compiler reads the NAME
+	// while the run asks its guard: a launch that holds no grant renders
+	// the empty value and is not refused.
+	DiagMintedVarInScriptBody DiagCode = "C331" // a `{{vars.x}}` naming a server-minted credential (the forge publish grant) in a tool node's `script:` body — refused at run before the temp file exists (warning)
+
+	DiagToolCapabilitiesInert DiagCode = "C332" // a tool node declares `capabilities:` but nothing reads it (a shell recipe, an HTTP action authorized by its connection, a registry recipe naming no host tool) — only a native action or a registry recipe naming an iterion host tool reads the grant (ADR-151) (warning)
+
+	DiagActionConnectionOnNative DiagCode = "C333" // `connection:` on an action whose connector is native and credential-free (board.*, ADR-151) — nothing reads the alias (warning)
+
+	DiagNativeActionWithoutGrant DiagCode = "C334" // a native board action whose capability is declared neither on the node nor on the workflow — refused CAPABILITY_DENIED at run time (warning)
+
+	DiagActionRetryOnNative DiagCode = "C335" // `retry:` on an action served by a native transport — the ladder's guards are HTTP-answer semantics, so the property is inert (warning)
+
+	DiagNativeVerbNotExposed DiagCode = "C336" // a native action (board.*) names a verb the native facade does not expose — every launch is refused at admission (warning)
+
+	DiagInvalidCodemode DiagCode = "C337" // codemode: value not one of on|off (error)
+
+	// C338 was `codemode: on` declared while no build served it. It shipped
+	// in v5.32.0 as the honesty clause of the attribute-only slice, and that
+	// slice's own text promised this: the slice that registers the tool
+	// deletes the emission. It is RETIRED rather than reused — a code names
+	// one defect for as long as anyone can read it in a log, and the defect
+	// it named ceased to exist when claw's cell went to shipped. C339 is the
+	// narrowed question that replaces it, and it is an ERROR, because what it
+	// diagnoses now fails the dispatch rather than running degraded.
+	//
+	// Nothing may be allocated to "C338" again.
+
+	DiagCodemodeBackendUnsupported DiagCode = "C339" // `codemode: on` on a route whose backend serves no codemode tool — refused at dispatch (error)
+
+	DiagTypedSecretPlaceholder DiagCode = "C340" // a declared or server-minted secret's placeholder typed as text in a tool body — a body resolves only the author's references, so the text runs as written (warning)
+
+	DiagSecretNameReserved DiagCode = "C341" // a secret name whose placeholder spells another's redact-only form (`<name>_redacted`), which the guard writes where that secret must resolve nowhere (error)
+
+	DiagSecretInShellLiteral DiagCode = "C342" // a value secret's default-form reference in a shell script where the shell expands nothing (single quotes, a quoted heredoc) — the script reads the variable's name, not the value (warning)
+
+	DiagShellScriptDataNotArriving DiagCode = "C343" // a data reference in a sh/bash script where the shell reads nothing (single quotes, $'…', a quoted heredoc, a comment) — the text holds the environment variable's read, not the value (warning)
+
+	DiagShellScriptDataArith DiagCode = "C344" // a data reference in a sh/bash script where bash evaluates the value — as arithmetic, a compound array assignment or a variable name ($(( )), (( )), [[ -gt ]], let, declare -i / -a, a subscript, [[ -v ]], read, printf -v, …) — best effort (warning)
+
+	DiagShellScriptDataCommand DiagCode = "C345" // a data reference as a command word in a sh/bash script — the shell runs the value as a program (warning)
+
+	DiagShellScriptDataCode DiagCode = "C346" // a data reference where another shell parses the value as code (a double-quoted sh -c / eval / trap argument, an unquoted heredoc fed to a shell, a mapfile -C callback, PS4/BASH_ENV/ENV, alias, ssh) (warning)
+
+	DiagCodemodeBoundAboveCeiling DiagCode = "C347" // a codemode: bound above the platform ceiling (scripthost.Ceiling) — clamped where the program is spawned, never refused, so the declaration says something that will not happen (warning)
+
+	DiagCodemodeBoundsWithModeOff DiagCode = "C348" // codemode: bounds declared beside `mode: off` — no program runs, so the bounds are inert (warning)
+
+	DiagCodemodeBoundUnreadable DiagCode = "C349" // a codemode: duration that is not readable as one, or is negative — the default applies instead, which is tighter than a bound being raised and looser than one being lowered (warning)
+
+	DiagCodemodeMemoryBelowFloor DiagCode = "C350" // a codemode: memory bound below the measured floor a Go child works under — the platform raises the bound to the floor where the program is spawned (warning)
+
+	// A node's own `allow:`/`ask:`/`deny:` lists on a claw route that serves
+	// it no tool. On claw the declared `tools:` list IS the tool surface
+	// (ClawToolSurfaceEmpty), so a node that declares rules and nothing to
+	// call is dispatched with nothing callable: the rules bound nothing, and
+	// an `allow:` row — which reads as a grant — grants nothing. A warning:
+	// the node still runs, and the same shape is a real bound on a backend
+	// that keeps its own roster (claude_code), which is why only a route the
+	// source sends to claw is named.
+	DiagPermissionRulesNoTools DiagCode = "C351" // a node declares its own allow/ask/deny rules and a route the source sends to claw (primary or fallback) serves it no tool — nothing is callable there, so the rules bound nothing (warning)
+
+	// C352 joins the Verified Action family (C103-C106 and C179, ADR-044)
+	// beside C351, whose fact it shares and whose fix it does not: a tool
+	// node's rung-4 recovery agent is dispatched with `agent_tools:` as its
+	// whole tool list, so on claw a rung that declares none sends an agent
+	// with nothing to call to achieve a goal "with its tools". A warning: the
+	// node runs, and the postcondition still judges it.
+	DiagRecoveryAgentNoTools DiagCode = "C352" // policy: recover reaches rung 4 on a workflow the source routes to claw, with no recovery.agent_tools: and no workflow codemode — the recovery agent is served no tool (warning)
+
+	DiagInvalidCodemodeStoreQuota DiagCode = "C353" // codemode store quota is negative or declared at node scope (error)
+
+	DiagInvalidCodemodeDefer DiagCode = "C354" // codemode defer: value not one of on|off (error)
+
+	// The deferral's own C348: `defer: on` declared on a node whose codemode
+	// is off by its own declaration. Not an error — the node keeps its tools
+	// declared and loses nothing — but the property the author wrote bounds
+	// nothing, and C348 is the form that says so. Workflow rung exempt, for
+	// the reason C348 states: the workflow's defer is a default every node
+	// that turns codemode on itself inherits.
+	DiagCodemodeDeferWithModeOff DiagCode = "C355" // codemode defer: on declared beside `mode: off` on a node — no program runs, so the deferral is inert (warning)
 )

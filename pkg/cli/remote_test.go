@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -250,9 +251,10 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}))
 	p, buf := remotePrinter(cli.OutputHuman)
 	err := cli.RemoteRunsLaunch(context.Background(), c, p, cli.RemoteRunsLaunchOptions{
-		FilePath: botPath,
-		Vars:     map[string]string{"k": "v"},
-		Backend:  "claw",
+		FilePath:       botPath,
+		Vars:           map[string]string{"k": "v"},
+		Backend:        "claw",
+		CodemodeBounds: &ir.CodemodeBounds{ConcurrentToolCalls: 3, StoreEntries: 48, StoreBytes: 262144},
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -262,6 +264,10 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}
 	if got["backend"] != "claw" {
 		t.Errorf("backend = %v", got["backend"])
+	}
+	bounds, _ := got["codemode_bounds"].(map[string]any)
+	if len(bounds) != 3 || bounds["concurrent_tool_calls"] != float64(3) || bounds["store_entries"] != float64(48) || bounds["store_bytes"] != float64(262144) {
+		t.Errorf("codemode_bounds = %v, want concurrent_tool_calls: 3, store_entries: 48, store_bytes: 262144", got["codemode_bounds"])
 	}
 	vars, _ := got["vars"].(map[string]any)
 	if vars["k"] != "v" {
@@ -500,7 +506,7 @@ func TestRemoteTeamsSwitch_ResolvesSlugToTheUUID(t *testing.T) {
 	}
 	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: remoteSessionToken})
 	p, _ := remotePrinter(cli.OutputHuman)
-	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "pic-graal", "cli"); err != nil {
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "pic-graal", "cli", nil); err != nil {
 		t.Fatalf("switch by slug: %v", err)
 	}
 	if mintedWith != "87a2ee99-6b91-43ca-bb51-659a8ce7f705" {
@@ -553,7 +559,7 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	}
 	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: oldToken})
 	p, _ := remotePrinter(cli.OutputHuman)
-	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-b", "cli"); err != nil {
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-b", "cli", nil); err != nil {
 		t.Fatalf("switch: %v", err)
 	}
 	if revoked != "p-old" {
@@ -583,11 +589,11 @@ func TestRemoteTeamsSwitch_RejectsNonMember(t *testing.T) {
 		fmt.Fprint(w, `{"error":"not a member of team \"team-x\""}`)
 	}))
 	p, _ := remotePrinter(cli.OutputHuman)
-	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "  ", "cli"); err == nil ||
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "  ", "cli", nil); err == nil ||
 		!strings.Contains(err.Error(), "team id required") {
 		t.Fatalf("blank team id must be rejected before any mint, got %v", err)
 	}
-	err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-x", "cli")
+	err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-x", "cli", nil)
 	if err == nil || !strings.Contains(err.Error(), "not a member") {
 		t.Fatalf("want the server's membership rejection, got %v", err)
 	}
@@ -733,5 +739,26 @@ func TestRemotePoolPolicy_RefusesSilentDisabledCreate(t *testing.T) {
 	}
 	if puts != 1 {
 		t.Fatalf("PUT count = %d, want 1", puts)
+	}
+}
+
+func TestRemoteRunsResumeSendsOnlyRestatedCodemodeStoreQuota(t *testing.T) {
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/runs/r1/resume" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]map[string]int64
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		q := body["codemode_store"]
+		if len(body) != 1 || len(q) != 1 || q["store_bytes"] != 262144 {
+			t.Errorf("body = %+v, want only the restated byte quota", body)
+		}
+		fmt.Fprint(w, `{"run_id":"r1","status":"running"}`)
+	}))
+	p, _ := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteRunsResume(context.Background(), c, p, "r1", cli.RemoteRunsResumeOptions{CodemodeStoreBytes: 262144}); err != nil {
+		t.Fatal(err)
 	}
 }

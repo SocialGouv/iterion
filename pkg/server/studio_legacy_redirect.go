@@ -22,7 +22,8 @@ import (
 // Deliberately ABSENT, because the SERVER still answers them at the root:
 // /login, /auth/…, /invitations/accept, /cli-auth, /config/<id> (share links
 // carry their token in the fragment), /marketplace (public — browsable with no
-// account), /brand/… and /x/… (workspace panes).
+// account), /legal/<slug> (the operator's legal pages, public — ADR-160),
+// /brand/… and /x/… (workspace panes).
 //
 // /marketplace is the one with a caveat worth stating rather than implying:
 // the server keeps it at the root for everyone, and the SPA carries a visitor

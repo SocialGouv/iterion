@@ -38,6 +38,60 @@ func TestResolveChain_AppendsFallbacksAfterProviderChain(t *testing.T) {
 	}
 }
 
+// TestResolveChain_AuthoredFallbackJoinsTheChainFolded: an authored
+// route's `provider:` text joins the chain in the same lower-case route
+// form the legacy parse folds its own field to — literal text and a
+// ${VAR} expansion alike. The credential plan keys the run on the walk's
+// folded words, so an unfolded element would serve, spend and stamp a
+// word the plan can never match: the observation joins no row.
+func TestResolveChain_AuthoredFallbackJoinsTheChainFolded(t *testing.T) {
+	t.Setenv("ITERION_TEST_CREDPROV", "Moonshot")
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "anthropic", []ir.Fallback{
+		{Name: "z", Provider: "ZAI", Model: "anthropic/glm-5.3"},
+		{Name: "v", Provider: "${ITERION_TEST_CREDPROV:-anthropic}"},
+	})
+	chain := e.resolveChain(node)
+	if len(chain) != 3 {
+		t.Fatalf("chain length %d, want 3 (the node route + the two authored routes): %+v", len(chain), chain)
+	}
+	if chain[1].Provider != "zai" {
+		t.Errorf("authored route %q provider = %q, want the folded zai", chain[1].Label, chain[1].Provider)
+	}
+	if chain[2].Provider != "moonshot" {
+		t.Errorf("${VAR} route %q provider = %q, want the folded moonshot", chain[2].Label, chain[2].Provider)
+	}
+}
+
+// TestResolveChain_theAuthoredWordJoinsThePlanSide: the word the serving
+// chain carries and the word the walk records — the plan's key half —
+// are the SAME string after the fold, so the runner's exact join hits.
+// The walk reads the authored text case-insensitively; a chain element
+// that kept the authored case would serve a spend the plan names under
+// another spelling.
+func TestResolveChain_theAuthoredWordJoinsThePlanSide(t *testing.T) {
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "anthropic", []ir.Fallback{
+		{Name: "z", Provider: "ZAI", Model: "anthropic/glm-5.3"},
+	})
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"x": node}}
+	res := EffectiveProviders(RouteView{Workflow: wf}, knownForTest)
+	if !res.NarrowSafe {
+		t.Fatalf("the walk widened on an upper-case authored route: %+v", res)
+	}
+	if got := res.Sites["x#z"]; !slicesEqual(got, []string{"zai"}) {
+		t.Fatalf("Sites[x#z] = %v, want [zai] — the walk records the folded word", got)
+	}
+	chain := e.resolveChain(node)
+	stamped := servingProvider(delegate.BackendClaudeCode, &delegate.Task{ProviderHint: chain[1].Provider})
+	for _, want := range res.Sites["x#z"] {
+		if stamped == want {
+			return
+		}
+	}
+	t.Fatalf("the chain stamps %q, the plan carries %v — the serving word must be one the plan keyed", stamped, res.Sites["x#z"])
+}
+
 func TestResolveChain_PreservesRunFallbackStageIndex(t *testing.T) {
 	e := &ClawExecutor{}
 	node := chainAgentNode("x", delegate.BackendClaudeCode, "zai,anthropic", []ir.Fallback{

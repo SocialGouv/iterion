@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 func TestIOTaskRoundTrip(t *testing.T) {
@@ -26,6 +27,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		Model:                  "anthropic/claude-sonnet-4-6",
 		HasTools:               true,
 		ToolMaxSteps:           10,
+		ToolTurnsAnchor:        ptrString("tu_7"),
 		MaxTokens:              8192,
 		WorkDir:                "/workspace",
 		BaseDir:                "/workspace",
@@ -50,6 +52,8 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		SettingsHooks:          json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
 		AmbientContext:         ambient.None,
 		AmbientContextSource:   "workflow",
+		Codemode:               true,
+		CodemodeBounds:         &scripthost.Limits{Wall: 2 * time.Minute, CPU: 45 * time.Second, Memory: 1 << 29, ScriptBytes: 1 << 19, ResultBytes: 1 << 21, ToolCalls: 256, ToolResultBytes: 1 << 17},
 	}
 
 	ioTask := ToIOTask(original)
@@ -98,6 +102,13 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if got.MaxTokens != original.MaxTokens {
 		t.Errorf("MaxTokens = %d, want %d", got.MaxTokens, original.MaxTokens)
+	}
+	// A retry of a sandboxed node re-crosses with the anchor its node
+	// execution started from: lost on the wire, the in-container loop takes
+	// the replayed conversation — dead turns included — for its start and
+	// hands the loop the whole bound again.
+	if got.ToolTurnsAnchor == nil || *got.ToolTurnsAnchor != *original.ToolTurnsAnchor {
+		t.Errorf("ToolTurnsAnchor = %v, want %q — the runner would charge the replayed turns nothing", got.ToolTurnsAnchor, *original.ToolTurnsAnchor)
 	}
 	if got.Ultracode != original.Ultracode {
 		t.Errorf("Ultracode = %v, want %v", got.Ultracode, original.Ultracode)
@@ -154,6 +165,31 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	if string(got.SettingsHooks) != string(original.SettingsHooks) {
 		t.Errorf("SettingsHooks = %s, want %s", got.SettingsHooks, original.SettingsHooks)
 	}
+	// Every field of the bound set, by reflection rather than by hand: this
+	// test is hand-enumerated, which is why three mutants that dropped
+	// CodemodeBounds on the way through ToIOTask and FromIOTask stayed green
+	// across thirty packages. A pointer to a struct is exactly the shape a
+	// hand-written round-trip forgets.
+	if (got.CodemodeBounds == nil) != (original.CodemodeBounds == nil) {
+		t.Fatalf("CodemodeBounds nil-ness changed: %v vs %v", got.CodemodeBounds, original.CodemodeBounds)
+	}
+	if got.CodemodeBounds != nil {
+		rt := reflect.TypeOf(*original.CodemodeBounds)
+		for i := 0; i < rt.NumField(); i++ {
+			want := reflect.ValueOf(*original.CodemodeBounds).Field(i).Int()
+			have := reflect.ValueOf(*got.CodemodeBounds).Field(i).Int()
+			if want != have {
+				t.Errorf("CodemodeBounds.%s = %d, want %d — the field did not survive the wire", rt.Field(i).Name, have, want)
+			}
+		}
+	}
+	if got.Codemode != original.Codemode {
+		// A sandboxed node rebuilds its loop on the other side of this
+		// mirror: a field missing here is a node that silently runs without
+		// the codemode tool its author asked for, in exactly the posture
+		// (in-pod, in-container) codemode targets.
+		t.Errorf("Codemode = %v, want %v", got.Codemode, original.Codemode)
+	}
 	if got.AmbientContext != original.AmbientContext || got.AmbientContextSource != original.AmbientContextSource {
 		t.Errorf("ambient context = %v (from %q), want %v (from %q)", got.AmbientContext, got.AmbientContextSource, original.AmbientContext, original.AmbientContextSource)
 	}
@@ -178,6 +214,7 @@ func TestIOResultRoundTrip(t *testing.T) {
 		PeakInputTokens:    1500,
 		ThinkingTokens:     50,
 		ThinkingMs:         20,
+		ToolTurns:          9,
 		Duration:           5 * time.Second,
 		ExitCode:           0,
 		BackendName:        "claw",
@@ -199,6 +236,11 @@ func TestIOResultRoundTrip(t *testing.T) {
 
 	if got.Tokens != original.Tokens {
 		t.Errorf("Tokens = %d, want %d", got.Tokens, original.Tokens)
+	}
+	// The in-container loop's completed tool turns are what the launcher's
+	// in-place retry carries into the next crossing.
+	if got.ToolTurns != original.ToolTurns {
+		t.Errorf("ToolTurns = %d, want %d — a retry of the crossing would start the bound over", got.ToolTurns, original.ToolTurns)
 	}
 	if got.Duration != original.Duration {
 		t.Errorf("Duration = %v, want %v (millisecond precision expected)", got.Duration, original.Duration)
@@ -266,5 +308,49 @@ func TestIOTaskCarriesCapabilitiesAndBoardWiring(t *testing.T) {
 	}
 	if got.SessionFingerprint != original.SessionFingerprint {
 		t.Errorf("SessionFingerprint = %q", got.SessionFingerprint)
+	}
+}
+
+func TestR2ParseDiagnosticCrossesSandboxApartFromAnswer(t *testing.T) {
+	original := Result{ParseFallback: true, ParseError: "malformed tool block", Output: map[string]any{"text": ""}}
+	wire, err := json.Marshal(ToIOResult(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received IOResult
+	if err = json.Unmarshal(wire, &received); err != nil {
+		t.Fatal(err)
+	}
+	got := FromIOResult(received)
+	if got.ParseError != original.ParseError || !got.ParseFallback || got.Output["text"] != "" {
+		t.Fatalf("parse diagnostic lost or became answer: %+v", got)
+	}
+}
+
+func ptrString(s string) *string { return &s }
+
+// An empty anchor is an anchor: the node execution started from a
+// conversation holding no tool turn. It must cross as "", never as absent —
+// an absent anchor tells the runner to fix its own from the conversation it
+// replays, which on a retry already holds the dead attempt's turns.
+func TestIOTaskCarriesAnEmptyToolTurnsAnchor(t *testing.T) {
+	data, err := json.Marshal(ToIOTask(Task{NodeID: "n", ToolMaxSteps: 4, ToolTurnsAnchor: ptrString("")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded IOTask
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := FromIOTask(decoded).ToolTurnsAnchor; got == nil || *got != "" {
+		t.Fatalf("ToolTurnsAnchor = %v after the wire (%s), want \"\"", got, data)
+	}
+	data, _ = json.Marshal(ToIOTask(Task{NodeID: "n"}))
+	var unanchored IOTask
+	if err := json.Unmarshal(data, &unanchored); err != nil {
+		t.Fatal(err)
+	}
+	if got := FromIOTask(unanchored).ToolTurnsAnchor; got != nil {
+		t.Fatalf("an unanchored task crossed with ToolTurnsAnchor = %q", *got)
 	}
 }

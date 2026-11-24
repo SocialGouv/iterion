@@ -1,6 +1,7 @@
 package model
 
 import (
+	"cmp"
 	"context"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 // command text handed to the hooks/logs only ever carries the
 // placeholder.
 func TestToolNodeShellMaterializesSecret(t *testing.T) {
+	t.Parallel()
 	const realVal = "sk-REAL-abcdef0123456789ABCDEF"
 	const ph = "__ITERION_SECRET_mytoken__"
 
@@ -67,15 +69,23 @@ func TestToolNodeShellMaterializesSecret(t *testing.T) {
 // Exercise the launcher-built guard and the real shell recipe, including its
 // command rewrite and env materialization seams. Undeclared literals stay in
 // the command itself; checking restored stdout alone misses substitutions.
+// The declared control resolves through the author's reference; the same
+// placeholder typed as text is text, like any placeholder that is not a
+// reference (ADR-146, amendment of 2026-11-14).
 func TestToolNodeKeepsUndeclaredIterionLiterals(t *testing.T) {
+	t.Parallel()
 	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
 		"TOKEN": {Value: "declared-value-12345"},
 	}}
 	guard := BuildSecretGuard(context.Background(), wf, nil, nil)
-	for _, tc := range []struct{ name, command, want string }{
-		{"W1 pipeline", "printf '%s' ITERION_A | grep -c ITERION_A", "1"},
-		{"W2 identical arguments", "test ITERION_A = ITERION_A && printf '%s' --set=k=ITERION_A", "--set=k=ITERION_A"},
-		{"W3 declared", "printf '%s' __ITERION_SECRET_TOKEN__", "declared-value-12345"},
+	for _, tc := range []struct {
+		name, command, logged, want string
+		declared                    bool
+	}{
+		{"W1 pipeline", "printf '%s' ITERION_A | grep -c ITERION_A", "", "1", false},
+		{"W2 identical arguments", "test ITERION_A = ITERION_A && printf '%s' --set=k=ITERION_A", "", "--set=k=ITERION_A", false},
+		{"W3 declared", "printf '%s' {{secrets.TOKEN}}", "printf '%s' '__ITERION_SECRET_TOKEN__'", "declared-value-12345", true},
+		{"W4 declared placeholder typed as text", "printf '%s' __ITERION_SECRET_TOKEN__", "", "__ITERION_SECRET_TOKEN__", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged string
@@ -88,16 +98,21 @@ func TestToolNodeKeepsUndeclaredIterionLiterals(t *testing.T) {
 			if materialize == nil {
 				t.Fatal("declared secret does not install a materializer")
 			}
-			if tc.name != "W3 declared" && materialize(tc.command) != tc.command {
+			if !tc.declared && materialize(tc.command) != tc.command {
 				t.Fatal("launcher materializer changes an undeclared literal")
 			}
-			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "literal"}, Command: tc.command}
+			refs, err := ir.ParseRefs(tc.command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "literal"}, Command: tc.command, CommandRefs: refs}
 			out, err := e.Execute(context.Background(), node, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if logged != tc.command || out["result"] != tc.want {
-				t.Fatalf("command = %q, output = %#v; want %q / %q", logged, out, tc.command, tc.want)
+			wantLogged := cmp.Or(tc.logged, tc.command)
+			if logged != wantLogged || out["result"] != tc.want {
+				t.Fatalf("command = %q, output = %#v; want %q / %q", logged, out, wantLogged, tc.want)
 			}
 		})
 	}

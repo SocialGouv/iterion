@@ -62,3 +62,32 @@ workflow w:
 		t.Fatalf("Capabilities = %q", got)
 	}
 }
+
+// A workflow-level `capabilities: []` is a DECLARED empty grant, told apart
+// from an absent line by nilness exactly like a node's (#1801): the document
+// says "this workflow opens no host capability", and an unparse → reparse
+// round-trip must be able to carry that.
+func TestWorkflowCapabilitiesDeclaredEmpty(t *testing.T) {
+	src := `agent a:
+  model: "gpt-4"
+
+workflow w:
+  entry: a
+  capabilities: []
+
+  a -> done
+`
+	res := parser.ParseLenient("test.bot", src)
+	assertNoDiags(t, res)
+
+	if len(res.File.Workflows) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(res.File.Workflows))
+	}
+	wf := res.File.Workflows[0]
+	if wf.Capabilities == nil {
+		t.Fatal("`capabilities: []` on a workflow must parse to a DECLARED empty list, got nil (absent)")
+	}
+	if len(wf.Capabilities) != 0 {
+		t.Fatalf("`capabilities: []` must be empty, got %#v", wf.Capabilities)
+	}
+}

@@ -6,10 +6,13 @@ package ir
 
 import (
 	"os"
+	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/dsl/types"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
@@ -34,6 +37,7 @@ type Workflow struct {
 	Secrets         map[string]*Secret     // secret name → resolved secret declaration
 	Presets         map[string]Preset      // preset name → resolved preset values (var name → typed value)
 	Attachments     map[string]*Attachment // attachment name → resolved attachment
+	BusinessStores  []BusinessStore        // expected stores, normalized by the launch authority
 	Loops           map[string]*Loop       // loop name → loop definition
 	Foreaches       map[string]*Foreach    // foreach name → sequential-iteration definition
 	Budget          *Budget                // workflow budget (nil if not set)
@@ -43,7 +47,7 @@ type Workflow struct {
 	MCP             *MCPConfig             // workflow-level MCP activation/filtering
 	DefaultBackend  string                 // workflow-level default backend (empty = not set)
 	ToolPolicy      []string               // workflow-level tool policy patterns (nil = open)
-	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
+	Capabilities    []string               // workflow-level default host capabilities (nil = none; a declared `capabilities: []` round-trips as declared)
 	Skills          []string               // workflow-level default skill-library references (nil = none)
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
 	// Contracts are the unit's `contract` declarations by name, each bound
@@ -55,6 +59,20 @@ type Workflow struct {
 	Compress       string // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory     string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	AmbientContext string // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset)
+	Codemode       string // codemode tool loop default for agent/judge nodes: on|off, lowercased and trimmed at the carry ("" = unset → off; no environment rung, ADR-132)
+	// CodemodeDefer is the workflow-level default for deferring a node's own
+	// `tools:` list to the codemode catalogue: on|off, normalized like
+	// Codemode ("" = unset → off). A node that turns codemode on itself
+	// inherits it, the way it inherits the workflow's bounds. ADDITIVE on the
+	// compiled form: a consumer built before the field existed reads nothing
+	// here and serves today's declared-tools behaviour, which is the safe
+	// fallback — deferral is an optimization over the same tool set, never a
+	// capability a stale reader would lose.
+	CodemodeDefer string
+	// CodemodeBounds is the workflow-level DEFAULT bound set its agent and
+	// judge nodes inherit field by field (ResolveCodemodeBounds). nil = none
+	// declared, which leaves every field to scripthost.DefaultLimits.
+	CodemodeBounds *CodemodeBounds
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -91,6 +109,38 @@ type Workflow struct {
 	// resolution, not by the compiler itself.
 	ActiveMCPServers   []string
 	ResolvedMCPServers map[string]*MCPServer
+	// MCPPrepared records the resolution that filled the two fields above
+	// (mcp.PrepareWorkflow). Nil when no resolution ran: the catalog then
+	// holds only what its builder put there by hand.
+	MCPPrepared *MCPPreparation
+}
+
+// MCPPreparation is what one MCP resolution decided.
+type MCPPreparation struct {
+	// Trust is the workspace trust the catalog was resolved for — the string
+	// form of store.RunTrust (this package does not import store), "" for
+	// the trusted default.
+	Trust string
+	// Withdrawn is what the workspace-trust floor withheld from the catalog:
+	// ambient sources (the checkout's .mcp.json, plugin-contributed servers)
+	// an untrusted run is not booted with. The launcher announces it once.
+	Withdrawn []WithdrawnMCPServer
+}
+
+// WithdrawnMCPServer names one MCP server source the workspace-trust floor
+// withheld. Name is empty for the checkout's .mcp.json: its server names are
+// the checkout's text, and the source alone says what was withheld.
+type WithdrawnMCPServer struct {
+	Name   string
+	Source string
+}
+
+// BusinessStore is a workflow declaration, independent of a storage backend.
+type BusinessStore struct {
+	ID        string
+	Kind      string
+	Namespace string
+	Required  bool
 }
 
 // ---------------------------------------------------------------------------
@@ -233,11 +283,12 @@ type AgentNode struct {
 	ActiveMCPServers []string   // populated after project config resolution
 	Publish          string     // persistent artifact name (empty if not set)
 	PublishLabels    []string   // DSL artifact_labels: applied to the published artifact
+	Deliverables     []string   // DSL deliverables: files the run collects at node end
 	Session          SessionMode
 	SessionSlot      string
 	Tools            []string // tool capability names
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
-	Capabilities     []string // host-side capabilities (e.g. board.create); nil = inherit workflow
+	Capabilities     []string // host-side capabilities (e.g. board.create); nil = inherit workflow, a declared `capabilities: []` = no grant (#1801)
 	Skills           []string // skill-library references; resolved names mirrored into .claude/skills/ (nil = inherit workflow)
 	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
 	AwaitMode        AwaitMode
@@ -249,7 +300,24 @@ type AgentNode struct {
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
+	// CodemodeDefer defers this node's own `tools:` list to the codemode
+	// catalogue: on|off, normalized like Codemode ("" = inherit workflow).
+	// ADDITIVE on the compiled form: a consumer built before the field
+	// existed reads nothing here and serves today's declared-tools
+	// behaviour, which is the safe fallback — deferral is an optimization
+	// over the same tool set, never a capability a stale reader loses.
+	CodemodeDefer string
+	// CodemodeBounds is this node's declared bound set; nil inherits the
+	// workflow's, field by field. Clamped to scripthost.Ceiling in the
+	// parent at spawn, with C347 at compile where a value is above it.
+	//
+	// No LLMNode getter, deliberately: every reader reaches it through the
+	// struct (extractBackendFields), and an interface method nobody calls
+	// is a seam that rots untested. One line adds it back the day a reader
+	// holds an LLMNode rather than the node.
+	CodemodeBounds *CodemodeBounds
+	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —
@@ -272,11 +340,12 @@ type JudgeNode struct {
 	MCP              *MCPConfig
 	ActiveMCPServers []string
 	Publish          string
+	Deliverables     []string // DSL deliverables: files the run collects at node end
 	Session          SessionMode
 	SessionSlot      string
 	Tools            []string
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
-	Capabilities     []string // host-side capabilities (e.g. board.read); nil = inherit workflow
+	Capabilities     []string // host-side capabilities (e.g. board.read); nil = inherit workflow, a declared `capabilities: []` = no grant (#1801)
 	Skills           []string // skill-library references; resolved names mirrored into .claude/skills/ (nil = inherit workflow)
 	ToolMaxSteps     int
 	AwaitMode        AwaitMode
@@ -288,7 +357,19 @@ type JudgeNode struct {
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
+	// CodemodeDefer defers this node's own `tools:` list to the codemode
+	// catalogue: on|off, normalized like Codemode ("" = inherit workflow).
+	// ADDITIVE on the compiled form: a consumer built before the field
+	// existed reads nothing here and serves today's declared-tools
+	// behaviour, which is the safe fallback — deferral is an optimization
+	// over the same tool set, never a capability a stale reader loses.
+	CodemodeDefer string
+	// CodemodeBounds is this node's declared bound set; nil inherits the
+	// workflow's, field by field. Clamped to scripthost.Ceiling in the
+	// parent at spawn, with C347 at compile where a value is above it.
+	CodemodeBounds *CodemodeBounds
+	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —
@@ -395,11 +476,20 @@ type ToolNode struct {
 
 	Publish       string   // persistent artifact name (empty = not published)
 	PublishLabels []string // DSL artifact_labels: applied to the published artifact
+	Deliverables  []string // DSL deliverables: files the run collects at node end
 	Session       SessionMode
 	AwaitMode     AwaitMode
 	Sandbox       *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Compress      string       // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission    string       // permission gate mode override: off|ask|deny ("" = inherit workflow)
+
+	// Capabilities are the host capabilities granted to the node (ADR-151,
+	// #78=A) — declared exactly like on an agent/judge: nil = inherit the
+	// workflow's, a declared `capabilities: []` = no grant (#1801). The
+	// `action:` recipe's native transport and a registry recipe naming an
+	// iterion host tool read them (model.nodeCapabilities); a command:/script:
+	// node has no consumer for them (C332 warns).
+	Capabilities []string
 
 	// Verified Action quad (ADR-044). All optional; a node with an empty
 	// Postcondition runs the recipe with exit-code = success (unchanged).
@@ -487,8 +577,8 @@ const (
 type RecoverySpec struct {
 	MaxRepairAttempts int      // rung 3 (self-repair) bound
 	MaxAgentAttempts  int      // rung 4 (agent recovery) bound; 0 = OFF
-	Model             string   // recovery LLM spec (empty = node/workflow default)
-	AgentTools        []string // rung-4 toolset (empty = node capabilities)
+	Model             string   // recovery LLM spec (empty = ITERION_VERIFIED_ACTION_MODEL, else the engine's default)
+	AgentTools        []string // rung-4 toolset, handed verbatim as the synthetic recovery agent's `tools:` (empty = on claw no tool at all, or `codemode` alone under the workflow's `codemode: on`, C352; the backend's own roster elsewhere)
 }
 
 // SubbotNode runs another .bot as a nested run. The runtime resolves With into
@@ -506,6 +596,21 @@ type SubbotNode struct {
 	// letting the workspace-safety guard fan this subbot out in parallel. Mirror
 	// of AgentNode/JudgeNode Readonly. Default false = conservatively mutating.
 	Isolated bool
+	// AutoMerge arms the child's worktree-finalization landing: when the
+	// child's own workflow completes, its own worktree finalization merges
+	// its branch (the same launch-intent vocabulary the runs API carries).
+	// The child is the only actor: no bank ever writes a subbot child's
+	// branch, so a launch whose plane leaves the child without a worktree
+	// (`worktree: none` in the child .bot, or a run store with no
+	// filesystem root) refuses the landing fields outright. Requires
+	// Isolated: a child running in the parent's workspace has no
+	// finalization of its own.
+	AutoMerge bool
+	// MergeInto is the child's landing target ("current" default, "none", or a
+	// branch name); MergeStrategy is "squash" (default) or "merge". Both are
+	// read only when AutoMerge arms the landing.
+	MergeInto     string
+	MergeStrategy string
 }
 
 // NodeKind implements Node.
@@ -695,6 +800,7 @@ type LLMNode interface {
 	GetCompress() string
 	GetAutoMemory() string
 	GetAmbientContext() string
+	GetCodemode() string
 	GetPermission() string
 	GetPermissionAllow() []string
 	GetPermissionAsk() []string
@@ -727,6 +833,7 @@ func (n *AgentNode) GetFallbacks() []Fallback                 { return n.Fallbac
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *AgentNode) GetAmbientContext() string                { return n.AmbientContext }
+func (n *AgentNode) GetCodemode() string                      { return n.Codemode }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 func (n *AgentNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *AgentNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -753,6 +860,7 @@ func (n *JudgeNode) GetFallbacks() []Fallback                 { return n.Fallbac
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *JudgeNode) GetAmbientContext() string                { return n.AmbientContext }
+func (n *JudgeNode) GetCodemode() string                      { return n.Codemode }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 func (n *JudgeNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *JudgeNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -860,6 +968,83 @@ func NodePublishLabels(n Node) []string {
 		return n.PublishLabels
 	}
 	return nil
+}
+
+// NodeDeliverables returns the DSL `deliverables:` list of the node kinds
+// that run something in a workspace (agent, judge, tool), or nil.
+//
+// It is the ONE reader of the declaration: the collector, a validator and a
+// report ask here instead of type-switching again, so a node kind that
+// gains the property is served everywhere at once — and the handle a
+// deliverable is served under is its base name, decided here with
+// DeliverableName rather than re-derived per reader.
+//
+// A human node's file comes from the operator's upload and a compute node
+// writes nothing, so neither accepts the property: the parser refuses it by
+// name there, which is a typed refusal rather than a silent drop.
+func NodeDeliverables(n Node) []string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.Deliverables
+	case *JudgeNode:
+		return n.Deliverables
+	case *ToolNode:
+		return n.Deliverables
+	}
+	return nil
+}
+
+// DeliverableName is the handle a declared deliverable is served under: its
+// base name, extension included (`out/report.md` is served as `report.md`,
+// which is what G119 settled and what the download route addresses). Empty
+// when the path names no file.
+func DeliverableName(declared string) string {
+	cleaned := strings.TrimSpace(declared)
+	if cleaned == "" || strings.HasSuffix(cleaned, "/") {
+		return ""
+	}
+	base := path.Base(path.Clean(cleaned))
+	switch base {
+	case ".", "..", "/":
+		return ""
+	}
+	return base
+}
+
+// DeliverableRefusal is why a declared deliverable cannot be resolved inside
+// the node's workspace — empty when it can: non-empty, relative, naming a
+// file rather than a directory, and not escaping upwards. The collector
+// reads the file from the workspace, so a path outside it is a promise no
+// run can keep — C317 refuses it where it is written, with this reason.
+//
+// A template (`{{…}}`) or an environment form (`${…}`) is judged like any
+// other text: no rendering can make `/tmp/report.md` relative, so a
+// templated entry is held to the same shape. Only what a template renders
+// TO escapes this answer, and that is the collector's to refuse where it
+// resolves the path.
+func DeliverableRefusal(declared string) string {
+	cleaned := strings.TrimSpace(declared)
+	switch {
+	case cleaned == "":
+		return "empty"
+	case strings.HasPrefix(cleaned, "/"):
+		return "absolute"
+	}
+	normalised := path.Clean(cleaned)
+	if normalised == ".." || strings.HasPrefix(normalised, "../") {
+		return "climbs out of the workspace"
+	}
+	if normalised == "." || DeliverableName(cleaned) == "" {
+		return "a directory"
+	}
+	return ""
+}
+
+// DeliverableIsWorkspacePath answers whether a declared deliverable can be
+// resolved inside the node's workspace: DeliverableRefusal has nothing to
+// say against it.
+func DeliverableIsWorkspacePath(declared string) bool {
+	return DeliverableRefusal(declared) == ""
 }
 
 // NodeInteraction returns the Interaction field for nodes that support it, or InteractionNone.
@@ -993,29 +1178,16 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 		}
 		addArtifactRef(rc.Ref)
 	}
-	// These runtime-rendered fields deliberately sit outside collectAllRefs'
-	// compiler diagnostics today, but they consume the same artifact values
-	// and therefore belong in the producer's durable dependency contract.
+	// A human node's `review_url:` sits outside collectAllRefs' compiler
+	// diagnostics — C101 owns its unknown-output verdict — but it consumes
+	// the same artifact values and therefore belongs in the producer's
+	// durable dependency contract. An LLM node's `images:` needs no arm
+	// here: collectAllRefs walks it, so the loop above already carries its
+	// artifact dependencies.
 	addArtifactRefs := func(refs []*Ref) {
 		for _, ref := range refs {
 			addArtifactRef(ref)
 		}
-	}
-	addImageArtifactRefs := func(fields *LLMFields) {
-		if fields == nil {
-			return
-		}
-		for _, image := range fields.Images {
-			refs, err := ParseRefs(image)
-			if err == nil {
-				addArtifactRefs(refs)
-			}
-		}
-	}
-	if node, ok := w.Nodes[nodeID].(LLMNode); ok {
-		addImageArtifactRefs(node.GetLLMFields())
-	} else if node, ok := w.Nodes[nodeID].(*RouterNode); ok {
-		addImageArtifactRefs(&node.LLMFields)
 	}
 	switch node := w.Nodes[nodeID].(type) {
 	case *ToolNode:
@@ -1389,18 +1561,43 @@ type Var struct {
 // (As=file). Hosts scopes which egress destinations the secret may be
 // materialised toward (Layer 2).
 type Secret struct {
-	Name        string
-	Value       string
-	As          string
-	MountPath   string
-	Env         string
-	Optional    bool // file secret: skip the mount (no error) when unresolved
-	Hosts       []string
+	Name      string
+	Value     string
+	As        string
+	MountPath string
+	Env       string
+	Optional  bool // file secret: skip the mount (no error) when unresolved
+	Hosts     []string
+	// Sinks names the materialization sinks the secret is granted to
+	// (pkg/dsl/secretsink); nil grants every sink. The compiler refuses a
+	// reference that reaches an ungranted sink, and the guard honours the
+	// grants the compiler cannot see (ADR-146).
+	Sinks       []string
 	Description string
 }
 
 func (s *Secret) IsFile() bool {
 	return s != nil && s.As == "file"
+}
+
+// HasInlineValue reports whether the declaration carries its own `value:`
+// expression. Such a secret is resolved by the run from that expression; a
+// stored secret, a bot binding or a launch override fills only a declaration
+// without one. Both launch resolutions (the cloud publisher's and the local
+// store's, runview.StampLocalCredentials), both required-secret gates, the
+// sandbox file-secret mount (runtime.addSecretFileMounts) and the secret guard
+// choose between the two sources through this predicate. The cloud runner's
+// file writer for an unsandboxed pod (runner.materializeFileSecretsNoSandbox)
+// reads the resolved credentials alone, so an inline-valued `as: file` secret
+// is not written there.
+func (s *Secret) HasInlineValue() bool {
+	return s != nil && strings.TrimSpace(s.Value) != ""
+}
+
+// Grants reports whether the secret may reach sink: every sink when the
+// declaration names none, the named ones otherwise.
+func (s *Secret) Grants(sink string) bool {
+	return s != nil && secretsink.Grants(s.Sinks, sink)
 }
 
 // VarType enumerates variable types.
@@ -1478,8 +1675,10 @@ type Preset struct {
 	// Description is a one-line summary surfaced in the studio Launch picker.
 	// File-based presets only.
 	Description string
-	// Prompt is the bias fragment appended to every LLM node's system prompt
-	// under a "## Focus" section at run time (see delegate.Task.PresetFragment).
+	// Prompt is the bias fragment appended to the system prompt of every
+	// model task the run builds, under a "## Focus" section at run time (see
+	// delegate.Task.PresetFragment; Workflow.RendersPresetPrompt says which
+	// node kinds build one).
 	// Supports `{{vars.X}}` template refs, resolved per node. File-based only.
 	Prompt string
 	// Skills lists bundle skill names this preset makes relevant (e.g.
@@ -1550,6 +1749,10 @@ type Loop struct {
 	MaxIterationsExpr     string
 	MaxIterationsExprRefs []*Ref
 	MaxIterationsAST      *expr.AST // expression form, evaluated at each crossing
+	// capRecords is what reading the cap's expression spent of the bot's
+	// read budget: every further edge that carries the loop spends it again
+	// (compileEdges), since the validators read the cap once per edge.
+	capRecords int
 	// Unbounded marks `as <name>(unbounded)`: the loop has no user iteration
 	// cap. It still terminates — the runtime bounds it by FuelCap (the
 	// effective fuel ceiling) and by a liveness monitor (no-progress halt).
@@ -1557,6 +1760,27 @@ type Loop struct {
 	// resolved per-loop fuel: the clause's own fuel, else budget.max_iterations.
 	Unbounded bool
 	FuelCap   int
+	// Guard is the loop-clause opt-out of the back-edge affordability
+	// guard (`as name(3) guard: off`): "on" or "off", empty inherits the
+	// chain (--loop-budget-guard → workflow loop_budget_guard: →
+	// ITERION_LOOP_BUDGET_GUARD → on). The runtime reads it through
+	// loopBudgetGuardEnabledFor; the exit grace refuses itself when ANY
+	// loop opts out, because a graced run could take that loop's
+	// back-edge and keep looping on a spent budget.
+	Guard string
+	// SizedByExpr is the authored work-signal source (`as name(3) sized_by
+	// "outputs.probe.pending"`), SizedByAST its compiled expression. The
+	// runtime evaluates it when the loop's budget mark is taken and when
+	// its back-edge is priced, and scales the previous crossing's cost by
+	// size_now / size_at_previous_crossing — a loop whose iterations
+	// shrink is priced by its real traversal instead of its first,
+	// largest pass (#2677). Empty/nil keeps the unscaled pricing.
+	SizedByExpr string
+	SizedByAST  *expr.AST
+	// sizeRecords is what reading the signal's expression spent of the
+	// bot's read budget, re-spent for every further edge carrying the
+	// loop — the cap's capRecords rule, applied to sized_by.
+	sizeRecords int
 	// Body is the set of node IDs that participate in the loop's cycle —
 	// each node from which the loop's edge target is reachable and which
 	// can reach the loop's edge source (i.e. nodes on a path that closes

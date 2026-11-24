@@ -8,7 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -95,18 +95,18 @@ func TestGenerateTextDirect_AFailedCallKeepsItsUsage(t *testing.T) {
 // A failure whose only spend is a call that went unreported is a bill of
 // unknown size, not nothing: the metered output says so.
 func TestMeteredFailure_AnUnreportedCallIsABill(t *testing.T) {
-	res := meteredFailure(delegate.Task{Model: "openai/gpt-x"}, Usage{UnreportedCalls: 1})
+	res := meteredFailure(context.Background(), delegate.Task{Model: "openai/gpt-x"}, Usage{UnreportedCalls: 1})
 	if got := cost.UnreportedCalls(res.Output); got != 1 {
 		t.Errorf("metered output %v, want one unreported call", res.Output)
 	}
-	if res := meteredFailure(delegate.Task{Model: "openai/gpt-x"}, Usage{}); res.Output != nil {
+	if res := meteredFailure(context.Background(), delegate.Task{Model: "openai/gpt-x"}, Usage{}); res.Output != nil {
 		t.Errorf("a spendless failure metered %v, want nothing", res.Output)
 	}
 }
 
 // A human-node generation that failed after an unreported call is a bill too.
 func TestMeteredHumanFailure_AnUnreportedCallIsABill(t *testing.T) {
-	out := meteredHumanFailure("openai/gpt-x", &ObjectResult[map[string]any]{TotalUsage: Usage{UnreportedCalls: 1}})
+	out := meteredHumanFailure(context.Background(), "openai/gpt-x", &ObjectResult[map[string]any]{TotalUsage: Usage{UnreportedCalls: 1}})
 	if cost.UnreportedCalls(out) != 1 {
 		t.Errorf("metered output %v, want one unreported call", out)
 	}
@@ -153,11 +153,11 @@ func TestSpendFolds_CarryUnreportedCalls(t *testing.T) {
 		t.Errorf("foldSpend = %v, want 3 unreported calls", got.Output)
 	}
 	var spent chainSpend
-	spent.add(unreported(1, 0))
+	spent.add(unreported(1, 0), spendLabel{})
 	if got := spent.applyTo(delegate.Result{}); cost.UnreportedCalls(got.Output) != 1 {
 		t.Errorf("chainSpend dropped a marker-only route: %+v", got)
 	}
-	spent.add(unreported(2, 30))
+	spent.add(unreported(2, 30), spendLabel{})
 	if got := spent.applyTo(unreported(1, 5)); cost.UnreportedCalls(got.Output) != 4 {
 		t.Errorf("chainSpend = %v, want 4 unreported calls", got.Output)
 	}
@@ -277,7 +277,7 @@ func TestClawBackend_EveryExitCarriesItsUnreportedCalls(t *testing.T) {
 		{"structured answer the model malformed, and its re-ask too", false, []script{
 			withoutUsageReport(toolUseEvents("tu_1", "structured_output", `{"answer":`, 100, 20)),
 			withoutUsageReport(toolUseEvents("tu_2", "structured_output", `{"answer":`, 100, 20)),
-		}, true, 2},
+		}, false, 2},
 		{"tool loop answering in JSON", true, []script{
 			withoutUsageReport(textEvents(`{"answer":"blue"}`, 100, 20)),
 		}, false, 1},
@@ -320,6 +320,9 @@ func TestClawBackend_EveryExitCarriesItsUnreportedCalls(t *testing.T) {
 			res, err := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1, MaxAttemptsTransient: 1}).Execute(context.Background(), task)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, want an error: %v", err, tc.wantErr)
+			}
+			if tc.name == "structured answer the model malformed, and its re-ask too" && !res.ParseFallback {
+				t.Fatal("malformed structured output bypasses schema correction")
 			}
 			if n := len(client.getCalls()); n != len(tc.scripts) {
 				t.Fatalf("%d provider call(s), want %d: the case did not take the exit it names", n, len(tc.scripts))

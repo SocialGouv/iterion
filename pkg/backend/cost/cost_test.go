@@ -1,76 +1,26 @@
 package cost
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
-	"time"
+
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
-// liveCacheDir returns a cache root for a test that needs claw's live
-// registry ENABLED, so $XDG_CACHE_HOME has to point at a real directory.
-//
-// It deliberately does NOT use t.TempDir(). EstimateUSD reaches
-// clawapi.LookupModelPricing, which calls MaybeRefreshLive — a DETACHED
-// goroutine that resolves $XDG_CACHE_HOME only when it runs and re-creates
-// <root>/claw-code-go through MkdirAll on its way to the cache file. That
-// write can land while t.TempDir()'s RemoveAll is walking the tree, failing
-// an otherwise-green test with "TempDir RemoveAll cleanup: ... directory not
-// empty" (observed on the merge queue, 2026-08-04, run 30944201638).
-// Retrying absorbs the race; a directory we still cannot remove is a few
-// bytes left in os.TempDir(), never a red test.
-func liveCacheDir(t *testing.T) string {
+// withLivePricing pins claw's tier to a fixture keyed by bare model id for the
+// duration of a test: the real lookup would read the host's cache and start a
+// refresh that outlives the test.
+func withLivePricing(t *testing.T, table map[string]clawapi.ModelPricing) {
 	t.Helper()
-	root, err := os.MkdirTemp("", "cost-live-cache-")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() {
-		for attempt := 0; ; attempt++ {
-			err := os.RemoveAll(root)
-			if err == nil {
-				return
-			}
-			if attempt == 4 {
-				t.Logf("leaving %s behind (claw's async refresh re-created it): %v", root, err)
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
+	prev := livePricing
+	livePricing = func(model string) (clawapi.ModelPricing, bool) {
+		if i := strings.LastIndex(model, "/"); i >= 0 {
+			model = model[i+1:]
 		}
-	})
-	return root
-}
-
-// seedClawCache writes claw's live-registry cache under root so a test can pin
-// the rates tier 1 will answer with.
-//
-// The LiveCache JSON is inlined rather than built through claw's own types:
-// Go's internal-import rule blocks cross-module access to the package that
-// defines them. The on-disk format is the public source of truth for the
-// integration anyway — a change to the JSON shape breaks consumers whether or
-// not they went through claw's typed APIs.
-func seedClawCache(t *testing.T, root, canonical string, inPerM, outPerM float64) {
-	t.Helper()
-	clawDir := filepath.Join(root, "claw-code-go")
-	if err := os.MkdirAll(clawDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+		p, ok := table[model]
+		return p, ok
 	}
-	cache := fmt.Sprintf(`{
-  "entries": [
-    {
-      "canonical": %q,
-      "provider": "openai",
-      "input_usd_per_million": %v,
-      "output_usd_per_million": %v
-    }
-  ],
-  "fetched_at": %q,
-  "source": "test"
-}`, canonical, inPerM, outPerM, time.Now().UTC().Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(clawDir, "models-cache.json"), []byte(cache), 0o644); err != nil {
-		t.Fatalf("write cache: %v", err)
-	}
+	t.Cleanup(func() { livePricing = prev })
 }
 
 func TestEstimateUSD(t *testing.T) {
@@ -211,9 +161,7 @@ func TestEstimateUSD_PrefersLiveRegistry(t *testing.T) {
 	// Seed claw's live cache with rates that intentionally differ from
 	// the static gpt-5 entry so we can verify which source EstimateUSD
 	// trusted.
-	dir := liveCacheDir(t)
-	t.Setenv("XDG_CACHE_HOME", dir)
-	seedClawCache(t, dir, "gpt-5", 99.0, 999.0)
+	withLivePricing(t, map[string]clawapi.ModelPricing{"gpt-5": {InputUSDPerMillion: 99, OutputUSDPerMillion: 999, Source: "live"}})
 
 	got := EstimateUSD("gpt-5", 1_000_000, 1_000_000)
 	// 99 + 999 = 1098 if claw is consulted; 11.25 from the static
@@ -246,18 +194,20 @@ func TestEstimateUSD_FallsBackToStaticTable(t *testing.T) {
 // zero here was the mistake that exposed an audit judging a source the
 // estimator never reaches first.
 //
-// The assertion is on the PROPERTY, not the number: the live rate is a third
-// party's blended figure and pinning it would break CI on their next revision,
-// while proving nothing about iterion. When the registry is unavailable
-// (offline, CLAW_DISABLE_LIVE_REGISTRY=1) there is legitimately no price and
-// the test says so rather than failing.
+// claw's tier answers from a fixture (withLivePricing): what this test holds is
+// that a qualified GLM id reaches that tier past a static table with no entry
+// for it. That the tier's rate is the one charged is
+// TestEstimateUSD_PrefersLiveRegistry's.
 func TestGLMIsPricedByTheLiveRegistryNotTheTable(t *testing.T) {
 	if _, _, ok := StaticRate("glm-5.2"); ok {
 		t.Fatal("glm-5.2 gained a committed entry: pick which provider's rate it is, or drop it again")
 	}
+	// claw's tier answers from a fixture: a qualified GLM id must reach it,
+	// past the static table that has no entry for it.
+	withLivePricing(t, map[string]clawapi.ModelPricing{"glm-5.2": {InputUSDPerMillion: 0.6, OutputUSDPerMillion: 2.2, Source: "live"}})
 	in, out, ok := EffectiveRate("anthropic/glm-5.2")
 	if !ok {
-		t.Skip("live registry unavailable — no effective price to check")
+		t.Fatal("claw's tier did not price anthropic/glm-5.2")
 	}
 	if in <= 0 || out <= 0 {
 		t.Errorf("effective rate %v/%v: the registry answered, so both sides must be positive", in, out)

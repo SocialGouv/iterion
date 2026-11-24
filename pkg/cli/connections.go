@@ -33,12 +33,17 @@ type ConnectionAddOptions struct {
 	// Scheme is which auth scheme the credential satisfies. Empty picks the
 	// package's only one, and refuses when there are several.
 	Scheme string
-	// TokenEnv names the environment variable holding the credential.
+	// TokenEnv names the environment variable holding the credential: the
+	// token, or an HTTP basic scheme's password. A scheme of kind none takes
+	// none.
 	//
 	// An ENV VAR rather than a flag, deliberately: a token passed as an
 	// argument lands in the shell history and in `ps` output for the life of
 	// the process. There is no --token flag for the same reason.
 	TokenEnv string
+	// Username is an HTTP basic scheme's username — an identifier, not a
+	// secret, so a flag; its password comes from TokenEnv.
+	Username string
 	// Capabilities is what the connection may be used for. Empty grants
 	// `action` only — the narrower of the two, since an agent choosing its own
 	// calls is a decision an operator should make deliberately.
@@ -57,12 +62,67 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if strings.TrimSpace(opts.Connector) == "" {
 		return errors.New("connections add: --connector is required")
 	}
+	alias := strings.TrimSpace(opts.Alias)
+	if alias == "" {
+		alias = "main"
+	}
+
+	// The package is loaded FIRST, so a typo in the connector id or an
+	// unknown scheme is refused before a credential is read or sealed
+	// anywhere — and the scheme says which material the command reads.
+	cat, err := localCatalog(opts.StoreDir)
+	if err != nil {
+		return err
+	}
+	pkg, tier, err := cat.Package(opts.Connector)
+	if err != nil {
+		return err
+	}
+	scheme, err := resolveScheme(pkg, opts.Scheme)
+	if err != nil {
+		return err
+	}
+	authScheme, ok := pkg.Connector.AuthScheme(scheme)
+	if !ok {
+		return fmt.Errorf("connections add: connector %q declares no auth scheme %q", opts.Connector, scheme)
+	}
+	token, err := readCredential(opts, authScheme.Kind)
+	if err != nil {
+		return err
+	}
+	return addConnection(opts, out, cat, pkg, tier, scheme, authScheme, alias, token)
+}
+
+// readCredential reads what a scheme of kind presents: nothing for kind
+// none — a --token-env or --username given for it is refused, not ignored —
+// the password from TokenEnv beside --username for HTTP basic, a token from
+// TokenEnv otherwise.
+func readCredential(opts ConnectionAddOptions, kind spec.AuthKind) (string, error) {
+	username := strings.TrimSpace(opts.Username)
+	switch {
+	case kind == spec.AuthNone:
+		if strings.TrimSpace(opts.TokenEnv) != "" || username != "" {
+			return "", errors.New("connections add: this scheme presents no credential — drop --token-env and --username")
+		}
+		return "", nil
+	case kind == spec.AuthBasic && username == "":
+		return "", errors.New("connections add: an HTTP basic scheme needs --username, its password in --token-env")
+	case kind != spec.AuthBasic && username != "":
+		return "", fmt.Errorf("connections add: --username is HTTP basic's, and this scheme is %s", kind)
+	}
 	if strings.TrimSpace(opts.TokenEnv) == "" {
-		return errors.New("connections add: --token-env is required (the name of an environment variable holding the credential; a token passed as a flag would land in your shell history)")
+		return "", errors.New("connections add: --token-env is required (the name of an environment variable holding the credential; a token passed as a flag would land in your shell history)")
 	}
 	token := os.Getenv(opts.TokenEnv)
 	if token == "" {
-		return fmt.Errorf("connections add: $%s is empty", opts.TokenEnv)
+		return "", fmt.Errorf("connections add: $%s is empty", opts.TokenEnv)
+	}
+	if kind == spec.AuthBasic {
+		// A password is not token-shaped: it may hold spaces.
+		if err := secrets.ValidateBasicShape(username, token); err != nil {
+			return "", fmt.Errorf("connections add: %w", err)
+		}
+		return token, nil
 	}
 	// The SAME shape gate `iterion secret set` applies, for the reason it
 	// states: "a value that could not possibly authenticate is refused at the
@@ -73,34 +133,22 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// happily. The connection then listed as active and failed at its first
 	// call with a 401, or with Go's opaque "invalid header field value for
 	// Authorization" — a layer away from the command that created it, which is
-	// the same failure checkSchemeIsWritable and checkBaseURL were added here
-	// to close.
+	// the same failure readCredential's scheme checks and checkBaseURL close.
 	if err := secrets.ValidateTokenShape(fmt.Sprintf("$%s", opts.TokenEnv), token); err != nil {
-		return fmt.Errorf("connections add: %w", err)
+		return "", fmt.Errorf("connections add: %w", err)
 	}
-	alias := strings.TrimSpace(opts.Alias)
-	if alias == "" {
-		alias = "main"
-	}
+	return token, nil
+}
 
-	// The package is loaded FIRST, so a typo in the connector id or an
-	// unknown scheme is refused before a credential is sealed anywhere.
-	cat, err := localCatalog(opts.StoreDir)
-	if err != nil {
-		return err
+// addConnection pins the origin, seals the credential the scheme presents
+// and stores the record.
+func addConnection(opts ConnectionAddOptions, out io.Writer, cat connection.Catalog, pkg *spec.Package, tier connection.Tier, scheme string, authScheme spec.AuthScheme, alias, token string) error {
+	baseURL := strings.TrimSpace(opts.BaseURL)
+	if !pkg.AddressesBaseURL() {
+		// The executor joins an operation's path after the base; a URL that
+		// IS the resource (a feed's) keeps its trailing slash.
+		baseURL = strings.TrimRight(baseURL, "/")
 	}
-	pkg, err := cat.Package(opts.Connector)
-	if err != nil {
-		return err
-	}
-	scheme, err := resolveScheme(pkg, opts.Scheme)
-	if err != nil {
-		return err
-	}
-	if err := checkSchemeIsWritable(pkg, scheme); err != nil {
-		return err
-	}
-	baseURL := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
 	if err := checkBaseURL(pkg, baseURL); err != nil {
 		return err
 	}
@@ -147,7 +195,15 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 		return fmt.Errorf("connections add: generate id: %w", err)
 	}
 	id = "conn_" + id
-	sealed, err := connection.SealToken(sealer, id, token, time.Time{})
+	var sealed []byte
+	switch authScheme.Kind {
+	case spec.AuthNone:
+		sealed, err = connection.SealNone(sealer, id)
+	case spec.AuthBasic:
+		sealed, err = connection.SealBasic(sealer, id, strings.TrimSpace(opts.Username), token)
+	default:
+		sealed, err = connection.SealToken(sealer, id, token, time.Time{})
+	}
 	if err != nil {
 		return err
 	}
@@ -164,10 +220,6 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// from a header into a query string — where the vendor's logs, proxies and
 	// referrers keep it. What a credential may be sent to, AND how, is decided
 	// when it is entrusted.
-	authScheme, ok := pkg.Connector.AuthScheme(scheme)
-	if !ok {
-		return fmt.Errorf("connections add: connector %q declares no auth scheme %q", opts.Connector, scheme)
-	}
 	placement := connection.PlacementOf(authScheme)
 
 	conn := connection.Connection{
@@ -192,6 +244,15 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// The pinned origin, always: it is what this credential may now be sent to,
 	// and the operator is the only one who can say it is wrong.
 	fmt.Fprintf(out, "connected %s as %q → %s\n", opts.Connector, alias, conn.BaseURL)
+	// WHICH TIER the package came from, next to the two things it decided.
+	//
+	// The instance URL above and the placement below are both pinned FROM
+	// this package — and two tiers can hold the same connector id, the same
+	// version and the same scheme id, so the id says nothing about which copy
+	// answered. An operator whose granted project tier shadows the package
+	// they installed in their home tier has no other way to see it here, and
+	// this is the command where the credential is entrusted.
+	fmt.Fprintf(out, "  package: %s v%s from the %s\n", pkg.Connector.ID, pkg.Connector.Version, tier)
 	// The RESOLVED capabilities, not the flag. An operator who named none gets
 	// `action` by default, and echoing the empty flag reported a grant that
 	// differs from the record just written — `connections list` then says
@@ -201,6 +262,15 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// tell an operator whether their PAT rides a header or a query string.
 	fmt.Fprintf(out, "  scheme: %s (%s) · capabilities: %s\n", scheme, placement.Describe(), capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
+	// A grant nothing performs is said at the moment it is MADE: the one
+	// surface that could tell a working grant from an inert one must, or it
+	// warns about a grant that works or keeps silent about one that does not.
+	// Today every grant is performed — `agent` by the MCP facade (#2758),
+	// `trigger` by the connector ingress and the pollers — so GrantAdvice
+	// answers "" until a new capability lands ahead of what reads it.
+	if advice := connection.GrantAdvice(caps); advice != "" {
+		fmt.Fprintf(out, "  warning: %s\n", advice)
+	}
 	// A self-hosted instance is the common case for the connectors this
 	// catalog ships, and the guarded dialer refuses one by default. Said here
 	// rather than left for the first run to discover: the record is still
@@ -238,6 +308,12 @@ func ConnectionsList(storeDir string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "%-16s %-12s %-10s %s\n", c.Alias, c.Connector, c.Status, host)
 		fmt.Fprintf(out, "  %s · scheme %s · %s\n", c.ID, c.SchemeID, capabilityNames(c.Capabilities))
+		// Said on EVERY list, not only at `add`: the grant outlives the
+		// command that wrote it, and the operator reading an inventory months
+		// later is the one deciding what this connection can be used for.
+		if advice := connection.GrantAdvice(c.Capabilities); advice != "" {
+			fmt.Fprintf(out, "  warning: %s\n", advice)
+		}
 		if c.StatusReason != "" {
 			fmt.Fprintf(out, "  %s\n", c.StatusReason)
 		}
@@ -269,29 +345,61 @@ func ConnectionsRemove(storeDir, connector, alias string, out io.Writer) error {
 	return nil
 }
 
+// localConnectorTiers builds the package tiers of this install: the SAME tier
+// construction a run uses, not a second copy of it.
+//
+// The two had drifted into one shared defect (an unreadable root read as an
+// absent one), and a command whose whole job is to answer what a run would
+// answer cannot read the disk its own way. Both local surfaces that resolve a
+// connector without running one — `connections add`, which refuses what a run
+// would refuse, and `validate --connectors`, which SAYS what a run would
+// refuse — come through here, with the roots they consulted so a caller can
+// name them.
+//
+// TRUST stated as the OPERATOR's own, which is the honest answer here and not
+// a default: there is no run to read it from, and the workspace these commands
+// read is the one the operator typed the command in. Answering TrustUnknown()
+// would close the project tier for the very case the grant exists for — an
+// operator who generated a connector into their own project — and would break
+// the invariant this function is written for, that a local surface refuses
+// exactly what a granted run refuses.
+func localConnectorTiers() ([]connection.Catalog, connection.LocalPaths, error) {
+	wd, _ := os.Getwd()
+	paths := connection.LocalCatalogPaths(wd, store.GlobalIterionDataDir())
+	tiers, err := connection.LocalCatalogs(paths, connection.TrustOfRun(store.RunTrustDefault))
+	if err != nil {
+		return nil, paths, err
+	}
+	return tiers, paths, nil
+}
+
+// noConnectorCatalogReason is the ONE sentence that says this install has no
+// connector catalog, and which roots it would have read.
+//
+// One sentence for every surface that has to say it — an error on
+// `connections add`, a line of the `validate --connectors` report — because
+// the two were a copy apart, and the copy named the project root
+// unconditionally: it sent an operator to create a directory this process
+// would then not consult. The project root is only half an expectation while
+// the grant is closed, so it is named as what it is.
+func noConnectorCatalogReason(paths connection.LocalPaths) string {
+	if paths.Project != "" && connection.ProjectCatalogGranted() {
+		return fmt.Sprintf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)
+	}
+	return fmt.Sprintf("no connector catalog found — expected %s (a project catalog at %s is consulted only with %s=1)",
+		paths.Home, paths.Project, connection.ProjectCatalogEnv)
+}
+
 // localCatalog builds the same layered catalog a run uses, so `connections
 // add` refuses exactly what a run would refuse — a connector the run could not
 // have resolved either.
 func localCatalog(storeDir string) (connection.Catalog, error) {
-	wd, _ := os.Getwd()
-	paths := connection.LocalCatalogPaths(wd, store.GlobalIterionDataDir())
-	// The SAME tier construction a run uses, not a second copy of it: the two
-	// had drifted into one shared defect (an unreadable root read as an absent
-	// one), and a command whose whole job is to refuse what a run would refuse
-	// cannot answer that question from its own reading of the disk.
-	tiers, err := connection.LocalCatalogs(paths)
+	tiers, paths, err := localConnectorTiers()
 	if err != nil {
 		return nil, err
 	}
 	if len(tiers) == 0 {
-		// The project root is only half an expectation while the grant is
-		// closed: naming it unconditionally sent an operator to create a
-		// directory this process would then not consult.
-		if paths.Project != "" && connection.ProjectCatalogGranted() {
-			return nil, fmt.Errorf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)
-		}
-		return nil, fmt.Errorf("no connector catalog found — expected %s (a project catalog at %s is consulted only with %s=1)",
-			paths.Home, paths.Project, connection.ProjectCatalogEnv)
+		return nil, errors.New(noConnectorCatalogReason(paths))
 	}
 	return connection.NewLayeredCatalog(tiers...), nil
 }
@@ -336,25 +444,10 @@ func checkBaseURL(pkg *spec.Package, baseURL string) error {
 	if u.Host == "" {
 		return fmt.Errorf("connections add: --base-url %q names no host", baseURL)
 	}
-	return nil
-}
-
-// checkSchemeIsWritable refuses a scheme this command cannot supply the
-// material for.
-//
-// `add` seals a TOKEN (there is no --username-env, and `connection.SealBasic`
-// has no caller), so choosing a basic scheme produced a record whose username
-// and password are empty: `connections list` showed it, `checkUsable` passed
-// it, and every call was refused locally with "basic auth needs a username" —
-// a message pointing nowhere near the command that created the record. Forgejo
-// makes this easy to hit: it declares several schemes, so --scheme is
-// mandatory, and the disambiguation error lists `basic` first.
-func checkSchemeIsWritable(pkg *spec.Package, schemeID string) error {
-	s, ok := pkg.Connector.AuthScheme(schemeID)
-	if !ok || s.Kind != spec.AuthBasic {
-		return nil
+	if u.User != nil {
+		return errors.New("connections add: --base-url names a user and password — they would be stored unsealed and sent with every call; pick the package's basic scheme (--username, the password in --token-env)")
 	}
-	return fmt.Errorf("connections add: scheme %q of connector %q is HTTP basic, which needs a username and a password — this command seals a token only; name a token-shaped scheme with --scheme", schemeID, pkg.Connector.ID)
+	return nil
 }
 
 // warnTo sends the sealer's warnings where the command's own output goes, so a
@@ -415,7 +508,7 @@ func parseCapabilities(vals []string) ([]connection.Capability, error) {
 	for _, v := range vals {
 		c := connection.Capability(strings.TrimSpace(v))
 		if !connection.ValidCapability(c) {
-			return nil, fmt.Errorf("unknown capability %q (want %q or %q)", v, connection.CapAction, connection.CapAgent)
+			return nil, fmt.Errorf("unknown capability %q (want one of %s)", v, strings.Join(connection.CapabilityNames(), ", "))
 		}
 		out = append(out, c)
 	}

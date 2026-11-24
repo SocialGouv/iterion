@@ -43,6 +43,7 @@ func toolCallEnvelopeFile(t *testing.T, dir, id, name string) string {
 // absence in the panic arm is the gate and not a scenario that reports
 // nothing anyway.
 func TestSandboxDispatch_AnUnwoundCrossingReportsNoStderr(t *testing.T) {
+	t.Parallel()
 	const toolName = "mcp_github_create_issue"
 	const notice = "iterion-claw-runner: warn: settings hooks: 1 entry ignored"
 

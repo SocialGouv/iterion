@@ -45,6 +45,7 @@ func TestDocsRefreshHintsProducer(t *testing.T) {
 		Note  string `json:"note"`
 	}
 	type hintsOut struct {
+		DocFiles        []string    `json:"doc_files"`
 		DocCount        int         `json:"doc_count"`
 		Hints           []hintEntry `json:"hints"`
 		HintCount       int         `json:"hint_count"`
@@ -281,6 +282,47 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		}
 		if !strings.Contains(res.HintsNote, "explore the repo directly") {
 			t.Errorf("hints_note must tell the campaign to explore directly, got %q", res.HintsNote)
+		}
+	})
+
+	t.Run("refused_trees_are_set_aside_from_the_footprint", func(t *testing.T) {
+		// `.github/workflows/` and `.claude/` are refused BY NAME by
+		// scope_check and delivery_gate, so a footprint naming a path there
+		// points the campaign at an edit the loop reverts and the tail
+		// refuses, pass after pass. Python's `**` never enters a hidden
+		// directory, so the default globs cannot reach them; an operator's
+		// explicit glob can, and `excluded_dirs` (here without `.claude`) is
+		// the operator's too. The paths are set aside whatever either says,
+		// and the note says so rather than dropping them in silence.
+		ws := t.TempDir()
+		write(t, ws, "README.md", "# fixture\n")
+		write(t, ws, ".github/workflows/README.md", "# workflows\n")
+		write(t, ws, ".github/CONTRIBUTING.md", "# contributing\n")
+		write(t, ws, ".claude/CLAUDE.md", "# instructions\n")
+		res := run(t, ws, "", map[string]string{
+			"doc_globs":     "README.md,.github/**/*.md,.claude/**/*.md",
+			"excluded_dirs": ".iterion,.works,vendor,node_modules,.git,dist,build,out",
+		})
+		for _, f := range res.DocFiles {
+			if strings.HasPrefix(f, ".github/workflows/") || strings.HasPrefix(f, ".claude/") {
+				t.Errorf("doc_files names %q, a path under a tree the delivery refuses by name: %v", f, res.DocFiles)
+			}
+		}
+		// The contributing guide is NOT under the refused tree: the
+		// credential pushes it and the gates own it.
+		if res.DocCount != 2 {
+			t.Errorf("doc_count = %d, want 2 (README.md and .github/CONTRIBUTING.md): %v", res.DocCount, res.DocFiles)
+		}
+		for _, want := range []string{"SET ASIDE", ".github/workflows/README.md", ".claude/CLAUDE.md"} {
+			if !strings.Contains(res.HintsNote, want) {
+				t.Errorf("hints_note = %q, want it to say %q — a glob set aside in silence is an operator's choice silently replaced", res.HintsNote, want)
+			}
+		}
+		// A footprint with no such match carries no warning.
+		plain := t.TempDir()
+		write(t, plain, "README.md", "# fixture\n")
+		if note := run(t, plain, "", nil).HintsNote; strings.Contains(note, "SET ASIDE") {
+			t.Errorf("hints_note warns with nothing set aside: %q", note)
 		}
 	})
 

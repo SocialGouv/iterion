@@ -201,19 +201,28 @@ func TestNormalize_ExplicitEmptyTriggersSurvive(t *testing.T) {
 }
 
 func TestValidate_PairOrder(t *testing.T) {
-	tests := []struct {
+	type pairOrderCase struct {
 		name  string
 		pairs []string
 		want  string // substring of the expected error; "" = valid
-	}{
+	}
+	tests := []pairOrderCase{
 		{"arbitrary default order", DefaultPairOrder, ""},
 		{"every known provider key", providerKeyPairs(), ""},
+		{"the gateway slot on claw", []string{Pair(HarnessClaw, "openai_compatible_key")}, ""},
 		{"not a pair", []string{"claude_code"}, "not harness+credential"},
 		{"empty side", []string{"+claude_forfait"}, "not harness+credential"},
 		{"unknown harness", []string{Pair("notabackend", CredClaudeForfait)}, `unknown harness "notabackend"`},
 		{"unknown credential", []string{Pair(HarnessClaw, "forfait_claude")}, `unknown credential "forfait_claude"`},
 		{"duplicate", []string{Pair(HarnessClaw, "anthropic_key"), Pair(HarnessClaw, "anthropic_key")}, "twice"},
 		{"explicitly empty", []string{}, "pair_order is empty"},
+	}
+	// The gateway slot pairs with claw alone: no other harness spends a
+	// gateway key, so every other harness naming it is refused.
+	for _, h := range Harnesses {
+		if h != HarnessClaw {
+			tests = append(tests, pairOrderCase{"the gateway slot on " + h, []string{Pair(h, "openai_compatible_key")}, "pairs with claw only"})
+		}
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -240,7 +249,7 @@ func TestValidate_ExplicitEmptyTriggersRefused(t *testing.T) {
 
 func providerKeyPairs() []string {
 	var pairs []string
-	for _, p := range []string{"anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot"} {
+	for _, p := range []string{"anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot", "openai_compatible"} {
 		pairs = append(pairs, Pair(HarnessClaw, p+"_key"))
 	}
 	return pairs
@@ -347,6 +356,7 @@ func TestKeyProviderSlotsMirrorSecretsProviders(t *testing.T) {
 		secrets.ProviderAnthropic, secrets.ProviderOpenAI, secrets.ProviderBedrock,
 		secrets.ProviderVertex, secrets.ProviderAzure, secrets.ProviderOpenRouter,
 		secrets.ProviderXAI, secrets.ProviderZAI, secrets.ProviderMoonshot,
+		secrets.ProviderOpenAICompatible,
 	} {
 		if !validCredential(string(p) + "_key") {
 			t.Errorf("secrets.Provider %q has no matching %q slot in the policy vocabulary", p, string(p)+"_key")
@@ -851,6 +861,66 @@ func TestValidateOverrides_Vocabulary(t *testing.T) {
 	}
 }
 
+// everyBotSpellingCases are the cells a level may write beside a node
+// cell's every-bot spelling: `*/x` and `x` both reach every bot
+// (Selector.MatchBot), so on one field they are one selector to the write
+// gate (writeRefusal, "" = accepted) — and at one level the launch fold
+// keeps the one without a bot part. A launch reads a stored level
+// holding both (storedRefusal ""); an exact duplicate stays refused by
+// both rules. Another field, or a bot part that names a bot or a glob
+// over one, is another cell.
+var everyBotSpellingCases = []struct {
+	name          string
+	cells         []Override
+	writeRefusal  string
+	storedRefusal string
+}{
+	{"x then */x on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}},
+		`"work" and "*/work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("work")`, ""},
+	{"*/x then x on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "work", Model: "openai/gpt-5.4"}},
+		`"*/work" and "work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("work")`, ""},
+	{"*/* beside *", []Override{{Selector: "*", Effort: "low"}, {Selector: "*/*", Effort: "high"}},
+		`"*" and "*/*" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("*")`, ""},
+	{"x twice on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "work", Backend: HarnessCodex}},
+		"pins work.backend twice — the fold would silently keep the first", "pins work.backend twice — the fold would silently keep the first"},
+	{"*/x twice on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "*/work", Model: "openai/gpt-5.4"}},
+		"pins */work.model twice", "pins */work.model twice"},
+	{"x and */x on two fields", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Model: "openai/gpt-5.5"}}, "", ""},
+	{"a bot's x beside x", []Override{{Selector: "review-pr/work", Backend: HarnessClaw}, {Selector: "work", Backend: HarnessCodex}}, "", ""},
+	{"a glob's x beside */x", []Override{{Selector: "rev*/work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}}, "", ""},
+}
+
+func checkEveryBotSpelling(t *testing.T, rule string, validate func(Policy) error, name string, cells []Override, refused string) {
+	t.Helper()
+	err := validate(Policy{Overrides: cells})
+	switch {
+	case refused == "" && err != nil:
+		t.Errorf("%s(%s) refused: %v", rule, name, err)
+	case refused != "" && (err == nil || !strings.Contains(err.Error(), refused)):
+		t.Errorf("%s(%s) = %v, want a refusal naming %s", rule, name, err, refused)
+	}
+}
+
+// The write gate refuses a level writing `x` and `*/x` on one field, as it
+// refuses an exact duplicate, naming the cell the launch would keep.
+func TestValidateOverrides_ACellAndItsEveryBotSpellingAreOneSelectorAtWrite(t *testing.T) {
+	for _, tc := range everyBotSpellingCases {
+		checkEveryBotSpelling(t, "Validate", Validate, tc.name, tc.cells, tc.writeRefusal)
+	}
+}
+
+// A launch reads a stored level holding `x` and `*/x` on one field: the
+// fold decides the pair (cellOutranks), so the record refuses no launch of
+// its level — a `*/x` written before the bot dimension existed was a glob
+// that matched nothing, and the write gate admitted it beside `x`. An exact
+// duplicate stays refused by both rules, as it was before the bot
+// dimension.
+func TestValidateOverrides_AStoredLevelHoldingACellAndItsEveryBotSpellingIsRead(t *testing.T) {
+	for _, tc := range everyBotSpellingCases {
+		checkEveryBotSpelling(t, "ValidateStored", ValidateStored, tc.name, tc.cells, tc.storedRefusal)
+	}
+}
+
 // The lock vocabulary accepts the two new fields.
 func TestValidateOverrides_LockVocabulary(t *testing.T) {
 	if err := Validate(Policy{Locks: []string{FieldOverrides, FieldProviders}}); err != nil {
@@ -963,28 +1033,25 @@ func TestValidateOverrides_RefusesAHintTheHarnessIgnores(t *testing.T) {
 	}
 }
 
-// ProviderHints must stay validKeyProvider's names plus the gateway: a
-// provider the credential slots learn (secrets.Provider) is one the
-// overrides and the providers allowlist must be able to pin, and any
-// other name in ProviderHints would promise a route no slot can fund.
+// ProviderHints must stay exactly validKeyProvider's names, the gateway's
+// included: a provider the credential slots learn (secrets.Provider) is
+// one the overrides and the providers allowlist must be able to pin, and
+// any other name in ProviderHints would promise a route no slot can fund.
 // In-package so the unexported validKeyProvider is read directly.
 func TestProviderHints_MirrorTheKeyProviders(t *testing.T) {
 	want := []string{
 		string(secrets.ProviderAnthropic), string(secrets.ProviderOpenAI), string(secrets.ProviderBedrock),
 		string(secrets.ProviderVertex), string(secrets.ProviderAzure), string(secrets.ProviderOpenRouter),
 		string(secrets.ProviderXAI), string(secrets.ProviderZAI), string(secrets.ProviderMoonshot),
-		ProviderOpenAICompatible,
+		string(secrets.ProviderOpenAICompatible),
 	}
 	sort.Strings(want)
 	got := append([]string(nil), ProviderHints...)
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ProviderHints %v != validKeyProvider's names + %q: %v", got, ProviderOpenAICompatible, want)
+		t.Fatalf("ProviderHints %v != validKeyProvider's names %v", got, want)
 	}
 	for _, h := range ProviderHints {
-		if h == ProviderOpenAICompatible {
-			continue // the gateway, whose credential the runner's environment funds
-		}
 		if !validKeyProvider(h) {
 			t.Errorf("ProviderHints names %q, which validKeyProvider refuses", h)
 		}

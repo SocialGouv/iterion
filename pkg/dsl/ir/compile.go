@@ -1,19 +1,20 @@
 package ir
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -83,12 +84,23 @@ type Diagnostic struct {
 	// File, Line and Column locate the declaration the diagnostic is
 	// attributed to — the node named by NodeID, or the edge named by
 	// EdgeID — in the source that was compiled. Best-effort: a global
-	// diagnostic (no workflow, duplicate loop) has no position and keeps
-	// the zero values, and a group-expanded node points at the group
-	// member it was cloned from.
+	// diagnostic (no workflow) has no position and keeps the zero values,
+	// and a group-expanded node points at the group member it was cloned
+	// from. Message and Hint are held to expr.MaxDiagnosticText (emit).
 	File   string
 	Line   int // 1-based; 0 = no position
 	Column int // 1-based
+	// Property names the property of the declaration the diagnostic is
+	// about, when it is about one property's VALUE rather than the
+	// declaration: the position is then that property line's where the
+	// parser recorded it (ast.PropertySpans), and EndLine/EndColumn close
+	// its span — the column after its last rune — on a `.bot` source; an
+	// author document carries the start alone, its mapper knowing where a
+	// YAML node starts and not where its text ends (#1094). Empty and zero
+	// for a diagnostic about the declaration, an edge or the program.
+	Property  string
+	EndLine   int
+	EndColumn int
 }
 
 func (d Diagnostic) Error() string {
@@ -155,9 +167,33 @@ type compiler struct {
 	// like edgeSpans: a span is the authoring surface, which this package's
 	// types stay clear of.
 	withSpans map[*DataMapping]ast.Span
+	// nodeTables is the per-property span table of every node declaration
+	// by the id the graph knows it under (eachNodeDecl), built on the first
+	// diagnostic about a node property's value (propertySpan).
+	nodeTables map[string]ast.PropertySpans
 
-	autoBackendOnce   sync.Once
-	autoBackendCached bool
+	capabilities CompileCapabilities
+
+	// exprBudget is the read budget the expressions of the bot are parsed
+	// on together (expr.ParseOn): an expression lives inside one string the
+	// lexer counted as a single record, so the compiler holds the bot's
+	// expressions to the count the lexer held its files to.
+	exprBudget *expr.Budget
+	// groupExpansionBudget/Spent: the uses of a bot share ONE substitution
+	// budget — every string field a group instance writes spends it (one
+	// record per field, one per groupSubstBytesPerRecord bytes) — because a
+	// per-use count lets N uses multiply: 40 uses individually under each
+	// bound built 11.5 GiB (#2774). Same resolver as the read budget
+	// (readbudget.Read), no second knob.
+	groupExpansionBudget, groupExpansionSpent int
+	// fallbackWhens are the fallback `when:` readings, by node id and route
+	// index (fallbackWhenKey): parsed once on exprBudget by
+	// checkFallbackWhen, nil when the reading was refused, and read again
+	// by validateVarListDefaults — never re-parsed.
+	fallbackWhens map[string]*expr.AST
+	// capRefused marks the edges whose loop cap, read again for them, ran
+	// out the budget (compileEdges): the validators skip the cap for them.
+	capRefused map[*Edge]bool
 }
 
 // workflowInteractionDefault returns the workflow-level interaction default,
@@ -176,29 +212,39 @@ func (c *compiler) workflowInteractionDefault() InteractionMode {
 // whatever attribution a site can offer — a node, an edge, a source span, a
 // site-specific fix line — travels the same way whichever helper it used,
 // and the catalogue fix line is the default hint for every code.
-func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp ast.Span, hint string, format string, args ...any) {
+func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp ast.Span, prop, hint string, format string, args ...any) {
 	if hint == "" {
 		hint = HintFor(code)
 	}
-	c.diags = append(c.diags, Diagnostic{
+	// Held to expr.MaxDiagnosticText here, whatever the site composed: the
+	// one bound no quoting site can undo.
+	d := Diagnostic{
 		Code:     code,
 		Severity: sev,
-		Message:  fmt.Sprintf(format, args...),
+		Message:  expr.Clip(fmt.Sprintf(format, args...), expr.MaxDiagnosticText),
 		NodeID:   nodeID,
 		EdgeID:   edgeID,
-		Hint:     hint,
+		Hint:     expr.Clip(hint, expr.MaxDiagnosticText),
 		File:     sp.Start.File,
 		Line:     sp.Start.Line,
 		Column:   sp.Start.Column,
-	})
+		Property: prop,
+	}
+	// Only a property span ends past its last rune; the other spans the
+	// parser records end where they start or at their value, so only a
+	// property diagnostic closes its span.
+	if prop != "" && sp.End.Line != 0 {
+		d.EndLine, d.EndColumn = sp.End.Line, sp.End.Column
+	}
+	c.diags = append(c.diags, d)
 }
 
 func (c *compiler) errorf(code DiagCode, format string, args ...any) {
-	c.emit(SeverityError, code, "", "", ast.Span{}, "", format, args...)
+	c.emit(SeverityError, code, "", "", ast.Span{}, "", "", format, args...)
 }
 
 func (c *compiler) warnf(code DiagCode, format string, args ...any) {
-	c.emit(SeverityWarning, code, "", "", ast.Span{}, "", format, args...)
+	c.emit(SeverityWarning, code, "", "", ast.Span{}, "", "", format, args...)
 }
 
 // errorfAt is a variant of errorf that attaches authoritative attribution
@@ -206,49 +252,49 @@ func (c *compiler) warnf(code DiagCode, format string, args ...any) {
 // the precise node or edge instead of guessing from the message text; the
 // source position is resolved from those ids by attachPositions.
 func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.emit(SeverityError, code, nodeID, edgeID, ast.Span{}, "", format, args...)
+	c.emit(SeverityError, code, nodeID, edgeID, ast.Span{}, "", "", format, args...)
 }
 
 // warnfAt is the warning counterpart to errorfAt.
 func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.emit(SeverityWarning, code, nodeID, edgeID, ast.Span{}, "", format, args...)
+	c.emit(SeverityWarning, code, nodeID, edgeID, ast.Span{}, "", "", format, args...)
 }
 
 // errorfOnEdge attributes a diagnostic to one specific AST edge — its own
 // line, which is what tells two edges sharing endpoints apart — with the
 // canonical edge id alongside.
 func (c *compiler) errorfOnEdge(code DiagCode, ae *ast.Edge, format string, args ...any) {
-	c.emit(SeverityError, code, "", edgeID(ae.From, ae.To), ae.Span, "", format, args...)
+	c.emit(SeverityError, code, "", edgeID(ae.From, ae.To), ae.Span, "", "", format, args...)
 }
 
 // errorfAtEdge is errorfOnEdge for a compiled edge, through the span
 // compileEdges recorded for it.
 func (c *compiler) errorfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
-	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", "", format, args...)
 }
 
 // warnfAtEdge is the warning counterpart to errorfAtEdge.
 func (c *compiler) warnfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
-	c.emit(SeverityWarning, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+	c.emit(SeverityWarning, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", "", format, args...)
 }
 
 // errorfAtSpan attributes a diagnostic to a source span directly — for a
 // declaration that is not a graph node (a prompt, a schema) and so has no
 // NodeID for attachPositions to look up.
 func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
-	c.emit(SeverityError, code, "", "", sp, "", format, args...)
+	c.emit(SeverityError, code, "", "", sp, "", "", format, args...)
 }
 
 // warnfAtSpan is the warning counterpart to errorfAtSpan.
 func (c *compiler) warnfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
-	c.emit(SeverityWarning, code, "", "", sp, "", format, args...)
+	c.emit(SeverityWarning, code, "", "", sp, "", "", format, args...)
 }
 
 // errorfAtNodeSpan attributes a diagnostic to a node AND to a specific span —
 // for a node that has more than one declaration, where the id alone would
 // resolve to the first one while the line to edit is the other.
 func (c *compiler) errorfAtNodeSpan(code DiagCode, nodeID string, sp ast.Span, format string, args ...any) {
-	c.emit(SeverityError, code, nodeID, "", sp, "", format, args...)
+	c.emit(SeverityError, code, nodeID, "", sp, "", "", format, args...)
 }
 
 // edgeID builds the canonical "<from>-><to>" identifier the studio uses so
@@ -288,12 +334,12 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		// author who wrote `mode: allowlist` under `sandbox:` (or whose
 		// `network:` body sat de-indented after a blank line) meant the
 		// network's.
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has invalid sandbox mode %q: that is a network: mode — write it as `network:` + `mode: %s` under `sandbox:` (the sandbox's own modes are \"none\", \"auto\" and \"inline\")",
 			scope, name, blk.Mode, blk.Mode)
 		return nil
 	default:
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
 			scope, name, blk.Mode)
 		return nil
@@ -302,7 +348,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	switch blk.HostState {
 	case "", "auto", "none":
 	default:
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has invalid sandbox.host_state %q (want \"\", \"auto\", or \"none\")",
 			scope, name, blk.HostState)
 		return nil
@@ -347,6 +393,10 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		HostState:       blk.HostState,
 		PostCreate:      blk.PostCreate,
 	}
+	// A bare `image:` word either names a stock image class (#2632) or is a
+	// local/docker.io reference — the warning (C325) tells the two apart;
+	// the value itself is kept as written in both cases.
+	c.warnUnknownSandboxImageClass(spec.Image, scope, name)
 	if len(blk.Env) > 0 {
 		spec.Env = make(map[string]string, len(blk.Env))
 		for k, v := range blk.Env {
@@ -364,7 +414,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Mode {
 		case "", "open", "allowlist", "denylist":
 		default:
-			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+			c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 				"%s %q has invalid sandbox.network mode %q (want \"open\", \"allowlist\" or \"denylist\")",
 				scope, name, blk.Network.Mode)
 			return nil
@@ -372,14 +422,14 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Inherit {
 		case "", "replace", "append":
 		default:
-			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+			c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 				"%s %q has invalid sandbox.network inherit %q (want \"replace\" or \"append\"; omit it to merge, the default)",
 				scope, name, blk.Network.Inherit)
 			return nil
 		}
 		if blk.Network.Mode == "" {
-			c.warnfAtScope(DiagNetworkModeMissing, scope, name,
-				"%s %q declares sandbox.network without a mode: as written the block is inert — at the policy layer it resolves to open (the proxy does not start); on a repo-defined sandbox (mode auto with a found devcontainer.json) the runtime instead completes it to the allowlist its content is shaped like. Write mode: allowlist (or open / denylist) to say which you mean",
+			c.warnfAtProperty(DiagNetworkModeMissing, scope, name, "sandbox",
+				"%s %q declares sandbox.network without a mode: as written the block is inert — at the policy layer it resolves to open (the proxy filters no host); on a repo-defined sandbox (mode auto with a found devcontainer.json) the runtime instead completes it to the allowlist its content is shaped like. Write mode: allowlist (or open / denylist) to say which you mean",
 				scope, name)
 		}
 		spec.Network = &SandboxNetwork{
@@ -407,13 +457,13 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// error out at Driver.Prepare time. Surface it as a compile-time
 	// diagnostic so the user fixes the workflow source.
 	if spec.Mode == "inline" && spec.Image == "" && spec.Build == nil {
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has sandbox mode=inline but no image: declare an image or build, or use mode=auto with a .devcontainer/devcontainer.json",
 			scope, name)
 		return nil
 	}
 	if spec.Image != "" && spec.Build != nil {
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has both sandbox.image and sandbox.build set; they are mutually exclusive (use image: for a pre-built ref or build: for a Dockerfile)",
 			scope, name)
 		return nil
@@ -527,13 +577,34 @@ func (c *compiler) validateNodeNames() {
 
 // Compile transforms an AST File into a canonical IR Workflow.
 // In V1, exactly one workflow per file is supported.
+// Target capabilities are unknown: compilation never probes host credentials
+// or executables. Execution resolves and builds the backend on its target.
 func Compile(file *ast.File) *CompileResult {
+	return CompileWithCapabilities(file, CompileCapabilities{})
+}
+
+// CompileCapabilities is an authoritative snapshot of the execution target,
+// supplied by a caller that knows that target. A nil AutoBackendAvailable means
+// unknown, not unavailable. It does not override explicit DSL routing choices.
+type CompileCapabilities struct {
+	AutoBackendAvailable *bool
+}
+
+// CompileWithCapabilities compiles with explicit target availability. It never
+// discovers capabilities on the compiling host. Unknown availability produces
+// a C018 warning; known absence is an error for agents and judges. Routers keep
+// their existing advisory diagnostic because they allow runtime defaulting.
+func CompileWithCapabilities(file *ast.File, capabilities CompileCapabilities) *CompileResult {
 	c := &compiler{
-		file:    detachForCompile(file),
-		nodes:   make(map[string]Node),
-		schemas: make(map[string]*Schema),
-		prompts: make(map[string]*Prompt),
-		mcp:     make(map[string]*MCPServer),
+		file:         detachForCompile(file),
+		nodes:        make(map[string]Node),
+		schemas:      make(map[string]*Schema),
+		prompts:      make(map[string]*Prompt),
+		mcp:          make(map[string]*MCPServer),
+		capabilities: capabilities,
+		exprBudget:   expr.NewBudget(readbudget.Read()),
+		// The uses of a bot share one substitution budget (#2774).
+		groupExpansionBudget: readbudget.Read(),
 	}
 	// A file that still carries `import` lines was handed over alone: its
 	// fragments were never merged in, and compiling it would be compiling a
@@ -702,6 +773,8 @@ func (c *compiler) compile() *Workflow {
 		interaction = &im
 	}
 
+	wfCodemode, wfCodemodeDefer, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "workflow", wf.Name)
+
 	w := &Workflow{
 		Name:                wf.Name,
 		Entry:               wf.Entry,
@@ -717,6 +790,7 @@ func (c *compiler) compile() *Workflow {
 		Secrets:             secrets,
 		Presets:             presets,
 		Attachments:         attachments,
+		BusinessStores:      compileBusinessStores(wf.BusinessStores),
 		Loops:               loops,
 		Foreaches:           foreaches,
 		Budget:              budget,
@@ -730,10 +804,13 @@ func (c *compiler) compile() *Workflow {
 		Interaction:         interaction,
 		Contracts:           contracts,
 		Contract:            contract,
-		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
+		Worktree:            c.worktreeMode(wf.Name, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		AmbientContext:      wf.AmbientContext,
+		Codemode:            wfCodemode,
+		CodemodeDefer:       wfCodemodeDefer,
+		CodemodeBounds:      wfCodemodeBounds,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
 		RepoDevbox:          wf.RepoDevbox,
 		WorkspaceCheckpoint: wf.WorkspaceCheckpoint,
@@ -919,37 +996,56 @@ func defaultWorktreeMode(raw string) string {
 }
 
 // worktreeMode canonicalises a workflow's `worktree:` and refuses a value
-// that is neither auto nor none (C142), naming what was WRITTEN and where
-// (the workflow's span — the declaration keeps no per-property position).
+// that is neither auto nor none (C142), naming what was WRITTEN, on the
+// `worktree:` line.
 // The runtime compares the canonical value to `auto` and nothing else, so a
 // mistyped auto ran the workflow in place, in the operator's own checkout,
 // with every commit landing there, without a word. A refused value reaches
 // the IR as the DEFAULT, auto: every launch surface refuses a workflow with
 // an error, and one that did not would then isolate the run rather than
 // run it in place — the hazard the check exists to close, closed twice.
-func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string {
+func (c *compiler) worktreeMode(workflow string, raw string) string {
 	mode := defaultWorktreeMode(raw)
 	switch mode {
 	case "auto", "none":
 		return mode
 	}
-	c.errorfAtSpan(DiagInvalidWorktree, at,
+	c.errorfAtProperty(DiagInvalidWorktree, "workflow", workflow, "worktree",
 		"workflow %q has invalid worktree %q; valid values are auto, none",
 		workflow, raw)
 	return "auto"
 }
 
-// canAutoResolveBackend reports whether the detect package can pick a
-// backend from the host environment, allowing an agent/judge with
-// neither `model:` nor `backend:` to validate. Cached per-compile —
-// 20-agent workflows would otherwise re-stat credentials.json and
-// re-LookPath the CLIs 40 times.
-func (c *compiler) canAutoResolveBackend() bool {
-	c.autoBackendOnce.Do(func() {
-		report := detect.Detect(context.Background())
-		c.autoBackendCached = detect.Resolve(report.PreferenceOrder, report.Backends) != ""
-	})
-	return c.autoBackendCached
+// checkModelOrBackend keeps all ordinary LLM nodes on the same capability
+// reading. The node's route is read the way the source reads a routing
+// field (sourceBackend, by default): a decided name answers, a field the
+// source writes but cannot answer (a ${X} with no :-, a {{vars.x}}) is
+// declared and not judged, and an empty or `auto` field falls through to
+// the workflow default, which answers the same way (BackendFallsThrough —
+// docs/backends.md). Only when nothing in the chain decides does the
+// target's capability verdict speak. One workflow per file (C007 refuses
+// the rest before nodes compile), so Workflows[0] is this node's own.
+func (c *compiler) checkModelOrBackend(kind, name, model, backend string) {
+	if model != "" {
+		return
+	}
+	if n, decides := sourceBackend.field(backend); n != "" || !decides {
+		return
+	}
+	if len(c.file.Workflows) > 0 {
+		if n, decides := sourceBackend.field(c.file.Workflows[0].DefaultBackend); n != "" || !decides {
+			return
+		}
+	}
+	available := c.capabilities.AutoBackendAvailable
+	if available != nil && *available {
+		return
+	}
+	if available != nil && kind != "router" {
+		c.errorfAt(DiagMissingModelOrBackend, name, "", "%s %q must set 'model' or 'backend': the execution target reports no auto-resolvable backend (see docs/backends.md)", kind, name)
+		return
+	}
+	c.warnfAt(DiagMissingModelOrBackend, name, "", "%s %q has no model or backend; execution must resolve a backend on its target (see docs/backends.md)", kind, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1080,16 @@ func (c *compiler) compilePrompts() {
 		refs, err := ParseRefs(body)
 		if err != nil {
 			c.errorfAtSpan(DiagBadTemplateRef, p.Span, "prompt %q: %v", p.Name, err)
+		}
+		// A bang ref in a prompt body is parsed and then ignored — a prompt
+		// has no shell to escape, the value renders whatever the prefix
+		// says. The warning names the spelling instead of leaving it silent;
+		// in a tool body the bang is the remedy, not the defect.
+		for _, ref := range refs {
+			if ref.Unquoted {
+				c.warnfAtSpan(DiagBangRefInPromptBody, p.Span,
+					"prompt %q: %s carries the bang form — a prompt has no shell, the value renders either way", p.Name, ref.Raw)
+			}
 		}
 		c.prompts[p.Name] = &Prompt{
 			Name:         p.Name,
@@ -1028,8 +1134,16 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 	c.validatePromptRef(name, "system", d.System)
 	c.validatePromptRef(name, "user", d.User)
 	model := resolveSupervisorModel(d.Model)
-	if model == "" && d.Backend == "" && !c.canAutoResolveBackend() {
-		c.errorfAt(DiagMissingModelOrBackend, name, "", "%s %q must set 'model' or 'backend' (or configure a credential the runtime can detect — see docs/backends.md)", kind, name)
+	c.checkModelOrBackend(kind, name, model, d.Backend)
+	// An image path is a template the run renders (validate_refs' images
+	// walk reads the same refs), so a malformed one is said here, where a
+	// tool's command and a prompt body have theirs said — never dropped to
+	// surface as an empty `-i` argument at the one moment the node needed
+	// the file.
+	for _, image := range d.Images {
+		if _, err := ParseRefs(image); err != nil {
+			c.errorfAt(DiagBadTemplateRef, name, "", "%s %q images: %v", kind, name, err)
+		}
 	}
 	// Apply workflow-level interaction default when node doesn't set one.
 	interaction := d.Interaction
@@ -1066,6 +1180,7 @@ func (c *compiler) compileAgents() {
 		if !ok {
 			continue
 		}
+		agentCodemode, agentCodemodeDefer, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent", a.Name)
 		c.nodes[a.Name] = &AgentNode{
 			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
@@ -1074,6 +1189,7 @@ func (c *compiler) compileAgents() {
 			MCP:               convertMCPConfig(a.MCP),
 			Publish:           a.Publish,
 			PublishLabels:     a.ArtifactLabels,
+			Deliverables:      a.Deliverables,
 			Session:           a.Session,
 			SessionSlot:       a.SessionSlot,
 			Tools:             a.Tools,
@@ -1090,6 +1206,9 @@ func (c *compiler) compileAgents() {
 			Compress:          a.Compress,
 			AutoMemory:        a.AutoMemory,
 			AmbientContext:    a.AmbientContext,
+			Codemode:          agentCodemode,
+			CodemodeDefer:     agentCodemodeDefer,
+			CodemodeBounds:    agentCodemodeBounds,
 			Permission:        a.Permission,
 			PermissionAllow:   a.Allow,
 			PermissionAsk:     a.Ask,
@@ -1109,6 +1228,7 @@ func (c *compiler) compileJudges() {
 		if !ok {
 			continue
 		}
+		judgeCodemode, judgeCodemodeDefer, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge", j.Name)
 		c.nodes[j.Name] = &JudgeNode{
 			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
@@ -1116,6 +1236,7 @@ func (c *compiler) compileJudges() {
 			InteractionFields: inter,
 			MCP:               convertMCPConfig(j.MCP),
 			Publish:           j.Publish,
+			Deliverables:      j.Deliverables,
 			Session:           j.Session,
 			SessionSlot:       j.SessionSlot,
 			Tools:             j.Tools,
@@ -1132,6 +1253,9 @@ func (c *compiler) compileJudges() {
 			Compress:          j.Compress,
 			AutoMemory:        j.AutoMemory,
 			AmbientContext:    j.AmbientContext,
+			Codemode:          judgeCodemode,
+			CodemodeDefer:     judgeCodemodeDefer,
+			CodemodeBounds:    judgeCodemodeBounds,
 			Permission:        j.Permission,
 			PermissionAllow:   j.Allow,
 			PermissionAsk:     j.Ask,
@@ -1181,9 +1305,7 @@ func (c *compiler) compileRouters() {
 		}
 		if mode == RouterLLM {
 			model := resolveSupervisorModel(r.Model)
-			if model == "" && r.Backend == "" {
-				c.warnf(DiagMissingModelOrBackend, "router %q with mode llm has no model or backend; will use built-in default at runtime", r.Name)
-			}
+			c.checkModelOrBackend("router", r.Name, model, r.Backend)
 			node.Model = model
 			node.Backend = r.Backend
 			node.Provider = r.Provider
@@ -1325,7 +1447,7 @@ func (c *compiler) compileHumans() {
 			switch node.Posture {
 			case "", PostureHumanRequired, PostureAgentVerdictOK:
 			default:
-				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+				c.errorfAtProperty(DiagInvalidReviewGateValue, "human", h.Name, "posture",
 					"human %q has invalid posture %q; valid values are %s, %s",
 					h.Name, h.Posture, PostureHumanRequired, PostureAgentVerdictOK)
 				node.Posture = ""
@@ -1337,7 +1459,7 @@ func (c *compiler) compileHumans() {
 			switch node.MergeStrategy {
 			case "", "squash", "merge":
 			default:
-				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+				c.errorfAtProperty(DiagInvalidReviewGateValue, "human", h.Name, "merge_strategy",
 					"human %q has invalid merge_strategy %q; valid values are squash, merge",
 					h.Name, h.MergeStrategy)
 				node.MergeStrategy = ""
@@ -1581,11 +1703,13 @@ func (c *compiler) compileTools() {
 			CallTimeout:   t.Timeout,
 			Publish:       t.Publish,
 			PublishLabels: t.ArtifactLabels,
+			Deliverables:  t.Deliverables,
 			AwaitMode:     t.Await,
 			Sandbox:       c.compileSandboxBlock(t.Sandbox, "tool", t.Name),
 			Compress:      t.Compress,
 			Permission:    t.Permission,
 			Needs:         t.Needs,
+			Capabilities:  t.Capabilities,
 			Goal:          t.Goal,
 			Postcondition: t.Postcondition,
 			PostcondRefs:  postcondRefs,
@@ -1607,11 +1731,70 @@ func (c *compiler) compileTools() {
 // distinction is what tells an operator "this bot needs a newer engine"
 // apart from "this expression is malformed".
 func exprDiagCode(err error) DiagCode {
+	if pastReadBudget(err) {
+		return DiagExprPastReadBudget
+	}
 	var arity *expr.ArityError
 	if errors.As(err, &arity) {
 		return DiagBuiltinArity
 	}
 	return DiagBadExpr
+}
+
+// pastReadBudget reports whether err is the expression parser's refusal of
+// an expression past the read budget (expr.BudgetError). A site that
+// reports one leaves the expression's text out of its message: it is the
+// one text no diagnostic should echo.
+func pastReadBudget(err error) bool {
+	var past *expr.BudgetError
+	return errors.As(err, &past)
+}
+
+// enumListed is how many members of an enum a diagnostic names; the rest
+// are counted.
+const enumListed = 16
+
+// enumList names an enum's members for a diagnostic — each quoted by
+// excerpt, the first enumListed by name and the rest by count — so an enum
+// of any size reads in a few lines and no member is cut short of itself
+// (the author's typo is next to the member it misspells).
+func enumList(values []string) string {
+	named := values
+	if len(named) > enumListed {
+		named = named[:enumListed]
+	}
+	parts := make([]string, 0, len(named)+1)
+	for _, v := range named {
+		parts = append(parts, strconv.Quote(expr.Excerpt(v)))
+	}
+	if more := len(values) - len(named); more > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", more))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// excerptPair quotes two texts a diagnostic says conflict: by excerpt, and
+// around their first difference when their excerpts would read the same.
+func excerptPair(a, b string) (string, string) {
+	ea, eb := expr.Excerpt(a), expr.Excerpt(b)
+	if a == b || ea != eb {
+		return ea, eb
+	}
+	i := differenceAt(a, b)
+	return expr.ExcerptAt(a, i), expr.ExcerptAt(b, i)
+}
+
+// differenceAt is the byte offset of the first rune where a and b differ —
+// the length of their common prefix, on a rune boundary of a.
+func differenceAt(a, b string) int {
+	i := 0
+	for i < len(a) && i < len(b) && a[i] == b[i] {
+		i++
+	}
+	for i > 0 && i < len(a) && !utf8.RuneStart(a[i]) {
+		i--
+	}
+	return i
 }
 
 func (c *compiler) compileComputes() {
@@ -1632,10 +1815,17 @@ func (c *compiler) compileComputes() {
 		}
 		exprs := make([]*ComputeExpr, 0, len(cd.Expr))
 		for _, e := range cd.Expr {
-			ast, err := expr.Parse(e.Expr)
+			ast, err := expr.ParseOn(e.Expr, c.exprBudget)
 			if err != nil {
-				c.errorfAt(exprDiagCode(err), cd.Name, "",
-					"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, e.Expr, err)
+				// On the entry's own line: the block holds one line per field,
+				// and the node's header would name them all at once.
+				if code := exprDiagCode(err); code == DiagExprPastReadBudget {
+					c.errorfAtNodeSpan(code, cd.Name, e.Span,
+						"compute %q field %q: %v", cd.Name, e.Key, err)
+				} else {
+					c.errorfAtNodeSpan(code, cd.Name, e.Span,
+						"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, expr.Excerpt(e.Expr), err)
+				}
 				continue
 			}
 			exprs = append(exprs, &ComputeExpr{
@@ -1677,13 +1867,60 @@ func (c *compiler) compileSubbots() {
 		if sd.Output != "" {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)
 		}
+		c.validateSubbotLanding(sd)
 		c.nodes[sd.Name] = &SubbotNode{
-			BaseNode:     BaseNode{ID: sd.Name, Description: sd.Description},
-			Source:       sd.Source,
-			With:         c.compileWithMappings(sd.Name, sd.With),
-			OutputSchema: sd.Output,
-			Needs:        sd.Needs,
-			Isolated:     sd.Isolated,
+			BaseNode:      BaseNode{ID: sd.Name, Description: sd.Description},
+			Source:        sd.Source,
+			With:          c.compileWithMappings(sd.Name, sd.With),
+			OutputSchema:  sd.Output,
+			Needs:         sd.Needs,
+			Isolated:      sd.Isolated,
+			AutoMerge:     sd.AutoMerge,
+			MergeInto:     sd.MergeInto,
+			MergeStrategy: sd.MergeStrategy,
+		}
+	}
+}
+
+// validateSubbotLanding refuses a landing intent the child cannot act on. A
+// subbot running in the parent's workspace executes in place — no worktree,
+// no finalization of its own — so `auto_merge:` there would arm a landing
+// that never fires and the child's converged work would wait for a human.
+// And `merge_into:` / `merge_strategy:` without the arming flag would be
+// dropped in silence. Both are closed where they are written. The landing
+// values' closed vocabularies are named at compile too: a strategy or a
+// target the child's finalize would only fail at merge time is refused
+// here, where the author is still looking at the line.
+func (c *compiler) validateSubbotLanding(sd *ast.SubbotDecl) {
+	landingFields := sd.AutoMerge || sd.MergeInto != "" || sd.MergeStrategy != ""
+	if landingFields && !sd.Isolated {
+		c.errorfAt(DiagSubbotLandingWithoutIsolated, sd.Name, "",
+			"subbot %q declares a landing intent (auto_merge/merge_into/merge_strategy) without `isolated: true` — the child runs in this run's workspace and has no finalization of its own to land from", sd.Name)
+	}
+	if !sd.AutoMerge && (sd.MergeInto != "" || sd.MergeStrategy != "") {
+		c.errorfAt(DiagSubbotLandingWithoutAutoMerge, sd.Name, "",
+			"subbot %q declares `merge_into:` or `merge_strategy:` without `auto_merge: true` — the landing they configure is never armed", sd.Name)
+	}
+	switch sd.MergeStrategy {
+	case "", "squash", "merge":
+	default:
+		c.errorfAt(DiagBadTemplateRef, sd.Name, "",
+			"subbot %q has invalid merge_strategy %q; valid values are squash, merge", sd.Name, sd.MergeStrategy)
+		sd.MergeStrategy = ""
+	}
+	// merge_into reads FOLDED everywhere the intent is read — the opt-out
+	// (pkg/store.MergeIntoOptOut), the default, or a branch name git
+	// accepts. Anything else would compile and die at the child's finalize
+	// (merge_status=failed, the router's bounded retries, then the alert):
+	// refused where written instead, naming what was written. The value is
+	// kept as written — the compile error refuses the workflow, the field
+	// never silently becomes another target.
+	switch strings.ToLower(strings.TrimSpace(sd.MergeInto)) {
+	case "", "none", "current":
+	default:
+		if err := gitlib.ValidateBranchName(sd.MergeInto); err != nil {
+			c.errorfAt(DiagBadTemplateRef, sd.Name, "",
+				"subbot %q has invalid merge_into %q: %v — valid values are none, current, or a branch name", sd.Name, sd.MergeInto, err)
 		}
 	}
 }
@@ -1747,9 +1984,9 @@ func (c *compiler) compileWaits() {
 			c.errorfAt(DiagWaitNoTimeout, wd.Name, "",
 				"wait %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", wd.Name)
 		} else if d, err := time.ParseDuration(wd.Timeout); err != nil {
-			c.errorfAt(DiagWaitNoTimeout, wd.Name, "", "wait %q has an invalid `timeout:` %q: %v", wd.Name, wd.Timeout, err)
+			c.errorfAtProperty(DiagWaitNoTimeout, "wait", wd.Name, "timeout", "wait %q has an invalid `timeout:` %q: %v", wd.Name, wd.Timeout, err)
 		} else if d <= 0 {
-			c.errorfAt(DiagWaitNoTimeout, wd.Name, "", "wait %q `timeout:` must be positive, got %q", wd.Name, wd.Timeout)
+			c.errorfAtProperty(DiagWaitNoTimeout, "wait", wd.Name, "timeout", "wait %q `timeout:` must be positive, got %q", wd.Name, wd.Timeout)
 		} else {
 			timeout = d
 		}
@@ -1781,9 +2018,9 @@ func (c *compiler) compileAwaitAnswers() {
 			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "",
 				"await_answers %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", ad.Name)
 		} else if d, err := time.ParseDuration(ad.Timeout); err != nil {
-			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q has an invalid `timeout:` %q: %v", ad.Name, ad.Timeout, err)
+			c.errorfAtProperty(DiagAwaitAnswersNoTimeout, "await_answers", ad.Name, "timeout", "await_answers %q has an invalid `timeout:` %q: %v", ad.Name, ad.Timeout, err)
 		} else if d <= 0 {
-			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q `timeout:` must be positive, got %q", ad.Name, ad.Timeout)
+			c.errorfAtProperty(DiagAwaitAnswersNoTimeout, "await_answers", ad.Name, "timeout", "await_answers %q `timeout:` must be positive, got %q", ad.Name, ad.Timeout)
 		} else {
 			timeout = d
 		}
@@ -1822,7 +2059,7 @@ func (c *compiler) compileFails() {
 		if fd.Code != "" {
 			switch {
 			case !failCodePattern.MatchString(fd.Code):
-				c.errorfAt(DiagInvalidFailCode, fd.Name, "",
+				c.errorfAtProperty(DiagInvalidFailCode, "fail", fd.Name, "code",
 					"fail %q has `code: %s` — a failure code must be UPPER_SNAKE (e.g. PLAN_BUDGET_EXHAUSTED): it is persisted as the run's failure_code and read by machines",
 					fd.Name, fd.Code)
 			case store.FailureCode(fd.Code).Reserved():
@@ -1833,7 +2070,7 @@ func (c *compiler) compileFails() {
 				// is auto-retried as a transient fault, and a resumable
 				// fail re-runs the same guard — so every attempt burns
 				// for nothing.
-				c.errorfAt(DiagReservedFailCode, fd.Name, "",
+				c.errorfAtProperty(DiagReservedFailCode, "fail", fd.Name, "code",
 					"fail %q has `code: %s` — that code belongs to the engine and is read as control flow (auto-resume, usage-window retry); pick a name of the bot's own, e.g. PLAN_BUDGET_EXHAUSTED",
 					fd.Name, fd.Code)
 			default:
@@ -1883,11 +2120,18 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 		// Condition: either a simple field name (legacy) or a parsed expression.
 		if ae.When != nil {
 			if ae.When.Expr != "" {
-				ast, err := expr.Parse(ae.When.Expr)
+				ast, err := expr.ParseOn(ae.When.Expr, c.exprBudget)
 				if err != nil {
-					c.errorfAt(exprDiagCode(err), "", edgeID(ae.From, ae.To),
-						"edge %s -> %s: invalid `when` expression %q: %v",
-						ae.From, ae.To, ae.When.Expr, err)
+					// On the edge's own line: two edges may share their
+					// endpoints, and the id alone would name the first.
+					if code := exprDiagCode(err); code == DiagExprPastReadBudget {
+						c.errorfOnEdge(code, ae,
+							"edge %s -> %s: `when` expression: %v", ae.From, ae.To, err)
+					} else {
+						c.errorfOnEdge(code, ae,
+							"edge %s -> %s: invalid `when` expression %q: %v",
+							ae.From, ae.To, expr.Excerpt(ae.When.Expr), err)
+					}
 				} else {
 					e.Expression = ast
 					e.ExpressionSrc = ae.When.Expr
@@ -1908,11 +2152,53 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				if existing.MaxIterations != ae.Loop.MaxIterations ||
 					existing.MaxIterationsExpr != ae.Loop.MaxIterationsExpr ||
 					existing.Unbounded != ae.Loop.Unbounded {
-					c.errorf(DiagDuplicateLoop,
+					// On the edge that re-declares the loop, the two caps
+					// quoted around their first difference.
+					was, now := excerptPair(existing.MaxIterationsExpr, ae.Loop.MaxIterationsExpr)
+					c.errorfOnEdge(DiagDuplicateLoop, ae,
 						"loop %q has conflicting max_iterations: %d/%q vs %d/%q",
 						ae.Loop.Name,
-						existing.MaxIterations, existing.MaxIterationsExpr,
-						ae.Loop.MaxIterations, ae.Loop.MaxIterationsExpr)
+						existing.MaxIterations, was,
+						ae.Loop.MaxIterations, now)
+				}
+				// The guard clause is the loop's, so every edge that shares
+				// the loop must agree on it too — otherwise which word the
+				// guard obeys would depend on the edge the run happens to
+				// cross.
+				if existing.Guard != ae.Loop.Guard {
+					c.errorfOnEdge(DiagDuplicateLoop, ae,
+						"loop %q has conflicting guard settings: %q vs %q",
+						ae.Loop.Name, existing.Guard, ae.Loop.Guard)
+				}
+				// Same for the work signal: which traversal the guard
+				// prices cannot depend on the edge the run happens to
+				// cross.
+				if existing.SizedByExpr != ae.Loop.SizedBy {
+					was, now := excerptPair(existing.SizedByExpr, ae.Loop.SizedBy)
+					c.errorfOnEdge(DiagDuplicateLoop, ae,
+						"loop %q has conflicting sized_by signals: %q vs %q",
+						ae.Loop.Name, was, now)
+				}
+				if existing.MaxIterationsAST != nil && existing.capRecords > 0 {
+					// Every edge that carries the loop reads its cap again
+					// (validateLoopCapExpressions walks it per edge), so each
+					// spends it: a cap the bot reads N times costs it N
+					// readings, and the edge the count runs out on is refused
+					// as the first reading would have been.
+					if err := c.exprBudget.Spend(existing.capRecords); err != nil {
+						c.errorfOnEdge(DiagExprPastReadBudget, ae, "edge %s -> %s: loop %q cap, read again for this edge: %v", ae.From, ae.To, ae.Loop.Name, err)
+						if c.capRefused == nil {
+							c.capRefused = map[*Edge]bool{}
+						}
+						c.capRefused[e] = true
+					}
+				}
+				if existing.SizedByAST != nil && existing.sizeRecords > 0 {
+					// The work signal rides the same rule as the cap:
+					// validateLoopSizeExpressions reads it once per edge.
+					if err := c.exprBudget.Spend(existing.sizeRecords); err != nil {
+						c.errorfOnEdge(DiagExprPastReadBudget, ae, "edge %s -> %s: loop %q sized_by, read again for this edge: %v", ae.From, ae.To, ae.Loop.Name, err)
+					}
 				}
 			} else {
 				loop := &Loop{
@@ -1921,8 +2207,22 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 					MaxIterationsExpr: ae.Loop.MaxIterationsExpr,
 					Unbounded:         ae.Loop.Unbounded,
 					FuelCap:           ae.Loop.FuelCap,
+					Guard:             ae.Loop.Guard,
+					SizedByExpr:       ae.Loop.SizedBy,
+				}
+				// Same domain as the workflow's loop_budget_guard (C133):
+				// anything but on|off is a typo that would otherwise read
+				// as "inherit" and silently keep a guard the author meant
+				// to lift for this loop.
+				switch strings.ToLower(strings.TrimSpace(loop.Guard)) {
+				case "", "on", "off":
+				default:
+					c.errorfOnEdge(DiagInvalidLoopClauseGuard, ae,
+						"loop %q has invalid guard %q; valid values are on, off",
+						ae.Loop.Name, ae.Loop.Guard)
 				}
 				c.compileLoopCap(loop, ae)
+				c.compileLoopSize(loop, ae)
 				loops[ae.Loop.Name] = loop
 			}
 		}
@@ -1941,9 +2241,11 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				// edge walked a collection its author never wrote, with no
 				// diagnostic. The loop arm above refuses the same shape.
 				if existing.Item != ae.Foreach.Item || existing.CollectionRaw != ae.Foreach.Collection {
+					was, now := excerptPair(existing.CollectionRaw, ae.Foreach.Collection)
+					wasItem, nowItem := excerptPair(existing.Item, ae.Foreach.Item)
 					c.errorfOnEdge(DiagDuplicateForeach, ae,
 						"foreach %q is declared twice over different iteration: %q in %q, then %q in %q",
-						ae.Foreach.Name, existing.Item, existing.CollectionRaw, ae.Foreach.Item, ae.Foreach.Collection)
+						ae.Foreach.Name, wasItem, was, nowItem, now)
 				}
 			} else {
 				fe := &Foreach{
@@ -2138,6 +2440,7 @@ func (c *compiler) compileSecrets(block *ast.SecretsBlock, vars map[string]*Var)
 			Env:         f.Env,
 			Optional:    f.Optional,
 			Hosts:       f.Hosts,
+			Sinks:       f.Sinks,
 			Description: f.Description,
 		}
 	}
@@ -2745,7 +3048,7 @@ func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 			c.warnfAt(DiagQuotedCommandRef, node, "",
 				"tool %q %s: %s is raw (`!`) inside quotes you wrote — the runtime does not escape a raw reference, so your quotes are its only containment, and a value carrying a quote breaks out of them. "+
 					"Drop the `!` to let the runtime escape the value, or keep the quotes knowing where the value comes from.",
-				node, where, ref)
+				node, where, expr.Excerpt(ref))
 			continue
 		}
 		switch quotedRefNamespace(ref) {
@@ -2755,12 +3058,12 @@ func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 					"a value that reaches the shell from an artifact, an attachment or a loop counter is then command execution "+
 					"(this shape rendered its braces literally before these namespaces resolved in a tool body; it is refused rather than armed). "+
 					"Remove the surrounding quotes — `iterion fix` does.",
-				node, where, ref)
+				node, where, expr.Excerpt(ref))
 		default:
 			c.warnfAt(DiagQuotedCommandRef, node, "",
 				"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
 					"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
-				node, where, ref)
+				node, where, expr.Excerpt(ref))
 		}
 	}
 }

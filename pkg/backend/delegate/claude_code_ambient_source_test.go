@@ -1,0 +1,365 @@
+package delegate
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+)
+
+// ambientEnvSource renders the routing label of a session that inherits the
+// given ambient credential: "anthropic-env:<fingerprint>" — the account the
+// meter keys on, never the value itself.
+func ambientEnvSource(key string) string {
+	return ambientSourcePrefix + secrets.FingerprintSHA256(key)
+}
+
+// ambientSetSource renders the label of a multi-channel ambient set, through
+// the production renderer: the pairs ride in ambientCredentialChannels' order
+// with the header credential last, the order the request carries them.
+func ambientSetSource(pairs ...[2]string) string {
+	return ambientSourcePrefix + secrets.FingerprintSHA256(ambientCredentialSet(pairs))
+}
+
+// The pod's ambient key opens its own meter, named by its fingerprint and
+// carrying the value in clear nowhere: the label rides run records a
+// run-reader can open. A different key is a different account and renders a
+// different label — one meter per account is the point.
+func TestAnthropicRouteSource_TheAmbientKeyNamesItsOwnMeter(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod-1")
+	ctx := context.Background()
+	source, refused := AnthropicRouteSource(ctx, "")
+	if refused {
+		t.Fatal("an unpinned route on an unstamped run refused — the pod's ambient key is spendable")
+	}
+	want := ambientEnvSource("sk-pod-1")
+	if source != want {
+		t.Errorf("source = %q, want %q", source, want)
+	}
+	if strings.Contains(source, "sk-pod-1") {
+		t.Errorf("source %q carries the credential in clear — the label rides run records a run-reader can open", source)
+	}
+
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod-2")
+	if source, _ := AnthropicRouteSource(ctx, ""); source == want {
+		t.Errorf("a different ambient key rendered the same label %q — one meter per account is the point", source)
+	}
+}
+
+// A node's own key — an ExtraEnv entry on top of the pod's ambient one —
+// spends its own account on the real spawn path: what setupCredsAndSession
+// stamps names the node key's meter, never the pod's.
+func TestSetupCredsAndSession_ANodeEnvKeySpendsItsOwnMeter(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	ctx := context.Background()
+	task := Task{NodeID: "node-key", WorkDir: t.TempDir(), Command: "true", ExtraEnv: []string{"ANTHROPIC_API_KEY=sk-node"}}
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	opts, cleanup := b.buildTransportOptions(task)
+	defer cleanup()
+	_, stamped, _, err := b.setupCredsAndSession(ctx, task, opts)
+	if err != nil {
+		t.Fatalf("setupCredsAndSession: %v", err)
+	}
+	if want := ambientEnvSource("sk-node"); stamped != want {
+		t.Errorf("session label = %q, want %q — the node's own key is its own account", stamped, want)
+	}
+	if stamped == ambientEnvSource("sk-pod") {
+		t.Errorf("session label %q merged the node key's spend into the pod's meter", stamped)
+	}
+}
+
+// Nothing inherited anywhere is the bare label: the credential-less meter a
+// "Not logged in" refusal lands on, exactly as before the ambient label
+// existed.
+func TestAnthropicRouteSource_NoAmbientCredentialIsTheBareLabel(t *testing.T) {
+	clearRoutingEnv(t)
+	source, refused := AnthropicRouteSource(context.Background(), "")
+	if refused {
+		t.Fatal("a pod with no ambient auth refused before spawning")
+	}
+	if source != "anthropic-env" {
+		t.Errorf("source = %q, want the bare %q — a refusal is not an account", source, "anthropic-env")
+	}
+}
+
+// The meter moves only through the ambient credential channels: ExtraEnv
+// entries that name none of them — what the runner lane actually composes
+// (PATH provisioning, the engine-child marker) — leave the stamp where the
+// process env put it. That boundary is what keeps the pre-flight, which
+// composes no ExtraEnv, and the session on one meter (AnthropicRouteSource).
+func TestSetupCredsAndSession_ANonCredentialExtraEnvCannotMoveTheMeter(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	ctx := context.Background()
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	stamp := func(extra []string) string {
+		task := Task{NodeID: "env-noise", WorkDir: t.TempDir(), Command: "true", ExtraEnv: extra}
+		opts, cleanup := b.buildTransportOptions(task)
+		defer cleanup()
+		_, stamped, _, err := b.setupCredsAndSession(ctx, task, opts)
+		if err != nil {
+			t.Fatalf("setupCredsAndSession: %v", err)
+		}
+		return stamped
+	}
+	quiet := stamp(nil)
+	noisy := stamp([]string{
+		"PATH=/usr/bin:/bin",
+		envtrust.EngineChildEnvEntry(),
+		"ITERION_TEST_RUN_NOISE=1",
+	})
+	if noisy != quiet {
+		t.Errorf("ExtraEnv naming no credential channel moved the meter: %q != %q", noisy, quiet)
+	}
+	if noisy != ambientEnvSource("sk-pod") {
+		t.Errorf("session label = %q, want the pod key's %q", noisy, ambientEnvSource("sk-pod"))
+	}
+}
+
+// An inherited base URL routes the session through ambient wiring; the
+// credential it spends is still the inherited key, and the label keeps both
+// facts — the fingerprint keys the account, the URL keeps the endpoints the
+// fork guard compares apart.
+func TestAnthropicRouteSource_AnAmbientBaseURLKeepsTheCredentialInItsLabel(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "pod-token")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gateway.internal/anthropic")
+	source, refused := AnthropicRouteSource(context.Background(), "")
+	if refused {
+		t.Fatal("the ambient route refused")
+	}
+	want := ambientEnvSource("pod-token") + ":https://gateway.internal/anthropic"
+	if source != want {
+		t.Errorf("source = %q, want %q", source, want)
+	}
+	if fp, ok := AmbientSourceFingerprint(source); !ok || fp != secrets.FingerprintSHA256("pod-token") {
+		t.Errorf("AmbientSourceFingerprint(%q) = %q, %v — the runner reads the account out of this label", source, fp, ok)
+	}
+}
+
+// A cloud-provider switch set ON outranks every token: the credential is the
+// cloud account's, and no ambient key is fingerprinted into the label.
+func TestAnthropicRouteSource_ACloudSwitchLeavesNoAmbientKeyInTheLabel(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	source, refused := AnthropicRouteSource(context.Background(), "")
+	if refused {
+		t.Fatal("the bedrock route refused")
+	}
+	if source != "anthropic-env" {
+		t.Errorf("source = %q, want the bare %q — bedrock spends the cloud account, not the ambient key", source, "anthropic-env")
+	}
+}
+
+// The switch pod's two lanes name two meters, and that split is a fact of
+// the forwarding layer, not of the stamp: the host spawn inherits the switch
+// and boots the cloud mode (no ambient key is named), while the sandboxed
+// spawn carries no switch — ambientForwardedChannels deliberately keeps the
+// switches out, since a forwarded switch would boot the mode in the
+// container WITHOUT the cloud credential chains a host spawn inherits, and
+// its CLI spends the ambient key instead. That key is what the sandboxed
+// session actually bills, so its stamp keys it; the pre-flight cannot model
+// both lanes at once. The pair is the open switch-pod question
+// (fleet/arbitrations.md, ARB-w-usagecap-switch-pod) — this test pins the
+// sandboxed half so the meter the container spends cannot drift while the
+// question stands, and it is the row to flip in the same change that makes
+// the lanes agree.
+func TestAnthropicRouteSource_ACloudSwitchPodStampsTwoLaneMeters(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	ctx := context.Background()
+	preflight, refused := AnthropicRouteSource(ctx, "")
+	if refused {
+		t.Fatal("the bedrock route refused")
+	}
+	if preflight != ambientSourceFamily {
+		t.Errorf("pre-flight = %q, want the bare %q — the host lane boots the cloud mode, no ambient key is named", preflight, ambientSourceFamily)
+	}
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	task := Task{NodeID: "route-source-bedrock"}
+	task.Sandbox = &captureSandboxCmdRun{}
+	_, stamped, _, err := b.setupCredsAndSession(ctx, task, nil)
+	if err != nil {
+		t.Fatalf("sandboxed session: %v", err)
+	}
+	if want := ambientEnvSource("sk-pod"); stamped != want {
+		t.Errorf("sandboxed session stamps %q, want the ambient key's %q — that key is what the in-container CLI spends", stamped, want)
+	}
+}
+
+// The ambient fingerprint marker belongs to the resolver, like the facade
+// slot and the suppression marker it is pinned beside: an ExtraEnv entry
+// carrying ITERION_AMBIENT_CRED_FP cannot key the session's meter on a
+// fingerprint of the node's choosing. With no inherited credential the label
+// stays the bare family — the forged value never reaches it; with one, the
+// resolver's own fingerprint wins.
+func TestSetupCredsAndSession_ExtraEnvCannotForgeTheAmbientMarker(t *testing.T) {
+	clearRoutingEnv(t)
+	ctx := context.Background()
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	stamp := func(extra []string) string {
+		task := Task{NodeID: "env-forge", WorkDir: t.TempDir(), Command: "true", ExtraEnv: extra}
+		opts, cleanup := b.buildTransportOptions(task)
+		defer cleanup()
+		_, stamped, _, err := b.setupCredsAndSession(ctx, task, opts)
+		if err != nil {
+			t.Fatalf("setupCredsAndSession: %v", err)
+		}
+		return stamped
+	}
+	forge := AmbientCredFPEnvKey + "=" + secrets.FingerprintSHA256("chosen-by-the-node")
+	if got := stamp([]string{forge}); got != ambientSourceFamily {
+		t.Errorf("a forged ITERION_AMBIENT_CRED_FP on a pod with no ambient credential stamped %q, want the bare %q — provisioning cannot key the meter", got, ambientSourceFamily)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	if got := stamp([]string{forge}); got != ambientEnvSource("sk-pod") {
+		t.Errorf("a forged marker beside a real ambient key stamped %q, want the resolver's own %q", got, ambientEnvSource("sk-pod"))
+	}
+}
+
+// A pod carrying a key AND a bearer sends both on the wire — the CLI builds a
+// combined auth and sets x-api-key AND Authorization when both are live
+// (ambientCredChannels names the state) — so the meter keys the whole live
+// set, not whichever channel the list happens to start with. The label spells
+// the wire shape here rather than importing it, so a format change says so
+// here first.
+func TestAnthropicRouteSource_TheLiveChannelSetNamesTheMeter(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "pod-bearer")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	ctx := context.Background()
+	want := ambientSourcePrefix + secrets.FingerprintSHA256("ANTHROPIC_AUTH_TOKEN=10:pod-bearer\nANTHROPIC_API_KEY=6:sk-pod\n")
+	source, refused := AnthropicRouteSource(ctx, "")
+	if refused {
+		t.Fatal("a both-live pod refused")
+	}
+	if source != want {
+		t.Errorf("source = %q, want %q — both channels ride the request, the meter keys the set", source, want)
+	}
+	if source == ambientEnvSource("pod-bearer") {
+		t.Errorf("source %q keyed the set on the bearer alone — the key the request also sends is under-keyed", source)
+	}
+
+	// A node's own key beside the pod's bearer is another set: its sessions
+	// cannot merge into the pod account's meter.
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	task := Task{NodeID: "node-key", WorkDir: t.TempDir(), Command: "true", ExtraEnv: []string{"ANTHROPIC_API_KEY=sk-node"}}
+	opts, cleanup := b.buildTransportOptions(task)
+	defer cleanup()
+	_, stamped, _, err := b.setupCredsAndSession(ctx, task, opts)
+	if err != nil {
+		t.Fatalf("setupCredsAndSession: %v", err)
+	}
+	wantNode := ambientSourcePrefix + secrets.FingerprintSHA256("ANTHROPIC_AUTH_TOKEN=10:pod-bearer\nANTHROPIC_API_KEY=7:sk-node\n")
+	if stamped != wantNode {
+		t.Errorf("session label = %q, want %q", stamped, wantNode)
+	}
+	if stamped == want {
+		t.Errorf("session label %q merged the node key's spend into the pod's meter", stamped)
+	}
+
+	// A custom-header Authorization line REPLACES the bearer on the wire —
+	// the CLI applies the block last, by header name — and rides beside the
+	// key: the set is the key and the header credential, after the token
+	// channels under the block's name and its own, the bearer out of it.
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer gw-secret")
+	wantHeader := ambientSourcePrefix + secrets.FingerprintSHA256("ANTHROPIC_API_KEY=6:sk-pod\nANTHROPIC_CUSTOM_HEADERS:authorization=16:Bearer gw-secret\n")
+	if source, _ := AnthropicRouteSource(ctx, ""); source != wantHeader {
+		t.Errorf("source = %q, want %q — the header credential replaces the bearer it is applied over", source, wantHeader)
+	}
+}
+
+// A custom-header line named after a header the Anthropic wire's auth sets is
+// applied over it, last (claw's Identity.Apply, h.Set): an Authorization line
+// replaces every bearer channel, an x-api-key line the key, and a line whose
+// value is empty erases what it replaces — the request then carries no
+// credential under that name, and the meter keys none. A line of another name
+// replaces nothing on this wire. Each row is the account the request carries:
+// keying a channel the line displaced splits one account over two meters (the
+// claw lane keys what claw sends), and keying it on the displaced value
+// merges another account into this one.
+func TestAnthropicRouteSource_AHeaderLineReplacesTheChannelItNames(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"an Authorization line over the bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-secret"}, ambientEnvSource("Bearer hdr-secret")},
+		{"an Authorization line over the OAuth token", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-secret"}, ambientEnvSource("Bearer hdr-secret")},
+		{"an x-api-key line over the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "X-Tenant: acme\nx-api-key: hdr-key"}, ambientEnvSource("hdr-key")},
+		{"an empty Authorization line over the bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_CUSTOM_HEADERS": "Authorization:"}, ambientSourceFamily},
+		{"an empty x-api-key line over the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key:"}, ambientSourceFamily},
+		{"an empty Authorization line beside the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization:"}, ambientEnvSource("sk-pod")},
+		{"an api-key line beside the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "api-key: gw-key"}, ambientEnvSource("sk-pod")},
+		{"both lines over both tokens", map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key\nAuthorization: Bearer hdr-secret"},
+			ambientSetSource([2]string{"ANTHROPIC_CUSTOM_HEADERS:authorization", "Bearer hdr-secret"}, [2]string{"ANTHROPIC_CUSTOM_HEADERS:x-api-key", "hdr-key"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearRoutingEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			source, refused := AnthropicRouteSource(context.Background(), "")
+			if refused {
+				t.Fatal("the ambient route refused")
+			}
+			if source != tc.want {
+				t.Errorf("source = %q, want %q", source, tc.want)
+			}
+		})
+	}
+}
+
+// An Authorization line in the ambient ANTHROPIC_CUSTOM_HEADERS is a
+// credential the CLI applies OVER every route's auth
+// (overlayCustomHeaderCredentials): a pod authenticating through it keys its
+// own meter, not the bare credential-less label the per-borrower split
+// charges.
+func TestAnthropicRouteSource_AnAmbientAuthorizationHeaderNamesItsAccount(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Tenant: acme\nAuthorization: Bearer gw-secret")
+	source, refused := AnthropicRouteSource(context.Background(), "")
+	if refused {
+		t.Fatal("the header-authenticated pod refused")
+	}
+	if want := ambientEnvSource("Bearer gw-secret"); source != want {
+		t.Errorf("source = %q, want %q — the Authorization line is the credential this pod spends", source, want)
+	}
+	if source == ambientSourceFamily {
+		t.Errorf("source %q left the gateway-header spend on the bare credential-less label", source)
+	}
+}
+
+// IsAmbientSource answers the whole family — the bare form included — the
+// one spelling readers branch on; AmbientSourceFingerprint stays the narrow
+// half that also extracts the credential.
+func TestIsAmbientSource(t *testing.T) {
+	rows := []struct {
+		source string
+		want   bool
+	}{
+		{ambientSourceFamily, true},
+		{ambientSourcePrefix, true},
+		{ambientSourcePrefix + "abc", true},
+		{ambientSourcePrefix + "abc:https://gateway.internal/anthropic", true},
+		{"facade:zai:https://gateway.internal/anthropic", false},
+		{"facade:https://gateway.internal/anthropic", false},
+		{"anthropic-direct", false},
+		{"anthropic-oauth", false},
+		{"anthropic-suppressed", false},
+		{"anthropic-envx", false},
+		{"", false},
+	}
+	for _, r := range rows {
+		if got := IsAmbientSource(r.source); got != r.want {
+			t.Errorf("IsAmbientSource(%q) = %v, want %v", r.source, got, r.want)
+		}
+	}
+}

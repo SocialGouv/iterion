@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { LiveDot } from "@/components/ui/LiveDot";
-import type { GlobalActiveRun, RunSummary } from "@/api/runs";
+import { crossDaemonRunStore, globalRunStoreParam, type GlobalActiveRun, type RunSummary } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
 import { STUDIO_BASE, scopePrefix } from "@/lib/scope";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@/components/Runs/runStatusMeta";
 import { useGlobalActiveRuns } from "@/hooks/useGlobalActiveRuns";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
+import { EXPECTED_BIRTH_PARAM, expectedBirthWire, navigationBirthState } from "@/lib/lostRuns";
 
 interface Props {
   runs: RunSummary[];
@@ -56,8 +57,12 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
     console.warn("RunsPanel: listGlobalActiveRuns failed:", globalError);
   }
 
+  // The clicked row's birth travels with the navigation: the view it opens
+  // expects that run, whatever a later poll lists under the ID.
   const goToRun = (id: string) =>
-    setLocation(`/runs/${encodeURIComponent(id)}`);
+    setLocation(`/runs/${encodeURIComponent(id)}`, {
+      state: navigationBirthState(id, runs.find((r) => r.id === id)?.birth_id),
+    });
 
   const hasAnything =
     active.length > 0 || recent.length > 0 || otherRunning.length > 0;
@@ -119,7 +124,7 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
                       {r.name || r.workflow_name}
                     </span>
                     {r.name && r.workflow_name !== r.name && (
-                      <span className="block text-caption text-fg-subtle truncate">
+                      <span className="block text-caption text-fg-muted truncate">
                         {r.workflow_name}
                       </span>
                     )}
@@ -130,7 +135,7 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
                       ? ` · #${r.queue_position}`
                       : ""}
                   </Badge>
-                  <span className="text-caption text-fg-subtle shrink-0 w-16 text-right">
+                  <span className="text-caption text-fg-muted shrink-0 w-16 text-right">
                     {formatRelative(r.updated_at)}
                   </span>
                 </button>
@@ -181,32 +186,45 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
   );
 }
 
+// withRunStore appends `?store=<store>` to a run path; none for "".
+function withRunStore(path: string, store: string): string {
+  return store ? `${path}?store=${encodeURIComponent(store)}` : path;
+}
+
+// fullPageRunPath is a run view path a full page load opens: `?store=` for a
+// foreign store (outside the guarantee), else the clicked row's birth as
+// `?expected_birth=` — the page registry does not survive the load, so the
+// birth rides in the URL and the destination pins it before its first
+// request.
+export function fullPageRunPath(path: string, store: string, birth: string | undefined): string {
+  if (store) return withRunStore(path, store);
+  return typeof birth === "string" ? `${path}?${EXPECTED_BIRTH_PARAM}=${encodeURIComponent(expectedBirthWire(birth))}` : path;
+}
+
 // openRunCrossDaemon resolves the daemon URL serving the given run's
-// store and navigates to its /runs/<id> route. When the resolved
-// daemon's store dir DOESN'T match the run's store_path (typically:
-// global ~/.iterion/runs/ runs viewed from a per-project daemon), the
-// `?store=<store_path>` query is appended so the daemon's read
-// handlers route via the cross-store proxy (pkg/server/runs.go::
-// resolveCrossStore) and the SPA's API helpers
-// (readStoreOverrideFromURL in api/runs.ts) carry the override on
-// every subsequent fetch. Errors fall back to a same-daemon
-// navigation so the worst case is the historical 404, not a swallowed
-// click.
+// store and navigates to its /runs/<id> route. `?store=<store_path>` is
+// appended only when the destination daemon's own store is not the run's
+// store (typically: a global ~/.iterion run viewed from a per-project
+// daemon), so its read handlers route via the cross-store proxy
+// (pkg/server/runs.go::resolveCrossStore) — a cross-store view, outside the
+// expected-birth guarantee. A run of the destination's own store opens as
+// that daemon's run and keeps it (crossDaemonRunStore), the row's birth
+// carried in the URL (fullPageRunPath). Errors fall back to a same-daemon
+// navigation so the worst case is the historical 404, not a swallowed click.
 async function openRunCrossDaemon(run: GlobalActiveRun): Promise<void> {
   // A full document navigation, so wouter's router base does not apply and
   // the prefix is written out. STUDIO_BASE and not studioBase(): the
   // destination is another daemon's origin, which has no pane scope of ours.
   const target = `${STUDIO_BASE}/runs/${encodeURIComponent(run.id)}`;
-  // Always carry the run's store_path as a query so the destination
-  // daemon's read handlers know which store to read from when the
-  // run lives outside the daemon's primary store. Same-store
-  // navigations include the param harmlessly — the handler accepts
-  // it and the path validates under $HOME/.iterion either way.
-  const targetWithStore = `${target}?store=${encodeURIComponent(run.store_path)}`;
   try {
     const daemonURL = await desktop.getDaemonURLForStore(run.store_path);
     if (daemonURL) {
-      window.location.replace(daemonURL.replace(/\/$/, "") + targetWithStore);
+      const current = await desktop.getServerURL().catch((err: unknown) => {
+        console.warn("openRunCrossDaemon: GetServerURL failed — the run's store is named:", err);
+        return "";
+      });
+      const store = crossDaemonRunStore(run, daemonURL, current);
+      window.location.replace(daemonURL.replace(/\/$/, "") + fullPageRunPath(target, store, run.birth_id));
       return;
     }
   } catch (err) {
@@ -215,10 +233,9 @@ async function openRunCrossDaemon(run: GlobalActiveRun): Promise<void> {
     }
   }
   // Fallback: current daemon — so unlike the cross-daemon branch above, this
-  // one is the SAME origin and must keep a workspace pane's /x/<id>. Still
-  // carrying ?store= so the per-project daemon can proxy reads from the
-  // foreign store.
-  window.location.assign(scopePrefix() + targetWithStore);
+  // one is the SAME origin and must keep a workspace pane's /x/<id>. It names
+  // the run's store unless it is this daemon's own.
+  window.location.assign(scopePrefix() + fullPageRunPath(target, globalRunStoreParam(run), run.birth_id));
 }
 
 function GlobalRunRow({ run }: { run: GlobalActiveRun }) {
@@ -287,14 +304,17 @@ function GlobalRunRow({ run }: { run: GlobalActiveRun }) {
   // OR a transient render before Wails injects window.go.main.App).
   // Both observed: the SPA was loaded via http://<daemon>/ instead of
   // wails://wails.localhost/, so the click navigates same-daemon and
-  // MUST still carry the store= query so the destination daemon's
-  // cross-store proxy can read from the foreign store. Without this,
+  // MUST still carry the store= query for a run of a foreign store so this
+  // daemon's cross-store proxy can read from it. Without this,
   // /api/runs/<id> 404s with "open ... no such file or directory"
   // (observed: store_path=~/.iterion run viewed from a per-project
-  // daemon).
+  // daemon). A run of this daemon's own store names none and carries the
+  // row's birth in the navigation's state.
+  const store = globalRunStoreParam(run);
   return (
     <Link
-      href={`/runs/${encodeURIComponent(run.id)}?store=${encodeURIComponent(run.store_path)}`}
+      href={withRunStore(`/runs/${encodeURIComponent(run.id)}`, store)}
+      state={store ? undefined : navigationBirthState(run.id, run.birth_id)}
       className="w-full px-4 py-2.5 flex items-center gap-3 bg-info-soft/20 hover:bg-info-soft/40 border-l-2 border-info"
     >
       {inner}

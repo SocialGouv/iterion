@@ -22,6 +22,14 @@ export function formatCredentialFingerprint(fingerprint: string, length = 8): st
   return digest.slice(0, length);
 }
 
+// shortKeyID renders a key id compactly enough for a table cell, keeping
+// its TAIL: a key id is a uuid, and the tail is what tells two keys of one
+// lender apart at a glance. The full id belongs in the cell's title.
+export function shortKeyID(keyID?: string): string {
+  if (!keyID) return "";
+  return keyID.length <= 12 ? keyID : `…${keyID.slice(-8)}`;
+}
+
 // formatDurationBetween computes an ISO-string duration. Returns null
 // when the input is malformed; falls back to "now" when end is omitted
 // (live ticker case).
@@ -58,6 +66,10 @@ export interface ContextUsage {
   pct: number;
   label: string;
   title: string;
+  /** Tokens used, clamped to the window — a gauge's aria-valuenow. */
+  now: number;
+  /** The window, i.e. a gauge's aria-valuemax. */
+  max: number;
 }
 
 export function formatContextUsage(
@@ -70,6 +82,12 @@ export function formatContextUsage(
     pct,
     label: `${formatTokens(used)}/${formatTokens(window)}`,
     title: `context: ${used.toLocaleString("en-US")} / ${window.toLocaleString("en-US")} tokens (${Math.round(pct)}%)`,
+    // A proxy can report more usage than the window it declares, which is
+    // why `pct` is clamped — a gauge built on these has to be clamped the
+    // same way or it announces an out-of-range value. The true figures stay
+    // in `title`.
+    now: Math.min(used, window),
+    max: window,
   };
 }
 

@@ -7,16 +7,18 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/google/uuid"
-	"golang.org/x/text/unicode/norm"
+
+	"github.com/SocialGouv/iterion/pkg/authoringlock"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // A lock serializes the server's participating writers across processes and
@@ -40,14 +42,7 @@ type authoringDirectory struct {
 }
 
 func openAuthoringDirectory(path string) (*authoringDirectory, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("unsafe authoring directory %s", path)
-	}
-	file, err := openAuthoringDirectoryFile(path, info)
+	file, info, err := authoringlock.OpenPinnedDir(path)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +78,7 @@ func (d *authoringDirectory) read(name string, limit int64) ([]byte, os.FileInfo
 	if !info.Mode().IsRegular() {
 		return nil, info, errors.New("authoring file is not regular")
 	}
-	f, err := openAuthoringFileAt(d.file, name, os.O_RDONLY, 0)
+	f, err := authoringlock.OpenFileAt(d.file, name, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -113,7 +108,7 @@ func (d *authoringDirectory) links(name string) (uint64, error) {
 	if !info.Mode().IsRegular() {
 		return 0, errors.New("authoring file is not regular")
 	}
-	f, err := openAuthoringFileAt(d.file, name, os.O_RDONLY, 0)
+	f, err := authoringlock.OpenFileAt(d.file, name, os.O_RDONLY, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -131,8 +126,6 @@ func (d *authoringDirectory) links(name string) (uint64, error) {
 // errAuthoringReadLimit is a read that met its limit before the file's end:
 // the bytes it answers are the limit's and one more, never the file whole.
 var errAuthoringReadLimit = errors.New("authoring file exceeds the read limit")
-
-var authoringControlName = regexp.MustCompile(`^(?:[a-f0-9]{64}\.lock|[a-f0-9-]{36}\.(?:record|candidate|before|undo))$`)
 
 // authoringListingHook is a test seam: called with an entry's name before
 // each inspection of an entry a control-directory listing holds, so a test
@@ -193,13 +186,7 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 			l.close()
 		}
 	}()
-	if err := mkdirAuthoringAt(parent.file, ".iterion"); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-	}
-	// A concurrent creator may not have flushed this directory entry yet.
-	if err := syncAuthoringDirectory(parent.file); err != nil {
+	if err := authoringlock.EnsureDir(parent.file, authoringlock.RecoveryDirName); err != nil {
 		return nil, err
 	}
 	// An operator-owned .iterion symlink may point to another disk. It is a
@@ -227,15 +214,10 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 		return nil, err
 	}
 	defer iterion.close()
-	if err := validateAuthoringOwnership(iterion.file, false); err != nil {
+	if err := authoringlock.ValidateOwnership(iterion.file, false); err != nil {
 		return nil, err
 	}
-	if err := mkdirAuthoringAt(iterion.file, "authoring"); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-	}
-	if err := syncAuthoringDirectory(iterion.file); err != nil {
+	if err := authoringlock.EnsureDir(iterion.file, authoringlock.ControlDirName); err != nil {
 		return nil, err
 	}
 	if err := iterion.verify(); err != nil {
@@ -247,7 +229,7 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 		return nil, err
 	}
 	l.control = control
-	if err := validateAuthoringOwnership(control.file, true); err != nil {
+	if err := authoringlock.ValidateOwnership(control.file, true); err != nil {
 		return nil, err
 	}
 	if err := l.verify(); err != nil {
@@ -255,22 +237,15 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 	}
 	// Exclusion precedes lock, candidate, journal and recovery data. Never
 	// rewrite an existing user ignore file or silently accept a tracked layout.
-	ignore, err := openAuthoringFileAt(control.file, ".gitignore", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err == nil {
-		_, writeErr := ignore.WriteString("*\n")
-		err = errors.Join(writeErr, ignore.Sync(), ignore.Close(), syncAuthoringDirectory(control.file))
-	} else if errors.Is(err, os.ErrExist) {
-		err = nil
-	}
-	if err != nil {
+	if err := authoringlock.EnsureExclusion(control.file); err != nil {
 		return nil, err
 	}
 	authoringExclusionWindow()
 	body, err := readAuthoringIgnore(ctx, control)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, authoringControlVanished("exclusion", "opening the control directory", filepath.Join(control.path, ".gitignore"), err)
+		return nil, authoringControlVanished("exclusion", "opening the control directory", filepath.Join(control.path, authoringlock.ExclusionName), err)
 	}
-	if err != nil || string(body) != "*\n" {
+	if err != nil || string(body) != authoringlock.ExclusionBody {
 		return nil, fmt.Errorf("unsafe authoring ignore file in %s: %w", control.path, errors.Join(err, errors.New("expected private * exclusion")))
 	}
 	if err := validateAuthoringGitExclusion(ctx, control.path); err != nil {
@@ -307,13 +282,13 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 	// audit passed is not a directory that stays that way — the checks that
 	// still matter afterwards run where the entry is read.
 	for _, name := range names {
-		if name != ".gitignore" && !authoringControlName.MatchString(name) {
+		if !authoringlock.IsControlEntry(name) {
 			return nil, fmt.Errorf("unexpected authoring control entry: %s", filepath.Join(control.path, name))
 		}
 		// Displaced objects are retained even when an external writer replaced
 		// the live path with a symlink or another non-regular object. Never follow
 		// those objects. All other private files must remain owned regular files.
-		if strings.HasSuffix(name, ".before") || strings.HasSuffix(name, ".undo") {
+		if authoringlock.IsDisplacedEntry(name) {
 			continue
 		}
 		authoringListingWindow(name)
@@ -327,41 +302,35 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("unsafe authoring control file: %s", name)
 		}
-		if name == ".gitignore" || strings.HasSuffix(name, ".lock") || strings.HasSuffix(name, ".record") {
+		if authoringlock.IsPrivateEntry(name) {
 			authoringListingWindow(name)
-			f, err := openAuthoringFileAt(control.file, name, os.O_RDONLY, 0)
+			f, err := authoringlock.OpenFileAt(control.file, name, os.O_RDONLY, 0)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			if err != nil {
 				return nil, err
 			}
-			err = errors.Join(validateAuthoringOwnership(f, true), f.Close())
+			err = errors.Join(authoringlock.ValidateOwnership(f, true), f.Close())
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
 	authoringListingWindow("")
-	// Conservative folding also serializes differently cased spellings on
-	// case-insensitive filesystems. Extra contention on sensitive filesystems
-	// is harmless. NFC coalesces Darwin's composed/decomposed name aliases.
-	base := filepath.Base(abs)
-	if canonical, err := filepath.EvalSymlinks(abs); err == nil {
-		canonicalParent, err := os.Stat(filepath.Dir(canonical))
-		if err != nil {
-			return nil, err
+	// The name and the fold are the bridge's: every writer of this file —
+	// the editors here, the CLI writers, the catalogue regeneration, the
+	// installers — must compute the same lock, and an agreement test holds
+	// these two takes to it.
+	base, err := authoringlock.CanonicalBase(abs, parent.info)
+	if err != nil {
+		if errors.Is(err, authoringlock.ErrAliasParentChanged) {
+			return nil, authoringConflictError{err.Error()}
 		}
-		if !os.SameFile(parent.info, canonicalParent) {
-			return nil, authoringConflictError{"authoring destination alias changed its parent"}
-		}
-		base = filepath.Base(canonical)
-	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	name := strings.ToLower(norm.NFC.String(normalizeAuthoringLockName(base)))
-	l.lockName = contentSHA256(name) + ".lock"
-	f, err := openAuthoringFileAt(control.file, l.lockName, os.O_CREATE|os.O_RDWR, 0o600)
+	l.lockName = authoringlock.LockFileName(base)
+	f, err := authoringlock.OpenFileAt(control.file, l.lockName, os.O_CREATE|os.O_RDWR, 0o600)
 	if errors.Is(err, os.ErrNotExist) {
 		// A name this open creates is never the one that is missing: the
 		// directory the audit just answered for is no longer linked
@@ -377,14 +346,14 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 		if !l.lockInfo.Mode().IsRegular() {
 			err = errors.New("authoring lock is not a regular file")
 		} else {
-			err = validateAuthoringOwnership(f, true)
+			err = authoringlock.ValidateOwnership(f, true)
 		}
 	}
 	err = errors.Join(err, f.Close())
 	if err != nil {
 		return nil, err
 	}
-	l.flock = flock.New(filepath.Join(control.path, l.lockName), flock.SetFlag(authoringLockOpenFlags()), flock.SetPermissions(0o600))
+	l.flock = flock.New(filepath.Join(control.path, l.lockName), flock.SetFlag(authoringlock.OpenFlags()), flock.SetPermissions(0o600))
 	ok = true
 	return l, nil
 }
@@ -399,7 +368,7 @@ func readAuthoringIgnore(ctx context.Context, control *authoringDirectory) ([]by
 	for {
 		// Read with room to spare: a file that is not the two bytes `*\n`
 		// is refused for what it holds, not for its length.
-		body, _, err := control.read(".gitignore", 64)
+		body, _, err := control.read(authoringlock.ExclusionName, 64)
 		if err != nil || len(body) != 0 {
 			return body, err
 		}
@@ -422,7 +391,7 @@ func readAuthoringIgnore(ctx context.Context, control *authoringDirectory) ([]by
 // exclusion is answered for here, not there.
 func checkLockedAuthoringExclusion(ctx context.Context, control *authoringDirectory) error {
 	vanished := func(err error) error {
-		return authoringControlVanished("exclusion", "acquiring lock", filepath.Join(control.path, ".gitignore"), err)
+		return authoringControlVanished("exclusion", "acquiring lock", filepath.Join(control.path, authoringlock.ExclusionName), err)
 	}
 	body, err := readAuthoringIgnore(ctx, control)
 	if errors.Is(err, os.ErrNotExist) {
@@ -431,17 +400,17 @@ func checkLockedAuthoringExclusion(ctx context.Context, control *authoringDirect
 	if err != nil {
 		return err
 	}
-	if string(body) != "*\n" {
+	if string(body) != authoringlock.ExclusionBody {
 		return authoringConflictError{"authoring exclusion changed while acquiring lock"}
 	}
-	f, err := openAuthoringFileAt(control.file, ".gitignore", os.O_RDONLY, 0)
+	f, err := authoringlock.OpenFileAt(control.file, authoringlock.ExclusionName, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return vanished(err)
 	}
 	if err != nil {
 		return err
 	}
-	return errors.Join(validateAuthoringOwnership(f, true), f.Close())
+	return errors.Join(authoringlock.ValidateOwnership(f, true), f.Close())
 }
 
 func validateAuthoringGitExclusion(ctx context.Context, dir string) error {
@@ -465,7 +434,7 @@ func validateAuthoringGitExclusion(ctx context.Context, dir string) error {
 				// repository" from Git while its INDEX still names staged
 				// files — one restored HEAD line and the recovery is tracked
 				// again. Git cannot answer for it, so that one refuses.
-				if strings.Contains(err.Error(), "not a git repository") {
+				if errors.Is(err, gitlib.ErrNotGitRepo) {
 					if authoringGitIndexStagesFiles(filepath.Join(p, ".git")) {
 						return fmt.Errorf("verify authoring Git exclusion: %w (git cannot read this repository but its index still stages files)", err)
 					}
@@ -717,7 +686,7 @@ func (l *authoringLocalLock) writeEditorFile(check storedCheck, content []byte, 
 		return err
 	}
 	flags := os.O_WRONLY | os.O_CREATE
-	f, err := openAuthoringFileAt(l.parent.file, filepath.Base(l.path), flags, 0o644)
+	f, err := authoringlock.OpenFileAt(l.parent.file, filepath.Base(l.path), flags, 0o644)
 	if err != nil {
 		return err
 	}
@@ -769,7 +738,7 @@ func (l *authoringLocalLock) replaceFile(check storedCheck, content []byte, igno
 		mode = info.Mode().Perm()
 	}
 	staged := "." + name + ".replace-" + uuid.NewString()
-	f, err := openAuthoringFileAt(l.parent.file, staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	f, err := authoringlock.OpenFileAt(l.parent.file, staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
@@ -808,7 +777,7 @@ func (l *authoringLocalLock) replaceFile(check storedCheck, content []byte, igno
 		return err
 	}
 	renamed = true
-	return syncAuthoringDirectory(l.parent.file)
+	return authoringlock.SyncDirectory(l.parent.file)
 }
 
 type authoringRecovery struct {
@@ -841,7 +810,14 @@ func prepareAuthoringLocal(l *authoringLocalLock, p authoringPreviewFile, ignore
 	}
 	mode := os.FileMode(0o644)
 	if p.Operation != "create" {
-		body, info, err := l.parent.read(filepath.Base(l.path), int64(currentAuthoringLimits().maxTotalBytes))
+		// The destination is read WHOLE, like the single-file door reads
+		// its own: the read budget is the journal's reading bound (#480),
+		// not a save's. Bounded here, a file past the budget could never
+		// be compared against its Before — every save of it answered 500
+		// while the same file through the single-file door answered 200
+		// (#2661). The bot that results is still held to read whole by
+		// saveUnit's own check on the written result.
+		body, info, err := l.parent.read(filepath.Base(l.path), math.MaxInt64-1)
 		if err != nil {
 			return nil, err
 		}
@@ -860,7 +836,7 @@ func prepareAuthoringLocal(l *authoringLocalLock, p authoringPreviewFile, ignore
 		tx.expectedInfo = info
 		mode = info.Mode().Perm()
 	}
-	journal, err := openAuthoringFileAt(l.control.file, tx.name("record"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	journal, err := authoringlock.OpenFileAt(l.control.file, tx.name("record"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -871,7 +847,7 @@ func prepareAuthoringLocal(l *authoringLocalLock, p authoringPreviewFile, ignore
 	if err = tx.step("prepare"); err != nil {
 		return tx, err
 	}
-	candidate, err := openAuthoringFileAt(l.control.file, tx.name("candidate"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	candidate, err := authoringlock.OpenFileAt(l.control.file, tx.name("candidate"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return tx, err
 	}
@@ -884,7 +860,7 @@ func prepareAuthoringLocal(l *authoringLocalLock, p authoringPreviewFile, ignore
 	if err != nil {
 		return tx, err
 	}
-	if err = syncAuthoringDirectory(l.control.file); err != nil {
+	if err = authoringlock.SyncDirectory(l.control.file); err != nil {
 		return tx, err
 	}
 	return tx, tx.stage("prepared")
@@ -926,7 +902,7 @@ func (tx *authoringLocalTransaction) move(stage string, from *authoringDirectory
 	return renameAuthoringAt(from.file, fromName, to.file, toName)
 }
 func (tx *authoringLocalTransaction) syncDirs() error {
-	return errors.Join(syncAuthoringDirectory(tx.lock.parent.file), syncAuthoringDirectory(tx.lock.control.file))
+	return errors.Join(authoringlock.SyncDirectory(tx.lock.parent.file), authoringlock.SyncDirectory(tx.lock.control.file))
 }
 func (tx *authoringLocalTransaction) publish() error {
 	l := tx.lock

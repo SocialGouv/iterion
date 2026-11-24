@@ -33,20 +33,26 @@ export default function CommentsEditor() {
         <div key={i} className="mb-3 p-2 bg-surface-1 rounded border border-border-default">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-fg-subtle">## Comment {i + 1}</span>
+            {/* Sibling cards repeat the visible "Delete"; the comment
+                position is what a screen reader needs to tell them apart. */}
             <Button
               variant="ghost"
               size="sm"
               className="text-danger hover:text-danger-fg"
+              aria-label={`Delete comment ${i + 1}`}
               onClick={() => removeComment(i)}
             >
               Delete
             </Button>
           </div>
+          {/* The placeholder is not a name: the card's position names the
+              field, matching the "## Comment N" header above it. */}
           <Textarea
             value={comment.text}
             onChange={(e) => updateComment(i, e.target.value)}
             rows={2}
             placeholder="Comment text..."
+            aria-label={`Comment ${i + 1} text`}
           />
         </div>
       ))}

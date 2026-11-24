@@ -20,6 +20,11 @@ func TestDeriveSourceKind(t *testing.T) {
 		{"dispatcher", store.Run{Source: &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: "native:1"}}, "dispatcher"},
 		{"studio chat", store.Run{Source: &store.RunSource{Kind: store.RunSourceKindStudioChat, ClientID: "browser", ConversationID: "tab"}}, "studio_chat"},
 		{"webhook owner", store.Run{OwnerID: "webhook:gitlab"}, "webhook"},
+		// The TYPED webhook provenance the launch path now stamps (#1501):
+		// same classifier value as the structural owner-prefix row above —
+		// the kind adds a delivery back-reference, not a new word for any
+		// reader.
+		{"webhook typed", store.Run{Source: &store.RunSource{Kind: store.RunSourceKindWebhook, DeliveryID: "d-1"}}, "webhook"},
 		{"fork", store.Run{ForkedFrom: "run-parent"}, "fork"},
 		{"shard", store.Run{ParentRunID: "run-parent"}, "shard"},
 		// Typed provenance outranks the structural fallbacks.

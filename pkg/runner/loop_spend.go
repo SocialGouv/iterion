@@ -2,7 +2,7 @@ package runner
 
 import (
 	"context"
-	"errors"
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -76,6 +76,20 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 		}
 		cancel()
+		// The fork review lane's SECOND charge (ADR-162 decision 5): the
+		// same spend on the pull request author's own subject, beside the
+		// org's — the dollars are charged where spend is measured, so the
+		// per-contributor bound's ceiling reads what the run actually
+		// spent, not a server-side guess. The subject rides the message
+		// exactly as the gate composed it (never re-derived here), and a
+		// message without one is a trusted run's — nothing to charge.
+		if msg.ForkAuthorSubject != "" {
+			bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
+			if err := r.cfg.OrgUsage.AddSpend(bg, orgusage.Subject(msg.ForkAuthorSubject), now, costUSD, in, out, aggregate); err != nil {
+				r.cfg.Logger.Warn("runner: fork-author spend record for %s (run %s): %v", msg.ForkAuthorSubject, msg.RunID, err)
+			}
+			cancel()
+		}
 	}
 }
 
@@ -164,9 +178,9 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if r.cfg.CredPool == nil || usage == nil {
 		return
 	}
-	if errors.Is(execErr, runtime.ErrResumeSuperseded) {
-		// The run's open lease is the newer attempt's: this delivery ran
-		// nothing, and its report would close that lease under it.
+	if stoppedAttempt(execErr) {
+		// This delivery executed nothing. Its report must not close the lease
+		// belonging to the execution state that replaced its snapshot.
 		return
 	}
 	if msg.PoolGrantless {
@@ -182,39 +196,114 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// leaves execErr saying only "paused". Without this the donor's dead
 	// credential stays first in the rotation and pauses the next run too,
 	// costing them a unit of their daily quota every time.
-	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
-		condition = credpool.ConditionAuthFailed
+	//
+	//
+	// It outranks a usage window too — as the COARSE answer, the one every
+	// lease takes when the attempt's verdicts cannot be told apart by
+	// credential. A chain whose one route met a window and another a dead
+	// credential stops on the window (the run waits for it, #3032), so
+	// execErr reads as a window; resting a dead donor on that window's
+	// cooldown would hand the credential back, still dead, the moment the
+	// window reopened.
+	//
+	// Which of the two the donor's credential met is a fact of the route it
+	// served, and the route verdicts carry it: the fine condition table
+	// (usage.fineConditions) places each verdict on the credential its route
+	// spent, and the broker gives each lease its own row — a healthy donor
+	// whose subscription met the window rests on it while the team key that
+	// was dead takes the blame, in whichever order the chain walked them.
+	if condition != credpool.ConditionAuthFailed && usage.SawAuthFailure() {
+		condition, cooldownUntil = credpool.ConditionAuthFailed, time.Time{}
 	}
 	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
-	// The report carries this delivery's attempt identity — its
-	// publication — so a superseding acquisition's lease is never closed or
-	// charged by a previous attempt's late teardown report. A publication
-	// that cannot be read falls back to the open lease inside the broker.
+	// The report carries this delivery's attempt identity — the attempt id
+	// its publication stamped on its pool leases, and its publication
+	// instant — so a superseding acquisition's lease is never closed or
+	// charged by a previous attempt's late teardown report. A message
+	// without the id pins by the instant; a publication that cannot be read
+	// falls back to the open lease inside the broker.
 	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
 	if perr != nil {
 		publishedAt = time.Time{}
 	}
-	// NO fine table rides yet (ADR-121 § Delivery 2, #2255): the emitter's
-	// route key names a CHANNEL (providerFingerprint's routing label), not
-	// a credential - the run's own OAuth and a donor's lent OAuth stamp the
-	// same label, so a table keyed on it cannot tell whose money spent, and
-	// the broker would book zero on every door-served run (revi R30d246).
-	// The coarse whole-attempt booking stands until the publisher stamps a
-	// node-to-credential-fingerprint plan into the message; the broker's
-	// fine consumer (Outcome.ByFingerprint + effectiveCharge) is shipped
-	// and tested, waiting for that producer.
-	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
+	// The fine table rides when the publisher stamped its plan (#2288,
+	// ADR-121 § Delivery 2): the emitter's route key names a CHANNEL
+	// (providerFingerprint's routing label), not a credential - the run's
+	// own OAuth and a donor's lent OAuth stamp the same label, so a table
+	// keyed on it cannot tell whose money spent (revi R30d246). The plan
+	// does: it names, per node and serving provider, the fingerprint of the
+	// sealed credential, and the emitter groups the attempt's spend by it.
+	// The broker's fine consumer (Outcome.ByFingerprint + effectiveCharge)
+	// then books only the lease credential's slice. A publication without
+	// a plan - an older publisher, or a routing walk the publisher could
+	// not read - reports no table and keeps the coarse whole-attempt
+	// booking, which is the conservative-on-ignore direction.
+	//
+	// The runner holds the same line at run time: a stamped plan whose keys
+	// answered nothing for some observation the attempt PAID for reports no
+	// table either (fineFingerprintSpend). A runtime node the walk cannot
+	// see (a claw subagent loop's `subagent:*` id, a model the agent tool
+	// named), a served model whose prefix names no provider, a spec that
+	// drifted from its launch reading — each slice may have run on the
+	// lease's own credential, and a table without it would book the donor
+	// short, letting spend past their MaxUSDPerDay ride the unplaced calls.
+	// A fallback chain's folded figure is no such slice: its event itemises
+	// the abandoned routes' spend, each joined on its own row
+	// (observeDelegate).
+	// One line at the report names the fall-back, so a run that keeps
+	// losing its fine booking is visible; a plan-less publication, or a
+	// plan every observation joined (env-funded routes are placed on nobody
+	// by design, never a miss), needs no line.
+	byFingerprint, miss := fineFingerprintSpend(usage)
+	if disagreed := usage.planDisagreements(); disagreed > 0 {
+		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %d observation(s) spent a credential other than the one the stamped plan predicted for their node — each books on the fingerprint its own credential keys name (ADR-161 decision 8), the plan being a prediction", msg.RunID, disagreed)
+	}
+	if miss.observations > 0 {
+		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg — or a route that drifted from its launch reading) — no fine table rides, the lease books the whole attempt", msg.RunID, miss.observations, miss.costUSD, miss.tokens)
+	}
+	if err := r.cfg.CredPool.ReportAttemptID(bg, msg.RunID, msg.PoolAttemptID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,
 		OutputTokens:    out,
 		AggregateTokens: aggregate,
 		Condition:       condition,
 		CooldownUntil:   cooldownUntil,
+		Conditions:      usage.fineConditions(),
 		Interim:         interim,
+		ByFingerprint:   byFingerprint,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %v (the donor's slot frees on lease expiry)", msg.RunID, err)
 	}
+}
+
+// fineFingerprintSpend builds the report's per-credential table from the
+// emitter's plan-keyed grouping, in a stable order so two reports of the
+// same attempt carry the same rows. The nil-vs-present distinction is the
+// broker's contract: NIL keeps the coarse whole-attempt booking, a present
+// table — even an empty one — books only the lease credential's slice.
+//
+// Nil when the publication carried no plan, AND when any observation the
+// plan is supposed to answer joined none of its keys (the returned miss
+// says how much): a table is sent only when it places every call the
+// attempt paid for, the runtime twin of model.CredentialPlan refusing a
+// partial plan. A table missing a slice would book the lease short of
+// whatever of that slice ran on its credential, and nothing downstream
+// could tell.
+func fineFingerprintSpend(usage *metricsEmitter) ([]credpool.FingerprintSpend, planMiss) {
+	if usage == nil || len(usage.credPlan) == 0 {
+		return nil, planMiss{}
+	}
+	rows, miss := usage.fineSnapshot()
+	if miss.observations > 0 {
+		return nil, miss
+	}
+	out := make([]credpool.FingerprintSpend, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Fingerprint < out[j].Fingerprint })
+	return out, miss
 }
 
 // classifyPoolCondition maps a terminal execution error onto what it means
@@ -233,9 +322,10 @@ func classifyPoolCondition(execErr error, now time.Time) (credpool.Condition, ti
 	// text-parsed fallback — a runner with no dispatcher classifies
 	// nothing, and the pool must still rest the donor rather than send the
 	// next run into the same shut window.
-	if at, _, ok := usageWindowEvidence(execErr); ok {
+	if ev, ok := usageWindowEvidence(execErr, now); ok {
+		at := ev.resetAt
 		if at.IsZero() {
-			if parsed, pok := delegate.ParseResetHint(execErr.Error(), now); pok {
+			if parsed, pok := delegate.ParseResetHint(ev.words, now); pok {
 				at = parsed
 			}
 		}

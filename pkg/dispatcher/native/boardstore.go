@@ -102,6 +102,14 @@ type BoardStore interface {
 	// resume can find it (unfenced form — for writers acting on
 	// UNCLAIMED cards, e.g. the parked-card reconcilers).
 	SetLastRun(id, runID, workdir string) error
+	// SetRunOutcome stamps what the card's run turned out to be (see
+	// Issue.LastRunStatus). MANDATORY for the same reason the lease is: an
+	// optional outcome writer is silently inert exactly where it matters
+	// (the cloud). A no-op — nil error, no event — unless LastRunID still
+	// names runID: the card reports its CURRENT run, and a late terminal
+	// from a run it has been re-dispatched past is not the card's state.
+	// Empty errMsg/errCode CLEAR a previous failure.
+	SetRunOutcome(id, runID, status, errMsg, errCode string, at time.Time) error
 	// SetAwaitingInput denormalizes onto the issue whether its most recent
 	// run parked awaiting human/operator input, so the board grid can badge
 	// the card without a per-run fetch. A best-effort HINT (see Issue.AwaitingInput).

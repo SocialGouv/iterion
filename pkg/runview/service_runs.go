@@ -267,18 +267,22 @@ func (s *Service) summarize(r *store.Run) RunSummary {
 func summarizeRun(r *store.Run, active bool) RunSummary {
 	return RunSummary{
 		ID:                r.ID,
+		BirthID:           r.BirthID,
 		Name:              r.Name,
 		WorkflowName:      r.WorkflowName,
 		BundleName:        resolveBundleName(r.BundleName, r.BundlePath),
 		BundleDisplayName: r.BundleDisplayName,
 		SourceKind:        deriveSourceKind(r),
 		Source:            cloneRunSource(r.Source),
+		TenantID:          r.TenantID,
+		RunnerPool:        r.RunnerPool,
 		Status:            r.Status,
 		FilePath:          r.FilePath,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
+		PreEngineRefusal:  clonePreEngineRefusal(r.PreEngineRefusal),
 		FailureCode:       r.FailureCode,
 		EndReason:         r.EndReason,
 		Active:            active,
@@ -302,6 +306,18 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		RetryAfter:        retryAfterOf(r),
 		RetryAttempts:     retryAttemptsOf(r),
 	}
+}
+
+func clonePreEngineRefusal(source *store.PreEngineRefusal) *store.PreEngineRefusal {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	if source.QueuedAt != nil {
+		at := *source.QueuedAt
+		cloned.QueuedAt = &at
+	}
+	return &cloned
 }
 
 func cloneRunSource(source *store.RunSource) *store.RunSource {
@@ -432,6 +448,16 @@ func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, 
 		_, _ = s.reconcileOutOfBandMerge(ctx, r, mergeRepoRoot(r), "",
 			[]store.MergeStatus{store.MergeStatusPending})
 	}
+	return BuildSnapshot(ctx, s.store, runID)
+}
+
+// SnapshotWithoutReconcileCtx is SnapshotCtx without the out-of-band merge
+// reconciliation, for a request that names the birth it expects: such a
+// request is an observation and does not write. The reconciliation's merge
+// write expects the birth it loaded, so a successor recreated after that
+// load is refused rather than written; every other snapshot — a run
+// socket's included — reconciles.
+func (s *Service) SnapshotWithoutReconcileCtx(ctx context.Context, runID string) (*RunSnapshot, error) {
 	return BuildSnapshot(ctx, s.store, runID)
 }
 

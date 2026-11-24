@@ -35,6 +35,11 @@ done
 for tool in gh jq; do
   command -v "$tool" >/dev/null || { echo "queue-stats: $tool is required" >&2; exit 2; }
 done
+# The rebuild attribution (section 3) is a sibling file, so a harness can run
+# the same program the report runs. Resolved from this script's own location
+# and checked here rather than two API pages later.
+cause_program="$(cd "$(dirname "$0")" && pwd)/queue-rebuild-cause.awk"
+[ -f "$cause_program" ] || { echo "queue-stats: $cause_program is missing — the rebuild attribution lives there" >&2; exit 2; }
 [ -n "$since" ] || since="$(date -u -d '7 days ago' +%F)"
 [ -n "$until" ] || until="$(date -u +%F)"
 for d in "$since" "$until"; do
@@ -175,14 +180,22 @@ while :; do
 done
 
 # builds.tsv: created, pull request, base kind (off main: the group of the
-# entry ahead, "queue-chain"), outcome, run id, updated, status, and whether
-# the build was created inside the window (1) or on the day before it (0).
-awk -F'\t' -v s="$since_epoch" 'FILENAME == ARGV[1] { kind[$1] = $3; next }
+# entry ahead, "queue-chain"), outcome, run id, updated, status, whether the
+# build was created inside the window (1) or on the day before it (0), the
+# base sha the branch name carries, and that base's commit date ("-" off
+# main). The last two are what the rebuild attribution below reads: the base
+# IS the generation, so a base that moved to a push is the push that discarded
+# the previous build. The sort is that attribution's input contract: creation
+# order decides which build a rebuild replaced, and the run id breaks a tie so
+# the verdict is a function of the data rather than of the order the API
+# happened to answer in.
+awk -F'\t' -v s="$since_epoch" 'FILENAME == ARGV[1] { kind[$1] = $3; when[$1] = $2; next }
   { if (match($4, /pr-[0-9]+-[0-9a-f]+$/) == 0) next
     split(substr($4, RSTART + 3), p, "-")
     b = (p[2] in kind) ? kind[p[2]] : "queue-chain"
+    w = (p[2] in when) ? when[p[2]] : "-"
     out = ($5 == "completed") ? $6 : $5
-    print $2 "\t" p[1] "\t" b "\t" out "\t" $1 "\t" $3 "\t" $5 "\t" ($2 >= s ? 1 : 0) }' "$work/kinds.tsv" "$work/runs.tsv" | sort -n > "$work/builds.tsv"
+    print $2 "\t" p[1] "\t" b "\t" out "\t" $1 "\t" $3 "\t" $5 "\t" ($2 >= s ? 1 : 0) "\t" p[2] "\t" w }' "$work/kinds.tsv" "$work/runs.tsv" | sort -t"$(printf '\t')" -k1,1n -k5,5n > "$work/builds.tsv"
 awk -F'\t' '$8 == 1' "$work/builds.tsv" > "$work/window.tsv"
 
 builds="$(wc -l < "$work/window.tsv" | tr -d ' ')"
@@ -190,45 +203,13 @@ prs="$(cut -f2 "$work/window.tsv" | sort -u | wc -l | tr -d ' ')"
 echo "## Queue builds (Tests, merge_group): ${builds} for ${prs} pull requests"
 cut -f4 "$work/window.tsv" | sort | uniq -c | awk '{ printf "  %-28s %d\n", $2, $1 }'
 echo
-# A rebuild of a pull request replaces its previous build. Both facts are
-# read from the clock, not from the order of the rows. The CAUSE: a direct
-# push to main committed at most 90 s before the rebuild — GitHub rebuilds
-# every group in flight, the entries behind the head included, some twenty
-# seconds after such a push — unless the replaced build had already finished
-# red before it (that build had ejected its pull request: the rebuild is a
-# re-enqueue). Otherwise the queue itself: an entry ahead failed or left, the
-# pull request was dequeued and queued again (one dequeued and queued again
-# within 90 s of an unrelated push is blamed on the push: none in 2026-09).
-# Commit dates stand in for push times: a push lands seconds after its commit,
-# but a local series pushed long after it was made would fall outside the
-# window. The STATE of the replaced build
-# is read at the push for a push-caused rebuild (a build finishing in the
-# twenty seconds before the rebuild was still running when the push hit), at
-# the rebuild otherwise: green, red, cancelled — or still running, since the
-# queue does not cancel the run of a group it discards.
-awk -F'\t' 'FILENAME == ARGV[1] { if ($3 != "queue-merge") { n++; t[n] = $2; k[n] = $3 } next }
-  {
-    if (($2 in pcreated) && $8 == 1) {
-      cause = "queue"; best = -1
-      for (i = 1; i <= n; i++) if (t[i] > pcreated[$2] && t[i] <= $1 && t[i] >= $1 - 90 && t[i] > best) { best = t[i]; cause = k[i] }
-      done = (pstatus[$2] == "completed")
-      if (cause != "queue" && done && pupdated[$2] <= best && pout[$2] != "success") cause = "queue"
-      at = (cause == "queue") ? $1 : best
-      state = (done && pupdated[$2] <= at) ? pout[$2] : "in-flight"
-      r[state " -> " cause]++
-      if (cause != "queue") {
-        lost++; bykind[cause]++
-        if (state == "success") green++; else running++
-      }
-    }
-    pcreated[$2] = $1; pupdated[$2] = $6; pstatus[$2] = $7; pout[$2] = $4
-  }
-  END {
-    print "Rebuilds — state of the replaced build -> cause:"
-    for (x in r) printf "  %-44s %d\n", x, r[x]
-    printf "Queue builds discarded by a direct push to main: %d (already green %d, still running %d); pushes: release %d, direct merge %d, other %d\n",
-      lost, green, running, bykind["release"], bykind["direct-merge"], bykind["other-push"]
-  }' <(awk -F'\t' '{ print $1 "\t" $2 "\t" $3 }' "$work/kinds.tsv") "$work/builds.tsv" > "$work/rebuilds.txt"
+# A rebuild of a pull request replaces its previous build, and its cause is
+# read from the new group's BASE — the sha the branch name carries — not from
+# a clock window. The program is its own file so a harness can run it over
+# crafted tables: internal/ciguard/queue_stats_test.go holds every rule in it,
+# including the one that made the old clock window undercount (#1967's group
+# was rebuilt 114 s after a release commit and counted as the queue's).
+awk -f "$cause_program" "$work/builds.tsv" > "$work/rebuilds.txt"
 head -1 "$work/rebuilds.txt"
 awk 'NR > 1 && !/^Queue builds discarded/' "$work/rebuilds.txt" | sort
 awk '/^Queue builds discarded/' "$work/rebuilds.txt"

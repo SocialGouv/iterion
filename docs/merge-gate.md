@@ -6,8 +6,8 @@ without ever letting an LLM be the yes/no arbiter of a merge.
 
 The split is deliberate:
 
-- **Revi (LLM) proposes** — one reviewer by default (`review_mode: mono`),
-  or independent Claude + GPT reviewers when `review_mode: dual` is an
+- **Revi (LLM) proposes** — one reviewer by default (`review_mode: single`),
+  or two independent reviewers when `review_mode: paired` is an
   intentional extra spend, find issues that are normalised, de-duplicated,
   and posted as inline PR comments.
 - **Determinism disposes** — the bot computes a **count** of findings at or
@@ -95,6 +95,7 @@ Bot vars ([`bots/review-pr/main.bot`](../bots/review-pr/main.bot)):
 |-----|---------|---------|
 | `gate_enabled` | `true` | Post the `revi/review` status. `false` = advisory-only reviews. |
 | `gate_severity` | `high` | Severity floor that blocks (`low`<`medium`<`high`<`critical`). `high` = high+critical block; low/medium advise. |
+| `publish_mode` | `""` | `off` = evaluation mode: the review runs whole and nothing is posted — no review, no status (see [below](#evaluation-mode)). |
 
 Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
@@ -104,7 +105,7 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
-> the default mono mode, two when dual is explicitly selected. It is gated only
+> the default single mode, two when paired is explicitly selected. It is gated only
 > by the webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
 > there is no author-trust gate on this lane. On a public repo a fork
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
@@ -148,9 +149,9 @@ instead of tuning five separate vars ([SocialGouv/iterion#685](https://github.co
 
 | Tier | severity_threshold | max_findings | post_to_board | review_mode | Reviewer model |
 |------|---------------------|--------------|----------------|-------------|-----------------|
-| `glance` | `high` | `5` | `false` | mono only | cheaper same-family (`claude-sonnet-5` / `openai/gpt-5.4-mini`) |
-| `guard` (**default**) | `medium` | `15` | `true` | mono (auto-resolved) | full-strength (`claude-opus-5` / `openai/gpt-5.5`), unchanged since 0.7.0 |
-| `audit` | `low` | `40` | `true` | **forced dual**, regardless of `review_mode` | full-strength, both families |
+| `glance` | `high` | `5` | `false` | single only | the cheaper reviewer (`reviewer_glance`) |
+| `guard` (**default**) | `medium` | `15` | `true` | single (auto-resolved) | full-strength (`reviewer`) |
+| `audit` | `low` | `40` | `true` | **forced paired**, regardless of `review_mode` | full-strength, both reviewers |
 
 `guard` is byte-identical to the bot's pre-#685 posture — an unpinned repo
 sees no behaviour change. The tier is a **preset, never a cage**: every
@@ -185,16 +186,22 @@ is engine-wide only), a genuinely new capability, filed as a follow-up
 rather than bundled into this preset. **Shipped since as `ambient_context:`
 (ADR-119)**: `ambient_context: none` on a review node is that lever.
 
-**The model-per-tier mechanism.** A node's `model:` (and `reasoning_effort:`)
-field resolves ONLY `${ENV_VAR:-default}` from the process environment,
-never `{{vars.x}}` — true on every backend, including `claw`'s in-process
-path, not just the CLI-delegated ones. So a `--var review_tier=glance`
-cannot retarget `reviewer_claude`'s/`reviewer_gpt`'s model directly; the
-bot instead declares two extra judge nodes, `reviewer_claude_glance` /
-`reviewer_gpt_glance`, pinned to the cheaper defaults, and the EXISTING
-`topology` condition router (ADR-052) picks between the full-strength and
-glance variant per family — the pattern to imitate for any future
-tier/variant knob that needs a different model, never a new engine branch.
+**The model-per-tier mechanism.** The two fields a tier moves do not read
+the same things. A node's `model:` (with `backend:`, `provider:` and
+`interaction_model:`) IS resolved against the run's vars on the dispatch
+path — `{{vars.x}}` first, then `${ENV_VAR:-default}`, on every backend
+including `claw`'s in-process path — while `reasoning_effort:` resolves the
+environment form ALONE (`ir.ResolveEffortLiteral`; its only dynamic input is
+an upstream `_reasoning_effort` edge mapping). So a `--var
+review_tier=glance` could retarget a model, but it could not carry the
+tier's effort floor with it, and a `backend:` spelled as a var stays
+UNDECIDED to the compiler, which disarms the C176/C177 screens that say what
+a node may DO (#1389: 92 refusals down to 23). The bot therefore declares
+two extra judge nodes, `reviewer_alternate_glance` / `reviewer_glance`,
+pinned to the cheaper defaults, and the EXISTING `topology` condition router
+(ADR-052) picks between the full-strength and glance variant per family —
+the pattern to imitate for any future tier/variant knob that moves more than
+one route field, never a new engine branch.
 
 **Per-repo pin.** `review_tier` is an ordinary launch var, so it is
 pinned exactly like `gate_context` or `post_to_board` — through the
@@ -208,6 +215,12 @@ iterion remote forge repo-bots create --data '{
   "bot_ids": ["review-pr"],
   "launch_vars": { "review_tier": "glance" }}'
 ```
+
+On a repo **already** provisioned this is a reconcile: same hook, same
+`iwh_` secret, nothing minted, so a stored CLI token runs it. A repo's
+first enable mints that secret and wants the studio or a session credential
+([cloud-cli](cloud-cli.md#tenant-scope-teams--orgs)). The
+same holds for the two `repo-bots create` recipes further down this page.
 
 **The fixer escalation rides the same lever.** `fixer_hint` is the sentence
 the review summary publishes with its findings when this repo has a fixer to
@@ -255,11 +268,35 @@ block for an admin.
 
 A review that hits the provider's quota does not die: the runner arms a
 durable retry and the reconciler leaves the check alone, because that armed
-retry is the promise. But the check then sits on its in-flight claim, which
+retry is the promise. It leaves it alone from the moment the run fails on the
+window, too: the engine writes `failed_resumable` / `USAGE_LIMIT_BLOCKED`
+before the runner's post-engine steps arm the retry, and a sweep tick in that
+gap used to count the run dead, relaunch a second review into the same wall
+and spend the head's one relaunch on a quota (#3127). A usage failure whose
+continuation is not settled final is parked (`store.Run.UsageWindowPark`): a
+continuation the runner stated (`retry_armed`, `redelivery_pending`) on every
+offer, and an unknown one on the sweep while the record is younger than the
+settle window (`ITERION_USAGE_PARK_SETTLE_WINDOW`, default `15m`) — the
+outcome event that follows the arming offers the run again. Past it nothing
+is going to arm the run (a lane with no runner, a runner lost before arming,
+an abandon write that failed), and the sweep — the only net under a missed
+event — repairs it as dead. The runner states the continuation before it
+fires that event, so an unknown one on the event is a lane that never states
+it, and the run is repaired as before; so is a park settled final (the
+attempt budget spent, the retry abandoned). Every other reader of "is this
+run dead" takes the same reading (`runWillResume`): the relaunch escalation,
+the autofix sweep, the stop on a closed pull request, the assistant's watch
+and the grant's expiry. But the check then sits on its in-flight claim, which
 reads exactly like a review that died — and nothing said how long to wait.
 So the park **comments on the pull request**, once per park (fired from the
 run-outcome event, never the every-minute sweep): what happened, the instant
-the retry fires, the attempt number, and the provider's own sentence. When
+the retry fires — the one every announcement of the park says
+(`retrypolicy.UsageParkResumesAt`: the owner's notification and the
+operator's alert name it too), never earlier than the usage window the
+sweeper itself waits for, so the notice and the resumer cannot disagree — how
+often, and at most how many times, the credential is probed before it (the
+probe stops at its budget, and the notice is posted once), the attempt
+number, and the provider's own sentence. When
 that sentence is an account **spend ceiling** rather than a time window, the
 notice says so explicitly — a ceiling reopens when an admin raises it (or
 the month rolls), so the armed retries can otherwise exhaust themselves
@@ -407,6 +444,60 @@ and the head of an open MR/PR carries **no** status. Query that last one
 with the **full** SHA — GitLab's statuses endpoint returns `[]` for an
 abbreviated one whether or not a status exists (measured on 19.2: full SHA
 → `["iterion/review"]`, same commit at 8 chars → `[]`).
+
+## <a name="evaluation-mode"></a>Evaluation mode — a run that owes no verdict
+
+`publish_mode: off` (review-pr and revi-converse) is a measurement run: the
+bot does all its work and posts nothing — `publish_review` sends no request
+to the publish endpoint, so neither the review nor the status lands, and
+`publish_health` reads `evaluation mode`. The server reads the same launch
+var (`forge.PublishModeWithholds`, beside `forge.GateValueDisables`), as the
+exact literal `off`:
+
+- `markGateInFlight` claims nothing, and `runGateDisabled` — read by the
+  reconciler, the auto-fix lane and the pause and DLQ notices — says the run
+  owes no verdict. So an evaluation run leaves no in-flight claim, no
+  synthetic `review died` failure, no relaunch and no comment on the pull
+  request it was launched not to touch.
+- `injectForgePublishVars` mints no publish grant and withdraws one the
+  launch carried, as for an untrusted launch: whatever bot version serves the
+  run, the publish endpoint has no grant of it to honour.
+- The hand-off walk (`realWebhookHandoff`) skips the run, so its unpublished
+  review is never a fixer's `prior_review`, and never shadows the published
+  review behind it.
+- A `$` expansion in the value is refused at launch admission
+  (`runview.GateLaunchVars`): the engine expands it, the server would read it
+  raw, and the two must read the same literal.
+
+The bundles that read the var require the release that carries this server
+half (`requires.iterion: ">= next"`, rewritten by the cut), so an older
+server refuses them rather than claiming and repairing the gate for a run
+that publishes nothing.
+
+Operators set it — a launch's `--var` or `bot_args`, a remote launch, an
+integration's pinned launch vars — and so can a bot holding `board.create`,
+through a card's `bot_args`. A pull request's author or a webhook payload
+never can: the webhook lanes write fixed payload keys, and no manifest
+channel they layer may carry it (`bots/publish_mode_eval_test.go`).
+
+Pinned on an integration, it makes every launch of the repo an evaluation:
+
+- every bot of that repo — a fixer included — launches without a publish
+  grant, so nothing of theirs that goes through the publish endpoint lands;
+- the repo-level derivations (forcing `review_on_sync`, the merge-queue
+  mirror) read `gate_enabled` only, so a repo whose gate context is a
+  REQUIRED check then waits on a status nothing posts. Pin
+  `gate_enabled: "false"` beside it, or keep the var on individual launches.
+
+**A known limit.** Evaluation mode withholds what the deterministic nodes
+write; the agents keep the surface they have in the default mode. The
+read-only contract of review-pr's reviewers and merge step stays
+prompt-enforced: the merge step keeps its `board.create` and `board.label`
+grants (only the prompt reads `post_to_board`), and the reviewers keep their
+shell beside review-pr's `forge_token`, whose declaration grants every sink;
+revi-converse's agent keeps its shell and the mounted `forge_token` file it
+may read a thread with. A model that disobeyed its prompt could write on the
+board or the forge in either mode.
 
 ### GitHub merge queues
 
@@ -977,6 +1068,15 @@ that from doing harm of its own:
   re-checked against the grant exactly as the publish endpoint checks them. A
   red status is not a merge, but posting one on any repo a team connection
   reaches is precisely the blast radius the grant exists to bound.
+- **A grant bound to no pull request speaks for no head.** The grant a
+  repo-bound schedule mints for the workflow dispatch
+  ([`workflow-kick`](../bots/workflow-kick/README.md)) carries
+  `dispatch_workflow` alone and names no pull request, so every surface that
+  acts on one refuses it before any forge call
+  (`grant_bound_to_no_pull_request`): the publish endpoint — review, gate
+  status, verdict gestures — the pull-request read, the delivery preflight,
+  this repair, the auto-fix lane and the PR notices, whatever `pr_url` the
+  run's vars carry. A pull-request launch pinning such a grant is refused.
 - **`failure`, not `success`.** A review that did not happen has approved
   nothing.
 - **The remedy has to be one that can work.** The generic wording — *"review
@@ -1008,6 +1108,17 @@ that from doing harm of its own:
     stands the repair down (a fresher review owns it), and no relaunch is
     attempted — it would replay the run's inputs, stale head included, and
     audit the same superseded revision again at full price.
+
+    The record carries its own **identity** (random, minted when the refusal
+    is recorded), and the reconciler retires the record it consumed by that
+    identity: a refusal recorded *after* it — a fresher episode, inside the
+    post→clear window — is not that pass's to retire, and the identity is
+    what tells the two apart when they agree on everything else (#2174).
+    During a **rolling upgrade** the identity may be dropped: a replica
+    older than the field rewrites the whole refusal record on its first
+    read-modify-write of the grant. The clear then falls back to matching
+    the record's clock, pin and check — the rule the identity replaced — so
+    a refusal is still retired exactly once, never zero times.
 
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
@@ -1118,6 +1229,32 @@ sweep interval and releases it on shutdown, so a rollout hands the sweep over
 within one interval; a holder that dies is outlived by the lease's TTL (three
 intervals) and replaced at most one interval later; every term opens with a
 deep pass.
+
+A term also ends on the **work** failing, and what a pass is worth is the
+OFFERS it made, never its scan's SUCCESS: each offer that reached the forge
+and each one that could not, reported by the lane that made it
+([`pkg/lease`](../pkg/lease) `Pass`, `ITERION_LEASE_HANDOVER`); a scan that
+could not be read at all is an attempt that reached nothing, and still counts
+as one. So a window where every run owes nothing is an *idle* pass — no offer,
+no evidence, and the lease stays where it is — while a pass whose every offer
+failed to reach the forge reads *unreachable*, and K of those in one term hand
+the net over to a peer. The three outcomes are separated by where an offer
+stops: a run that gates nothing exits on a local field read and accounts into
+nothing; an answer from the forge is this replica's reach whatever the answer
+said (a 404 or a 403 ends no term — a peer would be refused identically); only
+the absence of an answer, typed, is the class a peer may not share. A run the
+store cannot read answers for the store, not the forge, and a run an operator
+deleted between the scan and the offer is an answer like any other. A pass
+holding items from both far sides is classified by the CLASS of what it met
+and never by the order the scan returned its rows in — no success and one item
+that reached nothing reads *unreachable*, whichever row came first — because
+nothing orders those rows. A term ending another way — a step-down, a
+rollout, the lease lost — cancels the offer in flight, and that cancellation
+accounts into nothing either: this holder's own exit is not evidence about the
+forge, so a pass whose only item would have been that cancellation reads
+*idle*. Counting the scan's success as progress is what made this blind: every
+pass whose Mongo query answered read "progressed" while the pull requests the
+holder owed a check sat unanswered (#2825).
 
 Two offers of one dead run can still meet — the event path runs on whichever
 replica its queue group picks, beside the sweep, and a lease handed over

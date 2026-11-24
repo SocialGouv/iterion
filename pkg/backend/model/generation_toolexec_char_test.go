@@ -17,11 +17,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
 // charToolResultText extracts the text payload of a tool_result content block.
@@ -37,6 +38,7 @@ func charToolResultText(t *testing.T, b api.ContentBlock) string {
 }
 
 func TestShapeToolOutcome_DiagnosticNonzeroPreservesCapturedOutput(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	var postResult string
 	var failureCount int
@@ -74,6 +76,7 @@ func TestShapeToolOutcome_DiagnosticNonzeroPreservesCapturedOutput(t *testing.T)
 }
 
 func TestShapeToolOutcome_DiagnosticOnlySoftensKnownCompletedExit(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		toolName  string
@@ -134,6 +137,7 @@ func TestShapeToolOutcome_DiagnosticOnlySoftensKnownCompletedExit(t *testing.T) 
 }
 
 func TestDiagnosticShellFailureOutputDeclaresPartialOutput(t *testing.T) {
+	t.Parallel()
 	got, ok := diagnosticShellFailureOutput("diagnostic_shell", "first bytes\n... [output truncated]", errors.New("command exited with error: exit status 2"))
 	if !ok {
 		t.Fatal("truncated completed diagnostic was not exposed")
@@ -149,6 +153,7 @@ func TestDiagnosticShellFailureOutputDeclaresPartialOutput(t *testing.T) {
 // ToolUseIDs; onToolStarted fires before each executed tool with the raw
 // input; onToolCall fires after each with output/error.
 func TestExecuteToolsDirect_ResultShapesAndOrder(t *testing.T) {
+	t.Parallel()
 	var order []string
 	toolMap := map[string]*GenerationTool{
 		"ok_a": {Name: "ok_a", Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
@@ -231,11 +236,15 @@ func TestExecuteToolsDirect_ResultShapesAndOrder(t *testing.T) {
 	}
 }
 
-// TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk pins the unknown
+// TestExecuteToolsDirect_UnknownToolResultCarriesItsID pins the unknown
 // tool path: an isError "unknown tool: X" result, no execution, no
-// onToolStarted — and the quirk that the OnToolCall info for an unknown tool
-// carries NO ToolUseID (all other error paths stamp it).
-func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
+// onToolStarted — and an OnToolCall info that carries the call's ToolUseID
+// like every other refusal path. This test pinned the opposite once, the id
+// left off this one path; that quirk is removed on purpose (#3451), because
+// a codemode program's call to a tool that does not exist must be
+// attributable to the program it ran in.
+func TestExecuteToolsDirect_UnknownToolResultCarriesItsID(t *testing.T) {
+	t.Parallel()
 	var startedCount int
 	var completed []ToolCallInfo
 	results, err := executeToolsDirect(context.Background(),
@@ -265,9 +274,8 @@ func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
 	if completed[0].Error == nil || completed[0].Error.Error() != "unknown tool: nope" {
 		t.Errorf("completed[0].Error = %v", completed[0].Error)
 	}
-	// Quirk: the unknown-tool callback does NOT stamp ToolUseID.
-	if completed[0].ToolUseID != "" {
-		t.Errorf("completed[0].ToolUseID = %q, want empty (current unknown-tool quirk)", completed[0].ToolUseID)
+	if completed[0].ToolUseID != "tu_9" {
+		t.Errorf("completed[0].ToolUseID = %q, want the call's own id tu_9", completed[0].ToolUseID)
 	}
 }
 
@@ -276,6 +284,7 @@ func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
 // skips BOTH the lifecycle hooks and execution — the PreToolUse hook never
 // observes the call.
 func TestExecuteToolsDirect_MalformedInputShortCircuitsBeforeHooks(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	var preCount int
 	r.Register(hooks.PreToolUse, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
@@ -320,6 +329,7 @@ func TestExecuteToolsDirect_MalformedInputShortCircuitsBeforeHooks(t *testing.T)
 // when a PreToolUse hook blocks WITHOUT a reason: "tool refused: blocked by
 // lifecycle hook". onToolStarted must not fire for a blocked call.
 func TestExecuteToolsDirect_HookBlockDefaultReason(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	r.Register(hooks.PreToolUse, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
 		return hooks.Decision{Action: hooks.ActionBlock}, nil // no Reason
@@ -361,6 +371,7 @@ func TestExecuteToolsDirect_HookBlockDefaultReason(t *testing.T) {
 // returned, later tools never run, PostToolUseFailure does NOT fire for the
 // suspension while PostToolUse fired for the earlier success.
 func TestExecuteToolsDirect_WrappedAskUserUnwrappedAndAborts(t *testing.T) {
+	t.Parallel()
 	inner := &delegate.ErrAskUser{Question: "prod or staging?"}
 	var laterExecuted bool
 	toolMap := map[string]*GenerationTool{
@@ -427,6 +438,7 @@ func TestExecuteToolsDirect_WrappedAskUserUnwrappedAndAborts(t *testing.T) {
 // PreToolUse gets the PARSED input map, PostToolUse the tool's output,
 // PostToolUseFailure the execution error.
 func TestExecuteToolsDirect_HookPayloads(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	var preInputs []map[string]any
 	var postResult string
@@ -478,6 +490,7 @@ func TestExecuteToolsDirect_HookPayloads(t *testing.T) {
 // EXECUTES with, while both callbacks (started + completed) keep observing
 // the placeholder form.
 func TestExecuteToolsDirect_MaterializeOnlyAffectsExecution(t *testing.T) {
+	t.Parallel()
 	const placeholderJSON = `{"token":"__ITERION_SECRET_apikey__"}`
 	var execInput string
 	toolMap := map[string]*GenerationTool{
@@ -520,6 +533,7 @@ func TestExecuteToolsDirect_MaterializeOnlyAffectsExecution(t *testing.T) {
 // operator-facing question AND the structured permission marker the runtime
 // parses to compute the grant on resume.
 func TestExecuteToolsDirect_PermissionAskCarriesMarkerAndQuestion(t *testing.T) {
+	t.Parallel()
 	pol, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -550,6 +564,7 @@ func TestExecuteToolsDirect_PermissionAskCarriesMarkerAndQuestion(t *testing.T) 
 // lifecycle errors ("context canceled" / "context deadline exceeded") do NOT
 // classify as window overflows (they must not trigger compaction retries).
 func TestIsContextWindowError_MarkerTable(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -612,6 +627,7 @@ func charMessagesOfSize(n, chars int) []api.Message {
 // over the target shrinks (preserving the recent window verbatim), a
 // transcript already under the target is returned unchanged with ok=false.
 func TestForceCompactToTokens(t *testing.T) {
+	t.Parallel()
 	t.Run("shrinks oversized transcript", func(t *testing.T) {
 		msgs := charMessagesOfSize(12, 2000) // ~24k chars ≈ ~6k estimated tokens
 		out, ok := forceCompactToTokens(msgs, 500, 0)
@@ -650,4 +666,117 @@ func TestForceCompactToTokens(t *testing.T) {
 			t.Fatalf("expected ok=false when the transcript cannot shrink, got compacted len %d", len(out))
 		}
 	})
+}
+
+// TestForceCompactLadder pins the walk-down the reactive retry relies on:
+// a rung the transcript already fits under (by local estimate) is a no-op,
+// and the ladder must continue to the next smaller rung instead of giving
+// up — the review-pool incident died when the provider refused a transcript
+// the estimator read as under the 256k first rung, and the old single-rung
+// logic surfaced the error without ever trying 128k.
+func TestForceCompactLadder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("walks past no-op rungs to the first that shrinks", func(t *testing.T) {
+		// ~80k estimated tokens: under the 256k and 128k rungs, over 64k.
+		msgs := charMessagesOfSize(20, 16_000)
+		out, target, ok := forceCompactLadder(msgs, 0)
+		if !ok {
+			t.Fatal("expected the ladder to find a shrinking rung for an oversized transcript")
+		}
+		if target != 64_000 {
+			t.Errorf("ladder stopped at rung %d, want 64000 (the first rung under the estimate)", target)
+		}
+		if len(out) >= len(msgs) {
+			t.Errorf("compacted len = %d, want < %d", len(out), len(msgs))
+		}
+	})
+
+	t.Run("a transcript over the first rung stops there", func(t *testing.T) {
+		// ~300k estimated tokens: the 256k rung shrinks it, no walking needed.
+		msgs := charMessagesOfSize(40, 30_000)
+		out, target, ok := forceCompactLadder(msgs, 0)
+		if !ok {
+			t.Fatal("expected the ladder to shrink a transcript well over the first rung")
+		}
+		if target != 256_000 {
+			t.Errorf("ladder stopped at rung %d, want 256000 (the first rung)", target)
+		}
+		if len(out) >= len(msgs) {
+			t.Errorf("compacted len = %d, want < %d", len(out), len(msgs))
+		}
+	})
+
+	t.Run("a small transcript fits every rung and surfaces the error path", func(t *testing.T) {
+		msgs := charMessagesOfSize(3, 100)
+		out, target, ok := forceCompactLadder(msgs, 0)
+		if ok {
+			t.Fatalf("expected ok=false when no rung shrinks the transcript, got rung %d", target)
+		}
+		if len(out) != len(msgs) {
+			t.Errorf("output len = %d, want %d (unchanged)", len(out), len(msgs))
+		}
+	})
+}
+
+// The dispatch pins the node's executable tool set on the context every
+// Execute receives, so a tool whose answer depends on it — tool_search
+// (#2717) — speaks for THIS node rather than the registry's whole
+// catalogue. The pin is the toolMap itself: a name the map cannot dispatch
+// is exactly one the answer must mark unavailable.
+func TestExecuteToolsDirect_PinsTheNodesExecutableToolsOnTheContext(t *testing.T) {
+	t.Parallel()
+	var seen map[string]bool
+	var pinned bool
+	toolMap := map[string]*GenerationTool{
+		"read_file": {Name: "read_file", Execute: func(ctx context.Context, _ json.RawMessage) (string, error) {
+			seen, pinned = tool.NodeExecutableToolsFrom(ctx)
+			return "ok", nil
+		}},
+		"tool_search": {Name: "tool_search", Execute: func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}},
+	}
+	uses := []toolUseBlock{{ID: "tu_1", Name: "read_file", PartialJSON: `{}`}}
+	if _, err := executeToolsDirect(context.Background(), uses, toolMap, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("executeToolsDirect: %v", err)
+	}
+	if !pinned {
+		t.Fatal("the tool's Execute received a context without the node's executable set")
+	}
+	if !seen["read_file"] || !seen["tool_search"] || len(seen) != 2 {
+		t.Errorf("the pinned set = %v, want exactly the toolMap's names", seen)
+	}
+}
+
+// The launcher's side of a sandboxed crossing pins the same set: the node
+// the runner calls tool_search on is answered for the task's ToolDefs, not
+// the registry (#2717).
+func TestMultiplexerHandler_PinsTheNodesExecutableToolsOnTheForwardedCall(t *testing.T) {
+	t.Parallel()
+	var seen map[string]bool
+	var pinned bool
+	task := delegate.Task{
+		NodeID: "copi", Model: "openai/gpt-5",
+		ToolDefs: []delegate.ToolDef{
+			{Name: "read_file", Execute: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
+			// tool_search is launcher-placed, so the launcher executes it —
+			// capturing the context here observes exactly the pin its real
+			// closure reads.
+			{Name: "tool_search", Execute: func(ctx context.Context, _ json.RawMessage) (string, error) {
+				seen, pinned = tool.NodeExecutableToolsFrom(ctx)
+				return "ok", nil
+			}},
+		},
+	}
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
+	if _, err := handler.OnToolCall(context.Background(), "tool_search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("OnToolCall: %v", err)
+	}
+	if !pinned {
+		t.Fatal("the forwarded call's Execute received a context without the node's executable set")
+	}
+	if !seen["read_file"] || !seen["tool_search"] || len(seen) != 2 {
+		t.Errorf("the pinned set = %v, want exactly the task's ToolDefs names", seen)
+	}
 }

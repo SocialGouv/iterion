@@ -73,7 +73,7 @@ func TestRegisterClawBoardTools_ExecuteHitsStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create_issue missing: %v", err)
 	}
-	out, err := td.Execute(context.Background(), json.RawMessage(`{"title":"Refactor X"}`))
+	out, err := td.Execute(WithHostCapabilities(context.Background(), []string{"board.create"}, nil), json.RawMessage(`{"title":"Refactor X"}`))
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

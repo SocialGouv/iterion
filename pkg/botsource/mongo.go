@@ -366,8 +366,17 @@ func (s *MongoStore) Update(ctx context.Context, bs BotSource) (BotSource, error
 	return updated, nil
 }
 
-func (s *MongoStore) Delete(ctx context.Context, id string) error {
-	filter, err := withTenantFilter(ctx, bson.M{"_id": id})
+// Delete removes a row under the same optimistic-concurrency guard Update
+// takes: when version is non-zero the deletion matches on it, so a delete
+// racing a concurrent editor fails with ErrVersionConflict instead of
+// removing content the caller never read. The guard rides the delete's own
+// filter, so the match and the removal are one atomic server-side act.
+func (s *MongoStore) Delete(ctx context.Context, id string, version int) error {
+	base := bson.M{"_id": id}
+	if version != 0 {
+		base["version"] = version
+	}
+	filter, err := withTenantFilter(ctx, base)
 	if err != nil {
 		return err
 	}
@@ -376,7 +385,12 @@ func (s *MongoStore) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("botsource: delete: %w", err)
 	}
 	if res.DeletedCount == 0 {
-		return ErrNotFound
+		// Either the id does not exist, or the version guard rejected it.
+		// Probe to return the precise error, as Update does.
+		if _, gerr := s.Get(ctx, id); errors.Is(gerr, ErrNotFound) {
+			return ErrNotFound
+		}
+		return ErrVersionConflict
 	}
 	return nil
 }

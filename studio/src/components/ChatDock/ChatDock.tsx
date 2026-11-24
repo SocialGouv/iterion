@@ -31,6 +31,10 @@ import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
 import AttachedReferences from "@/components/ChatDock/AttachedReferences";
 import BotSwitcher from "@/components/ChatDock/BotSwitcher";
 import {
+  attachReferenceToAssistant,
+  onAssistantAttachRequest,
+} from "@/lib/chatDock/attachToAssistant";
+import {
   attachReference,
   detachReference,
   hasReferenceDrag,
@@ -76,10 +80,7 @@ import {
 import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
 import { useQueryClient } from "@tanstack/react-query";
 
-import {
-  SIDEBAR_COLLAPSED_PX,
-  SIDEBAR_EXPANDED_PX,
-} from "@/components/shared/Sidebar";
+import { sidebarWidthPx } from "@/components/shared/sidebarWidth";
 import { useUIStore } from "@/store/ui";
 
 import { DraftBotOffer } from "@/components/ChatDock/draftBotOffer";
@@ -260,17 +261,16 @@ function AssistantDock({
   }, [dockCtx, activeConversation, session.messages]);
 
   // The floating panel grows leftward from its top-left handle, so its width
-  // budget must stop at the sidebar — not at the viewport edge. Focus mode
-  // drops the chrome entirely, so there is nothing to clear.
+  // budget must stop at the sidebar — not at the viewport edge. The rail's
+  // width is rem-based so it follows the operator's text size (RGAA 10.4.1);
+  // the clamp reads the live pixel value derived from that same source.
+  // Focus mode drops the chrome entirely, so there is nothing to clear.
   const focusMode = useUIStore((s) => s.expanded);
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
-  const leftInset = focusMode
-    ? 0
-    : sidebarCollapsed
-      ? SIDEBAR_COLLAPSED_PX
-      : SIDEBAR_EXPANDED_PX;
+  const leftInset = focusMode ? 0 : sidebarWidthPx(sidebarCollapsed);
 
-  // What the operator DROPPED in, cleared once it has gone out with a
+  // What the operator ATTACHED (dropped in, or sent through
+  // attachReferenceToAssistant), cleared once it has gone out with a
   // message. Held here rather than in the session because it belongs to the
   // message being composed, not to the conversation.
   const [attached, setAttached] = useState<readonly TypedReference[]>([]);
@@ -279,6 +279,19 @@ function AssistantDock({
   const detach = useCallback((ref: string) => {
     setAttached((cur) => detachReference(cur, ref));
   }, [setAttached]);
+
+  // The receiving end of the ONE attach action (attachToAssistant.ts): the
+  // drop below routes through it, and so does the keyboard/single-pointer
+  // control #2770 put on each drag grip. Either way the reference
+  // lands on the message being composed — deduped, capped, drop-ordered by
+  // attachReference.
+  useEffect(
+    () =>
+      onAssistantAttachRequest((ref) =>
+        setAttached((cur) => attachReference(cur, ref)),
+      ),
+    [setAttached],
+  );
 
   const initialReference = contextState === "pending" ? reference : null;
   const initialPage = initialReference ? activePage : null;
@@ -480,8 +493,11 @@ function AssistantDock({
     if (!dropped) return;
     e.preventDefault();
     e.stopPropagation();
-    setAttached((cur) => attachReference(cur, dropped));
-  }, [setAttached, setDragOver]);
+    // The drop is one GESTURE reaching the shared attach action, not an
+    // attach path of its own — the keyboard/single-pointer control #2770
+    // put on each grip calls the same function.
+    attachReferenceToAssistant(dropped);
+  }, [setDragOver]);
 
   // An offer belongs to a reply. The offers are built from the latest run
   // artifact carrying their field, and the agent node publishes that

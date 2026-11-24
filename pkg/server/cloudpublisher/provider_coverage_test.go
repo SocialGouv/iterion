@@ -19,21 +19,20 @@ func TestAllKnownProvidersCoversEveryValidProvider(t *testing.T) {
 			t.Errorf("allKnownProviders holds %q, which Provider.Valid() refuses — the walk would resolve a provider no route can name", p)
 		}
 	}
+	// The gateway provider is walked (#2005 PR-C', ADR-131 §5): its key
+	// travels as the pair the resolution carries (key, canonical URL,
+	// endpoint-aware fingerprint). What a POOL may lend is the other list —
+	// TestWantForSlot_totalOverTheVocabulary pins that the gateway stays out
+	// of it.
 	for _, p := range []secrets.Provider{
 		secrets.ProviderAnthropic, secrets.ProviderOpenAI, secrets.ProviderBedrock,
 		secrets.ProviderVertex, secrets.ProviderAzure, secrets.ProviderOpenRouter,
 		secrets.ProviderXAI, secrets.ProviderZAI, secrets.ProviderMoonshot,
+		secrets.ProviderOpenAICompatible,
 	} {
 		if !walked[p] {
 			t.Errorf("provider %q is valid but absent from allKnownProviders — a BYOK key for it would never reach a run", p)
 		}
-	}
-	// The gateway provider is deliberately NOT walked yet: a gateway key is
-	// storable (#2005 PR-A) but stays inert until the walk vocabulary split
-	// and the URL carriage land (PR-C'). Sealing it before then would hand
-	// the runner a key with no endpoint to spend it on.
-	if walked[secrets.ProviderOpenAICompatible] {
-		t.Errorf("openai_compatible is in allKnownProviders before its carriage landed — a gateway key must stay inert until #2005 PR-C'")
 	}
 }
 

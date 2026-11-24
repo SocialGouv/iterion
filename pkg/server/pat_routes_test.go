@@ -140,7 +140,7 @@ func TestPATExpiryAndPins(t *testing.T) {
 	})
 
 	t.Run("team pin requires membership", func(t *testing.T) {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreatePAT(w, orgReq(ctx, "POST", "/api/me/tokens", `{"name":"pinned","team_id":"ghost"}`, ""))
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("pin to non-member team status = %d, want 403", w.Code)
@@ -151,13 +151,13 @@ func TestPATExpiryAndPins(t *testing.T) {
 		// A super-admin passes the membership gate for ANY string — the
 		// existence gate is what stops a slug-shaped pin minted 201 and
 		// then unable to authenticate ("token team unavailable" forever).
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreatePAT(w, orgReq(superAdminCtx(), "POST", "/api/me/tokens", `{"name":"slug","team_id":"pic-graal"}`, ""))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("mint for a non-existent team status = %d, want 400", w.Code)
 		}
-		if !strings.Contains(w.Body.String(), "unknown team") {
-			t.Fatalf("the refusal names the unknown team: %s", w.Body.String())
+		if !strings.Contains(w.Diagnostic(t), "unknown team") {
+			t.Fatalf("the refusal names the unknown team: %s", w.Diagnostic(t))
 		}
 	})
 
@@ -186,13 +186,13 @@ func TestPATExpiryAndPins(t *testing.T) {
 		}
 		s2 := New(Config{}, iterlog.New(iterlog.LevelError, nil))
 		s2.authSvc = svc
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s2.handleCreatePAT(w, orgReq(superAdminCtx(), "POST", "/api/me/tokens", `{"name":"outage","team_id":"t1"}`, ""))
 		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("a store outage must read 5xx, not the client-fault 400: status=%d body=%s", w.Code, w.Body.String())
+			t.Fatalf("a store outage must read 5xx, not the client-fault 400: status=%d body=%s", w.Code, w.Diagnostic(t))
 		}
-		if !strings.Contains(w.Body.String(), "check team") {
-			t.Fatalf("the 500 carries the cause: %s", w.Body.String())
+		if !strings.Contains(w.Diagnostic(t), "check team") {
+			t.Fatalf("the 500 carries the cause: %s", w.Diagnostic(t))
 		}
 	})
 
@@ -207,10 +207,10 @@ func TestPATExpiryAndPins(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreatePAT(w, orgReq(ctx, "POST", "/api/me/tokens", `{"name":"org-stated","team_id":"t2"}`, ""))
 		if w.Code != http.StatusCreated {
-			t.Fatalf("create status = %d body=%s", w.Code, w.Body.String())
+			t.Fatalf("create status = %d body=%s", w.Code, w.Diagnostic(t))
 		}
 		var resp struct {
 			OrgID string `json:"org_id"`

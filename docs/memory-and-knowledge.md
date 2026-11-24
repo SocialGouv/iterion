@@ -7,7 +7,7 @@ shared knowledge, and operators wiring multi-tenant isolation.
 Memory is how iterion agents carry knowledge across runs — what they
 learned, where they left off — persisted as a per-org, quota-governed
 tree of markdown documents with tenant-isolated visibility scopes. The session-continuity skill
-([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md))
+([bots/evolve/skills/session-continuity.md](../bots/evolve/skills/session-continuity.md))
 is the canonical consumer.
 
 Diagram: [diagrams/data-model-knowledge.md](diagrams/data-model-knowledge.md) — the memory, config-share and notification data model.
@@ -29,7 +29,7 @@ escape the tree.
 | `cross_project` | every project in one team | — | 512 MiB |
 | `user` | one user across projects | `UserID` | 128 MiB |
 | `org` | every bot / run / project in one team | — | 1 GiB |
-| `global` | the whole iterion instance | — | none (`0` = no sub-cap) |
+| `global` | the whole iterion instance | — | none (`0` = no sub-cap, never a refusal); bounded by the instance aggregate |
 
 `private` names a run-scoped scratch space nothing implements: a `SpaceRef`
 carries no run field, the closed enum
@@ -58,8 +58,17 @@ Two levels, both enforced at write:
   org alone is not enough.
 - **Per-visibility sub-caps**: the per-space defaults from the table
   above — a default of `0` (`global`) means *no* sub-cap, never a
-  refusal — and a cloud `global` write, which has no team, meets no
-  aggregate either; only the per-document cap applies. The filesystem adapter reads three env overrides:
+  refusal, in the docs, in `DefaultQuotaFor` and in both adapters. A cloud
+  `global` write carries no team, so it meets no PER-TEAM aggregate; it meets
+  the **instance aggregate** instead — a tenant-less row of
+  `memory_tenant_usage` keyed by `knowledge.InstanceUsageID`, bounded by the
+  same `DefaultOrgAggregateQuota` default and re-capped through
+  `SetTenantQuota(InstanceUsageID, n)`. The writing team's own counter is
+  debited too, so instance-wide bytes are attributed rather than anonymous;
+  that share is attribution, not accounting (a credit lands on whoever
+  SHRINKS a document, and a counter driven negative clamps to zero). The
+  filesystem adapter has always charged its whole-tree aggregate for a global
+  write, so the two adapters now answer the same question. It reads three env overrides:
   `ITERION_MEMORY_QUOTA_<VISIBILITY>` (e.g. `ITERION_MEMORY_QUOTA_PROJECT`),
   `ITERION_MEMORY_QUOTA_ORG_TOTAL` for its aggregate counter (where `0`
   refuses every write that grows the tree) and
@@ -78,13 +87,42 @@ write CAS is what actually blocks an over-budget write.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/memory/usage` | member | `{used_bytes, quota_bytes}` for one space |
-| `GET` | `/api/memory/docs` | member | List documents (optional `?dir=`) |
-| `GET` | `/api/memory/doc` | member | Read (`?path=`) |
+| `GET` | `/api/memory/usage` | authenticated (no role) | `{used_bytes, quota_bytes}` for one space |
+| `GET` | `/api/memory/docs` | authenticated (no role) | List documents (optional `?dir=`) |
+| `GET` | `/api/memory/doc` | authenticated (no role) | Read (`?path=`) |
 | `PUT` | `/api/memory/doc` | member (super-admin for `visibility=global`) | Write |
 | `DELETE` | `/api/memory/doc` | member (super-admin for global) | Delete |
-| `GET` | `/api/memory/export` | member | Tarball export of the space |
+| `GET` | `/api/memory/export` | authenticated (no role) | Tarball export of the space |
 | `POST` | `/api/memory/import` | member (super-admin for global; optional `?strategy=`) | Tarball import |
+
+A MUTATION takes the member rung of the caller's active team, at the mount
+every route of the family passes through (`memoryWriteAuth`, the memory
+instance of `mutatingRungAuth`): a viewer and a rank-0 `config_editor` read
+the team's spaces and are refused `403 member_role_required` on a write, a
+delete and an import. A document in a memory space is INSTRUCTION — the
+engine reads it back into every agent run that opens the space, under a
+machine principal the rung exempts — so the authorization is owed where the
+document is written, exactly as it is on a board's Ready column
+([pkg/server/memory_routes.go](../pkg/server/memory_routes.go)). Local
+single-tenant mode has no identity store, hence no role to read, and is
+untouched.
+
+Every visibility takes it, `visibility=user` included: that axis keys on the
+authenticated caller (`?user=` cannot move it), so a refused caller's
+document would be instruction for a run of their own — which the same rung
+gates at launch. The reads take no role on purpose: a viewer and a
+`config_editor` keep `usage`, `docs`, `doc` and the whole-space `export`.
+
+A mutation of `visibility=global` is checked ONCE, by
+`knowledge.AuthorizeSpaceWrite`, at the chokepoint every writer passes: the
+store. The authority is a fact of the CONTEXT — a `SpaceRef` carries no
+principal — granted by whoever proved it, so the proof and the grant are
+inseparable. Two sites grant it, and `grep WithPlatformWriteAuthority` is the
+audit: `requireMemoryWriteAuth` (which returns the granted request) and the
+local `iterion memory import` CLI. A store refusal surfaces as **403**, never
+as the 422 a client reads as "bad document". Every global mutation writes a
+platform-scoped audit row (`memory.global_write` / `_delete` / `_import`),
+readable at `/api/admin/audit`.
 
 Query params resolve the space:
 
@@ -143,14 +181,27 @@ reads one (stdin when `--in` is omitted) and merges under `--strategy`
 
 ## How bots use memory
 
-The canonical consumer is the **session-continuity** skill shipped in
-the `whats-next` bundle
-([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md)).
-It exposes three tools that every catalog bot can use:
+The canonical consumer is the **session-continuity** skill, rooted in the
+`evolve` bundle
+([bots/evolve/skills/session-continuity.md](../bots/evolve/skills/session-continuity.md)) —
+the member of its `internal/skillshare` family that carries a `memory:`
+block on a claw node, and so owns the write contract the others read. A
+member that cannot reach the tree carries a variant saying so and nothing
+more: `iterion validate` names a skill teaching a write its own bundle
+cannot serve (C274), and a family rooted in such a bundle would make that
+warning unclosable.
+
+The skill documents the three tools a `memory:` block installs on a claw
+run — claw-only, which is the whole reason the family is rooted where it is:
 
 - `memory_read` — read a document from the configured space.
 - `memory_write` — write or overwrite a document.
 - `memory_list` — list documents under an optional dir prefix.
+
+The write tool is the one a declaration can withhold: `write:` defaults to
+true, so the read-only shape is an explicit `write: false`, and the
+instance-wide `visibility: "global"` space is refused to every run (C319). A
+block that withholds it is not a write path, and C274 reads it as none.
 
 A document path is relative, stays inside the space (no `..`, no absolute
 form), and must be **canonical** — `MEMORY.md`, not `./MEMORY.md`;
@@ -288,14 +339,14 @@ Three properties worth knowing:
   running a half cycle whose only symptom is a memory that is always empty.
   Docker (bind mount) and unsandboxed runs are unaffected.
 
-  A cloud run is NOT automatically exempt, whatever the sandbox section of
-  [agents/backends](agents/backends/README.md) still
-  says about the runner pinning `ITERION_SANDBOX_OVERRIDE=none`.
-  Measured on the production instance (2026-08-05): the runner's config carries
-  `ITERION_SANDBOX_DEFAULT=auto`, `ITERION_SANDBOX_HOST_STATE=none` and an EMPTY
-  `ITERION_SANDBOX_OVERRIDE` — so a bot that does not opt out gets the
-  kubernetes sandbox and its auto-memory is refused. A cloud bot that wants
-  MEMORY.md declares `sandbox: none` (proven end to end there: one run wrote a
+  A cloud run is exempt only on the chart's default: `runner.sandbox.enabled:
+  false` renders `ITERION_SANDBOX_OVERRIDE=none`, so the agent runs in the
+  runner pod ([sandbox](sandbox.md)). Under `runner.sandbox.enabled`, or a
+  pool's own `sandbox.enabled`, the runner resolves `auto` and a bot that does
+  not opt out gets the kubernetes sandbox, so its auto-memory is refused; the
+  production instance measured on 2026-08-05 was such a deployment
+  (`ITERION_SANDBOX_DEFAULT=auto` with an EMPTY `ITERION_SANDBOX_OVERRIDE`).
+  A cloud bot that wants MEMORY.md there declares `sandbox: none` (proven end to end there: one run wrote a
   note, a second run on a different pod read it back through the store), or
   waits for a read-back seam on the copy-based drivers.
 - `iterion fork` / `rewind` do not carry `--auto-memory`; the bot's DSL
@@ -329,18 +380,44 @@ Multi-tenant safety lives on three boundaries:
    `SpaceRef.ID()` (which includes the tenant) and every query on a space or
    its documents addresses that id — `{space_id}` for a space's documents, the composite `{_id}`
    for one of them — so isolation rides the ref, not
-   the ctx tenant filter the rest of the store uses. `validateCloudTenant`
+   the ctx tenant filter the rest of the store uses. The space-wide reads
+   carry a `tenant_id` clause on top (`spaceDocFilter`): it cannot widen a
+   result, since the id already carries the tenant, but it refuses a document
+   whose stamped tenant disagrees with the ref that asked for it. The clause
+   is deliberately absent for `global`, whose documents carry no `tenant_id`
+   field at all. `validateCloudTenant`
    fail-closes, before any Mongo I/O, on a non-global ref carrying no
    tenant ([pkg/store/mongo/memory.go](../pkg/store/mongo/memory.go)).
 3. **Validate path traversal**: `SpaceRef.Validate` rejects `..`, `/`,
-   and `\` in every qualifier and the document path
+   and `\` in every qualifier and the document path, and rejects `:` —
+   the delimiter `SpaceRef.ID()` joins the axes with. Without that, two
+   DIFFERENT refs spell the SAME id (`{project:"x:y"}` and
+   `{project:"x", bot:"y:"}` both render `v1:org:T:x:y:::n`), and the FS
+   adapter folds them together as well (`pathSeg` maps `:` to `-`)
    ([pkg/knowledge/scope.go](../pkg/knowledge/scope.go)).
 
 `visibility=global` is the only space that **deliberately** crosses the
-tenant boundary; REST writes there are gated on `IsSuperAdmin`
-(`requireMemoryWriteAuth`), while a `claw` node whose `memory:` block sets
-`enabled: true` and `visibility: "global"` (with its `scope:`; `write`
-defaults to true) writes there from a run with no gate, and neither leaves
-an audit row — no memory mutation
-records one, so a super-admin overwrite of the shared catalogue does not
-show up under `/api/orgs/{id}/audit` or `/api/admin/audit`.
+tenant boundary, so a mutation there is a PLATFORM act and answers to one
+predicate — `knowledge.AuthorizeSpaceWrite`, called first by both adapters'
+`WriteDocument` and `DeleteDocument` and by the engine's tool installer. The
+authority rides the context, is granted only where it has just been proven,
+and defaults to refused:
+
+- **REST**: `requireMemoryWriteAuth` checks `platformAuthority` and returns
+  the granted request, so a handler cannot carry the grant without the proof.
+- **CLI**: `iterion memory import` grants it — the operator at their own
+  console, on their own filesystem store.
+- **A run**: no grant. A `claw` node whose `memory:` block sets
+  `enabled: true` and `visibility: "global"` (with its `scope:`; `write`
+  defaults to true) gets `memory_read` / `memory_list` and NOT
+  `memory_write`, plus a `<workspace_memory_write_refused>` system block
+  saying why, and **C319** at compile time. The capability is gated, not
+  removed: carrying a super-admin run's authority through to the engine
+  inserts at that one named grant, once the run message carries the launching
+  principal's platform flag.
+
+Every global mutation leaves a platform-scoped audit row
+(`memory.global_write`, `memory.global_delete`, `memory.global_import`) under
+`/api/admin/audit`. Team-scoped mutations are deliberately not audited: they
+are ordinary member writes, and a row per document would drown the
+control-plane log.

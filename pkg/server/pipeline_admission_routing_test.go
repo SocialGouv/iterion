@@ -51,7 +51,7 @@ func TestPipelineAdmission_ResolvesRoutingPolicy(t *testing.T) {
 	s, pub, board, iss := newTicketLaneFixture(t)
 	seedTeamRoutingCell(t, s, "t1")
 
-	if _, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, iss); err != nil {
+	if _, err := s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, iss); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	spec := pub.only(t)
@@ -69,7 +69,7 @@ func TestPipelineAdmission_RefusesWhenTheTenantPolicyIsUnreadable(t *testing.T) 
 		return failingRoutePolicyStore{err: errors.New("mongo wedged")}
 	}
 
-	_, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, iss)
+	_, err := s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, iss)
 	if err == nil {
 		t.Fatal("launchTicketNow = nil, want a refusal — an unreadable tenant routing record must never launch under a policy nobody could read")
 	}
@@ -132,14 +132,14 @@ func TestPipelineBoardLaunchAnswers503OnARoutingOutage(t *testing.T) {
 	req.SetPathValue("id", card.ID)
 	req = req.WithContext(auth.WithIdentity(req.Context(),
 		auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember}))
-	rec := httptest.NewRecorder()
+	rec := newServerErrorRecorder(s)
 	s.handlePipelineBoardTaskLaunch(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("launch-now = %d %s, want 503 — a wedged tenant routing store is this server's outage, not a conflict on the card", rec.Code, rec.Body.String())
+		t.Fatalf("launch-now = %d %s, want 503 — a wedged tenant routing store is this server's outage, not a conflict on the card", rec.Code, rec.Diagnostic(t))
 	}
-	if !strings.Contains(rec.Body.String(), card.ID) {
-		t.Errorf("response %s names no ticket", rec.Body.String())
+	if !strings.Contains(rec.Diagnostic(t), card.ID) {
+		t.Errorf("response %s names no ticket", rec.Diagnostic(t))
 	}
 	if n := launchCount(pub); n != 0 {
 		t.Fatalf("the refused ticket published %d launches, want 0", n)
@@ -188,7 +188,7 @@ func TestPipelineAdmission_CarriesTheIntegrationsRoutingCell(t *testing.T) {
 		t.Fatalf("narrow integration wh1: %v", err)
 	}
 
-	if _, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, cards[0]); err != nil {
+	if _, err := s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, cards[0]); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	spec := pub.only(t)
@@ -206,7 +206,7 @@ func TestPipelineAdmission_CarriesTheIntegrationsRoutingCell(t *testing.T) {
 	}
 	// The reserved keys are launch context on this lane as well: a bot that
 	// received them as vars would read a JSON blob as its own input.
-	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
+	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardProjectPathKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
 		if _, leaked := spec.Vars[reserved]; leaked {
 			t.Errorf("the reserved %s key reached the bot as a var: %v", reserved, spec.Vars)
 		}
@@ -221,7 +221,7 @@ func TestPipelineAdmission_CarriesTheIntegrationsRoutingCell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("board.Create: %v", err)
 	}
-	_, err = s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, bad)
+	_, err = s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, bad)
 	if err == nil {
 		t.Fatal("launchTicketNow accepted a card carrying a malformed override blob")
 	}
@@ -253,7 +253,7 @@ func TestPipelineAdmission_RefusesACardWhoseIntegrationItCannotRead(t *testing.T
 	if err != nil {
 		t.Fatalf("board.Create: %v", err)
 	}
-	_, err = s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, card)
+	_, err = s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, card)
 	if !errors.Is(err, errTicketRoutingUnresolved) {
 		t.Fatalf("launchTicketNow = %v, want errTicketRoutingUnresolved — a routing contract this lane cannot resolve refuses the launch", err)
 	}
@@ -310,11 +310,13 @@ func TestPipelineBoardCard_CarriesNoRoutingPolicyValue(t *testing.T) {
 }
 
 // TestPipelineBoardLaunchAnswers503WhenTheCardNamesAnotherTeamsIntegration:
-// the id a card carries IS member-writable, so the tenant check is what makes
-// the `webhook` level true. Over the public door, naming another team's
-// integration refuses with the outage status (the card is not at fault) and
-// publishes nothing — never the other team's routing block, never an absent
-// integration level.
+// the launch-side tenant check is what makes the `webhook` level true — the
+// id a card carries is launch context the write routes strip from a client
+// (native.DropReservedLaunchArgs), and this door is the belt behind that:
+// a card carrying an id its team cannot read — written before the filter
+// existed, or by any non-route writer — refuses with the outage status (the
+// card is not at fault) and publishes nothing. Never the other team's
+// routing block, never an absent integration level.
 //
 // Mutant: the cfg.TenantID check dropped → 202 and a run carrying the other
 // team's providers.
@@ -326,7 +328,16 @@ func TestPipelineBoardLaunchAnswers503WhenTheCardNamesAnotherTeamsIntegration(t 
 		Routing: &llmroute.Policy{Providers: []string{"anthropic"}},
 	})
 
-	card := env.createCard(t, `{"bot":"probe","title":"borrowed","bot_args":{"`+boardWebhookIDKey+`":"wh-t2"}}`)
+	// Stamped the way the server stamps (store-side), not through the write
+	// route: the route strips the id from a client; the launch must still
+	// refuse a card that carries an unreadable one.
+	card, err := env.board.Create(native.Issue{
+		Title: "borrowed", State: native.StateReady, Bot: "probe",
+		BotArgs: map[string]string{boardWebhookIDKey: "wh-t2"},
+	})
+	if err != nil {
+		t.Fatalf("board.Create: %v", err)
+	}
 	req := env.req(http.MethodPost, "/api/v1/pipeline-board/tasks/"+card.ID+"/launch", "")
 	req.SetPathValue("id", card.ID)
 	rec := httptest.NewRecorder()

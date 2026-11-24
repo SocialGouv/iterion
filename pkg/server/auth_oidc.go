@@ -47,6 +47,13 @@ const (
 	ssoErrLinkRequired     = "link_required"
 	ssoErrRestricted       = "restricted"
 	ssoErrLoginFailed      = "login_failed"
+	// ssoErrProviderUnavailable is the banner of a provider resolution that
+	// FAILED — an unreachable provider store, a secret the sealer could not
+	// open (oidc.ErrProviderUnavailable). It is distinct from
+	// ssoErrUnknownProvider on purpose: "no longer available" tells the user
+	// to stop waiting for an SSO that is merely down, where "try again in a
+	// moment" is the truth and the cause is in the server log.
+	ssoErrProviderUnavailable = "provider_unavailable"
 	// ssoErrPasswordChangeRequired refuses the SSO sign-in of an account an
 	// administrator set pending a password change: the SPA names the exits
 	// (the forced change, or the emailed reset for an SSO-only account).
@@ -70,6 +77,37 @@ func redirectSSOError(w http.ResponseWriter, r *http.Request, code string, extra
 		}
 	}
 	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusFound)
+}
+
+// redirectCallbackError answers a failed OIDC callback whose flow is known.
+// A DESKTOP flow's refusal goes to the desktop's own loopback listener
+// (?sso_error=), so the app stops waiting and says why at once, instead of
+// leaving the reason in the browser tab while the desktop waits out its
+// five-minute timeout (#2687); every other flow lands on the SPA login
+// banner as before. The loopback target was validated at /start
+// (safeDesktopRedirect: http on 127.0.0.1/[::1]/localhost only, an explicit
+// port, no credentials), so this is no open redirect — it 302s only to the
+// address the desktop itself named when it began the flow. pending zero
+// (the flow could not be taken) is the SPA path.
+func redirectCallbackError(w http.ResponseWriter, r *http.Request, pending oidc.PendingAuth, code string, extra url.Values) {
+	if !pending.Desktop || pending.DesktopRedirect == "" {
+		redirectSSOError(w, r, code, extra)
+		return
+	}
+	q := url.Values{}
+	q.Set("sso_error", code)
+	for k, vs := range extra {
+		for _, v := range vs {
+			if v != "" {
+				q.Add(k, v)
+			}
+		}
+	}
+	sep := "?"
+	if strings.Contains(pending.DesktopRedirect, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, pending.DesktopRedirect+sep+q.Encode(), http.StatusFound)
 }
 
 // ssoErrorForAuth maps an auth-service login error to its SPA error code.
@@ -208,7 +246,12 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name stri
 	linkUserID := link.UserID
 	c, tenantID, providerID, err := s.resolveConnector(r.Context(), name)
 	if err != nil {
-		httpError(w, http.StatusNotFound, "unknown provider")
+		// A resolution that FAILED is not the fact "unknown provider": the
+		// start of a flow whose provider store is unreachable owes the
+		// identity contract — 5xx, generic body, the cause in the log — so
+		// the operator sees an outage instead of users reading a 404 as a
+		// deleted SSO.
+		s.refuseConnector(w, r, name, err, http.StatusNotFound, "unknown provider")
 		return
 	}
 	state, verifier, _, err := oidc.GenerateStateAndPKCE()
@@ -349,8 +392,17 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// The callback is a top-level navigation, so surface failures as a
 		// friendly SPA banner rather than a bare API error page.
 		code := ssoErrUnknownProvider
-		if errors.Is(err, oidc.ErrProviderDisabled) {
+		switch {
+		case errors.Is(err, oidc.ErrProviderDisabled):
 			code = ssoErrProviderDisabled
+		case errors.Is(err, oidc.ErrProviderUnavailable):
+			// A resolution that failed says nothing about the provider's
+			// existence: the banner says "try again", and the cause — the
+			// only place it survives — goes to the log.
+			code = ssoErrProviderUnavailable
+			if s.logger != nil {
+				s.logger.Error("oidc callback: resolve the provider %s: %v", name, err)
+			}
 		}
 		redirectSSOError(w, r, code, nil)
 		return
@@ -366,7 +418,44 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("oidc callback error from %s: code=%s description=%q",
 				name, oauthErr, r.URL.Query().Get("error_description"))
 		}
-		redirectSSOError(w, r, ssoErrProviderReturned, provQ)
+		// The flow is over, so its state is consumed here rather than left
+		// replayable — and taking it is what tells a DESKTOP flow apart, so
+		// the refusal reaches the desktop's loopback instead of sitting in
+		// the browser tab while the app waits out its timeout (#2687).
+		//
+		// The flow the STATE names is the client waiting, whichever
+		// provider's callback the error arrives on — the same thing the
+		// accepted path below does with a state that disagrees
+		// (pending.Provider != name is answered through
+		// redirectCallbackError, with that pending). A refusal withheld
+		// from the desktop that started the flow is the timeout this
+		// branch exists to prevent, and the state is consumed either way,
+		// so withholding it protects nothing. The disagreement is logged:
+		// it names a provider that did not issue this callback.
+		//
+		// A read that did not complete is NOT a state consumed: it says so
+		// in the log instead of leaving the claim "consumed" standing on a
+		// state that may still be replayable.
+		var flow oidc.PendingAuth
+		if st := r.URL.Query().Get("state"); st != "" && s.oidcStates != nil {
+			p, terr := s.oidcStates.Take(r.Context(), st)
+			switch {
+			case terr == nil:
+				flow = p
+				if p.Provider != name && s.logger != nil {
+					s.logger.Warn("oidc callback error from %s: the state was issued by provider %q — the refusal is routed to the client that flow started", name, p.Provider)
+				}
+			case !errors.Is(terr, oidc.ErrStateNotFound):
+				// A read that did not complete, like a provider
+				// resolution that fails above: the cause survives
+				// nowhere else, and this is a server fault, not a
+				// client's.
+				if s.logger != nil {
+					s.logger.Error("oidc callback error from %s: read the flow's state: %v — the state was NOT consumed and may still be replayable", name, terr)
+				}
+			}
+		}
+		redirectCallbackError(w, r, flow, ssoErrProviderReturned, provQ)
 		return
 	}
 	state := r.URL.Query().Get("state")
@@ -381,7 +470,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pending.Provider != name {
-		redirectSSOError(w, r, ssoErrStateExpired, provQ)
+		redirectCallbackError(w, r, pending, ssoErrStateExpired, provQ)
 		return
 	}
 	// Verify the user-agent binding cookie matches the one issued at
@@ -392,6 +481,10 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		ckVal := s.sessionCookie(r, oidcAgentBindingCookie)
 		clearOIDCAgentBindingCookie(w, s.cfg.CookieDomain, s.cfg.CookieSecure)
 		if subtle.ConstantTimeCompare([]byte(ckVal), []byte(pending.AgentBinding)) != 1 {
+			// The login-CSRF guard firing is a refused sign-in: audited,
+			// though no identity has resolved yet — the flow, the
+			// connector and the client's address are what is known.
+			s.auditLoginFailed(r, callbackAttempt(pending, name), errAgentBindingMismatch)
 			redirectSSOError(w, r, ssoErrAgentBinding, provQ)
 			return
 		}
@@ -401,7 +494,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		if s.logger != nil {
 			s.logger.Warn("oidc exchange failed for %s: %v", name, err)
 		}
-		redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+		redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 		return
 	}
 	// Link flow: an authenticated user is attaching this SSO identity to their
@@ -472,38 +565,51 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, deeplink.Path("/account")+"?sso_linked="+url.QueryEscape(c.Display()), http.StatusFound)
 		return
 	}
-	// Per-org flows drive the login from the tenant/provider stored in
-	// PendingAuth at /start (server-side, keyed by the IdP-echoed state) — NOT
-	// from the URL — so a slug presented at /callback cannot be coerced into
-	// another tenant's policy.
-	var res auth.LoginResult
-	if pending.TenantID != "" {
-		res, err = s.authSvc.LoginWithExternalForOrg(r.Context(), ext, pending.TenantID, pending.OrgProviderID, r.UserAgent(), s.clientIP(r))
-	} else {
-		res, err = s.authSvc.LoginWithExternal(r.Context(), ext, r.UserAgent(), s.clientIP(r))
-	}
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("sso login failed via %s: %v", name, err)
-		}
-		redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
-		return
-	}
-	// Desktop flow: don't set browser cookies. Mint a single-use ticket holding
-	// this LoginResult and 302 to the desktop's loopback listener with it; the
-	// desktop redeems it at /api/auth/desktop/exchange over its native client
-	// (see desktop_sso.go). The refresh token thus never enters a URL.
+	// Desktop flow: don't set browser cookies — and DON'T mint the session
+	// here. The login is DEFERRED to the ticket's redemption (#2635): the
+	// ticket carries what the redemption needs to mint it (the account, the
+	// lineage the session will be born under, the landing team), and the
+	// store holds the ticket only as its hash, so no credential ever rests
+	// in desktop_sso_tickets and an unredeemed ticket leaves no live session
+	// behind. The desktop redeems the ticket at /api/auth/desktop/exchange
+	// over its native client (see desktop_sso.go), which is where the
+	// refresh token first exists. The refresh token thus never enters a URL.
 	if pending.Desktop {
 		if s.desktopTickets == nil {
-			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 			return
 		}
-		ticket, mintErr := s.desktopTickets.Mint(r.Context(), res)
+		// A desktop sign-in refused here is audited here; one accepted is
+		// audited where its session is minted, at the ticket's redemption.
+		attempt := loginAttempt{method: loginMethodDesktop, provider: name, subject: ext.Email}
+		var d auth.DesktopLogin
+		if pending.TenantID != "" {
+			d, err = s.authSvc.LoginWithExternalForOrgDesktop(r.Context(), ext, pending.TenantID, pending.OrgProviderID, r.UserAgent(), s.clientIP(r))
+		} else {
+			d, err = s.authSvc.LoginWithExternalDesktop(r.Context(), ext, r.UserAgent(), s.clientIP(r))
+		}
+		if err != nil {
+			s.auditLoginFailed(r, attempt, err)
+			// The refusal reaches the desktop that is waiting for it:
+			// redirectCallbackError sends a desktop flow's sso_error to the
+			// loopback listener, so an account pending a password change (or
+			// any other refusal) fails the app's sign-in at once instead of
+			// after its five-minute timeout (#2687).
+			if s.logger != nil {
+				s.logger.Warn("sso login failed via %s: %v", name, err)
+			}
+			redirectCallbackError(w, r, pending, ssoErrorForAuth(err), provQ)
+			return
+		}
+		d.Provider = name
+		ticket, mintErr := s.desktopTickets.Mint(r.Context(), d)
 		if mintErr != nil {
+			attempt.account = d.UserID
+			s.auditLoginFailed(r, attempt, fmt.Errorf("mint the desktop ticket: %w", mintErr))
 			if s.logger != nil {
 				s.logger.Error("sso login via %s: mint the desktop ticket: %v", name, mintErr)
 			}
-			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 			return
 		}
 		sep := "?"
@@ -513,6 +619,26 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, pending.DesktopRedirect+sep+"ticket="+url.QueryEscape(ticket), http.StatusFound)
 		return
 	}
+	// Per-org flows drive the login from the tenant/provider stored in
+	// PendingAuth at /start (server-side, keyed by the IdP-echoed state) — NOT
+	// from the URL — so a slug presented at /callback cannot be coerced into
+	// another tenant's policy.
+	attempt := loginAttempt{method: ssoLoginMethod(name, pending.TenantID != ""), provider: name, subject: ext.Email}
+	var res auth.LoginResult
+	if pending.TenantID != "" {
+		res, err = s.authSvc.LoginWithExternalForOrg(r.Context(), ext, pending.TenantID, pending.OrgProviderID, r.UserAgent(), s.clientIP(r))
+	} else {
+		res, err = s.authSvc.LoginWithExternal(r.Context(), ext, r.UserAgent(), s.clientIP(r))
+	}
+	if err != nil {
+		s.auditLoginFailed(r, attempt, err)
+		if s.logger != nil {
+			s.logger.Warn("sso login failed via %s: %v", name, err)
+		}
+		redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
+		return
+	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)
 	target := pending.NextURL
 	if target == "" {

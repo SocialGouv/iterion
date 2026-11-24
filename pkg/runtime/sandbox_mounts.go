@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -112,9 +113,24 @@ func applyScratchMount(
 	if hostScratch == "" {
 		return skip("no project scratch dir could be resolved")
 	}
-	if err := os.MkdirAll(hostScratch, 0o700); err != nil {
-		return skip(fmt.Sprintf("mkdir %s: %v", hostScratch, err))
+	// The scratch lives under the read-write iterion home, so a previous run
+	// could have replaced a component of this path with a symlink — and this
+	// bind is the one whose own comment names the threat ("the repository
+	// decides the bind source — symlinks included"). The same one check every
+	// such source passes, and a failure is this function's own loud skip.
+	iterionHome, _ := operatorsIterionHome()
+	if err := safepath.EnsureRealBindSourceDir(iterionHome, hostScratch, 0o700); err != nil {
+		return skip(err.Error())
 	}
+	// The check above ran at plan time; the runtime daemon resolves the
+	// source at CREATION, minutes later (image pull, build). Name the pair
+	// for the driver so it re-asks the same question at that border — a leaf
+	// swapped inside the window refuses the container instead of mounting
+	// where the swap points.
+	spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{
+		Root: iterionHome,
+		Path: hostScratch,
+	})
 	spec.Mounts = append(spec.Mounts, fmt.Sprintf(
 		"source=%s,target=%s,type=bind", hostScratch, sandboxScratchContainerPath))
 	// `docker inspect` must never show a mount events.jsonl cannot explain.
@@ -173,6 +189,13 @@ func addOptionalBindMount(
 // [store.EventSandboxHostStateMounted] with the precedence source so
 // operators can audit why the mount fired (or didn't).
 //
+// guard (#2069) shadows the host configuration the HOST later executes —
+// plugins.yaml + plugins/, ~/.claude/settings*.json + plugins/,
+// ~/.claude.json, ~/.codex/config.toml, ~/.gitconfig — with per-run copies
+// or read-only overlays, and its audit list rides the event's `guarded`
+// field. Nil disables the shadowing (the ITERION_SANDBOX_HOST_STATE_GUARD=off
+// posture; tests construct their own).
+//
 // Pre-conditions: spec is the resolved active spec; the caller has
 // already decided that mounts/env mutations are safe.
 // It RETURNS the host `~/.iterion` path it actually bind-mounted, at that same
@@ -196,7 +219,13 @@ func addOptionalBindMount(
 // Nothing is invented when the host has no identity either. git then fails
 // with its own message, which names the real problem (a host that was never
 // configured) instead of attributing commits to an identity nobody chose.
-func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlog.Logger) {
+//
+// An UNTRUSTED run gets no identity at all (ADR-162 U5): the operator's
+// user.name/user.email would attribute the workspace's commits to the
+// operator. The gpg-sign suppression above still applies — it removes a
+// capability, it does not lend one — and git's own "Author identity
+// unknown" is the honest failure a commit-producing untrusted run meets.
+func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlog.Logger, trust store.RunTrust) {
 	if spec.Env == nil {
 		spec.Env = map[string]string{}
 	}
@@ -210,6 +239,12 @@ func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlo
 		spec.Env["GIT_CONFIG_VALUE_0"] = "false"
 	}
 
+	if !trust.Trusted() {
+		if logger != nil {
+			logger.Warn("runtime: untrusted workspace — no git identity crosses; an in-sandbox `git commit` fails with \"Author identity unknown\" (mark the workspace trusted to lend one)")
+		}
+		return
+	}
 	name := gitConfigValue(workspacePath, "user.name")
 	email := gitConfigValue(workspacePath, "user.email")
 	if name == "" || email == "" {
@@ -250,24 +285,44 @@ func applyHostStateMounts(
 	spec *sandbox.Spec,
 	wf *ir.Workflow,
 	p SandboxParams,
+	guard *hostConfigGuard,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
-) (sharedStateDir string) {
-	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
+) (sharedStateDir string, err error) {
+	// resolveHostState is the same decision sandboxCredentialHome read
+	// before credential admission (the untrusted floor included), so the
+	// mount plan and the probe cannot disagree on what crosses.
+	resolvedHostState, hsSource := resolveHostState(wf, p)
 	spec.HostState = sandbox.HostState(resolvedHostState)
-	if !spec.HostState.Active() {
-		seedGitIdentityEnv(spec, p.WorkspacePath, logger)
-		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
-			"enabled": false,
-			"source":  hsSource,
-		})
-		return ""
-	}
-
 	absWorkspace, absErr := filepath.Abs(p.WorkspacePath)
 	if absErr != nil {
 		absWorkspace = p.WorkspacePath
 	}
+	// The workspace bind is not host_state-gated (the driver derives it from
+	// RunInfo.WorkspacePath whatever this plan decides), so its #2069 border
+	// question is asked on BOTH branches — the source under the store is
+	// plantable by any run alive between the plan and the creation, mounted
+	// home or not.
+	if err := guard.guardWorkspaceBind(spec, absWorkspace); err != nil {
+		return "", err
+	}
+	if !spec.HostState.Active() {
+		seedGitIdentityEnv(spec, p.WorkspacePath, logger, p.Trust)
+		// The worktree .git bind is not host_state-gated, so its #2069
+		// shadows apply here too — and the one audit event carries them.
+		guard.guardWorktreeGit(spec, p.WorktreeGitDir)
+		spec.BindSourceChecks = append(spec.BindSourceChecks, guard.verifiedBindSources()...)
+		disabled := map[string]any{
+			"enabled": false,
+			"source":  hsSource,
+		}
+		if guarded := guard.audit(); len(guarded) > 0 {
+			disabled["guarded"] = guarded
+		}
+		_ = emitEvent(store.EventSandboxHostStateMounted, disabled)
+		return "", nil
+	}
+
 	// Workspace at host's absolute path keeps cwd-derived state
 	// (Claude Code project key, ${PROJECT_DIR}, absolute-path tool
 	// args) resolvable identically in/out container. Preserve any
@@ -323,6 +378,110 @@ func applyHostStateMounts(
 	}
 
 	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, claudeConfigPath, codexDir, gitConfigPath)
+
+	// #2069: the binds above give the sandbox the host state it must WRITE
+	// (the run store, Claude Code sessions and credential refresh, codex's
+	// auth.json). What follows shadows the host CONFIGURATION the host later
+	// executes — per-run copies for files in-sandbox tools legitimately
+	// write, read-only overlays for what they never do. Only the SURVIVING
+	// binds are guarded: a candidate the filter dropped (missing on the
+	// host, or covered by the workspace bind) exposes nothing.
+	if guard != nil {
+		// The iterion home stays READ-WRITE — the run store, the memory tree
+		// and the project scratch live under it and must outlive the run — so
+		// it is a root whose content the sandbox writes, and every bind source
+		// below it is checked against a symlink the sandbox planted there
+		// (safepath.RealBindSource). Registering the root is what makes the
+		// check reach all of them; the ~/.claude and ~/.codex trees need no
+		// registration because nothing under them is written any more.
+		guard.sandboxWrites(iterionHomeDir)
+		mounted := map[string]bool{}
+		for _, m := range mounts {
+			mounted[m.HostPath] = true
+		}
+		if mounted[gitConfigPath] {
+			mounts = guard.copyFileOver(mounts, gitConfigPath, "")
+		}
+		if mounted[claudeConfigPath] {
+			mounts = guard.copyFileOver(mounts, claudeConfigPath, "{}\n")
+		}
+		if mounted[claudeDir] {
+			// READ-ONLY BY DEFAULT, through an ephemeral home: the read-write
+			// bind of ~/.claude is replaced by a per-run tmpfs, and what the
+			// operator's own CLI executes or loads is bound back on top,
+			// read-only. The in-sandbox CLI writes its home as freely as ever
+			// — in the tmpfs — and a path nobody thought of fails nowhere: it
+			// is simply absent, which is the shape the CLI meets on a fresh
+			// machine, instead of writing the operator's home in silence. The
+			// enumeration that remains is of the READ set, which is the
+			// operator's own configuration and therefore knowable.
+			mounts = guard.ephemeralDirOver(mounts, claudeDir)
+			for _, entry := range hostExecutedClaudeHomeEntries {
+				mounts = guard.roDirOverExisting(mounts, filepath.Join(claudeDir, entry))
+			}
+			// The settings files and the memory file are read AND written in
+			// place by the CLI (a permission "always allow" lands in
+			// settings.local.json), so they are per-run copies rather than
+			// read-only binds: the write succeeds and dies with the run. Not
+			// seeded — under the tmpfs an absent file is absent in the
+			// container too, so there is nothing to make unplantable, and a
+			// file iterion created in the operator's home would stay there.
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(claudeDir, "settings.json"))
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(claudeDir, "settings.local.json"))
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(claudeDir, "CLAUDE.md"))
+			// The two exceptions, each with the HOST-side iterion process that
+			// needs the same tree:
+			//   - projects/ holds the CLI's session transcripts, and
+			//     `session: persist` packs them from the host path after the
+			//     run (delegate.SessionFilesRoot -> $HOME/.claude, read by
+			//     sessionpack.CollectBySessionID in
+			//     pkg/backend/model/executor_persist.go). Ephemeral, every
+			//     persisted session would silently restart from scratch;
+			//   - .credentials.json is the forfait OAuth token the CLI reads
+			//     and refreshes. Ephemeral, a sandboxed claude_code node on a
+			//     forfait has no credential at all.
+			mounts = guard.rwDirOver(mounts, filepath.Join(claudeDir, "projects"), true)
+			mounts = guard.rwFileOverExisting(mounts, filepath.Join(claudeDir, ".credentials.json"))
+		}
+		if mounted[codexDir] {
+			// Same posture for CODEX_HOME, and it closes the same defect one
+			// level down: config.toml's `notify = [...]` and
+			// `mcp_servers.<x>.command` NAME a program, and shadowing the
+			// pointer while leaving ~/.codex/notify.sh writable shadowed
+			// nothing. Under the ephemeral home the named program lands in
+			// the tmpfs whatever its path.
+			mounts = guard.ephemeralDirOver(mounts, codexDir)
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(codexDir, "config.toml"))
+			// The instruction files codex reads from CODEX_HOME whatever the
+			// working directory (delegate.codexInstructionFiles is the same
+			// list, read by the ambient-context policy). Read-only, and never
+			// created: an AGENTS.override.md iterion seeds into a home that
+			// had none is a first-wins shadow of the operator's own
+			// AGENTS.md, forever (docs/adr/0119, docs/backends.md).
+			mounts = guard.roDirOverExisting(mounts, filepath.Join(codexDir, "prompts"))
+			for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
+				mounts = guard.roFileOverExisting(mounts, filepath.Join(codexDir, name))
+			}
+			// The exceptions, as above: auth.json is the "Sign in with
+			// ChatGPT" token claw's OpenAI provider reads, and sessions/ is
+			// what sessionpack packs for a codex `session: persist`.
+			mounts = guard.rwFileOverExisting(mounts, filepath.Join(codexDir, "auth.json"))
+			mounts = guard.rwDirOver(mounts, filepath.Join(codexDir, "sessions"), true)
+		}
+		if mounted[iterionHomeDir] {
+			mounts = guard.copyFileOver(mounts, filepath.Join(iterionHomeDir, "plugins.yaml"), "")
+			for _, entry := range hostLoadedIterionHomeEntries {
+				mounts = guard.roDirOver(mounts, filepath.Join(iterionHomeDir, entry))
+			}
+			// The sandbox's own cache store, read-only AT ITS OWN PATH. The
+			// run still writes the caches through the $HOME paths they are
+			// bound at (mount options are per mountpoint), but it can no
+			// longer rewrite the STORE — which is where a planted symlink
+			// would choose the next run's bind sources.
+			mounts = guard.roDirOver(mounts, SandboxCacheStoreDir(iterionHomeDir))
+		}
+	}
+
 	mountPairs := make([]string, 0, len(mounts))
 	for _, m := range mounts {
 		entry := fmt.Sprintf("source=%s,target=%s,type=bind", m.HostPath, m.ContainerPath)
@@ -345,30 +504,79 @@ func applyHostStateMounts(
 	// (the host_state HOME tmpfs is per-run), so the first `go build` is a
 	// full cold compile — AND it re-downloads the go1.26 toolchain, which
 	// lives at $HOME/go/pkg/mod/golang.org/toolchain@…. Observed stalling
-	// dispatched feature_dev/improve-loop runs for minutes in `act`. Bind
-	// the host's caches read-write (Go's build + module caches are
-	// concurrency-safe, so parallel runs sharing them is fine) at the same
-	// absolute path; they nest on the tmpfs HOME like the .iterion/.claude
-	// binds. Gated under host_state (off for host_state=none / cloud), and
-	// best-effort — a missing cache dir is simply skipped (cold, as before).
-	// Same rationale for the Node package caches: without them every
-	// sandboxed run re-downloads its packages over the network (session
-	// mining showed agents burning whole turns on cold `pnpm install`
-	// failures — the one sandbox-provisioning complaint still live in
-	// 2026-07). npm/pnpm/yarn caches are content-addressed and safe to
-	// share; same host_state gate + best-effort skip when absent.
+	// dispatched feature_dev/improve-loop runs for minutes in `act`. Same
+	// rationale for the Node package caches: without them every sandboxed
+	// run re-downloads its packages over the network (session mining showed
+	// agents burning whole turns on cold `pnpm install` failures — the one
+	// sandbox-provisioning complaint still live in 2026-07).
+	//
+	// The warmth is kept; the SOURCE is not the host's own cache (#2069).
+	// Each of these is a store whose content the HOST runs: $PNPM_HOME holds
+	// the global bins `pnpm setup` puts on the operator's PATH, the module
+	// cache holds the toolchain binary GOTOOLCHAIN=auto executes, and the
+	// build cache holds objects `go build` relinks without re-hashing
+	// (verification is GODEBUG=gocacheverify=1, off by default). Bound at
+	// the host's own path, read-write, a sandboxed agent writes what the
+	// host runs next. So the sandbox gets its OWN caches under the iterion
+	// home, bound at the same CONTAINER path (GOCACHE/GOMODCACHE/PNPM_HOME
+	// resolve from $HOME, which is the host home path in-container):
+	// persistent from one sandboxed run to the next, iterion-owned, and
+	// never read by the host's own tools. Gated under host_state (off for
+	// host_state=none / cloud) and on the operator's iterion home being
+	// mounted — without it there is nowhere iterion owns to keep them, and
+	// the run is cold, which is the pre-existing "cache absent" state.
+	// With the guard off (the hatch, or a driver with no host binds) the
+	// operator asked for the pre-guard posture, and that includes the host's
+	// own caches at their own path — best-effort, skipped when absent.
+	// A container pinning a UID that is not the host's gets NO cache: the
+	// store is created 0700 and owned by the host user, so a foreign UID
+	// cannot even read it and `go build` would die on permission denied with
+	// no iterion event to explain it. That is the same condition — and the
+	// same answer — as applyScratchMount's, which skips its bind rather than
+	// handing over a directory the container cannot use.
+	foreignUID := -1
+	if uid, ok := parseUserUID(spec.User); ok && uid != os.Getuid() {
+		foreignUID = uid
+	}
 	if homeDir != "" {
-		for _, rel := range []string{
-			".cache/go-build", "go/pkg/mod", // Go build + module caches
-			".npm",              // npm cache (_cacache)
-			".local/share/pnpm", // pnpm home: store + global bins
-			".cache/yarn",       // yarn cache
-		} {
-			p := filepath.Join(homeDir, rel)
-			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", p, p))
-				mountPairs = append(mountPairs, p+":"+p)
+		for _, rel := range SandboxCacheRelPaths() {
+			target := filepath.Join(homeDir, filepath.FromSlash(rel))
+			source := target
+			switch {
+			case guard == nil:
+				if fi, err := os.Stat(source); err != nil || !fi.IsDir() {
+					continue
+				}
+			case iterionHomeDir == "":
+				// No home iterion owns (a `.env` chose it, or it is the
+				// shared <tmp> fallback — already warned above): the run is
+				// cold rather than warmed from a store the host executes.
+				continue
+			case foreignUID >= 0:
+				logger.Warn("runtime: the container pins UID %d and the host is %d, so the sandbox's own cache store (%s, owner-only) would be unreadable inside it — this run builds cold instead", foreignUID, os.Getuid(), SandboxCacheStoreDir(iterionHomeDir))
+				continue
+			default:
+				source = filepath.Join(SandboxCacheStoreDir(iterionHomeDir), filepath.FromSlash(rel))
+				// The store lives under the read-write iterion home, so the
+				// RUN BEFORE THIS ONE could have replaced this path with a
+				// symlink to any host path — the one check every such bind
+				// source passes (safepath.RealBindSource).
+				if err := safepath.EnsureRealBindSourceDir(SandboxCacheStoreDir(iterionHomeDir), source, 0o700); err != nil {
+					logger.Warn("runtime: the sandbox's own cache %s is not the path it is named (%v) — this run builds cold, and nothing is mounted from it", source, err)
+					continue
+				}
+				// Same window as the scratch below the same home: the check
+				// ran at plan time, the daemon resolves at creation. The
+				// driver re-asks at that border; a swap refuses the run
+				// rather than poisoning the run after this one.
+				spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{
+					Root: SandboxCacheStoreDir(iterionHomeDir),
+					Path: source,
+				})
+				guard.note("private", target)
 			}
+			spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", source, target))
+			mountPairs = append(mountPairs, source+":"+target)
 		}
 	}
 
@@ -402,23 +610,28 @@ func applyHostStateMounts(
 		// for devbox/npm/pip/go (incl. $HOME/go/bin) while the deeper binds
 		// still overlay and persist. Direct $HOME/* binds (.claude,
 		// .iterion, …) need nothing extra — their parent is $HOME itself.
+		//
+		// The decision itself is homeTmpfsEntries, so the posture can be
+		// driven for a platform this process is not running on.
+		uid, gid := -1, -1
 		if goruntime.GOOS == "linux" {
-			if uid := os.Getuid(); uid != 0 {
-				gid := os.Getgid()
-				// `exec` is REQUIRED. docker mounts --tmpfs noexec by
-				// default, which blocks anything executable that lands in
-				// $HOME — most importantly go's auto-downloaded toolchain
-				// ($HOME/go/pkg/mod/golang.org/toolchain@.../bin/go), but
-				// also nix/npm/pip binaries cached under HOME. Without it a
-				// sandboxed `go build` dies with "cannot execute" and the
-				// agent is forced to hand-relocate GOPATH/GOCACHE to /tmp.
-				dirs := append([]string{homeDir}, homeNestedBindParents(homeDir, spec.Mounts)...)
-				for _, dir := range dirs {
-					spec.Tmpfs = append(spec.Tmpfs,
-						fmt.Sprintf("%s:uid=%d,gid=%d,mode=0755,exec", dir, uid, gid))
+			if u := os.Getuid(); u != 0 {
+				// A container pinned to a FOREIGN numeric user keeps the
+				// unaligned posture (uid<0): homeTmpfsEntries then lays the
+				// ephemeral homes owned by the pinned user — the same answer
+				// the scratch and the caches give this condition by skipping,
+				// and the one applyHostUIDRemap already declines to override.
+				// Host-uid-owned tmpfs under a 2234 container is a home that
+				// container cannot write.
+				if fu, ok := parseUserUID(spec.User); ok && fu != u {
+					uid, gid = -1, -1
+				} else {
+					uid, gid = u, os.Getgid()
 				}
 			}
 		}
+		spec.Tmpfs = append(spec.Tmpfs, homeTmpfsEntries(
+			homeDir, guard.ephemeralTmpfs(), homeNestedBindParents(homeDir, spec.Mounts), uid, gid, spec.User)...)
 	}
 
 	// Disable git commit signing inside the container. The mounted
@@ -443,11 +656,30 @@ func applyHostStateMounts(
 
 	applyHostUIDRemap(spec, emitEvent, logger)
 
+	// The worktree .git shadows (#2069) are applied HERE — after the
+	// HOME-tmpfs layering above, which a mount under $HOME must never feed:
+	// homeNestedBindParents would lay a tmpfs at the workspace bind's own
+	// destination for the overlay's ancestors, and a tmpfs shadows a bind
+	// at the same destination in either argument order. Docker mounts
+	// nested binds parents-first by destination depth, so these overlays
+	// win over the tree bind addWorktreeGitMount appends later.
+	guard.guardWorktreeGit(spec, p.WorktreeGitDir)
+	// Every source the plan verified rides the border field: the scratch and
+	// the caches name themselves at their own sites; everything a shadow
+	// asked checkBindSource about is recorded by the guard and flushed here.
+	spec.BindSourceChecks = append(spec.BindSourceChecks, guard.verifiedBindSources()...)
+
 	mounted := map[string]any{
 		"enabled":          true,
 		"source":           hsSource,
 		"workspace_folder": spec.WorkspaceFolder,
 		"mounts":           mountPairs,
+	}
+	// #2069: the host-config guard's audit — every host path shadowed by a
+	// per-run copy or a read-only overlay, so `docker inspect` never shows
+	// a host bind this event cannot explain.
+	if guarded := guard.audit(); len(guarded) > 0 {
+		mounted["guarded"] = guarded
 	}
 	if iterionHomeNotMounted != "" {
 		mounted["iterion_home_not_mounted"] = iterionHomeNotMounted
@@ -456,7 +688,7 @@ func applyHostStateMounts(
 		mounted["home_not_mounted"] = os.Getenv(store.HomeEnvName())
 	}
 	_ = emitEvent(store.EventSandboxHostStateMounted, mounted)
-	return sharedStateDir
+	return sharedStateDir, nil
 }
 
 // operatorsIterionHome returns the iterion home host_state may bind-mount
@@ -486,9 +718,96 @@ func operatorsIterionHome() (dir, notMounted string) {
 // ($HOME/<x>) are excluded — their parent is $HOME itself, already a
 // user-owned tmpfs. Results are deduped and ordered shallowest-first so
 // the tmpfs layers stack in mount order.
+//
+// An ancestor that is ITSELF a bind target is skipped: docker does not
+// root-create what a mount provides, and a tmpfs there would SHADOW the
+// bind — the #2069 config overlays ($HOME/.claude/settings.json over the
+// $HOME/.claude bind) are exactly this shape, and laying the tmpfs lost
+// the operator's whole ~/.claude for the run.
+// homeTmpfsEntries is the `--tmpfs` plan for a guarded run's $HOME, as a
+// decision separate from the platform it is taken on: uid >= 0 means the
+// host-UID remap aligns an owner (Linux, non-root engine); uid < 0 that it
+// does not, and the ephemeral homes are then owned by the CONTAINER user —
+// spec.User when it parses to a uid, world-writable when it does not. A
+// docker tmpfs without uid= is root:root, so "the image's own user owns
+// what is laid" is something this function must EMIT, not assume: a
+// root:root 0755 ephemeral home is a home the in-sandbox CLI cannot write.
+// The 0777 fallback loses nothing: a tmpfs keeps no byte past the run, and
+// the home's isolation never rested on its mode.
+//
+// Two stories ride one mount list, and only one of them is conditional:
+//
+//   - the WRITABLE-$HOME layering (homeDir itself and nestedParents) exists
+//     to re-lay as user-owned what docker/runc root-creates, so it has
+//     nothing to say where no uid is being aligned;
+//   - the guard's EPHEMERAL state dirs are laid either way, and that is the
+//     whole point of them. ephemeralDirOver dropped the read-write bind of
+//     ~/.claude and ~/.codex, so this tmpfs is where the in-sandbox CLI
+//     writes its home. Skip it and docker root-creates the mount parent of
+//     the read-only overlays nested under them, which an image whose user is
+//     not root cannot write — the operator's home would be safe and the CLI
+//     would be broken.
+//
+// Deduped because nestedParents names the same ancestor for every nested bind
+// under it, and because the guard's dirs and those ancestors overlap by
+// construction (~/.claude is the parent of the projects/ bind): two --tmpfs at
+// one destination is a mount docker cannot order.
+func homeTmpfsEntries(homeDir string, ephemeral, nestedParents []string, uid, gid int, containerUser string) []string {
+	if homeDir == "" {
+		return nil
+	}
+	homeOpts := ""
+	ephemeralOpts := ""
+	switch {
+	case uid >= 0:
+		homeOpts = fmt.Sprintf("uid=%d,gid=%d,mode=0755,exec", uid, gid)
+		ephemeralOpts = homeOpts
+	case containerUser == "":
+		// No remap and no pinned user: the image's default user is unknown
+		// (it lives in the image, not in the spec). World-writable keeps
+		// every possible owner able to write its own ephemeral home.
+		ephemeralOpts = "mode=0777,exec"
+	default:
+		if u, ok := parseUserUID(containerUser); ok {
+			ephemeralOpts = fmt.Sprintf("uid=%d,mode=0755,exec", u)
+		} else {
+			// A named user ("devbox") whose uid the spec does not carry.
+			ephemeralOpts = "mode=0777,exec"
+		}
+	}
+	dirs := make([]string, 0, 2+len(ephemeral)+len(nestedParents))
+	if uid >= 0 {
+		dirs = append(dirs, homeDir)
+	}
+	dirs = append(dirs, ephemeral...)
+	if uid >= 0 {
+		dirs = append(dirs, nestedParents...)
+	}
+	out := make([]string, 0, len(dirs))
+	seen := map[string]bool{}
+	for _, dir := range dirs {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		opts := ephemeralOpts
+		if dir == homeDir {
+			opts = homeOpts
+		}
+		out = append(out, dir+":"+opts)
+	}
+	return out
+}
+
 func homeNestedBindParents(homeDir string, mounts []string) []string {
 	if homeDir == "" {
 		return nil
+	}
+	targets := map[string]bool{}
+	for _, m := range mounts {
+		if t := mountTarget(m); t != "" {
+			targets[t] = true
+		}
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -507,6 +826,9 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 		}
 		for depth := 1; depth < len(parts); depth++ {
 			ancestor := filepath.Join(append([]string{homeDir}, parts[:depth]...)...)
+			if targets[ancestor] {
+				continue // a bind already provides it — never shadow it
+			}
 			if !seen[ancestor] {
 				seen[ancestor] = true
 				out = append(out, ancestor)
@@ -526,12 +848,23 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 
 // mountTarget extracts the target= path from a docker --mount spec entry
 // of the form "source=…,target=…,type=bind[,readonly]". Returns "" when
-// the entry carries no target= field.
+// the entry carries no target= field. Parsing delegates to the sandbox
+// package's MountTargetOf — the one parser of the target grammar, shared
+// with the admission walk, so the next alias lands once and every reader
+// sees it.
 func mountTarget(entry string) string {
-	for _, field := range strings.Split(entry, ",") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(field), "target="); ok {
-			return v
-		}
+	return sandbox.MountTargetOf(entry)
+}
+
+// mountSource extracts the source= path from a docker --mount spec entry of
+// the form "source=…,target=…,type=bind[,readonly]" ("src" is the same
+// key's alias). Returns "" when the entry carries no source= field — the
+// mirror of [mountTarget], for the readers that must answer about where a
+// mount REACHES (the host side) rather than where it lands. The last such
+// field, as docker binds it (sandbox.MountField).
+func mountSource(entry string) string {
+	if v, bare, ok := sandbox.MountField(entry, "source", "src"); ok && !bare {
+		return v
 	}
 	return ""
 }
@@ -644,7 +977,7 @@ func specsOf(contribs []plugin.RewriterContribution) []plugin.RewriterSpec {
 // OAuth mount in its sandbox block) is meaningless there and would otherwise
 // hard-fail manifest building (the kubernetes driver rejects type=bind), so we
 // warn and drop it; the sandboxed agent gets its creds/config from env instead.
-// Non-bind mounts (pvc/configmap/secret) pass through untouched.
+// Non-bind mounts (pvc/configmap/secret/emptydir) pass through untouched.
 func dropHostBindMounts(mounts []string, logger *iterlog.Logger) []string {
 	if len(mounts) == 0 {
 		return mounts
@@ -653,7 +986,7 @@ func dropHostBindMounts(mounts []string, logger *iterlog.Logger) []string {
 	for _, m := range mounts {
 		if mountIsHostBind(m) {
 			if logger != nil {
-				logger.Warn("runtime: sandbox: dropping host bind mount %q — this driver has no host filesystem (type=bind unsupported); the sandboxed agent must get its creds/config from env or a pvc/configmap/secret mount", m)
+				logger.Warn("runtime: sandbox: dropping host bind mount %q — this driver has no host filesystem (type=bind unsupported); the sandboxed agent must get its creds/config from env or a pvc/configmap/secret/emptydir mount", m)
 			}
 			continue
 		}
@@ -671,16 +1004,71 @@ const runFilesEnvVar = "ITERION_ARTIFACT_FILES_DIR"
 // finalizeMountsForDriver drops every host bind mount the selected driver
 // cannot honour, and with them the promises the runtime made on their
 // behalf: the run-files variable (dropUnsupportedHostBinds) and the
-// attachments path handed to nodes, returned empty when its bind is gone —
-// nodes are then given the host path, which at least fails loudly instead of
-// resolving to an empty mount point. A driver with a host filesystem keeps
-// everything.
-func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, attachmentsDir, botRunFilesDir string, logger *iterlog.Logger) string {
+// attachments path handed to nodes, returned empty when its bind is gone.
+// What went is returned as a report for the run's stream
+// (store.EventSandboxHostBindsDropped); the caller decides what an empty
+// attachments path means for a run that holds attachments. A driver with a
+// host filesystem keeps everything and reports nothing.
+func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, attachmentsDir, botRunFilesDir string, logger *iterlog.Logger) (string, droppedBinds) {
 	if caps.SupportsHostBindMounts {
-		return attachmentsDir
+		return attachmentsDir, droppedBinds{}
 	}
-	dropUnsupportedHostBinds(spec, botRunFilesDir, logger)
-	return ""
+	return "", dropUnsupportedHostBinds(spec, botRunFilesDir, logger)
+}
+
+// droppedBinds is what dropUnsupportedHostBinds took away from a spec: the
+// container targets of the host binds it removed and the promises it
+// withdrew with them. It is the record the run's stream carries, so a reader
+// of the run — not only of the runner's log — sees what the container never
+// had.
+type droppedBinds struct {
+	Targets    []string          // cleaned container targets of the dropped host binds, sorted
+	Withdrawn  []string          // variables withdrawn because their bind went
+	HandedBack map[string]string // variable → the bot's own value handed back in the runtime's place
+	Carried    []string          // targets a seed serves in the dropped bind's place (the attachments on a copying driver)
+}
+
+func (d droppedBinds) empty() bool {
+	return len(d.Targets) == 0 && len(d.Withdrawn) == 0 && len(d.HandedBack) == 0 && len(d.Carried) == 0
+}
+
+// carry moves target from the dropped list to the carried one: the bind
+// went, but a seed lands the same directory at the same path, so the
+// container does have it.
+func (d droppedBinds) carry(target string) droppedBinds {
+	clean := path.Clean(target)
+	kept := make([]string, 0, len(d.Targets))
+	for _, t := range d.Targets {
+		if t == clean {
+			d.Carried = append(d.Carried, t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	d.Targets = kept
+	return d
+}
+
+// payload is the event data of store.EventSandboxHostBindsDropped.
+func (d droppedBinds) payload(driver string) map[string]any {
+	out := map[string]any{
+		"driver": driver,
+		"mounts": append([]string{}, d.Targets...),
+	}
+	if len(d.Withdrawn) > 0 {
+		out["withdrawn"] = append([]string{}, d.Withdrawn...)
+	}
+	if len(d.HandedBack) > 0 {
+		handed := make(map[string]string, len(d.HandedBack))
+		for k, v := range d.HandedBack {
+			handed[k] = v
+		}
+		out["handed_back"] = handed
+	}
+	if len(d.Carried) > 0 {
+		out["carried"] = append([]string{}, d.Carried...)
+	}
+	return out
 }
 
 // dropUnsupportedHostBinds strips every host bind mount from spec — the
@@ -690,82 +1078,130 @@ func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, atta
 // wrapper redirecting its report into it died on "Directory nonexistent"
 // before the oracle ran, and four lots read an oracle verdict out of an
 // environment failure. The rule is keyed on the mounts, not on who set the
-// variable: a target a dropped bind served is gone unless a mount the driver
-// honours (pvc, configmap, secret) still serves it, and a value naming a path
-// no bind ever served is a promise the runtime never made. botRunFilesDir is
-// the value the runtime overwrote when it added its bind: handed back when
-// the runtime's promise is withdrawn, unless it names a dropped target too.
-func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger *iterlog.Logger) {
-	// Targets compare cleaned: a trailing slash or a spaced field is the same
-	// directory, and a miss here recreates the incident this rule closes.
-	target := func(m string) string {
-		if t := mountTarget(m); t != "" {
-			return path.Clean(t)
-		}
-		return ""
-	}
-	gone := map[string]bool{}
+// variable: a value goes when the mount that served it was a dropped bind —
+// the NEAREST mount at or above it, asked through sandbox.MountServing, the
+// one serving predicate the runtime's own storage decision asks too, a kept
+// mount winning a tie at the same target. So a kept mount (pvc, configmap,
+// secret, emptydir) nested under a dropped bind still serves its tree, a
+// bind nested under a kept mount took its own target with it, and a value
+// naming a path no bind ever served is a promise the runtime never made.
+// botRunFilesDir is the value the runtime overwrote when it named its own:
+// handed back when the runtime's promise is withdrawn, unless a dropped bind
+// served it too. The returned report lists what went: every dropped bind's
+// target, and the variable withdrawn or handed back.
+func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger *iterlog.Logger) droppedBinds {
+	var report droppedBinds
+	var binds []string
 	for _, m := range spec.Mounts {
 		if mountIsHostBind(m) {
-			if t := target(m); t != "" {
-				gone[t] = true
+			binds = append(binds, m)
+			// Targets compare cleaned: a trailing slash or a spaced field is
+			// the same directory, and a miss here recreates the incident this
+			// rule closes.
+			if t := mountTarget(m); t != "" {
+				report.Targets = append(report.Targets, path.Clean(t))
 			}
 		}
 	}
+	sort.Strings(report.Targets)
 	spec.Mounts = dropHostBindMounts(spec.Mounts, logger)
-	for _, m := range spec.Mounts {
-		delete(gone, target(m))
-	}
-	// A value goes when it names a dropped target OR a path under one: a
-	// directory under a bind that is gone is gone with it.
-	underDropped := func(dir string) bool {
-		value := path.Clean(dir)
-		for t := range gone {
-			if value == t || strings.HasPrefix(value, t+"/") {
-				return true
-			}
-		}
-		return false
+	// The kept mounts are listed first, so MountServing's first-of-equals
+	// hands a tie at one target to the mount the pod still has.
+	everyMount := append(append(make([]string, 0, len(spec.Mounts)+len(binds)), spec.Mounts...), binds...)
+	servedByDropped := func(dir string) bool {
+		serving := sandbox.MountServing(everyMount, dir)
+		return serving != "" && mountIsHostBind(serving)
 	}
 	dir, set := spec.Env[runFilesEnvVar]
-	if !set || !underDropped(dir) {
-		return
+	if !set || !servedByDropped(dir) {
+		return report
 	}
-	if botRunFilesDir != "" && !underDropped(botRunFilesDir) {
+	report.Withdrawn = append(report.Withdrawn, runFilesEnvVar)
+	if botRunFilesDir != "" && !servedByDropped(botRunFilesDir) {
 		spec.Env[runFilesEnvVar] = botRunFilesDir
+		report.HandedBack = map[string]string{runFilesEnvVar: botRunFilesDir}
 		if logger != nil {
 			logger.Warn("runtime: sandbox: %s handed back to the bot's own value %s — the runtime's bind serving %s was dropped with the other host binds", runFilesEnvVar, botRunFilesDir, dir)
 		}
-		return
+		return report
 	}
 	delete(spec.Env, runFilesEnvVar)
 	if logger != nil {
 		logger.Warn("runtime: sandbox: %s withdrawn — the bind serving %s was dropped with the other host binds; tools writing run files fall back to a temp dir", runFilesEnvVar, dir)
 	}
+	return report
+}
+
+// runFilesPodStorage decides what serves the declared run-files path target
+// on a driver with no host filesystem, asked of the mounts the pod keeps
+// through the one serving predicate (sandbox.MountServing, the nearest mount
+// at or above the path):
+//
+//   - a writable mount AT the path is the bot's own storage for it,
+//     returned as bots: a second volumeMount at one mountPath is a pod the
+//     API server refuses, and its size= names the drain's figure. A pvc
+//     there persists across runs, so the set drains what it holds — earlier
+//     runs' files included: storage the author chose for the path;
+//   - nothing at the path returns two empties: the runtime lays its own
+//     emptyDir there, nested beneath whatever holds the parent. A parent
+//     volume holds the path in its tree, never as a directory it promises:
+//     the path may not exist (the drain's in-pod tar -C then fails on every
+//     run that wrote nothing), a configmap or a secret parent is read-only,
+//     and a pvc parent would drain every earlier run's files into this one's
+//     set — a fresh emptyDir at the path answers all three;
+//   - a read-only mount at the path, or a read-only mount above it that the
+//     kubelet lays no mount point in, leaves the path unserved, returned
+//     with why: no tool can write it, and no storage can be laid there. The
+//     kubelet creates the mount points nested in a configmap or a secret
+//     volume before it mounts it read-only; a container runtime cannot
+//     create one inside any other read-only volume, and the pod would not
+//     start.
+func runFilesPodStorage(kept []string, target string) (bots, unserved string) {
+	nearest := sandbox.MountServing(kept, target)
+	if nearest == "" {
+		return "", ""
+	}
+	at := path.Clean(mountTarget(nearest)) == path.Clean(target)
+	switch {
+	case at && mountIsReadOnly(nearest):
+		return "", fmt.Sprintf("the bot's mount %q serves it read-only", nearest)
+	case at:
+		return nearest, ""
+	case mountIsReadOnly(nearest) && !mountIsAPIData(nearest):
+		return "", fmt.Sprintf("the bot's read-only mount %q holds its parent, and no mount point can be created inside it", nearest)
+	}
+	return "", ""
+}
+
+// mountIsReadOnly reports whether a mount the pod keeps serves its target
+// read-only: a configmap or a secret volume always does (the kubelet
+// mounts both read-only), any other type when its readonly flag is set —
+// read as the drivers read it, the last `readonly`/`ro` field winning
+// (sandbox.MountReadOnlyOf).
+func mountIsReadOnly(mount string) bool {
+	return mountIsAPIData(mount) || sandbox.MountReadOnlyOf(mount)
+}
+
+// mountIsAPIData reports whether a mount is a configmap or a secret volume
+// — the API data volumes the kubelet writes itself, read-only in the
+// container, and lays nested mount points in. The type is the mount's last
+// `type=` field, the one the driver renders (sandbox.MountField).
+func mountIsAPIData(mount string) bool {
+	typ, _, _ := sandbox.MountField(mount, "type")
+	return typ == "configmap" || typ == "secret"
 }
 
 // mountIsHostBind reports whether a docker-style mount string is a host bind
 // mount: an explicit type=bind, or — docker's default — a source= with no
-// explicit type. pvc/configmap/secret types are never host binds.
+// explicit type. pvc/configmap/secret/emptydir types are never host binds.
+// Each field is the last one naming it, as the drivers read it
+// (sandbox.MountField).
 func mountIsHostBind(mount string) bool {
-	var typ string
-	hasSource := false
-	for _, part := range strings.Split(mount, ",") {
-		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		switch strings.TrimSpace(kv[0]) {
-		case "type":
-			typ = strings.TrimSpace(kv[1])
-		case "source", "src":
-			hasSource = true
-		}
-	}
-	if typ != "" {
+	if typ, bare, ok := sandbox.MountField(mount, "type"); ok && !bare && typ != "" {
 		return typ == "bind"
 	}
-	return hasSource
+	_, bare, hasSource := sandbox.MountField(mount, "source", "src")
+	return hasSource && !bare
 }
 
 // addWorktreeGitMount bind-mounts the source repo's `.git` directory
@@ -785,15 +1221,29 @@ func mountIsHostBind(mount string) bool {
 //
 // Mounting only the per-run subtree leaves git unable to find shared
 // objects, refs/, HEAD, packed-refs — and every command fails with
-// `fatal: not a git repository`. The TODO below tracks a tighter
-// per-run isolation design (whole `.git` read-only + per-run subtree
-// read-write overlay), which docker bind layering technically allows
-// but is risky to ship without a test matrix proving the override
-// semantics on every supported driver. For now: simple + correct.
+// `fatal: not a git repository`. A tighter per-run isolation (whole `.git`
+// read-only + per-run subtree read-write overlay) remains possible —
+// docker bind layering allows it — but still wants a test matrix proving
+// the override semantics on every supported driver. #2069 closed the
+// host-EXECUTION half of it below (config + hooks shadowed); the residual
+// is ref/object corruption, an availability concern, not host code
+// execution.
 //
 // Read-write because git writes HEAD, refs, packed-refs, index, etc.
 // into the gitdir during normal `git commit` / `git checkout` flows,
 // and the worktree's gitdir is part of the broader `.git` tree.
+//
+// That read-write tree is also the #2069 surface on the REPOSITORY side:
+// `.git/config` (core.hooksPath, core.fsmonitor, aliases, credential
+// helpers) and `.git/hooks/` are configuration the operator's own git
+// executes on its next host-side command in this checkout. The guard
+// shadows both — from applyHostStateMounts (hostConfigGuard.
+// guardWorktreeGit), NOT here: the overlays must not feed the HOME-tmpfs
+// layering, which a mount added before applyHostStateMounts would (a
+// tmpfs at a bind's destination shadows the bind, whatever the argument
+// order — measured on docker 29). Docker mounts nested binds by
+// destination depth, parents first, so the overlays win over this tree
+// bind even though it is appended after them.
 //
 // Silently skips when:
 //   - gitDir is empty (non-worktree run, or cloud runner that never
@@ -813,12 +1263,25 @@ func mountIsHostBind(mount string) bool {
 // credentials through via [sandbox.WorkspaceFileRefresher] — see
 // pkg/sandbox/kubernetes/driver.go (populateWorkspace /
 // fixupWorkspaceGit) and ADR-082 Phase 3.
-func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logger) {
+func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logger, trust store.RunTrust) {
 	if gitDir == "" {
 		return
 	}
+	// ADR-162 U5: an untrusted run binds no .git. The git-private tree is
+	// where the rotated credential store, the repo's config and every
+	// sibling worktree's state live — and the kubernetes copy floors the
+	// same tree out (populateWorkspace skips `.git`, fixupWorkspaceGit is
+	// skipped whole): one answer on both drivers, so in-sandbox git fails
+	// with `fatal: not a git repository`, which is the isolation working,
+	// not a defect.
+	if !trust.Trusted() {
+		if logger != nil {
+			logger.Info("runtime: untrusted workspace — the worktree .git directory is not mounted; in-sandbox git commands will not see a repository")
+		}
+		return
+	}
 	// Walk up two levels: <repoRoot>/.git/worktrees/<run-id> → <repoRoot>/.git
-	dotGit := filepath.Dir(filepath.Dir(gitDir))
+	dotGit := worktreeDotGit(gitDir)
 	info, statErr := os.Stat(dotGit)
 	if statErr != nil {
 		if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {

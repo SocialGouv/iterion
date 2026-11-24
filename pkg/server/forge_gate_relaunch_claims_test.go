@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -72,7 +73,7 @@ func TestGateRelaunchClaims(t *testing.T) {
 		}
 		s.cfg.Store = rs
 		s.cfg.PublicURL = base
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		if err := conns.Create(ctx, forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}); err != nil {
 			t.Fatal(err)
 		}
@@ -245,7 +246,7 @@ func TestGateRelaunchClaims(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		conn, _ := w.s.forgeConnections.Get(ctx, "c1")
+		conn, _ := w.s.forgeConnections.Get(ctx, "t1", "c1")
 		grant, _ := w.s.forgePublishTokens.lookup("run-token")
 		w.s.relaunchDeadGateRun(ctx, deadGateRun{
 			run: run, grant: grant, conn: conn, gc: w.gc,
@@ -804,7 +805,7 @@ func TestDeferralAndRelaunchInteractions(t *testing.T) {
 		}
 		s.cfg.Store = rs
 		s.cfg.PublicURL = base
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		if err := conns.Create(ctx, forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}); err != nil {
 			t.Fatal(err)
 		}

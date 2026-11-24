@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // SecretRefResolver resolves `{{secrets.<name>}}` to what a node may see —
@@ -11,6 +12,16 @@ import (
 // secret guard implements it.
 type SecretRefResolver interface {
 	ResolveSecretRef(name string) string
+}
+
+// SinkSecretRefResolver is a SecretRefResolver that reads the sink a text is
+// rendered at: the guard resolves nothing for a value secret whose `sinks:`
+// keep it off that sink. The prompt path renders at the prompt sink, so a
+// prompt-like surface the compiler never walked (a bundle preset's prompt,
+// an `images:` path) reaches a model only with what the declaration grants.
+type SinkSecretRefResolver interface {
+	SecretRefResolver
+	ResolveSecretRefAt(sink, name string) string
 }
 
 // TemplateResolver renders the `{{…}}` references of a prompt body the way
@@ -103,6 +114,12 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 	if ref == ir.LiteralOpenExpression {
 		return "{{", true
 	}
+	// The bang form reaches this lookup as written ({{!input.x}}): strip the
+	// prefix here — the one lookup behind the prompt path — so a prompt
+	// renders the value like every other non-shell context. The shell path
+	// never passes a bang (the parser strips it), and the compiler names the
+	// spelling where it is inert (C169).
+	ref = strings.TrimPrefix(ref, "!")
 	parts := strings.SplitN(ref, ".", 2)
 	if len(parts) < 2 {
 		return "", false
@@ -125,7 +142,19 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 		// is the member `on` of the `json` var cfg, not a var whose name
 		// contains a dot. A whole-key lookup answered nothing here while
 		// an expression and a tool body both answered the member.
-		if v, ok := drillTemplatePath(r.Vars, strings.Split(key, ".")); ok {
+		segs := strings.Split(key, ".")
+		if v, ok := drillTemplatePath(r.Vars, segs); ok {
+			// A server-minted credential never renders through this
+			// lookup: the materialiser that swaps its placeholder back
+			// lives on the tool-body path (resolveTemplateWith) alone,
+			// so the value rendered here — a prompt, a preview without a
+			// guard — would be the bearer in clear. Freeze the identity:
+			// render the placeholder, the form Materialize renders.
+			if len(segs) == 1 {
+				if ph, masked := mintedVarMask(segs[0], v); masked {
+					return ph, true
+				}
+			}
 			return v, true
 		}
 	case "secrets":
@@ -139,7 +168,13 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 			if dot := strings.IndexByte(key, '.'); dot >= 0 {
 				name = key[:dot]
 			}
-			if v := r.Secrets.ResolveSecretRef(name); v != "" {
+			v := ""
+			if at, ok := r.Secrets.(SinkSecretRefResolver); ok {
+				v = at.ResolveSecretRefAt(secretsink.Prompt, name)
+			} else {
+				v = r.Secrets.ResolveSecretRef(name)
+			}
+			if v != "" {
 				return v, true
 			}
 		}
@@ -278,13 +313,19 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 // `json` value renders as one token and a `string[]` as argv words, exactly
 // as the run will render them; nil renders every reference undeclared.
 func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, shapes *Shapes, unresolved func(ref string)) string {
-	return renderCommand(command, refs, input, vars, td, runID, nil, shapes, unresolved)
+	return renderCommand(command, refs, input, vars, td, runID, nil, shapes, unresolved, nil)
 }
 
-// RenderScript renders a tool node's `script:` as the executor does before
-// the interpreter: each reference a JSON literal, a reference that resolves
-// to nothing the language's null — and said to unresolved when a caller
-// listens, since the null hides it from the text.
-func RenderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) string {
-	return renderScript(script, refs, input, vars, td, runID, nil, unresolved)
+// RenderScript renders a tool node's `script:` written in language as the
+// executor does before the interpreter: in js/py each reference a JSON
+// literal, in a sh/bash script each data reference a read of the variable
+// the run hands the interpreter (the value is not in the text), a reference
+// that resolves to nothing the language's null — and said to unresolved when
+// a caller listens, since the null hides it from the text.
+//
+// The error is the run's refusal: a value no form carries (a NUL byte in a
+// shell script's data) fails the node, naming the reference.
+func RenderScript(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) (string, error) {
+	text, _, err := renderScriptIn(script, language, refs, input, vars, td, runID, nil, unresolved, nil)
+	return text, err
 }

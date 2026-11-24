@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -24,7 +25,7 @@ func appConnWorldNoSlug(t *testing.T) (*Server, *fakeGitHubForge, webhooks.Confi
 	s := newWebhookTestServer(t)
 	f := newFakeGitHubForge(t)
 	s.forgeGitHubApp = ForgeGitHubAppConfig{AppID: 42, PrivateKey: testAppKeyPEM(t)}
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c-app", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime,
@@ -70,7 +71,7 @@ func TestPRForgeCommandGateLoopGuardSeesTheAppSlugItResolves(t *testing.T) {
 	if resp["status"] != webhooks.StatusFiltered {
 		t.Fatalf("status = %v, want filtered (loop-guard)", resp)
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), "c-app")
+	conn, err := s.forgeConnections.Get(context.Background(), "t1", "c-app")
 	if err != nil {
 		t.Fatal(err)
 	}

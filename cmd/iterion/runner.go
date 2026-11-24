@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
@@ -17,9 +18,12 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/memlimit"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -81,6 +85,13 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	errtrack.AttachLogHook(logger)
 	defer errtrack.Flush()
 	logger.Info("runner: starting")
+	for _, name := range cfg.Sandbox.PlantedIgnored {
+		logger.Warn("runner: %s", isolationenv.PlantedWarning(name))
+	}
+	// Same derivation as the server (#2693): the runner compiles every
+	// workflow it executes, and its pod's ceiling is the chart's 4Gi —
+	// the GC works before the OOM-killer. GOMEMLIMIT wins; ITERION_MEMLIMIT=off disables.
+	memlimit.Apply(logger.Info)
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -296,6 +307,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// topology (plan v2.1 D4').
 	var preparedConsumer *natsq.Consumer
 	if cfg.Runner.Pool != "" {
+		platformcfg.CheckPoolGatewayAtBoot(rootCtx, platformcfg.NewMongoRunnerPools(st.DB()), cfg.Runner.Pool, os.Getenv("OPENAI_COMPATIBLE_BASE_URL"), logger.Warn)
 		preparedConsumer, err = natsConn.AttachPoolConsumer(rootCtx, cfg.Runner.Pool)
 		if err != nil {
 			return fmt.Errorf("runner: attach pool consumer: %w", err)
@@ -315,25 +327,26 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
-		NATS:                natsConn,
-		RunnerPool:          cfg.Runner.Pool,
-		PreparedConsumer:    preparedConsumer,
-		Events:              eventsBus,
-		Store:               st,
-		RunnerID:            runnerID,
-		WorkDir:             cfg.Runner.WorkDir,
-		HeartbeatInterval:   cfg.Runner.Heartbeat,
-		DrainMode:           cfg.Runner.DrainMode,
-		DrainTimeout:        cfg.Runner.DrainTimeout,
-		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
-		RunnerEpoch:         selfEpoch,
-		HighWaterEpoch:      highWaterEpoch,
-		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
-		Logger:              logger,
-		Metrics:             mreg,
-		RunSecrets:          runSecretsStore,
-		Sealer:              sealer,
-		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
+		NATS:                 natsConn,
+		RunnerPool:           cfg.Runner.Pool,
+		PreparedConsumer:     preparedConsumer,
+		DisableStallSelfHeal: cfg.Runner.DisableStallSelfHeal,
+		Events:               eventsBus,
+		Store:                st,
+		RunnerID:             runnerID,
+		WorkDir:              cfg.Runner.WorkDir,
+		HeartbeatInterval:    cfg.Runner.Heartbeat,
+		DrainMode:            cfg.Runner.DrainMode,
+		DrainTimeout:         cfg.Runner.DrainTimeout,
+		SchemaMismatchDelay:  cfg.Runner.SchemaMismatchDelay,
+		RunnerEpoch:          selfEpoch,
+		HighWaterEpoch:       highWaterEpoch,
+		EpochMismatchDelay:   cfg.Rollout.EpochMismatchDelay,
+		Logger:               logger,
+		Metrics:              mreg,
+		RunSecrets:           runSecretsStore,
+		Sealer:               sealer,
+		GenericSecrets:       secrets.NewMongoGenericSecretStore(st.DB()),
 		// The forfait records a run follows mid-run instead of refreshing
 		// its own copy (see runner.Config.OAuthForfaits).
 		OAuthForfaits: secrets.NewMongoOAuthStore(st.DB()),
@@ -350,13 +363,27 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		UsageCapTrust:  usageCapTrust,
 		BotsPaths:      botsPaths,
 		BotSources:     botsource.NewMongoStore(st.DB()),
+		// The sandboxed host-MCP transport (#2632): a sandboxed node's
+		// board.* / runs.* capabilities resolve against the tenant's Mongo
+		// board and the tenant-scoped run store, served by the pod's
+		// per-run gateway listener. The tenant pin is minted from the run
+		// message; this factory only answers the tenant it is handed.
+		BoardFor: func(tenantID string) native.BoardStore {
+			if tenantID == "" {
+				return nil
+			}
+			return boardmongo.New(st.DB(), tenantID)
+		},
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's
 		// ITERION_SANDBOX_OVERRIDE=none without this left cloud runs
 		// executing unsandboxed in the runner pod, because the runner
 		// wired the raw (empty) config value and the engine is neutral.
-		SandboxDefault:   resolveRunnerSandboxDefault(cfg.Sandbox.Default),
+		SandboxDefault: resolveRunnerSandboxDefault(cfg.Sandbox.Default),
+		// An isolation variable a `.env` beside the runner's working
+		// directory planted was dropped on the way in; the deployment reads
+		// why here rather than wondering which tier served the run.
 		SandboxHostState: cfg.Sandbox.HostState,
 		SandboxOverride:  cfg.Sandbox.Override,
 	})

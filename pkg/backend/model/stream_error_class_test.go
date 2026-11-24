@@ -14,6 +14,7 @@ import (
 // (context overflow, quota), and every other verdict is a typed *APIError,
 // which isRetryable reads as is.
 func TestClassifyStreamEventError_OpenAIProviderCodes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		msg       string
@@ -84,9 +85,9 @@ func TestClassifyStreamEventError_OpenAIProviderCodes(t *testing.T) {
 		{"an empty nested error beside a permanent code", "openai stream error: {\"error\":null,\"code\":\"invalid_api_key\"}", false, false, ""},
 		{"an empty nested object beside a 4xx", "openai stream error: {\"error\":{},\"code\":404}", false, false, ""},
 
-		// transport, as before
-		{"claw idle watchdog", "openai stream stalled: no data for 5m0s — aborting (retryable; tune via CLAW_STREAM_IDLE_TIMEOUT)", true, false, ""},
-		{"claw responses idle watchdog", "openai responses stream stalled: no data for 5m0s — aborting (retryable; tune via CLAW_STREAM_IDLE_TIMEOUT)", true, false, ""},
+		// transport, as before. A silence the wire's own watchdog reported
+		// is typed as a *StreamIdleError instead — see
+		// TestClawStreamStall_CarriesIterionsOwnIdleVerdict.
 		{"truncated stream", "openai stream truncated: closed without finish_reason or [DONE]", true, false, ""},
 	}
 	for _, tc := range cases {
@@ -121,6 +122,7 @@ func TestClassifyStreamEventError_OpenAIProviderCodes(t *testing.T) {
 // which Codex holds terminal, is a capacity condition OpenAI documents as
 // retryable with backoff.
 func TestClassifyStreamEventError_ResponsesErrorCodes(t *testing.T) {
+	t.Parallel()
 	permanent := []string{
 		"invalid_prompt", "data_residency_mismatch", "bio_policy", "misalignment_policy_violation",
 		"invalid_image", "invalid_image_format", "invalid_base64_image", "invalid_image_url", "image_too_large",
@@ -151,6 +153,7 @@ func TestClassifyStreamEventError_ResponsesErrorCodes(t *testing.T) {
 // A status the provider names as its code travels as the error's HTTP status,
 // which the retry event reports.
 func TestClassifyStreamEventError_CarriesTheStatusItNames(t *testing.T) {
+	t.Parallel()
 	for msg, want := range map[string]int{
 		"openai stream error: upstream unavailable (code=503)": 503,
 		"openai response failed: 429: slow down":               429,

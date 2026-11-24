@@ -39,6 +39,76 @@ type ToolCall struct {
 	Failed        bool `json:"failed,omitempty"`
 }
 
+// UsageFeeds holds the two INDEPENDENT recordings of one node's token
+// spend, and the gap between them.
+//
+// The per-step feed is one `llm_step_finished` event per model message,
+// written by every producing site (the claude_code transcript observer,
+// the model hooks, the sandbox relay). The turn checkpoints are the
+// baseline both backend paths already wrote before that feed existed.
+// Requiring the two to agree FIELD BY FIELD is what a gate can hold: a
+// producing site that stopped emitting — or that emits a zero-valued
+// usage struct, the shape that made `duration_ms` understate by 6.7× —
+// shows up as a gap on its node, where counting events stays green
+// (#1481, the reconciliation its review asked for).
+//
+// Cache tokens are carried, never reconciled: the checkpoint has no
+// column for them, so the feed is their only recording and inventing a
+// baseline for it would be the conflation this package refuses
+// everywhere else.
+type UsageFeeds struct {
+	Steps int `json:"steps"`
+	// StepsWithUsage counts the steps whose event carried any of the four
+	// token fields AT ALL. Presence, never value: a step that reports a
+	// real zero is a measurement, a step that reports nothing is not, and
+	// the whole point of reconciling is that the first one still has to
+	// add up.
+	StepsWithUsage int `json:"steps_with_usage"`
+	// StepsUsageUnreported counts the steps whose producer said itself
+	// that the provider returned no usage. It explains a gap; it never
+	// excuses one.
+	StepsUsageUnreported int `json:"steps_usage_unreported"`
+	StepInputTokens      int `json:"step_input_tokens"`
+	StepOutputTokens     int `json:"step_output_tokens"`
+	StepCacheReadTokens  int `json:"step_cache_read_tokens"`
+	StepCacheWriteTokens int `json:"step_cache_write_tokens"`
+
+	Turns               int `json:"turns"`
+	TurnInputTokens     int `json:"turn_input_tokens"`
+	TurnOutputTokens    int `json:"turn_output_tokens"`
+	TurnAggregateTokens int `json:"turn_aggregate_tokens"`
+
+	// Reconcilable is the comparison's own coverage: both recordings
+	// carry usage AND the checkpoints reported a real input/output split.
+	// A missing recording is an absence — counted by the fields above —
+	// never a gap, and an unsplit AggregateTokens has no field-by-field
+	// baseline to compare against.
+	Reconcilable bool `json:"reconcilable"`
+	// The gaps are signed, checkpoint minus feed: a feed that emits twice
+	// is as much a defect as one that stopped.
+	GapInputTokens  int `json:"gap_input_tokens"`
+	GapOutputTokens int `json:"gap_output_tokens"`
+}
+
+// Reconciled reports that both recordings of this node's spend exist and
+// agree field by field.
+func (u UsageFeeds) Reconciled() bool {
+	return u.Reconcilable && u.GapInputTokens == 0 && u.GapOutputTokens == 0
+}
+
+// reconcile compares the two recordings once both have been read.
+func (u *UsageFeeds) reconcile() {
+	u.Reconcilable = u.StepsWithUsage > 0 &&
+		u.TurnAggregateTokens == 0 &&
+		u.TurnInputTokens+u.TurnOutputTokens > 0
+	if !u.Reconcilable {
+		u.GapInputTokens, u.GapOutputTokens = 0, 0
+		return
+	}
+	u.GapInputTokens = u.TurnInputTokens - u.StepInputTokens
+	u.GapOutputTokens = u.TurnOutputTokens - u.StepOutputTokens
+}
+
 // NodeProfile is one node's tool activity plus whatever token spend the
 // store can attribute to it.
 //
@@ -84,6 +154,8 @@ type NodeProfile struct {
 	// is how much of the measurement is guesswork.
 	Verbs        map[string]int `json:"verbs,omitempty"`
 	UnknownVerbs map[string]int `json:"unknown_verbs,omitempty"`
+	// Usage reconciles the per-step feed against these same checkpoints.
+	Usage UsageFeeds `json:"usage_feeds"`
 }
 
 // RunProfile is one run's nodes, with the run-level facts a report needs
@@ -105,6 +177,12 @@ type RunProfile struct {
 	// while still looking like a measurement — so the count is published
 	// rather than left to be inferred from a total that shrank.
 	CompletionsWithoutStart int `json:"completions_without_start"`
+	// StepsOutsideANode counts `llm_step_finished` events that name no
+	// node. A supervised raw session has none by construction
+	// (pkg/supervise observes a transcript, not a workflow), so folding
+	// its steps into a phantom node would move every per-node
+	// denominator in the report. They are counted here instead.
+	StepsOutsideANode int `json:"steps_outside_a_node,omitempty"`
 }
 
 // ParseRun reads one run's event stream and turn checkpoints and returns
@@ -171,6 +249,13 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 				iters[evt.NodeID] = map[int]bool{}
 			}
 			iters[evt.NodeID][intField(evt.Data, "iteration")] = true
+
+		case store.EventLLMStepFinished:
+			if evt.NodeID == "" {
+				prof.StepsOutsideANode++
+				continue
+			}
+			node(evt.NodeID).recordStep(evt.Data)
 
 		case store.EventToolStarted:
 			tool, _ := evt.Data["tool"].(string)
@@ -289,12 +374,42 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 	for _, id := range nodeOrder {
 		n := perNode[id]
 		if turns != nil {
-			n.Tokens, n.TokensBeforeMutation, n.TokensAfterMutation, n.TokensSplitKnown = nodeTokens(ctx, turns, runID, id, iters[id])
-			n.TokensKnown = n.TokensSplitKnown
+			u := nodeTokens(ctx, turns, runID, id, iters[id])
+			n.Tokens, n.TokensBeforeMutation, n.TokensAfterMutation = u.total, u.before, u.after
+			n.TokensSplitKnown = u.known
+			n.TokensKnown = u.known
+			n.Usage.Turns = u.turns
+			n.Usage.TurnInputTokens = u.input
+			n.Usage.TurnOutputTokens = u.output
+			n.Usage.TurnAggregateTokens = u.aggregate
 		}
+		n.Usage.reconcile()
 		prof.Nodes = append(prof.Nodes, *n)
 	}
 	return prof, nil
+}
+
+// recordStep folds one `llm_step_finished` event into the node's
+// per-step feed. Each field's presence is read by the reader that saw it
+// (intFieldPresent), never derived from the value: a step that reports a
+// real zero still has to reconcile, and that is the case a coverage
+// percentage cannot see.
+func (n *NodeProfile) recordStep(data map[string]any) {
+	n.Usage.Steps++
+	in, inKnown := intFieldPresent(data, "input_tokens")
+	out, outKnown := intFieldPresent(data, "output_tokens")
+	read, readKnown := intFieldPresent(data, "cache_read_tokens")
+	write, writeKnown := intFieldPresent(data, "cache_write_tokens")
+	if inKnown || outKnown || readKnown || writeKnown {
+		n.Usage.StepsWithUsage++
+	}
+	n.Usage.StepInputTokens += in
+	n.Usage.StepOutputTokens += out
+	n.Usage.StepCacheReadTokens += read
+	n.Usage.StepCacheWriteTokens += write
+	if unreported, _ := data["usage_unreported"].(bool); unreported {
+		n.Usage.StepsUsageUnreported++
+	}
 }
 
 // record folds one call into the node's counters. The "before mutation"
@@ -353,10 +468,11 @@ func (n *NodeProfile) record(c ToolCall) {
 // a turn mixing reads and a write counts whole to work. Returns
 // known=false when no checkpoint carried any usage at all, so the caller
 // can tell "no spend recorded" from "spent nothing".
-func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, iterations map[int]bool) (total, before, after int, known bool) {
+func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, iterations map[int]bool) turnTokens {
 	if len(iterations) == 0 {
 		iterations = map[int]bool{0: true}
 	}
+	var out turnTokens
 	mutated := false
 	for iter := range iterations {
 		list, err := ts.ListTurns(ctx, runID, nodeID, iter)
@@ -367,6 +483,7 @@ func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, i
 			if t == nil {
 				continue
 			}
+			out.turns++
 			if !mutated {
 				for _, tc := range t.ToolCalls {
 					if Classify(tc.Name, []byte(tc.InputPreview)) == ClassMutation {
@@ -376,19 +493,33 @@ func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, i
 				}
 			}
 			u := t.Usage
+			out.input += u.InputTokens
+			out.output += u.OutputTokens
+			out.aggregate += u.AggregateTokens
 			sum := u.InputTokens + u.OutputTokens + u.AggregateTokens
 			if sum > 0 {
-				known = true
-				total += sum
+				out.known = true
+				out.total += sum
 				if mutated {
-					after += sum
+					out.after += sum
 				} else {
-					before += sum
+					out.before += sum
 				}
 			}
 		}
 	}
-	return total, before, after, known
+	return out
+}
+
+// turnTokens is what one node's checkpoints recorded: the split the
+// report attributes, and the per-field sums the reconciliation compares
+// the per-step feed against.
+type turnTokens struct {
+	total, before, after int
+	known                bool
+	turns                int
+	input, output        int
+	aggregate            int
 }
 
 // rawInput returns the tool input bytes an event carries, preferring the

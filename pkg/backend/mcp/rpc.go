@@ -14,6 +14,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -33,6 +34,9 @@ type sdkClient struct {
 	startErr      error
 	session       *mcp.ClientSession
 
+	// callSlot serializes tool calls across aliases and users of this client.
+	callSlot chan struct{}
+
 	// gate is consulted before every protocol operation, including on an
 	// already-started session. The manager's start policy can tighten
 	// mid-run (the engine settles the sandbox after the launch surface's
@@ -51,7 +55,7 @@ type sdkClient struct {
 }
 
 func newSDKClient(cfg *ServerConfig, info clientInfo, gate func() error, logger *iterlog.Logger) *sdkClient {
-	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate, logger: logger}
+	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate, logger: logger, callSlot: make(chan struct{}, 1)}
 }
 
 // protocolVersion20260728 is the first MCP revision that removed the
@@ -102,6 +106,17 @@ func (c *sdkClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 }
 
 func (c *sdkClient) CallTool(ctx context.Context, toolName string, args map[string]any) (*ToolCallResult, error) {
+	select {
+	case c.callSlot <- struct{}{}:
+		defer func() { <-c.callSlot }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	// A cancellation and a released slot can both be ready. Do not call the
+	// SDK in that case, and never release the slot until its call returns.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := c.ensureStarted(ctx); err != nil {
 		return nil, err
 	}
@@ -321,30 +336,27 @@ func (c *sdkClient) start(ctx context.Context) (*mcp.ClientSession, error) {
 func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 	switch c.cfg.Transport {
 	case TransportStdio:
-		cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
+		command, err := resolveServerCommand(c.cfg.Name, c.cfg.Command)
+		if err != nil {
+			return nil, err
+		}
+		cmd := exec.Command(command, c.cfg.Args...)
 		if c.cfg.WorkDir != "" {
 			cmd.Dir = c.cfg.WorkDir
 		}
-		if len(c.cfg.Env) > 0 {
-			// Merge user env on top of the inherited environ so a
-			// user-supplied override (e.g. PATH, PYTHONPATH) wins
-			// instead of being a duplicate appended after the parent's
-			// value — execve doesn't dedup and Go's docs leave dup
-			// resolution implementation-defined.
-			environ := os.Environ()
-			merged := make(map[string]string, len(environ)+len(c.cfg.Env))
-			for _, kv := range environ {
-				if i := strings.IndexByte(kv, '='); i > 0 {
-					merged[kv[:i]] = kv[i+1:]
-				}
-			}
-			for k, v := range c.cfg.Env {
-				merged[k] = v
-			}
-			cmd.Env = make([]string, 0, len(merged))
-			for k, v := range merged {
-				cmd.Env = append(cmd.Env, k+"="+v)
-			}
+		// The child receives what the server DECLARES plus a
+		// process-essential allowlist (stdioChildEnv), never the launcher's
+		// whole environment. Set UNCONDITIONALLY: a nil cmd.Env makes Go
+		// hand the child every variable of the parent, so an empty `env:`
+		// leaked exactly as the merging path did — one assignment, both
+		// paths.
+		decision := stdioChildEnv(c.cfg.Env)
+		cmd.Env = decision.Env
+		if decision.Info != "" {
+			c.logger.Info("mcp: %s: %s", c.cfg.Name, decision.Info)
+		}
+		if decision.Warning != "" {
+			c.logger.Warn("mcp: %s: %s", c.cfg.Name, decision.Warning)
 		}
 		return newDiagnosticCommandTransport(cmd), nil
 
@@ -366,6 +378,25 @@ func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 	default:
 		return nil, fmt.Errorf("mcp: unsupported transport %q for %s", c.cfg.Transport, c.cfg.Name)
 	}
+}
+
+// resolveServerCommand resolves a stdio server's command to the executable
+// the child will run. A bare name is looked up through envtrust.LookPath —
+// exec.Command would resolve it against the LIVE PATH, which a project .env
+// answers when it planted one (applyDotEnv fills only unset names): which
+// executable the launcher starts is an authority question (#1945), and the
+// repository under review does not answer it (#2809). Resolving HERE, ahead
+// of exec.Command, also surfaces a miss at transport construction with the
+// server's name on it, rather than at Start as exec's deferred ErrNotFound.
+func resolveServerCommand(server, command string) (string, error) {
+	if strings.ContainsRune(command, os.PathSeparator) {
+		return command, nil
+	}
+	resolved, err := envtrust.LookPath(command)
+	if err != nil {
+		return "", fmt.Errorf("mcp: resolve the command of %q on the inherited PATH: %w", server, err)
+	}
+	return resolved, nil
 }
 
 // headerRoundTripper injects custom headers into every HTTP request.

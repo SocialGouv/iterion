@@ -24,6 +24,11 @@ name: ARC canary
 # Worst-case detection is therefore ~60-65 minutes after dispatch stops
 # being trustworthy (interval + threshold + the watchdog's head start).
 #
+# The VERDICT is not here: `scripts/ci/arc-canary-verdict.sh` holds it, and
+# `internal/ciguard/arc_canary_test.go` runs that script over crafted probes.
+# This file reads the Actions API and acts on the answer; the thresholds and
+# the exemptions are a program a harness can redden.
+#
 # The probe deliberately routes with the same lever as the required jobs
 # (`CI_SELF_HOSTED=off` sends it to ubuntu-latest): during a deliberate
 # fallback the canary goes quiet instead of alerting on a state the operator
@@ -62,6 +67,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       actions: read
+      # The job-level block REPLACES the workflow default, and the verdict is
+      # a script in the tree: without this the checkout below cannot read it.
+      contents: read
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -69,6 +77,11 @@ jobs:
       LABEL: ci:arc-canary
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
+      - name: Checkout
+        # For scripts/ci/arc-canary-verdict.sh alone: this job reads the
+        # Actions API, it never builds anything.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Judge the previous probe, alert or resolve
         run: |
           set -euo pipefail
@@ -85,35 +98,35 @@ jobs:
           IFS=$'\t' read -r prev_id prev_status prev_conclusion prev_created <<<"$prev"
           echo "previous probe: run $prev_id status=$prev_status conclusion=$prev_conclusion created=$prev_created"
 
-          verdict=green
-          detail=""
-          if [ "$prev_status" != "completed" ]; then
-            age=$(( $(date -u +%s) - $(date -u -d "$prev_created" +%s) ))
-            echo "previous probe still $prev_status after ${age}s"
-            if [ "$age" -gt 1500 ]; then
-              verdict=red
-              detail="still '$prev_status' ${age}s after creation — nothing picked it up"
-            fi
-          else
+          job_conclusion=""
+          job_started=""
+          job_created=""
+          if [ "$prev_status" = "completed" ]; then
             job=$(gh api "repos/$GH_REPO/actions/runs/$prev_id/jobs?per_page=100" \
               --jq '[.jobs[] | select(.name == "canary")][0] | select(. != null) | [.conclusion, .started_at, .created_at] | @tsv')
             IFS=$'\t' read -r job_conclusion job_started job_created <<<"$job"
-            if [ -z "$job_conclusion" ]; then
-              echo "previous probe carries no canary job — nothing to judge"
-              exit 0
-            fi
-            wait=$(( $(date -u -d "$job_started" +%s) - $(date -u -d "$job_created" +%s) ))
-            echo "probe job: conclusion=$job_conclusion wait=${wait}s"
-            # A human cancelling a probe (doublon de cron, incident being
-            # worked by hand) is not a stall signal.
-            if [ "$job_conclusion" != "success" ] && [ "$job_conclusion" != "cancelled" ]; then
-              verdict=red
-              detail="ran and reported '$job_conclusion' after ${wait}s in queue"
-            elif [ "$wait" -gt 1500 ]; then
-              verdict=red
-              detail="queued ${wait}s before a runner took it"
-            fi
           fi
+
+          # The verdict is ONE program in ONE file — the thresholds, the
+          # cancelled exemption, the refusal to judge on a missing date — so a
+          # harness can run the text that ships:
+          # internal/ciguard/arc_canary_test.go. A verdict this job computed
+          # inline could only be read, never exercised.
+          answer=$(PREV_STATUS="$prev_status" PREV_CREATED="$prev_created" \
+            JOB_CONCLUSION="$job_conclusion" JOB_CREATED="$job_created" JOB_STARTED="$job_started" \
+            ./scripts/ci/arc-canary-verdict.sh)
+          verdict=$(printf '%s\n' "$answer" | sed -n 's/^verdict=//p')
+          detail=$(printf '%s\n' "$answer" | sed -n 's/^detail=//p')
+          echo "verdict=$verdict detail=$detail"
+
+          case "$verdict" in
+            skip) exit 0 ;;
+            green|red) ;;
+            *)
+              echo "::error::arc-canary-verdict.sh answered '$verdict' — refusing to decide between paging and resolving"
+              exit 1
+              ;;
+          esac
 
           if [ "$verdict" = "green" ]; then
             # A missing label is the normal before-the-first-alert state, and

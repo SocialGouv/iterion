@@ -46,6 +46,41 @@ Set on the `workflow` block, per node, the CLI, or the environment.
 | `ask` | `default` | allow-rules auto-approve; **deny**-rules hard-block; everything else **pauses the run and surfaces the call to the human** (resumable). |
 | `deny` | `dontAsk` | allow-rules approve; **ask**-rules still pause (the lists are read the same way in both armed modes); everything else is **hard-denied with no pause** — the policy boundary for headless / cloud / cron runs with no human attached. |
 
+### Which spawn the gate bounds
+
+The gate is a `PreToolUse` hook, so it bounds **the spawn it is registered
+on** — a bound carried on argv follows the task, a bound carried on a hook
+follows the call site. That distinction is visible on exactly one node shape:
+a claude_code node with an `output_schema:` spawns the CLI **twice** on one
+session — the work pass (`Execute`), and a structured-output pass that resumes
+the same transcript to reformat what the first pass produced.
+
+**Both spawns carry the gate** (#1672). They register it through one
+constructor (`claudePermissionGate`), so the table above is exact on both: the
+rules decide, scoped patterns included, and a node's `tools:` declaration
+reaches both spawns beside it — `tools:` bounds what *exists*, the policy
+bounds what *runs*.
+
+One thing differs, because it cannot not: an **`ask` verdict on the
+structured-output pass is a refusal, not a pause**. That pass runs after the
+turn that could have paused for an operator, and its caller returns a result
+rather than a pending question — so the call is refused with a reason naming
+why, and the pass is not stopped (it still owes its JSON). `StructuredOutput`
+is exempt in the policy, so the tool a schema'd node returns its result with
+is never refused on either spawn.
+
+How the gate reaches the second spawn: `claudesdk.Prompt` sends the same
+`initialize` control request as the streaming path, and a one-shot spawn
+carrying hooks therefore reads stdin as a protocol stream (`--input-format
+stream-json`) with its prompt as a user message. A CLI that **refuses** that
+registration aborts the spawn with a typed error rather than running it
+ungated. Pinned by `TestTheGatedFormattingSpawnCarriesTheGateOnItsStdin` (the
+verdict read off the wire) and, against the real CLI, by
+`TestCLILiveOneShotHookChannelIsNotRefused` (`clilive` build tag).
+
+A node with no `output_schema:` has one spawn and no second case to reason
+about.
+
 ## Rule syntax
 
 Rules use Claude Code's syntax — a bare tool name matches any use, or a
@@ -143,22 +178,59 @@ were the other is the mistake this section exists to prevent. `tools:`
 bounds what *exists*; the policy bounds what may *run*; nothing joins them
 at run time.
 
+**On claw the list is the whole surface, and a rule is not a grant.** A claw
+node holds the tools its `tools:` list names — plus `ask_user` under
+`interaction:`, codemode's tool, and the store tools of a `memory:` block
+where the node declares no `output:` schema (a node that declares one, with
+none of the others, answers through the structured path, whose request sends
+none of them) — and nothing behind them: no `tools:` line there is *no tool at
+all*, the opposite of what it means on claude_code. So `allow: ["Read(**)"]` on a claw node that
+declares no `tools:` approves calls to a tool the node does not hold: the
+model is served nothing to call and the rules bound nothing. **C351** says so
+at compile time, on a route the source sends to claw (a `fallbacks:` route
+included); it stays silent on a node that only inherits the workflow's lists,
+and on a route the source does not decide. A tool node's rung-4 recovery
+agent is the same surface under another name: its `recovery.agent_tools:` list
+is its whole tool list, and **C352** names the agent that declares none on a
+workflow whose `default_backend:` is claw — with or without a gate.
+
 On `claude_code` a `tools:` list is **not** inert. The hard-restrict flag
 `--tools` is deliberately unused (see `pkg/backend/toolcatalog`), but iterion
 turns the list into `claudesdk.WithDisallowedTools`, which the SDK spells as
 `--disallowedTools`: every tool on Claude Code's **closed native roster**
-that the list does not name is removed. The roster is fourteen names —
-`Bash Read Glob Grep Write Edit MultiEdit NotebookEdit Task WebFetch
-WebSearch ToolSearch TodoWrite Skill` (`claudeNativeTools`). Measured on a
-reviewer node, counting only what the list itself contributes:
+that the list does not name is removed. The roster is twenty names —
+`Agent AskUserQuestion Bash BashOutput Edit Glob Grep KillShell MultiEdit
+NotebookEdit Read ScheduleWakeup Skill SlashCommand Task TodoWrite ToolSearch
+WebFetch WebSearch Write` (`backendcaps.NativeTools(ClaudeCode)`, read as
+`claudeNativeTools`). Measured on a reviewer node, counting only what the
+list itself contributes:
 
 ```
 no tools: list                          the list adds nothing
-tools: []                               the list adds all fourteen
-tools: [bash, read_file, glob, grep]    the list adds
-  [Write Edit MultiEdit NotebookEdit Task WebFetch WebSearch ToolSearch
-   TodoWrite Skill]
+tools: []                               the list adds all twenty
+tools: [bash, read_file, glob, grep]    the list adds the other sixteen
+  [Agent AskUserQuestion BashOutput Edit KillShell MultiEdit NotebookEdit
+   ScheduleWakeup Skill SlashCommand Task TodoWrite ToolSearch WebFetch
+   WebSearch Write]
 ```
+
+Six of those twenty were missing until #1651, which is why the roster is now
+held against iterion's own second enumeration of the same surface — the
+display table it renders tool headers from — by an anchoring guard
+(`TestEveryDisplayedToolIsOnTheRosterOrExcludedOnPurpose`). A name the roster
+forgets is a tool no `tools:` list can remove, and on the 84 shipped
+claude_code nodes that declare a restricted list with no `permission:` gate
+that list is the only bound. Five of the six — `AskUserQuestion`,
+`SlashCommand`, `ScheduleWakeup`, `BashOutput`, `KillShell` — are on the
+roster so `--disallowedTools` can name them and are withheld from **every**
+spawn whatever the list says; `Agent` is the current CLI's spelling of the
+subagent tool `Task` names on older ones, so declaring the subagent keeps
+both. This drift — what a node's declaration grants on the roster and what
+leaves it anyway, with the reason per name — is shown, never warned on:
+`iterion validate --explain` reads it per node, and the Studio launch picker
+carries the one-sentence form on every claude_code choice (#2815; the reading
+comes from the same projection the spawn's argv is built from, never a
+second list).
 
 **`tools: []` is a declaration, not an absence.** An empty list is the author
 saying *this node has no tools*; a node with no `tools:` line leaves the
@@ -171,7 +243,7 @@ explicit fact on the task (`delegate.Task.ToolsDeclared`).
 
 Three backends receive the list and narrow on it (`toolcatalog.ReceivesToolList`):
 claw resolves zero tool definitions from it, claude_code disallows all
-fourteen names of `claudeNativeTools`, codex drops to the `read-only` sandbox.
+twenty names of `claudeNativeTools`, codex drops to the `read-only` sandbox.
 pi, kimi and grok are driven through the CLI-agent seam, which never passes
 the list to the agent: there the bound is dropped and **C270** says so at
 compile time. Because an older engine reads `tools: []` as an absent list —
@@ -197,22 +269,16 @@ is the exception that proves the shape: it is *not* on the roster and is
 withheld separately, from every spawn, ultracode included, whatever the list
 says — with the schedulers `ScheduleWakeup`, `CronCreate`/`CronDelete`/
 `CronList` and `RemoteTrigger`, which no one-shot session can use.)
-The one spawn where none of them survives is the **structured-output pass of a
-GATED node**: it cannot carry the permission hook, so it withholds the roster,
-the whole orchestration surface this package enumerates (`Agent`, `Task`,
-`TaskOutput`, `Monitor`, `Workflow` — ultracode or not, because nothing there
-can run the policy the author wrote), and the names the live CLI was measured
-still registering afterwards: `EnterWorktree`/`ExitWorktree` (they move the
-worktree the session acts in), `CronCreate`/`CronDelete`/`CronList` and
-`ScheduleWakeup` (they schedule future work), `SendMessage`, `RemoteTrigger`,
-`BashOutput`, `KillShell`, `TaskStop`. `StructuredOutput` is the one tool that
-pass needs and is deliberately not withheld. That withholding is the enforced
-half and it is **incomplete** — it names a roster iterion does not own, so the
-tools outside those lists survive it (#1651). The sentence that pass also
-carries — *"Do not call any tool other than StructuredOutput; just return the
-JSON."* — covers those names whatever their spelling, but only while the model
-cooperates, which under a prompt-injection threat is the weaker control: it is
-defence in depth beside the flag, never in place of it. On claw,
+The **structured-output pass of a GATED node** used to be the one spawn where
+none of them survived: it withheld the whole roster plus every name the live
+CLI was measured still registering, because it could not carry the permission
+hook. It carries the hook now (#1672), so the answer there is the same as
+everywhere else — the list narrows what exists, the policy decides what runs,
+and the policy reads the name the CLI actually offers rather than a roster
+iterion does not own. That is the stronger half of the exchange: the
+withholding could only say "no native tools at all" and left every name
+outside its three lists alive, while the gate refuses `Bash(rm -rf:*)` by the
+rule the author wrote. On claw,
 `assembleEffectiveTools` adds `ask_user` when `interaction:` is set, then
 `todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:` — so a
 node that declared no tools can end up holding a file writer, which **C270**
@@ -274,13 +340,172 @@ bound a `ToolSearch` call.
 Matching semantics (`pkg/backend/permission`):
 
 - **Bash** patterns match the `command`; `prefix:*` is a prefix match,
-  a bare wildcard `*`/`**` is a greedy match, no wildcard is exact.
+  a bare wildcard `*`/`**` is a greedy match, no wildcard is exact. The
+  command is ONE candidate whatever it contains, so an exact allow never
+  approves shell text appended after a newline.
 - **Read / Edit / Write / NotebookEdit** patterns match the file path;
-  `pkg/**`, `*.go` etc. work as gitignore-style globs.
-- **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
+  `pkg/**`, `*.go` etc. work as gitignore-style globs. Every spelling of
+  that one path is matched: as the model sent it, lexically cleaned
+  (`/run//iterion/./secrets/x`), absolute against the directory the agent
+  runs in (so an absolute rule bounds `./secrets/key`, and a relative path
+  cannot climb out of the workspace past a deny), and with the symlinks of
+  its existing prefix resolved — `/tmp/s` → `/run/iterion/secrets` does not
+  walk past a deny, not even for a file that does not exist yet. A
+  spelling that still carries a `..` segment — the string as sent
+  (`/work/docs/../../etc/passwd`), or a relative cleanup that climbs above
+  its anchor (`../etc/passwd`) — names the file while its TEXT names a
+  directory the file is not under, so no wildcard or prefix `allow:` or
+  grant reads it: `Read(/work/docs/**)` does not open
+  `/work/docs/../../etc/passwd` (#2918). The anchored spellings stand in
+  for it, so a `..` that lands back inside the tree still opens. An exact
+  rule reads every spelling — an exact string names one file — which keeps
+  an `allow once` quoting what the model wrote; an unbounded scope
+  (`Read(**)`) leaves no call out. `deny:` and `ask:` read every spelling
+  too: over-refusing costs a refusal, and `deny: ["Read(**/../**)"]` bites
+  the climb itself.
+- **Glob / Grep** (and claw's `workspace_grep`) patterns match the search
+  pattern OR the search ROOT, each spelling of the root offered bare and
+  under a `path:` prefix: `Grep(path:/run/iterion/secrets/**)` names the
+  dimension explicitly, and a `dir/**` rule covers the call rooted AT `dir`
+  because such a call reads what is under it. **LS**'s `path` reads the
+  same way. A `dir/**` **deny** also binds a search rooted ABOVE `dir` —
+  at its parent or any ancestor — because that search walks the denied
+  tree whole while none of the call's spellings is under `dir` (#3086):
+  the containment is judged with the deny rules, at their rank, so no
+  `allow:` or grant reopens it and a refusal costs the agent one search
+  it can re-aim at a sibling. A scoped **ask** naming a tree re-gates the
+  same parent-rooted search — Ask, not Deny: the pause the operator wrote,
+  judged at the scoped ask's rank, so a grant already given still reopens
+  it. A Glob pattern is a path under its root: one
+  that climbs (`../../etc/*`) leaves it, so only a bare `Glob` or an
+  unbounded scope opens it, an `allow once` binds its pattern and asks
+  again, and a `deny:` meets where the climb lands — the pattern joined
+  onto the root. An ABSOLUTE Glob pattern is carried as written, so one
+  that reaches into a denied tree from an unrelated root meets the tree's
+  rule on the pattern dimension. A search that spells no `path` is not
+  rootless: the backend runs it from the directory the agent runs in, and
+  the closing verdicts read THAT as its root (#3086) — a deny on a tree
+  under the agent's directory binds the default, pathless spelling of a
+  search, while an allow keeps naming the tree it opens. An MCP server's
+  tool (`mcp__<server>__<verb>`, or the single-underscore spelling) holds
+  no row of any name table, so the filesystem-shaped key vocabulary is
+  read by the closing side alone — `path`, a move's `source` and
+  `destination`, and every element of a multi-read's `paths` list: a
+  `deny:` naming a tree binds an MCP search or listing rooted inside or
+  above it, and the verbs that carry no `path` —
+  `deny: ["mcp__fs__*(/run/iterion/secrets/**)"]`
+  bounds a filesystem server whole — while the opening side keeps the k=v
+  reading below, the gate knowing no MCP tool's argument semantics well
+  enough to open by path.
+- **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL,
+  the host read the way a WHATWG fetcher reads it — claude_code's WebFetch
+  parses with Node, and claw's Go fetcher dials that same host whenever it
+  parses the URL: `https:example.com/x`, `https://Example.com:443/x` and
+  `https://example.com\x` all fetch `example.com`, `http://0xa9fea9fe/` fetches
+  `169.254.169.254`, and a `deny:` naming an IPv4 address also meets its
+  IPv4-mapped IPv6 spelling (`http://[::ffff:a9fe:a9fe]/`), which both
+  fetchers dial as that address. A URL's path is a path: one whose decoded
+  path climbs (`/docs/../admin`, `/docs/%2e%2e/admin`, `/docs/..\admin`) is
+  read by no full-URL pattern, since a fetcher resolves the climb before the
+  server sees it; its host still stands for it. A `deny:` also meets the
+  URL with its path decoded and resolved (`https://example.com/./%61dmin/x` is
+  `https://example.com/admin/x`), upgraded from http to https as claude_code
+  fetches it, and its host without port or root-zone dot. A URL the gate
+  cannot read that way — another scheme, a host or port no fetcher accepts
+  — opens no pattern and meets every scoped `deny:` and `ask:` on WebFetch.
+- **Any other tool** (custom) is scoped by its sorted `k=v`
+  arguments; a value carrying a `..` segment keeps the call from every
+  pattern but an unbounded one, the gate not knowing which value is a path.
+  An MCP tool's `path` value is the one exception, read as a search root by
+  the closing verdicts alone (see **Glob / Grep** above).
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
 - **Tool classes**: `class:shell` matches by the registry's capability
   metadata — the member set, not a spelling ([tool classes](#tool-classes)).
+- A rule matches if it matches ANY candidate, and a **deny** is matched
+  against one wider set: every path key the call carries, not only the one
+  the tool is expected to honour (claw's `read_file` reads `path`,
+  claude_code's `Read` reads `file_path`). An `allow` or a grant opens such
+  a call only when it opens EVERY path the call carries, each read as its
+  own spellings: `{"file_path": "/work/docs/x.md", "path": "/etc/passwd"}`
+  is no read under `Read(/work/docs/**)`, or an allowed file named beside a
+  forbidden one would open whichever the tool honours.
+- A **deny** (and an `ask:`, which outranks an allow) also matches the
+  path's FOLDED spellings — slash-spelled and case-folded, the fold the
+  read-scope guard applies (iterion#2868): a file system that folds case
+  makes `/RUN/ITERION/SECRETS/x` the file `Read(/run/iterion/secrets/**)`
+  names, and a rule compared in one spelling only is a bypass of itself.
+  The fold feeds the closing verdicts alone: on a case-sensitive file
+  system a folded spelling may name a DIFFERENT file, so an allow or a
+  grant never matches it — over-refusing costs a refusal, over-granting
+  would cost a leak.
+- The gate never rewrites the RULE — it matches what the operator wrote. A
+  rule naming a path FRAGMENT still wraps it in stars (`Read(**.env)`);
+  `Read(.env*)` remains inert against `/home/u/repo/.env`.
+
+**Behaviour break (#1710).** Two shapes reach a different verdict than they
+did for workflows written before this. A `deny:` rule naming a directory for
+`Grep`/`Glob`/`LS` now BITES the call rooted there — it used to be compared
+to the search pattern only, so `deny: ["Grep(/run/iterion/secrets/**)"]`
+read as a bound and was inert, and a bare `Grep` allow let an agent read any
+file's content. And a path-scoped `allow:` rule now matches a call whose
+pattern does not, which is what makes `allow: ["Grep(path:src/**)"]` a usable
+bound. A pattern-shaped rule keeps matching the pattern: a scoped rule on a
+search tool matches EITHER dimension, so the way to bound a directory for
+certain is the `deny:` side, which wins in every mode.
+
+**Behaviour break (#2918).** An `allow:` pattern written against a relative
+climb — `Read(../shared/**)` — opens nothing any more: a relative spelling
+that climbs above the agent's directory is read by no pattern. Write the
+tree absolute; the absolute form of the call still meets it.
+
+**Behaviour break (#3086).** A search or listing rooted at the PARENT (or
+any ancestor) of a denied tree is now refused, where it used to walk the
+denied tree with the gate's blessing: with allow `[Grep, Glob]` beside
+`deny: ["Grep(/run/iterion/secrets/**)"]`, a `Grep` from `/run/iterion` or
+`/` — and a `Glob{pattern: "secrets/*", path: "/run/iterion"}` — is a Deny,
+quoting the tree rule. So is the DEFAULT spelling of a search: one that
+spells no `path` reads the agent's own directory as its root on the closing
+side, and is refused whenever that directory contains a denied tree. The
+containment only ever CLOSES: it reads the same
+deny rules, judges at their rank, and binds nothing outside a tree a rule
+names. A scoped `ask:` naming a tree gains the same reach: a search rooted
+above the asked tree pauses for the operator (Ask, at the scoped ask's
+rank) instead of walking the tree on a bare allow. The refusal is the
+verdict on both backends — the gate has no
+backend-enforced exclusion to narrow a live search with (claude_code's
+built-in Grep takes no extra ripgrep flags from the hook path), and claw's
+own read tools are already narrower than the gate: `workspace_grep`/`glob`
+resolve every path into the workspace plus its declared read roots
+(`resolveReadPath`) and refuse anything outside, so the containment is what
+keeps a read root declared over a denied tree's parent from reopening it.
+
+**The run's secret locations are denied by construction (#1710).** Every
+gated node's policy is armed by the engine with deny trees over the
+well-known secret locations — the mounted file secrets
+(`/run/iterion/secrets`) and the seeded CLI credential directories
+(`/tmp/iterion-claude-config`, `/tmp/iterion-codex-config`) — for the whole
+read AND write families, the listing and both search tools. "The agent
+cannot read the secrets" is a guarantee of the gate, not a `deny:` rule
+every author has to remember: a search or listing rooted at or above one of
+these trees (`/run/iterion`, `/tmp`, `/`) — or spelling no root at all,
+which the closing verdicts read as the agent's own directory — is refused
+as surely as one rooted inside it (#3086), and the write half keeps an
+agent from
+replacing the credential a seeded CLI spends. The armed families are the
+NATIVE ones (Read/Write/Edit/NotebookEdit, LS, Grep, Glob,
+`workspace_grep`); an MCP server the run attaches is the author's to bound —
+`deny: ["mcp__fs__*(/run/iterion/secrets/**)"]` covers a filesystem server
+whole, the closing side reading the filesystem-shaped keys (`path`, a move's
+`source`/`destination`, a multi-read's `paths` list) and not the singular
+`path` alone — because a non-filesystem server's `path` is no host path (a repo-virtual
+one would trip the containment on every call), so the engine arms no MCP
+glob of its own. These rules are engine-owned:
+no `allow:` or operator grant reopens them (deny wins in every mode), and
+they travel with the serialised policy to a child-process gate. The shell
+is deliberately NOT bound — it is the legitimate sink channel a secret is
+spent through (`curl --cert /run/iterion/secrets/mtls.pem …`), only the
+agent reading the plaintext is refused. `permission: off` disables the
+gate whole, bound included — that remains the escape hatch.
 
 **Cross-backend parity.** The same rule gates the matching tool on every
 supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
@@ -327,11 +552,14 @@ case, a space after the colon) all name the same class.
   `bash`), and claw's `repl` is a SECOND shell no spelling bounds.
 - `ask: ["class:shell"]` gates the class the same way: every member call
   pauses for a human, in every mode (an explicit ask precedes the mode
-  default), future members included. The pause is the unsandboxed mechanism:
-  on a sandboxed claw node a policy that can produce an ask refuses the NODE
-  at dispatch (a sandbox has no seam to pause the run for a human), and an
-  unsandboxed headless run stalls at the call until a human answers the
-  approval — an asked tool executes nothing unattended in either shape.
+  default), future members included. The pause is the unsandboxed mechanism;
+  on a sandboxed claw node the approval channel serves it for launcher-placed
+  tools (MCP, in-memory registries) — the launcher consumes the one-time
+  approval and executes the call itself — while an ask that can reach a
+  container-executed tool refuses the NODE at dispatch (a sandbox container
+  cannot be certified host-side), and an unsandboxed headless run stalls at
+  the call until a human answers the approval — an asked tool executes
+  nothing unattended in any of the three shapes.
 - `allow: ["class:shell"]` grants the class including future members —
   `allow:` widens. Accepted, not refused: the row is the author's explicit
   choice, and a refusal would replace it (**C167** warns instead, and
@@ -352,10 +580,13 @@ class row restated in the child bot (the same workflow-local reading every
 permission diagnostic has — **C111**, **C154**, **C135**). A claw subagent
 is the opposite case, the same run: the child conversation the `agent` tool
 spawns inherits the policy the node's own loop is gated by, so a denied or
-asked class bounds the delegation too. Shipped hosts wire no child runner —
-the `agent` tool answers a typed refusal (**C159** names the shape) — so
-that inheritance is wired where the proxy is and takes effect the moment a
-host wires it.
+asked class bounds the delegation too — a deny verbatim, an ask verdict
+degraded to a refusal naming the rule, since the child cannot pause the run
+(#2877). Both shipped hosts wire that child
+runner (#1940), in process and in the sandbox container, so the inheritance
+is live on every claw node that delegates — and the child's tool surface is
+the node's own effective `tools:`, never the process registry, so a policy
+row and a declared list bound it the same way they bound the parent.
 
 An operator grant outranks every row: approving a pause writes a grant into
 the run's policy, evaluated after a deny rule and before every ask or allow
@@ -460,12 +691,18 @@ and evaluated by each gated backend before every tool runs:
   C136 warns about the coupling at compile time.
 - **opencode** — cannot enforce the gate in any mode: it exposes no
   `PreToolUse` hook, so a node with an armed gate is refused at compile
-  time (C176) and again at dispatch rather than run ungated. Its own
-  declarative policy (`OPENCODE_PERMISSION`) is a plausible route to
-  native `deny`, deliberately not wired — membership in the gate table is
-  earned by a live denial, never declared. Note that a headless opencode
-  run auto-*rejects* an `ask` verdict (measured on 1.1.19; later builds add
-  a `--auto` flag that auto-*allows* it instead).
+  time (C176) and again at dispatch — typed (`CAPABILITY_UNSUPPORTED`), never
+  retried — rather than run ungated. Its own declarative policy is a
+  plausible route to native `deny`, deliberately not wired — membership in
+  the gate table is earned by a live denial, never declared. The 1.x
+  delivery (`OPENCODE_PERMISSION`) is removed from the 2.x line; the 2.x
+  mechanism (`OPENCODE_CONFIG_CONTENT`) is re-measured on 2.2.5: it holds
+  alone and past a key-positioned file allow, and still fails OPEN beside an
+  agent-level permission, a `default_agent`, or an invalid policy string.
+  Note that a headless opencode run auto-*rejects* an `ask` verdict
+  (measured on 1.1.19; later builds add a `--auto` flag that auto-*allows*
+  it instead) — which is why it is refused rather than merely
+  unwired: [backends.md](backends.md#opencode-permission-not-a-gate-alone).
 - **claude_code** — a broad PreToolUse hook (`wirePermissionHook` in
   claude_code.go) evaluates the policy. Under the always-on
   `bypassPermissions`, PreToolUse hooks still run and a `deny` decision
@@ -562,13 +799,35 @@ decode the native event and spell the native verdict.
   off-policy call to the operator, so nothing off-policy ever executes
   silently. To resolve the pause, the operator just **answers the
   approval question** with `allow`, `allow always`, or `deny` — on any of the
-  three gated backends. The pause carries a structured marker (tool + input
-  + rule); the runtime maps the answer to a grant rule
-  (`allow` = argument-scoped, `allow always` = whole-tool) and feeds it
-  back into the resolved policy, so the agent's re-issued call passes the
-  gate and executes after the generic `[PERMISSION GRANTED]` resume reminder.
-  `deny` refuses the call and the agent adapts. The `--permission-allow`
-  flags on `resume` remain available for scripted/headless approval.
+  three gated backends. The pause carries a structured marker (tool, input,
+  and rule).
+  - **Claw outside a sandbox:** `allow` authorizes the exact pending call.
+    The engine records consumption before dispatch and returns the actual
+    tool result to the model. A failure after dispatch can leave the outcome
+    unknown; a single-use authorization is not a guarantee of exactly-once
+    external effects. Approval answers to a new claw pause include
+    `_approval_interaction_id` from the question alongside the decision;
+    Studio sends it automatically. For headless resume, pass `--answers-file`
+    with `{"ask_user_response":"allow","_approval_interaction_id":"<id from the pending question>"}`.
+    Sandboxed claw serves the same exact approval through the launcher's
+    approval channel for launcher-placed tools (MCP, in-memory registries):
+    the pause crosses the sandbox IPC, the launcher consumes the claim and
+    executes the call itself, and a crossing that fails after a consumption
+    is typed ambiguous like the in-process path. A sandboxed claw node whose
+    ask-capable policy can also reach a container-executed tool (bash, the
+    file tools) still refuses at dispatch — the launcher cannot certify an
+    execution inside the container. When an
+    approved dispatch's outcome is unknown (a failure after the call ran),
+    every resume is refused until `resume --force` acknowledges it: the node
+    re-runs from its checkpoint, claw asks the permission again under a fresh
+    interaction ID, and answering it dispatches the call once more — the
+    double effect is the operator's explicit decision.
+  - **CLI permission adapters:** `allow` supplies an argument-scoped rule
+    for the resumed invocation, and the model reissues the call. For a
+    search tool the argument scope is the **directory** (for example,
+    `Grep(path:/work/pkg)`), not the pattern.
+  - `allow always` remains a whole-tool grant for the rest of the run.
+    `deny` refuses the pending call and lets the agent adapt.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
 - **Backend scope:** `claw`, `claude_code`, and pi RPC support `ask` and
@@ -594,13 +853,13 @@ decode the native event and spell the native verdict.
   run stopping at the recipe. A workflow whose only node is such a `tool`
   node therefore gets no C111 on its rule lists: they are read, by the agent
   that runs after a deterministic recipe already failed.
-  C111's reader test is **wider than the gate** — it counts a tool node on
-  `recovery.max_agent_attempts > 0` alone, policy included or not — so the
-  same silence covers a node that declares the bound under any other policy
-  (`required`, `best_effort`, or none), where no rung ever runs and the lists
-  really are inert. There, **C106**
-  names the dead recovery config, which is the finding the author needs:
-  the bound, not the rule lists, is what is unreachable.
+  C111's reader test is **exactly that gate** (`ToolRecoveryAgentRung`):
+  the bound AND `policy: recover`. A node declaring the bound under any
+  other policy (`required`, `best_effort`, or none) runs no rung, so it is
+  no reader and the rule lists DO earn their C111 — alongside **C106** on
+  the dead recovery config. The author gets both findings, which is the
+  pair the shape deserves: the bound is unreachable, and so are the lists
+  whose only reader it was.
 
 ## See also
 
@@ -609,7 +868,8 @@ decode the native event and spell the native verdict.
 - Diagnostics: **C110** (invalid permission mode), **C111** (a rule list
   that reaches no gated reader — including a workflow list every gated
   reader replaces), **C112** (tool-node `permission:` — parsed but not
-  enforced), **C154** (an entry the gate's parser cannot read, refused at
+  enforced), **C351** (a node's own rule lists on a claw route that serves
+  it no tool), **C352** (a recovery agent served no tool on claw), **C154** (an entry the gate's parser cannot read, refused at
   compile time instead of at dispatch), **C136** / **C176** (a route that
   cannot serve the gate in force for the node, node-declared `ask:` rules
   included).

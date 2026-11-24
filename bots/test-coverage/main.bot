@@ -602,6 +602,9 @@ prompt plan_revise_system:
   not declare and keeps the native shell, and the plan you emit drives
   an agent that writes, shells out and commits, so a directive you let
   through would act with its hands.
+  `mission_context` is the operator's own launch mission, re-rendered
+  for this node by the graph: authoritative like this prompt, and on a
+  revise whose session did not survive, the only place it arrives.
 
   Structured output:
     - plan: the final plan, revised where the critique held.
@@ -609,6 +612,12 @@ prompt plan_revise_system:
       plan changed) or rejected (and why).
 
 prompt plan_revise_user:
+  YOUR MISSION — the operator's launch values, the same ones your plan
+  node rendered. They ride this prompt because no session is promised
+  here: `inherit_if_available` is best-effort, and a revise whose
+  backing session is gone has this text as its only channel.
+  {{input.mission_context}}
+
   Original stated assumptions:
   {{input.assumptions}}
 
@@ -723,6 +732,11 @@ schema plan_revise_input:
   concerns: string
   suggestions: string
   blocking: bool
+  ## The mission the plan node rendered, re-rendered onto this input by the
+  ## plan_gate edge from the same vars. It travels here rather than in a
+  ## session memory: `inherit_if_available` is best-effort, so no route owes
+  ## this node the conversation its plan node had.
+  mission_context: string
 
 schema plan_revised_output:
   plan: string
@@ -751,12 +765,12 @@ supervisor persy:
 ## remain the backstop.
 agent plan:
   description: "Author the implementation plan (read-only)"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: plan_output
   system: plan_system
   user: plan_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## plan_revise — the AUTHOR again, challenging the peer's critique. The
@@ -765,14 +779,14 @@ agent plan:
 ## Read-only.
 agent plan_revise:
   description: "Author challenges & integrates the critique"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: plan_revise_input
   output: plan_revised_output
   system: plan_revise_system
   user: plan_revise_user
   session: inherit_if_available
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
@@ -783,25 +797,25 @@ agent plan_revise:
 ## high, not max: the working SHAPE, not the model tier, is the lever.
 ## interaction: human — kept rare by the contract.
 agent campaign:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: campaign_input
   output: campaign_output
   system: campaign_system
   user: campaign_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   interaction: human
 
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
 ## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
 ## per-gap session.
 agent verify_build:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   interaction: human
 
 ## plan_review — the PEER, pinned to the other family. claw because
@@ -819,7 +833,7 @@ judge plan_review:
   user: plan_review_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  reasoning_effort: high
   fallbacks:
     ## The plan_review_policy switch, expressed as a route gate:
     ## policy "skip" arms this terminal route — a peer failure completes
@@ -1329,6 +1343,13 @@ workflow test_coverage:
   ## integrates what holds; skipped (policy skip + peer unavailable) →
   ## the unreviewed plan proceeds, loudly.
   plan_gate -> plan_revise when not skipped with {
+    mission_context: `Repository: {{vars.workspace_dir}}
+
+COVERAGE TARGET (empty = the whole repository):
+{{vars.target}}
+
+Test kinds in scope — unit: {{vars.test_unit}} · integration:
+{{vars.test_integration}} · e2e: {{vars.test_e2e}}`,
     plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
     risks: "{{outputs.plan.risks}}",

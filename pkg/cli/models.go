@@ -19,8 +19,13 @@ type ModelsOptions struct {
 
 // RunModels resolves and prints the model catalog: for one model (--spec/arg)
 // or a representative known set, it reports the capabilities the runtime would
-// resolve, where each value came from (aggregator|curated), and whether this
-// host can actually reach the model with the credentials it holds.
+// resolve, the table that had an ENTRY for each model
+// (aggregator|curated for a vendor model;
+// operator|catalog-live|catalog-snapshot|unknown for a gateway id), and
+// whether this host can actually reach the model with the credentials it
+// holds. SOURCE is record-level: under `aggregator`, whatever the aggregator
+// left zero or unsaid is still the curated table's. A flag cell reads "?"
+// where no table answered it — unknown, never "no".
 //
 // It shares pkg/modelcatalog with GET /api/models on purpose — the CLI and the
 // studio picker answering "which models can I use here" differently is a bug
@@ -62,9 +67,9 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 			m.Source,
 			formatContextWindow(m.ContextWindow),
 			formatContextWindow(m.MaxOutputTokens),
-			yesNo(m.Reasoning),
-			yesNo(m.ToolCall),
-			yesNo(m.Temperature),
+			flagWord(m.Reasoning),
+			flagWord(m.ToolCall),
+			flagWord(m.Temperature),
 			formatPrice(m),
 			formatUsable(m),
 		})
@@ -141,4 +146,13 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// flagWord renders a capability flag: yes, no, or "?" when no table answered
+// it — a gateway id's unknown is never printed as a no.
+func flagWord(p *bool) string {
+	if p == nil {
+		return "?"
+	}
+	return yesNo(*p)
 }

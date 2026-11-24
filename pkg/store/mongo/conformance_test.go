@@ -3,9 +3,12 @@ package mongo
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,11 +24,10 @@ import (
 // conformance harness. Skipped unless ITERION_TEST_MONGO_URI is set —
 // the suite needs a real replica set (change streams + transactions),
 // so we don't try to spin up testcontainers from a unit test. Local
-// runs use the docker-compose.cloud.yml stack:
-//
-//	devbox run -- task cloud:up:deps
-//	ITERION_TEST_MONGO_URI='mongodb://localhost:27017/?replicaSet=rs0' \
-//	    devbox run -- go test ./pkg/store/mongo/...
+// runs use the owned replica-set fixture documented in docs/development.md,
+// "Running the Mongo conformance harness locally". That fixture enables test
+// commands for the app-scoped commit-failure probe; ordinary dev/prod stacks
+// need no test-command setting.
 //
 // The blob backend is stubbed via inMemoryBlob so a real S3/MinIO
 // isn't required just to exercise the run/event/lock paths.
@@ -40,9 +42,10 @@ func TestConformance_Mongo(t *testing.T) {
 		ctx, cancel := mongotest.Ctx(t)
 		defer cancel()
 		s, err := New(ctx, Config{
-			URI:      uri,
-			Database: dbName,
-			Blob:     newInMemoryBlob(),
+			URI:                uri,
+			Database:           dbName,
+			Blob:               newInMemoryBlob(),
+			RunFilesScratchDir: filepath.Join(t.TempDir(), "scratch"),
 		})
 		if err != nil {
 			t.Fatalf("mongo New: %v", err)
@@ -55,6 +58,66 @@ func TestConformance_Mongo(t *testing.T) {
 		})
 		return s
 	}, storetest.Opts{InitialStatus: store.RunStatusQueued})
+}
+
+func TestConformance_MongoCodemodeScratch(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo conformance")
+	}
+	cfg := Config{URI: uri, Database: "iterion_conformance_" + bsonNonce(t), Blob: newInMemoryBlob(), RunFilesScratchDir: t.TempDir()}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	s, err := New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		drop, cancel := mongotest.TeardownCtx()
+		defer cancel()
+		if err := s.db.Drop(drop); err != nil {
+			t.Error(err)
+		}
+		if err := s.Close(drop); err != nil {
+			t.Error(err)
+		}
+	})
+	peer, err := New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := mongotest.TeardownCtx()
+		defer cancel()
+		if err := peer.Close(closeCtx); err != nil {
+			t.Error(err)
+		}
+	})
+	storetest.CodemodeScratch(t, s, peer)
+	t.Run("PhysicalTombstoneAndSaveVersion", func(t *testing.T) {
+		ctx := store.WithTenant(t.Context(), "test-tenant")
+		const id = "scratch-physical"
+		stale, err := s.CreateRun(ctx, id, "scratch", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := peer.PutCodemodeScratch(ctx, id, "k", []byte(`"payload"`), store.CodemodeScratchLimits{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveRun(ctx, stale); !errors.Is(err, store.ErrRunConflict) {
+			t.Fatalf("pre-put SaveRun snapshot: got %v, want conflict", err)
+		}
+		if err := s.DeleteRun(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := peer.runs.FindOne(ctx, bson.M{"_id": id}).Raw()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw.Lookup("deleted_at").Type == 0 || raw.Lookup(codemodeScratchField).Type != 0 {
+			t.Fatal("tombstone missing or still contains the scratch field")
+		}
+	})
 }
 
 // bsonNonce returns a short suffix that makes parallel conformance
@@ -207,6 +270,47 @@ func (b *inMemoryBlob) DeleteRunAttachments(_ context.Context, runID string) err
 	return nil
 }
 
+func (b *inMemoryBlob) PutUpload(_ context.Context, uploadID, filename, _ string, body io.ReadSeeker, size int64) error {
+	key, err := blob.UploadKey(uploadID, filename)
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != size {
+		return fmt.Errorf("inMemoryBlob: upload %s: the body is %d bytes, size says %d", key, len(data), size)
+	}
+	b.data[key] = data
+	return nil
+}
+
+func (b *inMemoryBlob) GetUpload(_ context.Context, uploadID, filename string) (io.ReadCloser, blob.AttachmentMeta, error) {
+	key, err := blob.UploadKey(uploadID, filename)
+	if err != nil {
+		return nil, blob.AttachmentMeta{}, err
+	}
+	body, ok := b.data[key]
+	if !ok {
+		return nil, blob.AttachmentMeta{}, blob.ErrArtifactNotFound
+	}
+	return io.NopCloser(bytes.NewReader(body)), blob.AttachmentMeta{Size: int64(len(body))}, nil
+}
+
+func (b *inMemoryBlob) DeleteUpload(_ context.Context, uploadID string) error {
+	prefix, err := blob.UploadPrefix(uploadID)
+	if err != nil {
+		return err
+	}
+	for k := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(b.data, k)
+		}
+	}
+	return nil
+}
+
 func (b *inMemoryBlob) PutToolBlob(_ context.Context, runID, toolUseID, kind string, body []byte) error {
 	key, err := blob.ToolBlobKey(runID, toolUseID, kind)
 	if err != nil {
@@ -334,7 +438,16 @@ func (b *inMemoryBlob) DeleteRunIR(_ context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	bundles, err := blob.IRBundleSnapshotPrefix(runID)
+	if err != nil {
+		return err
+	}
 	delete(b.data, key)
+	for k := range b.data {
+		if strings.HasPrefix(k, bundles) {
+			delete(b.data, k)
+		}
+	}
 	return nil
 }
 

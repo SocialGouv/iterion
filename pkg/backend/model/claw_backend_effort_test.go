@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
@@ -38,6 +38,7 @@ func (c *captureRequestClient) last() api.CreateMessageRequest {
 // upward. Anthropic's Opus 5.5 has no none level, so it floors at low, the
 // same coercion the claude_code delegate applies on the CLI route.
 func TestClawBackend_EffortNoneReachesTheWire(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		model  string

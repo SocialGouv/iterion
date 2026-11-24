@@ -1,39 +1,55 @@
 package bots
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/skillshare"
 )
 
 // The programme contract has two readers with opposite jobs: the bot that
 // WRITES it and the bot that EXECUTES it. They must read the same document.
 //
-// iterion has no skill-sharing primitive, so the authoring doc's rule applies —
-// duplicate, and point each copy at its peers. A pointer in a comment is not a
-// mechanism, though: two copies drift the first time somebody edits one. This
-// test is the mechanism. Edit either copy and it reddens until both carry it.
-func TestContractSkillsAreIdenticalInBothBundles(t *testing.T) {
-	shared := []string{"plan-contract.md", "upgrade-archetypes.md"}
-	for _, name := range shared {
+// The mechanism that keeps them reading it is shared now:
+// internal/skillshare declares every skill several bundles carry, writes each
+// mirror from its family's source under `task gen`, and reddens on a copy that
+// drifted. This test is what the bots package owes on top of it — that THESE
+// two families are declared as mirrors of one source, so nobody closes the
+// gate on the contract by re-declaring either copy a variant. A variant is a
+// legitimate verdict for a skill a bundle tailors; for the contract it would
+// mean the writer and the executor work from two different documents, which is
+// the defect, not a tailoring.
+func TestContractSkillsAreOneSourceInBothBundles(t *testing.T) {
+	const writer, executor = "assessment", "modernize"
+	for _, name := range []string{"plan-contract.md", "upgrade-archetypes.md"} {
 		t.Run(name, func(t *testing.T) {
-			writer, err := os.ReadFile(filepath.Join("assessment", "skills", name))
-			if err != nil {
-				t.Fatalf("the bot that writes the contract does not ship %s: %v", name, err)
+			var family skillshare.Family
+			for _, f := range skillshare.Families() {
+				if f.Name == name {
+					family = f
+				}
 			}
-			executor, err := os.ReadFile(filepath.Join("modernize", "skills", name))
-			if err != nil {
-				t.Fatalf("the bot that executes the contract does not ship %s: %v", name, err)
+			if family.Name == "" {
+				t.Fatalf("%s is not declared in internal/skillshare/families.go, so nothing keeps the bot that "+
+					"writes the programme contract and the bot that executes it reading the same document", name)
 			}
-			if !bytes.Equal(writer, executor) {
-				t.Fatalf("assessment/skills/%s and modernize/skills/%s have drifted. The bot that "+
-					"writes the contract and the bot that executes it would be working from two "+
-					"different documents — copy the edit to both.", name, name)
+			members := map[string]skillshare.Kind{}
+			for _, b := range family.Members() {
+				members[b] = family.KindOf(b)
 			}
-			if !bytes.Contains(writer, []byte("TODO(skill-duplication)")) {
-				t.Errorf("%s carries no peer pointer; a reader who lands on one copy has no way to "+
-					"know the other exists", name)
+			for _, bundle := range []string{writer, executor} {
+				kind, ok := members[bundle]
+				if !ok {
+					t.Fatalf("family %s does not declare %s as a member", name, bundle)
+				}
+				if kind == skillshare.VariantKind {
+					t.Fatalf("family %s declares %s's copy a VARIANT. The bot that writes the contract and the "+
+						"bot that executes it would be working from two different documents — one of them must be "+
+						"the source and the other its mirror.", name, bundle)
+				}
+			}
+			if members[writer] == members[executor] {
+				t.Fatalf("family %s declares both %s and %s as %s — one is the source, the other its mirror",
+					name, writer, executor, members[writer])
 			}
 		})
 	}

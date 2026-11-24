@@ -38,6 +38,7 @@ type Registry struct {
 
 	// --- Runner-side metrics -------------------------------------
 	NATSPendingMessages    prometheus.Gauge
+	NATSStalled            prometheus.Gauge
 	WorkspaceCloneDuration prometheus.Histogram
 	LLMTokensTotal         *prometheus.CounterVec // backend, model, direction
 	LLMCostUSDTotal        *prometheus.CounterVec // backend, model
@@ -70,6 +71,7 @@ type Registry struct {
 	// success-only counter cannot distinguish from "nothing to do".
 	OrphanSweepErrors *prometheus.CounterVec // stage (scan|lease|flip)
 	DLQDepth          prometheus.Gauge
+	DLQDepthByPool    *GaugeSnapshot // pool; registry-known non-disabled pools
 	// Provider usage-window retries. The pair is what makes the wait
 	// auditable: scheduled counts runs parked for a later reset, resumed
 	// counts the ones a sweeper actually brought back. A growing gap means
@@ -78,7 +80,7 @@ type Registry struct {
 	// parked run just sits there as failed_resumable.
 	RunsUsageWindowBlocked prometheus.Counter
 	RunsRetryScheduled     prometheus.Counter
-	RunsRetryResumed       *prometheus.CounterVec // result (enqueued|abandoned|failed)
+	RunsRetryResumed       *prometheus.CounterVec // result (enqueued|abandoned|failed|slot_wait|window_wait|release_deferred)
 	RunsRetryPending       prometheus.Gauge
 	// RunsRetrySweeps is what makes the three above readable. Every one of
 	// them sits at 0 on a healthy idle deployment — and also on a deployment
@@ -93,6 +95,38 @@ type Registry struct {
 	// each pull is a pod — and the label is what makes it a cost/benefit
 	// reading rather than a cost one: see RetryProbePulled.
 	RunsRetryProbes *prometheus.CounterVec // result (pulled|still_blocked|stood_down)
+
+	// --- Platform bot overrides (#2354) --------------------------
+	// A stored platform override outranks the baked catalog at every
+	// launch surface, forever: a bundle pushed once keeps serving after a
+	// later release bakes a NEWER one for the same slug. The server
+	// reported that on the admin inventory and in one resolve-time Warn,
+	// and both are passive — a human has to look, or a run has to launch.
+	// These three are the poll that looks on its own.
+	//
+	// Only the PLATFORM tier is measured: the bot-source store offers no
+	// cross-tenant listing, so a per-team sweep would be one Mongo list
+	// per team per pass. The team tier keeps the inventory field and the
+	// resolve-time Warn.
+	BotOverrideShadowsNewer *prometheus.GaugeVec // slug
+	// BotShadowCheckUnavailable is what keeps the gauge above readable.
+	// Every slug sits at 0 both on a deployment whose overrides are all
+	// current AND on one whose catalog could not be read at all — a check
+	// that could not run must never read clean, so an unreadable leg
+	// raises this and HOLDS the per-slug values rather than zeroing them.
+	BotShadowCheckUnavailable prometheus.Gauge
+	// BotOverrideUnorderableVersion is the class the comparison cannot
+	// judge: Manifest.version is free-form, so a suffixed pin
+	// (0.9.2-codex-claw.3) orders against nothing, and a manifest is
+	// OPTIONAL on both sides — a bundle pushed without one, or a baked
+	// loose .bot, declares no version to compare. None of those is ever
+	// flagged as shadowing, and none of them may read as a clean row
+	// either: the override outranks the tier below it exactly as a dated
+	// pin does, and the question is simply unanswered. INFO only — no
+	// alert rule reads it. A deliberate pin is a legitimate operator
+	// choice, and paging on one iterion cannot even order would be a page
+	// nobody can clear.
+	BotOverrideUnorderableVersion *prometheus.GaugeVec // slug
 }
 
 // The dispositions of one pull-forward probe, each counted at the ONE site
@@ -152,6 +186,10 @@ func New() *Registry {
 	r.NATSPendingMessages = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iterion_nats_pending_messages",
 		Help: "Pending JetStream messages on the iterion.queue.runs durable consumer.",
+	})
+	r.NATSStalled = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "iterion_nats_stalled",
+		Help: "1 when the runs consumer has held pending messages with no claim for the stall window — deliveries are wedged and runs will not start (issue #2890).",
 	})
 	r.WorkspaceCloneDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "iterion_workspace_clone_duration_seconds",
@@ -243,16 +281,34 @@ func New() *Registry {
 		Name: "iterion_dlq_depth",
 		Help: "Messages currently parked on the runs DLQ stream.",
 	})
+	r.BotOverrideShadowsNewer = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "iterion_bot_override_shadows_newer",
+		Help: "1 when the platform bot override of this slug is strictly older than the bundle this deployment would otherwise serve, so the override is holding the newer bake back. Read both versions off `iterion remote admin bots` (bundle_version / shadowed_version); clear it by re-pushing the bundle or dropping the override.",
+	}, []string{"slug"})
+	r.BotShadowCheckUnavailable = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "iterion_bot_shadow_check_unavailable",
+		Help: "1 when the override-shadow check could not run (the bot catalog or the platform rows could not be read). The per-slug gauges then hold their last values: a check that could not run must not read as a clean inventory.",
+	})
+	r.BotOverrideUnorderableVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "iterion_bot_override_unorderable_version",
+		Help: "1 when the platform override of this slug and the bundle below it cannot be ordered — a free-form or suffixed version, or a side that declares no version at all — so no staleness verdict is made either way. Informational: no alert rule reads this series.",
+	}, []string{"slug"})
+
+	r.DLQDepthByPool = newGaugeSnapshot(prometheus.GaugeOpts{
+		Name: "iterion_dlq_depth_by_pool",
+		Help: "Messages parked on each registry-known, non-disabled runner pool DLQ.",
+	}, "pool")
 
 	reg.MustRegister(
 		r.RunsCreatedTotal, r.RunsActive, r.RunDurationSeconds,
 		r.WSConnections, r.MongoChangeStreamLagS,
-		r.NATSPendingMessages, r.WorkspaceCloneDuration,
+		r.NATSPendingMessages, r.NATSStalled, r.WorkspaceCloneDuration,
 		r.LLMTokensTotal, r.LLMCostUSDTotal, r.DelegateIdleDeadlockTotal, r.DelegateBackgroundTotal, r.RunnerHeartbeatErrors,
 		r.RunnerAdmissionRejected, r.RolloutEpochRegression,
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
-		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth,
+		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth, r.DLQDepthByPool,
+		r.BotOverrideShadowsNewer, r.BotShadowCheckUnavailable, r.BotOverrideUnorderableVersion,
 		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
 		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps, r.RunsRetryProbes,
 	)

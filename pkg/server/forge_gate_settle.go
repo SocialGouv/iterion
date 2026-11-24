@@ -186,7 +186,7 @@ func refusalAnswersRun(run *store.Run, grant ForgePublishGrant, check string) *g
 // the sweep listed it, or parked on an armed retry), or a second run shares
 // the grant (cutBack).
 func (s *Server) cutBackGrant(run *store.Run, token string) {
-	if !runIsOver(run) || s.forgePublishTokens == nil {
+	if !runIsOver(run, false) || s.forgePublishTokens == nil {
 		return
 	}
 	if _, err := s.cutBack(token, s.postRunGrace()); err != nil && s.logger != nil {

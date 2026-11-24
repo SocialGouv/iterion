@@ -39,7 +39,7 @@ var fmtCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmtOpts.Paths = args
 		fmtOpts.Printer = newPrinter()
-		_, err := cli.RunFmt(fmtOpts)
+		_, err := cli.RunFmt(cmd.Context(), fmtOpts)
 		return err
 	},
 }

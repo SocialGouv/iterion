@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -119,13 +120,24 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg.Token = token
+	// refuseMinted is the exit for every failure PAST a mint this command
+	// made: a token nothing stores is a credential nobody can use, and for
+	// the browser approval it belongs to an account the CLI holds nothing
+	// else for — only the token itself can revoke it. A token the operator
+	// supplied has no row this command created, so it leaves untouched.
+	refuseMinted := func(reason error) error {
+		if !selfMinted {
+			return reason
+		}
+		return cli.RefuseSelfMintedToken(cmd.Context(), cli.NewRemoteClientFor(cfg), token, reason)
+	}
 	answer, err := probeIdentity(cmd.Context(), base, token)
 	if err != nil {
-		return fmt.Errorf("reach %s: %w", base, err)
+		return refuseMinted(fmt.Errorf("reach %s: %w", base, err))
 	}
 	code := answer.code
 	if code == 401 || code == 403 {
-		return fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code)
+		return refuseMinted(fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code))
 	}
 	me, idErr := answer.identity(base)
 	// A token this command minted is known-good — the instance at base just
@@ -143,7 +155,7 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 		return tokenLoginRefusal(base, code, idErr)
 	}
 	if err := cli.SaveRemoteConfig(cfg); err != nil {
-		return err
+		return refuseMinted(fmt.Errorf("save the CLI credentials: %w", err))
 	}
 	p, _ := cli.RemoteConfigPath()
 	out := cli.NewPrinter(cli.OutputHuman)
@@ -292,16 +304,41 @@ func tokenLoginRefusal(base string, code int, idErr error) error {
 // instance's /cli-auth page (where the signed-in user approves and a token is
 // minted), and wait for it to redirect back to the loopback with the token.
 func loginViaBrowser(ctx context.Context, base string) (string, error) {
+	res, err := approveViaBrowser(ctx, base, "")
+	return res.token, err
+}
+
+// browserApprovalResult is what the /cli-auth page handed the loopback
+// listener: the minted token and, for a team-pinned approval, the team the
+// page says it pinned it to and the org the server states for that team
+// (both empty from an instance whose page does not know ?team=).
+type browserApprovalResult struct {
+	token  string
+	teamID string
+	orgID  string
+}
+
+// approveViaBrowser is the browser-approval flow of `remote login` and —
+// with team non-empty — of `remote teams switch` (#2674): the /cli-auth page
+// is opened with ?team=<id>, the approving LIVE SESSION mints the team-pinned
+// token (a stored PAT mints nothing since #1668), and the loopback callback
+// hands the token back together with the pin the page claims.
+//
+// It judges NOTHING about that pin: by the time the callback arrives the
+// token exists on the server, and only the caller holding it can revoke the
+// one it refuses (cli.RemoteTeamsSwitch). A refusal here would abandon a
+// live token nobody can see.
+func approveViaBrowser(ctx context.Context, base, team string) (browserApprovalResult, error) {
 	state := randHex(16)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", fmt.Errorf("start local listener: %w", err)
+		return browserApprovalResult{}, fmt.Errorf("start local listener: %w", err)
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 
-	tokenCh := make(chan string, 1)
+	resCh := make(chan browserApprovalResult, 1)
 	errCh := make(chan error, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -324,26 +361,38 @@ func loginViaBrowser(ctx context.Context, base string) (string, error) {
 			return
 		}
 		fmt.Fprint(w, htmlMsg("iterion CLI authorized ✓ — return to your terminal."))
-		tokenCh <- tok
+		resCh <- browserApprovalResult{token: tok, teamID: q.Get("team_id"), orgID: q.Get("org_id")}
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
 	authURL := base + "/cli-auth?redirect_uri=" + url.QueryEscape(redirectURI) + "&state=" + state
+	if team != "" {
+		authURL += "&team=" + url.QueryEscape(team)
+	}
 	fmt.Println("Opening your browser to authorize the iterion CLI…")
 	fmt.Println("If it doesn't open, visit:\n  " + authURL)
-	_ = openBrowser(authURL)
+	_ = browserOpener(authURL)
 
 	select {
-	case tok := <-tokenCh:
-		return tok, nil
+	case res := <-resCh:
+		return res, nil
 	case err := <-errCh:
-		return "", err
+		return browserApprovalResult{}, err
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return browserApprovalResult{}, ctx.Err()
 	case <-time.After(5 * time.Minute):
-		return "", fmt.Errorf("timed out waiting for browser authorization")
+		return browserApprovalResult{}, fmt.Errorf("timed out waiting for browser authorization")
+	}
+}
+
+// cliTeamApproval is the pkg/cli TeamApproval seam `remote teams switch`
+// runs through: the browser approval of the instance the client points at.
+func cliTeamApproval(c *cli.RemoteClient) cli.TeamApproval {
+	return func(ctx context.Context, teamID string) (cli.TeamApprovalResult, error) {
+		res, err := approveViaBrowser(ctx, c.BaseURL(), teamID)
+		return cli.TeamApprovalResult{Token: res.token, TeamID: res.teamID, OrgID: res.orgID}, err
 	}
 }
 
@@ -363,35 +412,19 @@ var remoteLogoutCmd = &cobra.Command{
 
 var remoteStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show the logged-in instance + account",
-	Args:  cobra.NoArgs,
+	Short: "Show the logged-in instance + account, and the server's and this client's versions",
+	Long: "Show the logged-in instance and account, the version and commit the\n" +
+		"instance runs (GET /api/server/info) and this client's own version.\n" +
+		"An instance that does not tell its version leaves it unknown, with the\n" +
+		"reason; the status still succeeds. --json prints the whole answer (orgs\n" +
+		"and teams included), the same one the operator MCP's remote_status gives.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := cli.NewRemoteClient()
 		if err != nil {
 			return err
 		}
-		code, body, err := client.API(cmd.Context(), "GET", "/api/auth/me", nil)
-		if err != nil {
-			return err
-		}
-		if code/100 != 2 {
-			return &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)}
-		}
-		var me struct {
-			User struct {
-				Email        string `json:"email"`
-				IsSuperAdmin bool   `json:"is_super_admin"`
-			} `json:"user"`
-		}
-		_ = json.Unmarshal(body, &me)
-		role := ""
-		if me.User.IsSuperAdmin {
-			role = " (super-admin)"
-		}
-		out := cli.NewPrinter(cli.OutputHuman)
-		out.Line("Instance: %s", client.BaseURL())
-		out.Line("Account:  %s%s", me.User.Email, role)
-		return nil
+		return cli.RemoteStatusPrint(cmd.Context(), client, newPrinter())
 	},
 }
 
@@ -451,9 +484,17 @@ func init() {
 	rootCmd.AddCommand(remoteCmd)
 }
 
+// htmlMsg renders the one-line page the loopback listener of the browser
+// approval serves. msg is escaped at the sink, so a sentence that ever
+// carries a value the instance chose cannot run as markup on
+// http://127.0.0.1:<port>.
 func htmlMsg(msg string) string {
-	return "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;padding:3rem;text-align:center\"><h2>" + msg + "</h2>"
+	return "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;padding:3rem;text-align:center\"><h2>" + html.EscapeString(msg) + "</h2>"
 }
+
+// browserOpener opens the approval URL in the system browser. A var so a
+// test drives the loopback itself instead of spawning xdg-open.
+var browserOpener = openBrowser
 
 func openBrowser(u string) error {
 	var name string

@@ -1,0 +1,36 @@
+schema_version: 1
+connector: rss
+domain: feed
+operations:
+- id: rss.feed.read
+  summary: Read the feed at the connection's URL.
+  description: >-
+    GET the connection's URL itself — the operation adds no path and no query —
+    and decode the answer as RSS 2.0 or Atom 1.0 into one shape: the feed's
+    title, link and updated instant, and its items with an id, a content
+    version, title, link, summary, content, published, updated, author and
+    categories.
+  resource: feed
+  verb: read
+  tags: [feed]
+  http:
+    method: GET
+    # The connection's URL as the operator wrote it — path, trailing slash and
+    # query — with nothing joined to it.
+    at_base_url: true
+    response_format: feed
+  results:
+  - status: 200
+    description: The decoded feed.
+  errors:
+  - status: 401
+    class: unauthorized
+    description: The feed is protected and the connection's credentials were refused.
+  - status: 404
+    class: not_found
+    description: No feed at this URL.
+  - status: 410
+    class: not_found
+    description: The feed was withdrawn.
+  effect: read
+  deterministic: true

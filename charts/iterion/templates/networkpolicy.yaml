@@ -5,20 +5,80 @@ metadata:
   name: {{ include "iterion.fullname" . }}
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
+  {{- if and (not .Values.networkPolicy.ingress.controllerNamespaces) (not .Values.networkPolicy.ingress.extraAllow) }}
+  annotations:
+    # The empty-config warning (#2804, decided: warn loudly, never refuse):
+    # both ingress lists are empty, so the server port's rule below renders
+    # with no from: and admits every in-cluster pod.
+    iterion.io/ingress-admit-all: "networkPolicy.ingress.controllerNamespaces and networkPolicy.ingress.extraAllow are both empty: the server port admits every in-cluster pod, which can forge X-Forwarded-For (the audit IP, the rate-limit key)"
+  {{- end }}
 spec:
+  # The app pods — server, runner, pools, backup — not the dev stores
+  # (devStack.*), which share the release's selector labels: under this
+  # policy their ports (27017, 8333) would be closed to the very pods that
+  # dial them, and they have no business under a deny-all egress.
   podSelector:
     matchLabels:
       {{- include "iterion.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values:
+          - dev-mongodb
+          - dev-seaweedfs
   policyTypes:
     - Ingress
     - Egress
   ingress:
-    # Allow all in-cluster traffic to the server port; the Ingress
-    # controller (or kubectl port-forward) is the public entry point.
-    - ports:
+    # The server port answers the ingress controller's pods and the
+    # release's own, nobody else's: any other in-cluster pod that reached
+    # it directly could set its own X-Forwarded-For — forging the audit IP
+    # and rotating the rate-limit key, the in-cluster half of #2673's
+    # evasion (#2804). The controller's namespaces are the operator's
+    # (networkPolicy.ingress.controllerNamespaces, ingress-nginx by
+    # default), matched on the kubernetes.io/metadata.name label the
+    # kube-apiserver stamps on every namespace since 1.22 — the idiom the
+    # kube-dns egress below uses; networkPolicy.ingress.extraAllow is the
+    # escape hatch (kubectl port-forward, a controller that lives
+    # elsewhere), the twin of egress.extraAllow.
+    #
+    # The empty-config verdict is decided (#2804, question 51): with BOTH
+    # lists empty the rule renders with no from: and admits all in-cluster
+    # traffic — the historical behaviour, kept because an upgrade must
+    # never be refused — and the render warns loudly (the
+    # iterion.io/ingress-admit-all annotation above, the WARNING comment
+    # below, a helm note at install/upgrade).
+    {{- if and (not .Values.networkPolicy.ingress.controllerNamespaces) (not .Values.networkPolicy.ingress.extraAllow) }}
+    # WARNING(#2804): no controllerNamespaces and no extraAllow — the rule
+    # below has no from: and admits EVERY in-cluster pod to the server
+    # port; any of them can forge X-Forwarded-For (the audit IP, the
+    # rate-limit key). Set networkPolicy.ingress.controllerNamespaces to
+    # your controller's namespaces.
+    {{- end }}
+    - {{- if or .Values.networkPolicy.ingress.controllerNamespaces .Values.networkPolicy.ingress.extraAllow }}
+      from:
+        # The release's own pods (server self-checks, the runner's calls).
+        - podSelector:
+            matchLabels:
+              {{- include "iterion.selectorLabels" . | nindent 14 }}
+        {{- range .Values.networkPolicy.ingress.controllerNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- with .Values.networkPolicy.ingress.extraAllow }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      ports:
         - port: {{ .Values.server.port }}
           protocol: TCP
         {{- if .Values.metrics.enabled }}
+    # The metrics port stays a rule of its own, unscoped as today:
+    # Prometheus scrapes from a namespace of the operator's, and scoping it
+    # with the server port's from: would break scraping on upgrade without
+    # a word. #2804 is about the port that reads X-Forwarded-For.
+    - ports:
         - port: {{ .Values.server.metricsPort }}
           protocol: TCP
         {{- end }}
@@ -44,4 +104,83 @@ spec:
     {{- with .Values.networkPolicy.egress.extraAllow }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- /* The release's OWN stores need no operator rule: the dev stores (devStack.*) and the nats sub-chart are pods of this release, dialed on known ports. */ -}}
+    {{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "iterion.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  {{- if ((.Values.devStack).mongodb).enabled }}
+                  - dev-mongodb
+                  {{- end }}
+                  {{- if ((.Values.devStack).seaweedfs).enabled }}
+                  - dev-seaweedfs
+                  {{- end }}
+      ports:
+        {{- if ((.Values.devStack).mongodb).enabled }}
+        - port: 27017
+          protocol: TCP
+        {{- end }}
+        {{- if ((.Values.devStack).seaweedfs).enabled }}
+        - port: 8333
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if (.Values.nats).enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    {{- end }}
+{{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
+---
+# The dev stores answer unsigned on the pod IP (no auth on Mongo, the
+# SeaweedFS master, volume and filer ports): left under no policy they are
+# open to every pod of a shared dev cluster. This one admits the release's
+# app pods on the two ports they dial and nothing else; egress stays open
+# (the stores dial nothing out). The kubelet's probes are host traffic no
+# policy sees.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "iterion.fullname" . }}-dev-stores
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - dev-mongodb
+          - dev-seaweedfs
+  policyTypes:
+    - Ingress
+  ingress:
+    # Every pod of the release, the stores INCLUDED: Mongo initiates its
+    # replica set against its own Service name, a hairpin that re-enters
+    # the pod with its own IP as the source — excluded, the set never
+    # initiates and the pod never turns Ready on a CNI that enforces
+    # policies (kind's does).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "iterion.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 27017
+          protocol: TCP
+        - port: 8333
+          protocol: TCP
+{{- end }}
 {{- end -}}

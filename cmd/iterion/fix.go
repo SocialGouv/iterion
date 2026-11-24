@@ -25,7 +25,7 @@ var fixCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fixOpts.Paths = args
 		fixOpts.Printer = newPrinter()
-		_, err := cli.RunFix(fixOpts)
+		_, err := cli.RunFix(cmd.Context(), fixOpts)
 		return err
 	},
 }

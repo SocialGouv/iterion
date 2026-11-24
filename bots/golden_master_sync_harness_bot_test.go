@@ -20,6 +20,7 @@ import (
 // sync-harness.py rewrites this file's block scalar on every regeneration.
 // A graph that a fresh `iterion validate` would reject must fail here.
 func TestGoldenMasterSyncHarnessBotCompiles(t *testing.T) {
+	t.Parallel()
 	src := readHarnessFile(t, "golden-master/sync-harness.bot")
 	pr := parsertest.Parse("golden-master/sync-harness.bot", src)
 	for _, d := range pr.Diagnostics {
@@ -103,6 +104,7 @@ sys.stdout.write(ast.literal_eval("(" + "\n".join(lit).rstrip().rstrip(")") + ")
 // rewrites harness.py, gate_replay reports "the gate left the tree changed",
 // the sync commit is dropped, and the bot can never land anything again.
 func TestGoldenMasterSyncHarnessWritesTheBytesTheGateWrites(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -286,6 +288,7 @@ func syncHarness(t *testing.T, ws string) (syncHarnessOut, int) {
 // bundle's harness (the same bytes the gate would write), the selftest ran on
 // the written file, and nothing else moved. A second run is a no-op.
 func TestGoldenMasterSyncHarnessBotMaterialisesTheCanonicalCopy(t *testing.T) {
+	t.Parallel()
 	ws, git := syncHarnessRepo(t, "\nimport hashlib\n# a stale judge\n")
 
 	res, exit := syncHarness(t, ws)
@@ -327,6 +330,7 @@ func TestGoldenMasterSyncHarnessBotMaterialisesTheCanonicalCopy(t *testing.T) {
 // a run started from a subdirectory — must sync and commit exactly as one whose
 // workspace IS the root, not refuse naming the one file that was to move.
 func TestGoldenMasterSyncHarnessBotNetBelowTheRepositoryRoot(t *testing.T) {
+	t.Parallel()
 	ws, git := syncHarnessRepoUnder(t, "\nimport hashlib\n# stale\n", "pkg/proj")
 
 	res, exit := syncHarness(t, ws)
@@ -354,6 +358,7 @@ func TestGoldenMasterSyncHarnessBotNetBelowTheRepositoryRoot(t *testing.T) {
 // refusal that leaves the tree as it found it — never a sync into a tree
 // this bot does not own the shape of.
 func TestGoldenMasterSyncHarnessBotRefusals(t *testing.T) {
+	t.Parallel()
 
 	t.Run("a harness without the materialised header is not overwritten", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "")
@@ -542,6 +547,7 @@ const syncGateWantsCommittedTree = "sh -c 'test -z \"$(git status --porcelain --
 // the gate's verdict sealed into the commit; a red gate drops the commit and
 // leaves the previous harness at HEAD.
 func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
+	t.Parallel()
 	t.Run("commit, green gate on the committed tree, verdict sealed", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
 		base := git("rev-parse", "HEAD")

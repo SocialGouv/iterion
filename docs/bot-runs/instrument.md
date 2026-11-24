@@ -4,6 +4,40 @@ Newest first. Bot: [bots/instrument/](../../bots/instrument/) — observability
 instrumentation campaign (Sentry/GlitchTip error tracking + standardized
 logs; opt-in tracing).
 
+## 2026-09-23 — Obsy on graal: one pass, the bot opens the MR itself on a foreign org (run 01a0cd9e)
+
+- Status: **validated** — converged in ONE pass; MR !36 open on the PIC, awaiting the graal
+  team's review (the ticket's remainder is theirs: merge → redeploy → provision the `graal`
+  Sentry project + DSN in graal-gitops → enable Argus's Sentry lane, #1702).
+- Versions: bot instrument 0.1.2 · iterion.cloud prod (2026-09-23)
+- Method: cloud run on iterion.cloud, team PIC GRAAL, forge connection `763ed9a7` (GAT
+  `iterion-pic-graal`), target `…/ia/graal/graal` (PIC GitLab), branch
+  `feat/observability-sentry-logs` → `main`, `open_mr=true`, `scope=errors,logs`,
+  `mission_notes` pre-arbitrated at the graal meeting; `claude_code` on the launcher's
+  personal forfait.
+- Result: $33.62, 1 h 27 (finished 11:01Z) — pass 1 $29.10, `verify_build` $1.28, review
+  $2.55, finalize $0.69. Verify gate green (`poetry run ruff check`, `pytest tests/unit`,
+  frontend `tsc -b && vite build`, `vitest run`); in-loop review clean. **MR !36**: 13
+  commits, 105 changed files.
+- Value: the graal app (FastAPI/uvicorn) gets its full errors+logs seam — opt-in
+  `sentry-sdk[fastapi]` (`SENTRY_DSN` by env, non-fatal init, release = git sha surfaced in
+  `/api/v1/health`, `send_default_pii=False` + PII scrubber, process and batch seams),
+  frontend Sentry via `VITE_SENTRY_DSN`, ONE logging seam (JSON formatter + request-id
+  correlation layered on the existing `logging.conf`, uvicorn access log included, agent
+  identity as a salted hash — never the ProConnect sub, console calls routed through the
+  seam), docs + Helm chart (`charts/graal/`) + CI wiring, detect-secrets baseline, tests
+  pinning the correlated Sentry event.
+- Findings / misses: the teach-back — the PIC repo has NO `.kontinuous/`; deployment is the
+  Helm chart + the `graal-gitops` repo (per-env values), and the kontinuous env `preprod` IS
+  graal's production (the user-serving env). Nothing over-claimed; what remains is outside
+  this repo and another team's.
+- Engine hardening: none surfaced — the run was frictionless, the fleet's lessons compounding
+  on this bot (3 passes → 1 → 1, the last on a foreign org's repository through a forge
+  connection).
+- Lessons for next run: `mission_notes` arbitrated at a live meeting remain the quality
+  lever; `open_mr=true` end-to-end (the bot opened MR !36 itself, per the arbitration) is
+  the proven path for dogfood on a repo no session owns.
+
 ## 2026-09-17 — profile 2: one logging seam shipped on a stdlib CLI, then the gate refused iterion's own mirror (run 01a0af9e-9678)
 
 - Status: **campaign validated, gate refused by #1364** — `campaign` (1 commit) → cost cap →

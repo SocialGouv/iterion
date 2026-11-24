@@ -35,7 +35,6 @@ export function OperatorBubble({
     <div className="flex items-start gap-2 ml-6">
       <span
         className="mt-1 px-2 py-0.5 rounded-full bg-surface-3 text-fg-default text-caption font-bold flex items-center justify-center shrink-0"
-        aria-hidden="true"
       >
         You
       </span>

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
@@ -285,7 +286,10 @@ func TestARunFileSaveNeverReadsAStoredFilePastTheEditorsLimit(t *testing.T) {
 // absence check keeps its bytes — one of the two writers gets a conflict,
 // never both a success and a lost file — and a New bot refused that way
 // leaves nothing of itself: no manifest beside the Save As's main.bot, no
-// bot to list or route, no staging directory.
+// bot to list or route, no staging directory. The Save As is another
+// process's server on the same workspace: one process's bot tree write lock
+// orders its own two writers, and across processes the scaffold's own guard
+// is what answers.
 func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
 	t.Setenv(parser.ReadBudgetEnv, "0")
 	seedSrc := unitFixtureNodes + "\nworkflow w:\n  entry: worker\n  worker -> done\n"
@@ -298,6 +302,7 @@ func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
 		}
 		s := newOrgTestServer(t)
 		s.cfg.WorkDir = work
+		other := &Server{cfg: Config{WorkDir: work}, writeLocks: &writeLocks{}}
 		_, opened := openPath(t, s, "src/seed.bot")
 		if !opened.Bindable {
 			t.Fatalf("seed does not open bindable")
@@ -332,7 +337,7 @@ func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
 		waitForStack(t, "botscaffold.Scaffold")
 		body, _ := json.Marshal(saveFileRequest{Path: "bots/race-bot/main.bot", Document: opened.Document, CreateOnly: true})
 		saved := httptest.NewRecorder()
-		s.handleSaveFile(saved, httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body)))
+		other.handleSaveFile(saved, httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body)))
 		created := <-createDone
 		authoringStepHook = nil
 		var resp saveFileResponse
@@ -365,10 +370,8 @@ func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
 func waitForStack(t *testing.T, fn string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
-	buf := make([]byte, 1<<22)
 	for time.Now().Before(deadline) {
-		n := runtime.Stack(buf, true)
-		if strings.Contains(string(buf[:n]), fn) {
+		if strings.Contains(goroutinetest.Dump(), fn) {
 			return
 		}
 		time.Sleep(time.Millisecond)

@@ -1280,26 +1280,6 @@ workflow test:
 
 func TestCompileSupervisorModelFallbackMissing(t *testing.T) {
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
-	// Also scrub the credentials the detect-based auto-resolution would
-	// see — without this, a dev box with ANTHROPIC_API_KEY set would
-	// suppress the C018 diagnostic this test verifies.
-	for _, k := range []string{
-		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		// z.ai routes Anthropic through ANTHROPIC_BASE_URL + ZAI_API_KEY
-		// (or ANTHROPIC_AUTH_TOKEN); without scrubbing these, a z.ai-configured
-		// dev box makes detect.go report an Anthropic provider available and
-		// suppresses the C018 diagnostic this test verifies.
-		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
-		"OPENAI_API_KEY",
-		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
-		"AWS_REGION", "AWS_DEFAULT_REGION",
-		"GOOGLE_CLOUD_PROJECT",
-		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
-		"ITERION_BACKEND_PREFERENCE",
-	} {
-		t.Setenv(k, "")
-	}
-	t.Setenv("HOME", t.TempDir())
 
 	src := `
 schema s:
@@ -1327,7 +1307,8 @@ workflow test:
   r -> done
   r -> fail
 `
-	r := compileFile(t, src)
+	available := false
+	r := CompileWithCapabilities(parseFile(t, src), CompileCapabilities{AutoBackendAvailable: &available})
 	if !r.HasErrors() {
 		t.Fatal("expected missing supervisor model diagnostic for agent")
 	}

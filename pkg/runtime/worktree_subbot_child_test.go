@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // autoWorktreeWorkflow is a one-tool-node workflow declaring the IR default
@@ -41,6 +42,7 @@ func autoWorktreeWorkflow(name string) *ir.Workflow {
 // chase instead of leaving them where the parent judges its result.
 func TestEngineRun_SubbotChildWorksInTheParentsTree(t *testing.T) {
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	repo, _ := initBareishRepo(t)
 
 	eng := New(autoWorktreeWorkflow("child-in-parent-tree"), s, newStubExecutor(),
@@ -154,7 +156,11 @@ func TestEngineRun_AParentsWorktreeIsolatesTheWholeFamily(t *testing.T) {
 			WithParentNodeID(req.NodeID),
 			WithLogger(log.New(log.LevelWarn, os.Stderr)),
 		)
-		return map[string]any{}, child.Run(ctx, "run-family-child", nil)
+		inv, err := prepareResourceInvocation(ctx, s, "run-family-child", req.ParentRunID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{}, child.Run(inv.Context, "run-family-child", nil)
 	}
 	parentWf := &ir.Workflow{
 		Name: "family-parent", Entry: "run_child", Worktree: "auto",
@@ -333,6 +339,7 @@ func TestRunsInParentWorkspace_TheFactsItReads(t *testing.T) {
 // parent linkage alone is not the question; the subbot node is.
 func TestEngineRun_NonSubbotChildKeepsItsOwnWorktree(t *testing.T) {
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	repo, _ := initBareishRepo(t)
 
 	eng := New(autoWorktreeWorkflow("shard-child"), s, newStubExecutor(),
@@ -369,6 +376,7 @@ func TestEngineRun_NonSubbotChildKeepsItsOwnWorktree(t *testing.T) {
 // assertion and serialize the fan-out it authorizes.
 func TestEngineRun_AnIsolatedSubbotChildKeepsItsOwnWorktree(t *testing.T) {
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	repo, originalTip := initBareishRepo(t)
 
 	eng := New(autoWorktreeWorkflow("isolated-child"), s, newStubExecutor(),
@@ -455,7 +463,11 @@ func TestEngineRun_IsolatedSubbotSiblingsOverlap(t *testing.T) {
 			WithIsolatedChild(req.Isolated),
 			WithLogger(log.New(log.LevelWarn, os.Stderr)),
 		)
-		return map[string]any{}, child.Run(ctx, childID, nil)
+		inv, err := prepareResourceInvocation(ctx, s, childID, req.ParentRunID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{}, child.Run(inv.Context, childID, nil)
 	}
 
 	exec := newStubExecutor()
@@ -653,7 +665,11 @@ func TestEngineRun_IsolatedSiblingsQueueWhenAutoCannotGiveEachATree(t *testing.T
 					opts = append(opts, tc.extra(repo)...)
 				}
 				child := New(tc.childWf("child"), s, childExec, opts...)
-				return map[string]any{}, child.Run(ctx, childID, nil)
+				inv, err := prepareResourceInvocation(ctx, s, childID, req.ParentRunID)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{}, child.Run(inv.Context, childID, nil)
 			}
 
 			exec := newStubExecutor()
@@ -743,6 +759,7 @@ func TestIsolatedChildsCommitIsReplayableOnlyWhereAutoGivesItATree(t *testing.T)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := tc.store(t)
+			storetest.SeedParentRun(t, s, "run-parent")
 			lent, tip0 := initBareishRepo(t)
 
 			var attempt int32
@@ -827,4 +844,10 @@ func TestIsolatedChildsCommitIsReplayableOnlyWhereAutoGivesItATree(t *testing.T)
 			}
 		})
 	}
+}
+
+// The rootless fixture changes only workspace placement. Explicit birth is
+// delegated to its real FS store without advertising other optional ports.
+func (s rootlessStore) CreateRunWithValueFormat(ctx context.Context, spec store.RunCreateSpec) (*store.Run, error) {
+	return store.CreateRunWithValueFormat(ctx, s.RunStore, spec)
 }

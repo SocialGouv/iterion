@@ -15,7 +15,8 @@
       {"n": 7, "criteriaId": "6.1", "file": "index.html", "line": 12, "selector": "", "claim": "Conforme sur l'évidence citée.", "kind": "c", "citations": [{"file": "index.html", "line": 12, "snippet": "<a href=\"/contact\">Nous contacter</a>"}]}
     ],
     "draft_path": "/scratch/rgaa-audit/run/draft/rgaa-2026-10-13.md",
-    "briefs_dir": "/scratch/rgaa-audit/run/adjudicate",
+    "technical_annex_path": "/scratch/rgaa-audit/run/draft/rgaa-2026-10-13-annex.md",
+    "brief_paths": ["/scratch/rgaa-audit/run/adjudicate/2.1.md", "/scratch/rgaa-audit/run/adjudicate/6.1.md"],
     "workspace_dir": "/ws",
     "standard": "rgaa",
     "scope_notes": ""

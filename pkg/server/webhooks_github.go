@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -38,7 +39,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Signature gate FIRST — never write an audit row or call gateLaunch
 	// for an unauthenticated request (would leak quota signal to a
 	// random poker on the open route).
-	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "github", r.Header.Get("X-Hub-Signature-256"))
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "github", webhookHMACSignature(webhooks.ProviderGitHub, r))
 	if !ok {
 		return
 	}
@@ -62,6 +63,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		// (featurly) that opens a PR back-linked to the issue. Distinct from the
 		// PR auto-review and slash-command paths.
 		s.handleGitHubIssues(w, r, cfg, body, payloadHash, srcIP)
+		return
+	case prforge.EventHeaderMergeGroup:
+		// Merge-queue path: the revision GitHub builds from a queue entry is
+		// not a pull request, so no review runs on it and the required check
+		// is absent exactly where the merge decision is made. This mirrors
+		// the entry's verdict onto it, as the App the ruleset can pin.
+		s.handleGitHubMergeGroup(ctx, w, cfg, body, payloadHash, srcIP)
 		return
 	case prforge.EventHeaderPullRequest:
 		// fall through to the PR auto-review path below.
@@ -196,7 +204,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		}
 		healIdem := healIdempotencyKey(cfg, p)
 		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
-		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
+		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg, store.RunTrustDefault)
 		// The revision this heal is about, under a name ONLY the fixer claim
 		// reads. Not `head_sha`: that key also arms markGateInFlight, and this
 		// lane deliberately stood down from the gate — `applyWebhookVarLayers`
@@ -454,6 +462,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		return
 	}
 	meta := prforgeIssueMeta(p)
+	meta.DeliveryID = forgeDeliveryID(r, webhooks.ProviderGitHub)
 
 	// Common gates (event + project) mirror the PR path.
 	labeled := p.IsLabeled() && webhooks.MatchLabel(cfg.LabelAllowlist, p.LabelName)
@@ -477,6 +486,12 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	if !ok {
 		return
 	}
+	// The visibility gate (#2676): a label starts a bot the catalogue
+	// enables — a disabled bot no more launches by its label than by its
+	// card, and a refused overlay starts nothing.
+	if !s.gateLabelBotVisibility(ctx, w, cfg, meta, botID, payloadHash, srcIP) {
+		return
+	}
 
 	// Author-trust gate on the zero-touch lane ONLY: an opened issue launches
 	// a bot with no human in the loop, so the author must hold real repo
@@ -494,11 +509,13 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, repo, issue#, trigger).
-	// The trigger is the label for the labeled path (re-applying a DIFFERENT
-	// label still launches; the SAME label replays no-op) and a stable "opened"
-	// marker for the zero-touch path (so a later label on the same issue is a
-	// distinct trigger, not a replay of the open).
+	// Idempotency: one trigger lane per (tenant, webhook, repo, issue#,
+	// trigger). The trigger is the label for the labeled path (a DIFFERENT
+	// label is its own lane) and a stable "opened" marker for the zero-touch
+	// path (so a later label on the same issue is a distinct trigger, not a
+	// replay of the open). The key is the lane's first claim: a redelivery of
+	// a claimed event replays no-op, and re-applying the SAME label launches
+	// again once the lane's previous run has ended (webhooks_trigger_lane.go).
 	trigger := p.LabelName
 	if !labeled {
 		trigger = "opened"
@@ -512,8 +529,9 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// runner clones the repo's default branch; featurly's worktree: auto
 	// branches from there.
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
-	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{})
+	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{},
+		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, trigger))
 }
 
 // issueLabeledVars composes the launch vars an implementer bot (featurly)

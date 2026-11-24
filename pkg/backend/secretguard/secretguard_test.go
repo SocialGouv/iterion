@@ -852,8 +852,9 @@ func TestTheEgressGateSeesEveryKindOfLiteral(t *testing.T) {
 		{Name: "KEY", Value: bin, Hosts: []string{"vault.example.com"}},
 		{Name: "TOK", Value: tok, Hosts: []string{"api.example.com"}},
 	}, DefaultConfig())
-	if len(g.matcher.plain) == 0 || len(g.matcher.res) == 0 {
-		t.Fatalf("scenario broken: %d plain literal(s), %d alternation(s)", len(g.matcher.plain), len(g.matcher.res))
+	st := g.load()
+	if len(st.matcher.plain) == 0 || len(st.matcher.res) == 0 {
+		t.Fatalf("scenario broken: %d plain literal(s), %d alternation(s)", len(st.matcher.plain), len(st.matcher.res))
 	}
 	for name, body := range map[string]string{"the token": "Bearer " + tok, "the binary key": "body=" + bin, "the large file": "body=" + big[:len(big)-1]} {
 		if !g.ContainsSecret(body) || !g.ExfiltratesTo(body, "evil.example") {
@@ -1001,8 +1002,9 @@ func TestTheMatcherCoversExactlyTheUnionOfOccurrences(t *testing.T) {
 			}
 		}
 		text := tb.String()
+		st := g.load()
 		covered := make([]bool, len(text))
-		for lit := range g.literalPlaceholder {
+		for lit := range st.literalPlaceholder {
 			for off := 0; ; {
 				i := strings.Index(text[off:], lit)
 				if i < 0 {
@@ -1022,8 +1024,8 @@ func TestTheMatcherCoversExactlyTheUnionOfOccurrences(t *testing.T) {
 				want.WriteByte(text[k])
 			}
 		}
-		got := g.matcher.ReplaceAllStringFunc(text, func(m string) string {
-			if _, ok := g.literalPlaceholder[m]; !ok {
+		got := st.matcher.ReplaceAllStringFunc(text, func(m string) string {
+			if _, ok := st.literalPlaceholder[m]; !ok {
 				t.Fatalf("f called with %q, no registered literal", m)
 			}
 			return "\x01"

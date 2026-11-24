@@ -288,7 +288,7 @@ func TestProdWatch_ANoteCheckMeetsItsWriterAtTheBoundary(t *testing.T) {
 			if err == nil || m == nil {
 				t.Fatalf("setup: at 1500 the check must refuse and name its numbers: %v %s", err, lastN(nerr, 300))
 			}
-			limit := atoiOr(m[1]) + 1 + atoiOr(m[2])
+			limit := pwLimitOf(t, nerr)
 			if _, nerr, err := pwNotifyDry(t, h, labels, limit-1, []any{}); err == nil || !strings.Contains(nerr, "no room to name one member") {
 				t.Fatalf("one character under the check's limit (%d) was not refused: %v %s", limit, err, lastN(nerr, 300))
 			}
@@ -306,7 +306,10 @@ func TestProdWatch_ANoteCheckMeetsItsWriterAtTheBoundary(t *testing.T) {
 				t.Fatalf("want the note in one message at the limit, got %d", len(msgs))
 			}
 			text := msgs[0].(map[string]any)["text"].(string)
-			lines := strings.Split(text, "\n")
+			if !strings.HasSuffix(text, "run `harness`") {
+				t.Fatalf("the note at the limit does not end with its run:\n%s", text)
+			}
+			lines := pwLines(text)
 			shown := strings.Repeat("ftp\u200b:", 32) + "ft`"
 			whole := len(lines) >= 2 && strings.Contains(lines[1], shown) && strings.HasSuffix(lines[1], strings.Repeat("&amp;", 100))
 			if !whole || (c.exact && (len([]rune(text)) != limit || len(lines) != 2)) {
@@ -332,7 +335,7 @@ func TestProdWatch_TheNoteCheckPairsEachKindWithItsOwnStates(t *testing.T) {
 	if err == nil || m == nil {
 		t.Fatalf("setup: at 1500 the check must refuse and name its numbers: %v %s", err, lastN(nerr, 300))
 	}
-	limit := atoiOr(m[1]) + 1 + atoiOr(m[2])
+	limit := pwLimitOf(t, nerr)
 	if !strings.Contains(nerr, "(labels.quiet with labels.loki_template)") || !strings.Contains(nerr, "(labels.folded_detail)") {
 		t.Fatalf("the refusal does not name the labels behind its numbers: %s", lastN(nerr, 400))
 	}
@@ -354,7 +357,9 @@ func TestProdWatch_TheNoteCheckPairsEachKindWithItsOwnStates(t *testing.T) {
 	need := 0
 	for _, msg := range out["messages"].([]any) {
 		lines := strings.Split(msg.(map[string]any)["text"].(string), "\n")
-		if k := len([]rune(lines[0])) + 1 + len([]rune(lines[1])); k > need {
+		// The header, the names line, and the run footer every message ends
+		// with — the room the check reserves for it.
+		if k := len([]rune(lines[0])) + 1 + len([]rune(lines[1])) + 1 + len([]rune(lines[len(lines)-1])); k > need {
 			need = k
 		}
 	}
@@ -411,6 +416,39 @@ func TestProdWatch_AFuturePendingStampGoesFirst(t *testing.T) {
 
 // pwCheckLimit reads the per-tick note check's numbers out of its refusal.
 var pwCheckLimit = regexp.MustCompile(`header renders up to (\d+) characters .*and its names line up to (\d+) with one name`)
+
+// pwFooterRoom reads the run footer's room out of the same refusal: the
+// characters notify reserves before the clip so every message ends with its
+// run (docs/agents/bots/run-link.md).
+var pwFooterRoom = regexp.MustCompile(`less the run footer \((\d+)\)`)
+
+// pwLimitOf: the exact message budget the check accepts, read out of its
+// refusal — the worst header, the newline, the worst names line and the
+// footer's room.
+func pwLimitOf(t *testing.T, nerr string) int {
+	t.Helper()
+	m := pwCheckLimit.FindStringSubmatch(nerr)
+	if m == nil {
+		t.Fatalf("the refusal does not name its numbers: %s", lastN(nerr, 300))
+	}
+	limit := atoiOr(m[1]) + 1 + atoiOr(m[2])
+	f := pwFooterRoom.FindStringSubmatch(nerr)
+	if f == nil {
+		t.Fatalf("the refusal does not name the run footer's room: %s", lastN(nerr, 300))
+	}
+	return limit + atoiOr(f[1])
+}
+
+// pwLines splits a delivered message into its lines without the run footer
+// every message ends with: a note's meta line stays its last line, as the
+// parts tests read it.
+func pwLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	if n := len(lines); n > 0 && strings.HasPrefix(lines[n-1], "🤖 ") {
+		lines = lines[:n-1]
+	}
+	return lines
+}
 
 // pwPlanLabels: the labels plan hands notify for these overrides (defaults merged).
 func pwPlanLabels(t *testing.T, h *pwHarness, overrides map[string]any) map[string]any {
@@ -532,7 +570,7 @@ func TestProdWatch_EachPartSaysItsOwnNumberAndCount(t *testing.T) {
 	cRe := regexp.MustCompile("`(\\d+)` occurrence")
 	metas := 0
 	for i, m := range msgs {
-		lines := strings.Split(m.(map[string]any)["text"].(string), "\n")
+		lines := pwLines(m.(map[string]any)["text"].(string))
 		want, sum := 0, 0
 		for k, n := range names {
 			if strings.Contains(lines[1], n) {
@@ -947,7 +985,7 @@ func TestProdWatch_EachPartSaysItsOwnFirstSighting(t *testing.T) {
 	}
 	dated := 0
 	for i, m := range msgs {
-		lines := strings.Split(m.(map[string]any)["text"].(string), "\n")
+		lines := pwLines(m.(map[string]any)["text"].(string))
 		own := ""
 		for k, n := range names {
 			id := fmt.Sprintf("t%02d", k)
@@ -995,7 +1033,7 @@ func TestProdWatch_TheCheckCountsMoreOnlyWhereItShows(t *testing.T) {
 	if err == nil || m == nil {
 		t.Fatalf("setup: at 1500 the check must refuse and name its numbers: %v %s", err, lastN(nerr, 300))
 	}
-	limit := atoiOr(m[1]) + 1 + atoiOr(m[2])
+	limit := pwLimitOf(t, nerr)
 	name := strings.Repeat("ftp:", 50)
 	var notes []any
 	for _, st := range []string{"new", "escalated", "reminder", "quiet", "regressed", "escalating", "reopened"} {
@@ -1014,7 +1052,9 @@ func TestProdWatch_TheCheckCountsMoreOnlyWhereItShows(t *testing.T) {
 	need := 0
 	for _, msg := range out["messages"].([]any) {
 		lines := strings.Split(msg.(map[string]any)["text"].(string), "\n")
-		if k := len([]rune(lines[0])) + 1 + len([]rune(lines[1])); k > need {
+		// The header, the names line, and the run footer every message ends
+		// with — the room the check reserves for it.
+		if k := len([]rune(lines[0])) + 1 + len([]rune(lines[1])) + 1 + len([]rune(lines[len(lines)-1])); k > need {
 			need = k
 		}
 	}

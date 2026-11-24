@@ -113,7 +113,7 @@ func TestGateDecisionClaim_TieBreaksTowardTheIncumbent(t *testing.T) {
 func TestGateDecisionReassert_NeverPutsASyntheticBackOverARealVerdict(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
 	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
-	conn, err := s.forgeConnections.Get(context.Background(), "conn1")
+	conn, err := s.forgeConnections.Get(context.Background(), "team1", "conn1")
 	if err != nil {
 		t.Fatal(err)
 	}

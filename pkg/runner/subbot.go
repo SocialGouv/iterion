@@ -7,18 +7,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
-	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 )
@@ -168,20 +170,44 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 // extension and re-anchor subbots, and a supervisor's per-lot child, existed
 // locally only. Mirrors runview.subbotRunnerFor: resolve the child .bot,
 // compile it, build a child executor under the SAME message (credentials,
-// sandbox, model pins travel), run it in the parent's EFFECTIVE workdir
-// (the per-run worktree, when the parent swapped to one), and hand back the
-// child's terminal output. Children carry the parent linkage so the studio
+// sandbox and run-level stamps travel; the model override rows are the root
+// run's launch rows over its routing policy, folded again for the child's own
+// bot), run it in the
+// parent's EFFECTIVE workdir (the per-run worktree, when the parent swapped
+// to one), and hand back the child's terminal output. Children carry the parent linkage so the studio
 // folds them into the parent's card, re-attach across a pod restart through
 // the same records runview keeps, and are charged like any attempt.
 func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir string, runLogger *iterlog.Logger, snapshotRoot ...string) runtime.SubbotRunner {
+	return r.subbotRunnerUnder(nil, msg, parentDir, workDir, runLogger, snapshotRoot...)
+}
+
+// subbotRoot is what the run the queue delivered — the root of a subbot
+// tree — froze at launch: its routing-policy snapshot and its own raw launch
+// rows, read from its document (runview.SubbotRootLaunchRows, a document
+// that predates the raw rows included). Every child of the tree folds them
+// for its own bot (runview.FoldForSubbotChild); they travel down the
+// recursion, so a grandchild reads the root's, never its parent's.
+type subbotRoot struct {
+	policy     *store.RunLLMRoutePolicy
+	launchRows []store.RunModelOverride
+}
+
+// subbotRunnerUnder is subbotRunnerFor below a known root; tree is nil at the
+// top of the tree, where msg is the root run's message.
+func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, parentDir, workDir string, runLogger *iterlog.Logger, snapshotRoot ...string) runtime.SubbotRunner {
 	if runLogger == nil {
 		runLogger = r.cfg.Logger
 	}
-	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
+	return func(ctx context.Context, req runtime.SubbotRequest) (_ map[string]any, retErr error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
+		// A child keeps the parent's original intention; a reload is not its source.
+		if err := store.RequireRunValueFormat(ctx, req.ParentRunID); err != nil {
+			return nil, err
+		}
+
 		// Every store call below is tenant-scoped; the parent's ctx carries
 		// the identity, and re-stamping it costs nothing where its absence
 		// panics deep inside SaveRun.
@@ -196,6 +222,11 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, r.cfg.Store, req, runLogger); handled {
 			return out, aerr
 		}
+		// Only a fresh child needs a birth capability; existing-child reads
+		// remain available to an exact parent with its original binding.
+		if _, err := runview.CheckSubbotBirthInvocation(ctx, req.ParentRunID); err != nil {
+			return nil, err
+		}
 
 		var childPath string
 		var err error
@@ -207,11 +238,33 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if err != nil {
 			return nil, err
 		}
+		// The child works in the parent's effective workdir when the parent
+		// passed one, else the parent's own. Resolved BEFORE the compile so
+		// the plugin `{{workspace}}` placeholders expand against the tree the
+		// child's engine roots at (runtime.WithWorkDir below), never the
+		// child .bot's directory (#1800) — and so the child's fallback screen
+		// probes the directory its engine gets, not the pod's cwd.
+		childWorkDir := req.WorkDir
+		if childWorkDir == "" {
+			childWorkDir = workDir
+		}
 		// The child compiles the way every path does: a bundle's main.bot
-		// promoted to its bundle, prompts/*.md in scope, the bundle's hash.
-		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath)
+		// promoted to its bundle, prompts/*.md in scope, the bundle's hash —
+		// for the parent's trust, which the child inherits on the wire
+		// (child := *msg below) and the child engine is launched with.
+		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath, childWorkDir, msg.Trust)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
+		}
+		// A landing intent the child cannot act on never fires — its own
+		// `worktree: none` declaration, a parent sandbox it would adopt (the
+		// sandbox mounts one tree whatever the child declares), or this
+		// deployment's plane (the runner's store has no filesystem root:
+		// every child runs in place and no bank ever writes a child's
+		// branch): refused here, before any child run is recorded — the
+		// class C329 closes at the parent's compile, one level down.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, r.cfg.Store.Root()); err != nil {
+			return nil, err
 		}
 		// The deployment's multitenant ceiling (ITERION_CLOUD_MAX_*) clamps
 		// the child exactly as executeRun clamps the parent: a tenant bot
@@ -219,19 +272,49 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		// behind. The parent's own launch overrides are NOT replayed — a
 		// child budgets itself from its .bot, as it does in-process.
 		applyCloudBudgetCeiling(childWf, runLogger)
+		// The child's override rows: the root run's launch rows over its
+		// routing policy folded for the child's own bot, both read from the
+		// root's document, screened before any child run is recorded. The
+		// parent's rows (msg.ModelOverrides) folded the policy for the
+		// parent's bot: they never reach the child.
+		childBotID, childBot := runview.SubbotChildBotIdentity(childPath, childBundle)
+		root := tree
+		if root == nil {
+			rootRun, lerr := r.cfg.Store.LoadRun(ctx, msg.RunID)
+			if lerr != nil {
+				return nil, fmt.Errorf("subbot %q: %w: the routing policy of root run %q cannot be read, so child bot %q cannot fold it: %w", req.Source, store.ErrChildParentUnreadable, msg.RunID, childBotID, lerr)
+			}
+			root = &subbotRoot{policy: rootRun.LLMRoutePolicy, launchRows: runview.SubbotRootLaunchRows(rootRun, runLogger)}
+		}
+		childRows, err := runview.FoldForSubbotChild(childWf, root.policy, root.launchRows, childBot, msg.Permission, runLogger)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
+		}
+		// The launch's credential walk reads no subbot child's site (a subbot
+		// node is unattributed to it), so a fold that puts a child's site on
+		// the gateway seals the team's gateway key only when a route the walk
+		// reads uses it too, or on a runner pool. Without that key in the
+		// run's sealed credentials the child's gateway call rides the runner's
+		// environment gateway: said here, where it happens.
+		if pinned := gatewayPinnedSites(childWf, childRows); len(pinned) > 0 {
+			if creds, _ := secrets.CredentialsFromContext(ctx); creds.APIKeyForRoute(secrets.ProviderOpenAICompatible) == "" {
+				runLogger.Warn("subbot %q (bot %q): the routing fold puts site %s on the OpenAI-compatible gateway, but the launch's credential walk seals no gateway key for a subbot child and the run's sealed credentials hold none — the call rides the runner's environment gateway (a parent route on the gateway, or a runner pool, seals the team's key)", req.Source, childBotID, strings.Join(pinned, ", "))
+			}
+		}
 		childRunID, err := store.GenerateRunID()
 		if err != nil {
 			return nil, err
 		}
-		runview.RecordSubbotChild(ctx, r.cfg.Store, req, childRunID, runLogger)
 
 		// The child runs under the parent's message — same credentials, same
-		// sandbox decision, same pins — as its own run: the doc the engine
-		// creates below is the child's, linked to the parent.
+		// sandbox decision, same run-level stamps — as its own run: the doc
+		// the engine creates below is the child's, linked to the parent, and
+		// its override rows are its own fold.
 		child := *msg
 		child.RunID = childRunID
 		child.ParentRunID = msg.RunID
-		child.BotID = runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath)
+		child.BotID = childBotID
+		child.ModelOverrides = wireModelOverrides(childRows)
 		child.WorkflowHash = hash
 		child.Vars = req.Vars
 		child.Resume = nil
@@ -243,22 +326,66 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			childContext.Workflow = store.WorkflowContext{}
 			childContext.Lineage = store.LineageContext{}
 		}
-		childContext = runview.ResolveExecutionContext(ctx, r.cfg.Store, childRunID, runview.LaunchSpec{
+		resolvedContext, contextErr := runview.ResolveExecutionContext(ctx, r.cfg.Store, childRunID, runview.LaunchSpec{
 			FilePath:         childPath,
 			WorkDir:          req.WorkDir,
 			ParentRunID:      req.ParentRunID,
 			ParentNodeID:     req.NodeID,
 			ExecutionContext: childContext,
 		}, childWf, hash, store.ContextPolicyLegacy, "")
+		if contextErr != nil {
+			return nil, contextErr
+		}
+		childContext = resolvedContext
 		childContext.LaunchSurface = "runner-subbot"
 		child.ExecutionContext = childContext
 
+		if parentCtx, _, err := store.LoadRunWithValueFormat(ctx, r.cfg.Store, req.ParentRunID); err == nil {
+			ctx = parentCtx
+		} else if !errors.Is(err, store.ErrRunNotFound) {
+			return nil, err
+		}
+		lease, err := runview.AcquireSubbotLease(ctx, r.cfg.Store, req.ParentRunID, childRunID, runview.SubbotLeaseOptions{HeartbeatInterval: r.cfg.HeartbeatInterval, OnRefreshError: func(err error) {
+			if r.cfg.Metrics != nil {
+				r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
+			}
+			r.cfg.Logger.Error("runner: subbot child lease lost: %v", err)
+		}})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = lease.Release() }()
+		invocation, err := lease.PrepareInvocation(lease.Context, r.cfg.Store, store.RunCreateSpec{ID: childRunID, WorkflowName: childWf.Name, Inputs: req.Vars, Status: store.RunStatusRunning})
+		childValueCtx := ctx
+		if invocation.Context != nil {
+			childValueCtx = invocation.Context
+		}
+		if err != nil {
+			return nil, runtime.RetirePreparedRun(childValueCtx, r.cfg.Store, invocation, err)
+		}
+		engineHandoff := false
+		defer func() {
+			if !engineHandoff {
+				retErr = runtime.RetirePreparedRun(childValueCtx, r.cfg.Store, invocation, retErr)
+			}
+		}()
+		runview.RecordSubbotChild(ctx, r.cfg.Store, req, childRunID, runLogger)
+
+		parkCtx, err := runview.SubbotParkContext(ctx, invocation)
+		if err != nil {
+			return nil, err
+		}
+
 		// The child's own run.log — the studio's per-node Logs tab reads the
 		// CHILD's persisted log, and the parent's logger would fold every
-		// line into the parent's. Same shape as the parent's writer.
-		childLogger := runLogger
+		// line into the parent's. Same shape as the parent's writer, and a
+		// FORK either way: a subbot is a run of its own, with its own guard,
+		// and buildExecutor sets that guard on the handle it is given — on
+		// the parent's handle it would replace the PARENT's matcher with a
+		// child's, which holds other values (iterion#2822).
+		childLogger := runLogger.WithOwnRedactor()
 		if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
-			idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+			idCtx := store.WithIdentity(context.WithoutCancel(childValueCtx), msg.TenantID, msg.OwnerID)
 			seed, serr := ls.RunLogSize(idCtx, childRunID)
 			if serr != nil {
 				runLogger.Warn("subbot %s: seed log offset: %v — starting at 0", childRunID, serr)
@@ -267,23 +394,31 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			defer func() { _ = w.Close() }()
 			r.registerLogWriter(childRunID, w)
 			defer r.unregisterLogWriter(childRunID)
-			childLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
+			childLogger = childLogger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 		}
 
-		// The child works in the parent's effective workdir when the parent
-		// passed one, else the parent's own. Resolved before the executor so
-		// the child's fallback screen probes the directory its engine gets
-		// (runtime.WithWorkDir below), not the pod's cwd.
-		childWorkDir := req.WorkDir
-		if childWorkDir == "" {
-			childWorkDir = workDir
-		}
+		// childWorkDir was resolved before the compile, so the {{workspace}}
+		// placeholders and the engine option below name the same tree.
 
-		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childWorkDir, childLogger, nil)
+		// The child's rotation loops register on the CHILD's guard (#2756):
+		// the handle is created before buildExecutor fills it.
+		childGuard := &runSecretGuard{}
+		childExec, childUsage, err := r.buildExecutor(childValueCtx, &child, childWf, childWorkDir, childLogger, nil, childGuard)
 		if err != nil {
 			return nil, err
 		}
-		defer r.recordOrgSpend(ctx, &child, childUsage)
+
+		childClosed := false
+		closeChild := func() {
+			if childClosed {
+				return
+			}
+			childClosed = true
+			closeExecutor(childExec)
+		}
+		defer closeChild()
+
+		defer r.recordOrgSpend(childValueCtx, &child, childUsage)
 
 		// Capture what the child emits — the terminal-node output a
 		// contractless subbot returns, plus the per-node outputs a contract's
@@ -295,7 +430,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		// secrets refresh — a child that outlives a token (a per-lot child
 		// of a supervisor runs for hours) would otherwise push with a dead
 		// one, exactly the parent's #99.
-		sbObsCtx, stopSbObs := context.WithCancel(ctx)
+		sbObsCtx, stopSbObs := context.WithCancel(childValueCtx)
 		defer stopSbObs()
 		defer r.unregisterSandboxRun(childRunID)
 
@@ -307,7 +442,8 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithWorkDir(childWorkDir),
 			runtime.WithSandboxRunObserver(r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{
 				runID: childRunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
-				secretRefs: r.sandboxFileSecretRefs(ctx, childWf),
+				secretRefs:  r.sandboxFileSecretRefs(ctx, childWf),
+				secretGuard: childGuard,
 				// No second checkpoint loop: a shared child is handed its
 				// parent's sandbox, and the parent's loop already preserves
 				// the one workspace they both work in.
@@ -322,19 +458,41 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// The wire carries these (child := *msg); the DOCUMENT is built
 			// from a named field list and would otherwise read as trusted.
 			runtime.WithTrust(child.Trust, child.RepoSHAExpected),
+			// The tier the parent's launch resolved (#1959): the child
+			// message is a struct copy of the parent's, so the fact already
+			// rides the wire — this stamps the child's DOCUMENT, whose named
+			// field list would otherwise read as the operator's own and
+			// disarm the floor for exactly the nested launches a team bot
+			// controls the text of.
+			runtime.WithBotSourceTier(child.BotSourceTier),
 			// Same trap for the frozen pool stamp: the child's document must
 			// name the pool its message claims. Nothing compares the pair
 			// YET — D4's admission guard will, and a doc left unmapped would
 			// fail every subbot node of a pool-team run the day it ships.
 			// (The runner MAIN loop will need the same option then.)
 			runtime.WithRunnerPool(child.RunnerPool),
+			// Same carriage for the frozen gateway stamp: the child's
+			// document must name the credential that funds it, replayed from
+			// the wire, never re-derived at the child.
+			runtime.WithContentBoundary(child.ContentBoundary),
 			runtime.WithParentNodeID(req.NodeID),
 			// The node's `isolated:` assertion: the child keeps a worktree of
 			// its own instead of working in the tree this request lends it.
 			runtime.WithIsolatedChild(req.Isolated),
+			// The node's landing intent: the child's run doc records it at
+			// creation (the same block the resume replay reads), and the
+			// child's own worktree finalization performs the landing. The
+			// in-place shapes are refused above (the child's own
+			// `worktree: none`, an adopted parent sandbox, a store with no
+			// filesystem root): no child ever runs here without a worktree
+			// of its own, so a recorded intent always has a finalization to
+			// fire it.
+			runtime.WithAutoMerge(req.AutoMerge),
+			runtime.WithMergeInto(req.MergeInto),
+			runtime.WithMergeStrategy(req.MergeStrategy),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.
-			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
+			runtime.WithSubbotRunner(r.subbotRunnerUnder(root, &child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
 			runtime.WithEventObserver(childUsage.observe),
 			runtime.WithOnNodeFinished(func(_ context.Context, runID, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
@@ -346,6 +504,27 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if req.ParentSandbox != nil {
 			opts = append(opts, runtime.WithSharedSandbox(req.ParentSandbox))
 		}
+		// The sandboxed host-MCP transport (#2632): a child with a sandbox of
+		// its own gets the listener; a child sharing the parent's sandbox
+		// inherits the endpoint through WithSharedSandbox. The per-node token
+		// comes from buildExecutor's BoardRegister (executorSpec), pinned to
+		// the child's tenant via its message copy. Scoped WITHOUT the
+		// connector facade, like the main loop's engine: the pod's mux
+		// serves board + runs only.
+		if r.boardMCP != nil {
+			opts = append(opts, runtime.WithBoardMCPScoped(r.boardMCP, false))
+		}
+		// The child's document stamps the rows it runs with, as a launch's
+		// does: the studio shows them and a resume of the child replays them.
+		if len(childRows) > 0 {
+			opts = append(opts, runtime.WithModelOverrides(runview.RunModelOverrides(childRows)))
+		}
+		// …and what the root froze: a resume of the child on its own replays
+		// the root's providers allowlist and seals under the root's policy, as
+		// the child's first pass ran under the root's message, and the
+		// child's own children fold the root's snapshot and launch rows when
+		// the resumed child is the top of their tree.
+		opts = append(opts, runtime.WithLLMRoutePolicy(root.policy), runtime.WithLaunchModelOverrides(root.launchRows))
 		// One bundle identity: the engine receives exactly what compiled.
 		opts = append(opts, runtime.WithBundle(childBundle))
 		// Plugin/library skills the LAUNCHING instance resolved: the pod's
@@ -359,30 +538,13 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		r.registerRunEngine(childRunID, childEng)
 		defer r.unregisterRunEngine(childRunID)
 
-		childCtx, childCancel := context.WithCancelCause(context.WithValue(ctx, subbotDepthKey{}, depth+1))
-		childLock, err := r.cfg.Store.LockRun(childCtx, childRunID)
-		if err != nil {
-			childCancel(nil)
-			closeExecutor(childExec)
-			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
-		}
-		// The child's lease is the orphan sweeper's liveness signal, exactly
-		// like the parent's: on the cloud store LockRun is a NATS-KV entry
-		// with a 60 s TTL that only a refresher keeps alive. The parent's
-		// heartbeat refreshes the PARENT's lease; without one of its own the
-		// child reads dead at T+60 s, the sweeper flips it failed_resumable,
-		// and the reaper deletes its sandbox pod mid-flight.
-		hbDone := make(chan struct{})
-		errtrack.Go("runner.subbot.heartbeat", func() { r.childLeaseHeartbeat(childCtx, childCancel, childLock, hbDone) })
+		childCtx := context.WithValue(childValueCtx, subbotDepthKey{}, depth+1)
 		runErr := func() error {
-			defer func() { _ = childLock.Unlock() }()
-			defer func() {
-				childCancel(nil)
-				<-hbDone
-			}()
-			return childEng.Run(childCtx, childRunID, req.Vars)
+			defer func() { _ = lease.Release() }()
+			defer closeChild()
+			engineHandoff = true
+			return childEng.RunPrepared(childCtx, childRunID, req.Vars, invocation)
 		}()
-		closeExecutor(childExec)
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run; that is not
 			// a parent failure. Park until the operator answers and the child
@@ -393,7 +555,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 				// stop signal), and a park on it returns at once with
 				// `context canceled` — a gate meant to wait for a human read
 				// as a parent failure 20 ms in.
-				out, aerr := runview.AwaitSubbotTerminal(ctx, r.cfg.Store, childRunID, runLogger)
+				out, aerr := runview.AwaitSubbotTerminal(parkCtx, r.cfg.Store, childRunID, runLogger)
 				if aerr == nil {
 					runview.ClearSubbotChild(ctx, r.cfg.Store, req)
 				}
@@ -410,46 +572,45 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 	}
 }
 
+// gatewayPinnedSites lists, quoted and in model.CallSites order, the
+// child's model-calling sites the fold puts on the OpenAI-compatible
+// gateway: a leg of the site that, under the folded rows, sends the gateway
+// hint (a chain's step included) or a gateway model the same leg of the
+// authored site — the site under no row — does not send. The judge is the
+// resolution at the site, as dispatch reads it, never a row alone: a row
+// another row outranks there decides nothing and names nothing, and a site
+// authored on the gateway that no row moves stays the authored workflow's.
+func gatewayPinnedSites(wf *ir.Workflow, rows []runview.ModelOverrideEntry) []string {
+	if wf == nil || len(rows) == 0 {
+		return nil
+	}
+	authored := map[string]model.CallSite{}
+	for _, s := range model.CallSites(model.RouteView{Workflow: wf}, nil) {
+		authored[s.ID] = s
+	}
+	gatewayHint := func(h string) bool {
+		return strings.EqualFold(strings.TrimSpace(h), llmroute.ProviderOpenAICompatible)
+	}
+	var out []string
+	for _, s := range model.CallSites(model.RouteView{Workflow: wf, Overrides: runview.ModelOverridesFromRun(runview.RunModelOverrides(rows))}, nil) {
+		was := authored[s.ID]
+		for i, leg := range s.Legs {
+			var wasHint string
+			if i < len(was.Legs) {
+				wasHint = was.Legs[i].Provider
+			}
+			spec := s.LegSpec(i, s.Model)
+			if (gatewayHint(leg.Provider) && !gatewayHint(wasHint)) || (llmroute.IsGatewayModel(spec) && spec != was.LegSpec(i, was.Model)) {
+				out = append(out, strconv.Quote(s.ID))
+				break
+			}
+		}
+	}
+	return out
+}
+
 func closeExecutor(exec runtime.NodeExecutor) {
 	if c, ok := any(exec).(io.Closer); ok {
 		_ = c.Close()
-	}
-}
-
-// childLeaseHeartbeat refreshes a subbot child's run lease while its engine
-// runs — the child half of Runner.heartbeat, without the JetStream delivery
-// (a child has none: it rides its parent's). A refresh failure cancels the
-// child with ErrRunInterrupted so it unwinds to failed_resumable before the
-// lease lapses, rather than letting a sibling pod's redelivery of the parent
-// find two writers on the child's state.
-func (r *Runner) childLeaseHeartbeat(ctx context.Context, cancel context.CancelCauseFunc, lock store.RunLock, done chan<- struct{}) {
-	defer close(done)
-	natsLock, ok := lock.(*natsq.Lock)
-	if !ok {
-		return // no-op lock or non-NATS provider — nothing to refresh
-	}
-	interval := r.cfg.HeartbeatInterval
-	if interval <= 0 {
-		interval = 20 * time.Second
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if err := natsLock.Refresh(ctx); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return
-				}
-				if r.cfg.Metrics != nil {
-					r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
-				}
-				r.cfg.Logger.Error("runner: subbot child lease refresh failed: %v — cancelling the child (resumable) to avoid split-brain", err)
-				cancel(runtime.ErrRunInterrupted)
-				return
-			}
-		}
 	}
 }

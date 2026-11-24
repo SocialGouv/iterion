@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRightIcon, DownloadIcon } from "@radix-ui/react-icons";
 
 import { getReviewScope, workspaceFileURL, type RunFile } from "@/api/runs";
+import { useRunBirthsVersion } from "@/hooks/useRunBirthsVersion";
 import FileDiffDialog from "@/components/Runs/FileDiffDialog";
 import { Dialog, InlineBanner, Spinner, VideoPreview } from "@/components/ui";
 
@@ -34,13 +35,6 @@ const STATUS_LABEL: Record<string, string> = {
   D: "deleted",
   R: "renamed",
 };
-
-function statusTone(status: string): string {
-  if (status.startsWith("A")) return "text-success-text";
-  if (status.startsWith("D")) return "text-danger-text";
-  if (status.startsWith("R")) return "text-accent-text";
-  return "text-fg-subtle";
-}
 
 function isMediaKind(kind: ProducedFileKind): boolean {
   return kind === "image" || kind === "audio" || kind === "video";
@@ -210,14 +204,22 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
                         // streams the LIVE file, which does exist.
                         disabled={!!f.uncaptured && !media}
                         onClick={() => openFile(f)}
-                        className="flex w-full min-w-0 items-baseline gap-2 rounded px-1 py-0.5 text-left text-caption enabled:hover:bg-surface-hover disabled:cursor-default"
+                        className="flex w-full min-w-0 items-baseline gap-2 rounded px-1 py-0.5 text-left text-caption enabled:hover:bg-surface-2 disabled:cursor-default"
                         title={
                           media
                             ? `Play ${producedKindLabel(kind).toLowerCase()}: ${f.path}`
                             : `View the diff of ${f.path}`
                         }
                       >
-                        <span className={`w-16 shrink-0 ${statusTone(f.status)}`}>
+                        <span className={`w-16 shrink-0 ${
+                          f.status.startsWith("A")
+                            ? "text-success"
+                            : f.status.startsWith("D")
+                              ? "text-danger"
+                              : f.status.startsWith("R")
+                                ? "text-accent-text"
+                                : "text-fg-subtle"
+                  }`}>
                           {STATUS_LABEL[f.status] ?? f.status}
                         </span>
                         {media ? (
@@ -302,13 +304,18 @@ function WorkspaceMediaDialog({
   onClose: () => void;
 }) {
   const kind = classifyProducedFile(file.path);
+  // The media URLs carry the run's expected birth once the page knows it:
+  // rebuilt when it is learned.
+  const birthsVersion = useRunBirthsVersion();
   const src = useMemo(
     () => workspaceFileURL(runId, file.path, { gate }),
-    [runId, file.path, gate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runId, file.path, gate, birthsVersion],
   );
   const downloadHref = useMemo(
     () => workspaceFileURL(runId, file.path, { gate, download: true }),
-    [runId, file.path, gate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runId, file.path, gate, birthsVersion],
   );
   const [loadError, setLoadError] = useState<string | null>(null);
 

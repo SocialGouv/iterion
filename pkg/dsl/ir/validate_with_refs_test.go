@@ -267,13 +267,14 @@ workflow w:
 	}
 }
 
-// C151: `{{attachments.<name>}}` in a `with:` value is refused —
-// same rule as C150, one file per site. Mutation toward the
-// forbidden alternative: move the reference to a tool's `command:`
-// (a real execution sink the runtime resolves) — C151 must disappear.
-// (A compute expression is NOT a sink for attachments either;
-// `TestC151AttachmentRefInComputeExprIsRefused` guards that arm.)
-func TestC151AttachmentRefInWithIsRefused(t *testing.T) {
+// C151 used to refuse `{{attachments.<name>}}` in a `with:` value —
+// resolveMapping had no attachments arm and rendered it to nil. Since
+// #2864 resolveRef resolves the namespace with the prompt body's
+// sub-field rule, so a `with:` value, an emit payload and a fail
+// `message:` carry the reference like any other; the refusal arm that
+// remains is the compute `expr:` one (`pkg/dsl/expr` has no attachments
+// resolver), guarded by `TestC151AttachmentRefInComputeExprIsRefused`.
+func TestC151AttachmentRefInWithIsAccepted(t *testing.T) {
 	src := `dsl: 2
 
 attachments:
@@ -304,32 +305,11 @@ workflow w:
   pass -> done
 `
 	got := compileText(t, src)
-	if !anyDiag(got, "C151") {
-		t.Fatalf("C151 did not fire on `{{attachments.spec}}` in a with-mapping:\n%v", got.Diagnostics)
+	if anyDiag(got, "C151") {
+		t.Fatalf("C151 still fires on `{{attachments.spec}}` in a with-mapping — resolveRef resolves the namespace there since #2864:\n%v", got.Diagnostics)
 	}
-	// Mutation: move the reference to a tool `command:` — a real
-	// execution sink; C151 must disappear.
-	sinkOK := `dsl: 2
-
-attachments:
-  spec: file
-
-schema kout:
-  ok: bool
-
-tool kick:
-  command: ` + "`echo {{attachments.spec}}`" + `
-  output: kout
-
-workflow w:
-  worktree: none
-  sandbox: none
-  entry: kick
-  kick -> done
-`
-	mutated := compileText(t, sinkOK)
-	if anyDiag(mutated, "C151") {
-		t.Fatalf("C151 fires on a tool command sink — the rule is over-broad:\n%v", mutated.Diagnostics)
+	if got.HasErrors() {
+		t.Fatalf("a with-mapping carrying an attachments ref must compile clean:\n%v", got.Diagnostics)
 	}
 }
 

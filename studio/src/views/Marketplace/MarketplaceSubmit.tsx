@@ -5,6 +5,7 @@ import type { MarketplaceScope } from "@/api/marketplace";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { HiddenFileInput } from "@/components/shared/HiddenFileInput";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
 
@@ -272,11 +273,11 @@ export function MarketplaceSubmit({
                   Import a packaged <code className="text-fg-default">.botz</code> bundle
                   directly into this workspace's <code className="text-fg-default">.botz/</code>.
                 </p>
-                <input
-                  ref={fileRef}
-                  type="file"
+                {/* Driven by the Import button beside it, never reached
+                    directly — out of the a11y tree, not just display:none. */}
+                <HiddenFileInput
+                  inputRef={fileRef}
                   accept=".botz"
-                  className="hidden"
                   onChange={(e) => void handleFile(e)}
                 />
                 <Button

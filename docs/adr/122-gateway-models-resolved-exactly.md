@@ -123,3 +123,51 @@ The wire id is untouched: what the gateway serves is what it receives.
 ## Amendment 2026-10-21 — the gateway may be a bundle credential
 
 From #2005 PR-C' on ([ADR-131](131-tenant-gateway-credential.md) §7), §6's "the gateway is env-funded … never to a bundle credential" is superseded for a run whose team holds an `openai_compatible` key: the key and its base URL are sealed into the run bundle and served before the environment, in-process and in the sandbox. The deployment's `OPENAI_COMPATIBLE_*` environment stays the path of a run that holds no such key (a laptop, a sovereign pool). The resolution order of §1 (operator table, catalog provider) is unchanged: the catalog stays operator-wide. Until PR-C' lands, §6 holds for every run, gateway key stored or not.
+
+## Amendment 2026-10-29 — the snapshot carries the capability flags (schema 2)
+
+§4's **Content** took the snapshot to hold the flattened models.dev table with its *four numeric fields*. It
+holds the three capability flags beside them — `reasoning`, `tool_call`, `temperature` — each an OPTIONAL
+boolean: a flag the aggregator states crosses with its verdict, a flag it does not state is absent from the
+line and reads unknown. ADR-093 §5 ("unknown capability flags are omitted, never invented") therefore holds
+word for word; what changes is that models.dev's *stated* verdicts now survive the trip offline.
+
+The reason is measured (#2842, from the adversarial round on #2103): models.dev publishes `tool_call:false`
+for 1053 of its 8918 entries, and under the numbers-only schema an offline or cold-start replica answered
+every flag unknown — so a published refusal arrived as a warning, and the verdict depended on whether the
+live table happened to be loaded.
+
+What that stated false is worth is measured too, and it is not uniform. Of the 2583 bare model names in the
+table, 176 have providers that DISAGREE on `tool_call`, and 301 of the 1053 `false` rows sit under such a
+name: `llmgateway/claude-sonnet-5` states false where 42 other publishers of `claude-sonnet-5` state true,
+`chutes/zai-org/glm-5.3` against 88. For those ids the flag is a gap in one publisher's metadata rather than
+knowledge that the model lacks tools — and a reader renders `tool_call:false` as a BLOCKING "this model
+cannot call tools" (`studio/src/api/models.ts`) where it rendered a warning. The row is nonetheless served
+exactly as published: the snapshot is keyed `provider/model` and a gateway id resolves an EXACT key (§1.2),
+so a publisher's verdict never answers for another's — averaging them is the bare-id index's business
+(`consensusSpec` nils a flag the publishers contest), and the gateway does not read it.
+
+`OPENAI_COMPATIBLE_MODELS` is therefore load-bearing here, not an exception for exotic deployments: its
+entry outranks both models.dev tiers, flags included, so a gateway that really does serve tools on a
+contested id is declared `"tool_call": true` there and answered. What bounds the cost meanwhile: the live
+tier carries the same rows, so an online replica already refused; the reader's level is a red alert and not
+a hard engine gate; and iterion's own routes (`scaleway/glm-5.2`, `glm-5.3`, `gpt-oss-120b`) all publish
+`tool_call:true`.
+
+The decision above is untouched: exact resolution, whole-entry precedence, provenance that travels, and the
+operator table outranking both models.dev tiers (flags included).
+
+Schema 1 is **not** kept loadable. The snapshot is embedded, so the file and its reader ship in the same
+binary; a mismatch is reachable only by hand-editing the file, which the loader refuses by name
+("regenerate with `task models:snapshot`"). That refusal is the line this clause rests on, so it carries a
+witness: `TestLoadFrom_RefusesWhatTheBinaryCannotRead` drives the loader's own seam (`loadFrom`) over a
+schema-1 file, an unreadable header and an unreadable line, and asserts that a refused file answers for no
+model at all. Deleting the schema verdict in the production code turns it red — before the seam existed, the
+same deletion left the suite green and served the schema-1 rows with every flag reading unknown, which is
+#2842. The generator's changelog reads through the same parser as
+production (`modelspecs.ReadSnapshot`) and compares entries by VALUE, flags included — the Consequences'
+"the committed diff is the review" needs the changelog to be able to SEE a flag flip.
+
+Measured cost: the embedded file goes from 1 132 168 to 1 694 930 bytes, so the Consequences' "about 0.9 MB"
+becomes about 1.6 MB of embedded JSON. The gzipped-blob alternative stays rejected for the reason given
+above — a reviewer reads the committed diff.

@@ -317,7 +317,7 @@ func TestARefusalARetryRepeatsIsReplayedOnce(t *testing.T) {
 			w.f.limitedUntil = time.Time{}
 			if tc.err != nil {
 				w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return nil, tc.err }
-			} else if err := w.s.forgeConnections.Delete(context.Background(), "conn1"); err != nil {
+			} else if err := w.s.forgeConnections.Delete(context.Background(), "team1", "conn1"); err != nil {
 				t.Fatal(err)
 			}
 			replays := 0

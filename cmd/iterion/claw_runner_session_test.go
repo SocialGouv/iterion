@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // The launcher's session_replay snapshot has to reach the model: it is the

@@ -4,8 +4,170 @@ Reactive security + alignment guard for automated dependency-update PRs
 (Dependabot / Renovate): audit the bump (supply-chain + CVE), align the
 consuming code, prove the tree with the deterministic verify gate,
 commit onto the PR branch, post the verdict comment. Never merges past a
-check — and only ever the commit it audited. See
+required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
+
+## 2026-11-16 — 2.12.3: a mis-transcribed commit id no longer holds a good alignment red (buildkit-operator#65, live)
+
+- Status: **fixed, live pending.** On buildkit-operator#65 the `/vetty` run
+  `01a1e07f` ended `hold_lost_alignment` on a push git itself certified: the
+  commit agent dropped two hex digits of the pushed sha (40 hex became 38),
+  and `commit_probe` refused every id that does not resolve to the workspace
+  head ("the commit report names …, which is not the workspace head"). The
+  synchronize relaunch reread git and caught it, but a PR without that
+  relaunch stays red until a manual `/vetty`.
+- Class: the refusal decided from a value the LLM transcribed. An id that
+  cannot be a commit id in any repository — not 40 hex for sha-1, not 64 for
+  sha-256 — is a transcription, not a fact: `commit_probe` now sets it aside
+  like a report without a commit id, and the parents check + `git ls-remote`
+  remain the evidence. A full-width id the workspace cannot resolve names a
+  commit the workspace does not hold, and still refuses — the foreign-report
+  tripwire keeps its red.
+- Proof: three set-aside cases (the live 38-hex shape, 39 and 20 hex) and two
+  refusal cases (40 and 64 hex naming no commit the workspace holds) in the
+  commit_probe suite; the mutation restoring the strict refusal turns exactly
+  the three set-aside cases red with the live message, the bot file restored
+  byte-identical.
+
+## 2026-11-15 — 2.12.2: the baseline in a repository that ignores the mirror (buildkit-operator#65, live)
+
+- Status: **fixed, live pending.** 2.12.1 was rolled to iterion.cloud (v7.1.0)
+  and `/vetty` on buildkit-operator#65 ran it (run `01a1dfbb-046c`): audit
+  safe, `align` regenerated the two CRDs, and `verify_run` printed
+  `VERIFY BASELINE NOT BUILT: git add exited 1: The following paths are
+  ignored by one of your .gitignore files: .claude`. The repository ignores
+  `.claude`; `git add` exits 1 on an exclusion whose literal path its walk
+  classifies as ignored, the index correctly staged. The baseline was dropped,
+  as designed, loudly, and the drift gate read the alignment again
+  (`hold_unstable`).
+- The fix. The baseline's `git add` leaves such an exclusion unspelled, the
+  rule the engine's own staging gesture already follows
+  (`pkg/runtime` `stagingExclusions`, #1558).
+- Proof. A case on a repository that ignores `.claude` (bko's shape): the
+  baseline is built, both gate forms pass, the mirror stays out of it. Spelling
+  every exclusion again turns it red on "the alignment itself was read as
+  drift" — the live failure; the bench is 10/10.
+- The witness had missed it because its fixture did not ignore the mirror:
+  the one repository shape the deployment target has.
+
+## 2026-11-15 — 2.12.1: an alignment that is regenerated output was read as drift (buildkit-operator#65)
+
+- Status: **fixed, live pending.** The deterministic witnesses run the shipped
+  `verify_run` against a real repository; no live run yet on 2.12.1.
+- What the runs showed. buildkit-operator#65 bumps the `controller-gen` pin in
+  the Taskfile (controller-tools v0.21.0 → v0.23.0). The PR's CI was green;
+  Vetty held it `hold_unstable` twice after the 14/11 quota reset.
+  - Run `01a1db2f-794a` (head `7ac5d386`): `align` regenerated the two CRD
+    copies with the repo's own `task manifests` (the
+    `controller-gen.kubebuilder.io/version` annotation, plus a pre-existing
+    description drift); `align_probe` read them pending. `verify_build` wrote a
+    verify.sh mirroring CI's drift gate, and said itself that the gate could
+    only go green once the regeneration was committed. `verify_run` exited 1 on
+    `git diff --exit-code`: the gate compared against HEAD, and HEAD does not
+    carry the alignment until `commit`, which runs only after a green verify.
+    Any bump whose alignment touches a generated path, or any alignment at all
+    against an unscoped drift gate, could never pass.
+  - Run `01a1db97-dfbd` (head `118ae49d`): `verify_run` exited 5, MASKED EXIT
+    STATUS on a diagnostic `diff -u "$b" "$f" | head -40 >&2`. The rejection
+    says the script "is regenerated next pass", but it set no
+    `precheck_rejected`, so `fix_verify` never ran and the bump held as a red
+    build that had never been built.
+- The fix. `verify_run` runs the script on a VERIFY BASELINE — a local commit
+  of the aligned tree (HEAD plus every pending path but the tree noise), HEAD
+  detached onto it, the index matching it, the branch ref and the working tree
+  untouched, never pushed — and puts HEAD and the index back before it
+  answers (normal end, exception, SIGTERM; after a SIGKILL the next call
+  restores from the marker first; a failed restore holds red, exit 6; a
+  baseline found in HEAD's history with no marker — the scratch dir lost to a
+  hard kill, Revi R17f17b — holds red too, and is never built upon). A
+  masked exit status loops back to `verify_build` like a missing or an empty
+  script.
+- Proof. `TestDepUpdateGuardVerifyBaseline`: both gate forms pass when the
+  regeneration reproduces the alignment and fail when it departs from it; the
+  baseline's parent is the head the run read, align's new file is in it, the
+  tree noise is not; HEAD, the branch ref and the index come back after a
+  normal end, a SIGTERM and a SIGKILL; a baseline stranded without its marker
+  holds red and HEAD stays on it. Nine mutants, each red on its own case: no
+  baseline (the #65 failure, verbatim), no SIGTERM handler, no `atexit`, no
+  restore-first, a failed restore reading green, the noise in the baseline,
+  the index left on the old tree, a masked exit not looping back, an orphaned
+  baseline not checked.
+
+## 2026-11-11 — 2.12.0: the gate follows a pure rebase, and re-arms on UNSTABLE (#3128) — no live run yet
+
+- Status: **structurally validated, live pending.** Deterministic witnesses
+  only; no run on a real pull request. On buildkit-operator `review_on_sync`
+  stays off until the operator ships the 2.12.0 bundle — until then nothing
+  launches Vetty on a push, so `continuity` never runs there.
+- What changed, and why. Every rebase of a gated Renovate PR bought a full LLM
+  audit, and an audit in flight when the rebase landed was refused at publish
+  for the moved head (the reconciler then painted "review refused to certify …
+  comment the bot's command" red, and a human posted `/vetty`). The identical
+  change carried no machine-readable verdict a later run could find.
+  - `continuity` (tool, first decision after `prepare`): change identity
+    contract v1 (`patch-id --verbatim` of merge-base..head, diff knobs and path
+    order pinned, folded with the modes, status and path of every changed
+    entry and with `base_ref`), then the gate history read from the forge —
+    the reviews over GraphQL with their edit record, the last-line
+    `vetty-gate/v1` marker each carries, and the status for the gate context
+    on every sha they name and on the head, with its creator. Unanimity veto,
+    whoever wrote the marker (a red on the head included); a review of this
+    App edited after it was created, or a stamped status another identity
+    wrote, vetoes too (this App is told by user id alone); a fresh eligible
+    green on the head → `already_gated` → `continuity_standby` →
+    `arm_automerge`; a fresh eligible green elsewhere, on a head the base
+    requires a check other than the gate on → the new verdict `carried`;
+    anything else, a moved head or a gate-only base included → the full
+    audit.
+  - `post_feedback` stamps ` · pid1:<id>` on the note and writes the marker as
+    the review's last line; it repins a green verdict onto a head that moved by
+    a pure rebase (never a hold), the new head's identity read from the forge
+    in a scratch repository and its gate history vetoing, then arms it; the
+    `continuity` and `carry_max_age_h` switches govern it as they govern the
+    carry. A carry `continuity` decided is read again at publish time and
+    withdrawn (nothing published) on a hold since, an edit, a foreign stamp,
+    an origin past `carry_max_age_h` or a gate-only base.
+  - `commit_probe` reads the candidate from git and the push evidence from
+    `git ls-remote` of the repository `pr_url` names (system and global config
+    cut off): one commit on the audited head, its parents read with replace
+    refs, grafts and the commit-graph file off, a report with no commit id
+    set aside (a pushed alignment the agent left unreported no longer pins the
+    verdict to the head it moved away from).
+  - `arm_automerge` re-reads a refused arming: CLEAN as before, UNSTABLE by
+    the check rollup's `isRequired` and `automerge_on_unstable` (merge, the
+    default, for every green verdict alike; nothing on a base that requires
+    no check); an arming GitHub accepts merges once the required checks pass;
+    a repository that does not allow auto-merge gets no merge in its place. A
+    `carried` head is armed or merged only where the base requires a check
+    other than the gate on it.
+- Measured, on git 2.43 and 2.55 in scratch repositories (the witnesses in
+  `bots/dep_update_guard_continuity_test.go`): a base move in another file or
+  15 lines away keeps the id; a base edit on a context line changes it; a YAML
+  re-indent changes it (it does not under `--stable`); other binary bytes
+  change it; a repository `diff.orderFile` does not; another `base_ref` does.
+  patch-id alone gave two different changes the same id whenever the entry
+  after a binary had no `---`/`+++` lines (a mode change, an empty file, a
+  second binary) — Renovate's gradle-wrapper bump, a jar plus `gradlew`'s mode,
+  is that shape — so the raw listing of paths and modes is folded in.
+- What the carry does NOT certify: a build of the new tree. The note says the
+  base is built by the repo's CI, and that is made true: a carry, a repin and
+  an arming of a carried head each need a check the base requires other than
+  the gate on that head.
+- Guarantee test: `TestDepUpdateGuardContinuityGuarantee_AdversarialForge`
+  drives the real deterministic nodes through the compiled graph against a
+  stateful forge (reviews with edits, statuses with creators, the rollup,
+  auto-merge, the publish endpoint, git over TLS) across sequences of heads:
+  pure-rebase carry with no model node; a hold on any head vetoing later
+  carries and repins in both finish orders, and withdrawing a carry decided
+  before it; edited App reviews; foreign status creators; differing
+  identities; a gate-only base at the CLEAN and UNSTABLE doors; the age from
+  the original audit across a chain and a resumed run; the token off argv and
+  out of every recorded output.
+- Lessons for next run: measure, per merge, full (LLM) runs against carry runs,
+  the publish `gate_error` "head moved" refusals, and `/vetty` deliveries; read
+  the bko delivery log for synchronize deliveries once `review_on_sync` is on.
+  The sandbox image's git must stay ≥ 2.39 (`--verbatim`); an older one carries
+  nothing and says why in the reason.
 
 ## 2026-09-17 — profile 2: a manifest-only bump judged safe, nothing to align, nothing to commit (run 01a0af9e-9697)
 

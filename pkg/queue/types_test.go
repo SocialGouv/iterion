@@ -148,6 +148,49 @@ func TestRunMessage_ValidateSchemaMismatch(t *testing.T) {
 	}
 }
 
+// TestRunMessage_AnUntrustedMessageOlderThanTheForkSubjectParks: a message
+// below ForkAuthorSubjectSchemaVersion cannot carry the fork author's
+// metering subject, so one carrying a fork run's trust — a v28 server replica
+// republishing, mid-rollout, a fork run an upgraded replica created — would
+// run with the author's dollar bound unenforced. Each row is the JSON a
+// publisher of that version writes, decoded and validated the way the
+// runner's Delivery.Decode does; the untrusted rows park as a version
+// mismatch (ErrSchemaVersion: transient, a resume from an upgraded server
+// recovers the run), the trusted v28 row and the v29 fork row run.
+//
+// Mutation: drop the rule from Validate → the three untrusted pre-v29 rows
+// validate.
+func TestRunMessage_AnUntrustedMessageOlderThanTheForkSubjectParks(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		body   string
+		parked bool
+	}{
+		{"a v28 fork resume", `{"v":28,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"fork"}`, true},
+		{"a v27 fork resume", `{"v":27,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"fork"}`, true},
+		{"a v28 message of a trust this binary does not know", `{"v":28,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"vendor"}`, true},
+		{"a trusted v28 message (the control)", `{"v":28,"run_id":"r","workflow_name":"w","ir_compiled":{}}`, false},
+		{"a v29 fork message naming its author (the control)", `{"v":29,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"fork","fork_author_subject":"forkauthor|t1|github|4242"}`, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var m RunMessage
+			if err := json.Unmarshal([]byte(row.body), &m); err != nil {
+				t.Fatal(err)
+			}
+			err := m.Validate()
+			if !row.parked {
+				if err != nil {
+					t.Fatalf("Validate = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrSchemaVersion) {
+				t.Fatalf("Validate = %v, want %v — the run parks for a resume, never runs with the author's bound unenforced", err, ErrSchemaVersion)
+			}
+		})
+	}
+}
+
 func TestRunMessage_ValidateRequiresRunID(t *testing.T) {
 	m := &RunMessage{
 		V:            SchemaVersion,
@@ -271,8 +314,48 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// dropped, a stale runner expands the braced environment forms of a body
 	// the author declared verbatim — the engine answering a read the body
 	// means for its own shell, on a runner and only there.
-	if SchemaVersion != 27 {
-		t.Errorf("SchemaVersion = %d, want 27 (bump intentionally)", SchemaVersion)
+	// v=27 carries BudgetOverrides.DonorMaxCostUSD: dropped, a stale runner
+	// loses the absolute donor ceiling on exit grace and live raises.
+	// v=28 carries BotSourceTier (#1959): dropped, a stale runner honours a
+	// team-authored `sandbox: none` the operator isolation floor exists to
+	// neutralize — failing open, on the pod. MinSchemaVersion stays 27: the
+	// v27 publisher already stamps the tier on the run document, so the
+	// runner re-reads it from there instead of dropping the decision.
+	// v=29 carries ForkAuthorSubject (ADR-162 U6): dropped, a stale runner
+	// leaves the fork lane's per-contributor DOLLAR bound unenforced for
+	// the run's lifetime — a perimeter failing open, on the pod.
+	// MinSchemaVersion stays 27: no message below v29 is a fork run, so
+	// there is no old payload whose dropped subject loses an enforced
+	// bound.
+	// v=30 carries ContentBoundary's producer (ADR-131 §4): dropped, a stale
+	// runner lands vendor crossings on a team_gateway run's gateway nodes and
+	// runs its auxiliaries on the pod's environment — failing open, on the
+	// pod. MinSchemaVersion stays 27: the fence is the maximum that rises.
+	// v=31 carries `codemode:` inside the compiled IR (ADR-165): dropped, a
+	// stale runner runs the node without the tool its author asked for —
+	// failing quiet, on the pod, with the run still reported successful.
+	// MinSchemaVersion stays 27 because the maximum is what rises, NOT
+	// because no old message can carry codemode: a v30 message published by
+	// a v5.32.x server can, that release having compiled the attribute with
+	// only a warning. Such a message is inside the accept window, so the
+	// fence never sees it — an upgraded runner recompiles it, C339 refuses,
+	// and the run parks on the DLQ. The migration sentence on ADR-165 is
+	// what answers that, and this comment said the opposite until an
+	// adversarial round read both files.
+	// v32 adds the codemode BOUNDS to that same carrier. The fallback runs
+	// tighter rather than looser, which is the exemption's first condition
+	// but not its second: declared bounds carry an operator's choice (the
+	// additive-field rule's own "budget caps"), and a runner that drops them
+	// silently re-makes it. Hence a bump, and MinSchemaVersion still 27.
+	// v33 adds the LAUNCH-TIME codemode OVERRIDE (mode + bounds raise). The
+	// direction is v21's ambient_context one, not v32's: a runner that drops
+	// an explicit `off` runs the capability the operator asked AWAY — the
+	// knob failing open, the exact direction the rule exists to reject. A
+	// dropped bounds raise only lands tighter, but the off direction alone
+	// decides the bump. MinSchemaVersion still 27.
+	// v35 adds store_entries and store_bytes to compiled workflow and launch bounds.
+	if SchemaVersion != 35 {
+		t.Errorf("SchemaVersion = %d, want 35 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)
@@ -280,8 +363,12 @@ func TestSchemaVersionConstant(t *testing.T) {
 }
 
 // TestValidate_DualAcceptWindow pins the explicit compatibility window.
-// At v27 the bounds coincide: pre-v27 donor messages lack the ceiling needed
-// for safe grace and live raises. Refusals remain TRANSIENT ErrSchemaVersion.
+// A v27 message lacks the wire-carried
+// BotSourceTier (#1959) but its publisher already stamped the run document,
+// so the floor re-reads it from there; a v27, v28 or v29 message carrying no
+// content boundary is the unstamped reading (one replaying team_gateway parks:
+// TestRunMessage_ATeamGatewayMessageOlderThanTheProducerParks).
+// Refusals remain TRANSIENT ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {
 	base := func(v int) *RunMessage {
 		return &RunMessage{
@@ -292,11 +379,10 @@ func TestValidate_DualAcceptWindow(t *testing.T) {
 			TenantID:     "t1",
 		}
 	}
-	if err := base(SchemaVersion).Validate(); err != nil {
-		t.Fatalf("current version must validate: %v", err)
-	}
-	if err := base(MinSchemaVersion).Validate(); err != nil {
-		t.Fatalf("previous version must validate (dual-accept): %v", err)
+	for v := MinSchemaVersion; v <= SchemaVersion; v++ {
+		if err := base(v).Validate(); err != nil {
+			t.Errorf("v=%d: supported version refused: %v", v, err)
+		}
 	}
 	for _, v := range []int{MinSchemaVersion - 1, SchemaVersion + 1} {
 		err := base(v).Validate()

@@ -49,8 +49,12 @@ form of the runner-pod env fallback (`ANTHROPIC_API_KEY`,
 secrets), which **remains the final backstop** below it. Since it serves
 every tenant that has nothing of its own, who may draw on it is now an
 explicit, **opt-in** audience — see
-[Gating the platform tier](#gating-the-platform-tier). The dedicated
-rotation section is at the end of this doc.
+[Gating the platform tier](#gating-the-platform-tier). A forfait at this
+tier — a sealed blob or the env backstop — lends one person's consumer
+subscription to every tenant the audience admits: it is a development and
+testing convenience, not a production credential
+([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)). The
+dedicated rotation section is at the end of this doc.
 
 ## Decision shortcut
 
@@ -91,7 +95,13 @@ path (it clears `ANTHROPIC_AUTH_TOKEN` when the value is a subscription token
 variable untouched), and it is forwarded into the sandbox so the refusal holds
 inside the container too.
 
-OpenAI's ChatGPT-forfait has never had an equivalent restriction.
+iterion applies no equivalent refusal to the ChatGPT-forfait on `claw`
+(`ITERION_OPENAI_USE_OAUTH=0` is an off switch, not a guard; pi's
+`openai-codex` bridge does honour `ITERION_FORBID_SUBSCRIPTION_OAUTH`). That
+absence is a statement about the code, not about OpenAI's consumer terms —
+a ChatGPT subscription is an individual licence like the Claude one, and
+whether it may serve automated runs is a reading of those terms the
+operator owns ([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)).
 
 ## Gotchas that cost real time
 
@@ -203,14 +213,36 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   a launch refusal retried with the dispatcher's backoff
   ([dispatcher.md](dispatcher.md)). The rule is **per route**, read
   through the same walk the credential stamp uses: only a run whose
-  EVERY LLM route pins a provider the deployment knows (a `provider/`
-  model prefix or a `provider:` hint) and NONE of them is funded by any
-  tier is refused; one funded pinned provider is enough, and a route the
-  walk cannot attribute (a `claude_code` node with no `model:`, `auto`, a
-  hint outside the vocabulary such as `kimi-code/…`) is never refused,
+  EVERY ATTRIBUTED provider (a `provider/` model prefix or a `provider:`
+  hint the deployment knows, on any LLM route — an agent, a judge, an
+  `llm`-mode router, a human node's LLM half, a node `fallbacks:` route,
+  the run-level chain, a supervisor) is funded by no tier is refused; one
+  funded provider is enough, and a route the walk cannot attribute (a
+  `claude_code` node with no `model:`, `auto`, a hint outside the
+  vocabulary such as `kimi-code/…`) is never refused,
   because the runner may still fund it from its env. Turn it on when the
   runner deployment carries no ambient LLM env — then a credential-less
   run can never start, and refusing it early is free information.
+- **An untrusted (fork-lane) run is always refused when its team's own
+  API keys do not fund it** — its vendor keys, and its `openai_compatible`
+  gateway key on the literal gateway routes it serves — knob or not: it runs
+  on its lane's pool, so no shared tier is sealed into it (D13); the runner
+  refuses its env and a forfait cannot cross its sandbox (ADR-162 decision
+  7). The rule is the `llm_fallback: none` one — strict per attributed
+  provider, a literal gateway route the team's sealed gateway key funds
+  judged as the `openai_compatible` provider — with the forfaits not counted
+  and three route classes refused: a route riding the runner's
+  `openai_compatible` gateway, which no gateway key of the team's own funds
+  (the env-funded program included), and, whatever the team holds, a route
+  the pool's runner decides itself (an `${…}` dial it
+  expands with its own environment, a late run var), and a route the walk
+  cannot attribute to a provider (`ProviderResolution.UnattributedSites`);
+  and a route that may spend the anthropic wire's default credential is
+  funded only by a team key among the wire slots it may read
+  (`ProviderResolution.WireDefaultSites`). The launch gate asks
+  it before metering (`fork_run_unfunded`,
+  [webhooks.md](webhooks.md#fork-lane-funding)), the publisher at publish,
+  and the credential preview prints it.
 
 ## Ingestion gate — what a `400` on provisioning means
 
@@ -253,10 +285,24 @@ two gateways is two identities. Any key may carry a `repos` audience (`owner/rep
 it is checked in the credential walk before a webhook pin, and a launch that names no
 repository cannot spend a restricted key. Every tier may hold a gateway key — team,
 personal, org (shared through the org audience) and platform — and `llm_fallback=none`
-keeps a sovereign team on its own for every route the walk resolves. Until the walk
-learns the provider (#2005 PR-C'), a gateway key is storable but never sealed into a
-run: a gateway route is still served from the deployment's environment, `none`
-included; a webhook pin on such a key is refused at write; the pool never lends one.
+keeps a sovereign team on its own for every route the walk resolves. The walk spends
+the key (ADR-131 §5): when a tier the launch consults holds a gateway key serving the
+launch's bot and repository, the run's literal `openai_compatible/…` routes are funded
+by it — the walk seals the pair — and the run is no longer env-funded; with no such key
+a run whose every route rides the gateway is served from the deployment's environment
+as before. An env-templated route (`${DIAL:-…}`) is never attributed to the key; under a
+dedicated runner pool the key is sealed for it all the same and claw's dispatch prefers
+it to the pod's gateway, while a default-runner run with routes the walk cannot decide
+never carries it.
+Under `none` a gateway route nothing of the team's own funds is refused by name, a
+pool-stamped run excepted. A webhook pin on a gateway key is exclusive (ADR-131 §6):
+admitted at write like any key of the team, it fills the gateway slot of every run
+that may ride a gateway route, or the launch (or resume) is refused by name — the key
+deleted, withheld by an audience, invisible to the launch's identity, undecryptable or
+held out by a frozen list (`cloudpublisher.GatewayPinRefusedError`) — never served by
+the team's other gateway key, a shared tier or the pod's environment; a run that
+rides no gateway route leaves the pin idle. The legacy pool and the fallback door
+never lend one.
 Moving a key's `base_url` is a rotation — the secret is re-sent and sealed under the
 new URL — so a mutator who never held the secret cannot redirect it. In the sealed run
 bundle the key is ONE credential with its URL: `RunBundle.APIBaseURLs` beside
@@ -266,8 +312,28 @@ half short; the publisher writes its key maps through one chokepoint
 (`APIKeyFingerprints`, which the runner stamps rather than recomputing — a gateway
 key's identity folds its URL in) always travel with the key. The runner reads the pair
 (`Credentials.GatewayCredentialForRoute`) and honours `AmbientLLMRefused` — the run's
-LLM routes spend these credentials only — from #2005 PR-B'2; the walk sets them from
-PR-C'.
+LLM routes spend these credentials only. The walk stamps the run's content boundary
+at launch (`Run.ContentBoundary`, carried on the queue message; ADR-131 §4):
+`team_gateway` — with the id of the key row that filled the gateway slot and the host
+its URL dials — when it attributes a gateway route to the key and seals it, a mixed
+run included; `own_keys` for every other launch it resolves, naming the key and host
+too when the launch sealed one for a route it could not decide. A resume reads that
+record: a `team_gateway` run keeps its gateway routes attributed (a slot it cannot fill
+is refused by name), and a run whose launch sealed no gateway key seals none — its
+gateway routes ride the deployment's environment as at launch. The bundle's
+`AmbientLLMRefused` is armed on the same decision (and on every untrusted run,
+ADR-162); a resume replays the frozen stamp, never re-deriving it, and seals the flag
+even when its walk finds nothing. Under `team_gateway` the routing ladder and the
+fallback door take no vendor crossing for a node routed to the gateway.
+An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
+or not a bundle arrives: the publisher stamps every bundle it seals for one, and an
+untrusted run can still reach a runner with none (a publisher that seals nothing, a run
+that calls no model), so the runner derives the same
+refusal from the queue message's trust — `store.RunTrust.AmbientLLMRefused`, the one
+predicate both sides read (#3126). A fork run whose model routes its team's own keys
+cannot fund — a gateway route among them unless the team's own gateway key funds it —
+is refused before that: at the launch gate before it is metered, and at publish
+([webhooks.md](webhooks.md#fork-lane-funding)).
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the
@@ -541,10 +607,13 @@ Four things worth knowing before building one:
   it looks: the provider RETIRES the refresh token it is handed, so a refresh
   aimed at the wrong record spends a live credential's token and leaves the
   dying one exactly as dying.
-- **Only the primary can be lent to the credential pool.** A pledge is keyed
-  on (owner, source, kind) with no rank, so `pool lend` offers rank 0. Lending
-  a specific fallback is not wired — see
-  [docs/credential-pool.md](credential-pool.md).
+- **Only the primary of a chain can be lent to the credential pool — for a
+  subscription.** An `oauth` pledge is keyed on (owner, source, kind) with no
+  rank, so `pool lend` offers rank 0; lending a specific fallback is not
+  wired. A metered `api_key` is the other case: it is identified by the key
+  itself (`key_id`), so two personal keys of one provider — two Anthropic
+  keys, say — can both be lent, as two pledges the broker fails over between.
+  See [docs/credential-pool.md](credential-pool.md).
 
 ## Preview the effective fallback order
 
@@ -592,10 +661,29 @@ and acquires no capacity. Actual materialization, a fresh provider observation
 or a concurrent admission can change the chosen credential. Runner environment
 credentials and workflow secrets remain outside this database observation.
 The selection rules are shared with the real publisher and checked against
-its sealed bundle in tests, with one divergence: the preview reads the
-team's `llm_fallback` but never its runner-pool mapping, so a pool-mapped
-team whose `llm_fallback` is unset previews org, pool and platform
-candidates its launches do not consult.
+its sealed bundle in tests, and the launch's refusals are observed BY NAME:
+the unfunded-provider refusal below through the producer the launch itself
+returns (`unfundedRefusalFor`), never a second sentence; the providers
+allowlist refusal through a sentence of the preview's own that names the
+same node, provider and level as the launch's. It judges the program the
+launch judges, routing policy composed (the launch's own
+`composePolicyLadder`, restored right after: a read model leaves the program
+it was handed as it was). Both postures that hold the shared tiers out of a
+run — the team's `llm_fallback` and its runner-pool mapping — are read
+through the launch's own readers, so a pool-mapped team previews neither the
+org, pool and platform candidates its launches do not consult nor a fallback
+door they do not open. Three limits are stated rather than hidden. A tier
+whose metadata could not be read (`selection is conditional`) under-predicts
+the fills, so the unfunded sentence is then qualified — "refuses unless a
+tier whose metadata was unavailable funds the routes named here" — instead
+of stated as the launch's verdict. A refusal the launch returns BEFORE its
+unfunded check (the allowlist's, or a failed `llm_fallback` or runner-pool
+read) is named beside the unfunded sentence, not instead of it: the launch
+returns the first, the preview names both. And the preview cannot predict a
+fallback-door GRANT — a consenting donor's credential the launch seals
+before the ladder, where the preview only reports what the pool WOULD serve
+— so under `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL` a run the door would fund
+can still preview as refused (#2485).
 
 ## Activating the cross-model plan review (one credential, nothing else)
 
@@ -845,6 +933,59 @@ refuses naming it. A typo'd boundary field must not silently re-open the
 shared tiers. Env-funded runs (every route on the runner's gateway) and
 unattributable routes answer to no policy; a tool-only run spends nothing.
 
+**Both refusals read the ATTRIBUTED set, and a mixed workflow is refused
+by name (#2485).** Until 2026-10-28 the set came from the walk's NARROWING
+reading, which answers "may spend anything" as soon as one route cannot be
+attributed: a single unpinned `backend: claude_code` node emptied it, and
+the refusal was disarmed for every OTHER route — a `draft` on
+`anthropic/…` beside a `verify` on `openai/…` started on a team funding
+only Anthropic, and the `openai` route then spent the runner pod's
+environment, the one funding this posture exists to rule out. The same
+three shapes disarmed `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`: an
+unattributable node, a human gate's `model:`, and a routing-policy forfait
+rung folded in before the set was read.
+
+The refusals now read `ProviderResolution.Providers` — every provider some
+RESOLVED route names, a sound lower bound whatever the narrowing reading
+says — so:
+
+- a route the walk CANNOT read is still refused by no name (it contributes
+  none), and the sovereign posture still refuses a workflow NO route of
+  which is readable when the team holds nothing at all;
+- the message names the PROVIDER and the NODE that spends it
+  (`openai (named by verify)`), and the refusal is the typed
+  `*cloudpublisher.UnfundedProvidersError` (`errors.As`) carrying both —
+  no caller has to parse the sentence;
+- the set is read on the program the routing policy COMPOSED, after
+  `ApplyPolicyLadder` lands its rungs: a rung the walk cannot attribute
+  contributes no name instead of emptying the set, and a rung the run may
+  really spend — a held pair's own provider, at `node#run-fallback` —
+  counts for the knob's "every attributed provider is unfunded" rule;
+- the **credential preview** answers the same verdict, under the policy and
+  under the knob, for all THREE arms — the two named ones and the sovereign
+  refusal of a run no route of which the walk can attribute while the team
+  holds nothing of its own: it reads this decision through the launch's own
+  producer and prints the sentence the launch would return (`The live launch
+  refuses: …`), where it used to show candidates and a generic warning for
+  a launch refused by name, or say "runner environment availability is
+  unknown" about a run the publisher will not publish;
+- **behaviour change**: a launch that starts today is refused tomorrow if
+  it mixes an unattributable route with a provider-pinned route the team
+  (under `llm_fallback: none`) or the deployment (under the knob) funds
+  nothing of. Remedy: provision the named provider, route the named node
+  to a funded one, or unset the knob. A gateway route
+  (`openai_compatible/…`) is never named: it acquires no credential.
+
+A tool node's `recovery: model:` is read too (#2783): the walk resolves the
+rung's spec the way dispatch's `recoveryModel` does — the authored field
+through the run's vars, then `ITERION_VERIFIED_ACTION_MODEL`, then the
+`anthropic/claude-opus-5-5` default — and reads each enabled rung the way it
+runs (rung 3 a direct generation, rung 4 the synthetic agent dispatch), so
+both refusals name its provider AND its node (`openai (named by
+heal#agent_recovery, heal#self_repair)`). Rungs exist under
+`policy: recover` alone, so an inert `recovery:` block (C106) is read as
+what it is: nothing.
+
 The setting is a boundary, not a preference: it is audited on every write
 (`team.llm_fallback_set`, tenant trail + org mirror), and survives the other
 team writers because it is a `PatchTeam $set` like the pool mapping. See
@@ -906,7 +1047,14 @@ to that same policy:
 
 - **`overrides`** — per-node routing cells. One entry is
   `{selector, backend, model, provider, effort}`, the selector an exact node
-  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*`. Values
+  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*` — or,
+  since ADR-132 D21, a node's `fallbacks:` route (`<node>#<route>`) or a
+  supervisor (`supervisor:<name>`), each optionally prefixed by the bot it is
+  for — its bot id or manifest name, or a glob over either (`review-pr/…`;
+  required on the route and supervisor forms; `*/` reaches every launch, one
+  naming no bot included; a launch's own model_overrides carry no prefix) — the
+  grammar and its guards in
+  [backends.md](backends.md#the-openai-compatible-gateway-openai_compatible). Values
   are **literals**: `llmroute.Validate` refuses a cell containing `{{` or
   `${`, naming the field — a pin the launch pre-flights cannot read is a pin
   the tenancy gate cannot certify. `effort` re-targets the node's reasoning
@@ -919,7 +1067,16 @@ to that same policy:
   naming its sites, nothing re-routed, no credential
   sealed for it, and dispatch drops the element so it cannot burn a retry
   budget on a call the tenant forbade; and a route the walk cannot READ
-  refuses too, because a lock that cannot be checked must not pass. An
+  refuses too, because a lock that cannot be checked must not pass. A human
+  node's LLM half (`interaction: llm` / `llm_or_human`) is read as the
+  direct generation it is — its `model:` prefix names the provider, no
+  backend and no override cell applies, exactly as dispatch spends it — so
+  it narrows, is served or refused like any primary route; a Verified
+  Action's recovery rungs are read the same way, rung 3 as the direct
+  generation it is and rung 4 as the synthetic agent dispatch it runs
+  (override cell included, at the `<tool>__recover` id dispatch builds),
+  each pinned at its own site (`node#self_repair`, `node#agent_recovery`);
+  a subbot still exposes no field and refuses under any list. An
   explicitly empty list is refused at the write surface: a level that must
   forbid everything has no run to make, and the honest spelling refuses the
   bot.
@@ -942,7 +1099,7 @@ and no refusal.
 **They fold differently, and the rule is each field's own.** `overrides`
 folds **entry-wise per (selector, field) cell** — a team pinning
 `judge → backend: claw` and an integration pinning
-`reviewer_gpt → model: <gateway id>` both hold, each cell's provenance keyed
+`reviewer → model: <gateway id>` both hold, each cell's provenance keyed
 `overrides.<selector>.<field>`. `providers` is one list and **replaces** like
 `pair_order`, first setter wins (ADR-129 §2).
 
@@ -953,7 +1110,11 @@ entries — the cloud lane (`Service.Launch`), the in-process lane
 (`startInProcess`, which serves a local launch and the scheduler's start of a
 previously-queued root) and the credential preview (`PreviewCredentials`) —
 and **before** the permission screen: a cell folded in after it would reach
-past a guard the launcher's own override cannot. The DETACHED local runner
+past a guard the launcher's own override cannot. That screen reads node and
+route cells alike — a route cell's `backend` meets the compiler's route
+refusals (C176, C135) there — and the fold also judges every (backend,
+hint, model) element the cells compose with dispatch's gateway rule
+([backends.md](backends.md#the-openai-compatible-gateway-openai_compatible)). The DETACHED local runner
 (`ITERION_RUNS_DETACHED=1`), driven by `iterion run`, has no counterpart: it
 folds nothing, screens nothing and stamps no folded list, and says so for the
 override CELLS only — the launch's `model_overrides` and the
@@ -961,12 +1122,18 @@ policy's `overrides` share one Warn, conditional on one of them being
 non-empty (`detached.go:421-423`,
 `TestLaunchDetached_NamesTheDroppedOverrides`), while a policy whose only
 field is `providers:` is dropped WITHOUT a word: the allowlist reaches a
-runner on the queue message alone (`RunMessage.LLMProviders` →
-`ExecutorSpec.LLMProviders`, filled at `loop.go:3390` and nowhere else), and
-this lane sends none — the local-parity limit ADR-129 §8 states. The folded
+cloud runner on the queue message (`RunMessage.LLMProviders` →
+`ExecutorSpec.LLMProviders`, `loop.go`) and an in-process run through its
+launch spec (`startInProcess` refuses on it with the publisher's own gate,
+`model.AllowlistRefusal`, threads it to its executor and stamps the policy on
+the run document for a local resume to replay), and this lane sends none —
+the local-parity limit ADR-129 §8 states. The folded
 list is what the run document stamps, what the queue message carries, what
 every pre-flight reads and what a resume replays instead of re-folding
-(`TestResume_ReplaysTheFoldedRowsNotThePolicy`), so no reader re-derives a pin
+(`TestResume_ReplaysTheFoldedRowsNotThePolicy`) — an in-process resume's
+supervisors and session board included, which read the rows the resumed
+executor dispatches with (`TestResume_SupervisorsReadTheRunsFoldedRows`,
+`TestResume_SessionBoardWatchesTheGatewayRoute`) — so no reader re-derives a pin
 from a record that has moved since.
 Precedence, end to end:
 
@@ -975,8 +1142,29 @@ Precedence, end to end:
 
 The launch wins that line at the two shapes ONE flat list can express: the
 SAME selector (the launch's rows sit after the policy's, and the later rule
-wins a tie), and a `*` row, which shadows every policy cell on that field
-outright. The residual the fold's own comment names: a policy cell on a MORE
+wins a tie), and a `*` row, which shadows every policy NODE cell on that
+field outright (a route or supervisor cell is reached by no node row, so no
+`*` row shadows it). The bot dimension resolves in the same fold, keyed on
+the launch's bot id and the manifest name of the bundle it serves: a cell
+for another bot drops, one for this bot folds as its bare target; on one
+target the more specific bot part wins (no bot part and `*/` < a glob < the
+manifest name < the bot id), then the nearer level, read from the cell's
+provenance (`llmroute.SourceRank`). A subbot child folds its root run's
+frozen snapshot again for its own bot — its bundle's slug and manifest name
+(`runview.SubbotChildBotIdentity`) — through the same body and screens
+(`runview.FoldForSubbotChild`, on the cloud runner and in-process alike): a
+cell for the parent's bot does not reach the child, one for the child's
+does, the parent's folded rows never travel, and the root's own launch rows
+(`store.Run.LaunchModelOverrides`, the raw rows before any cell) fold on top,
+bot-free, so a `team_gateway` launch's `*` row keeps the child on the
+gateway (`TestSubbotChildFoldsTheRoutingPolicyForItsOwnBot`,
+`TestSubbotChildFoldsTheRootRunsLaunchRows`,
+`TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway`). The walk reads
+no subbot child's site: a cell that moves only a child's node onto the
+gateway seals the team's gateway key when a route the walk reads uses it, or
+on a runner pool; elsewhere that call rides the runner's environment
+gateway, and the runner warns naming the pinned sites
+(`TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned`). The residual the fold's own comment names: a policy cell on a MORE
 SPECIFIC selector than any launch row pinning the same field still wins that
 field on specificity inside the folded list — carrying the layer across the
 wire would take ranks on the wire twins — so a launcher states a field-wide

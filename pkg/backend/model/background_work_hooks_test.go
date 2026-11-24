@@ -23,6 +23,7 @@ func (c *captureEmitter) AppendEvent(_ context.Context, _ string, evt store.Even
 // hook with the node it happened on. A bridge that is not wired leaves the
 // delegate's own tests green while no event is ever persisted.
 func TestDelegateHooksBridgeTheBackgroundWorkLifecycle(t *testing.T) {
+	t.Parallel()
 	var gotNode string
 	var got BackgroundWorkInfo
 	e := newFallbackExecutor(delegate.NewRegistry(), EventHooks{
@@ -41,6 +42,7 @@ func TestDelegateHooksBridgeTheBackgroundWorkLifecycle(t *testing.T) {
 }
 
 func TestStoreHooksPersistTheBackgroundWorkLifecycle(t *testing.T) {
+	t.Parallel()
 	em := &captureEmitter{}
 	hooks := NewStoreEventHooks(context.Background(), em, "run-bg", iterlog.Nop(), nil, nil)
 	if hooks.OnBackgroundWork == nil {

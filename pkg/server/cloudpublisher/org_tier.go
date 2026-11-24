@@ -79,9 +79,11 @@ func (p *Publisher) fillFromOrg(
 	withheld *audienceWithholdings,
 	bundle *secrets.RunBundle,
 	apiKeyFPs map[secrets.Provider]string,
+	keyIDs sealedKeyIDs,
+	wants credSlotWants,
 	skips *skipTracker,
-	skippedAPIKeys map[secrets.Provider]skippedAPIKey,
-	skippedForfaits map[string]skippedForfait,
+	skippedAPIKeys skippedAPIKeys,
+	skippedForfaits skippedForfaits,
 	pinned map[string]bool,
 	policy sharedTierPolicy,
 	native *tierNative,
@@ -131,7 +133,7 @@ func (p *Publisher) fillFromOrg(
 			}
 			// The adaptive-routing whitelist: an unlisted slot is invisible
 			// to this tier.
-			if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+			if !policy.sealableHeldSlot(slotOfKind(string(rec.Kind))) {
 				continue
 			}
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
@@ -154,9 +156,7 @@ func (p *Publisher) fillFromOrg(
 				if floorHeld {
 					skips.noteFloorHeld(rec.Fingerprint)
 				}
-				if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, org: true}
-				}
+				skippedForfaits.remember(string(rec.Kind), skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, org: true})
 				continue
 			}
 			bundle.OrgSourced[string(rec.Kind)] = true
@@ -187,7 +187,7 @@ func (p *Publisher) fillFromOrg(
 			if len(missing) > 0 {
 				octx := store.WithTenant(ctx, orgScope)
 				resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, missing, nil, p.sealer,
-					p.apiKeyUsable(octx, meter, runID, botID, skips), withheld.note)
+					policy.heldSlotUsable(p.apiKeyUsable(octx, meter, runID, botID, skips)), withheld.note)
 				if err != nil {
 					p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
 				} else {
@@ -205,7 +205,7 @@ func (p *Publisher) fillFromOrg(
 							continue
 						}
 						// The adaptive-routing whitelist.
-						if !policy.sealableSlot(slotOfProvider(prov)) {
+						if !policy.sealableHeldSlot(slotOfProvider(prov)) {
 							continue
 						}
 						// Decided again: a key filled earlier in this loop
@@ -217,7 +217,7 @@ func (p *Publisher) fillFromOrg(
 						}
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.OrgSourced[string(prov)] = true
-						apiKeyFPs[prov] = r.Fingerprint
+						noteSealedAPIKey(apiKeyFPs, keyIDs, wants, prov, sealedKey{id: r.KeyID, fingerprint: r.Fingerprint, max: r.MaxConcurrentRuns, name: r.Name})
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — %s)", runID, orgID, prov, r.Fingerprint, routeOnlyWhy(familyTaken, policy))
@@ -236,7 +236,7 @@ func (p *Publisher) fillFromOrg(
 					// omitting it here is what turned a recoverable park into an
 					// outright refusal for an org-funded team.
 					if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
-						fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, refused, nil, p.sealer, nil, withheld.note)
+						fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, refused, nil, p.sealer, restorableKey(skips), withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: org refused-key fallback resolve: %v", ferr)
 						}
@@ -244,13 +244,16 @@ func (p *Publisher) fillFromOrg(
 							if len(r.Plaintext) == 0 {
 								continue
 							}
-							if _, seen := skippedAPIKeys[prov]; seen {
-								continue // a tenant key's restore takes precedence
-							}
-							skippedAPIKeys[prov] = skippedAPIKey{
+							// A tenant key's restore takes precedence, and the
+							// restore applies that order itself — tier by tier.
+							// Dropping this candidate because the provider was
+							// already "seen" is what let a tenant entry the
+							// RESERVE holds mask the org sibling behind it.
+							skippedAPIKeys.remember(prov, skippedAPIKey{
 								plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID,
 								fingerprint: r.Fingerprint, org: true,
-							}
+								maxConcurrentRuns: r.MaxConcurrentRuns, name: r.Name,
+							})
 						}
 					}
 					if len(usedIDs) > 0 {

@@ -289,10 +289,32 @@ func runsEveryBranch(n Node) bool {
 // half of UsesLLM, exported for the walks outside this package that must
 // stay CONSERVATIVE about spend (a credential-wants derivation that
 // narrows a pool request, a usage-cap wire predicate): a node this answers
-// true for but that exposes no LLMFields (a human node answering with a
-// model, a Verified Action's agent rung, a subbot) cannot be resolved to
-// a provider, and a caller must widen rather than assume it spends nothing.
+// true for but that exposes no LLMFields (a subbot) cannot be resolved to
+// a provider by shape alone, and a caller must widen rather than assume it
+// spends nothing. The two model-calling kinds that carry no LLMFields but
+// DO expose their route — a human node's LLM half and a Verified Action's
+// recovery rungs — are read through their own shared readers
+// (model.humanLLMModelOf, model.recoveryRungsOf).
 func NodeUsesLLM(n Node) bool { return nodeUsesLLM(n) }
+
+// ToolRecoveryAgentRung reports whether a tool node's Verified Action
+// recovery can reach rung 4 — the AGENT dispatch, which carries a tool set
+// (`agent_tools:`) and is gated by the workflow's permission lists. Rung 3
+// (self-repair) is a direct generation with no tool surface, so it is
+// deliberately NOT this predicate's answer: the permission validation's
+// "reader" is the rung that holds tools, not the one that only completes.
+//
+// Dispatch's own two conditions, and the companion of
+// ToolRecoverySelfRepairRung: the rungs exist under `policy: recover` alone,
+// so an inert `recovery:` block (C106) is no reader of the permission lists
+// — nothing can ever run to read them. Unlike rung 3 this one takes the
+// recipe as it finds it: an agent achieves the GOAL with real tools, so it
+// runs for a registry recipe the self-repair rung cannot correct.
+func ToolRecoveryAgentRung(n Node) bool {
+	t, ok := n.(*ToolNode)
+	return ok && t.Policy == PolicyRecover && t.Recovery != nil &&
+		t.Recovery.MaxAgentAttempts > 0
+}
 
 // nodeUsesLLM answers for one node. Kept separate so the reasoning per node
 // kind stays readable, and each `true` names why it is one.
@@ -311,13 +333,52 @@ func nodeUsesLLM(n Node) bool {
 		return interactionUsesLLM(node.Interaction)
 	case *ToolNode:
 		// A tool node is a shell command — except that a Verified Action's
-		// rung 4 hands recovery to an agent when the recipe cannot heal
-		// itself. A run that only *might* reach that rung still can.
-		return node.Recovery != nil && node.Recovery.MaxAgentAttempts > 0
+		// recovery ladder spends a model when the recipe cannot heal
+		// itself: rung 3 asks one for a corrected command (a direct
+		// generation), rung 4 hands recovery to an agent. A run that only
+		// *might* reach a rung still can. Both rungs are read through the
+		// predicates dispatch gates them on, never restated here: a rung
+		// this arm counts and dispatch never runs makes a launch refuse a
+		// provider nothing spends (#2783).
+		return ToolRecoverySelfRepairRung(node) || ToolRecoveryAgentRung(node)
 	case *SubbotNode:
 		// The child `.bot` is another source entirely: unknowable from
 		// here, so assumed to spend.
 		return true
+	}
+	return false
+}
+
+// RendersPresetPrompt reports whether a run of the workflow builds at least
+// one model TASK — the system prompt a bundle preset's body is appended to
+// ("## Focus", delegate.Task.PresetFragment, applied by
+// pkg/backend/model's buildTask). It is the reader gate for a prompt-sink
+// text no node owns: with no task built, the text is rendered nowhere and
+// its references reach no sink.
+//
+// Narrower than UsesLLM on purpose, and exact rather than conservative: a
+// false answer here is silence on a dead text, a true one an ERROR at lint
+// (checkPresets), so each kind is counted by whether buildTask runs for it.
+// An agent and a judge build one; so does a tool node whose recovery
+// ladder hands the goal to an agent (the fourth rung synthesises one and
+// dispatches it as any agent). An `llm` router composes its own Task
+// without the fragment, a human node's `interaction: llm` and the
+// self-repair rung ask a client directly, a supervisor watches with a model
+// of its own, and a subbot's child engine selects no preset: none of them
+// reads the body.
+func (w *Workflow) RendersPresetPrompt() bool {
+	if w == nil {
+		return false
+	}
+	for _, n := range w.Nodes {
+		switch n.(type) {
+		case *AgentNode, *JudgeNode:
+			return true
+		case *ToolNode:
+			if ToolRecoveryAgentRung(n) {
+				return true
+			}
+		}
 	}
 	return false
 }

@@ -41,7 +41,7 @@ invariants. `iterion map find|impact|path` answer the exact questions.
 
   - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities` — carrying `ContextWindow` / `MaxOutputTokens` / `InputCostPerM` / `OutputCostPerM`, every one zero-means-unknown)
 
-  - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
+  - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio's Run button
 
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 

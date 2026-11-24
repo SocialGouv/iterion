@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -254,7 +255,7 @@ func newAutofixSweepWorld(t *testing.T) autofixSweepWorld {
 		t.Fatal(err)
 	}
 	s.cfg.Store = rs
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +393,7 @@ func TestForgePublishGrantUpdate_KeepsTheExpiryAndNeverResurrects(t *testing.T) 
 		{"valkey", func(t *testing.T) (ForgePublishTokenStore, func(string) time.Duration) {
 			mr, rdb := newTestRedis(t)
 			return newValkeyForgePublishTokenStore(rdb, nil), func(token string) time.Duration {
-				return mr.TTL(forgePublishTokenKeyPrefix + token)
+				return mr.TTL(forgePublishTokenKey(token))
 			}
 		}},
 	} {
@@ -816,7 +817,7 @@ func testAPagedDeepTraversalContinues(t *testing.T, deepEvery int) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runGateSweeper(ctx, l)
+		s.runGateSweeper(ctx, l, nil)
 	}()
 	waitForCond(t, 20*time.Second, "a deep traversal of the whole window", func() bool {
 		l.mu.Lock()
@@ -932,7 +933,7 @@ func sweepAWhile(t *testing.T, s *Server, l *pagedWindowLister, passes int) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runGateSweeper(ctx, l)
+		s.runGateSweeper(ctx, l, nil)
 	}()
 	waitForCond(t, 30*time.Second, fmt.Sprintf("%d ordinary listings", passes), func() bool {
 		l.mu.Lock()

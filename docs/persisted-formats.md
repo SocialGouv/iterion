@@ -17,7 +17,7 @@ authoritative schema; readers must tolerate additive fields and event types.
   artifacts/<node_id>/<version>.json
   interactions/<interaction_id>.json
   attachments/<name>/<original_filename>
-  attachments/<name>/meta.json
+  attachments/<name>/.iterion/meta.json
   plans/<sequence>.json
   tools/<tool_use_id>/input
   tools/<tool_use_id>/output
@@ -68,6 +68,27 @@ The complete shape is [`store.Run`](../pkg/store/run.go). `omitempty` fields
 from local/cloud, worktree, webhook, secret, attachment, budget, and Studio
 features can legitimately be absent.
 
+`source` is the run's TYPED provenance — who launched it — and is absent for
+an ordinary CLI / Studio Launch / fork-spawned run. `kind` is one of
+`dispatcher`, `schedule`, `studio_chat`, `webhook`
+([`store.RunSourceKind*`](../pkg/store/run.go)), open-world like every other
+vocabulary here: a reader must accept a kind it does not know rather than
+treat the run as unlaunched. Beside it rides the id of the record that
+launched the run, one field per record kind — `issue_id` (+ the
+`issue_identifier` / `issue_title` snapshot), `schedule_id` (a
+`cloudsched.ScheduledBot` id OR a `trigger.Subscription` id,
+`schedule_name` for display), `client_id` + `conversation_id` for a chat
+tab, and `delivery_id` for an inbound webhook delivery
+(`webhook_deliveries._id`). Each is the run→record direction, which is the
+only one persisted: the records hold their own `run_id` pointers, and the
+consumers of this class are keyed by RUN (the run-outcome spine loads the
+terminal run, then asks each record kind whether the run is theirs), so
+opening the opposite direction would be a second way to find one record.
+**Deploy-order constraint**, the same one `outcome_seq` carries: an old
+binary's full-document `SaveRun` drops a `source` field it does not know, so
+a release that adds a CONSUMER of a new `source` field ships only after the
+fleet fully carries the writer.
+
 `failure_code` (ADR-095) is the machine-readable classification of `error`
 on a failure status (`failed` / `failed_resumable` / `cancelled`), written
 atomically with the status and cleared by every transition to a non-failure
@@ -113,7 +134,7 @@ and for workflows that never delegated. The event stream is the full history
 different models).
 
 A schema re-ask — the one more turn a node gets after a schema-invalid
-answer ([backends.md](backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask))
+answer ([backends.md](backends.md#a-schema-invalid-answer-gets-bounded-correction-turns-the-schema-re-ask))
 — is announced by a `delegate_retry` carrying `reask`
 (`continue_conversation` / `resume_session` / `restart`) beside the
 validation `error`, and closes with its own `delegate_finished` /
@@ -123,7 +144,11 @@ cost is a session total, the difference). A transport retry the re-ask
 itself pays is a further `delegate_retry` carrying the same `reask` and a
 backoff `delay_ms`. The delegation's own
 `delegate_started` / `delegate_finished` pair fires once, around the first
-answer, and never carries `reask`.
+answer, and never carries `reask`. A re-ask run inside the fallback chain —
+before the delegation's own `delegate_finished` / `delegate_error` — marks
+its `delegate_started` `reask_in_chain: true`. The last-resort extraction's
+own call closes with a `delegate_finished` / `delegate_error` marked
+`reask: "extract"`, on `backend: claw` and the detected model.
 
 `fingerprint` on each entry is the backend's provider-routing label for that
 session — `anthropic-oauth`, `anthropic-direct`, `anthropic-env`, or
@@ -201,6 +226,7 @@ parent's).
   "backend_name": "claude_code",
   "backend_conversation": null,
   "backend_pending_tool_use_id": "",
+  "backend_session_stranded": false,
   "node_sessions": {
     "writer-or-named-session-slot": {
       "backend": "claude_code",
@@ -214,6 +240,9 @@ parent's).
     { "session_id": "sess-…", "tasks": ["auditor (local_agent, a1b2)"] }
   ],
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
+  "node_failure_streaks": {
+    "merge": { "fingerprint": "sha256:5f0c…", "count": 1 }
+  },
   "recovery_pause": true,
   "recovery_code": "AUTH_FAILED",
   "budget_tokens_used": 42000,
@@ -226,7 +255,9 @@ parent's).
 
 `node_sessions` keys default to the node id. A `session: persist` node may
 declare `session_slot: <name>` so serial nodes share one durable conversation;
-the value shape and backend-session blob storage are unchanged. Historical
+the two live in one keyspace, so a slot spelt like another node's id is
+refused at compile time (C314). The value shape and backend-session blob
+storage are unchanged. Historical
 claw envelopes are normalized when loaded: tool results without a preceding
 call, calls without a later result, and provider-specific reasoning blocks are
 removed block-by-block, with empty messages discarded. This compatibility
@@ -234,8 +265,23 @@ repair does not rewrite the stored blob in place; the next successful session
 checkpoint persists the normalized conversation.
 
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
-preserve mid-agent interaction; recovery counters keep retry ceilings honest;
+preserve mid-agent interaction — `backend_session_stranded` included, which
+marks the checkpointed conversation as a stranded sandbox crossing's own turns
+so the resumed crossing keeps its captures out of the session store (#2461);
+recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+`node_failure_streaks` holds, per tool node, the last failure of its command
+and how many executions in a row ended on it — what an identical repeat is
+recorded as `TOOL_FAILED_PERMANENT` on, across engines
+([resume.md](resume.md#a-tool-command-that-fails-the-same-way-again-is-permanent)).
+`fingerprint` is a SHA-256 of the exit status and the failure's text, salted
+with the run and the node: the checkpoint never holds the command's output.
+Only a command that ran to an exit status of its own is counted, and never a
+failure whose output names an outage. A node's entry leaves with its success,
+with a failure that is not counted or reads differently, and with a rewind
+that replays it; the field is absent with
+`ITERION_NODE_MAX_IDENTICAL_FAILURES=0` and on checkpoints written before it
+existed, which reads as no streak.
 The union of `artifact_owners` and `artifacts` is the authoritative logical
 publish-name snapshot. `artifact_owners` is the complete catalog: when a
 logical value is identical to its producer's `outputs` entry, the body is
@@ -271,7 +317,14 @@ entry (see [backends.md](backends.md), "Background work"). Absent on
 checkpoints written before it existed — an empty ledger, the previous
 behaviour. A turn checkpoint (`turns/…json`) carries the same fact for its
 own processes as `terminated_background`; a Fork API child run seeds its
-ledger with it.
+ledger with it. A turn checkpoint also carries `attempt`/`superseded`: its
+coordinate (`turns/<node>/<iter>/<turn>.json`) derives from the LLM step,
+not the node's execution attempt, so a retried or resumed node re-derives
+the coordinate its previous attempt wrote — the store keeps EVERY attempt
+(the superseded one preserved as `…/<turn>.attempt-<n>.json`, with its
+messages sidecar moved aside), the coordinate's canonical record stays the
+latest attempt for the fork anchor, and the usage reconciliation sums both
+(#2806).
 `recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
 for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
 the node still owes its work, so the answer that resumes the run is an
@@ -344,7 +397,11 @@ revision plus a leased owner/epoch fence. It also carries the artifact-version
 frontier and action receipts with `prepared`, `issued`, `succeeded`,
 `rejected`, or `uncertain` state. `issued` is written before target mutation
 and charged exactly once; an unknown outcome is reconciled from the target
-event journal and is never blindly retried.
+event journal and is never blindly retried. A dispatch refused before
+anything was published because a credential the resumed run sealed is at
+its concurrency cap goes back to `prepared` with `wait_until` one slot probe
+out, its charge given back: the coordinator asks again then, up to the
+mission's TTL.
 
 Queue schema v17 adds `ResumeSpec.expected_status` and `receipt_id`. The
 publisher consumes the exact expected status in its resumable→queued CAS; the
@@ -390,7 +447,7 @@ for the length of every rolling deploy.
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
 | LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `delegate_background`, `model_fallback`, `model_drift`, `model_served_via_facade` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
-| Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_env_denied`, `sandbox_network_defaulted`, `sandbox_workspace_export_failed`, `sandbox_scratch_banked`, `sandbox_scratch_restored`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
+| Sandbox/network | `sandbox_skipped`, `sandbox_floor_applied`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_no_credential_warning`, `sandbox_host_binds_dropped`, `sandbox_attachments_copied`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_env_denied`, `sandbox_image_env_planted`, `sandbox_network_defaulted`, `sandbox_workspace_export_failed`, `sandbox_runfiles_drain_failed`, `sandbox_scratch_banked`, `sandbox_scratch_restored`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |
 | Operator messages | `user_message_queued`, `user_message_delivered`, `user_message_consumed`, `user_message_cancelled` |
 | Worktree | `worktree_branch_failed` |

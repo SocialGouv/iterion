@@ -114,7 +114,7 @@ func SetMirrorCwdGuardForTests(fn func(workDir string) error) {
 	mirrorCwdGuard = fn
 }
 
-func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnresolved bool, logger *iterlog.Logger) (owned []string, complete bool, err error) {
+func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnresolved bool, pass *mirrorPass, logger *iterlog.Logger) (owned []string, complete bool, err error) {
 	if workDir == "" {
 		return nil, true, nil
 	}
@@ -138,7 +138,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnreso
 		return nil, false, nil
 	}
 	if inj != nil {
-		injOwned, injComplete, injErr := mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)
+		injOwned, injComplete, injErr := mirrorInjectedPluginFiles(workDir, inj.Plugin, pass, logger)
 		// The injected wire IS the whole declaration — the launching instance
 		// resolved it. A wire with no entries legitimately means "no plugins
 		// enabled", not "some plugin lost"; but a SKIPPED entry (validation or
@@ -232,7 +232,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnreso
 			for _, f := range files {
 				if !dirsReady {
 					for _, d := range []string{destDir, markerDir} {
-						if err := os.MkdirAll(d, 0o755); err != nil {
+						if err := pass.root().MkdirAll(d, 0o755); err != nil {
 							return nil, false, fmt.Errorf("runtime/plugin: mkdir %s: %w", d, err)
 						}
 					}
@@ -249,7 +249,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnreso
 				if werr := os.WriteFile(tmpPath, f.Content, 0o644); werr != nil {
 					return nil, false, werr
 				}
-				outcome, destPath, rerr := mirrorPluginContribFile(destDir, markerDir, tmpPath, f.Name, kind, logger)
+				outcome, destPath, rerr := mirrorPluginContribFile(destDir, markerDir, tmpPath, f.Name, kind, pass, logger)
 				if rerr != nil {
 					// BOTH error classes are soft here, unlike the bundle
 					// and library mirrors. Plugin contributions are
@@ -320,13 +320,13 @@ func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnreso
 // has always been. The returned destPath is the directory-form file for a
 // skill (the discoverable one that a backend must be handed) and the flat
 // file for a command or agent.
-func mirrorPluginContribFile(destDir, markerDir, tmpPath, name string, kind plugin.MirrorKind, logger *iterlog.Logger) (skillReconcileOutcome, string, error) {
+func mirrorPluginContribFile(destDir, markerDir, tmpPath, name string, kind plugin.MirrorKind, pass *mirrorPass, logger *iterlog.Logger) (skillReconcileOutcome, string, error) {
 	if kind.Name == "skill" {
 		_, destPath, _, err := skillDestDirForm(destDir, markerDir, name)
 		if err != nil {
 			return skillOutcomeShadowed, "", err
 		}
-		outcome, err := mirrorFileSkill(destDir, markerDir, tmpPath, name, skillTierPlugin, logger)
+		outcome, err := mirrorFileSkill(destDir, markerDir, tmpPath, name, skillTierPlugin, pass, logger)
 		if err != nil {
 			return outcome, "", err
 		}
@@ -334,7 +334,7 @@ func mirrorPluginContribFile(destDir, markerDir, tmpPath, name string, kind plug
 	}
 	destPath := filepath.Join(destDir, name)
 	markerPath := filepath.Join(markerDir, name+".sha256")
-	outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
+	outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, pass, logger)
 	if err != nil {
 		return outcome, destPath, err
 	}

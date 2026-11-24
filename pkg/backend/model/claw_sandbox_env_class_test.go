@@ -13,11 +13,13 @@ import (
 	"go/types"
 	"hash/fnv"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The in-container claw runner (`iterion __claw-runner`) is this same binary:
@@ -60,11 +63,16 @@ import (
 // host-side one is spelled only where the runner does not reach, envWrites
 // lists the ones this package only sets in an env it hands on, notEnvNames
 // the ones that name no variable. A name that crosses, crosses as the host's
-// process env — the forwarding loop copies os.Getenv — so it is never read
-// through a reader that also answers from state that does not cross
+// process env — the forwarding loop copies os.Getenv, save a value
+// envtrust.Planted reads as a workspace .env's, which crosses as the explicit
+// empty (#2813) — so it is never read through a reader that also answers
+// from state that does not cross
 // (envStateConsults), such a reader is never handed to another package, and
 // the name is spelled only at its reads or where crossingSpellings says why:
-// its sandboxed twin would otherwise see another value.
+// its sandboxed twin would otherwise see another value. The one answer the
+// premise does not reach: a name that crosses by its own branch carries the
+// host's own RESOLUTION of the question its reader consults
+// (consultsWhatCrosses) — the twin reads what the host reads.
 //
 // What it does not see, named rather than hidden: a name built at run time
 // rather than spelled as a constant here — derived from data, the ${NAME}s a
@@ -77,10 +85,28 @@ import (
 // spells itself, which is that package's to forward (#1804).
 
 // crossedByItsOwnBranch: names forwardableProviderEnv sets itself, because
-// the value that crosses is a decision, not the host's raw value.
+// the value that crosses is a decision, not the host's raw value — and the
+// tool names forwardableToolEnv sets, merged into the same runner env at the
+// dispatch (#2802).
 var crossedByItsOwnBranch = map[string]string{
 	"ITERION_OPENAI_USE_OAUTH":   `crosses as the refusal "0", or as "1" beside a ChatGPT forfait the container was handed: the run's own, or the host's that a host-wide "1" orders, written at the dispatch`,
 	"ITERION_CODEX_HOST_VERSION": "the host's `codex --version` probe, sent when no ITERION_CODEX_VERSION override is set",
+	"CLAW_BASH_TIMEOUT":          "the deployment's bash budget, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is when set (forwardableToolEnv)",
+	"CLAW_PROC_WAIT_DELAY":       "the drain bound bash grants a process that outlives its exit, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is when set (forwardableToolEnv)",
+	"CLAW_CONFIG_HOME":           "the skill lookup reads it in the container and no iterion-seeded mount serves a claw config home, so there is nothing to rewrite to and the launcher's value crosses as-is when set (forwardableToolEnv)",
+	// The two cross as the host's own answer to the question their reader
+	// asks (envtrust.Inherited, explicit empty included), so the twin
+	// resolves what the host resolves, planted included: the state the
+	// reader consults does not cross, the RESOLUTION does.
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT":       "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":       "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
+	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
+	// ADR-163: the run's price-feed table, folded by the server and
+	// planted on the run's environment (credroute overlay). The crossing
+	// crosses the overlay's bytes verbatim — explicit empty included, so
+	// a workspace .env cannot write the table the in-container catalog
+	// prices runs from.
+	"ITERION_GATEWAY_PRICE_FEED": "crosses on a gateway node as the run's own table, the credroute overlay's bytes verbatim (explicit empty included): an absent name lets the workspace .env fill one no server folded, and catalogEnv refuses planted values on both sides anyway",
 }
 
 // Why a name stays on the host.
@@ -102,19 +128,21 @@ type hostSideRead struct {
 }
 
 var hostSideEnvReads = map[string]hostSideRead{
+	"ITERION_OUTPUT_CORRECTION_BUDGET":     {"the host executor owns validation and reserves correction turns; the runner executes only the reserved task", []string{"DefaultOutputCorrectionBudget"}},
 	"ITERION_CLAW_COMPACT_THRESHOLD_RATIO": {whyTaskField, []string{"resolveCompaction"}},
 	"ITERION_CLAW_COMPACT_PRESERVE_RECENT": {whyTaskField, []string{"resolveCompaction"}},
 	"ITERION_COMPRESS":                     {whyTaskField, []string{"NewClawExecutor"}},
+	"ITERION_REWRITE_SANDBOX":              {"the rewriter chain's placement for a sandboxed task, a host-side decision taken where the command is resolved — the runner's tasks carry no sandbox, so it never takes it", []string{"NewClawExecutor"}},
 	"ITERION_AUTO_MEMORY":                  {whyTaskField, []string{"NewClawExecutor"}},
 	"ITERION_AMBIENT_CONTEXT":              {whyTaskField, []string{"NewClawExecutor"}},
-	"ITERION_CLAW_SLASH_COMMANDS":          {whyTaskField, []string{"expandWorkspaceSlashCommand"}},
+	"ITERION_CLAW_SLASH_COMMANDS":          {whyTaskField, []string{"SlashCommandsDisabled"}},
 	"ITERION_CLAW_SLASH_COMMAND_MAX_BYTES": {whyTaskField, []string{"slashCommandMaxBytes"}},
 	"ITERION_PERMISSION":                   {"resolved by the executor into the node's policy, which crosses as the permission_policy envelope", []string{"NewClawExecutor"}},
 	"ITERION_NODE_MAX_RETRIES":             {whyBudget, []string{"RetryPolicyFromEnv"}},
 	"ITERION_NODE_MAX_TRANSIENT_RETRIES":   {whyBudget, []string{"RetryPolicyFromEnv"}},
 	"ITERION_DEFAULT_BACKEND":              {whyExecutor, []string{"(*ClawExecutor).resolveBackendName"}},
-	"ITERION_DEFAULT_SUPERVISOR_MODEL":     {whyExecutor, []string{"(*ClawExecutor).executeLLMRouterUnified"}},
-	"ITERION_VERIFIED_ACTION_MODEL":        {whyExecutor, []string{"(*ClawExecutor).recoveryModel"}},
+	"ITERION_DEFAULT_SUPERVISOR_MODEL":     {whyExecutor, []string{"routerModelFallback"}},
+	"ITERION_VERIFIED_ACTION_MODEL":        {whyExecutor, []string{"recoveryModelFallback"}},
 	"ITERION_ROUTE_COOLDOWN":               {whyExecutor, []string{"NewClawExecutor"}},
 	"ITERION_SECRETS_REDACT":               {whySinkGuard, []string{"secretGuardConfigFromEnv"}},
 	"ITERION_SECRETS_REDACT_HEURISTIC":     {whySinkGuard, []string{"secretGuardConfigFromEnv"}},
@@ -122,6 +150,7 @@ var hostSideEnvReads = map[string]hostSideRead{
 	"ITERION_SECRETS_REDACT_MIN_SCORE":     {whySinkGuard, []string{"secretGuardConfigFromEnv"}},
 	"ITERION_SECRETS_PLACEHOLDERS":         {whySinkGuard, []string{"secretGuardConfigFromEnv"}},
 	"ITERION_TREE_NOISE":                   {whyHostTool, []string{"(*ClawExecutor).treeNoiseEnvAppend"}},
+	"ITERION_SCRIPT_DATA_SPILL_MAX":        {"the bound on a script node's data written into its script, read where the executor writes the script file", []string{"scriptDataSpillMaxFromEnv"}},
 }
 
 // binaryHostOnly: functions of the runner binary that only another command
@@ -138,15 +167,26 @@ var launcherOnly = map[string]string{
 // ${NAME} a tool command spells — never a knob. The exemption holds for the
 // pair it names alone: the function that reads, and the reader it calls.
 var dynamicEnvReads = map[[2]string]string{
-	{"forwardableProviderEnv", "os.Getenv"}: "the forwarding loop itself, over providerCredentialEnvVars",
+	{"forwardableProviderEnv", "envGetenv"}: "the forwarding loop itself, over providerCredentialEnvVars — through the env seam (#2808), so a carried environment is what crosses",
+	// The same loop, asking provenance on the routing subset: the name is
+	// the list's, and what crosses is the value the HOST inherited — a
+	// routing name this host's project `.env` planted would spend the run's
+	// own credential at a host the repository under review chose.
+	{"forwardableProviderEnv", "internal/envtrust.Inherited"}: "the same forwarding loop, over providerRoutingEnvVars",
 	// The `${NAME}` references a tool command spells are read through the
 	// lookup its reader is handed, so they are classified where that lookup
 	// is passed: templateExpanders' ToolBodyEnv / expandBracedEnvSteps.
 }
 
 // envEnumerations: functions that hand the whole environment on, and read
-// no knob from it.
+// no knob from it. envEnviron is the seam's root — the one place the
+// process environment is enumerated; every other entry is a caller of it,
+// tracked because envEnumerators names the seam (a whole-env consumer the
+// table does not know fails the scan).
 var envEnumerations = map[string]string{
+	"envEnviron":                            "the env seam's whole-env read (#2808): answers the context-carried environment, or the process's by default, for every consumer below",
+	"(*ClawBackend).Execute":                "the attempt's posture (ADR-161): the whole environment captured once and pinned on the attempt's context, which every read of the attempt answers from — in the container, the env the crossing composed, which is the point",
+	"resolveClawCall":                       "the claw arm's posture (ADR-161): the attempt's capture when one is pinned, else the whole environment captured for this one resolution — read below through the seam, name by name",
 	"BuildSecretGuard":                      whySinkGuard + ": every value in the env is a secret candidate",
 	"(*ClawExecutor).toolNodeCommand":       whyHostTool,
 	"(*ClawExecutor).toolNodeScriptCommand": whyHostTool,
@@ -158,31 +198,52 @@ var envEnumerations = map[string]string{
 const whyGatewayEnv = "the gateway's own env, which forwardableProviderEnv's gateway branch carries for a gateway node, with the host's catalog answer"
 
 var getterHandoffs = map[string]string{
-	"pkg/backend/compatgw.FromEnv":            whyGatewayEnv,
-	"pkg/backend/compatgw.ResolveCatalog":     whyGatewayEnv,
-	"pkg/backend/compatgw.CheckOperatorTable": whyGatewayEnv,
+	"pkg/backend/compatgw.FromEnv":             whyGatewayEnv,
+	"pkg/backend/compatgw.ResolveCatalog":      whyGatewayEnv,
+	"pkg/backend/compatgw.ResolveCatalogQuiet": whyGatewayEnv,
+	"pkg/backend/compatgw.CheckOperatorTable":  whyGatewayEnv,
+}
+
+// consultsHandoffs: the {callee, reader} pairs a state-consulting reader is
+// handed to ON PURPOSE. Everywhere else the refusal stands: what such a
+// reader answers from is state that does not cross, so a name read through
+// it would differ host/container. At a classified pair the handed reader
+// DEFINES what crosses — the divergence the refusal guards against is the
+// point. An entry whose site is gone is dropped, like every table here.
+var consultsHandoffs = map[[2]string]string{
+	{"pkg/backend/compatgw.FromEnv", "internal/envtrust.Inherited"}: "the crossing's gateway branch (forwardableProviderEnv): a gateway route a workspace .env planted must not cross (#2813) — Inherited reads a planted name as unset and the node fails loudly, by name",
 }
 
 // notEnvNames: constants this package spells like an env name, which no code
 // reads from the environment, with what they are.
-var notEnvNames = map[string]string{}
+var notEnvNames = map[string]string{
+	"ITERION_STRICT_OUTPUT_VALIDATION": "spelled in ToolStdoutNotJSONError's message, for the reader of a refusal: the dial is the engine's (pkg/runtime reads it once per engine), and its verdict reaches this package on the context (ToolContract)",
+	"ITERION_STRICT_OUTPUT_REFS":       "spelled in UnresolvedOutputRefError's message, for the reader of a refusal: the dial is the engine's (pkg/runtime reads it once per engine), and its verdict reaches this package on the context (ToolContract)",
+}
 
 // envWrites: variables this package sets in an environment it hands on — the
 // crossing itself, a tool node's command, a settings hook's — and never
 // reads.
 const (
 	whyCrossingSets = "set in the crossing by forwardableProviderEnv's gateway branch, for the in-container factory"
+	whyCatalogEmpty = "set in the crossing by forwardableProviderEnv's gateway branch as an explicit empty: a local source of the in-container catalog, which the host's own forwarded record answers for (the reader is pkg/backend/compatgw)"
+	whyEffortsMerge = "set in the crossing by forwardableProviderEnv's gateway branch as the host's merged accepted-efforts table (compatgw.CrossingReasoningEfforts over credroute.Inherited: the env table's valid entries under the run's feed-table efforts, explicit empty included), so an in-container route — an older image's included — maps an effort by the host's answer, never by a table the workspace .env or a devcontainer.json planted (the reader is pkg/backend/compatgw)"
 	whyForfaitDir   = "set in the crossing to where the run's forfait lands in the container"
 	whyCodexHome    = "set in the crossing to where a ChatGPT forfait lands in the container: the run's own, or the copy of the host's a dispatch writes"
 	whyHookEnv      = "the event a settings hook's command is told about, set in its env"
 	whyToolEnv      = "set in a tool node command's env"
+	whyEngineChild  = "set by the engine on every child it spawns against the workspace — a tool node's command, a delegate task's env, the runner crossing — so a re-entered iterion does not auto-load the repository's `.env` (#2844)"
+	whyRunTrust     = "set by the engine, for an untrusted run only, on every child it spawns against the workspace — a tool node's command, a delegate task's env, the runner crossing — so a re-entered iterion adopts the run's trust and never loads the outsider's `.env` (ADR-162); the readers are cmd/iterion's main and pkg/cli's iterion run"
 )
 
 var envWrites = map[string]string{
-	"OPENAI_COMPATIBLE_BASE_URL":         whyCrossingSets,
-	"OPENAI_COMPATIBLE_API_KEY":          whyCrossingSets,
-	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE": whyCrossingSets,
-	"ITERION_OPENAI_COMPATIBLE_RESOLVED": whyCrossingSets,
+	"OPENAI_COMPATIBLE_BASE_URL":          whyCrossingSets,
+	"OPENAI_COMPATIBLE_API_KEY":           whyCrossingSets,
+	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":  whyCrossingSets,
+	"ITERION_OPENAI_COMPATIBLE_RESOLVED":  whyCrossingSets,
+	"OPENAI_COMPATIBLE_MODELS":            whyCatalogEmpty,
+	"OPENAI_COMPATIBLE_CATALOG_PROVIDER":  whyCatalogEmpty,
+	"OPENAI_COMPATIBLE_REASONING_EFFORTS": whyEffortsMerge,
 	// The engine-owned sandbox proxy channel: this package only sets it in
 	// the runner env it hands on; the reader is pkg/backend/compatgw.
 	"ITERION_SANDBOX_PROXY_ENDPOINT": whyCrossingSets,
@@ -197,6 +258,8 @@ var envWrites = map[string]string{
 	"HOOK_MESSAGE_COUNT":             whyHookEnv,
 	"ITERION_ARTIFACT_FILES_DIR":     whyToolEnv,
 	"ITERION_ENGINE_BIN":             whyToolEnv,
+	"ITERION_ENGINE_CHILD":           whyEngineChild,
+	"ITERION_RUN_TRUST":              whyRunTrust,
 }
 
 const runnerHomePrefixForTest = "/tmp/iterion-scratch/claw-runner-home-"
@@ -407,21 +470,46 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 // at a read of it. A road from anywhere else to a reader that also answers
 // from envStateConsults would go unseen.
 var crossingSpellings = map[string]string{
-	"var providerCredentialEnvVars": "the forwarding list itself",
-	"var providerEndpointEnvVars":   "the endpoint subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
-	"forwardableProviderEnv":        "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
-	"var byokEnvVar":                "the variable a run's own key crosses as, which forwardableProviderEnv sets",
-	"anthropicWireShadowEnv":        "the ambient keys the crossing blanks, so the run's forfait outranks them",
-	"deliverHostCodexForfait":       "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
-	"hostCodexForfait":              "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
+	"var providerCredentialEnvVars":      "the forwarding list itself",
+	"var providerRoutingEnvVars":         "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
+	"var clawSandboxCredentialEnvKeys":   "the crossing's credential channels, which stampedCrossingFunds reads a stamped run's composed dispatch env over (env[key] over the range) — a map read the scan cannot see, nothing is forwarded",
+	"var clawEnvFactories":               "the credential each env factory of the in-container registry reads, which containerSpend reads the composed dispatch env under (env[factory.key]) — a map read the scan cannot see, nothing is forwarded",
+	"containerSpend":                     "reads the composed dispatch env the container's walk lands on — the credential names its walk takes, the forfait dirs the crossing points at, the gateway pair — and the channel the crossing recorded for each (crossingFacts.funds): map reads the scan cannot see, nothing is forwarded",
+	"var clawStreamTimeoutEnvVars":       "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
+	"forwardableProviderEnv":             "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's: the forwarding loop crosses the explicit empty instead (named in crossingFacts.planted), and the gateway branch reads envtrust.Inherited (consultsHandoffs), so a planted gateway route fails the node loudly, by name",
+	"forwardableToolEnv":                 "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
+	"var byokEnvVar":                     "the variable a run's own key crosses as, which forwardableProviderEnv sets",
+	"anthropicWireShadowEnv":             "the ambient keys the crossing blanks, so the run's forfait outranks them",
+	"deliverHostCodexForfait":            "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
+	"hostCodexForfait":                   "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
+	"workspaceAgentMaxBytes":             "asks whether a project .env planted the ceiling override, and denies a planted value its authority — the host resolves the default, and forwardableProviderEnv's branch crosses the explicit empty in its place",
+	"(anthropicEnvWalk).liveCredentials": "names the env channel each credential of a built walk came from, as a map key the usage-cap meter digests (delegate.AmbientCredentialSetFingerprint) — no read: the walk's values were read where the factory reads them",
+	"stampedCrossingFunds":               "reads a stamped run's composed dispatch env over clawSandboxCredentialEnvKeys, asking whether a channel of the run is set — a map read the scan cannot see; the answer decides the typed refusal, nothing is forwarded",
+	"stripForfaitCrossing":               "withdraws the forfait's channels from an untrusted run's crossing (ADR-162 decision 7): sets CODEX_HOME and CLAUDE_CONFIG_DIR to the explicit empty and deletes ITERION_OPENAI_USE_OAUTH — a spelling, no read; the forfait's own reader is the OAuth dir it no longer names",
+	"stampWithheldEnvName":               "names the subscription refusal a stamped run's crossing keeps forwarding while it blanks the pod's credentials — a comparison, no read",
+	"(anthropicEnvWalk).envName":         "names the env variable a built walk's credential came from, as the key containerSpend reads the crossing's funds under — no read: the walk's values were read where the walk reads them",
+	"envFactoryCredential":               "names, beside its reads, the env variable the env factory's walk took its credential from, as the key a sandbox runner reads the crossing's record under (Registry.envSpend) — CODEX_HOME included, which it names and never reads: the login's own reader is secrets.LoadCodexCredentialsFromDisk",
 }
 
 // envStateConsults answer for a name from state other than the process env,
 // which the forwarding loop never copies. A reader that hands its name to one
 // answers differently on the host than in the container.
+//
+// consultsWhatCrosses is the one answer the state-not-crossing premise does
+// not reach: a name whose crossing carries the host's own RESOLUTION of the
+// same question the reader asks (crossedByItsOwnBranch — the branch writes
+// envtrust.Inherited's answer, explicit empty included), so the twin reads
+// what the host reads. The entry lives beside the premise it bounds, and the
+// assertion keeps it two-sided with crossedByItsOwnBranch: an entry whose
+// name stops crossing by its own branch reds here.
+var consultsWhatCrosses = map[string]string{
+	"ITERION_GATEWAY_PRICE_FEED":       "the run's feed table crosses as the ctx-overlaid value the server folded (ADR-163): the host reads it through credroute.Inherited and crosses those same bytes, so the in-container catalog prices by the table the host priced by",
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+}
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",
-	"internal/envtrust.Planted":     "the names a workspace .env planted, which the host refuses and the forwarding loop copies",
+	"internal/envtrust.Planted":     "the names a workspace .env planted, which the host refuses and the forwarding loop refuses to cross (a planted value crosses as the explicit empty, never as the host's raw value)",
 	"pkg/dsl/ir.ProcessEnvReadable": "the cloud process-env policy (ir.SetProcessEnvPolicy), installed by the cloud server and runner, never by the claw runner",
 }
 
@@ -470,11 +558,19 @@ var templateExpanders = map[string][2]int{
 	"expandBracedEnvSteps": {0, 1},
 }
 
-// envEnumerators hand back the whole environment.
+// envEnumerators hand back the whole environment. envEnviron is one too:
+// the seam's own read is attributed to it, and every CALLER of it is a
+// whole-env reader the table below must classify — a new consumer of the
+// whole environment arrives red here, not invisible behind the seam.
 var envEnumerators = map[string]bool{
 	"os.Environ":                    true,
 	"syscall.Environ":               true,
 	"golang.org/x/sys/unix.Environ": true,
+	"envEnviron":                    true,
+	// The resolver's posture (ADR-161): the seam's carried environment, or
+	// the process's whole environment captured with its provenance.
+	"pkg/backend/credroute.Environ": true,
+	"pkg/backend/credroute.Capture": true,
 }
 
 const (
@@ -543,10 +639,21 @@ func TestEveryEnvReadIsClassifiedForTheSandbox(t *testing.T) {
 		}
 	}
 	for _, name := range sortedKeys(scan.consulted) {
-		if _, crossed := crossedByItsOwnBranch[name]; forwarded[name] || crossed {
-			t.Errorf("%s crosses as the host's process env, which is what the forwarding loop copies, but it is read at %s through a reader that also answers from state that does not cross (envStateConsults): its sandboxed twin would see another value — read it as forwardableProviderEnv does, with os.Getenv, or make what crosses resolve it the same way",
-				name, strings.Join(scan.consulted[name], ", "))
+		_, crossed := crossedByItsOwnBranch[name]
+		if !forwarded[name] && !crossed {
+			continue
 		}
+		if _, allowed := consultsWhatCrosses[name]; allowed {
+			// The allowance is two-sided: it answers because the crossing
+			// carries the host's own resolution, so a name that leaves its
+			// own-branch crossing strands the allowance on a raw copy.
+			if !crossed {
+				t.Errorf("%s is allowed to consult state that does not cross only because it crosses by its own branch (the crossing carries the host's resolution); it is not crossed there any more — re-ask the forwarding", name)
+			}
+			continue
+		}
+		t.Errorf("%s crosses as the host's process env, which is what the forwarding loop copies, but it is read at %s through a reader that also answers from state that does not cross (envStateConsults): its sandboxed twin would see another value — read it as forwardableProviderEnv does, with os.Getenv, cross it by its own branch with the host's resolution (crossedByItsOwnBranch, named in consultsWhatCrosses), or make what crosses resolve it the same way",
+			name, strings.Join(scan.consulted[name], ", "))
 	}
 	for _, name := range sortedKeys(scan.spelled) {
 		_, crossed := crossedByItsOwnBranch[name]
@@ -650,6 +757,21 @@ func TestEveryEnvReadIsClassifiedForTheSandbox(t *testing.T) {
 			t.Errorf("getterHandoffs lists %s, which this package no longer hands an env reader: drop the entry", callee)
 		}
 	}
+	consultsPairs := make([][2]string, 0, len(consultsHandoffs))
+	for pair := range consultsHandoffs {
+		consultsPairs = append(consultsPairs, pair)
+	}
+	sort.Slice(consultsPairs, func(i, j int) bool {
+		if consultsPairs[i][0] != consultsPairs[j][0] {
+			return consultsPairs[i][0] < consultsPairs[j][0]
+		}
+		return consultsPairs[i][1] < consultsPairs[j][1]
+	})
+	for _, pair := range consultsPairs {
+		if !scan.consultsUsed[pair] {
+			t.Errorf("consultsHandoffs lists %s handed %s, which no call site does anymore: drop the entry", pair[1], pair[0])
+		}
+	}
 }
 
 func btoi(b bool) int {
@@ -688,6 +810,7 @@ type envScan struct {
 	spelled      map[string][]envRead // every constant spelled like an env name, by site
 	consulted    map[string][]string  // name → reads through a reader that consults envStateConsults
 	dynamicUsed  map[[2]string]bool
+	consultsUsed map[[2]string]bool  // consultsHandoffs pairs the walk exercised
 	enumerations map[string][]string // function → positions
 	handoffs     map[string][]string // callee handed a reader → positions
 	reachedFrom  map[string]string   // function the runner reaches → the one it is reached from, or what enters it
@@ -1588,6 +1711,42 @@ func runnerReach(mod typedModule, problem func(string, ...any)) (reached map[str
 	return reached, cut
 }
 
+// litClosure is a function literal with its parameter flow, precomputed
+// per declaration so readThroughClosure can recognise the closure idiom.
+type litClosure struct {
+	lit  *ast.FuncLit
+	flow paramFlow
+}
+
+// readThroughClosure reports whether the env read of arg happens inside a
+// function literal whose own FIRST parameter carries the name — the
+// closure idiom a context-bound reader takes at a handoff site
+// (getenv := func(name string) string { return envGetenv(ctx, name) }),
+// the only shape in which a carried environment can be handed to a package
+// taking a func(string) string (compatgw's, #2808 slice 4). The literal
+// must BE a reader (isReaderRef: it hands that parameter to an exact-name
+// reader), so the exemption is the same as a top-level reader's — the
+// literal's callers and handoffs own the attribution: a local call
+// spelling a constant is attributed by readsOf, a handoff is classified
+// in getterHandoffs, and a literal reading anything else reddens here.
+func readThroughClosure(lits []litClosure, info *types.Info, readers envReaders, arg ast.Expr) bool {
+	var best *litClosure
+	pos := arg.Pos()
+	for i := range lits {
+		l := &lits[i]
+		if l.lit.Body.Pos() <= pos && pos < l.lit.Body.End() {
+			if best == nil || l.lit.Body.Pos() > best.lit.Body.Pos() {
+				best = l
+			}
+		}
+	}
+	if best == nil {
+		return false
+	}
+	i, ok := best.flow.passedAs(arg)
+	return ok && i == 0 && readers.isReaderRef(info, best.lit)
+}
+
 // scanPackageEnvReads collects every env name this package reads, by site,
 // and what the sandbox runner reaches of it. A read whose name is not a
 // constant is a problem, unless the function reads the variable its own
@@ -1601,7 +1760,7 @@ func scanPackageEnvReads(t *testing.T) envScan {
 	mod := loadTypedModule(t, fset)
 	model, info := mod.model, mod.model.info
 
-	scan := envScan{reads: map[string][]envRead{}, spelled: map[string][]envRead{}, consulted: map[string][]string{}, dynamicUsed: map[[2]string]bool{}, enumerations: map[string][]string{}, handoffs: map[string][]string{}}
+	scan := envScan{reads: map[string][]envRead{}, spelled: map[string][]envRead{}, consulted: map[string][]string{}, dynamicUsed: map[[2]string]bool{}, consultsUsed: map[[2]string]bool{}, enumerations: map[string][]string{}, handoffs: map[string][]string{}}
 	problem := func(format string, args ...any) { scan.problems = append(scan.problems, fmt.Sprintf(format, args...)) }
 	at := func(pos token.Pos) string {
 		p := fset.Position(pos)
@@ -1797,6 +1956,19 @@ func scanPackageEnvReads(t *testing.T) envScan {
 			callTargets := map[*ast.Ident]bool{}
 			handedTo := map[*ast.Ident]string{}
 			lookups := map[*ast.Ident]bool{}
+			// The closure idiom (#2808, slice 4): a context-bound reader at
+			// a handoff site — getenv := func(name string) string { return
+			// envGetenv(ctx, name) }. Collect this declaration's literal
+			// flows once, so a read whose name is a literal's own first
+			// parameter is attributed like a top-level reader's (its callers
+			// and handoffs own it) instead of refused as non-constant.
+			var litClosures []litClosure
+			ast.Inspect(decl, func(n ast.Node) bool {
+				if fl, ok := n.(*ast.FuncLit); ok {
+					litClosures = append(litClosures, litClosure{fl, newParamFlow(info, nil, fl.Type, fl.Body)})
+				}
+				return true
+			})
 			ast.Inspect(decl, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -1838,7 +2010,12 @@ func scanPackageEnvReads(t *testing.T) envScan {
 					default:
 						handedTo[ref] = label
 						if readers.consultsRef(info, arg) {
-							problem("%s: an env reader that also answers from envStateConsults handed to %s: what it reads there is not what crosses — hand it os.Getenv", at(arg.Pos()), label)
+							pair := [2]string{label, funcLabelOf(info, ref)}
+							if consultsHandoffs[pair] == "" {
+								problem("%s: an env reader that also answers from envStateConsults handed to %s: what it reads there is not what crosses — hand it os.Getenv, or classify the pair in consultsHandoffs with why the divergence is the point", at(arg.Pos()), label)
+							} else {
+								scan.consultsUsed[pair] = true
+							}
 						}
 					}
 				}
@@ -1853,6 +2030,9 @@ func scanPackageEnvReads(t *testing.T) envScan {
 							continue
 						}
 						if i, ok := flow.passedAs(rd.arg); ok && readers.args[where][i] == exactName {
+							continue
+						}
+						if readThroughClosure(litClosures, info, readers, rd.arg) {
 							continue
 						}
 						if pair := [2]string{where, rd.callee}; dynamicEnvReads[pair] != "" {
@@ -1896,6 +2076,17 @@ func scanPackageEnvReads(t *testing.T) envScan {
 				}
 				fn, ok := info.Uses[id].(*types.Func)
 				if !ok {
+					// A variable or field HOLDING an env reader (the closure
+					// idiom's getenv) follows the reader rule: called at the
+					// read, or handed to a call getterHandoffs classifies —
+					// any other reference is a reader out of sight.
+					if v, isVar := info.Uses[id].(*types.Var); isVar && readers.holds(v) {
+						if callee, handed := handedTo[id]; handed {
+							scan.handoffs[callee] = append(scan.handoffs[callee], at(id.Pos()))
+							return true
+						}
+						problem("%s: the env reader held by %s referenced other than by calling it: call it at the read, so the name it reads is spelled there", at(id.Pos()), v.Name())
+					}
 					return true
 				}
 				label := funcLabel(fn)
@@ -1957,4 +2148,129 @@ func funcLabelOf(info *types.Info, id *ast.Ident) string {
 		return funcLabel(fn)
 	}
 	return ""
+}
+
+// TestTheRunnerReceivesNoRunnerOwnNameFromTheLauncher holds the runner-own
+// class to the env map the sandbox driver is handed for the runner (opts.Env)
+// at the end of the full dispatch through executeViaSandboxRunner, on a
+// container driver — not to one of the maps it is assembled from: no
+// runner-own name may reach it, whatever its value (a copy of the
+// launcher's, or a location derived from its host — the launcher's HOME holds
+// real credential files, and the names point at files that exist), and HOME
+// is exactly the runner home the engine sets. Every name is set on the
+// launcher both ways an env road reads it: the process and the ctx-carried
+// env (PATH on the ctx alone — the dispatch itself spawns). The cases drive
+// the roads the dispatch branches on: a trusted and an untrusted task, the
+// host's codex forfait, the run's Claude forfait.
+func TestTheRunnerReceivesNoRunnerOwnNameFromTheLauncher(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		forfait       bool
+		untrusted     bool
+		claudeForfait bool
+	}{
+		{name: "plain"},
+		{name: "host codex forfait", forfait: true},
+		{name: "untrusted", untrusted: true},
+		{name: "run claude forfait", claudeForfait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operatorEnv(t)
+			launcher := carriedEnv{}
+			if tc.forfait {
+				launcher["CODEX_HOME"] = hostCodexHome(t, hostForfaitBlob)
+				for k, v := range map[string]string{"ITERION_OPENAI_USE_OAUTH": "1", "OPENAI_API_KEY": "sk-env", "OPENAI_BASE_URL": ""} {
+					t.Setenv(k, v)
+					launcher[k] = v
+				}
+			}
+			// Directories the test itself needs exist before TMPDIR and HOME move.
+			box := newDeliverySandbox(t)
+			workDir := t.TempDir()
+			home := t.TempDir()
+			real := map[string]string{"HOME": home, "TMPDIR": t.TempDir()}
+			// Real credential files, under HOME and where the names point: a
+			// road that only copies a location when the file exists fires.
+			files := t.TempDir()
+			for name, rel := range map[string]string{
+				"KUBECONFIG": "kubeconfig", "NPM_CONFIG_USERCONFIG": "npmrc", "NPM_CONFIG_GLOBALCONFIG": "npmrc-global",
+				"AWS_SHARED_CREDENTIALS_FILE": "aws-credentials", "DOCKER_CONFIG": "docker", "GH_CONFIG_DIR": "gh",
+				"XDG_CACHE_HOME": "cache", "PWD": "pwd",
+			} {
+				path := filepath.Join(files, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				real[name] = path
+			}
+			for _, rel := range []string{".kube/config", ".docker/config.json", ".config/gh/hosts.yml", ".npmrc", ".aws/credentials"} {
+				path := filepath.Join(home, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, decision := range vendoredToolEnvDecision {
+				if decision.class != toolClassRunnerOwn {
+					continue
+				}
+				value := "/launcher/" + strings.ToLower(name)
+				if dir, ok := real[name]; ok {
+					value = dir
+				}
+				launcher[name] = value
+				if name != "PATH" {
+					t.Setenv(name, value)
+				}
+			}
+			if _, ok := launcher["HOME"]; !ok {
+				t.Fatal("no runner-own HOME in the classification: the class lost its anchor")
+			}
+			ctx := withCarriedEnv(context.Background(), launcher)
+			task := delegate.Task{NodeID: "entry", Model: "openai/gpt-6", WorkDir: workDir, Sandbox: box}
+			if tc.untrusted {
+				task.WorkspaceTrust = store.RunTrustFork
+			}
+			if tc.claudeForfait {
+				ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+					OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+				})
+				task.Model = "anthropic/claude-opus-5-5"
+			}
+			_, dispatchErr := newTestClawBackend().executeViaSandboxRunner(ctx, task)
+			if len(box.runEnvs) != 1 {
+				t.Fatalf("the dispatch started %d runners, want one (dispatch error: %v)", len(box.runEnvs), dispatchErr)
+			}
+			received := box.runEnvs[0]
+			if tc.forfait && received["CODEX_HOME"] == "" {
+				t.Fatal("no CODEX_HOME reached the runner: the forfait road this case drives was not taken")
+			}
+			if tc.claudeForfait && received["CLAUDE_CONFIG_DIR"] == "" {
+				t.Fatal("no CLAUDE_CONFIG_DIR reached the runner: the Claude forfait road this case drives was not taken")
+			}
+			if _, ok := RunTrustEnvEntry(task.WorkspaceTrust); ok != tc.untrusted {
+				t.Fatalf("task trust %q: the untrusted road this case drives is not the one taken", task.WorkspaceTrust)
+			}
+			for _, name := range slices.Sorted(maps.Keys(launcher)) {
+				if vendoredToolEnvDecision[name].class != toolClassRunnerOwn {
+					continue
+				}
+				got, ok := received[name]
+				if name == "HOME" {
+					if want := clawRunnerHome(ctx, task); got != want {
+						t.Errorf("the runner received HOME=%q, want the runner home %q (clawRunnerHome)", got, want)
+					}
+					continue
+				}
+				if ok {
+					t.Errorf("the runner received %s=%q: it is runner-own — the container's process must read its own", name, got)
+				}
+			}
+		})
+	}
 }

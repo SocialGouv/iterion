@@ -39,7 +39,7 @@ export function OrgQuotasSection({
 
   return (
     <section className="space-y-3 mb-6">
-      <h4 className="font-medium">Quotas</h4>
+      <h3 className="font-medium">Quotas</h3>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         <Field label="Memory quota (GiB, 0 = default)">
           <Input

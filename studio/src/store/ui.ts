@@ -42,6 +42,18 @@ export const INSPECTOR_WIDTH_MAX = 600;
 const INSPECTOR_COLLAPSED_KEY = "iterion.inspectorCollapsed";
 const SIDEBAR_COLLAPSED_KEY = "iterion.sidebarCollapsed";
 const CHAT_ENTER_SUBMITS_KEY = "iterion.chatEnterSubmits";
+const MOTION_REDUCED_KEY = "iterion.motionReduced";
+const SINGLE_KEY_SHORTCUTS_KEY = "iterion.singleKeyShortcuts";
+
+// applyMotion mirrors the animation setting onto the document root so the
+// CSS resets (app.css, cloud-home.css) gate every registered animation
+// without each component reading the store (RGAA 13.8: the in-page stop
+// control, distinct from the OS-level prefers-reduced-motion query).
+function applyMotion(reduced: boolean) {
+  if (typeof document === "undefined") return;
+  if (reduced) document.documentElement.setAttribute("data-motion", "reduced");
+  else document.documentElement.removeAttribute("data-motion");
+}
 
 function readInspectorWidth(): number {
   return readNumberFlag(INSPECTOR_WIDTH_KEY, INSPECTOR_WIDTH_DEFAULT, {
@@ -142,6 +154,14 @@ interface UIState {
   // submits and Enter inserts a newline (legacy behavior).
   chatEnterSubmits: boolean;
   setChatEnterSubmits: (value: boolean) => void;
+  // Infinite animations (pulses, loop dash-flow, marquee, caret) collapse
+  // when this is on; the root data-motion attribute drives the CSS reset.
+  motionReduced: boolean;
+  setMotionReduced: (value: boolean) => void;
+  // Bare-keypress shortcuts (?, /, v, h, j, k, g-chords) answer nothing
+  // when this is off — the registry lib/shortcuts.ts holds the list.
+  singleKeyShortcuts: boolean;
+  setSingleKeyShortcuts: (value: boolean) => void;
   // File picker
   setFilePickerOpen: (open: boolean) => void;
   notifyFilesChanged: () => void;
@@ -169,10 +189,21 @@ export const useUIStore = create<UIState>((set) => ({
   inspectorWidth: readInspectorWidth(),
   inspectorCollapsed: readBooleanFlag(INSPECTOR_COLLAPSED_KEY),
   chatEnterSubmits: readBooleanFlag(CHAT_ENTER_SUBMITS_KEY, true),
+  motionReduced: readBooleanFlag(MOTION_REDUCED_KEY, false),
+  singleKeyShortcuts: readBooleanFlag(SINGLE_KEY_SHORTCUTS_KEY, true),
   filePickerOpen: false,
   filesChangedAt: 0,
   canvasActions: { arrange: null, fitView: null },
   commandPaletteOpen: false,
+  setMotionReduced: (value) => {
+    writeBooleanFlag(MOTION_REDUCED_KEY, value);
+    applyMotion(value);
+    set({ motionReduced: value });
+  },
+  setSingleKeyShortcuts: (value) => {
+    writeBooleanFlag(SINGLE_KEY_SHORTCUTS_KEY, value);
+    set({ singleKeyShortcuts: value });
+  },
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
   sidebarCollapsed: readBooleanFlag(SIDEBAR_COLLAPSED_KEY),
@@ -281,3 +312,6 @@ export const useUIStore = create<UIState>((set) => ({
   setCanvasActions: (actions) =>
     set({ canvasActions: actions ?? { arrange: null, fitView: null } }),
 }));
+
+// A stored reduced-motion choice applies before first render.
+applyMotion(useUIStore.getState().motionReduced);

@@ -29,6 +29,17 @@ func TestEveryProjectionKeyIsACanonicalFixedPoint(t *testing.T) {
 // agreeing here instead of in a run.
 func TestEveryNativeToolIsGrantableAndBoundableByItsOwnSpelling(t *testing.T) {
 	for _, native := range claudeNativeTools {
+		// A name withheld from EVERY spawn is on the roster so that
+		// --disallowedTools can name it, and for no other reason: no
+		// declaration may grant it back. Pretending it is grantable would be
+		// the lie, not the exemption — and the withholding is itself pinned,
+		// by TestTheNamesNoHeadlessNodeMayKeepAreAlwaysWithheld.
+		if slices.Contains(headlessWithheldTools, native) {
+			if _, grantable := claudeNativeForCanonical[toolcatalog.CanonicalToolName(native)]; grantable {
+				t.Errorf("native %q is withheld from every spawn AND grantable by a declaration — the two rules contradict each other", native)
+			}
+			continue
+		}
 		key := toolcatalog.CanonicalToolName(native)
 		granted, ok := claudeNativeForCanonical[key]
 		if !ok {

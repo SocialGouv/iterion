@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // gitCommandTimeout bounds every `git` subprocess spawned by this
@@ -34,6 +36,19 @@ const gitCommandTimeout = 30 * time.Second
 // `available: false, reason: "not_git_repo"` so the studio can render a
 // neutral empty-state instead of a red error.
 var ErrNotGitRepo = errors.New("git: not a git repository")
+
+// IsNotRepositoryDiagnostic recognizes Git's C-locale repository-discovery
+// failures, including the distinct dangling-gitfile diagnostic in Git 2.56.
+// It classifies only the leading fatal diagnostic, never words in a path or
+// a later line. This says Git cannot read the repository; it does not prove
+// that its files or index may be discarded.
+func IsNotRepositoryDiagnostic(stderr string) bool {
+	line, _, _ := strings.Cut(strings.TrimSpace(stderr), "\n")
+	return line == "fatal: not a git repository" ||
+		strings.HasPrefix(line, "fatal: not a git repository:") ||
+		strings.HasPrefix(line, "fatal: not a git repository (") ||
+		strings.HasPrefix(line, "fatal: gitfile does not point to a valid repository: ")
+}
 
 // ErrUnknownRevision is returned when git rejects a revision/range that
 // no longer resolves in the repository (branch pruned, base commit
@@ -213,8 +228,26 @@ func NoRunHooks(args ...string) []string {
 	return append(slices.Clone(runHooksOff), args...)
 }
 
+// gitEnv returns the process environment for the engine's own git
+// gestures, minus the redirection variables SanitizeEnv drops, with the
+// locale pinned, and minus the git transport a project `.env` planted:
+// GIT_SSH_COMMAND and its family name the PROGRAM that carries every
+// network gesture (the H-10 probe measured a planted GIT_SSH_COMMAND
+// EXECUTED by the git binary before it dialled), and the loaders now
+// refuse the family at the plant — this drop is the belt at the read, for
+// a marker an older binary's loader left in a child. The operator's own
+// export is not planted: it survives, as any operator channel does.
 func gitEnv() []string {
-	return append(SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
+	env := SanitizeEnv(os.Environ())
+	out := make([]string, 0, len(env)+2)
+	for _, kv := range env {
+		if key, _, ok := strings.Cut(kv, "="); ok &&
+			envtrust.GitTransportName(key) && envtrust.Planted(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "LC_ALL=C", "LANG=C")
 }
 
 // run executes `git args...` with cwd=dir and returns combined stdout.
@@ -235,7 +268,7 @@ func run(dir string, args ...string) ([]byte, error) {
 			return nil, fmt.Errorf("git %s: timed out after %s", strings.Join(args, " "), gitCommandTimeout)
 		}
 		msg := stderr.String()
-		if strings.Contains(msg, "not a git repository") {
+		if IsNotRepositoryDiagnostic(msg) {
 			return nil, ErrNotGitRepo
 		}
 		if strings.Contains(msg, "Invalid revision range") ||

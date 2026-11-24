@@ -49,6 +49,7 @@ func toolDefNames(defs []delegate.ToolDef) []string {
 // Reddens on the mutation that deletes the refuseToolsWithNoSandboxPlacement
 // call from ClawBackend.Execute.
 func TestClawExecute_RefusesAToolWithNoSandboxPlacement(t *testing.T) {
+	t.Parallel()
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	task := delegate.Task{
 		NodeID:  "orchestrator",
@@ -86,6 +87,7 @@ func TestClawExecute_RefusesAToolWithNoSandboxPlacement(t *testing.T) {
 // Reddens on the mutation that hoists refuseToolsWithNoSandboxPlacement out
 // of the `task.Sandbox != nil` branch.
 func TestClawExecute_UnsandboxedNodeIsNeverPlacementRefused(t *testing.T) {
+	t.Parallel()
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	task := delegate.Task{
 		NodeID:   "orchestrator",
@@ -108,6 +110,7 @@ func TestClawExecute_UnsandboxedNodeIsNeverPlacementRefused(t *testing.T) {
 //
 // Reddens on the mutation that drops the filter from ClawBackend.Execute.
 func TestClawExecute_DropsAnUnplaceableToolThePolicyDenies(t *testing.T) {
+	t.Parallel()
 	pol, err := permission.NewPolicy(permission.ModeDeny, []string{"read_file"}, nil, []string{"lsp"})
 	if err != nil {
 		t.Fatalf("NewPolicy: %v", err)
@@ -133,6 +136,7 @@ func TestClawExecute_DropsAnUnplaceableToolThePolicyDenies(t *testing.T) {
 // Reddens on the mutation that reinstates a PlacementRefused refusal in
 // buildTask.
 func TestBuildTask_LeavesThePlacementRefusalToExecute(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		logger:       iterlog.Nop(),
 		toolRegistry: placementRegistry(t, "read_file", "lsp", "todo_write"),
@@ -154,6 +158,7 @@ func TestBuildTask_LeavesThePlacementRefusalToExecute(t *testing.T) {
 // reach a filesystem or start a process are exactly the ones the runner
 // registers locally, so the sandbox must not cost the node its own work.
 func TestBuildTaskKeepsSandboxExecutableToolsOnASandboxedNode(t *testing.T) {
+	t.Parallel()
 	declared := []string{"bash", "read_file", "write_file", "diagnostic_shell", "repl", "notebook_edit", "agent"}
 	e := &ClawExecutor{
 		logger:       iterlog.Nop(),
@@ -199,6 +204,7 @@ func (fakeAsyncHook) CollectAnswers(context.Context) (string, error)            
 //
 // Reddens on the mutation that deletes the async arm of ClawBackend.Execute.
 func TestClawExecute_RefusesAsyncInteractionInASandboxByType(t *testing.T) {
+	t.Parallel()
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	task := delegate.Task{
 		NodeID:            "asker",
@@ -220,6 +226,7 @@ func TestClawExecute_RefusesAsyncInteractionInASandboxByType(t *testing.T) {
 //
 // Reddens on the mutation that moves the refusal back into buildTask.
 func TestSandboxedClawAsyncPrimaryFallsThroughToAnAsyncCapableRoute(t *testing.T) {
+	t.Parallel()
 	fallback := &asyncCapableRecorder{}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaw, NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}))
@@ -249,6 +256,7 @@ func TestSandboxedClawAsyncPrimaryFallsThroughToAnAsyncCapableRoute(t *testing.T
 // Reddens on the mutation that classifies `agent` (or any implicit grant)
 // PlacementRefused.
 func TestImplicitClawGrantsAreServableUnderASandbox(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{logger: iterlog.Nop(), sandbox: fakeSandboxRun{}}
 	f := backendFields{id: "n", tools: []string{"read_file"}, interaction: ir.InteractionAsync}
 	caps := []string{
@@ -277,6 +285,7 @@ func TestImplicitClawGrantsAreServableUnderASandbox(t *testing.T) {
 // nothing to withhold — and nothing to warn about, including from the
 // admission query that probes every node with ultracode on.
 func TestAssembleEffectiveTools_UltracodeGrantsAgentUnderASandboxToo(t *testing.T) {
+	t.Parallel()
 	f := backendFields{id: "n", tools: []string{"bash"}}
 	for _, e := range []*ClawExecutor{
 		{logger: iterlog.Nop()},

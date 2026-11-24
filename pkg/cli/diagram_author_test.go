@@ -58,7 +58,7 @@ func TestDiagramDrawsTheBotADocumentStandsFor(t *testing.T) {
 	if _, err := os.Stat("d/hello.bot"); err == nil {
 		t.Fatal("diagram wrote the .bot the document stands for")
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	for _, view := range views {
@@ -192,7 +192,7 @@ func TestDiagramRefusesADocumentAsItsBotIsRefused(t *testing.T) {
 			if _, err := os.Stat(dir + "/x.bot"); err == nil {
 				t.Fatal("a refused diagram wrote the .bot")
 			}
-			if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+			if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 				t.Fatalf("fmt --to bot: %v", err)
 			}
 			if _, botErr := diagramJSON(t, dir+"/x.bot", ""); botErr == nil || botErr.Error() != docErr.Error() {
@@ -225,7 +225,7 @@ func TestDiagramReadsADocumentAManifestExports(t *testing.T) {
 				t.Fatalf("%s: validate refuses the document of an exported main: %v", doc, err)
 			}
 		}
-		if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+		if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 			t.Fatalf("fmt --to bot: %v", err)
 		}
 		fromBot, err := diagramJSON(t, strings.TrimSuffix(doc, ".yaml"), "full")
@@ -256,7 +256,7 @@ func TestDiagramReadsADocumentsFragmentsWhereItsBotDoes(t *testing.T) {
 	}
 	jp, _ := jsonPrinter()
 	docValidate := RunValidate(doc, jp)
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	fromBot, err := diagramJSON(t, "s/bundle/workflows/other.bot", "full")
@@ -309,7 +309,7 @@ func TestADocumentWhoseBotFmtWillNotWriteOverIsRefused(t *testing.T) {
 			if err := RunValidate(doc, jp); err == nil || !strings.Contains(err.Error(), sentence) {
 				t.Fatalf("validate: %v, want the refusal saying %q", err, sentence)
 			}
-			res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
 			if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], tc.want) {
 				t.Fatalf("fmt --to bot --force: %v %q, want the refusal saying the .bot %s", err, res.Refused, tc.want)
 			}
@@ -332,7 +332,7 @@ func TestDiagramTakesADocumentWhoseBotEverySurfaceReadsBack(t *testing.T) {
 	if err := RunValidate(doc, jp); err != nil {
 		t.Fatalf("validate refuses what it reads as UPPER.BOT: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
 		t.Fatalf("fmt --to bot on UPPER.BOT.YAML: %v, want the conversion", err)
 	}
 	if _, err := os.Stat("u/UPPER.BOT"); err != nil {
@@ -354,7 +354,7 @@ func TestDiagramDoesNotDrawAMainDocumentInABundleAbove(t *testing.T) {
 	if docErr == nil || !strings.Contains(docErr.Error(), `unknown prompt "ask"`) {
 		t.Fatalf("the document was drawn in the bundle above: %v", docErr)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	if _, botErr := diagramJSON(t, "outer/sub/main.bot", ""); botErr == nil || botErr.Error() != docErr.Error() {
@@ -369,7 +369,7 @@ func TestADocumentOfAMainWhoseBundleDoesNotOpenIsRefusedAsItsBot(t *testing.T) {
 	inTempWorkspace(t)
 	writeBot(t, "m/manifest.yaml", "schema_version: 1\nname: probe\nexports: [not: a mapping\n")
 	doc := writeBot(t, "m/main.bot.yaml", helloDocWith(""))
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	const remedy = "give main.bot a directory of its own if this is not its bundle"
@@ -405,7 +405,7 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 	}
 	root := inTempWorkspace(t)
 	for _, tree := range []string{"bots", "examples"} {
-		copyTreeForTest(t, filepath.Join(repo, tree), filepath.Join(root, tree))
+		copyAuthoringCorpusForTest(t, filepath.Join(repo, tree), filepath.Join(root, tree))
 	}
 	var bots []string
 	for _, tree := range []string{"bots", "examples"} {
@@ -470,7 +470,7 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 			t.Fatalf("%s: the diagram of its document wrote it", bot)
 		}
 		drawn, refused := 0, 0
-		if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+		if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 			fmtRefused++
 			for key, s := range fromDoc {
 				if s.err == "" {
@@ -522,13 +522,61 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 	}
 }
 
-// copyTreeForTest copies the regular files of src under dst, directories
-// created as needed; a symlink is skipped.
-func copyTreeForTest(t *testing.T, src, dst string) {
+func TestAuthoringCorpusCopyOwnsItsRuntimeState(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	doc := writeBot(t, filepath.Join(src, "main.bot.yaml"), helloDocWith(""))
+	if result, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+		t.Fatalf("prepare the source with the real formatter: %v (%v)", err, result.Refused)
+	}
+	state := filepath.Join(src, ".iterion", "authoring")
+	if info, err := os.Stat(state); err != nil || !info.IsDir() {
+		t.Fatalf("the formatter did not establish source authoring state: %v", err)
+	}
+	private := []string{
+		filepath.Join(".iterion", "authoring", "host-only-state"),
+		filepath.Join("fragments", ".iterion", "run", "host-only-state"),
+	}
+	for _, path := range private {
+		writeBot(t, filepath.Join(src, path), "source session state\n")
+	}
+	resources := map[string]string{
+		filepath.Join("prompts", "context.md"):              "author context\n",
+		filepath.Join("assets", ".iterion"):                 "a regular authored file\n",
+		filepath.Join("assets", ".iterion-example", "data"): "an authored resource directory\n",
+	}
+	for path, body := range resources {
+		writeBot(t, filepath.Join(src, path), body)
+	}
+	copyAuthoringCorpusForTest(t, src, dst)
+	if err := os.Remove(filepath.Join(dst, "main.bot")); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := RunFmt(t.Context(), FmtOptions{Paths: []string{filepath.Join(dst, "main.bot.yaml")}, To: "bot"}); err != nil {
+		t.Fatalf("the copied corpus must acquire its own authoring lock: %v (%v)", err, result.Refused)
+	}
+	for _, path := range private {
+		if _, err := os.Stat(filepath.Join(dst, path)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("source session state crossed the corpus boundary at %s: %v", path, err)
+		}
+	}
+	for path, want := range resources {
+		got, err := os.ReadFile(filepath.Join(dst, path))
+		if err != nil || string(got) != want {
+			t.Errorf("authored resource %s = %q, %v; want %q", path, got, err, want)
+		}
+	}
+}
+
+// copyAuthoringCorpusForTest copies regular authoring files, excluding the
+// source session's .iterion directories and symlinks. The copy owns its state.
+func copyAuthoringCorpusForTest(t *testing.T, src, dst string) {
 	t.Helper()
 	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.IsDir() && d.Name() == ".iterion" {
+			return filepath.SkipDir
 		}
 		rel, err := filepath.Rel(src, p)
 		if err != nil {

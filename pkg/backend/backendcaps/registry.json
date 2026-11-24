@@ -8,20 +8,26 @@
       "default_preference": 1,
       "detection_order": 1,
       "native_tools": [
+        "Agent",
+        "AskUserQuestion",
         "Bash",
-        "Read",
+        "BashOutput",
+        "Edit",
         "Glob",
         "Grep",
-        "Write",
-        "Edit",
+        "KillShell",
         "MultiEdit",
         "NotebookEdit",
+        "Read",
+        "ScheduleWakeup",
+        "Skill",
+        "SlashCommand",
         "Task",
+        "TodoWrite",
+        "ToolSearch",
         "WebFetch",
         "WebSearch",
-        "ToolSearch",
-        "TodoWrite",
-        "Skill"
+        "Write"
       ],
       "cells": [
         {
@@ -48,6 +54,15 @@
             "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
           ],
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
         },
         {
           "name": "command-override",
@@ -77,11 +92,19 @@
         {
           "name": "image-presence",
           "axis": "image/presence",
-          "verdict": "unknown",
+          "verdict": "shipped",
           "evidence": [
-            "docs/backends.md:108"
+            "docker/llm-clis/package.json:6",
+            "sandbox/finalize/Dockerfile:40",
+            "Dockerfile:109",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "claude is reachable in both published families: the runner images carry the pinned node_modules/.bin on PATH and symlink it, the stock sandbox symlinks it. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "shipped",
+            "sandbox": "shipped"
+          },
+          "subject": "claude"
         },
         {
           "name": "interaction-async",
@@ -336,6 +359,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/codemode_tool_test.go:TestCodemodeCallsReachTheNodesOwnDoor"
+          ],
+          "detail": "The tool is registered on the generation loop that owns the tool dispatcher, so a program's calls are the node's own dispatches."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -363,11 +395,18 @@
         {
           "name": "image-presence",
           "axis": "image/presence",
-          "verdict": "unknown",
+          "verdict": "shipped",
           "evidence": [
-            "docs/backends.md:109"
+            "sandbox/finalize/Dockerfile:29",
+            "Dockerfile.runner-devbox:127",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "claw is served by the iterion binary itself, which both families copy onto PATH; no npm pin is involved. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "shipped",
+            "sandbox": "shipped"
+          },
+          "subject": "iterion"
         },
         {
           "name": "interaction-async",
@@ -482,11 +521,13 @@
         {
           "name": "subagents",
           "axis": "subagents",
-          "verdict": "typed-refused",
+          "verdict": "shipped",
           "evidence": [
-            "pkg/backend/tool/claw_subagent_refusal_test.go:TestTheProductionClawRegistryRefusesTheAgentTool"
+            "pkg/runview/claw_subagent_wiring_test.go:TestTheProductionHostWiresASubagentRunner",
+            "cmd/iterion/claw_runner_subagent_test.go:TestTheInContainerAgentToolReachesARunner",
+            "pkg/backend/model/subagent_parent_loop_test.go:TestAChildCannotExceedTheParentNodesToolSurface"
           ],
-          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+          "detail": "Synchronous, and bounded by the parent node: the child draws from the node's effective tools, inherits its permission policy and step budget, and its spend is debited to the node (#1940). Wired at both hosts, in process and in the sandbox container. No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
         },
         {
           "name": "tool-list",
@@ -622,6 +663,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -649,11 +699,19 @@
         {
           "name": "image-presence",
           "axis": "image/presence",
-          "verdict": "unknown",
+          "verdict": "partial",
           "evidence": [
-            "docs/backends.md:110"
+            "docker/llm-clis/package.json:8",
+            "Dockerfile:109",
+            "sandbox/finalize/Dockerfile:40",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "codex is reachable in the runner images (pinned, and the pinned node_modules/.bin is on PATH) and NOT in the stock sandbox, which extends no PATH and symlinks only claude and pi. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "shipped",
+            "sandbox": "unwired (no image)"
+          },
+          "subject": "codex"
         },
         {
           "name": "interaction-async",
@@ -908,6 +966,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -935,11 +1002,19 @@
         {
           "name": "image-presence",
           "axis": "image/presence",
-          "verdict": "unknown",
+          "verdict": "shipped",
           "evidence": [
-            "docs/backends.md:111"
+            "docker/llm-clis/package.json:7",
+            "Dockerfile:109",
+            "sandbox/finalize/Dockerfile:41",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "pi is reachable in the runner images through the pinned node_modules/.bin on PATH, with no symlink of its own, and in the stock sandbox through its symlink. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "shipped",
+            "sandbox": "shipped"
+          },
+          "subject": "pi"
         },
         {
           "name": "interaction-async",
@@ -1196,6 +1271,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -1223,11 +1307,18 @@
         {
           "name": "image-presence",
           "axis": "image/presence",
-          "verdict": "unknown",
+          "verdict": "unwired (no image)",
           "evidence": [
-            "docs/backends.md:113"
+            "docker/llm-clis/package.json:5",
+            "pkg/backend/delegate/grok.go:44",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "No published image carries the grok executable its adapter invokes: the pin manifest declares three CLIs and none is grok, which has no npm package upstream. The gap is the image's contents, so an operator image that ships the CLI lifts it. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "unwired (no image)",
+            "sandbox": "unwired (no image)"
+          },
+          "subject": "grok"
         },
         {
           "name": "interaction-async",
@@ -1482,6 +1573,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -1509,11 +1609,18 @@
         {
           "name": "image-presence",
           "axis": "image/presence",
-          "verdict": "unknown",
+          "verdict": "unwired (no image)",
           "evidence": [
-            "docs/backends.md:112"
+            "docker/llm-clis/package.json:5",
+            "pkg/backend/delegate/kimi.go:34",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "No published image carries the kimi executable its adapter invokes: the pin manifest declares three CLIs and none is kimi, which has no npm package upstream. The gap is the image's contents, so an operator image that ships the CLI lifts it. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "unwired (no image)",
+            "sandbox": "unwired (no image)"
+          },
+          "subject": "kimi"
         },
         {
           "name": "interaction-async",
@@ -1768,6 +1875,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -1797,9 +1913,16 @@
           "axis": "image/presence",
           "verdict": "unwired (no image)",
           "evidence": [
-            "docs/backends.md:114"
+            "docker/llm-clis/package.json:5",
+            "pkg/backend/delegate/opencode.go:68",
+            "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
           ],
-          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+          "detail": "No published image carries the opencode executable its adapter invokes; baking it measures +178 MB and asks which of two live distribution lines to pin (opencode-ai 1.19, @opencode/cli 2.x), the choice #1643 reserves. The gap is the image's contents. CLI reachability on PATH, not multimodal image input.",
+          "scoped": {
+            "runner": "unwired (no image)",
+            "sandbox": "unwired (no image)"
+          },
+          "subject": "opencode"
         },
         {
           "name": "interaction-async",
@@ -1849,18 +1972,21 @@
           "axis": "permission",
           "verdict": "typed-refused",
           "evidence": [
-            "pkg/dsl/ir/validate_fallbacks.go:52"
+            "pkg/dsl/ir/validate_fallbacks.go:52",
+            "docs/backends.md:2914"
           ],
-          "detail": "C176 preserves the existing compiler gate membership."
+          "detail": "C176 preserves the existing compiler gate membership. Refused rather than merely unwired: a headless opencode run auto-rejects an ask verdict and auto-allows it under --auto/--yolo, so its own policy cannot pause the iterion run."
         },
         {
           "name": "permission-deny",
           "axis": "permission",
           "verdict": "typed-refused",
           "evidence": [
-            "pkg/dsl/ir/validate_fallbacks.go:52"
+            "pkg/dsl/ir/validate_fallbacks.go:52",
+            "docs/backends.md:2914",
+            "pkg/backend/delegate/opencode_permission_clilive_test.go:TestCLILiveOpenCodeConfigContentDeny"
           ],
-          "detail": "C176 preserves the existing compiler gate membership."
+          "detail": "C176 preserves the existing compiler gate membership, and the dispatch refusal is typed (CAPABILITY_UNSUPPORTED). Refused rather than merely unwired: the 1.x delivery (OPENCODE_PERMISSION) is removed from the 2.x line, and OPENCODE_CONFIG_CONTENT, re-measured on 2.2.5, holds alone and past a key-positioned file allow but still fails OPEN, silently, beside an agent-level permission, a default_agent, or an invalid policy string. Membership stays unearned until a live denial and the config-ownership refusal land together."
         },
         {
           "name": "permission-external-hook",

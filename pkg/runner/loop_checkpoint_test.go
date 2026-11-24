@@ -53,6 +53,8 @@ func (f *checkpointRun) Driver() string { return "fake-k8s" }
 // ExportWorkspace makes this driver copy-based in the eyes of the observer.
 func (f *checkpointRun) ExportWorkspace(context.Context) error { return nil }
 
+func (f *checkpointRun) ExportRunFiles(context.Context) error { return nil }
+
 func (f *checkpointRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts) (sandbox.ExecResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -256,6 +258,7 @@ type nothingToHoldRun struct {
 
 func (f *nothingToHoldRun) Driver() string                        { return "fake-k8s" }
 func (f *nothingToHoldRun) ExportWorkspace(context.Context) error { return nil }
+func (f *nothingToHoldRun) ExportRunFiles(context.Context) error  { return nil }
 func (f *nothingToHoldRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts) (sandbox.ExecResult, error) {
 	var joined string
 	if len(cmd) > 1 && cmd[0] == "sh" {

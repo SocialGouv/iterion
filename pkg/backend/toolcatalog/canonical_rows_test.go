@@ -81,8 +81,8 @@ func TestEveryRowOfTheSharedTableIsPinned(t *testing.T) {
 // does — so this test is what makes adding a backend to the set a deliberate
 // act rather than a side effect.
 //
-// `opencode` is the worked example (#1640): it drives `opencode --format json
-// run` with the prompt on stdin and reads no tool list, so `tools: [Bash,
+// `opencode` is the worked example (#1640): it drives `opencode run --format
+// json` with the prompt on stdin and reads no tool list, so `tools: [Bash,
 // Read]` on such a node validated with zero diagnostics until C270.
 func TestOnlyTheBackendsThatReceiveTheToolListAreNamed(t *testing.T) {
 	for _, backend := range []string{"claw", "claude_code", "codex"} {

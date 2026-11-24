@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // Capabilities expose les caractéristiques optionnelles d'un backend
@@ -115,23 +118,26 @@ type RunStore interface {
 	//
 	// SetRunCredStamp stamps the run with what its credential resolution
 	// produced (RunCredStamp): the stable audit identities of the
-	// credentials the publisher sealed for it — never secrets — and when
-	// the earliest credential it passed over reopens. Re-stamped on every
-	// resume: re-resolution may pick different credentials, and a stale
-	// stamp would meter a key the run no longer holds, or arm a retry on
-	// a credential that is no longer the one it was refused.
+	// credentials the publisher sealed for it — never secrets — the
+	// capacity subjects they draw on, and when the earliest credential it
+	// passed over reopens. Re-stamped on every resume: re-resolution may
+	// pick different credentials, and a stale stamp would meter a key the
+	// run no longer holds, or arm a retry on a credential that is no longer
+	// the one it was refused.
 	//
 	// SetRunLLMIdle marks the run as executing no model-calling node
-	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince.
-	// SetRunCredStamp also clears the marker: a re-resolution is a fresh
-	// attempt, which counts until it proves idle.
+	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince: an
+	// observability marker, not a slot release. SetRunCredStamp also clears
+	// it: a re-resolution is a fresh attempt.
 	//
 	// CountAliveRunsWithCredFingerprint counts runs in the queued or
-	// running states stamped with fingerprint whose LLMIdleSince is nil,
-	// excluding excludeRunID (the run being resolved is already persisted
-	// and must not count itself toward its own ceiling). Deliberately NOT
-	// tenant-scoped: a platform key serves every tenant on one ceiling,
-	// and a tenant key's runs all live in one tenant anyway.
+	// running states stamped with fingerprint — a credential's, or a
+	// capacity subject (Run.CapacitySubjects) — model-idle or not
+	// (Run.SpendsCredential), excluding excludeRunID (the run being
+	// resolved is already persisted and must not count itself toward its
+	// own ceiling). Deliberately NOT tenant-scoped: a platform key and a
+	// shared gateway serve every tenant on one ceiling, and a tenant key's
+	// runs all live in one tenant anyway.
 	SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error
 	SetRunLLMIdle(ctx context.Context, runID string, idleSince *time.Time) error
 	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
@@ -289,14 +295,18 @@ type RunStore interface {
 	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
 	// every exit so a stolen claim cannot consume its successor's), and
 	// claimed=false (with the current status) when someone else holds a
-	// fresh claim or the run is already merged.
-	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
+	// fresh claim or the run is already merged. expect anchors the claim
+	// to the run its caller loaded: a successor recreated under the same
+	// ID is never claimed — (false, "", zero, ErrRunDataIdentityChanged).
+	// A zero expect skips the check.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect ExpectedBirth) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
 	// UpdateRunMergeIf is the compare-and-set exit from the merge state
 	// machine: it persists upd's merge fields iff the current
 	// MergeStatus is in expectedFrom (empty string matches an unset
 	// field). Returns changed=false when the state drifted — the caller
 	// lost its claim or raced another writer — in which case nothing
-	// was written.
+	// was written. A checked upd.ExpectBirth that differs from the stored
+	// birth answers ErrRunDataIdentityChanged and writes nothing.
 	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
@@ -478,6 +488,12 @@ func NextQueuedAt(at time.Time, prior *time.Time) time.Time {
 	return m
 }
 
+// MatchesExactQueuedAt tests an optional exact attempt fence. The precision
+// check keeps sub-millisecond inputs from matching only on Mongo.
+func MatchesExactQueuedAt(stored *time.Time, exact time.Time) bool {
+	return exact.IsZero() || (exact.Equal(QueuedFlipAt(exact)) && stored != nil && stored.Equal(exact))
+}
+
 // PublishAt is a message's published_at for an attempt whose identity
 // instant is notBefore — the run's marker, or the instant the lease its
 // grant opened was acquired: now, but never inside notBefore's
@@ -498,7 +514,9 @@ type QueuedFlipper interface {
 	// FlipToQueued moves the run from `from` to queued, its attempt marker
 	// stamped at NextQueuedAt(at, the marker it replaces), and returns what
 	// the run was before, read in the same atomic operation. changed=false
-	// when the run is not `from`.
+	// when the run is not `from`. The same write sets
+	// Run.CredAdmissionPending: the resume's credential-slot admission is
+	// still to come.
 	FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (flip QueuedFlip, changed bool, err error)
 	// RevertQueuedFlip puts flip.Prior back — only while the run is still
 	// queued with flip.At as its marker: a run claimed, cancelled, or queued
@@ -507,8 +525,23 @@ type QueuedFlipper interface {
 	// must not read as superseded by a flip nothing published, and the run's
 	// episode and continuation are the prior state's, not a new outcome.
 	// runErr, when not empty, replaces the prior error: why the resume was
-	// refused.
+	// refused. The revert clears Run.CredAdmissionPending with the rest.
 	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
+}
+
+// RevisionQueuedFlipper binds a queue transition to the exact run revision
+// whose pending interaction the publisher validated.
+type RevisionQueuedFlipper interface {
+	QueuedFlipper
+	FlipRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error)
+	// FlipAcknowledgedRevisionToQueued is the forced-resume variant: the
+	// operator has acknowledged an unresolved approved dispatch, so the
+	// stale marker does not hold the flip. The revision CAS still does.
+	FlipAcknowledgedRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error)
+}
+
+func AsRevisionQueuedFlipper(s RunStore) RevisionQueuedFlipper {
+	return capability[RevisionQueuedFlipper](s)
 }
 
 // AsQueuedFlipper returns the flip capability, or nil for a store that has
@@ -534,6 +567,50 @@ func AsQueuedAttemptClaimer(s RunStore) QueuedAttemptClaimer {
 	return capability[QueuedAttemptClaimer](s)
 }
 
+// CodemodeQuotaResumeClaim pins a direct resume to its observed row or a
+// queued resume to the publication's exact attempt marker.
+type CodemodeQuotaResumeClaim struct {
+	ExpectedStatus  RunStatus
+	ExpectedVersion int64
+	QueuedAt        time.Time
+	PauseHandoff    *ResumePauseHandoff
+}
+
+func (c CodemodeQuotaResumeClaim) Validate(quota CodemodeScratchLimits) error {
+	replay := quota == (CodemodeScratchLimits{})
+	if quota.Entries < 0 || quota.Bytes < 0 {
+		return fmt.Errorf("invalid codemode resume quota (entries=%d, bytes=%d)", quota.Entries, quota.Bytes)
+	}
+	if c.ExpectedStatus == RunStatusQueued || replay {
+		if c.QueuedAt.IsZero() || !c.QueuedAt.Equal(QueuedFlipAt(c.QueuedAt)) {
+			return fmt.Errorf("queued codemode resume requires an exact queue marker at millisecond precision")
+		}
+	} else if !c.QueuedAt.IsZero() {
+		return fmt.Errorf("direct codemode resume claim must not carry a queue marker")
+	}
+	if c.ExpectedStatus == RunStatusQueued {
+		if replay {
+			return fmt.Errorf("queued codemode resume requires at least one positive quota dimension")
+		}
+	} else if !c.ExpectedStatus.CanOperatorResume() || c.ExpectedVersion < 0 {
+		return fmt.Errorf("invalid codemode resume claim (status=%q, version=%d)", c.ExpectedStatus, c.ExpectedVersion)
+	}
+	return nil
+}
+
+// CodemodeQuotaResumeClaimer restates the nonzero quota dimensions in the
+// same CAS that claims the run and consumes any persisted pause pointer.
+// A nil result and nil error means the claim lost without changing the row.
+// A winning claim returns the merged durable bounds.
+type CodemodeQuotaResumeClaimer interface {
+	ClaimResumeWithCodemodeQuota(ctx context.Context, id string, claim CodemodeQuotaResumeClaim, quota CodemodeScratchLimits) (*scripthost.Limits, error)
+}
+
+// AsCodemodeQuotaResumeClaimer finds the atomic quota claim through decorators.
+func AsCodemodeQuotaResumeClaimer(s RunStore) CodemodeQuotaResumeClaimer {
+	return capability[CodemodeQuotaResumeClaimer](s)
+}
+
 // PIDStore is an optional interface implemented only by
 // FilesystemRunStore (Capabilities.PIDFile == true). Cloud (Mongo)
 // stores deliberately do not implement it: detached/reattach is a
@@ -551,6 +628,23 @@ type PIDStore interface {
 // dereferencing — local stores satisfy it, cloud stores do not.
 func AsPIDStore(s RunStore) PIDStore {
 	return capability[PIDStore](s)
+}
+
+// ContextPIDStore supplies PID operations for an existing bound invocation.
+// Every method requires its original format in ctx and compares it under the
+// metadata lock. It does not grant execution authority. Legacy PIDStore remains
+// available for historical orphan-sidecar callers. Cloud stores have neither.
+type ContextPIDStore interface {
+	WritePIDFileContext(context.Context, string, int) error
+	ReadPIDFileContext(context.Context, string) (int, error)
+	RemovePIDFileContext(context.Context, string) error
+	RemovePIDFileIfContext(context.Context, string, int) (bool, error)
+}
+
+// AsContextPIDStore discovers the contextual capability through decorators.
+// A bound invocation must not fall back to PIDStore when it is absent.
+func AsContextPIDStore(s RunStore) ContextPIDStore {
+	return capability[ContextPIDStore](s)
 }
 
 // QueuedRunCreator is the optional interface for stores that can persist
@@ -793,14 +887,29 @@ type TurnStore interface {
 	// runs/<runID>/turns/<NodeID>/<LoopIter>/<TurnIndex>.json. The
 	// caller is responsible for setting WrittenAt; implementations
 	// are free to overwrite it for monotonic-clock safety.
+	//
+	// The coordinate derives from the LLM step, not the node's
+	// execution attempt, so a retried or resumed node re-derives the
+	// coordinate its previous attempt wrote (#2806). Implementations
+	// keep EVERY attempt: a write that differs from the coordinate's
+	// incumbent supersedes it — the incumbent is preserved (fs:
+	// <turn>.attempt-<n>.json; mongo: the doc's `prior` list), the new
+	// write becomes the coordinate's latest record with Attempt
+	// incremented — while a byte-identical redelivery is the
+	// idempotent overwrite the seam has always had. WriteTurn owns
+	// the Attempt/Superseded bookkeeping and stamps both on t.
 	WriteTurn(ctx context.Context, t *TurnCheckpoint) error
 	// LoadTurn returns the TurnCheckpoint at the exact
-	// (NodeID, LoopIter, TurnIndex) coordinates, or a typed
+	// (NodeID, LoopIter, TurnIndex) coordinates — the coordinate's
+	// LATEST attempt, the one a fork resumes — or a typed
 	// not-found error.
 	LoadTurn(ctx context.Context, runID, nodeID string, loopIter, turn int) (*TurnCheckpoint, error)
 	// ListTurns enumerates all turns for one (NodeID, LoopIter)
-	// in ascending TurnIndex order. Returns an empty slice (no
-	// error) when no turns exist for that node yet.
+	// in ascending (TurnIndex, Attempt) order — every attempt of a
+	// coordinate, superseded ones included, so a reader summing the
+	// node's usage (the bench reconciliation) counts every attempt's
+	// spend. Returns an empty slice (no error) when no turns exist
+	// for that node yet.
 	ListTurns(ctx context.Context, runID, nodeID string, loopIter int) ([]*TurnCheckpoint, error)
 	// LatestTurn returns the highest-indexed turn for a node across
 	// all loop iterations, or a typed not-found error when none

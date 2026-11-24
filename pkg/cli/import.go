@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,8 +42,10 @@ type importResultJSON struct {
 // RunImport converts a Claude-Code workflow script (.js) into a draft
 // .bot file. The conversion is lossy by contract: everything the
 // lowering can't express becomes an annotated `## IMPORT` marker plus
-// a report entry, and the draft is compile-checked before any write.
-func RunImport(opts ImportOptions, p *Printer) error {
+// a report entry, and the draft is compile-checked before any write. The
+// context is the command's own (cobra cancels it on SIGINT): it bounds the
+// wait on the destination's authoring lock.
+func RunImport(ctx context.Context, opts ImportOptions, p *Printer) error {
 	if err := importable(opts.File); err != nil {
 		return err
 	}
@@ -81,7 +84,10 @@ func RunImport(opts ImportOptions, p *Printer) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat %s: %w", outPath, err)
 	}
-	if err := os.WriteFile(outPath, []byte(res.BotSource), 0o644); err != nil {
+	// The stat above is a read; the refusal that counts is the one taken
+	// under the lock, where nothing can be created between the look and
+	// the write.
+	if err := replaceBotFile(ctx, outPath, nil, []byte(res.BotSource), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 

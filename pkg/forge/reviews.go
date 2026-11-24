@@ -70,10 +70,22 @@ type ReviewResult struct {
 	// answered is then the operator's only lead. Never user-facing: the
 	// review body says what was folded, not why.
 	Diagnostics []string
-	// Fallback is "" for a clean inline post, "summary" when inline
-	// anchoring was rejected wholesale and every comment was folded into
-	// the review body, "partial" when only some inline comments landed
-	// (the rest folded into the summary).
+	// Fallback reports how the post departs from a clean inline one. Only
+	// "summary" promises a fold on every provider; "partial" does not:
+	//
+	//   - "" — every submitted inline comment landed, or none was submitted.
+	//   - "summary" — no inline comment landed and every submitted one is
+	//     in the review body: GitHub and Forgejo re-post the review
+	//     summary-only with the comments folded after the create refused
+	//     the anchors (422); GitLab folds every discussion that did not land
+	//     into its summary note.
+	//   - "partial" — fewer inline comments landed than were submitted.
+	//     GitLab folds the missing ones into its summary note, and reports
+	//     "partial" too when that note did not land (BodyMissing); with zero
+	//     landed it reports "summary". GitHub and Forgejo report it when the
+	//     post-create re-fetch lists fewer comments than were sent: a
+	//     verification shortfall, nothing folded — the body is the one
+	//     submitted, and CommentsPosted may be 0.
 	Fallback string
 	// BodyMissing reports a partial success where inline comments landed but
 	// the summary body did not. It is orthogonal to Fallback: folded comments

@@ -1,0 +1,134 @@
+## ─────────────────────────────────────────────────────────────────
+## workflow-kick — "Kicky": dispatch one workflow of the repository.
+##
+## ONE deterministic tool node, no LLM. It asks the iterion server to
+## dispatch the workflow file named by `workflow` on the repository's
+## default branch (POST forge_dispatch_url, bearer = the run's publish
+## grant), and reports the forge's answer. The server mints the dispatch
+## token for that one call; this run never holds a forge credential.
+##
+## The grant exists only for a run of a bot declaring the `actions` scope,
+## launched by a schedule bound to a repository integration whose row names
+## `workflow`; the server binds it to that workflow file and dispatches no
+## other. Any other launch (a pull-request launch, an API or board launch)
+## mints no dispatch grant: forge_dispatch_url stays empty and the run ends
+## NO_DISPATCH_GRANT. An empty `workflow` ends NO_WORKFLOW first. Every
+## refusal the server answers is typed (`code`, or `error_code` on a 5xx)
+## and ends the run WORKFLOW_NOT_DISPATCHED with that code and the reason.
+## ─────────────────────────────────────────────────────────────────
+
+dsl: 2
+
+vars:
+  ## The workflow file to dispatch: a plain *.yml / *.yaml basename under
+  ## the repository's .github/workflows (e.g. renovate.yml), set on the
+  ## schedule row. Required — empty ends NO_WORKFLOW: the bot never guesses
+  ## which workflow a repository wants started.
+  workflow: string = ""
+  ## The repository, owner/name. Empty reads it from the checkout's origin
+  ## remote (a repo-bound schedule clones its repository). The server
+  ## refuses any repository other than the one the grant is bound to.
+  repo: string = ""
+  ## Minted by the server with the run's publish grant (the dispatch
+  ## endpoint and its bearer). Empty means no grant was minted.
+  forge_dispatch_url: string = ""
+  forge_publish_token: string = ""
+
+schema kick_output:
+  dispatched: bool
+  code: string
+  reason: string
+  repo: string
+  workflow: string
+  ref: string
+  workflow_url: string
+  run_url: string
+
+## kick — the whole bot. Exit 0 with a JSON verdict whatever the server
+## answered: the routing below turns a refusal into a typed run failure,
+## so the schedule's health surface shows the server's own code. The
+## bearer reaches the program through its environment (AUTH), never its
+## command line; redirects are refused so the bearer cannot be replayed
+## elsewhere.
+tool kick:
+  command: `DISPATCH_URL={{vars.forge_dispatch_url}} AUTH={{vars.forge_publish_token}} WORKFLOW={{vars.workflow}} REPO={{vars.repo}} RUN_ID={{run.id}} RUN_URL={{run.url}} python3 -I -c "
+import json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
+url = os.environ.get('DISPATCH_URL', '').strip()
+auth = os.environ.get('AUTH', '').strip()
+workflow = os.environ.get('WORKFLOW', '').strip()
+repo = os.environ.get('REPO', '').strip()
+run_id = os.environ.get('RUN_ID', '').strip()
+run_url = os.environ.get('RUN_URL', '').strip()
+out = {'dispatched': False, 'code': '', 'reason': '', 'repo': repo, 'workflow': workflow, 'ref': '', 'workflow_url': '', 'run_url': run_url or run_id}
+def finish(code, reason):
+    out['code'] = code
+    out['reason'] = reason
+    sys.stderr.write('workflow-kick: ' + (code or 'dispatched') + ': ' + reason + ' (run ' + out['run_url'] + ')' + chr(10))
+    print(json.dumps(out))
+    raise SystemExit(0)
+if not workflow:
+    finish('NO_WORKFLOW', 'the workflow var is empty: set it on the schedule to the workflow file to dispatch, e.g. renovate.yml')
+if not url or not auth:
+    finish('NO_DISPATCH_GRANT', 'no dispatch endpoint was bound to this run: the server mints one only for a schedule bound to a repository integration whose row names the workflow, when the bot declares forge.token_scopes actions: write and forge_publish_mutations does not disarm it')
+if not repo:
+    p = subprocess.run(['git', 'remote', 'get-url', 'origin'], capture_output=True, timeout=30)
+    origin = p.stdout.decode().strip() if p.returncode == 0 else ''
+    parts = urllib.parse.urlsplit(origin)
+    path = parts.path if parts.scheme else (origin.split(':', 1)[1] if ':' in origin else '')
+    path = path.strip('/')
+    repo = path[:-4] if path.endswith('.git') else path
+    out['repo'] = repo
+if not repo:
+    finish('NO_REPO', 'the repo var is empty and the checkout has no readable origin remote: set repo to owner/name on the schedule')
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+body = json.dumps({'run_id': run_id, 'repo': repo, 'workflow': workflow}).encode()
+req = urllib.request.Request(url, data=body, method='POST', headers={'Content-Type': 'application/json', 'X-Iterion-Run': auth})
+try:
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=60) as resp:
+        ans = json.loads(resp.read().decode() or '{}')
+except urllib.error.HTTPError as e:
+    raw = e.read().decode(errors='replace')
+    try:
+        ans = json.loads(raw)
+    except ValueError:
+        ans = {}
+    if not isinstance(ans, dict):
+        ans = {}
+    ans.setdefault('code', ans.get('error_code') or 'HTTP_' + str(e.code))
+    if e.code >= 500:
+        ans.setdefault('reason', 'the server answered HTTP ' + str(e.code) + ' (its reason is in the server log)')
+    ans.setdefault('reason', ans.get('error') or raw[:300] or e.reason)
+except Exception as e:
+    finish('ENDPOINT_UNREACHABLE', 'the dispatch endpoint did not answer: ' + str(e))
+if not isinstance(ans, dict):
+    finish('BAD_ANSWER', 'the dispatch endpoint answered something that is not a JSON object')
+for key in ('repo', 'workflow', 'ref', 'workflow_url'):
+    if isinstance(ans.get(key), str) and ans.get(key):
+        out[key] = ans[key]
+if ans.get('dispatched') is True:
+    out['dispatched'] = True
+    finish('', 'dispatched ' + out['workflow'] + ' on ' + out['repo'] + '@' + out['ref'] + ' ' + out['workflow_url'])
+finish(str(ans.get('code') or 'NOT_DISPATCHED'), str(ans.get('reason') or ans.get('error') or 'the server did not dispatch the workflow'))
+"`
+  output: kick_output
+
+fail not_dispatched:
+  description: "the workflow was not dispatched"
+  code: WORKFLOW_NOT_DISPATCHED
+  message: "{{outputs.kick.code}}: {{outputs.kick.reason}} — run {{outputs.kick.run_url}}"
+
+workflow workflow_kick:
+  ## Nothing is written and nothing is built: the dispatch is one HTTP call.
+  worktree: none
+  repo_devbox: off
+
+  entry: kick
+
+  budget:
+    max_duration: "5m"
+
+  kick -> done when dispatched
+
+  kick -> not_dispatched when not dispatched

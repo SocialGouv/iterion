@@ -26,7 +26,7 @@ func RemoteSendPrint(ctx context.Context, c *RemoteClient, p *Printer, method, p
 		return err
 	}
 	if code/100 != 2 {
-		return &APIError{Status: code, Method: method, Path: path, Body: string(resp)}
+		return c.refuseAPI(code, method, path, resp)
 	}
 	if len(resp) > 0 {
 		PrintRemoteJSON(p, resp)
@@ -62,7 +62,7 @@ func RemoteAPIPrint(ctx context.Context, c *RemoteClient, p *Printer, method, pa
 		PrintRemoteJSON(p, resp)
 	}
 	if code/100 != 2 {
-		return &APIError{Status: code, Method: method, Path: path, Body: string(resp)}
+		return c.refuseAPI(code, method, path, resp)
 	}
 	return nil
 }

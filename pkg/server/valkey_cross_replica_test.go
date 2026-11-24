@@ -18,11 +18,13 @@ import (
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -48,7 +50,7 @@ type twoReplicas struct {
 	a, b       *Server
 	hsA, hsB   *httptest.Server
 	board      *native.Store
-	conns      forge.ConnectionStore
+	conns      connection.ForgeStore
 	oauthApps  forge.OAuthAppStore
 	sealer     secrets.Sealer
 	adminToken string
@@ -109,13 +111,13 @@ func newTwoReplicas(t *testing.T) *twoReplicas {
 		t.Fatalf("board store: %v", err)
 	}
 	shared := struct {
-		conns     forge.ConnectionStore
+		conns     connection.ForgeStore
 		integs    forge.RepoIntegrationStore
 		oauthApps forge.OAuthAppStore
 		hooks     webhooks.ConfigStore
 		gsecrets  secrets.GenericSecretStore
 	}{
-		conns:     forge.NewMemoryConnectionStore(),
+		conns:     connection.NewMemoryForgeStore(),
 		integs:    forge.NewMemoryRepoIntegrationStore(),
 		oauthApps: forge.NewMemoryOAuthAppStore(),
 		hooks:     webhooks.NewMemoryConfigStore(),
@@ -205,7 +207,7 @@ func replicaPost(t *testing.T, hs *httptest.Server, path, token string, body any
 func TestValkeyCrossReplica_BoardTokenMintedOnAAuthorizesWriteOnB(t *testing.T) {
 	r := newTwoReplicas(t)
 
-	if err := r.a.BoardMCPTokens().Register("run-tok", []string{"board.create", "board.read"}, "", ""); err != nil {
+	if err := r.a.BoardMCPTokens().Register("run-tok", []string{"board.create", "board.read"}, "", "", store.RunTrustDefault, true, ""); err != nil {
 		t.Fatalf("register on replica A: %v", err)
 	}
 

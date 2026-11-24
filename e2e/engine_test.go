@@ -28,7 +28,18 @@ import (
 func newEngine(t *testing.T, wf *ir.Workflow, s store.RunStore, exec runtime.NodeExecutor, opts ...runtime.EngineOption) *runtime.Engine {
 	t.Helper()
 	full := append([]runtime.EngineOption{runtime.WithWorkDir(scratchRepo(t))}, opts...)
-	return runtime.New(wf, s, exec, full...)
+	return engineWithScenarioSchema(wf, s, exec, full...)
+}
+
+// engineWithScenarioSchema gives the graph fixture its declared output shape.
+// Runtime validation stays enabled; handlers supply the values their scenario tests.
+func engineWithScenarioSchema(wf *ir.Workflow, s store.RunStore, exec runtime.NodeExecutor, opts ...runtime.EngineOption) *runtime.Engine {
+	if scenario, ok := exec.(*scenarioExecutor); ok {
+		scenario.mu.Lock()
+		scenario.schemas = wf.Schemas
+		scenario.mu.Unlock()
+	}
+	return runtime.New(wf, s, exec, opts...)
 }
 
 // scratchRepos memoises one repository per test. A test that runs then

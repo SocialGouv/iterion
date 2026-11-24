@@ -34,6 +34,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		LoopPreviousOutput:     rs.loopPreviousOutput,
 		LoopCurrentOutput:      rs.loopCurrentOutput,
 		LoopBudgetMarks:        snapshotLoopBudgetMarks(rs),
+		LoopBudgetSizes:        snapshotLoopBudgetSizes(rs),
 		LoopBudgetMarksV:       loopBudgetMarksVersion,
 		ArtifactVersions:       rs.artifactVersions,
 		Artifacts:              artifactValues,
@@ -45,6 +46,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		SettledIncoming:        cloneIncoming(rs.settledIncoming),
 		Vars:                   rs.vars,
 		NodeAttempts:           serializeNodeAttempts(rs.nodeAttempts),
+		NodeFailureStreaks:     cloneNodeFailureStreaks(rs.nodeFailureStreaks),
 		// Persist run-scoped accounting so resume continues from consumed
 		// budget/spend instead of a fresh allowance (see Checkpoint docs).
 		BudgetTokensUsed:       tokens,
@@ -59,6 +61,21 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
 		SessionLedger:          snapshotSessionLedger(rs.sessionLedger),
 		BackendSessionStateRef: rs.pauseSessionRef,
+	}
+	if original := rs.delegateHandoffCheckpoint; original != nil && original.NodeID == nodeID {
+		cp.ResumePauseCostReadings = snapshotResumePauseCostReadings(rs, nodeID)
+		cp.BackendName = original.BackendName
+		cp.BackendSessionID = original.BackendSessionID
+		cp.BackendSessionFingerprint = original.BackendSessionFingerprint
+		cp.BackendConversation = original.BackendConversation
+		cp.BackendPendingToolUseID = original.BackendPendingToolUseID
+		cp.BackendCommandNarrowing = original.BackendCommandNarrowing
+		cp.BackendSessionStranded = original.BackendSessionStranded
+		cp.BackendSessionStateRef = original.BackendSessionStateRef
+	}
+	if rs.correctionAccounts != nil {
+		accounts := rs.correctionAccounts.snapshot(cp)
+		cp.CorrectionAccounting = &accounts
 	}
 	return cp
 }
@@ -319,9 +336,19 @@ func cloneMap[K comparable, V any](m map[K]V) map[K]V {
 // cumulative cost from the checkpoint so the resume continues from what was
 // already spent instead of a fresh allowance. No-op when cp is nil (a
 // from-entry restart) or the checkpoint predates these fields (all zero).
-func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
+func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) error {
 	if cp == nil {
-		return
+		return nil
+	}
+	if rs.correctionAccounts != nil {
+		if err := validateCorrectionCheckpoint(cp); err != nil {
+			return err
+		}
+		restored, err := newCorrectionAccounts(rs.budget, cp.CorrectionAccounting)
+		if err != nil {
+			return err
+		}
+		rs.correctionAccounts = restored
 	}
 	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes, cp.BudgetUnreportedCalls)
 	// Keep the run-state clock in step with the budget's, so the two
@@ -336,6 +363,8 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 	// prices stay comparable to it and the first crossing after a resume
 	// is measured like any other.
 	restoreLoopBudgetMarks(rs, cp.LoopBudgetMarks)
+	restoreLoopBudgetSizes(rs, cp.LoopBudgetSizes)
+	return nil
 }
 
 // serializeNodeAttempts converts the runState's typed-key bucket into a
@@ -415,4 +444,18 @@ func restoreNodeAttempts(src map[string]map[string]int) map[string]map[ErrorCode
 		out[nodeID] = inner
 	}
 	return out
+}
+
+func snapshotResumePauseCostReadings(rs *runState, nodeID string) []store.ResumePauseCostReading {
+	var readings []store.ResumePauseCostReading
+	for key, usd := range rs.retrySessionCosts[nodeID] {
+		readings = append(readings, store.ResumePauseCostReading{Backend: key.backend, Session: key.session, USD: usd})
+	}
+	sort.Slice(readings, func(i, j int) bool {
+		if readings[i].Backend != readings[j].Backend {
+			return readings[i].Backend < readings[j].Backend
+		}
+		return readings[i].Session < readings[j].Session
+	})
+	return readings
 }

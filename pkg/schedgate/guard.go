@@ -73,6 +73,10 @@ type GuardResult struct {
 	Duration time.Duration
 }
 
+// guardDrainBound is this site's default bound on the wait for a guard's
+// output once `sh` itself has gone, overridable through [proc.WaitDelayEnv].
+const guardDrainBound = 2 * time.Second
+
 // RunGuard executes spec.Command with `sh -lc` under its OWN
 // timeout-bounded context derived from parentCtx. It never installs a
 // deadline on parentCtx itself: the run has not started yet, and a
@@ -97,9 +101,10 @@ func RunGuard(parentCtx context.Context, spec GuardSpec) GuardResult {
 	// The timeout must end the guard's work, not just iterion's wait: a
 	// guard that backgrounds a probe would otherwise keep running against
 	// the repo after the tick moved on. WaitDelay stays as the final
-	// unblock for anything that escapes the group.
+	// unblock for anything that escapes the group; proc.WaitDelayEnv is the
+	// operator's override of it.
 	proc.TerminateGroupOnCancel(cmd)
-	cmd.WaitDelay = 2 * time.Second
+	drainBound := proc.SetWaitDelay(cmd, guardDrainBound)
 	cmd.Dir = spec.Dir
 	cmd.Env = append(os.Environ(), spec.Env...)
 
@@ -111,6 +116,19 @@ func RunGuard(parentCtx context.Context, spec GuardSpec) GuardResult {
 	err := cmd.Run()
 	dur := time.Since(start)
 
+	if proc.DrainCutShort(err) {
+		// A guard's verdict is its exit code, and this one exited 0: what
+		// held the pipes is a probe it left running, which the group kill
+		// above has already been asked to end. Blocking the tick on it
+		// would refuse a run the guard allowed, on a fact about iterion's
+		// wait rather than about the repository. The tails keep whatever
+		// was copied before the cut.
+		err = nil
+		// Stderr, not the guard's own tail: that tail is a record field a
+		// reader of the tick parses, and this note is iterion's, not the
+		// guard's.
+		fmt.Fprintf(os.Stderr, "iterion: the schedgate guard exited, and a process it left kept its output open: stopped waiting %s\n", proc.WaitDelayHint(drainBound))
+	}
 	if err == nil {
 		return GuardResult{
 			Kind:       GuardOK,

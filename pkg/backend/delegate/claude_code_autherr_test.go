@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -204,8 +204,8 @@ func TestAuthFailureFast_FacadePinIsNamedByTheRouteItStamped(t *testing.T) {
 			resetClaudeCredEnv(t)
 			ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"}, nil)
 			task := Task{ProviderHint: hint}
-			credEnv, selected := anthropicCredRouteForTask(ctx, task)
-			if refusal := facadeHintRefusal(task.ProviderHint, credEnv); refusal != nil {
+			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
+			if refusal := facadeHintRefusal(ctx, task.ProviderHint, credEnv); refusal != nil {
 				t.Fatalf("a funded facade pin was refused: %v", refusal)
 			}
 
@@ -232,9 +232,9 @@ func TestAuthFailureFast_FacadePinIsNamedByTheRouteItStamped(t *testing.T) {
 			resetClaudeCredEnv(t)
 			ctx := ctxWithCreds(t, nil, nil)
 			task := Task{ProviderHint: hint}
-			credEnv, selected := anthropicCredRouteForTask(ctx, task)
+			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
 			var refused *ErrNoFacadeCredential
-			if !errors.As(facadeHintRefusal(task.ProviderHint, credEnv), &refused) {
+			if !errors.As(facadeHintRefusal(context.Background(), task.ProviderHint, credEnv), &refused) {
 				t.Fatalf("an unfunded facade pin reached the spawn: env = %v", credEnv)
 			}
 			spawn := credSpawnOf(ctx, credEnv, selected, false)
@@ -558,7 +558,7 @@ func TestAuthFailureFast_AmbientChannelsNameWhatTheSpawnCarried(t *testing.T) {
 			if tc.sandboxed {
 				task.Sandbox = k8sLikeRun{}
 			}
-			credEnv, selected := anthropicCredRouteForTask(ctx, task)
+			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
 
 			err := authFailureFast(&res, task, credSpawnOf(ctx, credEnv, selected, taskSandboxed(task)))
 			var auth *ErrAuthFailed
@@ -874,22 +874,23 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 		hint    string
 		byok    map[secrets.Provider]string
 		env     map[string]string
+		model   string // a facade row carries an id the facade SERVES (#2772): a claude id there is refused before the spawn
 		render  string // the CLI's own verdict, when the row is about which channel it names
 		want    string
 		wantNot string
 		wantEnv string // a substring of the child env dump
 		twoPass bool
 	}{
-		{name: "zai_api_key_shortcut", env: map[string]string{"ZAI_API_KEY": "zai-env"},
+		{name: "zai_api_key_shortcut", env: map[string]string{"ZAI_API_KEY": "zai-env"}, model: "glm-5.3",
 			want:    "no working zai credential — check ZAI_API_KEY",
 			wantNot: "forfait CLAUDE_CODE_OAUTH_TOKEN", wantEnv: "slot=zai bearer=zai-env"},
-		{name: "default_precedence_zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"},
+		{name: "default_precedence_zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"}, model: "glm-5.3",
 			want:    "no working zai credential — check this run's zai key",
 			wantNot: "ZAI_API_KEY", wantEnv: "slot=zai bearer=zai-byok"},
-		{name: "default_precedence_moonshot", byok: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-byok"},
+		{name: "default_precedence_moonshot", byok: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-byok"}, model: "kimi-k2",
 			want:    "no working moonshot credential — check this run's moonshot key",
 			wantNot: "MOONSHOT_API_KEY", wantEnv: "slot=moonshot bearer=moonshot-byok"},
-		{name: "pinned_zai", hint: "zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"},
+		{name: "pinned_zai", hint: "zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"}, model: "glm-5.3",
 			want:    "no working zai credential — check this run's zai key",
 			wantNot: "forfait CLAUDE_CODE_OAUTH_TOKEN", wantEnv: "slot=zai bearer=zai-byok"},
 		// The operator's own gateway, wired the way z.ai documents it: the
@@ -948,7 +949,7 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 			wantEnv: "bearer=host-gateway-key key= forfait= bedrock=[0]"},
 		// The SECOND producer: pass 1 answers prose, the formatting pass
 		// renders the refusal. Its record is formatOutput's.
-		{name: "formatting_pass_on_a_facade_route", env: map[string]string{"ZAI_API_KEY": "zai-env"}, twoPass: true,
+		{name: "formatting_pass_on_a_facade_route", env: map[string]string{"ZAI_API_KEY": "zai-env"}, model: "glm-5.3", twoPass: true,
 			want:    "no working zai credential — check ZAI_API_KEY",
 			wantNot: "forfait CLAUDE_CODE_OAUTH_TOKEN", wantEnv: "spawn 2 slot=zai bearer=zai-env"},
 	}
@@ -965,7 +966,7 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 			if tc.byok != nil {
 				ctx = ctxWithCreds(t, tc.byok, nil)
 			}
-			task := Task{ProviderHint: tc.hint}
+			task := Task{ProviderHint: tc.hint, Model: tc.model}
 			render := authRender
 			if tc.render != "" {
 				render = tc.render
@@ -1002,12 +1003,14 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 // The header predicate reads the variable the CLI reads, so it is pinned
 // against the CLI's own parser rather than against a second description of the
 // format: claw's ParseCustomHeaders is that reader (vendored, first-party), and
-// on every block that parser ACCEPTS, "an Authorization header is present"
-// must mean the same thing on both sides of the wire. A mirror written from the
-// documentation drifts at the edges the documentation does not mention — a \r
-// line ending, a blank line, a colon in the value, the word in a value instead
-// of a name. Mutation: widen the predicate to the whole value
-// (strings.Contains on the raw text) and the value-mention rows redden.
+// on every block that parser ACCEPTS, "an Authorization credential is present"
+// must mean the same thing on both sides of the wire — the parser's value for
+// the name, not empty. A mirror written from the documentation drifts at the
+// edges the documentation does not mention — a \r line ending, a blank line, a
+// colon in the value, the word in a value instead of a name. Mutation: widen
+// the predicate to the whole value (strings.Contains on the raw text) and the
+// value-mention rows redden; answer on the name alone and the empty-value rows
+// redden.
 //
 // On a block that parser REFUSES there is no mirror to hold: the predicate
 // answers per LINE on purpose, and each such block says here which answer it
@@ -1019,23 +1022,31 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 // input rather than derived, so the arm discriminates instead of restating the
 // predicate. Mutation: make the predicate refuse the block too (return false
 // on a line with no name) and the four rows that name a line redden.
-func TestCarriesAuthorizationHeader_AgreesWithTheCLIsParserAndAnswersPerLineBeyondIt(t *testing.T) {
+func TestSpawnAuthorizationHeader_CarriesAUsableAuthorizationLine(t *testing.T) {
 	cases := []struct {
 		raw           string
 		wantOnRefusal bool
 	}{
 		{raw: ""},
 		{raw: "   "},
-		{raw: "Authorization: Bearer sk-operator-gateway"},
-		{raw: "authorization: Bearer sk-lower"},
-		{raw: "  Authorization  :  Bearer sk-spaced"},
-		{raw: "x-tenant: t1\nAuthorization: Bearer sk-second-line"},
-		{raw: "Authorization: Bearer sk-crlf\r\nx-tenant: t1"},
-		{raw: "x-tenant: t1\n\nAuthorization: Bearer sk-after-a-blank-line"},
+		{raw: "Authorization: Bearer sk-operator-gateway", wantOnRefusal: true},
+		{raw: "authorization: Bearer sk-lower", wantOnRefusal: true},
+		{raw: "  Authorization  :  Bearer sk-spaced", wantOnRefusal: true},
+		{raw: "x-tenant: t1\nAuthorization: Bearer sk-second-line", wantOnRefusal: true},
+		{raw: "Authorization: Bearer sk-crlf\r\nx-tenant: t1", wantOnRefusal: true},
+		{raw: "x-tenant: t1\n\nAuthorization: Bearer sk-after-a-blank-line", wantOnRefusal: true},
 		{raw: "User-Agent: my-tool/1.0"},
 		{raw: "x-note: see the authorization: guide"},
 		{raw: "X-Authorization: Bearer sk-other-header"},
 		{raw: "x-proxy: https://gw.example.test/authorization: no"},
+		// The empty-value half: the line of the name is there, the value the
+		// request would carry is not — nothing authenticates, and the
+		// admission probe must refuse rather than admit a launch that dies
+		// "Not logged in". The last row is the last-write-wins shape: a real
+		// credential overwritten by an empty line is no credential.
+		{raw: "Authorization:"},
+		{raw: "Authorization:   "},
+		{raw: "Authorization: Bearer sk-real\nAuthorization:"},
 		// The refused half: a block the parser rejects, with and without a
 		// well-formed Authorization line beside the bad one. The commented
 		// block is how an operator annotates this variable, and the line is
@@ -1049,22 +1060,23 @@ func TestCarriesAuthorizationHeader_AgreesWithTheCLIsParserAndAnswersPerLineBeyo
 	}
 	for _, tc := range cases {
 		t.Run(strings.ReplaceAll(tc.raw, "\n", "|"), func(t *testing.T) {
+			env := map[string]string{"ANTHROPIC_CUSTOM_HEADERS": tc.raw}
 			headers, err := clawapi.ParseCustomHeaders(tc.raw)
 			if err != nil {
-				if got := carriesAuthorizationHeader(tc.raw); got != tc.wantOnRefusal {
-					t.Errorf("carriesAuthorizationHeader(%q) = %v on a block the CLI's parser refuses (%v), want %v",
+				if got := spawnAuthorizationHeader(env, true); got != tc.wantOnRefusal {
+					t.Errorf("spawnAuthorizationHeader(%q) = %v on a block the CLI's parser refuses (%v), want %v",
 						tc.raw, got, err, tc.wantOnRefusal)
 				}
 				return
 			}
 			want := false
-			for name := range headers {
-				if strings.EqualFold(strings.TrimSpace(name), "authorization") {
+			for name, value := range headers {
+				if strings.EqualFold(strings.TrimSpace(name), "authorization") && value != "" {
 					want = true
 				}
 			}
-			if got := carriesAuthorizationHeader(tc.raw); got != want {
-				t.Errorf("carriesAuthorizationHeader(%q) = %v, the CLI's parser sees %v (headers %v)",
+			if got := spawnAuthorizationHeader(env, true); got != want {
+				t.Errorf("spawnAuthorizationHeader(%q) = %v, the CLI's parser sees %v (headers %v)",
 					tc.raw, got, want, headers)
 			}
 		})

@@ -16,6 +16,7 @@ import (
 )
 
 func TestScanPreviewURLs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -90,6 +91,7 @@ func TestScanPreviewURLs(t *testing.T) {
 }
 
 func TestScanPreviewScreenshots(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -137,6 +139,7 @@ func TestScanPreviewScreenshots(t *testing.T) {
 }
 
 func TestSanitizeAttachmentSegment(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -159,6 +162,7 @@ func TestSanitizeAttachmentSegment(t *testing.T) {
 }
 
 func TestDetectScreenshotMIME(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"shot.png":        "image/png",
 		"a.PNG":           "image/png",
@@ -216,6 +220,7 @@ func (f *fakeStore) WriteAttachment(_ context.Context, _ string, rec store.Attac
 }
 
 func TestCaptureBrowserScreenshot_ReadsFileAndEmitsEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "shot.png")
 	pngBytes := []byte("\x89PNG\r\n\x1a\nfake-payload")
@@ -270,6 +275,7 @@ func TestCaptureBrowserScreenshot_ReadsFileAndEmitsEvent(t *testing.T) {
 }
 
 func TestCaptureBrowserScreenshot_MissingFileIsNonFatal(t *testing.T) {
+	t.Parallel()
 	fs := newFakeStore()
 	logger := iterlog.New(iterlog.LevelError, io.Discard)
 
@@ -284,7 +290,17 @@ func TestCaptureBrowserScreenshot_MissingFileIsNonFatal(t *testing.T) {
 	if len(fs.attachments) != 0 {
 		t.Fatalf("expected no attachment, got %d", len(fs.attachments))
 	}
-	if len(fs.events) != 0 {
-		t.Fatalf("expected no event, got %d", len(fs.events))
+	// Non-fatal, and nothing is announced as a CAPTURE — but the loss
+	// itself is on the run now: a declared file the run never received
+	// used to exist only in the runner's log, which on a pod is the one
+	// place the operator cannot read (#2668).
+	if len(fs.events) != 1 {
+		t.Fatalf("expected exactly the loss event, got %d: %#v", len(fs.events), fs.events)
+	}
+	if got := fs.events[0].Type; got != store.EventRunAttachmentLost {
+		t.Fatalf("event type = %q, want %q", got, store.EventRunAttachmentLost)
+	}
+	if got := fs.events[0].Data["path"]; got != "/nope/does-not-exist.png" {
+		t.Errorf("loss path = %v, want the declared path", got)
 	}
 }

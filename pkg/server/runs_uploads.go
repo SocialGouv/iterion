@@ -5,14 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"os"
-	"path"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,43 +19,30 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// stagedUpload is the on-disk metadata sidecar for an upload that
-// has been received but not yet promoted to a run. The bytes live
-// alongside it in the same staging directory.
-type stagedUpload struct {
-	UploadID         string    `json:"upload_id"`
-	OriginalFilename string    `json:"original_filename"`
-	MIME             string    `json:"mime"`
-	Size             int64     `json:"size"`
-	SHA256           string    `json:"sha256"`
-	CreatedAt        time.Time `json:"created_at"`
-}
+// stagedUpload is the record of an upload received and not yet promoted to
+// a run — the wire answer of POST /api/runs/uploads. Where it waits is the
+// run store's business (store.StagingStore): a directory under a local
+// store, the staged_uploads collection and the blob backend under the
+// cloud one. The server stages through the seam or refuses typed.
+type stagedUpload = store.StagedUpload
 
-const (
-	uploadStagingSubdir = "uploads"
-	uploadMetaFilename  = "meta.json"
-	// uploadStagingTTL bounds how long an unreferenced upload sits
-	// in the staging area before it is reaped. The launch path
-	// promotes within seconds of the upload completing; a generous
-	// TTL accommodates a user closing the modal without a leak.
-	uploadStagingTTL = 1 * time.Hour
-)
+// uploadStagingTTL bounds how long an unreferenced upload sits in staging
+// before it is reaped. The launch path promotes within seconds of the
+// upload completing; a generous TTL accommodates a user closing the modal
+// without a leak.
+const uploadStagingTTL = 1 * time.Hour
 
-// stagingRoot returns the directory housing pending uploads.
-func (s *Server) stagingRoot() (string, error) {
+// stagingStore is the run store's staging seam, or the typed reason there
+// is none: no run store, or a store that stages no uploads.
+func (s *Server) stagingStore() (store.StagingStore, error) {
 	if s.runs == nil {
-		return "", errors.New("uploads disabled: run store not configured")
+		return nil, errors.New("uploads disabled: run store not configured")
 	}
-	root := s.runs.StoreRoot()
-	if root == "" {
-		// Cloud / non-FS stores currently lack staging support.
-		return "", errors.New("uploads disabled: store has no filesystem root")
+	st := store.AsStagingStore(s.runs.RunStore())
+	if st == nil {
+		return nil, errors.New("uploads disabled: the run store stages no uploads")
 	}
-	dir := filepath.Join(root, uploadStagingSubdir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create staging root: %w", err)
-	}
-	return dir, nil
+	return st, nil
 }
 
 // handleUploadAttachment answers POST /api/runs/uploads. The body is
@@ -71,9 +56,9 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "uploads not configured on this server")
 		return
 	}
-	staging, err := s.stagingRoot()
+	stager, err := s.stagingStore()
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "uploads disabled: %v", err)
+		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "%v", err)
 		return
 	}
 
@@ -99,91 +84,92 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 
 	declaredMIME := strings.TrimSpace(r.FormValue("declared_mime"))
 
-	uploadID, err := newUploadID()
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "generate upload id: %v", err)
-		return
-	}
-	dir := filepath.Join(staging, uploadID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "mkdir staging: %v", err)
-		return
-	}
-
 	// Sanitise filename: strip any path component the browser tucked
 	// in, refuse traversal attempts, control bytes (incl. NUL — Windows
 	// stream-name truncation, log smuggling), and invalid UTF-8 (which
 	// later JSON-marshals to the manifest unescaped).
 	filename := filepath.Base(hdr.Filename)
 	if !validUploadFilename(filename) {
-		os.RemoveAll(dir)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid filename")
 		return
 	}
 
-	dst, err := os.Create(filepath.Join(dir, filename))
+	// One pass over the part measures it — the size, the SHA-256 and the
+	// sniffed type, never the declared one — and the stager reads it again
+	// from the start: the part is seekable, spooled by the multipart parser.
+	written, sniffed, sha256Hex, err := measureUpload(file, s.cfg.MaxUploadSize)
 	if err != nil {
-		os.RemoveAll(dir)
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "create staging file: %v", err)
-		return
-	}
-	// Streaming copy with size guard (defence-in-depth: form parsing
-	// already limited via MaxBytesReader, but ParseMultipartForm may
-	// have spilled to a temp file we don't directly observe).
-	written, err := io.Copy(dst, io.LimitReader(file, s.cfg.MaxUploadSize+1))
-	closeErr := dst.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		os.RemoveAll(dir)
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "write staging file: %v", err)
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "read upload: %v", err)
 		return
 	}
 	if written > s.cfg.MaxUploadSize {
-		os.RemoveAll(dir)
 		s.httpErrorFor(w, r, http.StatusRequestEntityTooLarge,
 			"file exceeds max_upload_size (%d bytes)", s.cfg.MaxUploadSize)
 		return
 	}
 	if written == 0 {
-		os.RemoveAll(dir)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "empty upload")
 		return
 	}
-
-	// Sniff the actual MIME from the on-disk bytes — never trust the
-	// declared form field. We re-open the file to feed http.DetectContentType
-	// without rebuffering the upload in memory.
-	mime, sha256Hex, err := sniffMIMEAndHash(filepath.Join(dir, filename))
-	if err != nil {
-		os.RemoveAll(dir)
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "sniff/hash: %v", err)
-		return
-	}
-	if !mimeAllowed(mime, s.cfg.AllowedUploadMIMEs) {
-		os.RemoveAll(dir)
+	if !mimeAllowed(sniffed, s.cfg.AllowedUploadMIMEs) {
 		s.httpErrorFor(w, r, http.StatusUnsupportedMediaType,
-			"file type %q not in allowlist; declared was %q", mime, declaredMIME)
+			"file type %q not in allowlist; declared was %q", sniffed, declaredMIME)
 		return
 	}
 
+	uploadID, err := newUploadID()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "generate upload id: %v", err)
+		return
+	}
 	rec := stagedUpload{
 		UploadID:         uploadID,
 		OriginalFilename: filename,
-		MIME:             mime,
+		MIME:             sniffed,
 		Size:             written,
 		SHA256:           sha256Hex,
 		CreatedAt:        time.Now().UTC(),
 	}
-	metaData, _ := json.MarshalIndent(rec, "", "  ")
-	if err := os.WriteFile(filepath.Join(dir, uploadMetaFilename), metaData, 0o600); err != nil {
-		os.RemoveAll(dir)
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "write meta: %v", err)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "rewind upload: %v", err)
+		return
+	}
+	// A SectionReader, not a LimitReader: the seam wants a body it can
+	// rewind (the blob backend retries and checksums), and the part has
+	// ReadAt whether it sits in memory or was spilled to a temp file.
+	if err := stager.StageUpload(r.Context(), rec, io.NewSectionReader(file, 0, written)); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "stage upload: %v", err)
 		return
 	}
 
 	s.writeJSONFor(w, r, rec)
+}
+
+// measureUpload reads the part once: the byte count (bounded at max+1, so
+// an oversize part is known without being read whole), the SHA-256, and
+// the content type sniffed from the first 512 bytes.
+func measureUpload(part io.Reader, max int64) (size int64, ctype, sha256Hex string, err error) {
+	h := sha256.New()
+	head := make([]byte, 0, 512)
+	limited := io.LimitReader(part, max+1)
+	buf := make([]byte, 32<<10)
+	for {
+		n, rerr := limited.Read(buf)
+		if n > 0 {
+			size += int64(n)
+			h.Write(buf[:n])
+			if room := 512 - len(head); room > 0 {
+				head = append(head, buf[:min(n, room)]...)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return 0, "", "", rerr
+		}
+	}
+	return size, http.DetectContentType(head), hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // promoteStaged moves uploads from staging into a run-scoped
@@ -192,7 +178,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 //
 // Validation against the workflow's IR (declared names, accept_mime,
 // required) is the caller's responsibility. This helper is concerned
-// only with the wire format and the staging fs layout.
+// only with the wire format and the staging seam.
 func (s *Server) promoteStaged(ctx context.Context, runID string, mapping map[string]string) (map[string]store.AttachmentRecord, int64, error) {
 	if len(mapping) == 0 {
 		return nil, 0, nil
@@ -200,13 +186,13 @@ func (s *Server) promoteStaged(ctx context.Context, runID string, mapping map[st
 	if len(mapping) > s.cfg.MaxUploadsPerRun {
 		return nil, 0, fmt.Errorf("too many attachments: %d > %d", len(mapping), s.cfg.MaxUploadsPerRun)
 	}
-	staging, err := s.stagingRoot()
+	stager, err := s.stagingStore()
 	if err != nil {
 		return nil, 0, err
 	}
 	out := make(map[string]store.AttachmentRecord, len(mapping))
-	written := make([]string, 0, len(mapping))     // names persisted, used for rollback
-	stagingDirs := make([]string, 0, len(mapping)) // staging dirs to clean only on full success
+	written := make([]string, 0, len(mapping))  // names persisted, used for rollback
+	promoted := make([]string, 0, len(mapping)) // upload ids to discard only on full success
 	var cumulative int64
 
 	// rollback removes every attachment we persisted before the error so
@@ -224,30 +210,29 @@ func (s *Server) promoteStaged(ctx context.Context, runID string, mapping map[st
 			rollback()
 			return nil, 0, fmt.Errorf("invalid attachment name %q: %w", name, err)
 		}
+		// A name is a directory entry a driver later hands to tools by name;
+		// one that reads as an option is nobody's attachment.
+		if strings.HasPrefix(name, "-") {
+			rollback()
+			return nil, 0, fmt.Errorf("invalid attachment name %q: a name must not start with a dash", name)
+		}
 		if err := store.SanitizePathComponent("upload_id", uploadID); err != nil {
 			rollback()
 			return nil, 0, fmt.Errorf("invalid upload id %q: %w", uploadID, err)
 		}
-		dir := filepath.Join(staging, uploadID)
-		metaBytes, err := os.ReadFile(filepath.Join(dir, uploadMetaFilename))
+		meta, body, err := stager.OpenStagedUpload(ctx, uploadID)
 		if err != nil {
 			rollback()
-			return nil, 0, fmt.Errorf("upload %q not found", uploadID)
-		}
-		var meta stagedUpload
-		if err := json.Unmarshal(metaBytes, &meta); err != nil {
-			rollback()
-			return nil, 0, fmt.Errorf("decode upload meta: %w", err)
+			if errors.Is(err, store.ErrUploadNotFound) {
+				return nil, 0, fmt.Errorf("upload %q not found", uploadID)
+			}
+			return nil, 0, fmt.Errorf("open upload %q: %w", uploadID, err)
 		}
 		cumulative += meta.Size
 		if cumulative > s.cfg.MaxTotalUploadSize {
+			body.Close()
 			rollback()
 			return nil, 0, fmt.Errorf("cumulative upload size exceeds max_total_upload_size (%d bytes)", s.cfg.MaxTotalUploadSize)
-		}
-		body, err := os.Open(filepath.Join(dir, meta.OriginalFilename))
-		if err != nil {
-			rollback()
-			return nil, 0, fmt.Errorf("open upload %q: %w", uploadID, err)
 		}
 		rec := store.AttachmentRecord{
 			Name:             name,
@@ -264,11 +249,13 @@ func (s *Server) promoteStaged(ctx context.Context, runID string, mapping map[st
 		body.Close()
 		out[name] = rec
 		written = append(written, name)
-		stagingDirs = append(stagingDirs, dir)
+		promoted = append(promoted, uploadID)
 	}
 	// All attachments persisted — only now is it safe to clear staging.
-	for _, d := range stagingDirs {
-		_ = os.RemoveAll(d)
+	for _, id := range promoted {
+		if err := stager.DiscardStagedUpload(ctx, id); err != nil && s.logger != nil {
+			s.logger.Warn("discard staged upload %s after its promotion: %v", id, err)
+		}
 	}
 	// Refresh once after the loop so the returned map carries the
 	// canonical StorageRef + any meta WriteAttachment recomputed.
@@ -304,19 +291,39 @@ func (s *Server) handleServeAttachment(w http.ResponseWriter, r *http.Request) {
 	// Verifying both preserves the studio's UX (no signature in
 	// dev-tools URLs) while still allowing presigned URLs to work
 	// from any user agent.
-	exp := r.URL.Query().Get("exp")
-	sig := r.URL.Query().Get("sig")
-	if exp == "" || sig == "" {
+	query, queryErr := url.ParseQuery(r.URL.RawQuery)
+	if queryErr != nil {
+		s.httpErrorFor(w, r, http.StatusForbidden, "invalid attachment query")
+		return
+	}
+	exp, sig, valueFormat := query.Get("exp"), query.Get("sig"), query.Get("vf")
+	var rc io.ReadCloser
+	var rec store.AttachmentRecord
+	var err error
+	// Any signed parameter opts into signature validation. Partial/duplicate
+	// fields cannot downgrade to the unsigned safe-origin route.
+	signed := query.Has("exp") || query.Has("sig") || query.Has("vf")
+	if signed {
+		if len(query["exp"]) != 1 || len(query["sig"]) != 1 || len(query["vf"]) > 1 || (query.Has("vf") && valueFormat == "") {
+			s.httpErrorFor(w, r, http.StatusForbidden, "invalid or expired signature")
+			return
+		}
+		rc, rec, err = s.runs.OpenPresignedAttachment(r.Context(), id, name, exp, sig, valueFormat)
+	} else {
 		if !s.requireSafeOrigin(w, r) {
 			return
 		}
-	} else if !s.verifyAttachmentSig(id, name, exp, sig) {
-		s.httpErrorFor(w, r, http.StatusForbidden, "invalid or expired signature")
-		return
+		rc, rec, err = s.runs.OpenAttachment(r.Context(), id, name)
 	}
-
-	rc, rec, err := s.runs.OpenAttachment(r.Context(), id, name)
 	if err != nil {
+		if errors.Is(err, store.ErrAttachmentSignature) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "invalid or expired signature")
+			return
+		}
+		if errors.Is(err, store.ErrValueFormatChanged) {
+			s.httpErrorFor(w, r, http.StatusConflict, "attachment value format changed")
+			return
+		}
 		if errors.Is(err, store.ErrAttachmentNotFound) {
 			s.httpErrorFor(w, r, http.StatusNotFound, "attachment not found")
 			return
@@ -371,19 +378,6 @@ func (s *Server) handlePresignAttachment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.writeJSONFor(w, r, map[string]string{"url": signed})
-}
-
-// verifyAttachmentSig dispatches the signature check to the
-// underlying RunStore when the local backend supports it. Cloud
-// (S3-presigned) URLs never reach this server — they are signed by
-// AWS and consumed by the client directly — so we treat unknown
-// stores as "no HMAC support", which forces requireSafeOrigin to
-// guard the path.
-func (s *Server) verifyAttachmentSig(runID, name, exp, sig string) bool {
-	if s.runs == nil {
-		return false
-	}
-	return s.runs.VerifyAttachmentSignature(runID, name, exp, sig)
 }
 
 // applyUploadDefaults fills in MaxUploadSize / total / per-run when
@@ -478,9 +472,15 @@ func splitMIME(m string) (string, string) {
 //     in a string field corrupt the file
 //
 // The size cap (255 bytes) matches what most filesystems will accept
-// as a single path component on disk.
+// as a single path component on disk. The store's own component rule
+// (SanitizePathComponent) is applied here too, so a name it would refuse
+// — a ".." inside the name — is a 400 at the door, not a 500 from the
+// seam.
 func validUploadFilename(filename string) bool {
 	if filename == "" || filename == "." || filename == ".." {
+		return false
+	}
+	if store.SanitizePathComponent("filename", filename) != nil {
 		return false
 	}
 	if len(filename) > 255 {
@@ -502,66 +502,28 @@ func validUploadFilename(filename string) bool {
 }
 
 // newUploadID generates a URL-safe upload identifier of the form
-// `up_<unix_seconds>_<8 hex random>`. Time prefix lets the TTL
-// sweeper compute eligibility without reading the meta file.
+// `up_<unix_seconds>_<32 hex random>`: opaque to clients, and with 128
+// bits of randomness no one guesses another tenant's staged upload — the
+// tenant-scoped record is the guard, the entropy is the floor beneath it.
 func newUploadID() (string, error) {
-	buf := make([]byte, 4)
+	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("up_%d_%s", time.Now().Unix(), hex.EncodeToString(buf)), nil
 }
 
-// sniffMIMEAndHash opens the file, computes SHA-256 streaming, and
-// returns the http.DetectContentType verdict on the first 512 bytes.
-func sniffMIMEAndHash(p string) (string, string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", "", err
-	}
-	defer f.Close()
-
-	head := make([]byte, 512)
-	n, err := f.Read(head)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", "", err
-	}
-	mime := http.DetectContentType(head[:n])
-
-	// Reset and stream the rest into the hasher.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return "", "", err
-	}
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", "", err
-	}
-	return mime, hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// reapStagedUploads sweeps abandoned uploads. Best-effort: errors are
-// silently dropped. Called periodically by runStagedUploadReaper.
-func (s *Server) reapStagedUploads() {
-	staging, err := s.stagingRoot()
+// reapStagedUploads sweeps abandoned uploads through the staging seam. A
+// store that stages nothing has nothing to sweep; a sweep that fails is
+// said at warn level, never dropped in silence. Called periodically by
+// runStagedUploadReaper.
+func (s *Server) reapStagedUploads(ctx context.Context) {
+	stager, err := s.stagingStore()
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-uploadStagingTTL)
-	entries, err := os.ReadDir(staging)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		fi, err := os.Stat(path.Join(staging, e.Name()))
-		if err != nil {
-			continue
-		}
-		if fi.ModTime().Before(cutoff) {
-			_ = os.RemoveAll(path.Join(staging, e.Name()))
-		}
+	if _, err := stager.ReapStagedUploads(ctx, time.Now().Add(-uploadStagingTTL)); err != nil && s.logger != nil {
+		s.logger.Warn("reap staged uploads: %v", err)
 	}
 }
 
@@ -578,7 +540,7 @@ const uploadReaperInterval = 10 * time.Minute
 func (s *Server) runStagedUploadReaper(ctx context.Context) {
 	// Fire once on startup so a freshly restarted server reclaims dirs
 	// older than the TTL without waiting a full interval.
-	s.reapStagedUploads()
+	s.reapStagedUploads(ctx)
 	t := time.NewTicker(uploadReaperInterval)
 	defer t.Stop()
 	for {
@@ -586,7 +548,7 @@ func (s *Server) runStagedUploadReaper(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.reapStagedUploads()
+			s.reapStagedUploads(ctx)
 		}
 	}
 }

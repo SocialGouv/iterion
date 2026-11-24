@@ -26,7 +26,7 @@ import (
 	"strings"
 	"syscall"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -48,6 +48,13 @@ const (
 	// DirPresets holds file-based presets (named sous-bots).
 	DirPresets = "presets"
 )
+
+// DirDeps is the workspace directory a project's `bots.lock` dependencies
+// are materialized into — the record of management for what lives there, so
+// a bundle under it is a pinned install and not an authored source tree.
+// Named here because the packer skips it, discovery lists it as a root, and
+// the catalogue regeneration asks whether the owner it refreshes is pinned.
+const DirDeps = ".botz"
 
 // LayoutDirs is the canonical order of the layout directories, shared by
 // the loader (which resolves them), the packer (which archives them),
@@ -71,19 +78,20 @@ const (
 
 // dirMarkers are the sibling entries that mark a directory as a bundle
 // rather than somewhere a loose main.bot happens to sit. A manifest marks
-// only when it is iterion's (manifestIsIterions): `manifest.yaml` and
+// only when it is iterion's (manifestVerdict): `manifest.yaml` and
 // `manifest.yml` are common filenames of other tools, and a bundle that
 // carries a marker but does not open is refused on every surface — so a
 // foreign manifest beside a loose main.bot must mark nothing, while an
 // iterion manifest that does not decode must still mark its bundle, so the
 // open fails loudly instead of the run starting without its prompts and
-// skills. Both spellings count, as the loader reads both: a marker the
+// skills. A skills/ or presets/ directory also marks the bundle, without a
+// manifest. Both manifest spellings count, as the loader reads both: a marker the
 // loader reads but the promotion ignored gave the file and the directory
 // forms of the same bundle two verdicts. A manifest that decodes as
 // iterion's but carries only generic keys (a foreign `name`+`version`
 // file) marks too — as it did before any of this, and harmlessly: the
 // loader accepts it and there is nothing beside it to merge.
-var dirMarkers = []string{DirSkills, ManifestFile, ManifestFileAlt}
+var dirMarkers = []string{DirSkills, DirPresets, ManifestFile, ManifestFileAlt}
 
 // genericManifestKeys are the Manifest's top-level keys every tool's
 // manifest may carry too: their presence says nothing about whose file it
@@ -95,7 +103,7 @@ var genericManifestKeys = map[string]bool{
 }
 
 // manifestStructKeys are the Manifest's top-level yaml keys, derived from
-// the struct's tags (yaml.v2 reads an untagged field under its lowercased
+// the struct's tags (yaml.v3 reads an untagged field under its lowercased
 // name), so a field added to the struct is known here without a second
 // list to keep.
 var manifestStructKeys = func() map[string]bool {
@@ -149,13 +157,6 @@ var iterionOnlyKeyRe = func() *regexp.Regexp {
 // is not ours — judging the half a bound left readable would be judging
 // another document.
 const maxManifestProbe = 1 << 20
-
-// manifestIsIterions reports whether path is a manifest file that is
-// iterion's; the reason it is not, when it is not, is manifestVerdict's.
-func manifestIsIterions(path string) bool {
-	ok, _ := manifestVerdict(path)
-	return ok
-}
 
 // manifestVerdict reads whether path is an iterion manifest off its
 // SHAPE, never its values (whether it then opens is the loader's verdict,
@@ -227,6 +228,43 @@ func manifestVerdict(path string) (ok bool, reason string) {
 	return false, "carries top-level keys no iterion manifest has (" + strings.Join(unknown, ", ") + ") and none only ours have"
 }
 
+// DirClaim answers whether dir is a bundle directory by the ONE definition
+// this package owns (the markers above): claimed = it carries an iterion
+// manifest — either spelling, by the SHAPE verdict, never by existence
+// alone — or a skills/ or presets/ directory; openable = main.bot sits beside the
+// claim. Discovery's walk and the localize path judge directories through
+// this verdict (ADR-140), so a directory cannot be a bundle on one surface
+// and a descent on another. reason, when the directory is not claimed but
+// carries a manifest, names why that manifest is not ours.
+func DirClaim(dir string) (claimed, openable bool, reason string) {
+	claimed, reason = directoryClaim(dir)
+	if !claimed {
+		return false, false, reason
+	}
+	_, err := os.Stat(filepath.Join(dir, MainBotFile))
+	return true, err == nil, reason
+}
+
+// directoryClaim is shared by discovery and file promotion, including a
+// studio draft whose main.bot has not been written yet.
+func directoryClaim(dir string) (claimed bool, reason string) {
+	for _, marker := range dirMarkers {
+		p := filepath.Join(dir, marker)
+		if marker == DirSkills || marker == DirPresets {
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				return true, reason
+			}
+			continue
+		}
+		if ok, why := manifestVerdict(p); ok {
+			return true, reason
+		} else if why != "" && reason == "" {
+			reason = marker + " " + why
+		}
+	}
+	return false, reason
+}
+
 // ForeignManifestBeside reports a file named like a manifest beside a
 // main.bot that DirForMainBot did NOT read as the bundle's manifest, and
 // why — the one outcome that would otherwise be silent: a typo in the only
@@ -273,17 +311,8 @@ func DirForMainBot(path string) string {
 		return ""
 	}
 	parent := filepath.Dir(abs)
-	for _, marker := range dirMarkers {
-		p := filepath.Join(parent, marker)
-		if marker == DirSkills {
-			if st, err := os.Stat(p); err == nil && st.IsDir() {
-				return parent
-			}
-			continue
-		}
-		if manifestIsIterions(p) {
-			return parent
-		}
+	if claimed, _ := directoryClaim(parent); claimed {
+		return parent
 	}
 	return ""
 }
@@ -305,8 +334,10 @@ func DirForMainBot(path string) string {
 // submodule, a linked worktree) is its own boundary: the file belongs to
 // the inner one. A tree with no .git at all walks on, to the filesystem
 // root. The boundary shares ambient.RepoRoot's .git rule: an EMPTY or
-// non-pointer .git file (a corrupt checkout) is no boundary, and the walk
-// crosses it — the pre-#1367 misattribution survives that one shape.
+// non-pointer .git file (a corrupt checkout) is no boundary, and neither is
+// a .git directory that is no repository to git (no HEAD, objects/, refs/) —
+// the walk crosses both, and the pre-#1367 misattribution survives those
+// shapes.
 func OwningDir(path string) string {
 	if path == "" {
 		return ""

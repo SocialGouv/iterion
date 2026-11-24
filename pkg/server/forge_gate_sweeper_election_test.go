@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/lease"
@@ -491,7 +492,7 @@ func TestLeaseStoreFor_EveryReplicaCampaignsOnTheSharedStore(t *testing.T) {
 	// stores wired: the merge-gate sweep starts, so the fallback is announced.
 	gateOnly := &Server{
 		cfg:                Config{Store: listerStore{RunStore: fs, scanCounter: &scanCounter{}}},
-		forgeConnections:   forge.NewMemoryConnectionStore(),
+		forgeConnections:   connection.NewMemoryForgeStore(),
 		forgePublishTokens: NewForgePublishTokenRegistry(),
 	}
 	if st := leaseStoreFor(gateOnly, warnf); st == nil {
@@ -705,7 +706,7 @@ func TestNew_WiresTheSharedLeaseStore(t *testing.T) {
 	// TestLeaseStoreFor_EveryReplicaCampaignsOnTheSharedStore.
 	New(Config{
 		Store:            listerStore{RunStore: fs, scanCounter: &scanCounter{}},
-		ForgeConnections: forge.NewMemoryConnectionStore(),
+		ForgeConnections: connection.NewMemoryForgeStore(),
 	}, iterlog.New(iterlog.LevelInfo, out))
 	if !strings.Contains(out.String(), "every replica elects itself") {
 		t.Errorf("New() on a cloud store hiding its database did not warn; log:\n%s", out.String())
@@ -856,7 +857,7 @@ func TestLeaseStoreFor_TheWarningFromTheServerThatBuildsIt(t *testing.T) {
 		StoreDir:                filepath.Join(workDir, ".iterion"),
 		SkipProjectRegistration: true,
 		Store:                   listerStore{RunStore: fs, scanCounter: &scanCounter{}},
-		ForgeConnections:        forge.NewMemoryConnectionStore(),
+		ForgeConnections:        connection.NewMemoryForgeStore(),
 	}, iterlog.New(iterlog.LevelInfo, out))
 	if _, ok := s.leases.(*lease.MemoryStore); !ok {
 		t.Fatalf("the lease store is %T, want the in-memory fallback — the premise is a run store with no shared database", s.leases)

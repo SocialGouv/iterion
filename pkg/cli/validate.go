@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/fix"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -68,6 +69,25 @@ type ValidateResult struct {
 	// ExecError says why the dry run asked for did not run — the fixtures
 	// could not be read, or the run failed; the compile verdict stands.
 	ExecError string `json:"exec_error,omitempty"`
+	// Connectors is what the catalogue INSTALLED ON THIS MACHINE answers for
+	// the program's `action:` nodes (`--connectors`, ADR-098) — present only
+	// when asked, and only for a program that compiles. Like Exec's, its
+	// findings are not diagnostics: what a tier serves is a property of the
+	// install, so it must not decide `valid` (validate_connectors.go holds
+	// the reasoning).
+	Connectors *ConnectorsReport `json:"connectors,omitempty"`
+	// ConnectorsError says why the resolution asked for did not happen — a
+	// catalog root that is there and cannot be read; the compile verdict
+	// stands. An install with no catalog at all is not this: it is an answer,
+	// and it is in the report.
+	ConnectorsError string `json:"connectors_error,omitempty"`
+	// Explain is the capability-drift reading (`--explain`, iterion#2815):
+	// one entry per LLM node whose source-resolved backend is claude_code,
+	// with the native tools the node's declaration grants and the ones the
+	// backend withholds whatever the list says, the reason per name. Like
+	// Exec and Connectors it is a reading, not a diagnostic: it never moves
+	// `valid`.
+	Explain []ValidateExplainNode `json:"explain,omitempty"`
 }
 
 // ValidateOptions widen `iterion validate`. Exec runs the compiled program
@@ -104,6 +124,19 @@ type ValidateOptions struct {
 	Vars   []string
 	Preset string
 	Inputs map[string]any
+	// Connectors resolves every `action:` node against the installed
+	// connector catalogue once the program compiles (`--connectors`). OFF by
+	// default and never implied by another option: it is the one thing
+	// `validate` reads off the machine rather than out of the program, so a
+	// default invocation has to stay independent of what is installed.
+	Connectors bool
+	// Explain shows, for every LLM node whose source-resolved backend is
+	// claude_code, the native roster the node's `tools:` declaration grants
+	// and the tools the backend withholds whatever the list says, with the
+	// reason per name (`--explain`, iterion#2815). A reading, never a
+	// diagnostic: it does not move the verdict, and the answer comes from
+	// the same projection the delegate's spawn argv is built from.
+	Explain bool
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -116,10 +149,18 @@ type ValidateDiagnostic struct {
 	File     string `json:"file,omitempty"`
 	Line     int    `json:"line,omitempty"`
 	Column   int    `json:"column,omitempty"`
-	Message  string `json:"message"`
-	Hint     string `json:"hint,omitempty"`
-	NodeID   string `json:"node_id,omitempty"`
-	EdgeID   string `json:"edge_id,omitempty"`
+	// EndLine and EndColumn close the span the finding is positioned on,
+	// when the stage recorded one — the column after the span's last rune;
+	// Property names the property of the declaration the finding is about,
+	// when it is about one property's value rather than the declaration:
+	// the position is then that property line's (#1094).
+	EndLine   int    `json:"end_line,omitempty"`
+	EndColumn int    `json:"end_column,omitempty"`
+	Property  string `json:"property,omitempty"`
+	Message   string `json:"message"`
+	Hint      string `json:"hint,omitempty"`
+	NodeID    string `json:"node_id,omitempty"`
+	EdgeID    string `json:"edge_id,omitempty"`
 	// Edit is the mechanical remedy the diagnostic carries, when its fix
 	// is the same every time (pkg/dsl/fix; `iterion fix` applies it): the
 	// literal before and after, at its line and column.
@@ -475,16 +516,19 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	for _, d := range cr.Diagnostics {
 		result.CompileDiagnostics = append(result.CompileDiagnostics, d.Error())
 		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
-			Source:   "compile",
-			Code:     string(d.Code),
-			Severity: d.Severity.String(),
-			File:     d.File,
-			Line:     d.Line,
-			Column:   d.Column,
-			Message:  d.Message,
-			Hint:     d.Hint,
-			NodeID:   d.NodeID,
-			EdgeID:   d.EdgeID,
+			Source:    "compile",
+			Code:      string(d.Code),
+			Severity:  d.Severity.String(),
+			File:      d.File,
+			Line:      d.Line,
+			Column:    d.Column,
+			EndLine:   d.EndLine,
+			EndColumn: d.EndColumn,
+			Property:  d.Property,
+			Message:   d.Message,
+			Hint:      d.Hint,
+			NodeID:    d.NodeID,
+			EdgeID:    d.EdgeID,
 		})
 		if d.Severity == ir.SeverityError {
 			result.Valid = false
@@ -516,7 +560,21 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				Message:  err.Error() + " — the tool sets reported here omit them",
 			})
 		}
-		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
+		// `iterion run` builds its engine with no WithWorkDir: the engine
+		// fills its own workDir with the process cwd and roots the run
+		// there. The tool sets predicted here are the ones a run launched
+		// from this directory resolves, so the {{workspace}} placeholders
+		// expand against the cwd — never the compiled file's directory,
+		// which is only where `.mcp.json` is read from (#1800).
+		workspace, wdErr := os.Getwd()
+		if wdErr != nil {
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "compile",
+				Severity: "warning",
+				Message:  fmt.Sprintf("cannot resolve the run workspace from the process cwd: %v — plugin {{workspace}} placeholders are reported unresolved", wdErr),
+			})
+		}
+		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path), workspace, runview.AnalysisTrust); err != nil {
 			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
 				Source:   "compile",
@@ -533,6 +591,10 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		}
 	}
 
+	// presetErrs are the bundle's preset files the loader could not read:
+	// scanned once below for the lint, read again by the dry run, so one
+	// cause is one sentence.
+	var presetErrs []error
 	// Bundle consistency: cross-check the manifest against the compiled
 	// workflow (var maps, forge secret, capabilities, per-bot-memory name
 	// stability). Only runs for bundles; plain .bot files have no manifest.
@@ -571,6 +633,20 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				Message:  fmErr.Error() + " — the checks that read it did not run",
 			})
 		}
+		// A preset the loader could not read is absent from the lint's
+		// input: said here, on every `validate`, so the verdict on the
+		// presets that loaded is never taken for a verdict on all of them.
+		// The dry run, when asked for, refuses to run over it as well, from
+		// this same scan.
+		var presetDocs []bundlelint.PresetDoc
+		presetDocs, presetErrs = scanBundlePresets(bundleHandle.PresetsDir)
+		for _, perr := range presetErrs {
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "bundle",
+				Severity: "warning",
+				Message:  perr.Error() + " — the checks that read the preset's body did not run",
+			})
+		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
@@ -580,6 +656,13 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			Frontmatter: lintFrontmatter,
 			DirName:     bundleDir,
 			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
+			// The presets' prompt bodies (C323 and the rest of the
+			// prompt-sink verdicts), read here because bundlelint stays
+			// I/O-free, and judged against the program a launch of THIS
+			// entry merges them into — the sibling's own when a sibling is
+			// validated, where the manifest-bound checks read main's.
+			Presets:  presetDocs,
+			Launched: cr.Workflow,
 			// The engine contract (C250/C251), held against THIS binary — the
 			// author's local half of the guard the push admission and the
 			// runner apply on a deployment.
@@ -638,16 +721,15 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if opts.wantsDryRun() && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
 		// A preset file the bundle carries and cannot read is the bot's
-		// defect, and this is the command that says so — `run` logs it at
-		// warn and goes on; the dry run does not run over it.
-		if err == nil && bundleHandle != nil {
-			if _, perrs := bundle.LoadPresets(bundleHandle.PresetsDir); len(perrs) > 0 {
-				err = fmt.Errorf("bundle presets: %s", joinErrors(perrs))
-			}
+		// defect, said above as a bundle warning with the file and the
+		// reason — `run` logs it at warn and goes on; the dry run does not
+		// run over it, and says so by count, never the cause a second time.
+		if err == nil && len(presetErrs) > 0 {
+			err = fmt.Errorf("bundle presets: %d preset file%s the loader could not read, each said as a bundle warning with its reason — the dry run did not run over them", len(presetErrs), pluralS(len(presetErrs)))
 		}
 		// The bundle's file presets (presets/<name>.md) join the in-source
 		// ones, so `--preset` resolves them as it does on `run`.
-		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, nil)
+		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, opts.Preset, nil)
 		inputs, ierr := dryRunInputs(cr.Workflow, opts)
 		if err == nil {
 			err = ierr
@@ -675,6 +757,27 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		}
 	}
 
+	// The connector resolution, on a program that compiles — the same rule as
+	// the dry run above, and for the same reason: the diagnostics are the
+	// remedy for a program that does not, and an action node of a program
+	// that failed to compile may not even be the node the author meant.
+	if opts.Connectors && result.Valid && cr.Workflow != nil {
+		report, err := resolveConnectorActions(cr.Workflow)
+		if err != nil {
+			result.ConnectorsError = err.Error()
+		} else {
+			result.Connectors = report
+		}
+	}
+
+	// The capability-drift reading (`--explain`), on a program that compiles:
+	// a reading, never a diagnostic, so it stands beside the verdict without
+	// moving it (iterion#2815 — ARB-50 withdrew the per-node warning this
+	// replaces; the information is owed, the diagnostic surface was wrong).
+	if opts.Explain && result.Valid && cr.Workflow != nil {
+		result.Explain = explainClaudeCodeSurfaces(cr.Workflow)
+	}
+
 	sortValidateDiagnostics(result.Diagnostics)
 	if p.Format == OutputJSON {
 		p.JSON(result)
@@ -695,6 +798,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			}
 		}
 		printDiagnostics(p, result.Diagnostics)
+		printExplain(p, result.Explain)
 		if result.Exec != nil {
 			p.Blank()
 			for _, line := range strings.Split(strings.TrimRight(result.Exec.Render(), "\n"), "\n") {
@@ -704,6 +808,13 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		if result.ExecError != "" {
 			p.Blank()
 			p.Line("  dry run: not run — " + result.ExecError)
+		}
+		if result.Connectors != nil {
+			renderConnectors(p, result.Connectors)
+		}
+		if result.ConnectorsError != "" {
+			p.Blank()
+			p.Line("  connectors: not resolved — " + result.ConnectorsError)
 		}
 		p.Blank()
 		if result.Valid {
@@ -718,6 +829,14 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	}
 	if result.ExecError != "" {
 		return dryRunFailed(p, result.ExecError)
+	}
+	// A catalogue that could not be read fails the command; a catalogue that
+	// cannot SERVE a node does not. The first is the operator's install
+	// answering nothing to a question they asked, the second is an answer —
+	// and one that is true on this machine only, so it must not become an
+	// exit code a CI gate reads as the program's verdict.
+	if result.ConnectorsError != "" {
+		return connectorsNotResolved(p, result.ConnectorsError)
 	}
 	if opts.Strict && result.Exec != nil && result.Exec.Failing() {
 		return dryRunNotClean(p, result.Exec)
@@ -750,6 +869,17 @@ func dryRunFailed(p *Printer, why string) error {
 		return fmt.Errorf("dry run failed: %w", ErrReported)
 	}
 	return fmt.Errorf("dry run failed: %s", why)
+}
+
+// connectorsNotResolved is the error of a `--connectors` resolution that could
+// not run — a catalog root that is there and unreadable — returned AFTER the
+// result was printed, like the dry run's: in JSON mode it is marked
+// ErrReported and the CLI prints nothing more.
+func connectorsNotResolved(p *Printer, why string) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("connectors not resolved: %w", ErrReported)
+	}
+	return fmt.Errorf("connectors not resolved: %s", why)
 }
 
 // annotateEdits attaches to each compile diagnostic the mechanical remedy
@@ -787,7 +917,7 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, 
 						vd := &result.Diagnostics[j]
 						if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
 							vd.NodeID == node &&
-							strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+							strings.Contains(vd.Message, e.Property+": "+expr.Excerpt(ref)+" sits inside quotes") {
 							vd.Edit = &e
 							break
 						}
@@ -1002,38 +1132,71 @@ func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, stri
 	return mcr.Workflow, fm, mainPath, err
 }
 
-// scanBundleSkills reads a bundle's skills/*.md frontmatter (name +
-// description) for the routability lint (C231–C234), using the shared
-// skilllib parser so it never drifts from run-time discovery. An empty or
-// missing dir yields no docs (the checks then no-op). Non-.md entries and
-// unreadable files are skipped silently — the lint judges routability of the
+// scanBundleSkills reads a bundle's skill pages for the routability lint
+// (C231–C234) and the durable-memory reference check (C274), using the shared
+// skilllib reading — BOTH canonical forms (`skills/<name>.md` and
+// `skills/<name>/SKILL.md`, which the engine's own mirror copies through
+// unchanged) plus its frontmatter parser — so the lint never drifts from
+// run-time discovery. An empty or missing dir yields no docs (the checks then
+// no-op), and an unreadable file is skipped silently: the lint judges the
 // skills that exist, not filesystem health.
+//
+// The reported path is the PAGE, directory form included, so an operator
+// opens the file the diagnostic names.
+//
+// The page's text travels with its frontmatter because C274 asks which TOOLS
+// the page names; bundlelint stays I/O-free, so the bytes are read here.
 func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 	if skillsDir == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(skillsDir)
+	pages, err := skilllib.ListDirPages(skillsDir)
 	if err != nil {
 		return nil
 	}
 	var docs []bundlelint.SkillDoc
-	for _, e := range entries {
-		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
-			continue
-		}
-		f, err := os.Open(filepath.Join(skillsDir, e.Name()))
+	for _, p := range pages {
+		body, err := os.ReadFile(p.Path)
 		if err != nil {
 			continue
 		}
-		name, desc := skilllib.ScanFrontmatter(f)
-		_ = f.Close()
+		name, desc := skilllib.ScanFrontmatter(strings.NewReader(string(body)))
 		docs = append(docs, bundlelint.SkillDoc{
-			Path:        filepath.Join(bundle.DirSkills, e.Name()),
+			Path:        bundle.DirSkills + "/" + p.Rel,
 			Name:        name,
 			Description: desc,
+			Body:        string(body),
 		})
 	}
 	return docs
+}
+
+// scanBundlePresets reads a bundle's presets/*.md for the lint, through the
+// loader the RUN uses (bundle.LoadPresets) so the lint never drifts from
+// what a launch actually merges. An empty or missing dir yields no docs (the
+// checks then no-op). A file the loader could not read — frontmatter it
+// cannot parse, a name it refuses, a duplicate — is absent from the docs and
+// present in the errors, one per file, for the caller to say: the lint
+// judges the presets that load, and the caller owes the reader the ones it
+// did not judge.
+//
+// A doc's path is the PAGE, bundle-relative, so an operator opens the file
+// the diagnostic names; an error is the loader's own sentence, which names
+// the file by the path the loader opened.
+func scanBundlePresets(presetsDir string) ([]bundlelint.PresetDoc, []error) {
+	if presetsDir == "" {
+		return nil, nil
+	}
+	specs, errs := bundle.LoadPresets(presetsDir)
+	var docs []bundlelint.PresetDoc
+	for _, ps := range specs {
+		docs = append(docs, bundlelint.PresetDoc{
+			Path:   bundle.DirPresets + "/" + filepath.Base(ps.Path),
+			Name:   ps.Name,
+			Prompt: ps.Prompt,
+		})
+	}
+	return docs, errs
 }
 
 // wantsDryRun says the options ask for the dry run — by its switch, or by
@@ -1116,15 +1279,6 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 
 // noEnvironment answers every reference with the empty string.
 func noEnvironment(string) string { return "" }
-
-// joinErrors lists errors on one line, for a result field.
-func joinErrors(errs []error) string {
-	parts := make([]string, 0, len(errs))
-	for _, e := range errs {
-		parts = append(parts, e.Error())
-	}
-	return strings.Join(parts, "; ")
-}
 
 // declaredVars lists the workflow's var names, sorted, for an error to
 // name — the shared helper's word.

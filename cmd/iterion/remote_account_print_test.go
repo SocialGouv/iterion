@@ -3,37 +3,24 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 // captureStdout runs run with os.Stdout read into the returned string.
 func captureStdout(t *testing.T, run func() error) string {
 	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stdout
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-	read := make(chan string)
-	go func() {
-		b, _ := io.ReadAll(r)
-		read <- string(b)
-	}()
-	runErr := run()
-	_ = w.Close()
-	out := <-read
-	if runErr != nil {
-		t.Fatal(runErr)
-	}
-	return out
+	return stdiotest.Run(t, &os.Stdout, func() {
+		if err := run(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // TestRemoteLoginAndStatus_showTheServersAccountInert: the account `remote

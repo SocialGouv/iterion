@@ -34,8 +34,9 @@ func loginAccessToken(t *testing.T, base, email, password string) string {
 }
 
 // TestRemoteLogin_TakesTheTeamSlugItsOwnAdviceCarries: `teams switch <slug>`
-// from a stored personal access token refuses before sending anything and
-// names the login that does pin a team, carrying the argument as TYPED. A
+// with no browser approval wired (a caller that cannot browse passes a nil
+// seam) refuses before sending anything and names the login that does pin a
+// team, carrying the argument as TYPED. A
 // slug is what an operator types (team ids are UUIDs nobody remembers), so
 // the login has to resolve it the way `teams switch` would — the mint pins
 // `team_id` verbatim, and an unresolved slug comes back 403 "not a member of
@@ -63,7 +64,7 @@ func TestRemoteLogin_TakesTheTeamSlugItsOwnAdviceCarries(t *testing.T) {
 
 	// The refusal an operator reads, and the command line it hands them.
 	stored := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: base, Token: "iap_stored_cli_token"})
-	switchErr := cli.RemoteTeamsSwitch(ctx, stored, cli.NewPrinter(cli.OutputHuman), slug, "iterion-cli (host)")
+	switchErr := cli.RemoteTeamsSwitch(ctx, stored, cli.NewPrinter(cli.OutputHuman), slug, "iterion-cli (host)", nil)
 	if switchErr == nil {
 		t.Fatal("`teams switch` from a stored personal access token reported success")
 	}

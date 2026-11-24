@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ensureLogSource guarantees a run.log tailer is feeding a live RunLogBuffer
@@ -25,7 +27,7 @@ import (
 // active in-process (those feed their buffer directly via the logger tee) and
 // are NOT terminal (a finished run's static run.log wants the one-shot replay,
 // not a lingering tailer).
-func (s *Service) ensureLogSource(runID string) (release func(), buf *RunLogBuffer) {
+func (s *Service) ensureLogSource(ctx context.Context, runID string) (release func(), buf *RunLogBuffer) {
 	s.fileSrcMu.Lock()
 	if s.logSrcs == nil {
 		s.logSrcs = make(map[string]*fileSrcHandle)
@@ -34,34 +36,38 @@ func (s *Service) ensureLogSource(runID string) (release func(), buf *RunLogBuff
 	if h == nil {
 		h = &fileSrcHandle{done: make(chan struct{})}
 		s.logSrcs[runID] = h
-		s.prepareRunLogNoFile(runID)     // in-memory buffer GetLogBuffer will return
-		startLogSource(s, runID, h.done) // fsnotify tail run.log → buffer
+		// The buffer is labelled with the run the tailer reads — the one
+		// holding the ID now, read without the subscriber's binding — never
+		// with the run a subscriber was admitted on.
+		h.buf = s.prepareRunLogNoFile(store.WithoutRunDataBinding(ctx), runID) // in-memory buffer GetLogBuffer will return
+		startLogSource(s, runID, h.buf, h.done)                                // fsnotify tail run.log → buffer
 	}
 	h.refs++
 	s.fileSrcMu.Unlock()
-
-	buf = s.GetLogBuffer(runID)
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			s.fileSrcMu.Lock()
 			cur := s.logSrcs[runID]
-			last := false
+			var drop *RunLogBuffer
 			if cur != nil {
 				cur.refs--
 				if cur.refs <= 0 {
 					close(cur.done)
 					delete(s.logSrcs, runID)
-					last = true
+					drop = cur.buf
 				}
 			}
 			s.fileSrcMu.Unlock()
-			if last {
-				s.dropRunLog(runID)
+			if s.logReleaseGap != nil {
+				s.logReleaseGap(runID)
 			}
+			// The tailer's own buffer: one a new subscription or run
+			// registered under the ID once the handle was gone stays.
+			s.dropRunLog(runID, drop)
 		})
-	}, buf
+	}, h.buf
 }
 
 // GetLogBuffer returns the live log buffer for runID, or nil if the
@@ -72,6 +78,55 @@ func (s *Service) GetLogBuffer(runID string) *RunLogBuffer {
 	s.runLogsMu.RLock()
 	defer s.runLogsMu.RUnlock()
 	return s.runLogs[runID]
+}
+
+// GetLogBufferOf is GetLogBuffer for a reader bound to one run: the buffer
+// only when it was created for the run of this birth (RunLogBuffer.BornOf),
+// nil otherwise — a predecessor's buffer still registered under the ID, or
+// one whose run could not be read when it was created.
+func (s *Service) GetLogBufferOf(runID, birth string) *RunLogBuffer {
+	if buf := s.GetLogBuffer(runID); buf != nil && buf.BornOf(birth) {
+		return buf
+	}
+	return nil
+}
+
+// recordLogBirth records on buf the birth of the run the buffer is created
+// for: the run ctx is bound to (a prepared launch), else the run runID names
+// now, read with the caller's identity. A run that cannot be read leaves the
+// birth unknown, and the buffer is then served to no bound reader.
+func (s *Service) recordLogBirth(ctx context.Context, buf *RunLogBuffer, runID string) {
+	if b, ok := store.RunDataBindingFrom(ctx); ok && b.Header().RunID == runID {
+		buf.SetBirth(b.Header().BirthID)
+		return
+	}
+	if s.store == nil {
+		return
+	}
+	if run, err := s.store.LoadRun(ctx, runID); err == nil {
+		buf.SetBirth(run.BirthID)
+	}
+}
+
+// InstallLogBufferForTest registers a live buffer for runID holding data, as
+// created for the run of birth — a predecessor's buffer a subscription still
+// holds after its run was replaced. The returned func removes it.
+func (s *Service) InstallLogBufferForTest(runID, birth string, data []byte) func() {
+	buf, _ := NewRunLogBuffer("")
+	_, _ = buf.Write(data)
+	buf.SetBirth(birth)
+	s.runLogsMu.Lock()
+	s.runLogs[runID] = buf
+	s.runLogsMu.Unlock()
+	return func() { s.dropRunLog(runID, buf) }
+}
+
+// PrepareRunLogForTest runs a launch's log preparation for runID under ctx —
+// the buffer, its run.log tee and its lane registration (prepareRunLog) —
+// without starting the run. The returned func drops the buffer.
+func (s *Service) PrepareRunLogForTest(ctx context.Context, runID string) func() {
+	buf, _ := s.prepareRunLog(ctx, runID)
+	return func() { s.dropRunLog(runID, buf) }
 }
 
 // logPositionForRun is the callback shape the store uses to stamp
@@ -170,32 +225,88 @@ func (s *Service) activeDurationForRun(runID string) int64 {
 // Returns the buffer for cleanup and the logger to thread through
 // both BuildExecutor and runtime.WithLogger so every iterion log line
 // emitted during this run is captured for the WS subscribers.
-func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
+func (s *Service) prepareRunLog(ctx context.Context, runID string) (*RunLogBuffer, *iterlog.Logger) {
 	var filePath string
-	if s.storeDir != "" {
-		runDir := filepath.Join(s.storeDir, "runs", runID)
-		if err := os.MkdirAll(runDir, 0o755); err == nil {
-			filePath = filepath.Join(runDir, "run.log")
+	if path, ok := s.runLogPath(runID); ok {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+			filePath = path
 		}
 	}
 	buf, fileErr := NewRunLogBuffer(filePath)
 	if fileErr != nil {
 		s.logger.Warn("runview: open run.log for %s: %v — proceeding without disk persistence", runID, fileErr)
 	}
+	s.recordLogBirth(ctx, buf, runID)
+
+	// A predecessor buffer still registered for this ID (a run goroutine that
+	// did not clean up) returns its bail BEFORE this producer registers: two
+	// buffers of one run share the same observation, so registering first
+	// would JOIN the predecessor's live epoch and its release would never end
+	// it. Its subscribers are left to see EOF below.
+	s.runLogsMu.Lock()
+	old := s.runLogs[runID]
+	s.runLogsMu.Unlock()
+	if old != nil && old != buf {
+		// A buffer still installed means its producer did not finish on its
+		// own: nothing classified its end, so it is lost, never the default
+		// terminal (setLogEnd is first-wins and keeps a real classification).
+		old.setLogEnd(logEndLost)
+		old.releaseLogLane()
+	}
+
+	// The lane is registered before the buffer is installed, with the
+	// durability the tee actually achieved: a buffer whose file could not be
+	// opened is memory-only, and its lane is refused at adoption.
+	dur := logMemoryOnly
+	if buf.fileTee() {
+		dur = logDurable
+	}
+	s.registerRunLogOrigin(ctx, runID, buf, dur)
+
+	// A fork, so this run's secret matcher lands on a handle of its own:
+	// BuildExecutor sets it here (iterion#2822) and the service logger —
+	// shared by every run in this process — keeps its own reading.
+	perRunLogger := s.logger.WithWriter(io.MultiWriter(s.logger.Writer(), buf))
 
 	s.runLogsMu.Lock()
-	if old, ok := s.runLogs[runID]; ok {
-		// Defensive: a previous run goroutine for this ID didn't
-		// fully clean up. The store lock should make this impossible,
-		// but if it ever happens we want the WS subscribers of the
-		// stale buffer to see EOF rather than dangle forever.
-		old.Close()
-	}
 	s.runLogs[runID] = buf
+	s.runLoggers[runID] = perRunLogger
 	s.runLogsMu.Unlock()
 
-	perRunLogger := s.logger.WithWriter(io.MultiWriter(s.logger.Writer(), buf))
+	// Defensive: a previous run goroutine for this ID didn't fully clean up
+	// (the store lock should make this impossible). Its subscribers see EOF
+	// rather than dangle forever; its bail was already returned above.
+	if old != nil && old != buf {
+		old.Close()
+	}
+
 	return buf, perRunLogger
+}
+
+// runLoggerFor returns the logger a helper must log this run's text on.
+// For a run this process holds it is the per-run fork prepareRunLog
+// built, carrying the run's secret matcher — which is what the exported
+// finalize helpers need: they log a git command's combined output on the
+// logger they are HANDED (runtime.RecoverFinalize,
+// runtime.CommitUncommittedAndFinalize), and coverage follows the handle,
+// not the helper.
+//
+// For a run held elsewhere — the reaper's sweep over finished runs, a
+// finalize after a restart — there is no matcher in this process to hand:
+// the guard belongs to the run's own launch. The answer is then a FORK of
+// the service logger, never the service logger itself, so the slot those
+// lines cross can never be one a live run installed into.
+func (s *Service) runLoggerFor(runID string) *iterlog.Logger {
+	if s == nil {
+		return nil
+	}
+	s.runLogsMu.RLock()
+	l := s.runLoggers[runID]
+	s.runLogsMu.RUnlock()
+	if l != nil {
+		return l
+	}
+	return s.logger.WithOwnRedactor()
 }
 
 // prepareRunLogNoFile is the detached-mode counterpart to
@@ -204,26 +315,109 @@ func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
 // owns the on-disk run.log; a second writer here would corrupt it.
 // File contents reach this buffer via the file_log_source tailer,
 // which reads new bytes off disk and pushes them through Write.
-func (s *Service) prepareRunLogNoFile(runID string) *RunLogBuffer {
+func (s *Service) prepareRunLogNoFile(ctx context.Context, runID string) *RunLogBuffer {
 	buf, _ := NewRunLogBuffer("")
+	s.recordLogBirth(ctx, buf, runID)
 	s.runLogsMu.Lock()
-	if old, ok := s.runLogs[runID]; ok {
-		old.Close()
-	}
+	old := s.runLogs[runID]
 	s.runLogs[runID] = buf
 	s.runLogsMu.Unlock()
+	if old != nil && old != buf {
+		// Same teardown as the file-backed replacement, outside the lock: the
+		// predecessor's bail is returned and its subscribers see EOF. Its end
+		// was never classified, so it is LOST rather than implicitly terminal.
+		old.setLogEnd(logEndLost)
+		old.releaseLogLane()
+		old.Close()
+	}
 	return buf
 }
 
-// dropRunLog tears down the per-run buffer at run-completion time:
-// closes any active subscribers, the persisted file, and removes the
-// map entry. Idempotent.
-func (s *Service) dropRunLog(runID string) {
-	s.runLogsMu.Lock()
-	buf := s.runLogs[runID]
-	delete(s.runLogs, runID)
-	s.runLogsMu.Unlock()
-	if buf != nil {
-		buf.Close()
+// dropRunLog tears down buf, the per-run buffer its caller created for
+// runID (prepareRunLog, prepareRunLogNoFile): closes its subscribers and its
+// persisted file, and removes the map entry — only while it still holds buf.
+// A buffer registered under the ID since (a new subscription's tailer, a new
+// run) is another owner's and stays. Idempotent; a nil buf is a no-op.
+func (s *Service) dropRunLog(runID string, buf *RunLogBuffer) {
+	if buf == nil {
+		return
 	}
+	s.runLogsMu.Lock()
+	if s.runLogs[runID] == buf {
+		delete(s.runLogs, runID)
+		delete(s.runLoggers, runID)
+	}
+	s.runLogsMu.Unlock()
+	buf.Close()
+	// The producer's bail is returned after the buffer's subscribers saw EOF:
+	// the lane publishes the end setLogEnd recorded (logEndTerminal by
+	// default) and its topic stays retained for a subscriber that parks
+	// across the close.
+	buf.releaseLogLane()
+	s.clearLogProducerFailure(runID)
+}
+
+// runLogOwner holds a producer's log bail until it hands the run to its
+// goroutine. Transfer runs SYNCHRONOUSLY immediately before the `go` that
+// takes the run over; from then on Abandon is a no-op, so a launcher's late
+// defer can never release the bail of a run that is alive.
+type runLogOwner struct {
+	s     *Service
+	runID string
+	buf   *RunLogBuffer
+	mu    sync.Mutex
+	held  bool
+}
+
+// ownRunLog arms ownership of a producer's buffer, registering its lane when
+// prepareRunLog did not (the detached paths, whose buffer has no file tee of
+// its own). The caller MUST Transfer before handing the run to its goroutine,
+// and Abandon on every path that ends before that hand-off.
+func (s *Service) ownRunLog(ctx context.Context, runID string, buf *RunLogBuffer, dur logDurability) *runLogOwner {
+	if buf != nil && !buf.laneRegistered() {
+		s.registerRunLogOrigin(ctx, runID, buf, dur)
+	}
+	return &runLogOwner{s: s, runID: runID, buf: buf, held: buf != nil}
+}
+
+// Transfer hands the bail to the run's goroutine. Idempotent.
+func (o *runLogOwner) Transfer() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.held = false
+	o.mu.Unlock()
+}
+
+// Abandon returns the bail of a producer that never started: the run's own
+// status classifies the epoch (paused keeps a resume possible, terminal ends
+// the stream, anything else is lost), then the buffer is dropped. Idempotent;
+// a no-op once Transfer handed the bail on.
+func (o *runLogOwner) Abandon() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	held := o.held
+	o.held = false
+	o.mu.Unlock()
+	if !held {
+		return
+	}
+	if o.buf != nil {
+		o.buf.setLogEnd(o.s.classifyRunLogExit(o.runID))
+	}
+	o.s.dropRunLog(o.runID, o.buf)
+}
+
+// classifyRunLogExit reads the run's stored status and classifies it for the
+// log stream. A status that cannot be read is LOST: a vanished producer is a
+// typed error, never a silent completion.
+func (s *Service) classifyRunLogExit(runID string) logEnd {
+	run, err := s.store.LoadRun(store.TeamBlind(context.Background()), runID)
+	if err != nil || run == nil {
+		return logEndLost
+	}
+	return classifyLogExit(run.Status)
 }

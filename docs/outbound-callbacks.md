@@ -42,9 +42,10 @@ Supply three optional fields when launching a run via `POST /api/runs`
   artifact holds the run's user-facing answer (read from its
   `final_answer` field). When omitted, iterion probes every
   artifact-producing node of the run's artifact index and returns the
-  first `final_answer` it finds. That index is a map and the scan has no
-  ordering key, so when two nodes carry an answer which one wins is
-  undefined — name the node when it matters.
+  `final_answer` written LAST — the artifact's `written_at`, with the
+  node id breaking a tie — so a redelivery of the same finished run
+  resolves to the same answer. Name the node when the run's last answer
+  is not the one the receiver should see.
 
 The three fields are persisted on the run and propagated across the
 cloud queue (`queue.RunMessage`), so both local (in-process) and cloud
@@ -71,7 +72,11 @@ When the run terminates, iterion POSTs this JSON to `callback_url`:
 - **Fired once per terminal transition.** A run that pauses
   (`paused_waiting_human` / `paused_operator`) does **not** fire — it is
   waiting, not done. A later `resume` that actually terminates fires
-  then.
+  then. A **usage park** is the same shape: `failed_resumable` with a
+  retry armed on a provider wall delivers nothing while it waits (the
+  decision keys on the persisted wall, `RetryState.Wall`), and the run
+  delivers once at settlement — resumed and finished, or its retry
+  retired by the sweeper's abandonment.
 - **`final_answer` may be empty.** A workflow that legitimately produces
   no user-facing answer (e.g. a facilitator choosing silence) yields an
   empty string; receivers should treat that as "post nothing".
@@ -120,16 +125,41 @@ attacker-influenced. Before delivering, iterion vets it
 
 - scheme must be `http` or `https`;
 - the host must resolve **exclusively** to public-unicast addresses —
-  loopback, link-local, RFC-1918 private ranges, and cloud-metadata
-  endpoints (e.g. `169.254.169.254`) are refused;
-- unresolvable hosts and cluster-internal aliases
-  (`*.svc.cluster.local`, `kubernetes.default`,
-  `metadata.google.internal`) are refused;
-- resolution **fails closed**.
+  loopback, link-local, RFC-1918 private ranges, the shared CGNAT space
+  (`100.64.0.0/10`), the IETF-protocol IPv4 block (`192.0.0.0/24`),
+  site-local `fec0::/10`, cloud-metadata endpoints (e.g. `169.254.169.254`,
+  Azure's `168.63.129.16`) and the IPv6 transition addresses that carry one
+  of them (NAT64, 6to4, SIIT `::ffff:0:a.b.c.d`; the NAT64 local-use prefix
+  `64:ff9b:1::/48` whole) are refused;
+- the reserved and benchmarking IPv4 blocks (`240.0.0.0/4`,
+  `198.18.0.0/15`) are refused whole for a host written as such an address,
+  and refused as the DNS answer for a name except two `/16`s a resolver in a
+  cluster or on a workstation answers names from: `240.240.0.0/16`, the pool
+  Istio's DNS proxy auto-allocates VIPs from for a ServiceEntry host declared
+  without addresses (and not a wildcard), and `198.18.0.0/16`, Clash's default
+  fake-IP range. The rest stays refused as an answer because clusters put
+  their own addresses there — GKE puts Pod and Service ranges in Class E, EKS
+  custom networking recommends `198.19.0.0/16` for pod subnets — and a public
+  wildcard DNS name (`240.0.0.10.sslip.io`) answers any address its label
+  spells. The cost of the two admitted `/16`s is a cluster whose own pod or
+  Service ranges sit in one of them: a name answering there reaches them
+  through every strict dial, including the two that hand the response back,
+  the studio preview proxy and the cloud connector client. A transition
+  address carrying either block stays refused;
+- names no public host carries are refused before any lookup: a single
+  label (`localhost`, a Service's short name), `kubernetes.default`, and
+  every name under `.svc`, `.cluster.local`, `.internal` (e.g.
+  `metadata.google.internal`), `.local`, `.localhost` or `.localdomain`;
+  any other name is looked up absolute, so no search domain completes it;
+- unresolvable hosts are refused, and resolution **fails closed**;
+- the delivery dials the vetted address directly and **never consults an
+  ambient proxy** (`HTTP_PROXY` / `HTTPS_PROXY`) — a proxy hop would steer
+  the delivery around the guard, and a proxy-form request would carry the
+  operator's `Proxy-Authorization` to the run-chosen receiver.
 
 This mirrors the SSRF guard used by the preview proxy — both call the
 shared [`pkg/secure/httpdial`](../pkg/secure/httpdial/httpdial.go)
-(`ResolvePublicHost` / `IsPublicUnicast`).
+(`ResolvePublicHost` / `IsPublicUnicast`, delivery on `PinnedTransport`).
 
 ### Allowing private targets (self-host)
 
@@ -144,7 +174,8 @@ ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1
 on the iterion **server** (and on cloud **runner** pods, if applicable)
 to relax the guard and permit private/loopback callback URLs. Off by
 default — cloud runners must not be able to gateway into a private
-network.
+network. The deprecated IPv4-compatible form (`::a.b.c.d`) stays refused:
+no setting lifts it.
 
 ## Implementation map
 

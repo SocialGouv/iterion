@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -132,9 +133,9 @@ func TestRemoveSecurityReadToken_DropsEntryThenDeletesEmptiedSecret(t *testing.T
 	}
 }
 
-func seedGitHubAppConn(t *testing.T, sealer secrets.Sealer, connStore ConnectionStore, expiresAt time.Time, securityRead bool) Connection {
+func seedGitHubAppConn(t *testing.T, sealer secrets.Sealer, connStore connection.ForgeStore, expiresAt time.Time, securityRead bool) Connection {
 	t.Helper()
-	blob, err := sealConnectionSecret(sealer, "conn-gh", connectionSecret{AccessToken: "old-install-token", ExpiresAt: expiresAt})
+	blob, err := connection.SealForgeCredential(sealer, "conn-gh", connection.ForgeCredential{AccessToken: "old-install-token", ExpiresAt: expiresAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func seedGitHubAppConn(t *testing.T, sealer secrets.Sealer, connStore Connection
 
 func TestRefreshWorker_MintsSecurityReadTokenAlongsideRefresh(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -191,7 +192,7 @@ func TestRefreshWorker_MintsSecurityReadTokenAlongsideRefresh(t *testing.T) {
 
 func TestRefreshWorker_SecurityMinterSkippedWhenNotOptedIn(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), false)
@@ -219,7 +220,7 @@ func TestRefreshWorker_SecurityMinterSkippedWhenNotOptedIn(t *testing.T) {
 
 func TestRefreshWorker_SecurityMintFailureSurfacesButKeepsRefresh(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -249,11 +250,11 @@ func TestRefreshWorker_SecurityMintFailureSurfacesButKeepsRefresh(t *testing.T) 
 	}
 	// … but the connection's own refresh already landed (canonical blob +
 	// status), so the forge token is NOT held hostage by the security lane.
-	conn, _ := connStore.Get(context.Background(), "conn-gh")
+	conn, _ := connStore.Get(context.Background(), "t1", "conn-gh")
 	if conn.Status != StatusActive {
 		t.Fatalf("connection status = %s, want active", conn.Status)
 	}
-	sec, err2 := openConnectionSecret(sealer, conn.ID, conn.SealedPayload)
+	sec, err2 := connection.OpenForgeCredential(sealer, conn.ID, conn.SealedPayload)
 	if err2 != nil || sec.AccessToken != "fresh-install-token" {
 		t.Fatalf("connection token = %q (err %v), want fresh-install-token", sec.AccessToken, err2)
 	}
@@ -377,7 +378,7 @@ func TestUpsertSecurityReadToken_ConcurrentWriteIsNotLost(t *testing.T) {
 
 func TestRefreshWorker_WithdrawsEntryWhenConnectionCannotRefresh(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	conn := seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -415,7 +416,7 @@ func TestRefreshWorker_WithdrawsEntryWhenConnectionCannotRefresh(t *testing.T) {
 
 func TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	conn := seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -445,7 +446,7 @@ func TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws(t *testing.T) {
 	}
 	// The opt-in is switched off with an actionable reason, so the next tick
 	// does not re-hit the forge for a grant that cannot appear on its own.
-	got, _ := connStore.Get(context.Background(), "conn-gh")
+	got, _ := connStore.Get(context.Background(), "t1", "conn-gh")
 	if got.SecurityReadEnabled {
 		t.Fatal("security-read must be switched off after a permanent mint failure")
 	}
@@ -493,7 +494,7 @@ func TestSecurityReadOrgKey_RefusesTheAppBotHandle(t *testing.T) {
 
 func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	conn := seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -517,7 +518,7 @@ func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
 	if _, err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	got, _ := connStore.Get(context.Background(), "conn-gh")
+	got, _ := connStore.Get(context.Background(), "t1", "conn-gh")
 	if got.SecurityReadEnabled || !strings.Contains(got.StatusReason, "Dependabot alerts") {
 		t.Fatalf("degrade not recorded: enabled=%v reason=%q", got.SecurityReadEnabled, got.StatusReason)
 	}
@@ -529,7 +530,7 @@ func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
 	if _, err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("second RunOnce: %v", err)
 	}
-	got, _ = connStore.Get(context.Background(), "conn-gh")
+	got, _ = connStore.Get(context.Background(), "t1", "conn-gh")
 	// Guard the guard: without an actual second refresh this test proves
 	// nothing (the connection would simply not be due).
 	if got.LastRefreshedAt == nil || !got.LastRefreshedAt.Equal(clock) {
@@ -542,7 +543,7 @@ func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
 
 // seedWatchOnlyConn is a PurposeSecurityRead connection: an App holding
 // metadata + vulnerability_alerts and nothing else.
-func seedWatchOnlyConn(t *testing.T, sealer secrets.Sealer, connStore ConnectionStore, expiresAt time.Time, optedIn bool) Connection {
+func seedWatchOnlyConn(t *testing.T, sealer secrets.Sealer, connStore connection.ForgeStore, expiresAt time.Time, optedIn bool) Connection {
 	t.Helper()
 	c := seedGitHubAppConn(t, sealer, connStore, expiresAt, optedIn)
 	c.Purpose = PurposeSecurityRead
@@ -559,7 +560,7 @@ func seedWatchOnlyConn(t *testing.T, sealer secrets.Sealer, connStore Connection
 // being wired. The runtime refresher here fails the test if it is consulted.
 func TestRefreshWorker_WatchOnlyNeverMintsRuntimeToken(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	seedWatchOnlyConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -583,7 +584,7 @@ func TestRefreshWorker_WatchOnlyNeverMintsRuntimeToken(t *testing.T) {
 	if m := securityReadMap(t, sealer, secStore, "t1"); m["socialgouv"] != "sec-read-token" {
 		t.Fatalf("map = %v, want socialgouv → sec-read-token", m)
 	}
-	got, err := connStore.Get(context.Background(), "conn-gh")
+	got, err := connStore.Get(context.Background(), "t1", "conn-gh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +599,7 @@ func TestRefreshWorker_WatchOnlyNeverMintsRuntimeToken(t *testing.T) {
 // failure mode is invisible until alerts silently stop an hour later.
 func TestRefreshWorker_WatchOnlyRearmsFromSecurityTokenExpiry(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	seedWatchOnlyConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -617,7 +618,7 @@ func TestRefreshWorker_WatchOnlyRearmsFromSecurityTokenExpiry(t *testing.T) {
 	if _, err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	got, err := connStore.Get(context.Background(), "conn-gh")
+	got, err := connStore.Get(context.Background(), "t1", "conn-gh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +647,7 @@ func TestRefreshWorker_WatchOnlyRearmsFromSecurityTokenExpiry(t *testing.T) {
 // promise of freshness) and record the reason once.
 func TestRefreshWorker_WatchOnlyPermanentFailureWithdrawsAndRecords(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	conn := seedWatchOnlyConn(t, sealer, connStore, now.Add(2*time.Minute), true)
@@ -678,7 +679,7 @@ func TestRefreshWorker_WatchOnlyPermanentFailureWithdrawsAndRecords(t *testing.T
 			t.Fatalf("stale entry survived a permanent failure: %v (secret %s)", m, gs.ID)
 		}
 	}
-	got, err := connStore.Get(context.Background(), "conn-gh")
+	got, err := connStore.Get(context.Background(), "t1", "conn-gh")
 	if err != nil {
 		t.Fatal(err)
 	}

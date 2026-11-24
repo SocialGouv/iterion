@@ -16,8 +16,10 @@
 ##     memory (visibility: "bot") is Evoly's headline feature.
 ##   - Default models are forfait-friendly: claw nodes use openai/gpt-6-astra
 ##     (ChatGPT forfait), the single cross-family "claude" reviewer uses
-##     claude_code (Claude Code OAuth forfait). claw+anthropic would need
-##     an API key (Anthropic forfait is Claude-Code-only), so it is avoided.
+##     claude_code (Claude Code OAuth forfait). claw DOES serve a Claude
+##     subscription, but Anthropic bills a third-party client against the
+##     subscription's separate extra-usage balance rather than the plan's
+##     limits (ADR-085), so claw+anthropic is avoided here.
 ##   - The workflow name, the bundle dir, and manifest.name are ALL
 ##     "evolve" so botID is stable across CLI (wf.Name) and dispatcher
 ##     (bundle name) launches — otherwise the per-bot memory tree would
@@ -30,16 +32,19 @@
 dsl: 2
 
 vars:
-  ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer, "dual"
-  ## runs both and cross-confirms. Dual costs a full reviewer pass per
-  ## family on every round, so mono is the default; dual is a deliberate
-  ## opt-in (`--var review_mode=dual`). "auto" is resolved at LAUNCH by
-  ## pkg/reviewtopology from the host's detected credentials and also
-  ## lands on mono — it only picks the family for you.
-  review_mode: string [enum: "auto", "mono", "dual"] = "mono"
-  ## Which family runs in mono. Overwritten by the launch-time resolver
-  ## when only one family is usable on the host.
-  mono_family: string [enum: "claude", "gpt"] = "claude"
+  ## REVIEW TOPOLOGY (ADR-052, ADR-169). "single" runs `reviewer` alone,
+  ## "paired" adds `reviewer_alternate` and cross-confirms. Paired costs a
+  ## full reviewer pass on every round, so "single" is the DECLARED default;
+  ## paired is a deliberate opt-in (`--var review_mode=paired`). That
+  ## default is read only where no injection runs: every injecting lane
+  ## resolves an UNSET review_mode as "auto", at LAUNCH, by
+  ## pkg/reviewtopology — and "auto" is single on every host. Which backend
+  ## and model serves each role is the node's own route, re-targeted by a
+  ## routing cell, never by a bot var.
+  review_mode: string [enum: "auto", "single", "paired"] = "single"
+  ## RETIRED (ADR-169) — decides nothing; kept DECLARED so a launch that
+  ## still sends it is not refused as an unknown input. See review-pr's copy.
+  mono_family: string = ""
   workspace_dir: string = "${PROJECT_DIR}"
   ## Optional steering hints (objective / horizon / focus). The dispatcher
   ## fills this from the issue title + body; on an interactive
@@ -836,11 +841,12 @@ agent load_nexie_handoff:
   tool_max_steps: 15
   reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
 
-## The "claude" perspective. claude_code uses Claude Code OAuth (forfait,
-## no API key). It judges the vision passed in its input; no memory block
-## (claude_code ignores memory anyway) — it reads the workspace to verify
-## evidence.
-judge review_claude:
+## The reviewer (ADR-169: roles, not vendors). claude_code uses
+## Claude Code OAuth (forfait, no API key). It judges the vision passed in
+## its input; no memory block (claude_code ignores memory anyway) — it reads
+## the workspace to verify evidence. It runs on every round, and a paired
+## round adds reviewer_alternate beside it.
+judge reviewer:
   model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   input: review_input
@@ -854,23 +860,24 @@ judge review_claude:
   ## branches are workspace-safe (the guard rejects >1 mutating branch).
   readonly: true
 
-## The "gpt" perspective. claw + openai/gpt-6-astra (ChatGPT forfait).
-judge review_gpt:
+## The alternate reviewer (ADR-169: roles, not vendors). claw +
+## openai/gpt-6-astra (ChatGPT forfait); only a paired review runs it.
+judge reviewer_alternate:
   model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: review_input
   output: verdict_output
   system: review_system
   user: review_user_gpt
-  ## NO tools for the gpt reviewer, and `tools: []` is what enforces it: an
+  ## NO tools for this reviewer, and `tools: []` is what enforces it: an
   ## empty list is a declaration, not an absence (C270 names any route that
   ## would drop it). The vision + system prompt already sits near the
   ## ChatGPT-forfait context window; even one or two read_file tool results
   ## pushed the SECOND request over it (context_length_exceeded, observed in
   ## the 2026-06-24 dogfood). The shared review prompt says reviewers MAY read
   ## the workspace — so this reviewer judges the vision on its TEXTUAL merits
-  ## (coherence, evidence-citation, constraint-honesty) while the claude
-  ## reviewer (which keeps tools) does the file-grounded verification.
+  ## (coherence, evidence-citation, constraint-honesty) while the reviewer
+  ## (which keeps tools) does the file-grounded verification.
   ## Cross-family perspective is preserved; the forfait window cannot
   ## overflow. ITERION_EVOLVE_MODEL_GPT changes the MODEL only — the backend
   ## is pinned to claw and the empty list holds whatever model runs here; a
@@ -880,13 +887,13 @@ judge review_gpt:
   readonly: true
 
 ## Topology gate (ADR-052). A `condition` router picks a SINGLE target,
-## which is what mono needs; the guard cannot live on review_fanout's own
+## which is what single needs; the guard cannot live on review_fanout's own
 ## edges because fan_out_all collects every outgoing edge without
 ## evaluating `when` (same trap as round_robin).
 router review_topology:
   mode: condition
 
-## Cross-family review fan-out (dual only). fan_out_all sends the vision
+## Review fan-out (paired only). fan_out_all sends the vision
 ## to both reviewers in parallel; they are read-only judges so two
 ## concurrent branches are workspace-safe.
 router review_fanout:
@@ -906,16 +913,17 @@ human ask_continue:
 
 ## Deterministic join: wait for BOTH reviewers, merge their verdicts into
 ## one advisory the operator sees. Not a gate — the human is the gate.
-## In MONO only one family's edge fires, so the other family's fields are
-## absent. Absent must read as "this family did not object" rather than as
-## a rejection — otherwise mono could never approve. `both_approved` is
+## In single only `reviewer`'s edge fires (it fills the claude_* fields), so
+## the alternate's gpt_* fields are absent. Absent must read as "this
+## reviewer did not object" rather than as a rejection — otherwise single
+## could never approve. `both_approved` is
 ## therefore "no participating reviewer objected".
 compute aggregate_review:
   input: review_merge_input
   output: review_summary
   await: best_effort
   expr:
-    both_approved: "if(vars.review_mode == 'dual' || vars.mono_family == 'claude', input.claude_approved, true) && if(vars.review_mode == 'dual' || vars.mono_family == 'gpt', input.gpt_approved, true)"
+    both_approved: "input.claude_approved && if(vars.review_mode == 'paired', input.gpt_approved, true)"
     combined_concerns: "concat(input.claude_concerns, input.gpt_concerns)"
     combined_missing: "concat(input.claude_missing, input.gpt_missing)"
     ## Each operand needs its own fallback: in MONO the absent family's edge
@@ -987,47 +995,42 @@ workflow evolve:
 
   investigate -> synthesize_vision
 
-  ## Review topology: dual takes the fan-out and runs both families; mono
-  ## goes straight to the single family reviewer, so only one LLM pass is
-  ## spent per round. The claude edge is the unconditional fallback, so an
-  ## unset/unknown review_mode degrades to the cheap path.
+  ## Review topology: paired takes the fan-out and runs both reviewers;
+  ## single goes straight to `reviewer`, so only one LLM pass is spent per
+  ## round. `reviewer` is the unconditional fallback, so an unset/unknown
+  ## review_mode degrades to the cheap path.
   synthesize_vision -> review_topology
 
-  review_topology -> review_fanout when "vars.review_mode == 'dual'"
+  review_topology -> review_fanout when "vars.review_mode == 'paired'"
 
-  review_topology -> review_gpt when "vars.review_mode != 'dual' && vars.mono_family == 'gpt'" with {
+  review_topology -> reviewer with {
     vision: "{{outputs.synthesize_vision}}",
     workspace_dir: "{{vars.workspace_dir}}",
   }
 
-  review_topology -> review_claude with {
+  review_fanout -> reviewer_alternate with {
     vision: "{{outputs.synthesize_vision}}",
     workspace_dir: "{{vars.workspace_dir}}",
   }
 
-  review_fanout -> review_claude with {
-    vision: "{{outputs.synthesize_vision}}",
-    workspace_dir: "{{vars.workspace_dir}}",
-  }
-
-  review_fanout -> review_gpt with {
+  review_fanout -> reviewer with {
     vision: "{{outputs.synthesize_vision}}",
     workspace_dir: "{{vars.workspace_dir}}",
   }
 
   ## Both reviewers join at aggregate_review (await: wait_all).
-  review_claude -> aggregate_review with {
-    claude_approved: "{{outputs.review_claude.approved}}",
-    claude_concerns: "{{outputs.review_claude.concerns}}",
-    claude_missing: "{{outputs.review_claude.missing_axes}}",
-    claude_confidence: "{{outputs.review_claude.confidence}}",
+  reviewer -> aggregate_review with {
+    claude_approved: "{{outputs.reviewer.approved}}",
+    claude_concerns: "{{outputs.reviewer.concerns}}",
+    claude_missing: "{{outputs.reviewer.missing_axes}}",
+    claude_confidence: "{{outputs.reviewer.confidence}}",
   }
 
-  review_gpt -> aggregate_review with {
-    gpt_approved: "{{outputs.review_gpt.approved}}",
-    gpt_concerns: "{{outputs.review_gpt.concerns}}",
-    gpt_missing: "{{outputs.review_gpt.missing_axes}}",
-    gpt_confidence: "{{outputs.review_gpt.confidence}}",
+  reviewer_alternate -> aggregate_review with {
+    gpt_approved: "{{outputs.reviewer_alternate.approved}}",
+    gpt_concerns: "{{outputs.reviewer_alternate.concerns}}",
+    gpt_missing: "{{outputs.reviewer_alternate.missing_axes}}",
+    gpt_confidence: "{{outputs.reviewer_alternate.confidence}}",
   }
 
   ## Initial path: aggregate → carry (stamps the synthesised vision +

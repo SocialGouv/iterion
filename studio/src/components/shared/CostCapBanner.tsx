@@ -60,7 +60,7 @@ export default function CostCapBanner() {
         ${status.spent_usd.toFixed(2)} of ${status.limit_usd.toFixed(2)} spent
         today ({status.date} UTC). New runs are paused.
       </span>
-      <span className="text-fg-subtle">Resets automatically at the next UTC day.</span>
+      <span className="text-fg-muted">Resets automatically at the next UTC day.</span>
       <div className="ml-auto flex items-center gap-2">
         <Button
           variant="primary"

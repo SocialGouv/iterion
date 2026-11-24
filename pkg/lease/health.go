@@ -1,0 +1,661 @@
+package lease
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// DefaultHandoverPasses is K when Health.Passes is unset: the consecutive
+// unreachable passes that end a term. One is a blip the next pass retries;
+// three paced by a net's own interval is the shortest run that cannot be a
+// single flap, and it bounds the blackhole at three intervals.
+const DefaultHandoverPasses = 3
+
+// DefaultSickTerms is the fleet circuit breaker's threshold when
+// Health.SickTerms is unset: the consecutive terms ended by a handover after
+// which this replica stops handing over. Three says the fleet, not this
+// replica, is what cannot reach the far side — every peer took the lease and
+// gave it back just as sick — and a fourth handover would only keep the net
+// bouncing between replicas with nobody working.
+const DefaultSickTerms = 3
+
+// defaultBackoffTerms sizes the wait a handover adds before this replica
+// campaigns again, in campaign retries: every peer gets a full attempt at the
+// lease before the replica that just gave it up tries again. Without it the
+// sick holder races its peers for the lease it released a moment ago, and the
+// race is one it often wins — it is the candidate already awake.
+const defaultBackoffTerms = 2
+
+// PassVerdict is what ONE pass of a leased net reports about itself.
+//
+// A term ends on the work failing only on this verdict, which travels FROM
+// the pass: "no progress" is never read as "sick", because a net whose passes
+// find nothing to do is the healthiest state the net has.
+type PassVerdict int
+
+const (
+	// VerdictIdle is a pass that attempted nothing: no work was due. It says
+	// nothing about this replica's reach, so it neither ends a term nor
+	// clears a run of failures.
+	VerdictIdle PassVerdict = iota
+	// VerdictProgressed is a pass at least one of whose items succeeded. The
+	// holder works: the run of failures is cleared and the circuit closes.
+	VerdictProgressed
+	// VerdictUnreachable is a pass that attempted work, none of which
+	// succeeded, one of whose causes was a transport failure — the class a
+	// peer on another node may well not share (per-node DNS, a
+	// NetworkPolicy, conntrack). K of these in a row end the term.
+	VerdictUnreachable
+	// VerdictRefused is a pass that attempted work, none of which succeeded,
+	// none of whose causes was a transport failure: the far side answered, and
+	// answered no. The answer coming back is itself proof this replica
+	// reaches it, so the run of transport failures is cleared — while a
+	// refusal is not progress, and does not close the circuit. Handing over
+	// would move the refusal, not repair it.
+	VerdictRefused
+)
+
+func (v PassVerdict) String() string {
+	switch v {
+	case VerdictIdle:
+		return "idle"
+	case VerdictProgressed:
+		return "progressed"
+	case VerdictUnreachable:
+		return "unreachable"
+	case VerdictRefused:
+		return "refused"
+	}
+	return "unknown"
+}
+
+// Pass accumulates what ONE pass of a leased net did, so the verdict comes
+// from the pass instead of being inferred by its observer. The zero value is
+// an idle pass. Safe for concurrent use: a pass whose items run in parallel
+// records from several goroutines.
+//
+// A nil *Pass accounts into nothing, the way a nil *Health decides nothing:
+// the same work runs outside an elected term — the event path that shares a
+// net's repair function, a test calling one pass directly — and it must
+// neither account nor crash. Recording into a pass the caller did not open is
+// the normal case there, not a defect.
+type Pass struct {
+	mu        sync.Mutex
+	attempted int
+	succeeded int
+	// cause is the failure Verdict classifies on, chosen by CLASS: a
+	// TransportFailure when the pass met one, else the first failure it met.
+	cause error
+}
+
+// Attempted records n items the pass tried, s of which succeeded, and the
+// first failure it met — nil when none did. It is the shape of a worker that
+// already counts, like forge.RefreshWorker.RunOnce's (refreshed, firstErr).
+//
+// A pass carries items from more than one far side — a net that offers N runs
+// to the forge reads each one's row from the store first — and nothing orders
+// them: a Mongo page sorted on `updated_at` alone, items running in parallel,
+// two lanes of one offer. So the cause the verdict classifies on is picked by
+// class and not by arrival: an unreachable item displaces a cause that is not
+// one, and a pass with no success and one unreachable item reads unreachable
+// in EVERY order. Under a first-wins rule the same pass reads `refused`
+// whenever a local refusal happens to arrive first — the verdict Observe
+// reads as the far side having ANSWERED, which clears the very run of
+// unreachable passes a handover counts.
+//
+// The trade-off, stated: a pass mixing refusals with one unreachable item
+// hands its net over instead of keeping it. That direction is bounded — K
+// consecutive such passes end one term, and the sick-terms circuit stops a
+// fleet from bouncing the lease with nobody working — while the other
+// direction is unbounded: a holder that reaches nothing keeps its net for as
+// long as one refusal lands in each of its passes.
+//
+// The rule reaches as far as the causes it is GIVEN: a worker that already
+// collapsed its own N failures into one — forge.RefreshWorker.RunOnce keeps
+// the first — hands over the cause it kept, and must hand the unreachable one
+// for its own items to be classified by class rather than by the order its
+// query listed them in.
+func (p *Pass) Attempted(n, s int, firstErr error) {
+	if p == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.attempted += n
+	p.succeeded += s
+	if p.cause == nil || (!TransportFailure(p.cause) && TransportFailure(firstErr)) {
+		p.cause = firstErr
+	}
+}
+
+// Succeeded records ONE item the pass attempted and completed.
+func (p *Pass) Succeeded() { p.Attempted(1, 1, nil) }
+
+// Failed records ONE item the pass attempted and could not complete. A nil
+// err is still an attempt that did not succeed, and names no cause to
+// classify: Verdict answers VerdictRefused for a pass whose failures are all
+// unnamed, the direction that does not hand the lease over on a cause nobody
+// named — and an item that does name an unreachable cause still decides.
+func (p *Pass) Failed(err error) {
+	if err == nil {
+		err = errUnnamedFailure
+	}
+	p.Attempted(1, 0, err)
+}
+
+// errUnnamedFailure stands in for a failure recorded without a cause, so an
+// all-failed pass is never classified as unreachable by default.
+var errUnnamedFailure = errors.New("lease: a pass recorded a failure without naming it")
+
+// A pass must not record the expiry of its OWN context. The UnlessDone
+// recorders below carry the rule for every recorder that sits after a call
+// which can outlive its term. The pass's ctx is the term's: its end is this
+// holder stepping down (a rollout, a lease lost, a shutdown), and it reaches
+// an item in flight as the cancellation of that item's call. Whatever that call then answers is
+// evidence about nothing, and EITHER arm of a recorder would overwrite the
+// term's own state with it — one Observe branch per verdict:
+//   - the cut-off call reads refused, the verdict Observe takes as the far
+//     side having ANSWERED: it clears the run of unreachable passes the term
+//     accumulated and closes the circuit endTerm deliberately leaves open;
+//   - the call that answered anyway reads progressed, which clears that run,
+//     the circuit AND the run of sick terms: strictly more state, on an
+//     answer this holder is no longer serving.
+//
+// A pass cut short reports what it did before the term ended, and the verdict
+// it carries is idle or earlier evidence — nothing about the end itself. The
+// direction is bounded: the successor's term opens with a pass of its own.
+
+// AttemptedUnlessDone records n items the pass tried, s of which succeeded,
+// and the first failure met (Attempted), unless ctx is done — then nothing.
+func (p *Pass) AttemptedUnlessDone(ctx context.Context, n, s int, firstErr error) {
+	if termDone(ctx) {
+		return
+	}
+	p.Attempted(n, s, firstErr)
+}
+
+// SucceededUnlessDone records ONE item the pass attempted and completed
+// (Succeeded), unless ctx is done — then nothing.
+func (p *Pass) SucceededUnlessDone(ctx context.Context) {
+	if termDone(ctx) {
+		return
+	}
+	p.Succeeded()
+}
+
+// FailedUnlessDone records ONE item the pass attempted and could not complete
+// (Failed), unless ctx is done — then nothing.
+func (p *Pass) FailedUnlessDone(ctx context.Context, err error) {
+	if termDone(ctx) {
+		return
+	}
+	p.Failed(err)
+}
+
+// termDone reports whether ctx is a term's context and it has ended. A nil
+// ctx carries no term, so there is nothing to be done.
+func termDone(ctx context.Context) bool { return ctx != nil && ctx.Err() != nil }
+
+// Verdict classifies the pass. A pass that attempted items and recorded
+// neither a success nor a failure for them is idle: a verdict guessed from
+// that silence is exactly what this type exists to refuse.
+func (p *Pass) Verdict() PassVerdict {
+	if p == nil {
+		return VerdictIdle
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.attempted == 0:
+		return VerdictIdle
+	case p.succeeded > 0:
+		return VerdictProgressed
+	case p.cause == nil:
+		return VerdictIdle
+	case TransportFailure(p.cause):
+		return VerdictUnreachable
+	default:
+		return VerdictRefused
+	}
+}
+
+// TransportFailure reports whether err is the class of failure a peer on
+// another node may well not share: the pass could not reach what it had to
+// reach. It answers the only question a handover turns on — would another
+// replica plausibly do better? — so a refusal that came BACK from the far
+// side (an HTTP status, an invalid credential, a validation, a TLS identity)
+// is false: a peer would be refused identically.
+//
+// Typed, never by message: the causes the probe of #2685 named — per-node
+// DNS, a NetworkPolicy, conntrack — reach a caller as *net.DNSError or a
+// syscall errno inside an HTTP client's *url.Error, which errors.As
+// traverses. Two seams widen that, each explained where it is read below: a
+// multi-cause error is classified by agreement over ALL its causes, and a net
+// whose far side this package cannot type declares it (Unreachable, or a
+// LeaseUnreachable() bool method on its own error type).
+//
+// The rule reaches as far as the causes it is GIVEN, and it is given ONE
+// error: a pass handed several — one per worker of a sweep that renews two
+// credential families, one per item of a net that records item by item —
+// picks a single cause to classify (Pass.Attempted), so collecting a sweep's
+// own causes into one aggregate is the RECORDER's half of the rule. A net
+// that drops them keeps a verdict decided by the order its causes arrived in.
+//
+// context.Canceled is false: it is the term ending, not the egress failing.
+// context.DeadlineExceeded is true — it is how a call to an unreachable peer
+// ends when the client bounds it rather than the kernel — so a pass must not
+// record the expiry of its OWN context as a failure, or every shutdown under
+// a deadline would read as a handover.
+func TransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A MULTI-CAUSE error carries one cause per item of a sweep that did not
+	// abort on the first failure (errors.Join, or any error whose Unwrap
+	// answers []error). Nothing orders those items — a Mongo page sorted on
+	// an expiry, items running in parallel — so the agreement rule is STATED
+	// here instead of being inherited from errors.Is's traversal: a cause
+	// that names a reach failure decides, in EVERY order the causes were
+	// collected in, and causes that name none leave the pass refused.
+	//
+	// Inherited traversal is not the same answer: errors.Is(joined,
+	// context.Canceled) is true as soon as ONE item was cut off by the term
+	// ending, which made the guard below answer "not transport" for a pass
+	// whose other item had met per-node DNS. Per cause, that cancellation is
+	// evidence about nothing and the DNS failure still decides.
+	//
+	// The trade-off, stated: a sweep mixing refusals with one unreachable
+	// item hands its net over instead of keeping it. That direction is
+	// bounded — K consecutive such passes end one term, and the sick-terms
+	// circuit stops a fleet from bouncing the lease with nobody working —
+	// while the other direction is unbounded: a holder that reaches nothing
+	// keeps its net for as long as one refusal lands in each of its passes.
+	//
+	// A cause naming a reach failure DECIDES; none doing so settles nothing,
+	// because the aggregate answers for the ITEMS alone. The chain ABOVE it
+	// carries a net's own declaration — Unreachable over the error a sweep
+	// hands back, a LeaseUnreachable type holding a joined cause — so that
+	// declaration is read here, and the branch falls THROUGH to the typed
+	// guards below. They traverse the items as a tree too, which can only
+	// ADD a true to the answer the rule above left false: the bounded
+	// direction.
+	if causes := multiCauses(err); len(causes) > 0 {
+		for _, cause := range causes {
+			if TransportFailure(cause) {
+				return true
+			}
+		}
+		// The net's declaration over the WHOLE sweep is read HERE, above the
+		// cancellation guard, for the very reason the causes are classified
+		// one at a time: errors.Is traverses an aggregate as a tree, so ONE
+		// item the term ending cut off would answer for the sweep and veto
+		// the declaration sitting above it — the net said "this node never
+		// got there" and the verdict said "the far side answered", which is
+		// the answer that CLEARS the run of unreachable passes a handover
+		// counts (#2685). A sweep is the term ending only when EVERY one of
+		// its causes is.
+		if !everyCauseIsTheTermEnding(causes) && declaredUnreachable(err) {
+			return true
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	// A net that KNOWS its failure was a reach failure says so, and the
+	// declaration decides: what a net's far side IS, and which of its
+	// answers mean the node never got there, is the net's own business —
+	// this package types none of them (Unreachable, LeaseUnreachable).
+	//
+	// Only a true declaration decides. A type that answers false is not a
+	// veto: it keeps the typed classes below, so a declaration can never
+	// make this classifier answer LESS than it did before the type existed.
+	if declaredUnreachable(err) {
+		return true
+	}
+	// A resolver flap is typed, including NXDOMAIN: a half-broken resolver
+	// answers "no such host" for a name that resolves on every other node,
+	// which is the per-node DNS failure this whole net exists to cover.
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	for _, errno := range []syscall.Errno{
+		syscall.ECONNRESET, syscall.ECONNREFUSED, syscall.ECONNABORTED,
+		syscall.ETIMEDOUT, syscall.EPIPE, syscall.ENETUNREACH,
+		syscall.EHOSTUNREACH, syscall.ENETDOWN, syscall.ENETRESET,
+		syscall.EHOSTDOWN,
+	} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// Last, and only on Timeout(): a net.Error that is not a timeout is
+	// already covered above by its errno, and context.DeadlineExceeded
+	// reaches here as the timeout of a bounded call.
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// Unreachable marks err as a failure to REACH the far side, for a net whose
+// far side TransportFailure cannot type on its own: a gateway's 502/503/504
+// on a per-node egress path, a driver that reports its transport errors as
+// text, a proxy's own error page. The net that made the call is the only code
+// that knows what its far side is, and this is how it says so —
+// TransportFailure answers true for the result, which is the class that ends
+// a term rather than the class that clears the run of failures a handover
+// counts. The error marked may be a whole sweep's aggregate (errors.Join):
+// the mark sits above the causes, and it decides for the sweep the way a
+// per-cause mark decides for its item — unless the term ending cut off EVERY
+// one of them, which is the term ending and not a far side nobody reached.
+// Nesting changes neither answer: a sweep whose causes are themselves sweeps
+// is read down to its items.
+//
+// Additive in both directions: the mark wraps err, so every errors.Is and
+// errors.As a caller already runs keeps answering the same, and a cause that
+// is NOT marked is classified exactly as before. A type that owns the answer
+// for all its values declares it instead, with a LeaseUnreachable() bool
+// method — forge.StatusError answers it for an upstream 5xx — and needs no
+// wrapper at the call site.
+//
+// A nil err stays nil: there is no failure to mark.
+func Unreachable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &unreachableError{cause: err}
+}
+
+// unreachableError is the mark Unreachable adds. Its message is the cause's,
+// verbatim: the declaration is TYPED, and a log line that gained a prefix
+// would be the second place to maintain it.
+type unreachableError struct{ cause error }
+
+func (e *unreachableError) Error() string          { return e.cause.Error() }
+func (e *unreachableError) Unwrap() error          { return e.cause }
+func (e *unreachableError) LeaseUnreachable() bool { return true }
+
+// declaredUnreachable reports whether any error in err's chain declares
+// itself a reach failure. The WHOLE chain, not errors.As's first match: a
+// wrapper that answers false would otherwise shadow the declaration of the
+// cause it wraps, which is the "two guards covering each other" shape — and
+// a declaration is only ever read as true (TransportFailure).
+//
+// The chain here STOPS at a multi-cause error, whose items TransportFailure
+// has already classified one at a time: what is left to read is the chain
+// above the aggregate, which is where a net marks a whole sweep.
+func declaredUnreachable(err error) bool {
+	for err != nil {
+		if d, ok := err.(interface{ LeaseUnreachable() bool }); ok && d.LeaseUnreachable() {
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
+// everyCauseIsTheTermEnding reports whether every cause of a sweep's
+// aggregate is the term ending. ONE item cut off that way is evidence about
+// nothing — the sweep still met whatever its other items met, and a net's
+// declaration over it still holds — while a sweep every item of which the
+// term cut off IS the term ending, which no declaration turns into an egress
+// failure.
+//
+// A cause that is ITSELF an aggregate is asked the same question about its
+// own causes, at every depth, instead of being handed to errors.Is: that
+// traversal reads an aggregate as a tree, so ONE cancelled item would answer
+// for the sub-sweep holding it — the very contamination this predicate
+// removes one level up. A sweep of sweeps therefore reads exactly as the flat
+// sweep of the same items does.
+func everyCauseIsTheTermEnding(causes []error) bool {
+	if len(causes) == 0 {
+		return false
+	}
+	for _, cause := range causes {
+		if inner := multiCauses(cause); len(inner) > 0 {
+			if !everyCauseIsTheTermEnding(inner) {
+				return false
+			}
+			continue
+		}
+		if !errors.Is(cause, context.Canceled) {
+			return false
+		}
+	}
+	return true
+}
+
+// multiCauses answers the causes of the nearest multi-cause error in err's
+// chain, or nil when there is none. Nearest, rather than err itself, because
+// a sweep's aggregate reaches its consumer wrapped in the sweep's own
+// context ("forge: refresh %d connections: %w") as often as bare.
+func multiCauses(err error) []error {
+	for err != nil {
+		if multi, ok := err.(interface{ Unwrap() []error }); ok {
+			return multi.Unwrap()
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return nil
+		}
+		err = u.Unwrap()
+	}
+	return nil
+}
+
+// Health lets a term end on the work failing, backs this replica off before
+// it campaigns again, and stops handing over once handing over has
+// demonstrably stopped helping. One per replica per lease: the state it keeps
+// is this candidate's own reach, not the lease's.
+//
+// It is wired through Spec.Health and read by the net's pass loop (Observe).
+// A nil *Health is the behaviour without it — a term ends on lease loss or
+// shutdown, never on the work failing — so every method below is nil-safe.
+type Health struct {
+	// Passes is K: the consecutive unreachable passes that end a term. Zero
+	// or negative means DefaultHandoverPasses.
+	Passes int
+	// SickTerms is the fleet circuit breaker's threshold: the consecutive
+	// terms this replica ended by handing over after which it stops handing
+	// over and keeps serving, because every peer gave the lease back just as
+	// sick. It stays open until a pass reaches the far side again, so a
+	// fleet-wide outage leaves ONE replica working rather than the net
+	// bouncing between replicas with nobody working. Zero or negative means
+	// DefaultSickTerms.
+	SickTerms int
+	// Backoff is the wait a handover adds before this replica campaigns
+	// again. Zero means defaultBackoffTerms campaign retries, which is the
+	// only form that scales with a net's own pace.
+	Backoff time.Duration
+	// Off disarms the handover: a term ends on lease loss or shutdown only.
+	// The operator's escape hatch over a mechanism that gives work up, kept
+	// greppable rather than implicit (the server reads
+	// ITERION_LEASE_HANDOVER into it).
+	Off bool
+
+	mu sync.Mutex
+	// unreachable is the run of consecutive unreachable passes in this term.
+	unreachable int
+	// sickTerms is the run of consecutive terms ended by a handover.
+	sickTerms int
+	// handedOver says THIS term ended because the work kept failing.
+	handedOver bool
+	// open is the circuit breaker: handing over has not helped, so this
+	// replica keeps serving. Closed again by the first pass that reaches the
+	// far side — one that progressed, or one the far side refused.
+	open bool
+	// handovers, lastAt and lastVerdict are what an operator reads
+	// (Snapshot); they are not read by any decision here.
+	handovers   int
+	lastAt      time.Time
+	lastVerdict PassVerdict
+}
+
+// HandoverState is the handover as an operator reads it: armed or not, where
+// the current run of failures stands, and whether this replica has stopped
+// handing over.
+type HandoverState struct {
+	// Armed is whether a term can end on the work failing at all: a Health
+	// is wired and its override is not off.
+	Armed bool `json:"armed"`
+	// Passes is K, the run of unreachable passes that ends a term.
+	Passes int `json:"passes,omitempty"`
+	// FailingPasses is where that run stands in the current term.
+	FailingPasses int `json:"failing_passes,omitempty"`
+	// Handovers is how many terms this replica has ended by handing over
+	// since it started.
+	Handovers int `json:"handovers,omitempty"`
+	// SickTerms is the current run of consecutive such terms.
+	SickTerms int `json:"sick_terms,omitempty"`
+	// CircuitOpen says this replica keeps serving despite its passes
+	// failing: handing over stopped helping, so the net is not bouncing
+	// between replicas with nobody working.
+	CircuitOpen bool `json:"circuit_open,omitempty"`
+	// LastPassAt and LastPassVerdict are the last pass this replica
+	// classified, so a reader can tell a quiet net from a dead one.
+	LastPassAt      *time.Time `json:"last_pass_at,omitempty"`
+	LastPassVerdict string     `json:"last_pass_verdict,omitempty"`
+}
+
+// Observe records one pass's verdict and reports whether the term must end:
+// the net returns from its pass loop, which releases the lease (Run), and a
+// peer campaigns at its next attempt. Safe for concurrent use.
+//
+// It reports true once per term: the caller is expected to return promptly,
+// as it is for a term context that was cancelled.
+func (h *Health) Observe(v PassVerdict) (handOver bool) {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastVerdict, h.lastAt = v, time.Now()
+	switch v {
+	case VerdictProgressed:
+		h.unreachable, h.sickTerms, h.open = 0, 0, false
+		return false
+	case VerdictRefused:
+		// The far side answered: this replica reaches it, whatever the
+		// answer was. That closes the circuit too — a replica that stopped
+		// handing over because nothing was reachable is reaching again, so
+		// the mechanism is armed for the next outage — while a refusal is
+		// not progress and does not clear the run of sick TERMS.
+		h.unreachable, h.open = 0, false
+		return false
+	case VerdictUnreachable:
+		h.unreachable++
+	default: // VerdictIdle: no evidence either way, and no decision.
+		return false
+	}
+	if h.Off || h.open || h.handedOver || h.unreachable < h.passes() {
+		return false
+	}
+	h.handedOver = true
+	h.handovers++
+	return true
+}
+
+// Snapshot is the handover state as an operator reads it.
+func (h *Health) Snapshot() HandoverState {
+	if h == nil {
+		return HandoverState{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := HandoverState{
+		Armed:         !h.Off,
+		Passes:        h.passes(),
+		FailingPasses: h.unreachable,
+		Handovers:     h.handovers,
+		SickTerms:     h.sickTerms,
+		CircuitOpen:   h.open,
+	}
+	if !h.lastAt.IsZero() {
+		at := h.lastAt.UTC()
+		out.LastPassAt, out.LastPassVerdict = &at, h.lastVerdict.String()
+	}
+	return out
+}
+
+// beginTerm clears what belongs to one term. The run of sick TERMS is not
+// one of them: it is what tells this replica that handing over is not working.
+func (h *Health) beginTerm() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.unreachable, h.handedOver = 0, false
+}
+
+// endTerm closes a term and reports what it was: whether the work ended it,
+// the run of such terms, and whether this term is the one that opened the
+// circuit — the transition, so the fact is logged once rather than at every
+// term that follows.
+func (h *Health) endTerm() (handedOver bool, sickTerms int, circuitOpened bool) {
+	if h == nil {
+		return false, 0, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.handedOver {
+		// A term that ended another way — a step-down, a rollout, the lease
+		// lost — breaks the RUN of sick terms. It does not close the
+		// circuit: with the circuit open no pass hands over, so every term
+		// that follows ends "another way", and closing here would suppress
+		// exactly one term's handover and leave the state unreadable. What
+		// closes it is evidence that this replica reaches the far side again
+		// (Observe), which is the same evidence that says handing over could
+		// help.
+		h.sickTerms = 0
+		return false, 0, false
+	}
+	h.sickTerms++
+	if !h.open && h.sickTerms >= h.maxSickTerms() {
+		h.open = true
+		circuitOpened = true
+	}
+	return true, h.sickTerms, circuitOpened
+}
+
+// backoff is the wait a handover adds to the campaign's retry, so every peer
+// gets an attempt at the lease before this replica tries again.
+func (h *Health) backoff(retry time.Duration) time.Duration {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.Backoff > 0 {
+		return h.Backoff
+	}
+	return defaultBackoffTerms * retry
+}
+
+// passes is K with its default applied. Called under h.mu.
+func (h *Health) passes() int {
+	if h.Passes > 0 {
+		return h.Passes
+	}
+	return DefaultHandoverPasses
+}
+
+// maxSickTerms is the circuit breaker's threshold with its default applied.
+// Called under h.mu.
+func (h *Health) maxSickTerms() int {
+	if h.SickTerms > 0 {
+		return h.SickTerms
+	}
+	return DefaultSickTerms
+}

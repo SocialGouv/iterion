@@ -40,7 +40,7 @@ func TestTheMirrorCwdGuardRefusesThePackageDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = mirrorPluginContributions(cwd, &Contributions{Plugin: []ContributionFile{{Kind: "skills", Name: "s.md", Content: []byte("x")}}}, false, nil)
+	_, _, err = mirrorPluginContributions(cwd, &Contributions{Plugin: []ContributionFile{{Kind: "skills", Name: "s.md", Content: []byte("x")}}}, false, testTrustedPass(t), nil)
 	if err == nil || !strings.Contains(err.Error(), "TEST process cwd") {
 		t.Fatalf("the armed guard did not refuse a package-dir mirror: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestTheMirrorCwdGuardRefusesThePackageDirectory(t *testing.T) {
 		Nodes:   map[string]ir.Node{"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}}},
 		Edges:   []*ir.Edge{},
 		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
-	}, nil, nil, nil)
+	}, nil, nil, testTrustedPass(t), nil)
 	if err == nil || !strings.Contains(err.Error(), "TEST process cwd") {
 		t.Fatalf("the armed guard did not refuse a package-dir library mirror: %v", err)
 	}

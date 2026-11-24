@@ -16,7 +16,6 @@ change needs.
 | layer | proves | cost | runs |
 |---|---|---|---|
 | **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** (`go test ./e2e/...` + `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
-
 | **live** (`-tags live`) | what a real harness actually does | real LLM spend | only when a human or an agent asks — **no CI job carries the tag** |
 
 The free layer carries **361 of the 387 rows** of
@@ -96,7 +95,11 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   `~/.gitconfig` otherwise decides whether a test passes (a global
   `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
   The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
-  sweeps `_test.go` and fails a new site that assembles its own argv.
+  sweeps `_test.go` and fails a new site that assembles its own argv — a git
+  named by a value (a `LookPath("git")` result, a constant) included, as in
+  the production sweeps beside it (#3255). A git passed as a parameter (a
+  generic runner's `run(t, dir, "git", …)`, a git helper's) is not followed:
+  route it through gittest.
 - **Run tests with devbox's pinned Git.** The assistant's attested authoring
   commits use guarded ref transactions, which need **Git ≥ 2.46**.
   `devbox.json` pins Git 2.55.0 and `devbox.lock` resolves it for each platform;
@@ -105,17 +108,18 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   *"attested authoring commits require Git 2.46 or newer for guarded ref
   transactions"*. Re-enter devbox before diagnosing those failures as a
   regression in the code under test.
-- **A run's workspace must be a repository the TEST owns.** An engine built
-  without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
-  inside the developer's checkout — so `worktree: auto` (the IR default)
-  registers the run's worktree in the REAL repository and the registration
-  outlives the `t.TempDir()` that held the checkout (#870: 1 773 dead
-  entries / 2.5 GB measured). Pass `gittest.SourceRepo(t)` (e2e goes through
-  `newEngine`), or `t.Chdir` into one where the CLI takes its workspace from
-  the cwd. `gittest.NoWorktreeLeaks(m)` in `TestMain` (e2e, `pkg/runview`,
-  `pkg/cli`) fails the suite naming the test behind any entry left behind,
-  and reclaims it **by recorded path** — never `git worktree prune`, which
-  would also drop an operator's checkout on an unmounted volume.
+- **A run's workspace must be a repository the TEST owns.** `worktree: auto`
+  (the IR default) registers the run's worktree in the workspace's repository,
+  outliving the `t.TempDir()` holding it (#870: 1 773 entries, 2.5 GB; #2781:
+  32/day) — so under `go test` an engine with no `WithWorkDir` refuses a cwd
+  in iterion's own repository and works in a throw-away dir, where `auto`
+  degrades in place. A run needing one takes `gittest.SourceRepo(t)` or a
+  `t.Chdir` into one, is WAITED for, and asserts
+  `gittest.LinkedWorktrees(t, repo)` empty — the engine unregisters on
+  SUCCESS only. `NoWorktreeLeaks(m)` in `TestMain` (e2e, `pkg/runview`,
+  `pkg/cli`) fails the suite naming the test behind any entry left, and
+  reclaims it **by recorded path** — never `git worktree prune`, which also
+  drops a checkout on an unmounted volume.
 - **A test never touches the operator's iterion home.** Under `go test`,
   `store.IterionHome()` never resolves to `~/.iterion`: without
   `ITERION_HOME` it is a directory the test process created. A package whose
@@ -138,8 +142,13 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   before the run is done never removes it, and `pkg/runtime`'s `TestMain`
   fails the suite on one left behind.
 - **A test never reaches the operator's machine** — no login shell under the operator's HOME (`hometest.IsolateUserHome` in `TestMain`, `RequireNoOperatorProfile` pins it), the bundle cache pinned (`dispatcher.WithBundleCacheRoot`), the SSRF lookup injected (`notify.WithResolver`); each seam asserts it was consulted. Details: [backends/sandbox.md](../backends/sandbox.md#tests-never-reach-the-operators-machine) (#2231, #2080).
+- **A test binary that links a live pricing tier isolates it from `TestMain`** — claw's model registry or the models.dev aggregator: `os.Exit(pricingtest.Run(m.Run))`, or `pricingtest.Isolate()` before the tests run ([internal/pricingtest](../../../internal/pricingtest/pricingtest.go)). A guard reads `go list -test` and names a package that does not (#3257).
+- **Capture process stdout/stderr through [internal/stdiotest](../../../internal/stdiotest/capture.go).** It drains while the callback writes, joins the reader and closes both pipe ends on exit. Reading only after the callback returns deadlocks when the pipe fills; a loaded Linux host can shrink pipe capacity. Use `Run` for one callback, or `Start` with deferred `Close` for repeated `Read` intervals. Join all writers before reading/closing; process-global captures cannot run in parallel tests.
+- **Write an executable a test execs through [testfs.WriteExecutable](../../../internal/testfs/executable.go).** It holds `syscall.ForkLock` from open to close, so no concurrent fork in the test binary (cgo's aside) copies the write descriptor and the exec cannot answer ETXTBSY ("text file busy"). Dropping `t.Parallel()` fixes one test and leaves the class.
+- **Repository sweeps resolve their root from the test process's working directory**, through [sweepwalk.ModuleRoot](../../../internal/sweepwalk/sweepwalk.go) or a relative walk. A compile-time path such as `runtime.Caller` can point at another checkout when a test binary is reused; it is not the tree being tested.
 - Table-driven subtests with standard `testing` package
 - **Mongo conformance locally** — one `mongo:8.0` replica-set container on port 27018, launched exactly as the CI job does; recipe and the two traps in [docs/development.md](../../development.md#running-the-mongo-conformance-harness-locally). A store-twin or conformance-row change is unverified until it ran there.
+- **Cloud child leases** — Mongo child birth, NATS renewal, release and TTL configuration refusal, proven together: [docs/development.md](../../development.md#testing-child-leases-with-mongo-and-nats).
 - **Studio UI e2e** (`task test:e2e:ui`) — Playwright against the REAL server, seeded with genuine engine output (no LLM credential, no network); bootstrapped by the e2e-coverage bot's dogfood ([docs/bot-runs/e2e-coverage.md](../../bot-runs/e2e-coverage.md)). `ITERION_HOME`/`HOME`/`ITERION_SECRETS_KEY` are redirected into the throwaway workspace — a rule any new spec keeps. Specs assert rendered content and interactions, the store being the oracle for what the UI writes. The browser download is opt-in (`task test:e2e:ui:install`); workers: 1, so a spec that mutates state leaves it in a shape the others tolerate.
 - **E2E coverage matrix** ([docs/e2e-coverage-matrix.md](../../e2e-coverage-matrix.md)) — the feature×coverage inventory the **e2e-coverage bot (Endy)** grep-verifies; when you add a feature or an e2e test, update the matching row. Contract: [bots/e2e-coverage/skills/coverage-matrix.md](../../../bots/e2e-coverage/skills/coverage-matrix.md).
 - **Bot golden replay** (`task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture and re-validates it against the current schema + invariants with no API calls; record mode hits the real LLM (ADR-008).

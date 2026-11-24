@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -167,12 +168,12 @@ func reasoningEffortOf(opts GenerationOptions) string {
 // lowered (no effort sent, an effort this code cannot rank, or one already
 // at the model's lowest accepted level). The ProviderOptions map is copied,
 // never written through.
-func effortAfterCut(opts GenerationOptions) (lowered GenerationOptions, to string, ok bool) {
+func effortAfterCut(ctx context.Context, opts GenerationOptions) (lowered GenerationOptions, to string, ok bool) {
 	from := wireEffort(reasoningEffortOf(opts))
 	if from == "" {
 		return opts, "", false
 	}
-	to = coerceEffortForModel("low", modelroute.Parse(opts.Model).CapabilityID())
+	to, _ = gatewayReasoningEffort(ctx, opts.Model, coerceEffortForModel("low", modelroute.Parse(opts.Model).CapabilityID()), iterlog.NewFromEnv(os.Stderr).Warn)
 	if to == "" || effortRank(to) >= effortRank(from) {
 		return opts, "", false
 	}

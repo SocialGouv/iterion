@@ -21,6 +21,8 @@ type Store interface {
 	// analogue of a per-id GetUser ErrNotFound — so callers resolving a
 	// reference list (member rosters, org trees) issue one query instead
 	// of a Get per row.
+	// A completed read containing corrupt rows returns the readable rows
+	// together with *BulkDecodeError. Other errors return no partial result.
 	GetUsersByIDs(ctx context.Context, ids []string) (map[string]User, error)
 	// UpdateUser replaces the WHOLE user document. Every production writer
 	// is a PatchUser (TestUpdateUserHasNoProductionCallers keeps it that
@@ -38,6 +40,25 @@ type Store interface {
 	// lists everyone; see UserFilter for what a non-empty Query selects.
 	ListUsers(ctx context.Context, f UserFilter) ([]User, error)
 	UserCount(ctx context.Context) (int64, error)
+	// MarkUserErased sets the row's status to erased and nothing else — the
+	// address stays — and returns the row as it stands after. It is the
+	// first write of an account erasure (auth.Service.EraseUser): from it
+	// on, no sign-in of any kind opens on the account and no patch reaches
+	// it, while the erasure still has the address to match the invitations
+	// and audit rows on. A row already erased is answered unchanged; a
+	// missing row is ErrNotFound.
+	MarkUserErased(ctx context.Context, id string) (User, error)
+	// EraseUser anonymizes the user row in ONE write and returns it as it
+	// stands after: status erased, email replaced with ErasedEmail(id),
+	// name, password hash, GitHub orgs, default team and org, lockout and
+	// last sign-in cleared, the super-admin flag withdrawn; the id, the
+	// creation instant and the updated_at stamp stay. It is the identity
+	// half of an account erasure (auth.Service.EraseUser runs the rest:
+	// links, memberships, invitations, sessions). A row already carrying
+	// its marker is answered unchanged, whether MarkUserErased ran before
+	// or not; a missing row is ErrNotFound. The status is terminal:
+	// MarkUserErased and EraseUser are its only writers.
+	EraseUser(ctx context.Context, id string) (User, error)
 
 	// Orgs
 	CreateOrg(ctx context.Context, o Org) (Org, error)
@@ -110,6 +131,16 @@ type Store interface {
 	UpdateInvitation(ctx context.Context, inv Invitation) error
 	DeleteInvitation(ctx context.Context, id string) error
 	ListInvitationsByTeam(ctx context.Context, teamID string) ([]Invitation, error)
+	// DeleteInvitationsByEmail removes every invitation addressed to email
+	// (Invitation.AddressedTo), in every team, and answers how many it
+	// removed. An account's erasure calls it with the address the row
+	// carried, before the row loses it.
+	DeleteInvitationsByEmail(ctx context.Context, email string) (int64, error)
+	// DeleteInvitationsByInviter removes every invitation userID created
+	// (Invitation.InvitedBy), in every team, and answers how many it
+	// removed: an erased account's pending invitations would still seat
+	// their invitees, since accepting one reads nothing of its creator.
+	DeleteInvitationsByInviter(ctx context.Context, userID string) (int64, error)
 
 	// OIDC links
 	UpsertOIDCLink(ctx context.Context, link OIDCLink) error
@@ -128,6 +159,45 @@ type Store interface {
 type Page struct {
 	Offset int
 	Limit  int
+}
+
+// AllTeams reads pages of allTeamsPageSize teams, each overlapping the
+// previous one by allTeamsOverlap.
+const (
+	allTeamsPageSize = 500
+	allTeamsOverlap  = 250
+)
+
+// AllTeams walks every team, oldest first (created_at, then id — the total
+// order both stores page by): a caller that must see EVERY team — a sweep,
+// a guard refusing a delete while any team binds the thing — cannot stop at
+// one bounded page. Offset pages over a collection that changes mid-walk
+// shift: a team deleted ahead of the cursor moves every later team back one
+// row. Consecutive pages therefore overlap (the repeats are dropped), so a
+// team that existed when the walk started is missed only when more than
+// allTeamsOverlap earlier teams are deleted between two page reads; a team
+// created mid-walk is read only if it sorts at or past the next page's
+// first row. On an error the teams read so far come back with it.
+func AllTeams(ctx context.Context, st interface {
+	ListTeams(context.Context, Page) ([]Team, error)
+}) ([]Team, error) {
+	var out []Team
+	seen := map[string]bool{}
+	for offset := 0; ; offset += allTeamsPageSize - allTeamsOverlap {
+		page, err := st.ListTeams(ctx, Page{Offset: offset, Limit: allTeamsPageSize})
+		if err != nil {
+			return out, err
+		}
+		for _, t := range page {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				out = append(out, t)
+			}
+		}
+		if len(page) < allTeamsPageSize {
+			return out, nil
+		}
+	}
 }
 
 // UserFilter narrows a ListUsers page. The zero value selects every

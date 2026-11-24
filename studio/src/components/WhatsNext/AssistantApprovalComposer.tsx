@@ -30,7 +30,7 @@ export default function AssistantApprovalComposer({
   };
 
   return (
-    <div className="space-y-2 px-3 py-2" aria-label="Approval response">
+    <div className="space-y-2 px-3 py-2" role="group" aria-label="Approval response">
       <div className="flex flex-wrap gap-2">
         <Button
           variant="primary"

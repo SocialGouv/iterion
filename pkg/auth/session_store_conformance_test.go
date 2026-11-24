@@ -533,6 +533,38 @@ func runSessionStoreSuite(t *testing.T, st SessionStore) {
 		}
 	})
 
+	t.Run("deleting an account's sessions removes every row of it, revoked or live, and keeps its records", func(t *testing.T) {
+		const user = "user-erased"
+		live := seedFor(t, user, "erase-live", Session{LineageID: "erase-live"})
+		retired := seedFor(t, user, "erase-retired", Session{LineageID: "erase-retired"})
+		if _, err := st.RevokeSession(ctx, retired.ID, now); err != nil {
+			t.Fatalf("RevokeSession: %v", err)
+		}
+		other := seedFor(t, "user-neighbour", "erase-neighbour", Session{LineageID: "erase-neighbour"})
+		raised, err := st.RecordAccountRevocation(ctx, user, now)
+		if err != nil {
+			t.Fatalf("RecordAccountRevocation: %v", err)
+		}
+		n, err := st.DeleteAccountSessions(ctx, user)
+		if err != nil || n != 2 {
+			t.Fatalf("DeleteAccountSessions = %d (%v), want 2", n, err)
+		}
+		for _, hash := range []string{live.TokenHash, retired.TokenHash} {
+			if _, err := st.GetSessionByTokenHash(ctx, hash); !errors.Is(err, ErrSessionNotFound) {
+				t.Fatalf("a session of the erased account still reads (%v)", err)
+			}
+		}
+		if _, err := st.GetSessionByTokenHash(ctx, other.TokenHash); err != nil {
+			t.Fatalf("another account's session went with the erasure: %v", err)
+		}
+		if g, err := st.SessionGeneration(ctx, user); err != nil || g != raised {
+			t.Fatalf("the account's generation reads %d (err %v) after the delete, want the record %d kept", g, err, raised)
+		}
+		if n, err := st.DeleteAccountSessions(ctx, user); err != nil || n != 0 {
+			t.Fatalf("a second delete answered %d (%v), want 0", n, err)
+		}
+	})
+
 	// Last: DeleteExpired sweeps the whole store.
 	t.Run("the sweep of expired sessions keeps every revocation record", func(t *testing.T) {
 		const user = "user-sweep"

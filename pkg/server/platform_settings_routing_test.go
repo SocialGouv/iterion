@@ -133,3 +133,43 @@ func TestAdminPlatformCredentials_RoutingOverridesAndProvidersRoundTrip(t *testi
 		t.Fatalf("template model = %d, want 400", w.Code)
 	}
 }
+
+// A PATCH that leaves the routing block alone reads the STORED block the
+// way a launch reads it (llmroute.ValidateStored): a record a write surface
+// now refuses for a gateway step dispatch never builds — the tail of a claw
+// chain — blocks no edit of enforce, teams, orgs, keys_first or
+// facade_default. A block the PATCH supplies still meets the write rule,
+// and a stored block the fold cannot read still refuses the PATCH.
+func TestAdminPlatformCredentials_APatchReadsTheStoredRoutingAsALaunchDoes(t *testing.T) {
+	st := platformcfg.NewMemoryStore[platformcfg.PlatformCredentials]()
+	s := New(Config{SkipProjectRegistration: true, PlatformCredentialsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/platform-credentials", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutPlatformCredentials(w, r)
+		return w
+	}
+	const deadTail = "zai,openai_compatible:scaleway/deepseek-v4.1-flash"
+	stored := llmroute.Policy{Overrides: []llmroute.Override{{Selector: "work", Provider: deadTail}}}
+	if err := st.Put(context.Background(), platformcfg.PlatformCredentials{Routing: &stored}); err != nil {
+		t.Fatal(err)
+	}
+	if w := put(`{"enforce":false}`); w.Code != http.StatusOK {
+		t.Fatalf("enforce patch over a stored dead gateway tail = %d: %s", w.Code, w.Body.String())
+	}
+	rec, _ := st.Get(context.Background())
+	if rec == nil || rec.Enforce == nil || *rec.Enforce || rec.Routing == nil || len(rec.Routing.Overrides) != 1 || rec.Routing.Overrides[0].Provider != deadTail {
+		t.Fatalf("stored = %+v, want enforce=false beside the routing block verbatim", rec)
+	}
+	if w := put(`{"routing":{"overrides":[{"selector":"work","provider":"` + deadTail + `"}]}}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "dispatch refuses the step's own model") {
+		t.Fatalf("supplied dead gateway tail = %d: %s, want the write rule's 400", w.Code, w.Body.String())
+	}
+	unreadable := llmroute.Policy{Overrides: []llmroute.Override{{Selector: "work", Provider: "zai,nosuch"}}}
+	if err := st.Put(context.Background(), platformcfg.PlatformCredentials{Routing: &unreadable}); err != nil {
+		t.Fatal(err)
+	}
+	if w := put(`{"enforce":false}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "nosuch") {
+		t.Fatalf("enforce patch over an unreadable stored block = %d: %s, want a 400 naming the step", w.Code, w.Body.String())
+	}
+}

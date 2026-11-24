@@ -20,6 +20,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
+// The fixture keys the pool-grant witnesses address by id: named rather than
+// generated, so a pledge's identity is one value across the launch fixture
+// and the tests that withdraw it.
+const (
+	gwDonorKeyID  = "key-donor-gw"
+	xaiDonorKeyID = "key-donor-a-xai"
+)
+
 // RVA probe (b): the pool lane's gateway refusal `break`s out of the switch
 // only. Simulates the drift the comment names ("a pool vocabulary that
 // drifted") by appending the gateway want to poolWantOrder for this test.
@@ -48,7 +56,7 @@ func rvaGatewayPoolLaunch(t *testing.T, drift bool) (msg *queue.RunMessage, open
 		t.Fatal(err)
 	}
 	donorKeys := secrets.NewMemoryApiKeyStore()
-	dk := secrets.ApiKey{ID: secrets.NewApiKeyID(), TenantID: "donor-team", ScopeTeamID: "donor-team", ScopeUserID: "donor",
+	dk := secrets.ApiKey{ID: gwDonorKeyID, TenantID: "donor-team", ScopeTeamID: "donor-team", ScopeUserID: "donor",
 		Provider: secrets.ProviderOpenAICompatible, BaseURL: gwURL, Name: "gw",
 		Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderOpenAICompatible, "sk-gw-donated", gwURL), CreatedAt: time.Now().UTC()}
 	dk.SealedSecret, err = secrets.SealAPIKeyFor(sealer, dk, []byte("sk-gw-donated"))
@@ -66,7 +74,7 @@ func rvaGatewayPoolLaunch(t *testing.T, drift bool) (msg *queue.RunMessage, open
 	// A pledge with Ref openai_compatible written straight into the store
 	// (a pledge "written before the refusal").
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "openai_compatible"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "openai_compatible", gwDonorKeyID), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "openai_compatible", KeyID: dk.ID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {
@@ -111,7 +119,9 @@ func rvaGatewayPoolLaunch(t *testing.T, drift bool) (msg *queue.RunMessage, open
 	msg = published[len(published)-1]
 	open, _ = leases.ListOpenByRun(ctx, runID)
 	if msg.SecretsRef != "" {
-		rec, err := pub.runSecrets.Get(ctx, msg.SecretsRef)
+		// lctx carries the launching team: the run-secrets store scopes
+		// its reads by tenant, as the runner's fetch does.
+		rec, err := pub.runSecrets.Get(lctx, msg.SecretsRef)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +170,7 @@ func TestPoolGatewayRefusal_Drift(t *testing.T) {
 			t.Logf("ReportAttempt: %v", err)
 		}
 	}
-	day, _, _ := rvaLedger.Usage(context.Background(), credpool.PledgeID("donor", credpool.SourceAPIKey, "openai_compatible"), time.Now().UTC())
+	day, _, _ := rvaLedger.Usage(context.Background(), credpool.PledgeID("donor", credpool.SourceAPIKey, "openai_compatible", gwDonorKeyID), time.Now().UTC())
 	t.Logf("DONOR LEDGER after the attempt report: runs=%d cost_usd=%.2f", day.Runs, day.CostUSD)
 	var fails []string
 	if day.CostUSD > 0 {
@@ -216,7 +226,7 @@ func TestAcquireDoorGrant_AnUnsealedGrantIsReleased(t *testing.T) {
 	// donation marks write into them).
 	bundle := &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"},
 		PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}
-	g, _ := f.pub.acquireDoorGrant(ctx, "r1", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, bundle, nil, false, false, map[secrets.Provider]string{}, func(string) bool { return true })
+	g, _ := f.pub.acquireDoorGrant(ctx, "r1", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, bundle, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, func(string) bool { return true }, false)
 	if g == nil {
 		t.Fatal("fixture: the door acquired nothing — the release witness would be vacuous")
 	}
@@ -227,7 +237,7 @@ func TestAcquireDoorGrant_AnUnsealedGrantIsReleased(t *testing.T) {
 	// donor and skips the tiers behind the door).
 	refusedBundle := &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"},
 		PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}
-	g, released := f.pub.acquireDoorGrant(ctx, "r2", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, refusedBundle, nil, false, false, map[secrets.Provider]string{}, func(string) bool { return false })
+	g, released := f.pub.acquireDoorGrant(ctx, "r2", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, refusedBundle, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, func(string) bool { return false }, false)
 	if g != nil {
 		t.Fatal("an unsealed door grant was returned — its lease outlives a credential the run never carried")
 	}
@@ -239,7 +249,7 @@ func TestAcquireDoorGrant_AnUnsealedGrantIsReleased(t *testing.T) {
 	// The slot must be FREE again: a third acquire grants. Under the leak,
 	// the refused arm's lease would leave the pledge "serving" and this
 	// arm would be declined.
-	if g3, _ := f.pub.acquireDoorGrant(ctx, "r3", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"}, PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}, nil, false, false, map[secrets.Provider]string{}, func(string) bool { return true }); g3 == nil {
+	if g3, _ := f.pub.acquireDoorGrant(ctx, "r3", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"}, PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, func(string) bool { return true }, false); g3 == nil {
 		t.Fatal("the refused arm's lease was not released: the pledge is still serving it")
 	}
 	logs := f.logs.String()
@@ -276,7 +286,7 @@ func rvaPoolLeaseLaunch(t *testing.T) (pub *Publisher, leases *credpool.MemoryLe
 	keys := secrets.NewMemoryApiKeyStore()
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform")
 	// Donor A's xai key and pledge: what the LAUNCH takes through the pool.
-	xaiKeyID := secrets.NewApiKeyID()
+	xaiKeyID := xaiDonorKeyID
 	xaiSealed, err := secrets.SealAPIKey(sealer, xaiKeyID, []byte("xai-donated-key"))
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +320,7 @@ func rvaPoolLeaseLaunch(t *testing.T) (pub *Publisher, leases *credpool.MemoryLe
 	}
 	pledges = credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor-a", credpool.SourceAPIKey, "xai"), PoolID: "pool-1", UserID: "donor-a",
+		ID: credpool.PledgeID("donor-a", credpool.SourceAPIKey, "xai", xaiKeyID), PoolID: "pool-1", UserID: "donor-a",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "xai", KeyID: xaiKeyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {
@@ -368,14 +378,14 @@ func TestFailedResumeWithARefusedGrantReopensTheSupersededLease(t *testing.T) {
 	}
 	setPublishOK(false)
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor-a", credpool.SourceAPIKey, "xai"), PoolID: "pool-1", UserID: "donor-a",
+		ID: credpool.PledgeID("donor-a", credpool.SourceAPIKey, "xai", xaiDonorKeyID), PoolID: "pool-1", UserID: "donor-a",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "xai"},
 		Enabled:    false, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor-gw", credpool.SourceAPIKey, "openai_compatible"), PoolID: "pool-1", UserID: "donor-gw",
+		ID: credpool.PledgeID("donor-gw", credpool.SourceAPIKey, "openai_compatible", gatewayKeyID), PoolID: "pool-1", UserID: "donor-gw",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "openai_compatible", KeyID: gatewayKeyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {

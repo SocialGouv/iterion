@@ -32,9 +32,9 @@ func TestStream_HonorsCtxCancel(t *testing.T) {
 	p := newCatProcess(t)
 
 	sess := &Session{
-		cfg:           applyOptions(nil),
-		proc:          p,
-		hookCallbacks: make(map[string]HookCallback),
+		cfg:   applyOptions(nil),
+		proc:  p,
+		hooks: newHookChannel(),
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 

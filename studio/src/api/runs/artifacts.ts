@@ -5,6 +5,7 @@
 
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { downloadBlob } from "@/lib/download";
+import { runFetch } from "@/lib/lostRuns";
 import { apiURL, extractErrorMessage, request, withStoreParam } from "./client";
 import type {
   Artifact,
@@ -40,7 +41,7 @@ export async function listAllArtifacts(
 export async function getRunWorkflow(runId: string, attemptId?: string): Promise<WireWorkflow> {
   const params = new URLSearchParams();
   if (attemptId) params.set("attempt", attemptId);
-  const qs = withStoreParam(params).toString();
+  const qs = withStoreParam(params, runId).toString();
   return request(`/runs/${encodeURIComponent(runId)}/workflow${qs ? `?${qs}` : ""}`);
 }
 
@@ -93,11 +94,13 @@ export async function listArtifactFiles(runId: string): Promise<ArtifactFile[]> 
 // Build the URL to download a single artifact file. Returns a string
 // (not a fetch wrapper) because the caller hands it straight to an
 // `<a href>` for browser download / new-tab preview.
-export function artifactFileURL(runId: string, relPath: string): string {
+// `download` asks for an attachment disposition; the query is built here,
+// before apiURL adds the run's expected birth.
+export function artifactFileURL(runId: string, relPath: string, opts: { download?: boolean } = {}): string {
   // The path can contain `/` segments; encodeURIComponent would clobber
   // them. Encode each segment individually so subdirs survive.
   const segments = relPath.split("/").map(encodeURIComponent).join("/");
-  return apiURL(`/runs/${encodeURIComponent(runId)}/artifact-files/${segments}`);
+  return apiURL(`/runs/${encodeURIComponent(runId)}/artifact-files/${segments}${opts.download ? "?download=1" : ""}`);
 }
 
 // fetchArtifactFile downloads one artifact file body via the same
@@ -110,8 +113,8 @@ export async function fetchArtifactFile(
   relPath: string,
   opts: { download?: boolean } = {},
 ): Promise<{ blob: Blob; contentType: string }> {
-  const url = artifactFileURL(runId, relPath) + (opts.download ? "?download=1" : "");
-  const res = await fetch(url, { credentials: "include" });
+  const url = artifactFileURL(runId, relPath, opts);
+  const res = await runFetch(url, { credentials: "include" });
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }
@@ -183,6 +186,12 @@ export const EDITOR_SESSION_FIELD = "editor_session_id";
 export const EDITOR_REVISION_FIELD = "editor_revision";
 export const EDITOR_APPLY_INTENT_FIELD = "editor_apply_intent";
 export const EDITOR_SAVE_INTENT_FIELD = "editor_save_intent";
+// editor_file is a HINT, never a target (#1647): for a bot in several files
+// it says which file `draft_bot` holds the text of, and the offer only
+// refuses to apply while the Source view's picker — the actual write
+// target — names another one. Intent's spelling for this surface: the
+// model asks, the author's selection decides.
+export const EDITOR_FILE_FIELD = "editor_file";
 export const ASSISTANT_ACTIONS_FIELD = "assistant_actions";
 export const FILE_CHANGES_FIELD = "file_changes";
 export const FILE_CHANGES_INTENT_FIELD = "file_changes_intent";
@@ -209,6 +218,10 @@ export interface EditorProposalLookup {
   revision: number | null;
   applyIntent: EditorActionIntent;
   saveIntent: EditorActionIntent;
+  /** The editor_file hint: which file of a bot in several files `source`
+   *  holds the text of. Null when absent — the common case for a bot in
+   *  one file, where the proposal is the whole file anyway. */
+  file: string | null;
 }
 
 export interface AssistantActionsLookup {
@@ -348,6 +361,7 @@ export async function lookupEditorProposal(
     revision: null,
     applyIntent: "none",
     saveIntent: "none",
+    file: null,
   };
   const summaries = await listAllArtifacts(runId, opts);
   const ordered = [...summaries].sort((a, b) =>
@@ -373,6 +387,7 @@ export async function lookupEditorProposal(
     const source = data[DRAFT_BOT_FIELD];
     const saveIntent = editorActionIntent(data[EDITOR_SAVE_INTENT_FIELD]);
     const hasDraft = typeof source === "string" && source.trim() !== "";
+    const hintedFile = data[EDITOR_FILE_FIELD];
     if (
       typeof session === "string" &&
       session.trim() !== "" &&
@@ -391,6 +406,12 @@ export async function lookupEditorProposal(
           ? editorActionIntent(data[EDITOR_APPLY_INTENT_FIELD])
           : "none",
         saveIntent,
+        // The hint rides only a draft: a save-only turn writes the host's
+        // own buffer, which no model-named file is about.
+        file:
+          hasDraft && typeof hintedFile === "string" && hintedFile.trim() !== ""
+            ? hintedFile.trim()
+            : null,
       };
     }
     // `mode` exists on every current Copi turn. Reaching it without a valid

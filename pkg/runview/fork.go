@@ -53,6 +53,10 @@ type ForkSpec struct {
 	// gateForkInputs. A value re-sent unchanged does not: the parent was
 	// already admitted with it.
 	NewInputs map[string]any
+	// SourceExpectOrigin is the origin a checked surface admitted for RunID,
+	// the source: the run Fork loads is verified against it before the child
+	// exists. The child is created unbound. The zero value is unchecked.
+	SourceExpectOrigin ActionOrigin
 }
 
 // ForkResult is the response shape returned to HTTP / CLI callers.
@@ -60,10 +64,12 @@ type ForkResult struct {
 	NewRunID    string            `json:"new_run_id"`
 	ParentRunID string            `json:"parent_run_id"`
 	ForkAnchor  *store.ForkAnchor `json:"fork_anchor,omitempty"`
-	// Notes carries typed admissions the fork granted without a verdict —
-	// today only the unverifiable-source case: values admitted without a
-	// pre-check, which the child's first resume judges against the var
-	// constraints. Empty for a fork where every supplied value was checked.
+	// Notes carries what the fork decided that the caller must see: typed
+	// admissions granted without a verdict (the unverifiable-source case:
+	// values admitted without a pre-check, which the child's first resume
+	// judges against the var constraints), and each key pin of the parent the
+	// fork dropped because its key no longer exists (dropSweptKeyPins). Empty
+	// for a fork that checked every supplied value and dropped no pin.
 	Notes []string `json:"notes,omitempty"`
 }
 
@@ -86,6 +92,9 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	parent, err := s.store.LoadRun(ctx, spec.RunID)
 	if err != nil {
 		return nil, fmt.Errorf("load parent run: %w", err)
+	}
+	if err := spec.SourceExpectOrigin.Verify(parent); err != nil {
+		return nil, fmt.Errorf("runview: fork: %w", err)
 	}
 	turnStore := store.AsTurnStore(s.store)
 	if turnStore == nil {
@@ -184,6 +193,38 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// the parent would, and a child doc reading unmapped would later hit the
 	// resume refusal (team mapping ≠ child stamp) with no recovery path.
 	child.RunnerPool = parent.RunnerPool
+	// The frozen gateway stamp rides the same carriage: the child is funded
+	// by the credential that funded the parent, and a child doc left
+	// unstamped would re-derive (or lose) the pair on resume.
+	child.ContentBoundary = parent.ContentBoundary
+	// So does the rest of the launch-frozen credential frame every resume
+	// replays (SubmitResume reads each off the document): the webhook's key
+	// pins — the stamp names the pinned key, and a child without the pin
+	// would seal another key under it (ADR-131 §6) —, the routing policy
+	// (allowlist and pair order, ADR-129 §5: nil reads as the package
+	// defaults), the pinned providers (empty reads as the one-key-per-family
+	// fill) and the attached pool (ADR-164).
+	child.KeyOverrides = maps.Clone(parent.KeyOverrides)
+	droppedPins := s.dropSweptKeyPins(ctx, parent, child)
+	child.LLMRoutePolicy = parent.LLMRoutePolicy
+	child.PinnedProviders = slices.Clone(parent.PinnedProviders)
+	child.PoolAttachment = parent.PoolAttachment
+	// The override rows the parent executed with — its launch rows folded
+	// over its routing policy's cells — are what every resume replays and
+	// what the resume's walk reads, so the child dispatches and seals as the
+	// parent did. The raw launch rows ride beside them for the subbot
+	// children of the child's tree.
+	child.ModelOverrides = slices.Clone(parent.ModelOverrides)
+	child.LaunchModelOverrides = slices.Clone(parent.LaunchModelOverrides)
+	// The run-level override choices ride too: the fork child is the
+	// recovery path of the parent run, and an operator who killed codemode
+	// (or pinned the permission gate) at launch expects the child to start
+	// from THAT decision, not from the authored DSL the child's empty doc
+	// would replay (found by tour 2 — the permission half is a pre-existing
+	// hole of the same shape; both fixed here).
+	child.PermissionOverride = parent.PermissionOverride
+	child.CodemodeOverride = parent.CodemodeOverride
+	child.CodemodeBoundsOverride = parent.CodemodeBoundsOverride
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {
@@ -239,8 +280,11 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// tenant's secrets and can be handed a publish grant, whichever branch it
 	// took. Inside the repo-targeted branch this was carried; the worktree
 	// branch (checked FIRST, and taken by any workflow declaring
-	// `worktree: auto`) and the local branch silently dropped it.
-	child.Trust = parent.Trust
+	// `worktree: auto`) and the local branch silently dropped it. The fork
+	// author's metering subject rides the same carrier: the child of a fork
+	// run is that author's spend, and every gated resume of it re-meters the
+	// SAME bound the parent's launch entered.
+	store.InheritTrustAndAuthor(child, parent)
 	if parent.Worktree {
 		// A fork materialises a checkout without entering Engine.Run, so it
 		// must ask the same shared-pool bound itself before growing the pool.
@@ -323,6 +367,28 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 			return nil, fmt.Errorf("load turn messages for claw rehydration: %w", mErr)
 		}
 		child.Checkpoint.BackendConversation = msgBytes
+		// The stranding fact travels with the conversation (#2461): when the
+		// parent's pause checkpoint says these turns are a stranded crossing's
+		// own, the child's resumed crossing keeps its captures out of the
+		// session store too. The asymmetry is deliberate — a false positive
+		// costs one capture the child's fresh store never accumulates; a
+		// false negative repeats the session replacement the field closes.
+		// Scoped to the pause's own anchor: the stranded conversation is the
+		// pause node's LAST turns, so the child inherits the fact only when
+		// it re-executes exactly that turn. Any other anchor — another node,
+		// or an earlier turn of the pause node — pins a conversation that
+		// joined the session normally, and stamping it stranded would have
+		// OnSessionCapture silently refuse the child's legitimate captures.
+		if parent.Checkpoint != nil && parent.Checkpoint.BackendSessionStranded &&
+			spec.NodeID == parent.Checkpoint.NodeID {
+			anchorsCrossing, anchorsErr := anchorsThePauseNodesLatestTurn(ctx, turnStore, parent.ID, turn)
+			if anchorsErr != nil {
+				return nil, anchorsErr
+			}
+			if anchorsCrossing {
+				child.Checkpoint.BackendSessionStranded = true
+			}
+		}
 	}
 	// Drop the forked node's existing output and every logical binding that
 	// may have come from it so re-execution starts fresh. Besides explicit
@@ -373,7 +439,44 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 			s.logger.Warn("runview: fork %s records ForkSuppliedInputs=%v — the child's first resume judges them against the var constraints", child.ID, child.ForkSuppliedInputs)
 		}
 	}
+	for _, dropped := range droppedPins {
+		result.Notes = append(result.Notes, dropped)
+		if s.logger != nil {
+			s.logger.Warn("runview: fork %s of %s: %s", child.ID, parent.ID, dropped)
+		}
+	}
 	return result, nil
+}
+
+// dropSweptKeyPins applies the credential sweep's rule to the key pins a fork
+// copies: a pin whose key row no longer exists is the explicit clear, not a
+// replacement (pkg/server's sweep clears the webhook's and the subscription's
+// pins at the key's deletion; the parent's document keeps its frozen copy).
+// The child — the recovery path of a run that cannot continue — would
+// otherwise replay a pin no resume can honour: a gateway pin is exclusive, so
+// every resume of it would be refused. Each dropped pin is returned as the
+// fork's note. A pin the store cannot answer for is kept, said in the log:
+// the child's resume then names it.
+func (s *Service) dropSweptKeyPins(ctx context.Context, parent, child *store.Run) []string {
+	if s.forkKeyPinCheck == nil || len(child.KeyOverrides) == 0 {
+		return nil
+	}
+	providers := slices.Sorted(maps.Keys(child.KeyOverrides))
+	var notes []string
+	for _, prov := range providers {
+		keyID := child.KeyOverrides[prov]
+		exists, err := s.forkKeyPinCheck(ctx, parent.TenantID, keyID)
+		switch {
+		case err != nil:
+			if s.logger != nil {
+				s.logger.Warn("runview: fork of %s: the %s key pin %s could not be checked (%v) — kept: the child's resume names it if its key is gone", parent.ID, prov, keyID, err)
+			}
+		case !exists:
+			delete(child.KeyOverrides, prov)
+			notes = append(notes, fmt.Sprintf("the parent's %s key pin %s was dropped: its key no longer exists (deleted since the pin was written — a swept pin is the explicit clear), so the child's routes take the team's current key", prov, keyID))
+		}
+	}
+	return notes
 }
 
 func invalidateForkAnchorArtifacts(cp *store.Checkpoint, nodeID string) {
@@ -695,6 +798,20 @@ func copyVars(cp *store.Checkpoint) map[string]any {
 		return out
 	}
 	return map[string]any{}
+}
+
+// anchorsThePauseNodesLatestTurn reports whether the fork's resolved
+// anchor turn is the node's latest turn checkpoint. A pause's stranded
+// conversation is that node's last turns, so only that anchor rehydrates
+// the stranded exchange — any earlier turn pinned a conversation that
+// joined the session normally. A store failure fails the fork: guessing
+// would silently decide whether the child's captures mirror.
+func anchorsThePauseNodesLatestTurn(ctx context.Context, turnStore store.TurnStore, runID string, turn *store.TurnCheckpoint) (bool, error) {
+	latest, err := turnStore.LatestTurn(ctx, runID, turn.NodeID)
+	if err != nil {
+		return false, fmt.Errorf("resolve the pause node's latest turn for stranding propagation: %w", err)
+	}
+	return latest != nil && latest.LoopIter == turn.LoopIter && latest.TurnIndex == turn.TurnIndex, nil
 }
 
 // forkSessionLedger is the child run's session ledger: the parent's, plus the

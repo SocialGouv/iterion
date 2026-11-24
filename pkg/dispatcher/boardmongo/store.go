@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -233,6 +234,10 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 		return nil, err
 	}
 	in.Blockers = native.NormalizeBlockers(in.Blockers)
+	// The publish grant is minted per launch and never rides a card
+	// (native/card_grant.go): the twin of the FS store's own drop, so a
+	// writer reaching either store gets the same card.
+	in.BotArgs = native.BotArgsForWrite(in.BotArgs)
 	if in.ID == "" {
 		in.ID = "native:" + uuid.NewString()
 	} else if err := validateIssueID(in.ID); err != nil {
@@ -814,15 +819,56 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 		return nil
 	}
 	now := time.Now().UTC()
+	// The outcome tuple describes the run the pointer is LEAVING — see the
+	// FS twin (native.Store.setLastRunLocked) for why it cannot ride along.
+	outcomeKeys := []string{}
+	if iss.LastRunID != runID {
+		iss.LastRunStatus = ""
+		iss.LastRunError = ""
+		iss.LastRunErrorCode = ""
+		iss.LastRunAt = nil
+		outcomeKeys = []string{"lastrunstatus", "lastrunerror", "lastrunerrorcode", "lastrunat"}
+	}
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
 	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
 	iss.LaunchRefusal = nil // a launch happened: the retry ledger no longer describes the card
 	iss.UpdatedAt = now
-	if err := s.replace(ctx, iss, "lastrunid", "lastworkdir", "runs", "launchrefusal"); err != nil {
+	if err := s.replace(ctx, iss, append([]string{"lastrunid", "lastworkdir", "runs", "launchrefusal"}, outcomeKeys...)...); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})
+}
+
+// SetRunOutcome stamps the terminal outcome of the card's run onto its
+// record. Mirrors the FS twin field for field, including the LastRunID
+// match key (see native.BoardStore.SetRunOutcome).
+func (s *Store) SetRunOutcome(id, runID, status, errMsg, errCode string, at time.Time) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if iss.LastRunID == "" || iss.LastRunID != runID {
+		return nil
+	}
+	if iss.LastRunStatus == status && iss.LastRunError == errMsg && iss.LastRunErrorCode == errCode {
+		return nil
+	}
+	stamped := at.UTC()
+	iss.LastRunStatus = status
+	iss.LastRunError = errMsg
+	iss.LastRunErrorCode = errCode
+	iss.LastRunAt = &stamped
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.replace(ctx, iss, "lastrunstatus", "lastrunerror", "lastrunerrorcode", "lastrunat"); err != nil {
+		return err
+	}
+	return s.emit(native.Event{
+		Type: native.EvtIssueUpdated, IssueID: id,
+		Payload: map[string]any{"run_id": runID, "last_run_status": status},
+	})
 }
 
 // SetAwaitingInput denormalizes onto the issue whether its most recent
@@ -975,6 +1021,58 @@ func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comm
 		return nil, nil, err
 	}
 	return iss, &c, nil
+}
+
+// ErrAmbiguousIssue marks an issue id PREFIX that names more than one
+// issue — the by-id resolver's caller decides what an ambiguous prefix
+// means (ADR-141: not an address, the ambient stamp decides).
+var ErrAmbiguousIssue = errors.New("boardmongo: ambiguous issue id prefix")
+
+// issueTenantDoc is the projection the cross-tenant resolve reads.
+type issueTenantDoc struct {
+	ID       string `bson:"_id"`
+	TenantID string `bson:"tenant_id"`
+}
+
+// ResolveIssueTenant resolves the team ONE issue lives in, across every
+// tenant of the deployment — the by-id capability the board routes' choke
+// point needs (ADR-141): an id-addressed issue is served from ITS team,
+// whatever team the credential is pinned to. The id may be a prefix (the
+// handlers resolve prefixes too); the lookup is the existence check, so a
+// deleted issue stops resolving at once. The _id-anchored filter rides the
+// same index the per-tenant reads ride.
+func (s *Store) ResolveIssueTenant(prefix string) (string, error) {
+	want := prefix
+	if !strings.HasPrefix(prefix, "native:") {
+		want = "native:" + prefix
+	}
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	cursor, err := s.issues.Find(ctx, bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(want)}})
+	if err != nil {
+		return "", fmt.Errorf("boardmongo: resolve issue tenant: %w", err)
+	}
+	defer cursor.Close(ctx)
+	tenant := ""
+	count := 0
+	for cursor.Next(ctx) {
+		var doc issueTenantDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return "", fmt.Errorf("boardmongo: resolve issue tenant: %w", err)
+		}
+		count++
+		if count > 1 {
+			return "", ErrAmbiguousIssue
+		}
+		tenant = doc.TenantID
+	}
+	if err := cursor.Err(); err != nil {
+		return "", fmt.Errorf("boardmongo: resolve issue tenant: %w", err)
+	}
+	if count == 0 {
+		return "", tracker.ErrNotFound
+	}
+	return tenant, nil
 }
 
 func (s *Store) Resolve(prefix string) (string, error) {
@@ -1188,10 +1286,15 @@ func applyPatch(iss *native.Issue, p native.Patch, board *native.Board) patchRes
 		changed = append(changed, "bot")
 	}
 	if p.BotArgs != nil {
+		// The publish grant never rides a card (native/card_grant.go): a
+		// SENT grant is dropped before the swap, and the STORED one comes
+		// back off the record — an args rewrite scrubs no grant the launch
+		// lane still reads, and an explicit empty value still withdraws it.
+		kept := native.KeepStoredMintedVars(iss.BotArgs, native.BotArgsForWrite(*p.BotArgs))
 		var next map[string]string
-		if len(*p.BotArgs) > 0 {
-			next = make(map[string]string, len(*p.BotArgs))
-			for k, v := range *p.BotArgs {
+		if len(kept) > 0 {
+			next = make(map[string]string, len(kept))
+			for k, v := range kept {
 				next[k] = v
 			}
 		}

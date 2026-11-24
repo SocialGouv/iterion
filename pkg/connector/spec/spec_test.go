@@ -111,6 +111,17 @@ func TestValidateRefusals(t *testing.T) {
 		wantMsg string
 	}{
 		{
+			// Prevents: a catalog package squatting a NATIVE connector id
+			// (ADR-151): where the transport is registered the engine's
+			// registry answers for the id and the package is silently
+			// hijacked; where it is not, the same action id is refused.
+			name: "a native connector id squatted",
+			mutate: func(p *spec.Package) {
+				p.Connector.ID = "board"
+			},
+			wantMsg: "reserved",
+		},
+		{
 			// Prevents: a request sent to a literally-templated URL.
 			name: "path placeholder with no parameter",
 			mutate: func(p *spec.Package) {
@@ -453,6 +464,15 @@ func TestEveryDocumentIsVersionGuarded(t *testing.T) {
 			name: "an ops file",
 			file: filepath.Join(spec.OpsDir, "issue.yaml"),
 			body: "schema_version: 99\nconnector: probe\ndomain: issue\noperations: []\n",
+		},
+		{
+			// Its version is its OWN (99 is newer than TriggersSchemaVersion,
+			// not than the package's), and the table's claim is EVERY
+			// document — a list that stops at the documents that existed when
+			// it was written guards one less file than it says.
+			name: "triggers.yaml",
+			file: spec.TriggersFile,
+			body: "schema_version: 99\nconnector: probe\ntriggers: []\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

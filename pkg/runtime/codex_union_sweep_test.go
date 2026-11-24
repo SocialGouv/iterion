@@ -37,6 +37,7 @@ var theValuesThatOpenAnAppend = map[string]any{
 	"Interaction":     ir.InteractionHuman,
 	"ReasoningEffort": "ultracode",
 	"AmbientContext":  "all",
+	"Codemode":        "on",
 	"Compress":        "on",
 	"Permission":      "ask",
 	"Capabilities":    []string{"board.read", "runs.read"},

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 
 	"github.com/SocialGouv/iterion/pkg/connector/gen"
 	"github.com/SocialGouv/iterion/pkg/connector/identity"
@@ -207,11 +207,11 @@ func TestForgejoIdentityLockMatchesAllExistingOperations(t *testing.T) {
 	if committed == nil {
 		t.Fatal("Forgejo identity lock not seeded")
 	}
-	want, err := yaml.Marshal(lock)
+	want, err := yamlx.Marshal(lock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := yaml.Marshal(committed)
+	got, err := yamlx.Marshal(committed)
 	if err != nil {
 		t.Fatal(err)
 	}

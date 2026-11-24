@@ -4,17 +4,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // periodicWorkerFrames names the goroutine a runview.Service starts and keeps
-// for its whole life, one entry per kind. Counting stack frames rather than
+// for its whole life, one entry per kind. Reading stack frames rather than
 // instrumenting the production code keeps the oracle on the artefact that
 // actually runs.
 var periodicWorkerFrames = map[string]string{
@@ -23,16 +23,74 @@ var periodicWorkerFrames = map[string]string{
 	"alert stall poll":   "alert.(*Manager).Start.func1",
 }
 
-// liveGoroutines counts the goroutines whose stack carries frame. The dump is
-// a stop-the-world snapshot, so the count is consistent.
-func liveGoroutines(frame string) int {
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			return strings.Count(string(buf[:n]), frame)
+// workerKinds names the kinds in a fixed order, so a reading that errors on
+// several of them says so in the same order every time.
+func workerKinds() []string {
+	kinds := make([]string, 0, len(periodicWorkerFrames))
+	for kind := range periodicWorkerFrames {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	return kinds
+}
+
+// workerSettleCeiling bounds how long a reading waits for the workers a switch
+// signalled to return — a ceiling, not an expectation: the wait ends the
+// instant the set read is the one expected, so load changes how long this test
+// takes and never what it decides. ONE ceiling covers every kind, because one
+// reading covers every kind: a leak of all three is reported after one ceiling
+// and not after three.
+const workerSettleCeiling = 30 * time.Second
+
+// workersByKind returns, per kind, the ids of the goroutines whose OWN stack
+// carries that kind's frame. Every kind comes out of ONE stop-the-world
+// snapshot, so the readings describe the same instant and cost one dump, and
+// the reading is a SET: the runtime never reuses a goroutine id, so a
+// goroutine one snapshot does not hold and the next does was started in
+// between, whatever the rest of the process did meanwhile.
+//
+// goroutinetest holds the matching rule — including why a frame is matched
+// with its opening parenthesis — so this witness and the runs service's own
+// stop witness cannot drift apart on what counts as carrying a frame.
+func workersByKind(t *testing.T) map[string]map[int]bool {
+	t.Helper()
+	return goroutinetest.ByFrame(t, periodicWorkerFrames)
+}
+
+// ownWorkers returns, per kind, the goroutines carrying that kind's frame that
+// ambient does not hold, i.e. the ones the caller is answerable for.
+func ownWorkers(t *testing.T, ambient map[string]map[int]bool) map[string][]int {
+	t.Helper()
+	mine := map[string][]int{}
+	for kind, ids := range workersByKind(t) {
+		for id := range ids {
+			if !ambient[kind][id] {
+				mine[kind] = append(mine[kind], id)
+			}
 		}
-		buf = make([]byte, 2*len(buf))
+		slices.Sort(mine[kind])
+	}
+	return mine
+}
+
+// settleOwnWorkers polls — one dump per poll, every kind at once — until the
+// workers the caller owns satisfy settled for every kind, or the ceiling runs
+// out. Returns the last reading.
+func settleOwnWorkers(t *testing.T, ambient map[string]map[int]bool, settled func(n int) bool) map[string][]int {
+	t.Helper()
+	deadline := time.Now().Add(workerSettleCeiling)
+	for {
+		mine := ownWorkers(t, ambient)
+		done := true
+		for _, kind := range workerKinds() {
+			if !settled(len(mine[kind])) {
+				done = false
+			}
+		}
+		if done || !time.Now().Before(deadline) {
+			return mine
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -42,15 +100,19 @@ func liveGoroutines(frame string) int {
 // they scan a store the server no longer serves, once per interval, for the
 // process lifetime, one more scanner per switch.
 func TestSwapWorkDir_LeavesOnePeriodicWorkerPerKind(t *testing.T) {
-	// Baselines first: another test's service (should one ever appear) must
-	// not be read as this one's leak. Taken once the reading is STABLE — a
-	// worker stopped by a previous test is signalled before it returns, so a
-	// single sample counts goroutines that are already on their way out and
-	// sets a baseline nothing can come back to.
-	base := map[string]int{}
-	for kind, frame := range periodicWorkerFrames {
-		base[kind] = stableGoroutines(frame)
-	}
+	// Who is standing BEFORE this test's server exists. Goroutine ids are
+	// never reused, so every worker this test is answerable for is one this
+	// set does not hold — and an ambient worker that leaves, or lingers,
+	// while the switches run cannot move the reading either way. A COUNT
+	// cannot say that: by the time this test runs the suite leaves about two
+	// hundred of these workers standing, and one of them exiting late reads
+	// exactly like a worker this test leaked (it did, on a loaded CI shard:
+	// "197 live after 4 project switches, want 198" — one FEWER than the
+	// baseline, reported as a leak). The reading rests on this test NOT being
+	// parallel: nothing else in the package builds a service while it runs,
+	// so a goroutine the set does not hold is this test's own. A t.Parallel()
+	// here would hand the reading another test's workers.
+	ambient := workersByKind(t)
 
 	dir := t.TempDir()
 	first := filepath.Join(dir, "p0")
@@ -78,7 +140,26 @@ func TestSwapWorkDir_LeavesOnePeriodicWorkerPerKind(t *testing.T) {
 	srv.bgJoinBudget = 30 * time.Second
 	shutdownOnCleanup(t, srv)
 
+	// Every worker standing when a switch starts belongs to a service that
+	// switch replaces — or to one an earlier switch already replaced and left
+	// running. Their union is the set the one survivor may NOT be drawn from:
+	// a worker in it scans a store the server no longer serves, and its being
+	// the ONLY one alive says the switch stopped the service the server now
+	// serves. Reading ids and judging a POPULATION cannot say that — one
+	// worker standing is one worker standing, whichever service it belongs
+	// to, so a switch that stops the WRONG service reads exactly like a
+	// switch that stops the right one.
+	replaced := map[int]bool{}
 	for i := 1; i <= 4; i++ {
+		before := settleOwnWorkers(t, ambient, func(n int) bool { return n >= 1 })
+		for _, kind := range workerKinds() {
+			if len(before[kind]) == 0 {
+				t.Fatalf("premise, within %s: no %s worker of this test's own services is live before switch %d — the set this test's verdict is drawn from would be empty", workerSettleCeiling, kind, i)
+			}
+			for _, id := range before[kind] {
+				replaced[id] = true
+			}
+		}
 		next := filepath.Join(dir, "p"+string(rune('0'+i)))
 		mkProjectDir(t, next)
 		if err := srv.swapWorkDir(context.Background(), next); err != nil {
@@ -86,42 +167,23 @@ func TestSwapWorkDir_LeavesOnePeriodicWorkerPerKind(t *testing.T) {
 		}
 	}
 
-	for kind, frame := range periodicWorkerFrames {
-		want := base[kind] + 1 // the service the server actually serves
-		if got := settleGoroutines(frame, want); got != want {
-			t.Errorf("%s: %d live after 4 project switches, want %d — every switch left the previous service's worker scanning a store the server no longer serves", kind, got, want)
+	// One worker per kind, and it is the SERVED service's. Five is the leak
+	// this test exists for — the initial service and the four the switches
+	// replaced; zero is the opposite defect, a server serving a store nothing
+	// scans; one that a switch REPLACED is both at once, and is what a switch
+	// stopping the wrong service leaves behind.
+	mine := settleOwnWorkers(t, ambient, func(n int) bool { return n == 1 })
+	for _, kind := range workerKinds() {
+		live := mine[kind]
+		switch {
+		case len(live) > 1:
+			t.Errorf("%s: %d workers of this test's own services live after 4 project switches (goroutines %v), want 1 — every switch left the previous service's worker scanning a store the server no longer serves", kind, len(live), live)
+		case len(live) == 0:
+			t.Errorf("%s: not one worker of this test's own services is live after 4 project switches — the service the server serves scans nothing", kind)
+		case replaced[live[0]]:
+			t.Errorf("%s: the one live worker (goroutine %d) belongs to a service a switch REPLACED — the switch stopped the service the server now serves, which scans nothing, and the store it no longer serves is still scanned once per interval", kind, live[0])
 		}
 	}
-}
-
-// settleGoroutines polls until the count reaches want or the budget runs out —
-// a stopped goroutine returns shortly after its signal, not at the instant of
-// it. Returns the last count read.
-func settleGoroutines(frame string, want int) int {
-	deadline := time.Now().Add(3 * time.Second)
-	got := liveGoroutines(frame)
-	for got != want && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-		got = liveGoroutines(frame)
-	}
-	return got
-}
-
-// stableGoroutines returns a count that two readings apart agree on, so a
-// worker already winding down from an earlier test is not counted as
-// standing. Falls back to the last reading when nothing settles in budget.
-func stableGoroutines(frame string) int {
-	deadline := time.Now().Add(3 * time.Second)
-	prev := liveGoroutines(frame)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-		got := liveGoroutines(frame)
-		if got == prev {
-			return got
-		}
-		prev = got
-	}
-	return prev
 }
 
 // mkProjectDir makes a directory swapWorkDir accepts as a project.

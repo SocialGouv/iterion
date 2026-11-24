@@ -44,6 +44,51 @@ erDiagram
         int64 next_plan_seq
         int64 next_note_seq
     }
+    run_data_v1_events {
+        ObjectId _id PK "identity is unique (data_namespace, seq)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int64 seq
+        string type
+        map data
+        int64 log_offset
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_logs {
+        ObjectId _id PK "identity is unique (data_namespace, offset)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int64 offset
+        bytes data
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_plans {
+        ObjectId _id PK "identity is unique (data_namespace, seq)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int seq
+        object todos "an ARRAY of plan todos"
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_notes {
+        ObjectId _id PK "identity is unique (data_namespace, seq)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int seq
+        string author
+        string body
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_seq {
+        object _id PK "{tenant_id, data_namespace}"
+        int64 next_seq
+        int64 next_plan_seq
+        int64 next_note_seq
+    }
     interactions {
         object _id PK "{run_id, interaction_id}"
         string run_id FK "runs._id"
@@ -62,6 +107,16 @@ erDiagram
         string text
         string node_id
         string[] skill_refs
+        datetime queued_at
+        string tenant_id FK "team id"
+    }
+    run_data_v1_user_messages {
+        object _id PK "{run_id, message_id, namespace}"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        string interaction_id "logical interaction ID"
+        string status "queued|delivered|consumed|cancelled"
+        string text
         datetime queued_at
         string tenant_id FK "team id"
     }
@@ -100,11 +155,19 @@ erDiagram
     run_turns     }o--|| runs : "run_id"
     interactions  }o--|| runs : "run_id"
     user_messages }o--|| runs : "run_id"
+    run_data_v1_user_messages }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_events }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_logs }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_plans }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_notes }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_seq }o--o| runs : "_id.data_namespace retains run and birth"
     runs          |o--o| interactions : "checkpoint.interaction_id"
     user_messages }o--o| interactions : "interaction_id"
 ```
 
-- Every stream names its run with a top-level `run_id`. `run_seq` is the one exception — its run id lives *inside* the compound `_id`. The counter is one row per (tenant value, run), not one per run.
+- Payload streams name their logical run with a top-level `run_id`. Historical `run_seq` stores the run id inside compound `_id` and has one row per (tenant value, run). Staged `run_data_v1_seq` instead keys its three independent counters by `{tenant_id, data_namespace}`; the namespace retains the format, run and birth, with no top-level `run_id`.
+- `run_data_v1_user_messages` is the staged incarnation inbox; protocol-one admission remains closed. Its namespace also participates in reads, CAS and cleanup. Rows can outlive a published header, so the organization sweep removes all births by tenant, including orphan rows.
+- The five staged `run_data_v1_events`, `run_data_v1_logs`, `run_data_v1_plans`, `run_data_v1_notes` and `run_data_v1_seq` collections isolate stream data and counters by incarnation. Admission remains closed. Their logical relationships are optional because rows can outlive the parent header; tenant cleanup covers orphan births. Notes and counters have no TTL.
 - A gap in `seq` is normal.
 - `interactions` is the durable question/answer record and `runs.checkpoint.interaction_id` is only a pointer to the pending one.
 - `dev` is a tenant *value*, not a team. A server started with `DisableAuth` stamps the store ctx under the id `dev` for both tenant and owner, so every row written in that ctx — for example `events` — carries `tenant_id: dev`.
@@ -182,6 +245,16 @@ erDiagram
         string[] tags
         string tenant_id FK "team id"
     }
+    staged_uploads {
+        string _id PK "the upload id, up_<unix>_<32 hex>"
+        string tenant_id FK "team id"
+        string owner_id FK "users._id"
+        string original_filename
+        string mime "sniffed, never the declared one"
+        int64 size
+        string sha256
+        datetime created_at "the staging sweep reaps after an hour"
+    }
     run_gitmeta {
         ObjectId _id PK "the identity is the unique run_id"
         string run_id FK, UK "runs._id"
@@ -204,6 +277,8 @@ erDiagram
     runs }o..o| retry_circuits : "retry_circuits.key, derived from the run; the run stores no reference"
     retry_circuits }o--o| runs : "last_failure_run_id"
     run_tags |o--|| runs : "run_id"
+    staged_uploads }o--o| teams : "tenant_id"
+    staged_uploads }o..o| users : "owner_id"
     run_gitmeta |o--|| runs : "run_id"
     runs }o--o| runs : "parent_run_id"
     runs |o--o{ runs : "subbot_children - written on the PARENT"
@@ -276,7 +351,7 @@ erDiagram
         int64 lease_epoch
     }
     "S3: artifacts and backend sessions" {
-        string key PK "artifacts/<run>/<node>/<v>.json, attachments/<run>/<name>/<file>, tools/<run>/<toolUseID>/<kind>, ir/<run>.json, sessions/<run>/<ref>, runfiles/<run>/<path>"
+        string key PK "artifacts/<run>/<node>/<v>.json, attachments/<run>/<name>/<file>, tools/<run>/<toolUseID>/<kind>, ir/<run>.json, sessions/<run>/<ref>, runfiles/<run>/<path>, uploads/<upload>/<file>"
     }
     "NATS KV: run locks" {
         string key PK "the run id"
@@ -292,6 +367,7 @@ erDiagram
     assistant_missions }o--|| runs : "assistant_run_id"
     assistant_missions }o--|| assistant_run_watches : "watch_id"
     runs ||..o{ "S3: artifacts and backend sessions" : "key - the run id sits in its second path segment"
+    staged_uploads ||..o| "S3: artifacts and backend sessions" : "key - uploads/<_id>/<original_filename>, before any run exists"
     runs ||--o| "NATS KV: run locks" : "key - the run id; the claiming runner holds one lease per run"
 ```
 
@@ -300,16 +376,17 @@ erDiagram
 
 ## Where a run's bytes live
 
-Outside Mongo, a cloud run writes into six S3 key spaces of one bucket and one NATS KV bucket, and its launch travels on a JetStream subject; a second KV bucket holds the fleet's rollout epoch. The marked participants of Block 3 are the two stores a run itself writes; the streams are transport rather than state, so no entity draws them.
+Outside Mongo, a cloud run writes into six S3 key spaces of one bucket — beside a seventh, `uploads/`, where the server stages what a launch form uploads before any run exists — and one NATS KV bucket, and its launch travels on a JetStream subject; a second KV bucket holds the fleet's rollout epoch. The marked participants of Block 3 are the two stores a run itself writes; the streams are transport rather than state, so no entity draws them. The six run key spaces are keyed by the run id alone, with no tenant in the key: they are deleted by `store.DeleteRun` — `DELETE /api/runs/{id}`, and the org purge, which deletes each run of a purged org through it before any Mongo row goes ([flow-org-team-lifecycle.md](flow-org-team-lifecycle.md)).
 
 | store | key or name | what it holds |
 | --- | --- | --- |
 | S3, bucket `iterion-artifacts` (the default name) | `artifacts/<run>/<node>/<version>.json` | one object per artifact revision of a node |
 | S3 | `attachments/<run>/<name>/<file>` | the attachment bodies `runs.attachments` indexes — plus the reserved name `__gitdiff`, where a per-file diff too large to inline is offloaded and deliberately left OUT of that index |
 | S3 | `tools/<run>/<toolUseID>/input` · `/output` | one object per tool call and direction |
-| S3 | `ir/<run>.json` | the compiled IR when it rides out of band |
+| S3 | `ir/<run>.json` · `ir/<run>-bundle-<digest>.json` | the compiled IR when it rides out of band, and the immutable bundle snapshot when it exceeds the queue payload — both deleted by `DeleteRunIR` |
 | S3 | `sessions/<run>/<ref>` | the backend conversation a resume reattaches to |
 | S3 | `runfiles/<run>/<rel path>` | tool-produced files |
+| S3 | `uploads/<upload>/<file>` | an upload a launch form staged and no run claimed yet — reached only through its `staged_uploads` record, read under the tenant filter, never presigned, swept after an hour (bytes, then record) |
 | NATS KV `iterion-run-locks` | the run id | the runner's execution lease (`LeaseInfo`: runner id, started_at, run_status, tenant, pool); bucket TTL `LockTTL`, 60s by default |
 | NATS KV `iterion-runner-rollout` | `epoch.high-water` | the monotonic runner rollout epoch, no TTL |
 | JetStream `ITERION_RUNS`, `ITERION_RUNS_DLQ` | `iterion.queue.runs`, `iterion.queue.runs.dlq` | the run work queue and its park; a sovereign pool gets its own `ITERION_RUNS_POOL_<pool>` pair on an exact, never wildcard, subject |
@@ -373,12 +450,19 @@ stateDiagram-v2
 | `events` | `pkg/store/mongo` | `store.Event` | `tenant_id` — team id | unique `(run_id, seq)`; TTL `ts` after `eventsTTLDays` | `file events.jsonl` |
 | `run_logs` | `pkg/store/mongo` | `runLogDoc` | `tenant_id` — team id | unique `(run_id, offset)`; TTL `ts` after `eventsTTLDays` | `file run.log` |
 | `run_seq` | `pkg/store/mongo` | `bson.M` literal, no Go struct | inside `_id` — `{tenant_id, run_id}`, team id | `_id` only; no TTL | `none (cloud-only)` |
+| `run_data_v1_events` | `pkg/store/mongo` | `store.Event` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, seq)`; nonunique `(tenant_id, data_namespace, seq)`; TTL `ts` when `eventsTTLDays > 0` | staged file `.run-data-v1/f<format>/<run>/<birth>/events.jsonl` |
+| `run_data_v1_logs` | `pkg/store/mongo` | `runLogDoc` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, offset)`; nonunique `(tenant_id, data_namespace, offset)`; TTL `ts` when `eventsTTLDays > 0` | staged file `.run-data-v1/f<format>/<run>/<birth>/run.log` |
+| `run_data_v1_plans` | `pkg/store/mongo` | `runPlanDoc` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, seq)`; nonunique `(tenant_id, data_namespace, seq)`; TTL `ts` when `eventsTTLDays > 0` | staged file `.run-data-v1/f<format>/<run>/<birth>/plans/<NNNN>.json` |
+| `run_data_v1_notes` | `pkg/store/mongo` | `runNoteDoc` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, seq)`; nonunique `(tenant_id, data_namespace, seq)`; no TTL | staged file `.run-data-v1/f<format>/<run>/<birth>/notes/<NNNN>.json` |
+| `run_data_v1_seq` | `pkg/store/mongo` | `bson.M` literal, no Go struct | inside `_id` — `{tenant_id, data_namespace}`, canonical parent tenant | `_id` only; no TTL | `none (cloud-only)` |
 | `interactions` | `pkg/store/mongo` | `interactionDoc` wrapping `store.Interaction` | `tenant_id` — team id | `_id` `{run_id, interaction_id}`; no TTL | `file interactions/<id>.json` |
 | `user_messages` | `pkg/store/mongo` | `userMessageDoc` wrapping `store.QueuedUserMessage` | `tenant_id` — team id | `_id` `{run_id, message_id}`; no TTL | `file user_messages.jsonl` |
+| `run_data_v1_user_messages` | `pkg/store/mongo` | `userMessageDoc` wrapping `store.QueuedUserMessage` | `tenant_id` — team id | `_id` `{run_id, message_id, namespace}`; nonunique `(data_namespace, run_id, queued_at)` and `(data_namespace, run_id, status, queued_at)`; no TTL | staged file `.run-data-v1/f<format>/<run>/<birth>/user_messages.jsonl` |
 | `run_plans` | `pkg/store/mongo` | `runPlanDoc` | `tenant_id` — team id | unique `(run_id, seq)`; TTL `ts` after `eventsTTLDays` | `file plans/<NNNN>.json` |
 | `run_notes` | `pkg/store/mongo` | `runNoteDoc` | `tenant_id` — team id | unique `(run_id, seq)`; no TTL | `file notes/<NNNN>.json` |
 | `run_turns` | `pkg/store/mongo` | `runTurnDoc` for `store.TurnCheckpoint` | `tenant_id` — team id | unique `(run_id, node_id, loop_iter, turn_index)`; TTL `ts` | `file turns/<node>/<iter>/<turn>.json` |
 | `run_tags` | `pkg/store/mongo` | `runTagsDoc` | `tenant_id` — team id | unique `run_id`; no TTL | `file tags.json` |
+| `staged_uploads` | `pkg/store/mongo` | `store.StagedUpload` | `tenant_id` — team id | `_id` is the upload id; index `created_at`; no TTL index — the staging sweep reaps after an hour, bytes then record | `file uploads/<id>/meta.json` |
 | `run_gitmeta` | `pkg/store/mongo` | `runGitMetaDoc` | `tenant_id` — team id | unique `run_id`; no TTL | `file gitmeta.json` |
 | `run_route_decisions` | `pkg/store/mongo` | `store.RouteDecision` | `tenant_id` — team id; the watermark sentinel is untenanted | unique `(run_id, outcome_seq)`; no TTL | `file route_decisions.json` |
 | `retry_circuits` | `pkg/store/mongo` | `store.RetryCircuitState` | `tenant_id` — team id | unique `(tenant_id, key)`; TTL `updated_at` after 30 days | `none (cloud-only)` |
@@ -391,7 +475,7 @@ stateDiagram-v2
 | `assistant_run_watches` | `pkg/runwatch` | `runwatch.Watch` | `tenant_id` — team id, a plain tenant parameter on the per-operator reads | unique partial `(tenant_id, owner_id, target_run_id)` on `state: active`; no TTL | `file assistant-run-watches.json` |
 | `assistant_run_watch_episodes` | `pkg/runwatch` | `runwatch.Episode` | `tenant_id` — team id, ignored by the claim queries | unique `(watch_id, outcome_event_id)`; no TTL | `file assistant-run-watches.json` |
 | `assistant_missions` | `pkg/assistantmission` | `assistantmission.Mission` | `tenant_id` — team id, a plain tenant parameter on the per-operator reads, ignored by the reconcile and claim queries | unique `(tenant_id, operator_id, invocation_key)`, unique partial `active_target_key`; no TTL | `file assistant-missions.json` |
-| `"S3: artifacts and backend sessions"` | `pkg/store/blob` | key spaces, not documents | the run id is the key's second path segment | none | `S3` |
+| `"S3: artifacts and backend sessions"` | `pkg/store/blob` | key spaces, not documents | the run id is the key's second path segment — the upload id under `uploads/`, scoped by its `staged_uploads` record | none | `S3` |
 | `"NATS KV: run locks"` | `pkg/queue/nats` | `nats.LeaseInfo` | `tenant_id` inside the lease payload | bucket TTL `LockTTL`, default 60s | `NATS KV` |
 
 ## Related

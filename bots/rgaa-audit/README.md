@@ -21,8 +21,8 @@ The split is **who finds, who judges, who refuses**:
   lives in this bundle;
 - a **second reader** puts every stated non-conformity and every landed
   conformity on trial; an optional **human gate** approves or declares
-  criteria undecidable; a **transcription judge** with no tool but the board
-  files the plan verbatim, and a deterministic node checks it did.
+  criteria undecidable; the plan is then filed and verified **with no model
+  in the loop**, by native board actions on tool nodes (#2388).
 
 The engine is pinned by version **and** by the sha256 of its entry file
 (`ultra11y.pin`), fingerprinted before anything of it runs and before every
@@ -42,7 +42,8 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   ─► worklist ─► plan_batches ─► dispatch ⇒ adjudicate ─► write_fragment
   ─► merge_verdicts ─► fold_probe ⟲ (re-ask of the named refusals, once)
   ─► fold_final ─► draft_report ─► budget_gate ─► [refute ⇒ … ─► refute_apply]
-  ─► review_gate ─► [human_review] ─► final_report ─► deliver ─► [publish ─► publish_verify] ─► done
+  ─► review_gate ─► [human_review] ─► final_report ─► deliver ─► [publish_list
+  ─► publish_diff ─► publish_create (fan_out_each) ─► publish_verify] ─► done
 ```
 
 - `prepare` resolves the pinned engine (`$ULTRA11Y_BIN`, the global npm
@@ -51,7 +52,11 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   (`ENGINE_HASH_MISMATCH` / `ENGINE_UNRESOLVED`), probes the browser and
   writes the run's helper library.
 - `static_audit` is THE finding set; an empty scope is `EMPTY_SCOPE`, never
-  a clean audit. `bank_static` publishes it before any model runs.
+  a clean audit. It first purges the workspace's `.ultra11y/pages/` (a
+  previous run's captures would anchor findings the fresh audit no longer
+  produces) and removes the previous generation's `audit-latest.json` (the
+  engine swallows a failed write: an old document must never stand in for
+  the new one). `bank_static` publishes it before any model runs.
 - `render` scans the page sample (`.ultra11yrc.json`) in a Playwright
   Chromium when `rendered=auto` finds one, serving the site with
   `serve_command` if given; `rendered=required` makes its absence a
@@ -61,12 +66,16 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   go back to the agents. Stored recommendations are not replayed: they are
   non-normative, and one whose element has since been edited would refuse
   the verdict it rides on. A ledger the engine cannot read is
-  `LEDGER_INVALID`, with the engine's own message.
+  `LEDGER_INVALID`, with the engine's own message. A ledger copy found at
+  the node's entry belongs to THIS audit (a fresh audit drops it), so a run
+  rewound to before the fold re-emits the recorded replay instead of
+  replaying over a folded audit — which would empty the copy.
 - `worklist` → `plan_batches` → `dispatch` (fan-out per batch) →
   `adjudicate` (read-only agent) → `write_fragment` (item-keyed) →
   `merge_verdicts` (one writer, later rounds win per criterion, citations
   checked against the shown evidence, recommendations kept only on the
-  criterion's own anchors — the others dropped and counted) →
+  criterion's own anchors — the others dropped and counted; a batch that
+  answered only part of its criteria is named apart from a dead one) →
   `fold_probe` (the fold on a copy, refusals named and re-asked once) →
   `fold_final` (the real audit folded exactly once, ledger merged; a retyped
   citation folded with its anchor's text where the engine accepts both).
@@ -76,16 +85,26 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   own findings are never pruned) and reports what it pruned; an incomplete
   trial is not applied, and the part of an applied one the engine refuses
   (a retained claim whose anchor does not ground) is named as a degradation.
-- `final_report` renders the report, cross-checks its « Décidés » line and
-  RGAA rate against the document, runs the engine's integrity and
-  completeness checks, writes the coverage annex, and copies everything to
-  `report_dir` when set — the ledger with workspace-relative anchors, ready
-  to commit.
+- `final_report` uses ultra11y 5.49.0 to render the business summary and
+  its separate technical annex. It cross-checks the annex's « Décidés »
+  line and the summary's RGAA rate against the audit, then runs the engine's
+  integrity and completeness checks. Both draft readers receive both files.
+  `report_dir`, when set, receives these documents, requested HTML files,
+  the linked screenshots, Markdown and JSON page grids when rendered,
+  Iterion's coverage annex
+  and the ledger with workspace-relative anchors. Relative report links
+  remain usable. `report_files` lists the source artifacts; historical
+  outputs and issue plans are not swept into this export.
 - `deliver` builds the issue plan from the engine's own tickets (one per
-  criterion, severity-sorted, capped); `publish` files it when
-  `post_to_board` is true; `publish_verify` holds the judge's own report to
-  the plan and fails typed when a planned title is neither created nor found
-  (a self-report: a tool node has no board action to read the board with).
+  criterion, severity-sorted, capped); when `post_to_board` is true the plan
+  is filed with **no model in the loop** (#2388): `publish_list` reads the
+  board through the native action transport (ADR-151), `publish_diff`
+  computes the titles to file (de-duplication by exact title), one
+  `board.issue.create` action per missing title files them verbatim, and
+  `publish_verify` **reads the board back** (`board.issue.list` again) and
+  refuses typed when a planned title is not on it
+  (`BOARD_PUBLISH_INCOMPLETE`). A card the plan does not contain is not a
+  refusal: the instance's board is shared, and coverage is the verdict.
 
 Every node that rewrites `audit-latest.json` records its hash in the run's
 `state/` directory and its own output; every later node refuses a document
@@ -96,7 +115,7 @@ Every refusal the bot makes is a typed `fail` node (`ENGINE_UNRESOLVED`,
 `ENGINE_HASH_MISMATCH`, `EMPTY_SCOPE`, `RENDER_UNAVAILABLE`,
 `LEDGER_INVALID`, `AUDIT_INTEGRITY`, `ADJUDICATION_INCOMPLETE`,
 `REFUTE_INCOMPLETE`, `HUMAN_REJECTED`, `REPORT_INTEGRITY_FAILED`,
-`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`); an engine crash stays an
+`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`, `BOARD_PLAN_DUPLICATE_TITLES`); an engine crash stays an
 untyped, resumable error — except on a committed ledger the engine cannot
 replay, which is `LEDGER_INVALID` with the engine's own message.
 
@@ -107,6 +126,7 @@ replay, which is `LEDGER_INVALID` with the engine's own message.
 | `standard` | `rgaa` | the RGAA 4.1.2 pack (the WCAG core report has no « Décidés » line and a different rate semantics: a follow-up) |
 | `scope_globs` / `exclude_globs` / `max_files` | whole workspace | what the engine audits |
 | `rendered` | `auto` | `off` / `auto` / `required` — the browser layer; the engine writes its captures under `.ultra11y/pages/` of the workspace (gitignore it) |
+| `browser_path` | — | browser executable the rendered layer launches (`--browser-path` of the engine's probe and scan), e.g. the sandbox image's `/usr/bin/chromium`; empty = `$ULTRA11Y_BROWSER_PATH`, else the engine's own Playwright |
 | `serve_command` / `serve_ready_url` | — | how to serve the site for the scan |
 | `ledger_path` | `.ultra11y/verdicts/<standard>.json` | the committed ledger to replay |
 | `batch_size` / `max_reask` | 8 / 1 | adjudication batches and re-asks |
@@ -153,4 +173,6 @@ walks the whole graph without a model, a shell or a workspace.
 
 `rgaa-audit` (the playbook), `ultra11y-engine` (the engine from inside the
 bot), `adjudication-protocol`, `refutation-protocol`, `iterion-board` (the
-shared board skill).
+shared board skill — retained as the SOURCE of its sharing family; since
+the publication went deterministic (#2388) no node of this bot reads it,
+and the mirrors' reads are their own).

@@ -26,3 +26,18 @@ func TestCapabilityUnsupportedDoesNotRetry(t *testing.T) {
 		t.Fatal("a missing capability requires a configuration change before resuming")
 	}
 }
+
+// TestBackendCLIAbsentIsTheSameClassOnTheHostPlane: the dispatch-plane refusal
+// of a backend no published image ships (#1643) classifies to the same
+// deterministic terminal code as the declaration-plane refusal — retrying
+// cannot install a CLI.
+func TestBackendCLIAbsentIsTheSameClassOnTheHostPlane(t *testing.T) {
+	err := fmt.Errorf("dispatch: %w", &delegate.ErrBackendCLIAbsent{NodeID: "implement", Backend: "kimi", Binary: "kimi"})
+	if got := Classify(err); got != runtime.ErrCodeCapabilityUnsupported {
+		t.Fatalf("classification = %s", got)
+	}
+	action, code := Dispatch(DefaultRecipes())(context.Background(), err, func(runtime.ErrorCode) int { return 0 })
+	if action.Kind != runtime.RecoveryFailTerminal || code != runtime.ErrCodeCapabilityUnsupported {
+		t.Fatalf("action=%+v code=%s", action, code)
+	}
+}

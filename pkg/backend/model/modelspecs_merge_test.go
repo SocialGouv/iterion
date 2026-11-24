@@ -1,11 +1,13 @@
 package model
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // TestMain isolates this package's tests from the host's live model prices
@@ -14,9 +16,29 @@ import (
 // assertions (TestCapabilitiesForModel) flake on a dev machine that has run a
 // real bot, and a usage_progress sample falls under its floor wherever claw's
 // cache prices a model below the static table (#1686).
+//
+// capParallelism first, because the cap has to land before m.Run builds the
+// test context that reads `-parallel` (testparallel_test.go carries the
+// measurement that chose the number).
+// It also makes this test binary able to BE a script-host child, which is
+// what lets codemode_tool_test.go run a real program through a real child
+// process without building the release binary: scripthost.Host re-execs
+// whatever Binary names, and here that is this binary, which answers the
+// subcommand exactly as `iterion __script-host` does. The arm must come
+// FIRST, before any isolation runs: the child is not running tests.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == scripthost.Subcommand {
+		if err := scripthost.RunChild(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "script-host child:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	capParallelism()
 	restore := pricingtest.Isolate()
+	restoreProviders := isolateProviders()
 	code := m.Run()
+	restoreProviders()
 	restore()
 	os.Exit(code)
 }
@@ -55,13 +77,16 @@ func TestMergeSpec_AggregatorOverridesCurated(t *testing.T) {
 	if got.InputCostPerM != 3 || got.OutputCostPerM != 15 {
 		t.Errorf("price = %v/%v, want 3/15", got.InputCostPerM, got.OutputCostPerM)
 	}
-	if got.Temperature {
+	if !no(got.Temperature) {
 		t.Error("an explicit aggregator false must override the curated true")
 	}
 	// A nil flag is "unstated", not false — the curated heuristic stands.
-	if got.ToolCall != curated.ToolCall || got.Reasoning != curated.Reasoning {
-		t.Errorf("unstated flags = tool:%v reason:%v, want curated tool:%v reason:%v",
-			got.ToolCall, got.Reasoning, curated.ToolCall, curated.Reasoning)
+	if flagWord(got.ToolCall) != flagWord(curated.ToolCall) || flagWord(got.Reasoning) != flagWord(curated.Reasoning) {
+		t.Errorf("unstated flags = tool:%s reason:%s, want curated tool:%s reason:%s",
+			flagWord(got.ToolCall), flagWord(got.Reasoning), flagWord(curated.ToolCall), flagWord(curated.Reasoning))
+	}
+	if got.Source != SourceAggregator {
+		t.Errorf("a merged record reads source %q, want aggregator", got.Source)
 	}
 }
 
@@ -115,7 +140,59 @@ func TestCapabilitiesForModel_DisabledRegistryIsPureCurated(t *testing.T) {
 	t.Cleanup(modelspecs.SetDefault(modelspecs.New(modelspecs.Options{Disabled: true})))
 
 	got := capabilitiesForModel("anthropic", "claude-sonnet-4-6")
-	if want := curatedCapabilities("anthropic", "claude-sonnet-4-6"); got != want {
-		t.Errorf("disabled resolution = %+v, want curated %+v", got, want)
+	if want := curatedCapabilities("anthropic", "claude-sonnet-4-6"); !sameCapabilities(got, want) {
+		t.Errorf("disabled resolution = %s, want curated %s", capabilitiesWords(got), capabilitiesWords(want))
+	}
+}
+
+// A PUBLISHED verdict wins over the curated heuristic for each of the three
+// flags, in BOTH directions — a published false over a curated true is the
+// direction that matters most: it is the only place a known "this model has
+// no tools" can reach a reader, and dropping it reports a known false as a
+// known true. Only Temperature's false-over-true was covered.
+func TestMergeSpec_APublishedFlagOverridesTheCuratedOneBothWays(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published modelspecs.Spec
+		curated   ModelCapabilities
+		want      ModelCapabilities
+	}{
+		{
+			name:      "published false over curated true",
+			published: modelspecs.Spec{Reasoning: boolp(false), ToolCall: boolp(false), Temperature: boolp(false)},
+			curated:   ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true)},
+			want:      ModelCapabilities{Reasoning: Known(false), ToolCall: Known(false), Temperature: Known(false)},
+		},
+		{
+			name:      "published true over curated false",
+			published: modelspecs.Spec{Reasoning: boolp(true), ToolCall: boolp(true), Temperature: boolp(true)},
+			curated:   ModelCapabilities{Reasoning: Known(false), ToolCall: Known(false), Temperature: Known(false)},
+			want:      ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true)},
+		},
+		{
+			name:      "an unstated flag leaves the curated verdict standing",
+			published: modelspecs.Spec{},
+			curated:   ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(false)},
+			want:      ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(false)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeSpec(tc.published, tc.curated)
+			for _, flag := range []struct {
+				what      string
+				got, want *bool
+			}{
+				{"reasoning", got.Reasoning, tc.want.Reasoning},
+				{"tool_call", got.ToolCall, tc.want.ToolCall},
+				{"temperature", got.Temperature, tc.want.Temperature},
+			} {
+				if flagWord(flag.got) != flagWord(flag.want) {
+					t.Errorf("%s = %s, want %s", flag.what, flagWord(flag.got), flagWord(flag.want))
+				}
+			}
+			if got.Source != SourceAggregator {
+				t.Errorf("source = %q, want aggregator", got.Source)
+			}
+		})
 	}
 }

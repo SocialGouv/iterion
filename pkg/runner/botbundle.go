@@ -49,7 +49,12 @@ func (r *Runner) materializeBotBundle(ctx context.Context, ref *queue.BotBundleR
 		if err != nil {
 			return nil, nil, err
 		}
-		b, err := bundle.OpenDir(dir)
+		// The snapshot's entry is the launched file (Snapshot.EntryPath):
+		// main.bot for a canonical bundle, but a promoted sibling entry or
+		// the loose catalogue file the snapshot froze alone (#1896) is the
+		// main this run compiles — opening for main.bot would refuse the
+		// dir.
+		b, err := bundle.OpenDirEntry(dir, snapshot.EntryPath())
 		if err != nil {
 			cleanup()
 			return nil, nil, err

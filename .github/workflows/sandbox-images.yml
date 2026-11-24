@@ -2,9 +2,9 @@ name: 🧱 Sandbox Base Images
 
 # The heavy, rarely-changing sandbox tool bases (iterion-sandbox-*-base):
 # slim-base → full-base → sec-base (serial: each FROM the previous), plus
-# browser-base off slim-base in parallel. They contain NO iterion binary —
-# sandbox/finalize/Dockerfile stamps it on to produce the published
-# iterion-sandbox-* images (see _finalize.yml).
+# browser-base off slim-base and rgaa-base off browser-base in parallel.
+# They contain NO iterion binary — sandbox/finalize/Dockerfile stamps it on
+# to produce the published iterion-sandbox-* images (see _finalize.yml).
 #
 # Deliberately a separate workflow from image.yml: its declarative `paths`
 # filter means the ~26-min chain only runs when sandbox/ inputs change, and
@@ -18,11 +18,11 @@ name: 🧱 Sandbox Base Images
 # multi-arch. Release (`:vX.Y.Z`, multi-arch, signed) sandbox images are
 # produced by release-images.yml, not here.
 #
-# All four bases share ONE buildkit-operator routing-name
+# All five bases share ONE buildkit-operator routing-name
 # (`iterion-sandbox-base`): the chain is serial, so contention is negligible,
 # and a single warm daemon means one shared content store (full-base FROM
 # slim-base pulls blobs the daemon just built) and shared apt cache mounts
-# across the debian-based variants — instead of four isolated PVCs each
+# across the debian-based variants — instead of five isolated PVCs each
 # re-pulling the chain.
 
 on:
@@ -144,23 +144,39 @@ jobs:
       is-pr: ${{ github.event_name == 'pull_request' }}
       multiarch: true
 
+  # rgaa-base — the pinned ultra11y engine off browser-base (Chromium), the
+  # rgaa-audit capability class a bot selects with `sandbox: { image: rgaa }`.
+  base-rgaa:
+    needs: [prep, base-browser]
+    if: ${{ github.event_name != 'workflow_run' }}
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-rgaa-base
+      routing-name: iterion-sandbox-base
+      context: sandbox/rgaa
+      file: sandbox/rgaa/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-browser-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
   # Fold the fresh tool bases + the current `:edge` iterion binary into the
   # published iterion-sandbox-*:edge images. Runs after a base rebuild (push /
   # PR) AND on a workflow_run refold (bases skipped → this is the only job).
   # The skipped-base tolerance lets it run in both shapes.
   finalize:
-    needs: [prep, base-sec, base-browser]
+    needs: [prep, base-sec, base-browser, base-rgaa]
     # Two legitimate shapes: a workflow_run refold (bases deliberately skipped),
     # or a base rebuild that SUCCEEDED. Never on a base FAILURE — a `skipped`
     # base can also mean "an upstream base build failed and skipped the rest",
     # so only tolerate skipped bases on the workflow_run path; on a real base
-    # build require success (sec+browser success ⇒ the whole slim→full→sec and
-    # slim→browser chains succeeded), else we'd publish sandbox images stamped
-    # onto stale *-base tools.
+    # build require success (sec+browser+rgaa success ⇒ the whole slim→full→sec
+    # and slim→browser→rgaa chains succeeded), else we'd publish sandbox images
+    # stamped onto stale *-base tools.
     if: >-
       ${{ !cancelled() && needs.prep.result == 'success' &&
           (github.event_name == 'workflow_run' ||
-           (needs.base-sec.result == 'success' && needs.base-browser.result == 'success')) }}
+           (needs.base-sec.result == 'success' && needs.base-browser.result == 'success' && needs.base-rgaa.result == 'success')) }}
     uses: ./.github/workflows/_finalize.yml
     secrets: inherit
     with:

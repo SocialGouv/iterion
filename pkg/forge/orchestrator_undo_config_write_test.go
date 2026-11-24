@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -261,6 +262,8 @@ func TestReprovision_RestoreDoesNotClobberAConcurrentWinner(t *testing.T) {
 		done <- err
 	}()
 	<-wroteA // A replaced the stored config and is about to call the forge
+	// B may overlap only after A's lease expires; that expiry is not a write fence.
+	o.Now = func() time.Time { return time.Unix(1700000120, 0).UTC() }
 
 	conn.WebhookBaseURL = "https://iterion.allowlisted.example" // the operator pins
 	if err := o.Connections.Update(ctx, conn); err != nil {
@@ -284,6 +287,10 @@ func TestReprovision_RestoreDoesNotClobberAConcurrentWinner(t *testing.T) {
 		t.Fatalf("the forge hook moved to %q — the premise is wrong", got)
 	}
 	assertLiveSecretVerifies(t, o, res.WebhookID, winnerSecret, "after the loser's restore")
+	cfg, _ := o.Webhooks.Get(ctx, res.WebhookID)
+	if !sameSet(cfg.BotIDs, []string{"review-pr", "revi-converse", "dep-guard"}) {
+		t.Fatal("loser restored stale config settings over winner")
+	}
 }
 
 // rereadFailStore fails the config re-read the restore compares against —

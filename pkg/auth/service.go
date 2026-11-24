@@ -22,8 +22,13 @@ import (
 // Sentinel errors raised by Service. Handlers map them to HTTP
 // statuses (Unauthorized, Forbidden, NotFound, Conflict).
 var (
-	ErrInvalidCredentials     = errors.New("auth: invalid credentials")
-	ErrAccountDisabled        = errors.New("auth: account disabled")
+	ErrInvalidCredentials = errors.New("auth: invalid credentials")
+	ErrAccountDisabled    = errors.New("auth: account disabled")
+	// ErrAccountErased is ErrAccountDisabled for an account erased by
+	// anonymization (identity.UserStatusErased): refused wherever a
+	// disabled one is — errors.Is(err, ErrAccountDisabled) holds — and
+	// named apart, since no re-enable brings it back.
+	ErrAccountErased          = fmt.Errorf("%w: the account is erased", ErrAccountDisabled)
 	ErrPasswordChangeRequired = errors.New("auth: password change required")
 	ErrPasswordWeak           = errors.New("auth: password too weak")
 	ErrSignupClosed           = errors.New("auth: signup is invite-only")
@@ -300,7 +305,7 @@ func NewService(cfg Config) (*Service, error) {
 		}
 	}
 	return &Service{
-		store:                    cfg.Store,
+		store:                    grantGuard{Store: cfg.Store},
 		sessions:                 cfg.Sessions,
 		signer:                   cfg.Signer,
 		signupMode:               cfg.SignupMode,
@@ -364,6 +369,34 @@ type LoginResult struct {
 	OrgMemberships []identity.OrgMembership
 }
 
+// DesktopLogin is what a desktop SSO login defers from the IdP callback to
+// the ticket's redemption (#2635): the account, the lineage its session will
+// be born under and the landing team the login resolved — and NO token. The
+// callback mints nothing: no session row is written and no refresh token
+// exists while the login waits, so an unredeemed ticket leaves no live
+// session (there is nothing to revoke at its expiry) and the ticket store
+// never rests a credential. The session is minted by RedeemDesktopLogin,
+// when the desktop redeems the ticket.
+//
+// The bson tags are the wire shape of a desktop_sso_tickets document's
+// payload (pkg/auth/desktopsso).
+type DesktopLogin struct {
+	UserID string `bson:"user_id" json:"user_id"`
+	// Root names the lineage the session will be born under, resolved at the
+	// callback: a revoke-all landing between the callback and the redemption
+	// raises the account's generation above the one carried here, and the
+	// redemption's standing check refuses it (SessionRevoked).
+	Root SessionRoot `bson:"root" json:"root"`
+	// PreferredTeamID is the active team the login resolved at the callback
+	// (the per-org SSO landing, or the account's default): the redemption
+	// prefers it again when the account is still a member of it.
+	PreferredTeamID string `bson:"preferred_team,omitempty" json:"preferred_team,omitempty"`
+	// Provider is the connector slug the callback resolved the login
+	// through, for the audit row the redemption writes (never a display
+	// name, never an IdP subject). The caller of the callback sets it.
+	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
+}
+
 // Login authenticates with email + password. On success, issues an
 // access JWT bound to the user's default team (or first available)
 // and a refresh token.
@@ -373,13 +406,13 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// Spend the same time hashing a dummy password so we don't
 		// leak account existence via response timing.
 		_, _ = VerifyPassword(password, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
 	}
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if u.Status == identity.UserStatusDisabled {
-		return LoginResult{}, ErrAccountDisabled
+	if refusal := accountRefusal(u); refusal != nil {
+		return LoginResult{}, refusal
 	}
 	if u.LockedUntil != nil && s.now().Before(*u.LockedUntil) {
 		// Spend the same argon2id cycles a real attempt would, so a
@@ -387,7 +420,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// password" by response timing. The LockoutDuration docstring
 		// promises this; the gate must honour it.
 		_, _ = VerifyPassword(password, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonLocked)
 	}
 	ok, err := VerifyPassword(password, u.PasswordHash)
 	if err != nil {
@@ -400,7 +433,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		if s.logger != nil {
 			s.logger.Error("auth: stored password hash for user %s is unparseable: %v", u.ID, err)
 		}
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCorruptPasswordHash)
 	}
 	if !ok {
 		// Brute-force lockout: increment the failed counter and lock
@@ -415,7 +448,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// fact this path owns: a whole-row write would also restore the
 		// status, the privilege flag and the password hash it read.
 		s.countPasswordProofFailure(ctx, u)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonBadPassword)
 	}
 
 	// Password verified — but a pending_password_change status must
@@ -444,11 +477,8 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 	// was verified against.
 	verified := u.PasswordHash
 	u, err = s.stampLogin(ctx, u, s.now().UTC(), identity.UserPatch{
-		Lockout: &identity.UserLockout{},
-		IfNotStatus: []identity.UserStatus{
-			identity.UserStatusDisabled,
-			identity.UserStatusPendingPasswordChange,
-		},
+		Lockout:        &identity.UserLockout{},
+		IfNotStatus:    append(identity.SignInRefusingStatuses(), identity.UserStatusPendingPasswordChange),
 		IfPasswordHash: &verified,
 	})
 	if err != nil {
@@ -484,7 +514,9 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 // cosmetic stamp failing fails the login.
 func (s *Service) stampLogin(ctx context.Context, u identity.User, at time.Time, owned identity.UserPatch) (identity.User, error) {
 	owned.LastLoginAt = &at
-	owned.IfNotStatus = alsoRefusing(owned.IfNotStatus, identity.UserStatusDisabled)
+	for _, refused := range identity.SignInRefusingStatuses() {
+		owned.IfNotStatus = alsoRefusing(owned.IfNotStatus, refused)
+	}
 	patched, err := s.store.PatchUser(ctx, u.ID, owned)
 	if errors.Is(err, identity.ErrUserStatusChanged) {
 		return identity.User{}, ErrAccountDisabled
@@ -492,7 +524,7 @@ func (s *Service) stampLogin(ctx context.Context, u identity.User, at time.Time,
 	if errors.Is(err, identity.ErrUserPasswordChanged) {
 		// The password the caller verified was replaced while it was being
 		// checked: it no longer signs the account in.
-		return identity.User{}, ErrInvalidCredentials
+		return identity.User{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
 	}
 	if err != nil {
 		return u, err
@@ -538,7 +570,7 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 		// network observer can't distinguish "no such account" from
 		// "wrong temp password" by response timing (matches Login).
 		_, _ = VerifyPassword(currentPassword, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
 	}
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("auth: look up the account whose temporary password is changed: %w", err)
@@ -546,11 +578,14 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 	if u.Status != identity.UserStatusPendingPasswordChange {
 		// Same timing-equalisation for the wrong-status branch.
 		_, _ = VerifyPassword(currentPassword, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonWrongStatus)
 	}
 	ok, err := VerifyPassword(currentPassword, u.PasswordHash)
-	if err != nil || !ok {
-		return LoginResult{}, ErrInvalidCredentials
+	if err != nil {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCorruptPasswordHash)
+	}
+	if !ok {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonBadPassword)
 	}
 	hash, err := HashPassword(newPassword)
 	if err != nil {
@@ -568,7 +603,7 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 		return LoginResult{}, fmt.Errorf("auth: read the account whose temporary password is changed: %w", err)
 	}
 	if u.Status != identity.UserStatusPendingPasswordChange || u.PasswordHash != verified {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
 	}
 	// The session's reads run before the rotation commits: a read that fails
 	// then leaves the temporary password the holder's to use again.
@@ -594,18 +629,18 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 	// temporary password. The refusal stays opaque, like the wrong-status
 	// branch above, and leaves the credential that landed under it in place.
 	u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
-		PasswordHash: &hash,
-		Status:       &active,
-		Lockout:      &identity.UserLockout{},
-		LastLoginAt:  &now,
-		IfNotStatus: []identity.UserStatus{
-			identity.UserStatusDisabled,
-			identity.UserStatusActive,
-		},
+		PasswordHash:   &hash,
+		Status:         &active,
+		Lockout:        &identity.UserLockout{},
+		LastLoginAt:    &now,
+		IfNotStatus:    append(identity.SignInRefusingStatuses(), identity.UserStatusActive),
 		IfPasswordHash: &verified,
 	})
-	if errors.Is(err, identity.ErrUserStatusChanged) || errors.Is(err, identity.ErrUserPasswordChanged) {
-		return LoginResult{}, ErrInvalidCredentials
+	if errors.Is(err, identity.ErrUserPasswordChanged) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
+	}
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonWrongStatus)
 	}
 	if err != nil {
 		return LoginResult{}, s.commitUnconfirmed(ctx, lc.user.ID, err)
@@ -648,8 +683,11 @@ func (s *Service) commitUnconfirmed(ctx context.Context, userID string, cause er
 // disabled, and a disable landing after the stamp records a raise above the
 // session's generation, which covers it. Every failure from here on is
 // ErrPasswordChangedSignIn: the password IS changed, and the caller signs in
-// with it.
+// with it. Such a failure answers the account whose password changed
+// (LoginResult.User, nothing else), so the caller can attribute the change
+// it cannot answer with a session.
 func (s *Service) openSessionAfterChange(ctx context.Context, lc loginContext, u identity.User, userAgent, ip string) (LoginResult, error) {
+	changed := LoginResult{User: u}
 	var generation int64
 	var err error
 	for attempt := 0; attempt < changeRevocationAttempts; attempt++ {
@@ -661,19 +699,19 @@ func (s *Service) openSessionAfterChange(ctx context.Context, lc loginContext, u
 		if s.logger != nil {
 			s.logger.Error("auth: the password of user %s is changed, but the revocation after the change failed %d times (last: %v): a sign-in with the old password during the change may survive it — sign the account out everywhere", u.ID, changeRevocationAttempts, err)
 		}
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	if u, err = s.stampLogin(ctx, u, s.now().UTC(), identity.UserPatch{
 		IfNotStatus: []identity.UserStatus{identity.UserStatusPendingPasswordChange},
 	}); err != nil {
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	if lc, err = s.signLogin(lc, RevokedAccountRoot(generation)); err != nil {
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	res, err := s.commitLogin(ctx, lc, u, userAgent, ip)
 	if err != nil {
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	return res, nil
 }
@@ -691,18 +729,13 @@ func (s *Service) commitLogin(ctx context.Context, lc loginContext, u identity.U
 	return lc.result(refresh, sess.ExpiresAt), nil
 }
 
-// issueLogin is the shared post-authentication path: every caller that has
-// just authenticated an existing account ends here. It picks the active
-// team, mints tokens, and records the refresh session.
-func (s *Service) issueLogin(ctx context.Context, u identity.User, userAgent, ip string) (LoginResult, error) {
-	return s.issueLoginInTeam(ctx, u, "", userAgent, ip)
-}
-
-// issueLoginInTeam is issueLogin with a preferred active team: when
-// preferredTeamID is one of the user's memberships, the JWT is stamped with it
-// (and its role) instead of the DefaultTeamID/first-membership pick. Used by
-// per-org SSO so a user who logs in via an org's own Keycloak lands in that
-// org rather than their stored default.
+// issueLoginInTeam is the shared post-authentication path of an EXISTING
+// account: every caller that has just authenticated one ends here. It picks
+// the active team — preferredTeamID when it names one of the user's
+// memberships (and its role), the DefaultTeamID/first-membership pick
+// otherwise; the per-org SSO flow uses it so a user who logs in via an
+// org's own Keycloak lands in that org rather than their stored default —
+// mints tokens, and records the refresh session.
 func (s *Service) issueLoginInTeam(ctx context.Context, u identity.User, preferredTeamID, userAgent, ip string) (LoginResult, error) {
 	lc, err := s.prepareLogin(ctx, u, preferredTeamID)
 	if err != nil {
@@ -727,6 +760,77 @@ func (s *Service) issueNewAccountLogin(ctx context.Context, u identity.User, pre
 		return LoginResult{}, err
 	}
 	if lc, err = s.signLogin(lc, NewAccountRoot()); err != nil {
+		return LoginResult{}, err
+	}
+	return s.commitLogin(ctx, lc, u, userAgent, ip)
+}
+
+// finishExternalLogin ends an SSO login of an existing account — the tails
+// of LoginWithExternal and LoginWithExternalForOrg share it. With desktop nil
+// it mints and delivers the session at once (issueLoginInTeam). With one, it
+// DEFERS the mint to the desktop ticket's redemption: what redemption needs
+// is captured (the account, the lineage its session will be born under — read
+// now so a revoke-all landing meanwhile covers it — and the landing team the
+// login resolved), and nothing is signed and no session is written (#2635).
+func (s *Service) finishExternalLogin(ctx context.Context, u identity.User, preferredTeamID, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
+	if desktop == nil {
+		return s.issueLoginInTeam(ctx, u, preferredTeamID, userAgent, ip)
+	}
+	lc, err := s.prepareLogin(ctx, u, preferredTeamID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	root, err := NewSessionRoot(ctx, s.sessions, u.ID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	*desktop = DesktopLogin{UserID: u.ID, Root: root, PreferredTeamID: lc.teamID}
+	return LoginResult{}, nil
+}
+
+// finishNewAccountLogin is finishExternalLogin for an account the calling
+// flow created a moment ago: its deferred root is born under generation zero
+// (NewAccountRoot) — no session-store row of the account is read, and a
+// revoke-all landing once the account exists raises the generation above
+// zero, which the redemption's standing check refuses.
+func (s *Service) finishNewAccountLogin(ctx context.Context, u identity.User, preferredTeamID, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
+	if desktop == nil {
+		return s.issueNewAccountLogin(ctx, u, preferredTeamID, userAgent, ip)
+	}
+	lc, err := s.prepareLogin(ctx, u, preferredTeamID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	*desktop = DesktopLogin{UserID: u.ID, Root: NewAccountRoot(), PreferredTeamID: lc.teamID}
+	return LoginResult{}, nil
+}
+
+// RedeemDesktopLogin completes a desktop SSO login whose ticket the desktop
+// redeemed: the account is asked about its standing as the login's lineage
+// and generation name it — a disable, a pending-password status, a sign-out
+// or a "sign out everywhere" landing since the IdP callback refuses (the
+// generation the root carries is the one the callback read) — and ONLY then
+// is the session minted. The refresh token exists from this call on and is
+// handed to the caller; before it, nothing of this login rested in any
+// store (#2635).
+func (s *Service) RedeemDesktopLogin(ctx context.Context, d DesktopLogin, userAgent, ip string) (LoginResult, error) {
+	if d.UserID == "" || d.Root.ID == "" {
+		return LoginResult{}, errors.New("auth: a desktop login that names no account or no lineage")
+	}
+	u, err := s.standing(ctx, Identity{
+		UserID:            d.UserID,
+		Credential:        CredentialAccessToken,
+		SessionLineage:    d.Root.ID,
+		SessionGeneration: d.Root.Generation,
+	})
+	if err != nil {
+		return LoginResult{}, err
+	}
+	lc, err := s.prepareLogin(ctx, u, d.PreferredTeamID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if lc, err = s.signLogin(lc, d.Root); err != nil {
 		return LoginResult{}, err
 	}
 	return s.commitLogin(ctx, lc, u, userAgent, ip)
@@ -1338,11 +1442,26 @@ var errPasswordChangePending = fmt.Errorf("%w: the account must change its passw
 // session may continue on — disabled, or pending a password change — and nil
 // for an active one.
 func sessionRefusal(u identity.User) error {
-	switch u.Status {
-	case identity.UserStatusDisabled:
-		return ErrAccountDisabled
-	case identity.UserStatusPendingPasswordChange:
+	if refusal := accountRefusal(u); refusal != nil {
+		return refusal
+	}
+	if u.Status == identity.UserStatusPendingPasswordChange {
 		return errPasswordChangePending
+	}
+	return nil
+}
+
+// accountRefusal is the answer every sign-in, refresh, switch and derivation
+// gives an account no session may open or continue on: ErrAccountErased for
+// an erased one, ErrAccountDisabled for a disabled one, nil otherwise. The
+// one reading of identity.UserStatus.SignInRefused in this package, so the
+// two statuses are refused at every site together.
+func accountRefusal(u identity.User) error {
+	switch {
+	case u.Status == identity.UserStatusErased:
+		return ErrAccountErased
+	case u.Status.SignInRefused():
+		return ErrAccountDisabled
 	}
 	return nil
 }
@@ -1623,16 +1742,37 @@ func (s *Service) SwitchTeam(ctx context.Context, presented Identity, teamID str
 	if orgID != "" {
 		patch.DefaultOrgID = &orgID
 	}
-	return SwitchResult{Identity: id, User: s.persistDefaults(ctx, u, patch, "team"), AccessToken: tok, AccessExpires: exp}, nil
+	return SwitchResult{Identity: id, User: s.patchBestEffort(ctx, u, patch, "the default team"), AccessToken: tok, AccessExpires: exp}, nil
 }
 
-// persistDefaults writes a switch's chosen defaults and returns the stored
-// row, or u unchanged when the write failed (logged — see SwitchTeam).
-func (s *Service) persistDefaults(ctx context.Context, u identity.User, patch identity.UserPatch, what string) identity.User {
+// patchBestEffort writes a patch neither the answer being built nor the next
+// login depends on — a switch's chosen defaults, the landing defaults and the
+// stamp of an account this very call provisioned — and returns the stored row,
+// or u unchanged when the write failed. It is the ONE place that tolerance
+// lives, so it cannot be silent: the cause is logged with the account and what
+// could not be written, since the row an operator reads afterwards no longer
+// says it.
+//
+// The failure it exists for is the one that used to answer 500 over a FULLY
+// provisioned account: the caller has already written the account, its space
+// and its grants, so refusing on a cosmetic write leaves rows standing that no
+// retry can reuse (the email is taken and no path frees it) while the password
+// or the SSO identity signs that very account in. A session whose active team
+// comes from the rows the caller just wrote is unaffected, and the next login
+// resolves the landing context again (pickActiveTeam).
+//
+// Its contract, and the reason the login stamp of a RETURNING user is not one
+// of its callers: the patch carries NO precondition. A patch with IfNotStatus
+// or IfPasswordHash is a write that commits to the status or the hash its
+// caller checked, and PatchUser answers a sentinel when the row moved under
+// it — a refusal an admin's deactivation earned, which a tolerant writer may
+// not turn into a log line. That write is stampLogin's, and it stays fatal on
+// those sentinels.
+func (s *Service) patchBestEffort(ctx context.Context, u identity.User, patch identity.UserPatch, what string) identity.User {
 	patched, err := s.store.PatchUser(ctx, u.ID, patch)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("auth: persist default %s for user %s failed: %v", what, u.ID, err)
+			s.logger.Warn("auth: %s of user %s could not be written: %v (the account and its access stand; the next sign-in resolves them again)", what, u.ID, err)
 		}
 		return u
 	}
@@ -1698,7 +1838,7 @@ func (s *Service) SwitchOrg(ctx context.Context, presented Identity, orgID strin
 	if teamID != "" {
 		patch.DefaultTeamID = &teamID
 	}
-	return SwitchResult{Identity: id, User: s.persistDefaults(ctx, u, patch, "org"), AccessToken: tok, AccessExpires: exp}, nil
+	return SwitchResult{Identity: id, User: s.patchBestEffort(ctx, u, patch, "the default org"), AccessToken: tok, AccessExpires: exp}, nil
 }
 
 // pickActiveTeamInOrg selects a team for the user within one org: their
@@ -1794,11 +1934,12 @@ func (s *Service) registerOpen(ctx context.Context, email, password, name, userA
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
-		DefaultOrgID: &space.orgID, DefaultTeamID: &space.teamID,
-	}); err != nil {
-		return LoginResult{}, err
-	}
+	// The landing defaults, best-effort: the session below is built from the
+	// rows this call just wrote, so refusing here would answer 500 over an
+	// account that is complete and signs in — see patchBestEffort.
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{
+		DefaultOrgID: &space.orgID, DefaultTeamID: &space.team.ID,
+	}, "the landing defaults of the new account")
 	lc, err := s.signLogin(s.loginContextFromRows(u, []identity.Membership{space.membership}, space.orgID, []identity.OrgMembership{space.orgMembership}), NewAccountRoot())
 	if err != nil {
 		return LoginResult{}, err
@@ -1878,9 +2019,11 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if grant.orgID != "" {
 		patch.DefaultOrgID = &grant.orgID
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
-		return LoginResult{}, err
-	}
+	// Best-effort, and here the price of refusing is the harshest of the two
+	// registration paths: the invitation is already claimed, so an accept that
+	// answers an error over a complete account cannot be retried at all — the
+	// token is spent (claimInvitation) and the email is taken.
+	u = s.patchBestEffort(ctx, u, patch, "the landing defaults of the invited account")
 	var orgMems []identity.OrgMembership
 	if grant.write != nil {
 		orgMems = append(orgMems, *grant.write)
@@ -2135,8 +2278,59 @@ func (s *Service) Store() identity.Store { return s.store }
 // cannot get otherwise: wrapping the store to open a read-modify-write
 // window deterministically (a concurrent mutation landing between a
 // handler's read and its write). Production wiring passes the store at
-// construction and never calls this.
+// construction and never calls this. st is used as given: a test that wraps
+// Store() keeps the grant guard under its wrapper, one that passes a bare
+// store runs without it.
 func (s *Service) SetStoreForTest(st identity.Store) { s.store = st }
+
+// provisionUndoTimeout bounds a compensation whose request context may
+// already be done — the provisioning often failed BECAUSE the caller went
+// away — while keeping it from running unbounded (the shape revokeAccount
+// uses for its detached record).
+const provisionUndoTimeout = sessionOpTimeout
+
+// provisionUndo holds the undo of every write a provisioning COMMITTED, in
+// the order it committed them. compensate runs them newest-first, so a
+// provisioning that cannot finish leaves the state it started from: the slug
+// free, no half-provisioned row for the retry to collide with. A step is
+// pushed only once its write answered.
+type provisionUndo struct {
+	steps []provisionUndoStep
+}
+
+type provisionUndoStep struct {
+	what string
+	undo func(context.Context) error
+}
+
+func (p *provisionUndo) push(what string, undo func(context.Context) error) {
+	p.steps = append(p.steps, provisionUndoStep{what: what, undo: undo})
+}
+
+// compensate removes the committed writes and answers cause — the failure
+// that stopped the provisioning, which is what the caller asked about —
+// naming any row the undo could not remove: the operator needs both facts,
+// because that row is what a retry will collide with. Detached from the
+// caller's cancellation and bounded.
+func (p *provisionUndo) compensate(ctx context.Context, cause error) error {
+	if len(p.steps) == 0 {
+		return cause
+	}
+	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), provisionUndoTimeout)
+	defer cancel()
+	var left []string
+	for i := len(p.steps) - 1; i >= 0; i-- {
+		// A row already gone is the state the undo wanted.
+		if err := p.steps[i].undo(uctx); err != nil && !errors.Is(err, identity.ErrNotFound) {
+			left = append(left, fmt.Sprintf("%s (%v)", p.steps[i].what, err))
+		}
+	}
+	if len(left) == 0 {
+		return cause
+	}
+	return fmt.Errorf("%w — and the compensation could not remove %s, so a retry will answer a duplicate",
+		cause, strings.Join(left, ", "))
+}
 
 // CreateTeamFor provisions a non-personal team inside org `orgID`,
 // owned by user `userID`. The user must be a member of the org (super-
@@ -2167,6 +2361,20 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 			return identity.Team{}, err
 		}
 	}
+	undo := &provisionUndo{}
+	t, err := s.createTeamIn(ctx, u, orgID, name, slug, s.now().UTC(), undo)
+	if err != nil {
+		return identity.Team{}, undo.compensate(ctx, err)
+	}
+	return t, nil
+}
+
+// createTeamIn is CreateTeamFor's WRITE phase: it reads nothing, so a caller
+// that has already read (or just written) the rows the authorization needs
+// runs no read after its own first irreversible write. It pushes the undo of
+// each write it commits onto undo and leaves compensating to the caller —
+// one decision, at the call that owns the whole unit.
+func (s *Service) createTeamIn(ctx context.Context, u identity.User, orgID, name, slug string, now time.Time, undo *provisionUndo) (identity.Team, error) {
 	base := slug
 	if base == "" {
 		base = identity.SlugifyTeamName(name)
@@ -2174,7 +2382,6 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 			base = "team"
 		}
 	}
-	now := s.now().UTC()
 	for attempt := 0; attempt < 10; attempt++ {
 		try := base
 		if attempt > 0 {
@@ -2199,6 +2406,9 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 		if err != nil {
 			return identity.Team{}, err
 		}
+		undo.push(fmt.Sprintf("the team %s (slug %s)", t.ID, t.Slug), func(c context.Context) error {
+			return s.store.DeleteTeam(c, t.ID)
+		})
 		if err := s.store.UpsertMembership(ctx, identity.Membership{
 			UserID:   u.ID,
 			TeamID:   t.ID,
@@ -2207,6 +2417,9 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 		}); err != nil {
 			return identity.Team{}, err
 		}
+		undo.push(fmt.Sprintf("the owner grant of %s on team %s", u.ID, t.ID), func(c context.Context) error {
+			return s.store.DeleteMembership(c, u.ID, t.ID)
+		})
 		return t, nil
 	}
 	return identity.Team{}, errors.New("auth: could not allocate slug for team")
@@ -2224,6 +2437,12 @@ func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (
 	u, err := s.store.GetUser(ctx, userID)
 	if err != nil {
 		return identity.Org{}, err
+	}
+	// The one gate every org creation crosses — the super-admin console
+	// naming an owner by address, and self-service — so an account that
+	// cannot act never becomes the owner of an org nobody can then run.
+	if u.Status.SignInRefused() {
+		return identity.Org{}, fmt.Errorf("%w: user %s is %s — it cannot own a new organization", ErrGrantRefused, u.ID, u.Status)
 	}
 	base := slug
 	if base == "" {
@@ -2256,17 +2475,33 @@ func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (
 		if err != nil {
 			return identity.Org{}, err
 		}
+		// The org row is the first irreversible write, so it pushes its own
+		// undo and every write after it is compensated with it — all four of
+		// them: a failure in between used to leave a TEAM-LESS org holding
+		// the slug, and the retry — the only remedy, super-admin only —
+		// answered acme-corp-2.
+		undo := &provisionUndo{}
+		undo.push(fmt.Sprintf("the org %s (slug %s)", o.ID, o.Slug), func(c context.Context) error {
+			return s.store.DeleteOrg(c, o.ID)
+		})
 		if err := s.store.UpsertOrgMembership(ctx, identity.OrgMembership{
 			UserID:   u.ID,
 			OrgID:    o.ID,
 			Role:     identity.OrgRoleOwner,
 			JoinedAt: now,
 		}); err != nil {
-			return identity.Org{}, err
+			return identity.Org{}, undo.compensate(ctx, err)
 		}
-		// Seed a default team so the org is immediately usable.
-		if _, err := s.CreateTeamFor(ctx, u.ID, o.ID, name, ""); err != nil {
-			return identity.Org{}, err
+		undo.push(fmt.Sprintf("the owner membership of %s in org %s", u.ID, o.ID), func(c context.Context) error {
+			return s.store.DeleteOrgMembership(c, u.ID, o.ID)
+		})
+		// Seed a default team so the org is immediately usable. The write
+		// phase directly: the account was read above, and the org and the
+		// owner membership CreateTeamFor would read are the two rows THIS
+		// call just wrote — reading them back is the read-after-write
+		// #2655 names, and a failure of it left exactly the team-less org.
+		if _, err := s.createTeamIn(ctx, u, o.ID, name, "", now, undo); err != nil {
+			return identity.Org{}, undo.compensate(ctx, err)
 		}
 		return o, nil
 	}
@@ -2372,7 +2607,15 @@ func (s *Service) RestoreOrg(ctx context.Context, orgID string) (identity.Org, e
 
 // CreateInvitation issues a fresh invitation. The plaintext token is
 // returned (caller emails it) and only its hash is persisted.
+//
+// An invitation token is a team token (MintTeamToken): it outlives the
+// credential it is minted from, so the context must carry the derivation
+// chokepoint's verdict for it — the gate stamped it after its ask granted —
+// and a call whose context carries none is refused, whatever calls this.
 func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, role identity.Role, invitedBy string) (token string, inv identity.Invitation, err error) {
+	if _, err := RequireMintVerdict(ctx, MintTeamToken, "auth.Service.CreateInvitation"); err != nil {
+		return "", identity.Invitation{}, err
+	}
 	if !role.Valid() {
 		return "", identity.Invitation{}, identity.ErrInvalidRole
 	}
@@ -2396,23 +2639,72 @@ func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, ro
 		CreatedAt: now,
 		ExpiresAt: now.Add(InvitationTTL),
 	}
+	// An invitation addressed to an account under erasure would outlive the
+	// erasure's sweep by address: refused before the write, and taken back
+	// when the erasure marked the account while it was being written.
+	if err := s.refuseAddressUnderErasure(ctx, inv.Email); err != nil {
+		return "", identity.Invitation{}, err
+	}
 	if err := s.store.CreateInvitation(ctx, inv); err != nil {
+		return "", identity.Invitation{}, err
+	}
+	if err := s.refuseAddressUnderErasure(ctx, inv.Email); err != nil {
+		if derr := s.store.DeleteInvitation(ctx, inv.ID); derr != nil {
+			err = errors.Join(err, fmt.Errorf("auth: take back invitation %s: %w", inv.ID, derr))
+		}
 		return "", identity.Invitation{}, err
 	}
 	return tok, inv, nil
 }
 
+// refuseAddressUnderErasure answers ErrGrantRefused when email belongs to an
+// erased account — one whose erasure has not yet anonymized the row, since
+// an anonymized row no longer carries the address.
+func (s *Service) refuseAddressUnderErasure(ctx context.Context, email string) error {
+	u, err := s.store.GetUserByEmail(ctx, email)
+	if errors.Is(err, identity.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("auth: read the account at the invited address: %w", err)
+	}
+	if u.Status == identity.UserStatusErased {
+		return fmt.Errorf("%w: the account at this address is being erased", ErrGrantRefused)
+	}
+	return nil
+}
+
 // CreateUserAndPersonalTeam is used by the bootstrap path to provision
 // the very first super-admin. Idempotent: returns the existing user
 // if email is already taken.
+//
+// Every read it runs answers its own failure: only a store that ANSWERED can
+// say an email is free, a membership list is empty or a team is absent, and
+// provisioning a second account over a read that failed is exactly how the
+// bootstrap would collide with the row it could not see.
 func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, password string, isSuperAdmin bool, status identity.UserStatus) (identity.User, identity.Team, error) {
 	email = identity.NormalizeEmail(email)
-	if existing, err := s.store.GetUserByEmail(ctx, email); err == nil {
+	existing, err := s.store.GetUserByEmail(ctx, email)
+	if err != nil && !errors.Is(err, identity.ErrNotFound) {
+		return identity.User{}, identity.Team{}, fmt.Errorf("auth: read the account of %s before provisioning it: %w", email, err)
+	}
+	if err == nil {
 		// Find their personal team if any, else return zero team.
-		ms, _ := s.store.ListMembershipsByUser(ctx, existing.ID)
+		ms, merr := s.store.ListMembershipsByUser(ctx, existing.ID)
+		if merr != nil {
+			return identity.User{}, identity.Team{}, fmt.Errorf("auth: list the teams of the existing account %s: %w", existing.ID, merr)
+		}
 		for _, mb := range ms {
 			t, terr := s.store.GetTeam(ctx, mb.TeamID)
-			if terr == nil && t.Personal {
+			if errors.Is(terr, identity.ErrNotFound) {
+				// The store ANSWERED: that membership's team is gone, so it
+				// is not the personal team being looked for.
+				continue
+			}
+			if terr != nil {
+				return identity.User{}, identity.Team{}, fmt.Errorf("auth: read the team %s of the existing account %s: %w", mb.TeamID, existing.ID, terr)
+			}
+			if t.Personal {
 				return existing, t, nil
 			}
 		}
@@ -2444,19 +2736,21 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
-		DefaultOrgID: &space.orgID, DefaultTeamID: &space.teamID,
-	}); err != nil {
-		return identity.User{}, identity.Team{}, err
-	}
-	t, _ := s.store.GetTeam(ctx, space.teamID)
-	return u, t, nil
+	// The landing defaults, best-effort — see patchBestEffort. The team comes
+	// from the row the provisioning WROTE: reading it back here answered a
+	// ZERO team on a failed read, over a provisioning that had succeeded.
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{
+		DefaultOrgID: &space.orgID, DefaultTeamID: &space.team.ID,
+	}, "the landing defaults of the bootstrapped account")
+	return u, space.team, nil
 }
 
 // personalSpace is what createPersonalTeam wrote: the personal org and team,
-// and the user's owner rows in both.
+// and the user's owner rows in both. The team is the ROW this call wrote, so
+// no caller reads it back after the provisioning.
 type personalSpace struct {
-	orgID, teamID string
+	orgID         string
+	team          identity.Team
 	orgMembership identity.OrgMembership
 	membership    identity.Membership
 }
@@ -2467,9 +2761,31 @@ type personalSpace struct {
 // UX: one org, one team, the user owns both. Slugs derive from the email
 // local-part with a numeric suffix on collision (org and team share the
 // base; the team slug is suffixed "-team" to keep the namespaces clean).
+//
+// It OWNS the compensation of its four writes, as CreateOrgFor owns its own:
+// whatever committed is removed when a later write fails, so a signup that
+// cannot finish leaves no personal org and no personal team holding the
+// slugs — the orphan a retry collided with, pushing the space of the account
+// that finally registers to <base>-2. Its three callers (registerOpen, the
+// SSO first login, the bootstrap) therefore have nothing to undo of the
+// space. What it does NOT undo is the ACCOUNT row its callers wrote before
+// it: the identity store has no account delete (#2655 R1), so the email
+// stays taken and the retry answers ErrEmailAlreadyTaken until it does.
 func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (personalSpace, error) {
-	now := s.now().UTC()
-	org, om, err := s.createPersonalOrg(ctx, u, now)
+	undo := &provisionUndo{}
+	space, err := s.createPersonalSpaceIn(ctx, u, s.now().UTC(), undo)
+	if err != nil {
+		return personalSpace{}, undo.compensate(ctx, err)
+	}
+	return space, nil
+}
+
+// createPersonalSpaceIn is createPersonalTeam's WRITE phase: it reads
+// nothing, pushes the undo of each write it commits onto undo, and leaves
+// compensating to its caller — one decision, at the call that owns the unit,
+// the shape createTeamIn already has.
+func (s *Service) createPersonalSpaceIn(ctx context.Context, u identity.User, now time.Time, undo *provisionUndo) (personalSpace, error) {
+	org, om, err := s.createPersonalOrg(ctx, u, now, undo)
 	if err != nil {
 		return personalSpace{}, err
 	}
@@ -2499,6 +2815,9 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (pers
 		if err != nil {
 			return personalSpace{}, err
 		}
+		undo.push(fmt.Sprintf("the personal team %s (slug %s)", t.ID, t.Slug), func(c context.Context) error {
+			return s.store.DeleteTeam(c, t.ID)
+		})
 		mb := identity.Membership{
 			UserID:   u.ID,
 			TeamID:   t.ID,
@@ -2508,15 +2827,19 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (pers
 		if err := s.store.UpsertMembership(ctx, mb); err != nil {
 			return personalSpace{}, err
 		}
-		return personalSpace{orgID: org.ID, teamID: t.ID, orgMembership: om, membership: mb}, nil
+		undo.push(fmt.Sprintf("the owner grant of %s on the personal team %s", u.ID, t.ID), func(c context.Context) error {
+			return s.store.DeleteMembership(c, u.ID, t.ID)
+		})
+		return personalSpace{orgID: org.ID, team: t, orgMembership: om, membership: mb}, nil
 	}
 	return personalSpace{}, errors.New("auth: could not allocate slug for personal team")
 }
 
 // createPersonalOrg provisions an Org with Personal=true and an owner
 // org-membership, and returns both. Slug derives from the email local-part
-// with a numeric suffix on collision.
-func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now time.Time) (identity.Org, identity.OrgMembership, error) {
+// with a numeric suffix on collision. Write phase too: each write it commits
+// pushes its undo, bounded to the org id THIS call minted.
+func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now time.Time, undo *provisionUndo) (identity.Org, identity.OrgMembership, error) {
 	base := identity.SlugifyTeamName(u.Email)
 	if base == "" {
 		base = "org"
@@ -2542,6 +2865,9 @@ func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now ti
 		if err != nil {
 			return identity.Org{}, identity.OrgMembership{}, err
 		}
+		undo.push(fmt.Sprintf("the personal org %s (slug %s)", o.ID, o.Slug), func(c context.Context) error {
+			return s.store.DeleteOrg(c, o.ID)
+		})
 		om := identity.OrgMembership{
 			UserID:   u.ID,
 			OrgID:    o.ID,
@@ -2551,6 +2877,9 @@ func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now ti
 		if err := s.store.UpsertOrgMembership(ctx, om); err != nil {
 			return identity.Org{}, identity.OrgMembership{}, err
 		}
+		undo.push(fmt.Sprintf("the owner membership of %s in the personal org %s", u.ID, o.ID), func(c context.Context) error {
+			return s.store.DeleteOrgMembership(c, u.ID, o.ID)
+		})
 		return o, om, nil
 	}
 	return identity.Org{}, identity.OrgMembership{}, errors.New("auth: could not allocate slug for personal org")

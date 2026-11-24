@@ -13,6 +13,7 @@ import (
 // run against its own — a run longer than a lot's wall is that lot's
 // GATE_TIMEOUT in lot_verify, so it is not that lot's green here.
 func TestCampaignFinalizeReadsEachRunAgainstItsLotsWall(t *testing.T) {
+	t.Parallel()
 	const head = "version: 1\ngate_timeout_s: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n"
 	t.Run("a gate two lots share", func(t *testing.T) {
 		r := finalizeOn(t, head+
@@ -40,6 +41,7 @@ func TestCampaignFinalizeReadsEachRunAgainstItsLotsWall(t *testing.T) {
 // setting, behind a replace ref — is reported as not judged, the plan is read
 // as committed, and what the oracle writes is not what the suites judge.
 func TestCampaignFinalizeJudgesOnlyTheCommittedTree(t *testing.T) {
+	t.Parallel()
 	red := map[string]string{"ci/test.sh": "#!/bin/sh\n[ -f ci/local.sh ] && exit 0\nexit 1\n"}
 	notRequalified := func(t *testing.T, r finalizeRun) {
 		t.Helper()
@@ -96,6 +98,7 @@ func TestCampaignFinalizeJudgesOnlyTheCommittedTree(t *testing.T) {
 // 0) in a shape no reader takes is NOT READ, and a gate no shell can run is not
 // requalifiable — the handoff is written either way.
 func TestCampaignFinalizeWritesAHandoffWhateverThePlanHolds(t *testing.T) {
+	t.Parallel()
 	for name, plan := range map[string]string{
 		"a trailing document separator": campaignSuitesPlan + "---\n",
 		"a second document":             campaignSuitesPlan + "---\nreviewed: true\n",
@@ -122,6 +125,7 @@ func TestCampaignFinalizeWritesAHandoffWhateverThePlanHolds(t *testing.T) {
 // shows and the handoff's commit subject carry the suites' verdict and an
 // oracle that did not run, not only the oracle's colour.
 func TestCampaignFinalizeSummarySaysWhatTheSuitesGave(t *testing.T) {
+	t.Parallel()
 	t.Run("red suites", func(t *testing.T) {
 		r := finalizeOn(t, strings.Replace(campaignSuitesPlan, "status: blocked", "status: done", 1),
 			map[string]string{"ci/test.sh": "#!/bin/sh\nexit 1\n"}, nil)
@@ -145,6 +149,7 @@ func TestCampaignFinalizeSummarySaysWhatTheSuitesGave(t *testing.T) {
 // runs as declared, and the report names the run that was red, with its own
 // exit code.
 func TestCampaignFinalizeReportsTheRunOfARepeatedSuite(t *testing.T) {
+	t.Parallel()
 	plan := strings.Replace(campaignSuitesPlan, "  - \"sh ci/test.sh\"\n", "  - \"sh ci/test.sh\"\n  - \"sh ci/test.sh\"\n", 1)
 	// Red on its first run, green on its second.
 	flaky := "#!/bin/sh\nif [ -e .git/second ]; then exit 0; fi\ntouch .git/second\nexit 1\n"
@@ -157,6 +162,7 @@ func TestCampaignFinalizeReportsTheRunOfARepeatedSuite(t *testing.T) {
 // TestCampaignFinalizeCommitsOnlyItsOwnFiles: what a child run left in the index
 // is not the supervisor's to land under "campaign: handoff".
 func TestCampaignFinalizeCommitsOnlyItsOwnFiles(t *testing.T) {
+	t.Parallel()
 	r := finalizeOn(t, campaignSuitesPlan, map[string]string{"ci/test.sh": "#!/bin/sh\nexit 1\n"},
 		func(ws string, git func(...string) string) {
 			writeContract(t, ws, "src/worker.txt", "work in flight\n")
@@ -174,6 +180,7 @@ func TestCampaignFinalizeCommitsOnlyItsOwnFiles(t *testing.T) {
 // killed with everything it started — nothing writes to the tree after the
 // handoff is written.
 func TestCampaignFinalizeKillsWhatACommandStarted(t *testing.T) {
+	t.Parallel()
 	late := filepath.Join(t.TempDir(), "late")
 	gate := "sh -c '(sleep 2; touch " + late + ") & wait'"
 	r := finalizeOn(t, "version: 1\ngate_timeout_s: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n"+
@@ -193,6 +200,7 @@ func TestCampaignFinalizeKillsWhatACommandStarted(t *testing.T) {
 // commits is not a green verdict, and the oracle does not judge what moved
 // under it.
 func TestCampaignFinalizeRefusesWhatTheCommandsLeftBehind(t *testing.T) {
+	t.Parallel()
 	t.Run("a gate that writes, without suites declared", func(t *testing.T) {
 		r := finalizeOn(t, "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n"+
 			"  - id: L1\n    title: t\n    status: blocked\n    exit_gate:\n      - \"sh -c 'echo wrote > leftover.txt'\"\n", nil, nil)
@@ -230,6 +238,7 @@ func TestCampaignFinalizeRefusesWhatTheCommandsLeftBehind(t *testing.T) {
 // plan whose ids are not non-empty unique strings is NOT READ, and never a
 // verdict keyed by something else.
 func TestCampaignFinalizeHoldsIdsToBeKeys(t *testing.T) {
+	t.Parallel()
 	for name, plan := range map[string]string{
 		"a non-scalar id": "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n" +
 			"  - id: [\"L1\"]\n    title: t\n    status: blocked\n    exit_gate:\n      - \"true\"\n",
@@ -249,6 +258,7 @@ func TestCampaignFinalizeHoldsIdsToBeKeys(t *testing.T) {
 // TestCampaignFinalizeSubjectForNoSuites: a contract with no suites reads as a
 // word in the subject and the notice, not as a sentence fragment.
 func TestCampaignFinalizeSubjectForNoSuites(t *testing.T) {
+	t.Parallel()
 	r := finalizeOn(t, "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n"+
 		"  - id: L1\n    title: t\n    status: done\n    exit_gate:\n      - \"true\"\n", nil, nil)
 	if subject := r.git("log", "-1", "--format=%s"); !strings.HasSuffix(strings.TrimSpace(subject), "suites none") {
@@ -260,6 +270,7 @@ func TestCampaignFinalizeSubjectForNoSuites(t *testing.T) {
 // have killed is past the lot's wall, whatever the tenth of a second says —
 // lot_verify times the same command out.
 func TestCampaignFinalizeReadsARunPastItsLotsWallByMillis(t *testing.T) {
+	t.Parallel()
 	r := finalizeOn(t, "version: 1\ngate_timeout_s: 1\nsuites:\n  - \"sleep 1.01\"\noracle:\n  refs_dir: .golden-master/refs\nlots:\n"+
 		"  - id: L1\n    title: t\n    status: blocked\n    exit_gate:\n      - \"true\"\n"+
 		"  - id: Z\n    title: never reached\n    status: todo\n    gate_timeout_s: 10\n    exit_gate:\n      - \"true\"\n", nil, nil)

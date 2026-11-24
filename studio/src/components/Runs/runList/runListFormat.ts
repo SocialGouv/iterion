@@ -60,6 +60,15 @@ export function shortRunID(id: string): string {
   return id.length > 14 ? id.slice(0, 14) + "…" : id;
 }
 
+// runRowQualifier is the row's own discriminator for an accessible NAME:
+// friendlyLabel falls back to workflow_name, which every run of one workflow
+// shares, so a name built on it alone repeats down the list. The last cell
+// already shows shortRunID — the name takes the same text without its
+// ellipsis, which a screen reader would otherwise read out.
+export function runRowQualifier(run: RunSummary): string {
+  return shortRunID(run.id).replace("…", "");
+}
+
 // statusFilterLabel returns a lower-case fragment suited for the
 // "No <status> runs" empty headline (matches the chip label so the
 // phrasing stays consistent between the chip and the empty state).

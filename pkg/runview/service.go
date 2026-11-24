@@ -68,12 +68,29 @@ type LaunchSpec struct {
 	// in a node's `with:`) is this opt-out's legitimate user; a typo'd key
 	// stays the default's refusal. False = the check runs.
 	AllowUnknownInputs bool
+	// RefuseUndecidedRoutingFields is the card lanes' launch shape
+	// (ADR-129 §7, #2665): a board card's vars are the delivery payload's
+	// own answer and no operator gesture follows the launch, so a
+	// backend/model/provider/effort field the launch's vars reading cannot
+	// decide (a {{vars.*}} span naming an undeclared or late var) refuses
+	// the launch instead of running undecided — a gate may only certify
+	// the route the run will spend. False = every other lane's shape: the
+	// undecided field stays undecided and the per-reader pre-flights
+	// answer as they always have.
+	RefuseUndecidedRoutingFields bool
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.
-	Preset  string
-	RunID   string        // optional explicit ID; auto-generated when empty
-	Timeout time.Duration // 0 disables
+	Preset string
+	RunID  string // optional explicit ID; auto-generated when empty
+	// SubmissionKey makes the launch an idempotent submission (submission.go):
+	// the run id is derived from the key and the caller's tenant, and a key
+	// whose run already exists answers from that run — completing a cloud run
+	// persisted but never published, refusing a spent one — instead of
+	// failing or creating a second run. A RunID set beside it must be the
+	// derived one.
+	SubmissionKey string
+	Timeout       time.Duration // 0 disables
 	// MergeInto controls the worktree-finalization fast-forward target
 	// for `worktree: auto` runs. "" or "current" → FF the user's
 	// currently-checked-out branch (default); "none" → skip FF;
@@ -97,7 +114,11 @@ type LaunchSpec struct {
 	// before the engine starts. It is expected to materialise every
 	// attachment declared in `attachments:` into the run-scoped store
 	// (typically by promoting uploads from a staging area). Errors
-	// abort the launch.
+	// abort the launch. An out-of-process path — the cloud publisher, a
+	// detached runner — invokes it before its hand-off, once the run row
+	// exists (PromoteForHandoff): the process that runs the engine has no
+	// staging area, and a run handed over without its attachments would
+	// start without them in silence.
 	AttachmentPromote runtime.AttachmentPromoteFunc
 	// Backend, when non-empty, overrides the workflow's `default_backend:`
 	// for this run. Node-level explicit `backend:` declarations still
@@ -119,6 +140,19 @@ type LaunchSpec struct {
 	// "workspace", "operator", "all"; ADR-119). "" inherits the workflow/node
 	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT.
 	AmbientContext string
+	// Codemode is the run-level codemode override ("", "on", "off"; ADR-165).
+	// "" inherits the workflow/node `codemode:` DSL — deliberately no
+	// environment rung. It wins over the authored rungs in BOTH directions:
+	// an operator may keep a declared capability off for this run, and may
+	// arm it on a node whose author stayed silent (then a backend that
+	// serves no codemode tool refuses at dispatch, and the picker screen
+	// names that before the run).
+	// CodemodeBounds raises bounds for the run, field by field: a zero field
+	// means the launch did not choose and the authored value stands. Every
+	// value still passes scripthost.Clamp at spawn (ceiling, floor, OnClamp
+	// report), so the launch never bypasses a bound by asking.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard is the run-level back-edge affordability override
 	// ("", "on", "off"). "" inherits the workflow `loop_budget_guard:` then
 	// ITERION_LOOP_BUDGET_GUARD.
@@ -132,11 +166,12 @@ type LaunchSpec struct {
 	// inherits the workflow/node `permission:` DSL then
 	// ITERION_PERMISSION. See docs/permissions.md.
 	Permission string
-	// ReviewMode is the run-level mono/dual review-topology override
-	// ("", "auto", "mono", "dual") from the studio Launch toggle /
+	// ReviewMode is the run-level review-topology override
+	// ("", "auto", "single", "paired") from the studio Launch toggle /
 	// dispatcher. Only affects bots that declare a review_mode var. ""
-	// / "auto" resolves from detected provider credentials at launch;
-	// "mono"/"dual" force it. See pkg/reviewtopology.
+	// / "auto" resolves to single; "paired" adds the second reviewer. The
+	// retired "mono"/"dual" spellings still read as single/paired. See
+	// pkg/reviewtopology.
 	ReviewMode string
 	// RetryPolicy is the retry contract already RESOLVED across its layers
 	// by the launch site (per-run override → launching surface → bot
@@ -151,6 +186,12 @@ type LaunchSpec struct {
 	// onto the run doc beside RetryPolicy. Nil = the consumer applies the
 	// package defaults.
 	LLMRoutePolicy *store.RunLLMRoutePolicy
+	// PoolAttachment is the pool attachment already RESOLVED by the launch
+	// site (ADR-164): the frozen {pool, strategy} — nil when no attachment
+	// resolved (today's pool behavior), non-nil with an empty PoolID when a
+	// level resolved-disabled. Snapshotted verbatim onto the run doc beside
+	// LLMRoutePolicy.
+	PoolAttachment *store.RunPoolAttachment
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each entry targets nodes by selector (node id,
 	// id glob, or kind keyword agent|judge) and wins over the node's DSL
@@ -170,6 +211,11 @@ type LaunchSpec struct {
 	// the folded list. Within the launch's own rows, specificity rules as
 	// before.
 	ModelOverrides []ModelOverrideEntry
+	// LaunchModelOverrides is the launch's own rows as ModelOverrides held
+	// them before the fold: foldAndScreen records them here, and the launch
+	// stamps them on the run document (store.Run.LaunchModelOverrides) for
+	// the subbot children of the run's tree. A caller never sets it.
+	LaunchModelOverrides []ModelOverrideEntry
 	// RoutingPolicy is the launch-frozen outcome contract (validated
 	// and hashed by the HTTP layer); persisted on the run doc and
 	// replayed from it on resume.
@@ -234,14 +280,48 @@ type LaunchSpec struct {
 	// RepoSHAExpected pins the commit this launch admitted, for a RepoRef an
 	// untrusted party can move. Empty disables the runner's comparison.
 	RepoSHAExpected string
+	// ForkAuthorSubject is the per-contributor metering subject the fork
+	// review lane's admission composed (orgusage.ForkAuthorSubject's exact
+	// spelling, built on the metering id the org budget used). Persisted on
+	// the run document and mirrored onto the queue message, so the runner's
+	// recordOrgSpend charges the author's dollars beside the org's and every
+	// resume/retry re-enters the SAME subject. Empty on every trusted
+	// launch.
+	ForkAuthorSubject string
+	// Admitted is what the launch gate judged for this launch, stamped by the
+	// surface that crossed it (the run launch API, the inbound webhook tail):
+	// the trust it admitted and the fork author subject it charged. Launch
+	// compares it with the trust the launch is published under — its own,
+	// lowered to that of the runs it is launched from — and refuses an
+	// untrusted launch on a nil or a different admission
+	// (CheckLaunchAdmitted). Nil on every surface that crossed no gate.
+	Admitted *GateAdmission
+	// ForkLanePool is the runner pool an UNTRUSTED launch executes on
+	// (ADR-162 Q3 and decision 10): the pool its fork-lane config names, or
+	// the pool the untrusted run it is launched from was stamped with
+	// (inheritSourceTrust). The cloud publisher stamps it as the run's
+	// RunnerPool — the document and the wire — so a fork run lands on that
+	// pool alone, and refuses an untrusted launch that names none. Empty on
+	// every trusted launch, whose pool is its team's mapping.
+	ForkLanePool string
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
-	// by repository. Set by inbound-webhook launches; empty otherwise.
+	// by repository and the runner's spend meter (repoForSpend) can charge
+	// the run to it. Set by every repo-targeted cloud launch surface:
+	// the inbound webhooks, the repo-targeted POST /api/runs, and the
+	// board dispatcher (#2371, D33); empty otherwise.
 	ProjectPath string
-	// BotID is the bot bundle name (e.g. "review-pr") this run launches.
-	// The cloud publisher uses it to resolve bot-secret bindings during
-	// credential sealing. Empty for plain .bot launches.
+	// BotID is the id of the bot this run launches: a catalogue bot's
+	// name ("review-pr"), a team or platform bot's slug
+	// ("review-pr-pool"). The cloud publisher uses it to resolve
+	// bot-secret bindings during credential sealing; memory, pledges and
+	// the BYOK audience key on it too. Empty for plain .bot launches.
 	BotID string
+	// BotManifestName is the manifest name of the bundle the launch serves
+	// — the second spelling the routing cells' bot dimension reaches the
+	// bot by (a team fork keeps its catalogue bot's name under its own
+	// slug). Never an identity key: the launch fold alone reads it.
+	BotManifestName string
 	// BundleDir, when set, is the launch-materialized directory of a resolved
 	// cloud bundle (catalog, team bot or platform override): compile merges
 	// its prompts/ into the AST exactly like a baked bundle's, so they
@@ -249,6 +329,21 @@ type LaunchSpec struct {
 	// dir, cleaned up by the launch surface after Launch returns; never
 	// persisted.
 	BundleDir string
+	// BundleEntry is the launched entry's base name inside BundleDir when it
+	// is not the canonical main.bot: a bundle's promoted sibling entry, or
+	// the loose catalogue file the snapshot froze without one (#1896). The
+	// compile opens BundleDir with it as the main (bundle.OpenDirEntry).
+	// Empty means main.bot.
+	BundleEntry string
+	// ExpectProgramHash pins the launch to a program its caller read: the
+	// workflow identity (CompiledSource.Hash — the main, the bundle's
+	// prompts/ and presets/, the fragments and the include closure) that
+	// LaunchProgramHash answered for it. It is held on the publisher lane
+	// alone: the launch is refused (ErrProgramChanged) when the compile whose
+	// result is published reads another program (checkPinnedProgram). A lane
+	// that reads the bot again after accepting the launch refuses a pin
+	// outright (ErrLaunchPinUnsupported). Empty compares nothing.
+	ExpectProgramHash string
 	// BotBundle carries the immutable collection and its origin to the cloud
 	// publisher. Nil for loose/inline launches that bypass bundle resolution.
 	BotBundle *BotBundleRef
@@ -377,6 +472,30 @@ func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
 	return ModelOverridesFromRun(RunModelOverrides(entries))
 }
 
+// knownLaunchOverrides marks a launch's own rows as known to the executor
+// (ExecutorSpec.LaunchModelOverrides): empty rows say the launch carried none.
+func knownLaunchOverrides(o model.ModelOverrides) *model.ModelOverrides { return &o }
+
+// LaunchOverridesOfRun is the launch's own rows among a run's overrides, as
+// its document records them (store.Run.LaunchModelOverrides — a subbot
+// child's records its tree's root rows). A document that records none holds
+// no launch row, unless its routing policy froze no override cell: then its
+// overrides are the launch's rows whole (a CLI launch, or a document written
+// before the field). A document written before the field WITH policy cells
+// cannot be split, and reads as cells only.
+func LaunchOverridesOfRun(run *store.Run) model.ModelOverrides {
+	if run == nil {
+		return model.ModelOverrides{}
+	}
+	if len(run.LaunchModelOverrides) > 0 {
+		return ModelOverridesFromRun(run.LaunchModelOverrides)
+	}
+	if run.LLMRoutePolicy == nil || len(run.LLMRoutePolicy.Overrides) == 0 {
+		return ModelOverridesFromRun(run.ModelOverrides)
+	}
+	return model.ModelOverrides{}
+}
+
 // ModelOverridesFromRun adapts persisted pins through the same fold used by
 // launch and cloud execution, including the operator's reasoning effort.
 func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {
@@ -385,6 +504,19 @@ func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {
 		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
 	return model.OverridesFrom(out)
+}
+
+// ModelOverrideEntriesFromRun reads persisted rows back as launch entries,
+// the inverse of RunModelOverrides.
+func ModelOverrideEntriesFromRun(rows []store.RunModelOverride) []ModelOverrideEntry {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]ModelOverrideEntry, len(rows))
+	for i, r := range rows {
+		out[i] = ModelOverrideEntry{Selector: r.Selector, Backend: r.Backend, Model: r.Model, Provider: r.Provider, Effort: r.Effort}
+	}
+	return out
 }
 
 // RunModelOverrides converts the launch entries into the persisted
@@ -438,6 +570,21 @@ type ResumeSpec struct {
 	// ReceiptID correlates the durable mission action with run_resumed. It is
 	// host-issued and never accepted from an assistant artifact directly.
 	ReceiptID string
+	// Admitted is what the launch gate judged for this resume, stamped by the
+	// surfaces that cross it (the HTTP resume, the WS answer, the retry
+	// sweeper); nil on every surface that crosses none. Resume and the cloud
+	// publisher's SubmitResume compare it with the run document they resume
+	// (CheckResumeAdmitted): an untrusted run is never resumed on a nil or a
+	// mismatched admission.
+	Admitted *GateAdmission
+	// ExpectOrigin is the origin a checked surface admitted for RunID.
+	// Resume verifies the run it loads against it before anything is
+	// reconciled, written, published or spawned, binds its budget writes to
+	// it, and verifies the run again under the spawn lock; the cloud
+	// publisher verifies the document it republishes from and binds its
+	// queued claim to it. The resumed execution never inherits the binding.
+	// The zero value is unchecked.
+	ExpectOrigin ActionOrigin
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
@@ -445,10 +592,13 @@ type ResumeSpec struct {
 	// BundleDir / BotBundle mirror LaunchSpec's fields: a cloud resume of a
 	// stored bot re-resolves the bundle fresh (like credentials are
 	// re-sealed), so the compile merge and the runner-side materialization
-	// stay consistent with THIS resume's source.
-	BundleDir string
-	BotBundle *BotBundleRef
-	Answers   map[string]any // answers for human nodes; ignored for failed_resumable
+	// stay consistent with THIS resume's source. BundleEntry is
+	// LaunchSpec's entry of the same pair — the launched entry's base name
+	// inside BundleDir when it is not main.bot (#1896).
+	BundleDir   string
+	BundleEntry string
+	BotBundle   *BotBundleRef
+	Answers     map[string]any // answers for human nodes; ignored for failed_resumable
 	// HostInputs are host-attested, ephemeral fields merged into the paused
 	// human node output for downstream mappings. They are deliberately kept
 	// out of human_answers_recorded and published artifacts: this is a derived
@@ -473,6 +623,14 @@ type ResumeSpec struct {
 	// to the workflow's value, and could hand the operator's setup to a run
 	// launched with `none`.
 	AmbientContext string
+	// Codemode re-states the run-level codemode override ("", "on", "off").
+	// Unlike AutoMemory the launch PERSISTED its choice on the run doc, so
+	// a resume that says nothing replays the launch's decision
+	// (resumeExecutorSpec reads it); an explicit re-state here wins over
+	// the replay. CodemodeBounds re-states the launch's bounds raise the
+	// same way.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard re-states the run-level back-edge affordability
 	// override ("", "on", "off"), for the same reason AutoMemory does.
 	LoopBudgetGuard string
@@ -500,6 +658,15 @@ type ResumeSpec struct {
 	// UnlimitedWorkflow can also be activated between conversational turns;
 	// once active, subsequent resumes preserve that choice.
 	Budget *ir.BudgetOverrides
+}
+
+// CodemodeResumeQuota extracts only a resume request's explicit scratch quota
+// dimensions. Call it before merging the request with persisted bounds.
+func CodemodeResumeQuota(bounds *ir.CodemodeBounds) store.CodemodeScratchLimits {
+	if bounds == nil {
+		return store.CodemodeScratchLimits{}
+	}
+	return store.CodemodeScratchLimits{Entries: max(0, bounds.StoreEntries), Bytes: max(0, bounds.StoreBytes)}
 }
 
 // RunBudgetOverrides converts an engine launch override into the persisted
@@ -561,6 +728,11 @@ func MergeBudgetOverrides(base, next *ir.BudgetOverrides) *ir.BudgetOverrides {
 // RunSnapshot — call Snapshot for the full view.
 type RunSummary struct {
 	ID string `json:"id"`
+	// BirthID is the run's birth identity, as on the snapshot header
+	// (RunHeader.BirthID): a view opened from this row expects it, so a run
+	// replaced between the listing and the navigation is refused rather
+	// than shown in its place. "" is a historical run.
+	BirthID string `json:"birth_id"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -578,13 +750,27 @@ type RunSummary struct {
 	// SourceKind classifies how the run was triggered, for list filtering /
 	// grouping: "manual" | "webhook" | "dispatcher" | "fork" | "shard".
 	// Derived server-side from the run's source/owner; never persisted.
-	SourceKind string          `json:"source_kind,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
+	// TenantID is the team the run belongs to (wire name team_id, the
+	// same spelling the ?team_id= scope parameter uses). Empty for
+	// local-mode runs — the filesystem store is implicitly
+	// single-tenant. Carried so a cross-tenant listing can attribute
+	// each row (#2148); a per-team listing answers with the caller's
+	// own team.
+	TenantID string `json:"team_id,omitempty"`
+	// RunnerPool is the sovereign runner pool (#2029) the run was
+	// stamped with at launch. Empty = the shared default pool. Carried
+	// so a cross-tenant view keeps pool-sovereign rows visually marked
+	// (A19).
+	RunnerPool string          `json:"runner_pool,omitempty"`
 	Status     store.RunStatus `json:"status"`
 	FilePath   string          `json:"file_path,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	// PreEngineRefusal explains a refused delivery without inventing a failed status.
+	PreEngineRefusal *store.PreEngineRefusal `json:"pre_engine_refusal,omitempty"`
 	// FailureCode is Error's machine-readable classification (ADR-095);
 	// empty = unknown/legacy.
 	FailureCode store.FailureCode `json:"failure_code,omitempty"`
@@ -627,7 +813,8 @@ type RunSummary struct {
 	WorkDir  string `json:"work_dir,omitempty"`
 	RepoRoot string `json:"repo_root,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project") for
-	// cloud webhook-launched runs, powering the "by repo" filter.
+	// repo-targeted cloud runs — webhook, repo-targeted REST and
+	// board-dispatched alike (#2371) — powering the "by repo" filter.
 	// Empty in local mode.
 	ProjectPath string `json:"project_path,omitempty"`
 	// QueuePosition is set only for cloud-mode runs whose Status is
@@ -692,6 +879,11 @@ type Service struct {
 	// built map.
 	mergeTemps   map[string]string
 	mergeTempsMu sync.Mutex
+	// repositoryWrites is the host's hold on a repository the service's merge
+	// methods write — merge, conflict staging by hand and by the agent,
+	// finalize, abort (WithRepositoryWrites); nil holds nothing. The engine's
+	// own merges do not go through it.
+	repositoryWrites func(ctx context.Context, repoRoot string) (release func(), err error)
 	// workspaceTracker versions the files a run produces, so a rewind can
 	// undo a node's real work — the output map is only a summary for a
 	// bot whose product is documentation or code. Filesystem-backed, so
@@ -706,6 +898,9 @@ type Service struct {
 	// compatibility.
 	boardMCPHandler http.Handler
 	boardRegister   func(caps []string, sourceIssueID, runID string) string
+	// boardRevoke ends a grant boardRegister minted, as the node that held
+	// it returns.
+	boardRevoke func(token string)
 	// workDir is the directory the engine should treat as ${PROJECT_DIR}
 	// and as the repo-lookup seed for worktree: auto. Empty means
 	// "default to os.Getwd() at Run() time" — the right thing for the
@@ -747,6 +942,12 @@ type Service struct {
 	// only signal left. Wired by the cloud server from the identity store.
 	currentPoolForTenant func(ctx context.Context, tenantID string) (string, error)
 
+	// botContexts, when non-nil, materialises the bot's operator-bound
+	// context documents into every launch this service drives (ADR-147).
+	// Nil on a service that cannot materialise — launches then behave as
+	// before the seam existed.
+	botContexts *BotContextResolver
+
 	// alertSettings, when non-nil, requests construction of an alert
 	// Manager that observes the run event stream (via the file-event
 	// tail) and fans stall / budget / failure alerts out to a webhook,
@@ -754,6 +955,31 @@ type Service struct {
 	// Wails sink. Set via WithAlerts.
 	alertSettings *AlertSettings
 	alertManager  *alert.Manager
+	// alertRegistry carries manager-published alerts to the native merges
+	// by registration (R54 slice 3): one epoch per adoption, closed at the
+	// last bail's release. nil on wrapper stores and without alerts —
+	// those runs keep the legacy-only alert path.
+	alertRegistry *alertRegistry
+	// alertSeamMu serializes THIS service's registration seam: capture,
+	// acquire and adopt must be one step against the other seams (a
+	// rotation re-registration racing a resume's launch seam must not
+	// install two epochs of one observation). Per service, not package
+	// level — a hot-swap pair must not serialize each other.
+	alertSeamMu sync.Mutex
+
+	// logRegistry carries the log lanes of this service's producers to its
+	// bound log subscribers (R54 slice 4): one retained epoch per producer
+	// registration, wakes without payload, and the epoch's one end. nil only
+	// on a Service built outside NewService — log lanes then stay off.
+	logRegistry *logRegistry
+	// logSeamMu serializes THIS service's log registration seam, as
+	// alertSeamMu does for alerts, and for the same reason.
+	logSeamMu sync.Mutex
+	// logAdmissionHook, when set (tests), runs before the bound log
+	// admission's store read so a witness can drive the retry against the
+	// native store without wrapping it (a wrapper stays legacy, arbitration
+	// C). Nil in production.
+	logAdmissionHook func(ctx context.Context, runID string) error
 
 	// recoveryDispatch is built once on construction so each Launch /
 	// Resume reuses the same dispatcher rather than allocating a new
@@ -782,6 +1008,13 @@ type Service struct {
 	// runlog.go and the /api/runs/{id}/log endpoint.
 	runLogsMu sync.RWMutex
 	runLogs   map[string]*RunLogBuffer
+	// runLoggers holds the per-run LOGGER prepareRunLog built beside the
+	// buffer: the fork carrying this run's secret matcher (BuildExecutor
+	// sets it there, iterion#2822). It is what the finalize helpers a
+	// control or lifecycle call reaches for log on — those run outside the
+	// run's goroutine and have no other handle to the run's matcher. Same
+	// lifecycle and lock as runLogs.
+	runLoggers map[string]*iterlog.Logger
 	// runEngines holds the live in-process Engine for each active run so
 	// the active-duration stamping callback (activeDurationForRun) can
 	// read the run's monotonic SharedBudget elapsed. Registered in
@@ -843,6 +1076,11 @@ type Service struct {
 	// in the user's own checkout.
 	forgeToken ForgeTokenResolver
 
+	// forkKeyPinCheck reports whether a key pin's row still exists, so a fork
+	// drops a pin the credential sweep would have cleared (Fork). Installed by
+	// the server via WithForkKeyPinCheck; nil keeps every pin the parent froze.
+	forkKeyPinCheck ForkKeyPinCheck
+
 	// completionNotifier POSTs a run-completion webhook when an
 	// in-process run carrying a callback URL reaches a terminal state.
 	// Default-constructed in NewService; never nil for in-process runs.
@@ -867,6 +1105,12 @@ type Service struct {
 	// handler streams from change streams instead of relying on the
 	// local broker (which only sees this process's writes). ADR-053.
 	streamSrc runstream.Source
+	// observedEvents owns only explicit observed feeds, never the legacy Source.
+	observedEvents *observedEventBridges
+	// liveEvents owns the retained per-client event subscriptions
+	// StreamSource serves on the native filesystem store; nil on any other
+	// store or with an injected streamSrc.
+	liveEvents *liveEventStreams
 
 	// fileSrcs tracks on-demand events.jsonl tailers started by
 	// ensureEventSource for runs not produced in this process (e.g.
@@ -881,6 +1125,9 @@ type Service struct {
 	// fileSrcMu (same low-contention lock). Refcounted; the tailer + buffer are
 	// torn down when the last WS subscriber releases.
 	logSrcs map[string]*fileSrcHandle
+	// logReleaseGap, when set (tests), runs between a log tailer's last
+	// release unlocking fileSrcMu and dropping its buffer.
+	logReleaseGap func(runID string)
 
 	// maxCostPerDayUSD configures the per-(store, UTC-day) LLM spend cap
 	// enforced across every run this service launches. 0 disables it.
@@ -939,6 +1186,34 @@ func WithWorkDir(dir string) ServiceOption {
 	return func(s *Service) {
 		s.workDir = dir
 	}
+}
+
+// WithRepositoryWrites installs the host's hold on a repository the
+// service's merge methods write: the squash merge, a resolution's staging
+// (by hand and by the agent), the commit that finalizes a resolved conflict
+// and the abort each write repoRoot's index and working tree under the hold
+// hold returns, so the host's other writers of that checkout wait for them
+// instead of failing on git's index.lock or reading a half-merged tree. A
+// model call or a push runs outside it. The engine's own merges — the
+// review gate's, a run end's auto-merge — do not take it.
+func WithRepositoryWrites(hold func(ctx context.Context, repoRoot string) (release func(), err error)) ServiceOption {
+	return func(s *Service) {
+		s.repositoryWrites = hold
+	}
+}
+
+// underRepository runs write, a write of repoRoot's index and working tree,
+// under the host's hold (WithRepositoryWrites).
+func (s *Service) underRepository(ctx context.Context, repoRoot string, write func() error) error {
+	if s.repositoryWrites == nil {
+		return write()
+	}
+	release, err := s.repositoryWrites(ctx, repoRoot)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return write()
 }
 
 // WithRunEnv installs the environment snapshot used by every executor this
@@ -1055,6 +1330,17 @@ func WithResumePolicyFiller(fn ResumePolicyFiller) ServiceOption {
 	return func(s *Service) { s.resumePolicyFiller = fn }
 }
 
+// ForkKeyPinCheck reports whether the API key row keyID still exists in the
+// tenant's key store: false with a nil error only when the row is gone. An
+// error is a store that could not answer.
+type ForkKeyPinCheck func(ctx context.Context, tenantID, keyID string) (exists bool, err error)
+
+// WithForkKeyPinCheck wires the key-row lookup a fork reads to drop a key pin
+// whose key no longer exists (Fork). See ForkKeyPinCheck.
+func WithForkKeyPinCheck(fn ForkKeyPinCheck) ServiceOption {
+	return func(s *Service) { s.forkKeyPinCheck = fn }
+}
+
 // WithForgeTokenResolver wires the forge-credential lookup used to merge
 // repo-targeted runs server-side. See ForgeTokenResolver.
 func WithForgeTokenResolver(fn ForgeTokenResolver) ServiceOption {
@@ -1104,11 +1390,19 @@ func WithStore(s store.RunStore) ServiceOption {
 // WithBoardMCP wires the dedicated host MCP HTTP transport for sandboxed
 // board/runs-capability nodes (C082). handler must serve ONLY the token-gated
 // MCP routes — never the full server mux. register mints a per-node token
-// against the server's historical BoardMCPTokenRegistry name.
-func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID, runID string) string) ServiceOption {
+// against the server's historical BoardMCPTokenRegistry name, and revoke ends
+// it when the node that held it returns.
+//
+// The two travel TOGETHER, in one option, because a deployment that wired the
+// minter and not the reaper is the state this had: the registry's contract is
+// "Register at the start and Revoke at the end", and a token nobody revokes
+// stays live for the whole TTL — which since #2758 is a day of being able to
+// spend the tenant's credentials through the facade.
+func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID, runID string) string, revoke func(token string)) ServiceOption {
 	return func(svc *Service) {
 		svc.boardMCPHandler = handler
 		svc.boardRegister = register
+		svc.boardRevoke = revoke
 	}
 }
 
@@ -1168,6 +1462,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		recoveryDispatch:       recovery.Dispatch(recovery.DefaultRecipes()),
 		executionContextPolicy: ExecutionContextPolicyFromEnv(),
 		runLogs:                make(map[string]*RunLogBuffer),
+		runLoggers:             make(map[string]*iterlog.Logger),
 		runEngines:             make(map[string]*runtime.Engine),
 		runSteer:               make(map[string]chan *runtime.OverrideMsg),
 	}
@@ -1256,8 +1551,18 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		s.pipelineQueue = newPipelineQueue(s.maxConcurrentPipelines)
 	}
 
+	// The log registry precedes the recovery pass for the same reason the
+	// alert registry does: a boot-time reattach of a detached runner
+	// registers its log lane during reconcileOrphans.
+	s.logRegistry = newLogRegistry()
+
 	if s.alertSettings != nil {
 		s.alertManager = s.buildAlertManager(*s.alertSettings)
+		// The registry precedes the recovery pass: a boot-time reattach of
+		// a detached runner registers its alert origin during
+		// reconcileOrphans, so both halves of the registration must exist
+		// by then.
+		s.alertRegistry = newAlertRegistry()
 		if !s.recoveryPassive {
 			s.alertManager.Start(context.Background())
 		}
@@ -1267,18 +1572,9 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		// Run-completion webhooks are off-by-default in behaviour (no-op
 		// unless a launched run carries a callback URL) but the notifier
 		// itself is always present so spawnRun can fire unconditionally.
-		// ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1 relaxes the SSRF
-		// guard for self-hosted deployments whose callback receiver lives
-		// on a private network alongside iterion.
-		allowPrivate := os.Getenv("ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE") == "1"
-		// ITERION_COMPLETION_WEBHOOK_SECRET, when set, HMAC-signs every
-		// outbound payload (X-Iterion-Signature) so receivers can
-		// authenticate the delivery. Empty = unsigned (receiver must not
-		// require a signature).
-		secret := os.Getenv("ITERION_COMPLETION_WEBHOOK_SECRET")
-		s.completionNotifier = notify.New(s.logger, 0,
-			notify.WithAllowPrivate(allowPrivate),
-			notify.WithSigningSecret(secret))
+		// The env-configured construction every settling lane shares — see
+		// notify.NewFromEnv.
+		s.completionNotifier = notify.NewFromEnv(s.logger, 0)
 	}
 
 	if !s.recoveryPassive {
@@ -1293,13 +1589,15 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		s.rebuildPipelineQueue()
 		s.startPipelineScheduler()
 	}
+	s.initObservedEventFeeds()
+	s.initLiveEventStreams()
 	return s, nil
 }
 
 // buildAlertManager wires the alert Manager's sinks (webhook, optional
-// desktop, and the always-on browser-broker sink), the run-name lookup,
-// and the deep-link base URL. The manager itself is fed events by the
-// file-event tail (see runstream.TailEventsFile).
+// desktop, tracker), the origin-bound lookups, the persisted twin, and the
+// legacy broker carrier. The manager itself is fed events by the file-event
+// tail (see runstream.TailEventsFile).
 func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	var sinks []alert.Sink
 	if wh := alert.NewWebhookSink(set.WebhookURL, s.logger); wh != nil {
@@ -1314,21 +1612,6 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	if tk := alert.NewTrackerSink(); tk != nil {
 		sinks = append(sinks, tk)
 	}
-	// Browser delivery: publish an in-process `alert` event to the
-	// broker. It is NOT persisted to events.jsonl, so the file tail
-	// never re-feeds it into Observe (no detection feedback loop).
-	sinks = append(sinks, alert.FuncSink(func(_ context.Context, a alert.Alert) {
-		if s.broker == nil {
-			return
-		}
-		s.broker.Publish(store.Event{
-			Type:      store.EventAlert,
-			RunID:     a.RunID,
-			NodeID:    a.NodeID,
-			Timestamp: a.Timestamp,
-			Data:      a.AsEventData(),
-		})
-	}))
 
 	// Alert callbacks run outside request contexts. Bootstrap the identity
 	// from the exact run already observed by this internal manager, then
@@ -1350,9 +1633,27 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		}
 		return r, store.WithIdentity(ctx, r.TenantID, r.OwnerID), nil
 	}
-	runLookup := func(id string) (string, bool) {
+	runLookup := func(id string, obs store.RunObservation, registered bool) (string, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if registered {
+			// A registered run resolves under its captured observation: the
+			// name is the birth's, never whatever run holds the ID now.
+			bound, err := alertObservationContext(ctx, obs)
+			if err != nil {
+				return "", false
+			}
+			r, err := s.store.LoadRun(bound, id)
+			if err != nil || r == nil {
+				// A successor refused the bound read: no name decorates the
+				// alert, and the by-ID fallback stays out of reach (R3).
+				return "", false
+			}
+			if r.Name != "" {
+				return r.Name, true
+			}
+			return r.WorkflowName, true
+		}
 		r, _, err := loadAlertRun(ctx, id)
 		if err != nil || r == nil {
 			return "", false
@@ -1366,7 +1667,37 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
-		alert.WithHumanWaitLookup(func(ctx context.Context, id string, now time.Time) bool {
+		// The wait probe splits the root from its descendants (F11): the
+		// root read validates under the captured binding (a successor is
+		// refused), then the traversal runs on a tenant-stamped UNBOUND
+		// context — the root's run binding must not refuse each child's
+		// load, or a genuinely paused descendant reads as absent and the
+		// watchdog false-stalls.
+		alert.WithHumanWaitLookup(func(ctx context.Context, id string, obs store.RunObservation, registered bool, now time.Time) bool {
+			if registered {
+				bound, err := alertObservationContext(ctx, obs)
+				if err != nil {
+					return false
+				}
+				// The root is validated under the captured binding and the
+				// VALIDATED row is pinned into the traversal (M4): a
+				// replacement between the two reads must not decide this
+				// stall on the successor's data. Descendants traverse on a
+				// tenant-stamped unbound context — the root's run binding
+				// must not refuse each child's load, or a genuinely paused
+				// descendant reads as absent and the watchdog false-stalls.
+				root, err := s.store.LoadRun(bound, id)
+				if err != nil || root == nil {
+					return false
+				}
+				unbound := store.WithoutRunDataBinding(ctx)
+				if tenant := obs.TenantID(); tenant != "" {
+					unbound = store.WithIdentity(unbound, tenant, "")
+				} else {
+					unbound = store.WithoutTenantFilter(unbound)
+				}
+				return store.HasBlockingHumanWaitWithRoot(unbound, s.store, root, id, now)
+			}
 			_, ctx, err := loadAlertRun(ctx, id)
 			if err != nil {
 				return false
@@ -1377,34 +1708,95 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
 	}
+	// The legacy broker carrier (fact 13): the manager publishes every
+	// fired alert inline along its captured route — stamped when the run
+	// was registered, unstamped (today's shape) otherwise. Unbound and
+	// wrapper consumers keep this carrier; merges holding the registry
+	// lane dedup it per-merge.
+	if s.broker != nil {
+		opts = append(opts, alert.WithLegacyAlertPublish(func(evt store.Event) {
+			s.broker.Publish(evt)
+		}))
+	}
 	// Persisted twin: append every alert as a durable run_health event
 	// so the stall episode survives a WS reconnect and shows in the
 	// timeline. Loop-free by construction — Observe ignores
 	// EventRunHealth — and best-effort: an append failure is logged,
 	// never blocks alerting.
+	//
+	// The twin lands under the registration captured at the alert's birth
+	// (F10): the capability check runs BEFORE any write (F17), and once an
+	// observed append was ATTEMPTED the by-ID append is out of reach — a
+	// refusal after a partial write must never replay a second row.
 	if s.store != nil {
-		opts = append(opts, alert.WithStoreSink(func(a alert.Alert) {
+		opts = append(opts, alert.WithStoreSink(func(a alert.Alert, obs store.RunObservation, registered bool) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, ctx, err := loadAlertRun(ctx, a.RunID)
-			if err != nil {
-				if s.logger != nil {
-					s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
-				}
-				return
-			}
-			if _, err := s.store.AppendEvent(ctx, a.RunID, store.Event{
+			evt := store.Event{
 				Type:      store.EventRunHealth,
 				RunID:     a.RunID,
 				NodeID:    a.NodeID,
 				Timestamp: a.Timestamp,
 				Data:      a.AsEventData(),
-			}); err != nil && s.logger != nil {
-				s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+			}
+			if !registered {
+				// A run nobody registered keeps today's by-ID append.
+				_, ctx, err := loadAlertRun(ctx, a.RunID)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
+					}
+					return
+				}
+				if _, err := s.store.AppendEvent(ctx, a.RunID, evt); err != nil && s.logger != nil {
+					s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+				}
+				return
+			}
+			if err := store.RequireEventObservationProducer(s.store); err != nil {
+				// A store without the observed-producer capability keeps
+				// today's by-ID append — detected before any write (F17).
+				_, ctx, err := loadAlertRun(ctx, a.RunID)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
+					}
+					return
+				}
+				if _, err := s.store.AppendEvent(ctx, a.RunID, evt); err != nil && s.logger != nil {
+					s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+				}
+				return
+			}
+			bound, err := alertObservationContext(ctx, obs)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("alert: bind run_health for %s to its registration: %v", a.RunID, err)
+				}
+				return
+			}
+			if _, err := store.AppendObservedEvent(bound, s.store, a.RunID, evt); err != nil && s.logger != nil {
+				// Any error AFTER the attempt — identity changed, capability,
+				// store failure — logs and stops: the append may have landed,
+				// so a by-ID replay could double-persist the row.
+				s.logger.Warn("alert: persist run_health for %s under its registration: %v", a.RunID, err)
 			}
 		}))
 	}
 	return alert.NewManager(opts...)
+}
+
+// alertObservationContext restores a captured registration's identity for
+// store reads and writes under the alert manager's callbacks: the tenant
+// (or an explicit no-filter for local runs), then the observation's header
+// as the read/write binding — a successor is refused, not adopted (F10).
+func alertObservationContext(ctx context.Context, obs store.RunObservation) (context.Context, error) {
+	if tenant := obs.TenantID(); tenant != "" {
+		ctx = store.WithIdentity(ctx, tenant, "")
+	} else {
+		ctx = store.WithoutTenantFilter(ctx)
+	}
+	return store.BindRunObservation(ctx, obs)
 }
 
 // Broker exposes the event broker for transports that need to

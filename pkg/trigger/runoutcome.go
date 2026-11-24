@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -107,13 +108,16 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 	// which is NOT the wall: the arming takes the earlier of the wall and a
 	// skipped credential's reopening, then applies the jitter, the floor and
 	// the max_wait ceiling. The wall identifies the episode; the wake is what
-	// a reader is told to expect, so both travel.
+	// a reader is told to expect, so both travel — the wake read through the
+	// one reading every announcement of a park takes
+	// (retrypolicy.UsageParkResumesAt), the pull-request notice's and the
+	// operator alert's included.
 	var usageWall, usageWake time.Time
 	if r, err := rs.LoadRun(fctx, runID); err == nil && r != nil {
 		updatedAt = r.UpdatedAt
 		usageWall = r.UsageParkWall()
-		if !usageWall.IsZero() && r.RetryState != nil && r.RetryState.RetryAfter != nil {
-			usageWake = r.RetryState.RetryAfter.UTC()
+		if !usageWall.IsZero() {
+			usageWake = retrypolicy.UsageParkResumesAt(r, time.Now().UTC())
 		}
 		bankState, finalBranch, finalCommit, finalBranchError = r.BankState(), r.FinalBranch, r.FinalCommit, r.FinalBranchError
 		repo = r.ProjectPath

@@ -62,6 +62,22 @@ type Issue struct {
 	// regardless of success/failure so the operator can always
 	// pivot from the kanban card to the run console / diff inspector.
 	LastRunID string `json:"last_run_id,omitempty"`
+	// LastRun{Status,Error,ErrorCode,At} prove what the run in LastRunID
+	// turned out to be (#1501). Without them a card whose run died reads
+	// exactly like a card that was dispatched and worked — the decision,
+	// not the result — and the only reader of the run was the reaper's
+	// poller, which judges claims, not outcomes.
+	//
+	// Written by the run-outcome spine (pkg/server/outcome_spine.go) from
+	// the run's terminal status, and ONLY while LastRunID still names that
+	// run: the card reports its CURRENT run, so a late terminal from a run
+	// the card has already been re-dispatched past is dropped rather than
+	// stamped. Error and ErrorCode are cleared by a successful outcome —
+	// this is a health signal, not an audit trail (Runs is the audit).
+	LastRunStatus    string     `json:"last_run_status,omitempty"`
+	LastRunError     string     `json:"last_run_error,omitempty"`
+	LastRunErrorCode string     `json:"last_run_error_code,omitempty"`
+	LastRunAt        *time.Time `json:"last_run_at,omitempty"`
 	// AwaitingInput is a denormalized best-effort HINT that the issue's
 	// most recent dispatcher-spawned run parked on a human/operator gate
 	// and is waiting for an answer. It lets the studio render a per-card

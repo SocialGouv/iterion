@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -23,30 +25,31 @@ import (
 type ErrorCode = store.FailureCode
 
 const (
-	ErrCodeNodeNotFound          = store.FailureNodeNotFound
-	ErrCodeNoOutgoingEdge        = store.FailureNoOutgoingEdge
-	ErrCodeLoopExhausted         = store.FailureLoopExhausted
-	ErrCodeBudgetExceeded        = store.FailureBudgetExceeded
-	ErrCodeExecutionFailed       = store.FailureExecutionFailed
-	ErrCodeWorkspaceSafety       = store.FailureWorkspaceSafety
-	ErrCodeResourceRestore       = store.FailureResourceRestore
-	ErrCodeTimeout               = store.FailureTimeout
-	ErrCodeCancelled             = store.FailureCancelled
-	ErrCodeJoinFailed            = store.FailureJoinFailed
-	ErrCodeResumeInvalid         = store.FailureResumeInvalid
-	ErrCodeScratchNotPortable    = store.FailureScratchNotPortable
-	ErrCodeSchemaValidation      = store.FailureSchemaValidation
-	ErrCodeExpressionFailed      = store.FailureExpressionFailed
-	ErrCodeRateLimited           = store.FailureRateLimited
-	ErrCodeUsageLimitBlocked     = store.FailureUsageLimitBlocked
-	ErrCodeContextLengthExceeded = store.FailureContextLengthExceeded
-	ErrCodeToolFailedTransient   = store.FailureToolFailedTransient
-	ErrCodeToolFailedPermanent   = store.FailureToolFailedPermanent
-	ErrCodeNetworkTransient      = store.FailureNetworkTransient
-	ErrCodeAuthFailed            = store.FailureAuthFailed
-	ErrCodeModelUnavailable      = store.FailureModelUnavailable
-	ErrCodeSchemaUnusable        = store.FailureSchemaUnusable
-	ErrCodeCapabilityUnsupported = store.FailureCapabilityUnsupported
+	ErrCodeNodeNotFound           = store.FailureNodeNotFound
+	ErrCodeNoOutgoingEdge         = store.FailureNoOutgoingEdge
+	ErrCodeLoopExhausted          = store.FailureLoopExhausted
+	ErrCodeBudgetExceeded         = store.FailureBudgetExceeded
+	ErrCodeExecutionFailed        = store.FailureExecutionFailed
+	ErrCodeWorkspaceSafety        = store.FailureWorkspaceSafety
+	ErrCodeResourceRestore        = store.FailureResourceRestore
+	ErrCodeTimeout                = store.FailureTimeout
+	ErrCodeCancelled              = store.FailureCancelled
+	ErrCodeJoinFailed             = store.FailureJoinFailed
+	ErrCodeResumeInvalid          = store.FailureResumeInvalid
+	ErrCodeScratchNotPortable     = store.FailureScratchNotPortable
+	ErrCodeSchemaValidation       = store.FailureSchemaValidation
+	ErrCodeExpressionFailed       = store.FailureExpressionFailed
+	ErrCodeRateLimited            = store.FailureRateLimited
+	ErrCodeUsageLimitBlocked      = store.FailureUsageLimitBlocked
+	ErrCodeContextLengthExceeded  = store.FailureContextLengthExceeded
+	ErrCodeToolFailedTransient    = store.FailureToolFailedTransient
+	ErrCodeToolFailedPermanent    = store.FailureToolFailedPermanent
+	ErrCodeNetworkTransient       = store.FailureNetworkTransient
+	ErrCodeAuthFailed             = store.FailureAuthFailed
+	ErrCodeModelUnavailable       = store.FailureModelUnavailable
+	ErrCodeSchemaUnusable         = store.FailureSchemaUnusable
+	ErrCodeProviderRequestInvalid = store.FailureProviderRequestInvalid
+	ErrCodeCapabilityUnsupported  = store.FailureCapabilityUnsupported
 	// Raised when the workflow requested an EXPLICIT sandbox mode
 	// (`sandbox: { mode: inline, image/build: … }`) but no
 	// container-runtime driver on this host can honour it. Distinct
@@ -54,12 +57,55 @@ const (
 	// `sandbox_skipped` event when no runtime is present — see
 	// resolveAndStartSandbox. #1425.
 	ErrCodeSandboxDriverUnavailable = store.FailureSandboxDriverUnavailable
+	// Raised at sandbox start for an UNTRUSTED (fork-lane) run whose
+	// sandboxed nodes no credential can reach — the per-backend predicate
+	// of #1768 (sandbox_credential_admission.go) settled it before the
+	// container starts; the undecidable cases warn instead
+	// (sandbox_no_credential_warning).
+	ErrCodeSandboxCredentialUnreachable = store.FailureSandboxCredentialUnreachable
+	// Raised by the same admission for a run stamped to its own credentials
+	// (ADR-131 §7) whose node only the pod's environment would fund
+	// (ADR-161 decision 7).
+	ErrCodeCredentialAmbientRefused = store.FailureCredentialAmbientRefused
+	// Raised by the same admission for a node whose only funding is a
+	// subscription ITERION_FORBID_SUBSCRIPTION_OAUTH refuses (ADR-161
+	// decision 7).
+	ErrCodeCredentialSubscriptionForbidden = store.FailureCredentialSubscriptionForbidden
+	// Raised for an UNTRUSTED (fork-lane) run whose credential cannot cross
+	// the sandbox as a Layer 2 placeholder — a forfait, an SDK-signed key,
+	// the launcher's ambient env (the arms, ADR-162 decision 7) — or whose
+	// start cannot arm the substitution at all (TLS inspection off, a driver
+	// that cannot inspect: sandbox.go's crossing floor).
+	ErrCodeSandboxCrossingRefused = store.FailureSandboxCrossingRefused
+	// Raised for an UNTRUSTED (fork-lane) run whose only route out is the
+	// egress proxy on a driver that cannot enforce a network policy around
+	// the container (sandbox.go's network floor, ADR-162 decision 7): the
+	// proxy env would be a convention, not a floor.
+	ErrCodeSandboxNetworkRefused = store.FailureSandboxNetworkRefused
+	// Raised at sandbox start when the run carries attachments and the
+	// selected driver can neither bind-mount nor copy their directory in
+	// (sandbox_attachments.go). The operator attached the files on purpose;
+	// a run that went on without them would read as a run that never had
+	// them.
+	ErrCodeAttachmentsUndeliverable = store.FailureAttachmentsUndeliverable
+	// Raised before a node runs when it names an attachment's path and the
+	// run holds that attachment with no path a node can open
+	// (attachment_admission.go).
+	ErrCodeAttachmentPathUnavailable = store.FailureAttachmentPathUnavailable
+	// Raised before the sandbox when a store with no filesystem root did
+	// not hand the run's attachments over (materializeAttachments): the
+	// run parks resumable, a redelivery fetches again.
+	ErrCodeAttachmentsUnfetchable = store.FailureAttachmentsUnfetchable
 	// Raised before the first node when the attached bundle declares a
 	// `requires.iterion` this build is below (engine_requirement.go).
 	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine
 	// Raised when a node's failure leaves a remote effect UNDECIDED — see
 	// the AmbiguousEffect interface below.
 	ErrCodeAmbiguousEffect = store.FailureAmbiguousEffect
+	// Raised when a node's declared grant was REFUSED — a capability the
+	// workflow never opted into (#78=A, ADR-151). Deterministic by
+	// definition: the same IR meets the same grant on every attempt.
+	ErrCodeCapabilityDenied = store.FailureCapabilityDenied
 )
 
 // AmbiguousEffect is implemented by an error whose operation may or may not
@@ -88,39 +134,39 @@ type AmbiguousEffect interface {
 // its remote effect undecided. It is the ONE reading of the interface, so a
 // second call site cannot drift into a different rule. A RuntimeError read
 // from a run document also carries this fact in its persisted code.
-func IsAmbiguousEffect(err error) bool {
-	var amb AmbiguousEffect
-	if errors.As(err, &amb) && amb.AmbiguousEffect() {
+func IsAmbiguousEffect(err error) bool { return errtrack.IsAmbiguousEffect(err) }
+
+// AmbiguousEffect exposes the durable code through the shared cause seam.
+func (e *RuntimeError) AmbiguousEffect() bool { return e != nil && e.Code == ErrCodeAmbiguousEffect }
+
+// CapabilityDenial is implemented by an error whose cause is a REFUSED
+// grant: the node named something (a board verb, a host tool) its
+// `capabilities:` list does not open. The seam discipline is
+// AmbiguousEffect's: an interface any transport can implement — the board's
+// native facade today — without the engine learning what the transport is
+// (ADR-151), and one reading of it here so no call site drifts into its own
+// rule.
+//
+// The refusal is DETERMINISTIC: the same IR meets the same grant on every
+// attempt, so the classifier (pkg/runtime/recovery) fails it terminally
+// rather than re-running the node to hear the same no.
+type CapabilityDenial interface {
+	error
+	// CapabilityDenied reports whether the failure is a refused grant.
+	CapabilityDenied() bool
+}
+
+// IsCapabilityDenial reports whether err — or any error it wraps — is a
+// refused grant. A RuntimeError carrying the persisted code answers too, so
+// a denial reloaded from a run document classifies the same.
+func IsCapabilityDenial(err error) bool {
+	var denial CapabilityDenial
+	if errors.As(err, &denial) && denial.CapabilityDenied() {
 		return true
 	}
 	var rt *RuntimeError
-	if errors.As(err, &rt) && rt != nil && rt.Code == ErrCodeAmbiguousEffect {
+	if errors.As(err, &rt) && rt != nil && rt.Code == ErrCodeCapabilityDenied {
 		return true
-	}
-	switch wrapped := err.(type) {
-	case interface{ Unwrap() []error }:
-		for _, cause := range wrapped.Unwrap() {
-			if IsAmbiguousEffect(cause) {
-				return true
-			}
-		}
-	case interface{ Unwrap() error }:
-		return IsAmbiguousEffect(wrapped.Unwrap())
-	case interface{ As(any) bool }:
-		// Redaction hides Unwrap from reporters but preserves As. Read the
-		// represented error's structure without exposing its unredacted text.
-		var many interface{ Unwrap() []error }
-		if wrapped.As(&many) && many != nil {
-			for _, cause := range many.Unwrap() {
-				if IsAmbiguousEffect(cause) {
-					return true
-				}
-			}
-		}
-		var one interface{ Unwrap() error }
-		if wrapped.As(&one) && one != nil {
-			return IsAmbiguousEffect(one.Unwrap())
-		}
 	}
 	return false
 }
@@ -171,6 +217,12 @@ type Remedy struct {
 // recorded, no claim — and there is nothing to retry.
 var ErrResumeSuperseded = errors.New("runtime: resume superseded — the run was queued again after this delivery was published")
 
+// ErrAdmissionStopped means a concurrent execution-state change invalidated
+// this admission before it could save a verdict. The invocation executed
+// nothing and must not overwrite, finalize or account for the replacement row.
+// Unlike ErrResumeSuperseded, this stop does not reoffer a queued publication.
+var ErrAdmissionStopped = errors.New("runtime: admission stopped by a concurrent execution-state change")
+
 // RemedyOf is the remedy err carries: its RuntimeError's hint, else the one
 // that error's code names (CodeRemedy). Zero when err carries no RuntimeError.
 func RemedyOf(err error) Remedy {
@@ -179,6 +231,9 @@ func RemedyOf(err error) Remedy {
 		return Remedy{}
 	}
 	if rt.Hint == "" {
+		if rt.Code == ErrCodeProviderRequestInvalid {
+			return Remedy{Hint: ProviderRequestRemedy(err)}
+		}
 		return CodeRemedy(rt.Code)
 	}
 	return Remedy{Hint: rt.Hint, AlsoNeedsForce: rt.AlsoNeedsForce}
@@ -320,3 +375,9 @@ func CeilingReason(reason string) bool {
 
 // Ceiling says the decline was the run's circumstances' (CeilingReason).
 func (d *LoopDeclined) Ceiling() bool { return CeilingReason(d.Reason) }
+
+// ProviderRequestRemedy keeps the provider's explanation available to an
+// operator changing the request, bounded before reaching persisted hints.
+func ProviderRequestRemedy(err error) string {
+	return "fix the provider request parameters before resuming; provider refused: " + iterlog.Truncate(providerParameterCause(err), 2048)
+}

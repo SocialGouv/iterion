@@ -7,7 +7,9 @@ Read it when editing a bundle's `skills/` — the mirror into `.claude/skills`, 
 Claude Code-style skills ship inside the `.botz` bundle they
 support, not at a repo-global location. Iterion's runtime mirrors
 `<bundle>/skills/*.md` into `<workspace>/.claude/skills/` at run
-start (and on each resume), regardless of backend. Three backends
+start (and on each resume), regardless of backend. A page may equally
+ship as the directory form `skills/<name>/SKILL.md`, copied through
+unchanged and judged by the same checks (C231-C234, C274). Three backends
 consume the same directory: `claude_code` through its native lookup,
 `claw` through the `skill` tool (registered by
 [pkg/backend/tool/claw_builtins.go:RegisterClawSkill](../../../pkg/backend/tool/claw_builtins.go)),
@@ -24,9 +26,10 @@ Current bundles and their skills:
   `iterion-dsl-quickref`, `iterion-board` (reference for the
   capability-gated board MCP tools on claude_code, claw, and pi RPC),
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-  `session-continuity` (iterion workspace memory — `memory_read` /
-  `memory_write` / `memory_list` for the cross-run knowledge tree under
-  `~/.iterion/projects/<key>/memory/<scope>/`), and `dogfood-cycle`
+  `session-continuity` (the VARIANT: this bundle has no memory tree, so
+  its copy carries the refusal, the board as its durable record and the
+  read-only `findings/` inbox — the write contract is rooted in
+  `bots/evolve`), and `dogfood-cycle`
   (the operator's measured ritual for validating a bot by a real run).
   Unlisted: `factory-ops`, `operator-arbitrage` — 11 files; the generated
   [map-bots.md](../../references/map-bots.md) is the inventory.
@@ -37,7 +40,7 @@ Current bundles and their skills:
   Six of the original eight were produced by a dogfood run of claw +
   `openai/gpt-5.5` against this repo; `iterion-board` was added by
   the board-capabilities work and `session-continuity` by the
-  workspace-memory work — see
+  workspace-memory work (rooted on `evolve` since iterion#2832) — see
   [scripts/adhoc/whats-next-skills-gen.bot](../../../scripts/adhoc/whats-next-skills-gen.bot)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).
@@ -109,7 +112,56 @@ plus an imperative-voice body grounded in real files. Skills must
 be self-contained: a reader who lands on one should not have to
 chase context across the repo.
 
-If a skill ends up duplicated across multiple bundles, accept the
-duplication for now (iterion has no skill-sharing primitive yet)
-and add a TODO comment in each copy pointing to its peers.
+## A skill several bundles carry is DECLARED, not duplicated
+
+A skill file lives with its bundle, so a skill several bundles need exists
+as several files. A comment pointing at the peers is a convention, not a
+mechanism: the copies drift the first time somebody edits one. Measured
+before this was closed — 20 file names shared over 72 copies, 16 of the 20
+already diverged, five different spellings of the "keep these in sync"
+comment, and exactly one family with a test behind it.
+
+[`internal/skillshare`](../../../internal/skillshare) is the mechanism.
+One declaration (`families.go`) names, per shared file name, the bundle
+whose copy is the **source**, the bundles whose copies are **mirrors** of
+it, and the bundles that carry a deliberate **variant** with the reason it
+diverges — the reason lives in the declaration, where one reader sees every
+copy's verdict at once, instead of in a comment each copy words
+differently.
+
+- Editing a shared skill means editing its **source** and running
+  `task skills:sync` (also a step of `task gen`), which writes every
+  mirror. The other copies are not yours to edit.
+- Adding a skill a second bundle carries means adding its family to
+  `families.go`. The gate reddens on a file name several bundles carry that
+  no family declares — that is the hole this closes, so a new one cannot
+  land quietly.
+- A copy that must diverge is declared a variant with its reason, and
+  pinned by its own content in
+  [`bots/testdata/shared_skills.txt`](../../../bots/testdata/shared_skills.txt).
+  No generator rewrites a variant, so the pin is the only thing that makes
+  an edit to one visible: re-pin it deliberately with `task skills:bless`,
+  whose diff is the review. "Declared variant" must not come to mean
+  "exempt forever" — a byte-identity guard laid over drift that already
+  happened would freeze it rather than prevent it.
+
+The gate is `go test ./internal/skillshare/` (it rides the required `test`
+check) and `task skills:check`. It reddens on a drifted mirror, a variant
+that collapsed onto its source, an unreviewed edit to any declared copy, a
+declared copy that is gone, and an undeclared shared skill.
+
+Two shapes of divergence are worth knowing because they recur. A copy that
+differs only by the `[[bundle]]` line cross-referencing its own playbook is
+a shared document with an unshareable self-reference; those stay variants
+until the sharing primitive can substitute a per-bundle token — the one
+axis [ADR-144](../../adr/144-shared-skills-are-bundle-dependencies.md)
+leaves open, because a templated skill is an authoring surface of its own
+(seven of the declared variants are that single line and nothing else). A
+copy whose generated region a per-bundle generator rebuilds
+(`iterion bots regen-catalog`) can never be a byte-mirror.
+
+Sharing a skill BETWEEN bundles is a bundle dependency, not a copy:
+`exports.skills` / `dependencies.skills`, resolved at install into the
+consumer's own `skills/` — shape, refusals and the pin in
+[bundles.md](../../bundles.md#shared-skill-dependencies).
 

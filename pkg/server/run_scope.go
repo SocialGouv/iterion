@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -52,6 +54,40 @@ var runScopePrefixes = []runScopePrefix{
 var runScopeLadderRoutes = map[string]bool{
 	"browser/cdp": true,
 	"shell":       true,
+}
+
+// issueScopePrefixes are the fixed segment chains that precede the id
+// wildcard of the BOARD issue routes (ADR-141): the native REST family and
+// the pipeline-board family — the forge per-card routes ride the native
+// chain. Classified only when the issue-tenant resolver capability exists
+// (cloud): self-hosted's single store has no tenancy to decouple.
+var issueScopePrefixes = []runScopePrefix{
+	{4, []string{"api", "v1", "native", "issues"}},
+	{4, []string{"api", "v1", "pipeline-board", "tasks"}},
+}
+
+// ErrAmbiguousIssueID marks an issue id PREFIX that names more than one
+// issue across teams: an ambiguous prefix is not an address, so the
+// ambient stamp decides and the handler's own resolution renders the
+// verdict for the caller's team.
+var ErrAmbiguousIssueID = errors.New("ambiguous issue id prefix")
+
+// issueIDClass is the board twin of runIDClass (ADR-141).
+func (s *Server) issueIDClass(r *http.Request) (string, bool, int) {
+	if s == nil || s.mux == nil || s.cfg.IssueTenantResolver == nil {
+		return "", false, 0
+	}
+	_, pattern := s.mux.Handler(r)
+	if pattern == "" {
+		return "", false, 0
+	}
+	for _, w := range issueScopePrefixes {
+		if !patternWildcardAt(pattern, w) {
+			continue
+		}
+		return extractRunID(r.URL.EscapedPath(), w.fixedSegments), true, w.fixedSegments
+	}
+	return "", false, 0
 }
 
 // routeSubPath returns the request path segments AFTER the id wildcard
@@ -166,17 +202,38 @@ func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
 //     Via: this GRANTS what the pinned-token path refused before (an org
 //     admin's PAT pinned to another team was unusable there), it does not
 //     widen a session beyond canViewTeam;
+//   - a plain org member of the team's parent org reads as a viewer too,
+//     but only when the team's run-visibility axis (ADR-148) is explicitly
+//     opened to the org — a per-team flag the org sets, marked Via:
+//     org-shared; every action stays behind the member rung;
 //   - everyone else: not authorized.
 //
+// The axis is a BY-ID grant: allowOrgShared marks the callers that sit on
+// the run-addressed/WS-scope paths, where the grant was decided. The
+// X-Iterion-Team header re-scope passes false — the header costs exactly
+// what a team switch would demand, and a plain org member's switch into
+// the team is refused; letting the axis ride the header would open the
+// team's run LISTS and stats to it (the ADR-148 review's R1141b0).
+//
 // A membership-store FAILURE is an error, never a silent degrade to viewer.
-func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string) (auth.Identity, bool, error) {
-	return identityInTeamOn(s.authStore(), ctx, id, teamID)
+func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
+	return identityInTeamOn(s.authStore(), ctx, id, teamID, allowOrgShared)
 }
 
 // identityInTeamOn is identityInTeam against an explicit identity store —
 // the same computation, testable against stubbed membership failures.
-func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, teamID string) (auth.Identity, bool, error) {
+// allowOrgShared carries the by-id contract line: true on the
+// run-addressed and WS-standing paths, false on the header re-scope.
+func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
 	if id.IsSynthetic() {
+		return auth.Identity{}, false, nil
+	}
+	// The re-scope is the second address of a team: a credential pinned to
+	// one team reaches no run and no issue of another, whatever standing its
+	// owner holds there. "Not authorized" here, so the caller answers the
+	// 404 a run they cannot see answers — no existence oracle over the
+	// teams the pin excludes.
+	if id.PinRefusesTeam(teamID) {
 		return auth.Identity{}, false, nil
 	}
 	if id.IsSuperAdmin {
@@ -238,14 +295,30 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		if oerr != nil && !errors.Is(oerr, identity.ErrNotFound) {
 			return auth.Identity{}, false, oerr
 		}
-		if oerr != nil || !om.Role.AtLeast(identity.OrgRoleAdmin) {
+		if oerr != nil || !om.Role.Valid() {
+			return auth.Identity{}, false, nil
+		}
+		// The org reach, narrowest grant first: an org admin/owner reads
+		// as a viewer on every team of their org (what canViewTeam would
+		// grant); a plain org member does too, but ONLY on a team whose
+		// run-visibility axis (ADR-148) is explicitly opened to the org —
+		// a per-team, org-gated flag read LIVE with the team above. Both
+		// land as a viewer: the ladder still refuses every action, and
+		// cdp/shell stay member-only.
+		via := ""
+		switch {
+		case om.Role.AtLeast(identity.OrgRoleAdmin):
+			via = "org-admin-lineage"
+		case allowOrgShared && t.RunVisibility == identity.RunVisibilityOrg:
+			via = "org-shared"
+		default:
 			return auth.Identity{}, false, nil
 		}
 		return withCredentialOf(auth.Identity{
 			UserID: id.UserID, Email: id.Email,
 			OrgID: t.OrgID, OrgRole: om.Role,
 			TeamID: teamID, Role: identity.RoleViewer,
-			Via: "org-admin-lineage",
+			Via: via,
 		}, id), true, nil
 	default:
 		// A transient store failure must NOT degrade into a verdict.
@@ -254,10 +327,10 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 }
 
 // withCredentialOf returns scoped carrying the credential facts of from — the
-// principal kind, the token id, the credential kind, its expiry and its
-// session — so an identity re-scoped to a run's team is still the credential
-// that was presented: what it may mint and until when does not change with
-// the team it acts in.
+// principal kind, the token id, the credential kind, its expiry, its session
+// and its team pin — so an identity re-scoped to a run's team is still the
+// credential that was presented: what it may mint, until when, and which team
+// it is bound to do not change with the team it acts in.
 func withCredentialOf(scoped, from auth.Identity) auth.Identity {
 	scoped.Kind = from.Kind
 	scoped.JTI = from.JTI
@@ -267,6 +340,8 @@ func withCredentialOf(scoped, from auth.Identity) auth.Identity {
 	scoped.SessionGeneration = from.SessionGeneration
 	scoped.CredentialID = from.CredentialID
 	scoped.MintedBy = from.MintedBy
+	scoped.TeamPin = from.TeamPin
+	scoped.OrgPin = from.OrgPin
 	return scoped
 }
 
@@ -309,6 +384,9 @@ func (s *Server) runScopeLadder(r *http.Request, fixedSegments int, role identit
 // (one answer, no existence oracle), 403 for a caller without the ladder's
 // rung, 500 when the store fails (fail visibly, never a degrade).
 func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Identity) (context.Context, bool) {
+	if issueID, isIssue, fixedSegments := s.issueIDClass(r); isIssue {
+		return s.scopeIssueByID(w, r, id, issueID, fixedSegments)
+	}
 	runID, ok, fixedSegments := s.runIDClass(r)
 	if !ok {
 		return s.stampAuthedContext(w, r, id)
@@ -329,7 +407,7 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve run tenant: %v", err)
 		return nil, false
 	}
-	resolved, ok, err := s.identityInTeam(r.Context(), id, team)
+	resolved, ok, err := s.identityInTeam(r.Context(), id, team, true)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve standing in team %s: %v", team, err)
 		return nil, false
@@ -346,7 +424,81 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		s.httpErrorFor(w, r, http.StatusForbidden, "your role in team %s does not allow this action", team)
 		return nil, false
 	}
-	return s.stampAuthedContext(w, r, resolved)
+	// A19 (#2148): a cross-team read granted by the super-admin flag —
+	// and only such a grant — crosses the named, audited predicate. A
+	// membership or org-admin standing is the ordinary path and stays
+	// unaudited; the flag that reaches everywhere is exactly the one
+	// that must leave a trace.
+	if resolved.Via == "super-admin" && id.TeamID != team {
+		s.superAdminRunRead(r, id, team, "run.cross_team_read", runID, nil)
+	}
+	// byID: the run's team is the scope this request acts in — the
+	// explicit team header must not fight the resource's team (the
+	// class test pins it).
+	return s.stampIdentity(w, r, resolved, true)
+}
+
+// scopeIssueByID is the board twin of the run arm (ADR-141): the issue's
+// team resolves team-blind through the issue-tenant resolver, the caller's
+// standing in THAT team authorizes — reads for a viewer, mutations for a
+// member, the run ladder's rule (no board GET hands out live control) —
+// and the stamp lands on the issue's team, so every handler's per-request
+// store resolution (cloudBoardResolve reads the stamped team) serves the
+// issue's own board unchanged. An issue the caller cannot see answers 404
+// exactly like a missing one; a resolver that cannot read is a 500; an
+// ambiguous id prefix is not an address — the ambient stamp decides.
+// allowOrgShared=false: the run-visibility axis (ADR-148) is a RUNS grant —
+// it does not reach the board surface.
+func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.Identity, issueID string, fixedSegments int) (context.Context, bool) {
+	if issueID == "" {
+		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
+		return nil, false
+	}
+	team, err := s.cfg.IssueTenantResolver(r.Context(), issueID)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrAmbiguousIssueID):
+		return s.stampAuthedContext(w, r, id)
+	case errors.Is(err, tracker.ErrNotFound):
+		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
+		return nil, false
+	default:
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve issue tenant: %v", err)
+		return nil, false
+	}
+	resolved, ok, err := s.identityInTeam(r.Context(), id, team, false)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve standing in team %s: %v", team, err)
+		return nil, false
+	}
+	if !ok {
+		// No standing in the issue's team: the issue is invisible — the
+		// same 404 a missing issue answers (no existence oracle).
+		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
+		return nil, false
+	}
+	if !s.runScopeLadder(r, fixedSegments, resolved.Role) {
+		s.httpErrorFor(w, r, http.StatusForbidden, "your role in team %s does not allow this action", team)
+		return nil, false
+	}
+	if resolved.Via == "super-admin" && id.TeamID != team {
+		s.superAdminRunRead(r, id, team, "issue.cross_team_read", issueID, nil)
+	}
+	return s.stampIdentity(w, r, resolved, true)
+}
+
+// attachRunViewer stamps the caller's effective standing for THIS run
+// onto a snapshot about to be served (the ADR-148 review's F4): the
+// choke point resolved it; the studio derives its action affordances
+// from it instead of guessing from run status. No identity (or none
+// with a role — a local, auth-less server), no field: today's
+// affordances stand.
+func attachRunViewer(r *http.Request, snap *runview.RunSnapshot) {
+	id, _ := auth.FromContext(r.Context())
+	if id.Role == "" {
+		return
+	}
+	snap.Viewer = &runview.RunViewer{Role: string(id.Role), Via: id.Via}
 }
 
 // socketStanding is what one tick of an open run socket (the Browser-Live
@@ -416,7 +568,7 @@ func (s *Server) runSocketStanding(ctx context.Context, runID string, opener aut
 	}
 	scoped := opener
 	scoped.IsSuperAdmin = user.IsSuperAdmin
-	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team)
+	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team, true)
 	if serr != nil {
 		if s.logger != nil {
 			s.logger.Error("server: run socket of %s: the caller's standing in %s could not be read: %v", runID, team, serr)

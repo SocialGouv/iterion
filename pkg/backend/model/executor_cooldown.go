@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -31,6 +32,16 @@ type routeCooldown struct {
 	// chain's terminal error must still expose this cause to the durable
 	// usage-window retry and credential-pool health classifiers.
 	Cause error
+	// Source and Credential are what the call that armed the entry reported
+	// it ran on: the claude_code session label and the credential keys
+	// (delegate.Result.SessionFingerprint and Credential, ADR-161 decision
+	// 8). The verdict a skip carries is that call's, so the skip names that
+	// call's credential (ChainRoute): a skipped route makes no call of its
+	// own, and the credential pool places the verdict on the credential it
+	// names — a verdict naming none is placed by the credential plan's
+	// prediction, or on nobody.
+	Source     string
+	Credential credroute.Spend
 }
 
 // maxRouteCooldown bounds how far ahead a remembered reset may sit before

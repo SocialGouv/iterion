@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -36,6 +38,21 @@ func (s *capStatusStore) UpdateRunOutcome(_ context.Context, _ string, status st
 	s.gotMeta = meta
 	s.gotFrom = from
 	return true, nil
+}
+
+// The fake observes the same typed port as the real FS/Mongo conformance.
+func (s *capStatusStore) RecordPreEngineRefusal(ctx context.Context, id string, q store.PreEngineRefusalRequest) (store.PreEngineRefusalResult, error) {
+	if err := q.Validate(); err != nil {
+		return store.PreEngineRefusalResult{}, err
+	}
+	changed, err := s.UpdateRunOutcome(ctx, id, q.TargetStatus(), q.Message, q.Outcome(), store.PreEngineRefusalFromStatuses(q))
+	return store.PreEngineRefusalResult{Changed: changed, Status: q.TargetStatus()}, err
+}
+func (s *capStatusStore) AppendEvent(ctx context.Context, id string, event store.Event) (*store.Event, error) {
+	if s.RunStore != nil {
+		return s.RunStore.AppendEvent(ctx, id, event)
+	}
+	return &event, nil
 }
 
 type failingCapStore struct{ usagecap.Store }
@@ -76,6 +93,7 @@ func capLLMWorkflow() *ir.Workflow {
 }
 
 func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	resets := time.Now().UTC().Add(30 * time.Hour)
 	caps := usagecap.NewMemStore()
@@ -124,10 +142,72 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	}
 }
 
+func TestUsageAdmissionRefusesUnappliedQuotaInsteadOfArmingQuotaFreeRetry(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	ctx := store.WithIdentity(t.Context(), "team", "owner")
+	caps := usagecap.NewMemStore()
+	now := time.Now().UTC()
+	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""), usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Utilization: 0.92, Status: usagecap.StatusWarning, ResetsAt: now.Add(time.Hour), ObservedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, prior := range []store.RunStatus{store.RunStatusFailedResumable, store.RunStatusPausedWaitingHuman} {
+		t.Run(string(prior), func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			const id = "quota-at-wall"
+			armed := now.Add(time.Minute)
+			if err := st.SaveRun(ctx, &store.Run{ID: id, TenantID: "team", OwnerID: "owner", Status: prior,
+				Checkpoint: &store.Checkpoint{NodeID: "think", InteractionID: "waiting-answer"},
+				RetryState: &store.RunRetryState{RetryAfter: &armed}, CodemodeBoundsOverride: &scripthost.Limits{StoreBytes: 500}}); err != nil {
+				t.Fatal(err)
+			}
+			flip, ok, err := st.FlipToQueued(ctx, id, prior, now)
+			if err != nil || !ok {
+				t.Fatalf("queue attempt: changed=%t err=%v", ok, err)
+			}
+			msg := &queue.RunMessage{RunID: id, TenantID: "team", OwnerID: "owner", PublishedAtRFC: store.PublishAt(now, flip.At).Format(time.RFC3339Nano),
+				Resume: &queue.ResumeSpec{PriorStatus: prior, CodemodeQuota: &queue.CodemodeQuotaPatch{QueuedAt: flip.At, Bytes: 800}}}
+			r := capRunner(capTestPolicy(), caps, st)
+			if err := r.spendResumeIntent(ctx, msg, iterlog.Nop()); err != nil || msg.Resume.CodemodeQuotaSpent {
+				t.Fatalf("present quota intent must be unspent: err=%v", err)
+			}
+			var refusal *unappliedQuotaUsageRefusal
+			if err := r.admitAttempt(ctx, capLLMWorkflow(), msg); !errors.As(err, &refusal) {
+				t.Fatalf("usage admission returned %v, want explicit refusal without retryable provider error", err)
+			}
+			queued, err := st.LoadRun(ctx, id)
+			if err != nil || queued.Status != store.RunStatusQueued {
+				t.Fatalf("preflight must leave the queued attempt to the exact release: run=%+v err=%v", queued, err)
+			}
+			var delivery fakeDelivery
+			if status, interim := r.finishUnappliedQuotaUsageRefusal(ctx, msg, refusal, &delivery, iterlog.Nop()); status != "quota_not_applied" || interim || delivery.acks != 1 || delivery.naks != 0 {
+				t.Fatalf("status=%s interim=%t delivery=%+v; want ack only after release", status, interim, delivery)
+			}
+			after, err := st.LoadRun(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != prior || !strings.Contains(after.Error, "codemode quota change was not applied") || !strings.Contains(after.Error, "submit a new resume") ||
+				after.CodemodeBoundsOverride == nil || after.CodemodeBoundsOverride.StoreBytes != 500 || after.CodemodeQuotaClaimedAt != nil ||
+				after.RetryState == nil || after.RetryState.RetryAfter != nil || after.ContinuationState != store.ContinuationFinal {
+				t.Fatalf("unapplied refusal did not restore prior=%s with no scheduled retry: status=%s continuation=%s error=%q bounds=%+v retry=%+v", prior, after.Status, after.ContinuationState, after.Error, after.CodemodeBoundsOverride, after.RetryState)
+			}
+			if prior.RequiresResumeAnswers() && (after.Checkpoint == nil || after.Checkpoint.InteractionID != "waiting-answer") {
+				t.Fatalf("release lost the pending human answer: %+v", after.Checkpoint)
+			}
+		})
+	}
+}
+
 // The runtime settings path, at THIS enforcement point: a cap written to
 // the settings store starts refusing runs on the same Runner value —
 // no restart, no reconstruction — once the resolver's TTL elapses.
 func TestUsageCapPreflight_RuntimeSettingsChangeIsLive(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	caps := usagecap.NewMemStore()
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
@@ -252,8 +332,11 @@ func TestUsageCapPreflight_FailsOpen(t *testing.T) {
 
 // One tenant's own subscription is a different meter from the deployment's:
 // merging them would let one tenant's spend park another's runs, and would
-// consult the wrong ledger for both.
+// consult the wrong ledger for both. The pod's ambient channels are blanked
+// first: these rows answer for a pod with no inherited credential, and a
+// machine that exports one (the forfait pod does) must not move the meters.
 func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
+	blankAnthropicWireEnv(t)
 	msg := &queue.RunMessage{TenantID: "team-7"}
 
 	if got := usageCapKey(context.Background(), msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "") {
@@ -377,6 +460,7 @@ func capToolOnlyWorkflow() *ir.Workflow {
 // 92% against a 75% cap. The LLM-shaped run must still be refused (asserted
 // in the same test, so a fix that simply disabled the cap fails here).
 func TestUsageCapPreflight_SparesAWorkflowThatCannotCallAModel(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	caps := usagecap.NewMemStore()
 	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""),
@@ -460,8 +544,11 @@ func TestUsageCapPreflight_RotatedCredentialIsNotParkedByTheOldAccounts(t *testi
 // The meter key names the credential the run actually spends: the delegate
 // ranks a ctx API key above an OAuth dir, so the fingerprint must follow
 // the same preference, and legacy credentials without fingerprints keep the
-// fingerprint-less key they always had.
+// fingerprint-less key they always had. The pod's ambient channels are
+// blanked first: a machine that exports one must not hand the legacy rows a
+// fingerprint they never carried.
 func TestUsageCapKey_FingerprintFollowsTheSpendingCredential(t *testing.T) {
+	blankAnthropicWireEnv(t)
 	msg := &queue.RunMessage{TenantID: "team-7"}
 
 	both := secrets.WithCredentials(context.Background(), secrets.Credentials{
@@ -545,6 +632,7 @@ func TestUsageCapCredKeys_ReadingFollowsTheSessionSource(t *testing.T) {
 // tenant shapes were probed: both keys held and the anthropic one capped,
 // and an openai-only tenant metered on the platform key.
 func TestUsageCapPreflight_SparesARunPinnedOffTheAnthropicWire(t *testing.T) {
+	blankAnthropicWireEnv(t) // the unpinned-judge rows cap the bare meter: a pod with no ambient credential
 	offWire := func() *ir.Workflow {
 		return &ir.Workflow{
 			Name:  "rite",
@@ -666,4 +754,38 @@ func TestUsageCapPreflight_SparesARunPinnedOffTheAnthropicWire(t *testing.T) {
 			t.Errorf("a rescue route must not park a run whose every primary route is off the wire: %v", err)
 		}
 	})
+}
+
+// A stamped run holding a gateway credential meters its supervisor
+// evaluations on the credential the registry serves: the slot's
+// fingerprint is the server's URL-folded stamp the bundle carried
+// (PR-B'1), never a recomputed hash — and a run holding no gateway
+// credential meters nothing: the registry reads the gateway from the
+// deployment's OPENAI_COMPATIBLE env pair (or refuses a stamped run's
+// fallback outright), never from the pod's anthropic ambient env.
+func TestSupervisorKey_GatewaySlotMetersOnTheHeldPair(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7", RunnerPool: ""}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
+		Fingerprints:   map[string]string{string(secrets.ProviderOpenAICompatible): "fp-gw-server"},
+	})
+	k := usageCapCredKeys(ctx, msg)
+	key, metered := k.supervisorKey(ctx, "openai_compatible/glm-5.3", "")
+	if !metered {
+		t.Fatal("a held gateway pair must meter its supervisor evaluations")
+	}
+	if !strings.Contains(key, "fp-gw-server") {
+		t.Fatalf("the meter key does not carry the server's fingerprint: %q", key)
+	}
+	// No gateway credential held: nothing the registry would spend is on a
+	// meter the cap keeps — the env pair has no ledger, the stamped run's
+	// fallback answers a typed refusal.
+	ctx = secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	k = usageCapCredKeys(ctx, msg)
+	key, metered = k.supervisorKey(ctx, "openai_compatible/glm-5.3", "")
+	if metered {
+		t.Fatalf("a run holding no gateway credential = %q metered=%v, want not metered — the deployment's env pair books on nobody", key, metered)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
@@ -20,6 +21,6 @@ import (
 // default timeout (#2231).
 func TestMain(m *testing.M) {
 	os.Exit(hometest.IsolateUserHome(func() int {
-		return hometest.Isolate(func() int { return proctest.NoProcessLeaks(m.Run) })
+		return hometest.Isolate(func() int { return proctest.NoProcessLeaks(func() int { return pricingtest.Run(m.Run) }) })
 	}))
 }

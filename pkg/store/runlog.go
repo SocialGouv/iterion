@@ -17,66 +17,90 @@ import (
 // dispatcher-supplied ID cannot create/open run.log outside the store and
 // only fail later when CreateRun validates the ID.
 //
-// On error the original logger is returned with a nil closer so callers
-// can keep running — a run with no writable store dir still works (logs
-// go to stderr only). The returned closer is nil when no tee was set up;
-// callers should defer Close on the non-nil result.
+// On error a FORK of the original logger is returned with a nil closer so
+// callers can keep running — a run with no writable store dir still works
+// (logs go to stderr only). The fork is what makes the returned handle the
+// RUN's: BuildExecutor sets the run's secret matcher on the logger a
+// surface hands it, and that slot is per-handle, so returning the caller's
+// own logger here would install one run's matcher where the next run
+// replaces it (iterion#2822). The returned closer is nil when no tee was
+// set up; callers should defer Close on the non-nil result.
 //
-// Shared between the CLI runner (pkg/cli/run.go) and the in-process
-// dispatcher runner (pkg/dispatcher/engine_runner.go) so dispatched runs
-// produce the same per-run log file the studio's log viewer expects —
-// without this, the studio renders "No log captured" on every
-// dispatcher-spawned run because the file simply doesn't exist.
+// This wrapper preserves the context-free historical compatibility API.
+// CLI and dispatcher invocations use TeeRunLogContext with their original
+// binding, then apply RunLogErrorFatal to the returned error.
 func TeeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID string) (*iterlog.Logger, io.Closer) {
-	warn := func(format string, args ...any) {
-		if logger != nil {
-			logger.Warn(format, args...)
-		}
+	out, closer, err := TeeRunLogContext(context.Background(), logger, level, storeRoot, runID)
+	if err != nil && logger != nil {
+		logger.Warn("store: run.log tee refused: %v", err)
 	}
-	if err := SanitizePathComponent("run ID", runID); err != nil {
-		warn("store: refusing run.log tee for unsafe run ID: %v", err)
-		return logger, nil
-	}
-
-	runsDir := filepath.Join(storeRoot, "runs")
-	runDir := filepath.Join(runsDir, runID)
-	if err := os.MkdirAll(runDir, dirPerm); err != nil {
-		warn("store: mkdir run dir for log tee: %v", err)
-		return logger, nil
-	}
-	// MkdirAll does not tighten existing directories, and this helper can be
-	// the first store code path to touch <root>/runs/<runID>. Run logs can
-	// contain prompts, model outputs, and secrets, so force the private store
-	// modes even when an older build left the directory world-readable.
-	if err := os.Chmod(runsDir, dirPerm); err != nil {
-		warn("store: chmod runs dir for log tee: %v", err)
-		return logger, nil
-	}
-	if err := os.Chmod(runDir, dirPerm); err != nil {
-		warn("store: chmod run dir for log tee: %v", err)
-		return logger, nil
-	}
-
-	logPath := filepath.Join(runDir, "run.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
-	if err != nil {
-		warn("store: open run.log for tee: %v", err)
-		return logger, nil
-	}
-	if err := logFile.Chmod(filePerm); err != nil {
-		_ = logFile.Close()
-		warn("store: chmod run.log for tee: %v", err)
-		return logger, nil
-	}
-	return iterlog.New(level, io.MultiWriter(os.Stderr, logFile)), logFile
+	return out, closer
 }
 
-// runLogPath validates runID and returns <root>/runs/<runID>/run.log.
-func (s *FilesystemRunStore) runLogPath(runID string) (string, error) {
+// TeeRunLogContext validates the original Run format before opening a file.
+// Delayed callers must pass their captured binding and propagate the error.
+// Its returned descriptor refers to this inode; it is not reopened by path.
+// TeeRunLog retains the historical stderr-only fallback for legacy callers.
+func TeeRunLogContext(ctx context.Context, logger *iterlog.Logger, level iterlog.Level, storeRoot, runID string) (*iterlog.Logger, io.Closer, error) {
+	logger = logger.WithOwnRedactor()
 	if err := SanitizePathComponent("run ID", runID); err != nil {
-		return "", err
+		return logger, nil, err
 	}
-	return filepath.Join(s.root, "runs", runID, "run.log"), nil
+	if ctx == nil {
+		return logger, nil, ErrInvalidValueFormat
+	}
+	if err := ctx.Err(); err != nil {
+		return logger, nil, err
+	}
+	s, err := New(storeRoot)
+	if err != nil {
+		return logger, nil, err
+	}
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return logger, nil, err
+	}
+	defer unlock()
+	payload, err := s.openRunLog(ctx, runID, true)
+	if err != nil {
+		return logger, nil, err
+	}
+	defer payload.Close()
+	if !payload.strict {
+		runDir := filepath.Dir(payload.key)
+		runsDir := filepath.Dir(runDir)
+		// Preserve historical permission hardening for the legacy namespace.
+		if err = os.Chmod(runsDir, dirPerm); err != nil {
+			return logger, nil, err
+		}
+		if err = os.Chmod(runDir, dirPerm); err != nil {
+			return logger, nil, err
+		}
+	}
+	logFile, err := payload.OpenFile(os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
+	if err != nil {
+		return logger, nil, err
+	}
+	if err = logFile.Chmod(filePerm); err != nil {
+		_ = logFile.Close()
+		return logger, nil, err
+	}
+	if payload.strict {
+		if err = errors.Join(logFile.Sync(), payload.syncParent()); err != nil {
+			_ = logFile.Close()
+			return logger, nil, err
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		_ = logFile.Close()
+		return logger, nil, err
+	}
+	return iterlog.New(level, io.MultiWriter(os.Stderr, logFile)), logFile, nil
+}
+
+// openRunLog validates the binding and retains the selected log namespace.
+func (s *FilesystemRunStore) openRunLog(ctx context.Context, runID string, create bool) (*runPayloadFile, error) {
+	return s.openRunPayloadFile(ctx, runID, "run.log", create)
 }
 
 // AppendRunLog implements RunLogStore over runs/<id>/run.log. Bytes are
@@ -85,21 +109,24 @@ func (s *FilesystemRunStore) runLogPath(runID string) (string, error) {
 // bytes instead of corrupting the stream. The normal local writer is
 // the RunLogBuffer file tee — this method exists for store-API parity
 // (a runner pointed at a filesystem store).
-func (s *FilesystemRunStore) AppendRunLog(_ context.Context, runID string, offset int64, data []byte) error {
+func (s *FilesystemRunStore) AppendRunLog(ctx context.Context, runID string, offset int64, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
 	if offset < 0 {
 		return fmt.Errorf("store: AppendRunLog(%s): negative offset %d", runID, offset)
 	}
-	logPath, err := s.runLogPath(runID)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), dirPerm); err != nil {
-		return fmt.Errorf("store: AppendRunLog(%s): mkdir: %w", runID, err)
+	defer unlock()
+	payload, err := s.openRunLog(ctx, runID, true)
+	if err != nil {
+		return err
 	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, filePerm)
+	defer payload.Close()
+	f, err := payload.OpenFile(os.O_CREATE|os.O_WRONLY, filePerm)
 	if err != nil {
 		return fmt.Errorf("store: AppendRunLog(%s): open: %w", runID, err)
 	}
@@ -107,18 +134,22 @@ func (s *FilesystemRunStore) AppendRunLog(_ context.Context, runID string, offse
 	if _, err := f.WriteAt(data, offset); err != nil {
 		return fmt.Errorf("store: AppendRunLog(%s): write at %d: %w", runID, offset, err)
 	}
+	if payload.strict {
+		return errors.Join(f.Sync(), payload.syncParent())
+	}
 	return nil
 }
 
 // ReadRunLogRange implements RunLogStore: bytes [from, until) of
 // runs/<id>/run.log, until <= 0 meaning "to end". A missing file is
 // (nil, nil) — the run produced no log.
-func (s *FilesystemRunStore) ReadRunLogRange(_ context.Context, runID string, from, until int64) ([]byte, error) {
-	logPath, err := s.runLogPath(runID)
+func (s *FilesystemRunStore) ReadRunLogRange(ctx context.Context, runID string, from, until int64) ([]byte, error) {
+	payload, err := s.openRunLog(ctx, runID, false)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(logPath)
+	defer payload.Close()
+	f, err := payload.Open()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -149,12 +180,13 @@ func (s *FilesystemRunStore) ReadRunLogRange(_ context.Context, runID string, fr
 
 // RunLogSize implements RunLogStore: the persisted byte count of
 // runs/<id>/run.log (0 when missing).
-func (s *FilesystemRunStore) RunLogSize(_ context.Context, runID string) (int64, error) {
-	logPath, err := s.runLogPath(runID)
+func (s *FilesystemRunStore) RunLogSize(ctx context.Context, runID string) (int64, error) {
+	payload, err := s.openRunLog(ctx, runID, false)
 	if err != nil {
 		return 0, err
 	}
-	st, err := os.Stat(logPath)
+	defer payload.Close()
+	st, err := payload.Stat()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, nil

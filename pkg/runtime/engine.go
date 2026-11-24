@@ -11,10 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -39,20 +37,9 @@ const tracerName = "github.com/SocialGouv/iterion/pkg/runtime"
 
 // EnvOutputCorrectionBudget is the process-wide default for bounded schema
 // correction. Launch surfaces can still override it with the engine option.
-const EnvOutputCorrectionBudget = "ITERION_OUTPUT_CORRECTION_BUDGET"
+const EnvOutputCorrectionBudget = model.EnvOutputCorrectionBudget
 
-func defaultOutputCorrectionBudget() int {
-	const fallback = 2
-	raw := strings.TrimSpace(os.Getenv(EnvOutputCorrectionBudget))
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return fallback
-	}
-	return n
-}
+func defaultOutputCorrectionBudget() int { return model.DefaultOutputCorrectionBudget() }
 
 // ErrRunPaused is returned by Run or Resume when execution is suspended
 // at a human node. This is not a failure — the run can be resumed via
@@ -133,13 +120,7 @@ type OutputCorrector interface {
 // OutputCorrectionUsage is optional accounting returned by a corrector that
 // performs its own model call. The runtime folds it into the node's normal
 // `_tokens`/`_cost_usd` metadata before budget enforcement.
-type OutputCorrectionUsage struct {
-	Tokens  int
-	CostUSD float64
-	// UnreportedCalls has no field yet because no implementer exists
-	// (the interface is test-only): when a second OutputCorrectorWithUsage
-	// appears, the correction call's unreported count comes with it.
-}
+type OutputCorrectionUsage = store.OutputCorrectionUsage
 
 // OutputCorrectorWithUsage extends OutputCorrector for executors that can
 // report the correction call's spend. Executors may implement either
@@ -160,16 +141,30 @@ type workDirSetter interface{ SetWorkDir(string) }
 
 type repoRootSetter interface{ SetRepoRoot(string) }
 
+// scratchDirSetter receives the run's scratch READ ROOTS so the claw read
+// tools accept them (#2650, narrowed by #2869): base is the shared project
+// scratch (${PROJECT_SCRATCH_DIR}), run the run family's own subtree
+// beneath it (${RUN_SCRATCH_DIR}), always a root, and shared reports
+// whether base itself is a root too — only while the workflow still
+// references it; false means the narrowed scope stands alone. Pushed from
+// pushExecutorVars only, which every path reaches after e.repoRoot is
+// settled AND after the sandbox decision — the values are keyed on the
+// repo root and differ between host and container.
+type scratchDirSetter interface {
+	SetScratchDirs(base, run string, shared bool)
+}
+
 type varsSetter interface{ SetVars(map[string]any) }
 
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	resourceScope *runResourceScope
-	workflow      *ir.Workflow
-	store         store.RunStore
-	executor      NodeExecutor
-	logger        *iterlog.Logger
+	terminationWriteTimeout time.Duration
+	resourceScope           *runResourceScope
+	workflow                *ir.Workflow
+	store                   store.RunStore
+	executor                NodeExecutor
+	logger                  *iterlog.Logger
 	// seamWarnOnce keeps the "this executor cannot answer the seams
 	// admission reads" warning to one line per engine: admission asks per
 	// node, per branch, on every fan-out.
@@ -179,35 +174,50 @@ type Engine struct {
 	// `go test` when the process cwd was the package directory (#1803);
 	// releaseTempWorkDir removes it when Run or ResumeWithHostInputs returns.
 	workDirTemp            string
-	onEvent                func(evt store.Event)    // optional observer fired after every successful append
-	recoveryDispatch       RecoveryDispatch         // optional; consulted on node execution failure
-	workflowHash           string                   // SHA-256 of the .bot source, set via WithWorkflowHash
-	workflowSource         string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
-	compiledMain           string                   // the main's key in compiledFiles, set via WithCompiledSources
-	compiledFiles          map[string]string        // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
-	executionContext       *store.ExecutionContext  // resolved launch/resume context contract, set via WithExecutionContext
-	workspaceTracker       workspacetrack.Tracker   // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
-	filePath               string                   // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
-	parentRunID            string                   // immediate parent run, set via WithParentRunID for nested executions
-	trust                  store.RunTrust           // who wrote the code in this run's workspace, set via WithTrust
-	repoSHAExpected        string                   // the commit the admission pinned, set via WithTrust
-	runnerPool             string                   // the sovereign pool the run is frozen to, set via WithRunnerPool
-	parentNodeID           string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
-	isolatedChild          bool                     // the parent's subbot node declared `isolated:` for this child, set via WithIsolatedChild
-	preset                 string                   // in-source preset name selected at launch, set via WithPreset
-	runName                string                   // deterministic human-friendly run label, set via WithRunName
-	source                 *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
-	mergeInto              string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName             string                   // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
-	mergeStrategy          string                   // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
-	autoMerge              bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
-	modelOverrides         []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
-	routingPolicy          *store.RoutingPolicy     // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
-	budgetAsk              *ir.BudgetOverrides      // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
-	validateOutputs        bool                     // when true, validate node outputs against declared schemas
-	outputCorrectionBudget int                      // bounded invalid-output correction calls per node episode
-	forceResume            bool                     // when true, skip workflow hash check on resume
-	acceptScratchLoss      bool                     // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
+	onEvent                func(evt store.Event)     // optional observer fired after every successful append
+	recoveryDispatch       RecoveryDispatch          // optional; consulted on node execution failure
+	workflowHash           string                    // SHA-256 of the .bot source, set via WithWorkflowHash
+	workflowSource         string                    // .bot text at launch, set via WithWorkflowSource (else read from filePath)
+	compiledMain           string                    // the main's key in compiledFiles, set via WithCompiledSources
+	compiledFiles          map[string]string         // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
+	executionContext       *store.ExecutionContext   // resolved launch/resume context contract, set via WithExecutionContext
+	workspaceTracker       workspacetrack.Tracker    // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
+	filePath               string                    // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
+	parentRunID            string                    // immediate parent run, set via WithParentRunID for nested executions
+	runScratchOwner        string                    // run-family root ${RUN_SCRATCH_DIR} keys on, settled once per execution by runInitState/restoreRunEnv (#2869)
+	trust                  store.RunTrust            // who wrote the code in this run's workspace, set via WithTrust
+	repoSHAExpected        string                    // the commit the admission pinned, set via WithTrust
+	botSourceTier          string                    // which bot-resolution tier served the launch (store.BotSourceTier*), set via WithBotSourceTier; the #1959 isolation floor reads it
+	runnerPool             string                    // the sovereign pool the run is frozen to, set via WithRunnerPool
+	contentBoundary        *store.RunContentBoundary // the frozen gateway stamp the run replays, set via WithContentBoundary
+	parentNodeID           string                    // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
+	isolatedChild          bool                      // the parent's subbot node declared `isolated:` for this child, set via WithIsolatedChild
+	preset                 string                    // in-source preset name selected at launch, set via WithPreset
+	runName                string                    // deterministic human-friendly run label, set via WithRunName
+	source                 *store.RunSource          // originating action metadata (dispatcher → issue ref), set via WithSource
+	mergeInto              string                    // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName             string                    // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
+	mergeStrategy          string                    // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge              bool                      // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
+	modelOverrides         []store.RunModelOverride  // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	launchModelOverrides   []store.RunModelOverride  // the launch's own raw override rows, before the routing policy folded in, persisted for the subbot children of the run's tree; set via WithLaunchModelOverrides
+	llmRoutePolicy         *store.RunLLMRoutePolicy  // the routing-policy snapshot the run's tree froze at launch, persisted on the run doc (a subbot child records its root's); set via WithLLMRoutePolicy
+	routingPolicy          *store.RoutingPolicy      // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
+	budgetAsk              *ir.BudgetOverrides       // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
+	validateOutputs        bool                      // when true, reject runtime schema mismatches instead of warning
+	toolStdoutWrapped      bool                      // the output-validation dial's explicit off: a tool recipe's non-JSON stdout under `output:` is wrapped as {"result": …} instead of failing the node
+	outputRefsOwed         bool                      // a tool body reading an output field its producer declared and did not supply fails the node before the body runs; off renders the hole (EnvOutputRefs)
+	outputCorrectionBudget int                       // bounded invalid-output correction calls per node invocation
+	// parallelSaveWindow coalesces routine fan-out boundary checkpoints into
+	// one durable write per window (#561); zero keeps the legacy synchronous
+	// one-write-per-boundary behaviour. Immediate writes — branch completion,
+	// pause, spend, abandoned resume — bypass the window in both modes.
+	parallelSaveWindow time.Duration
+	forceResume        bool // when true, skip workflow hash check on resume
+	acceptScratchLoss  bool // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
+	// resumeRunCheck judges the run Resume loads by ID before any step of
+	// the resume acts on it (WithResumeRunCheck); nil checks nothing.
+	resumeRunCheck func(*store.Run) error
 	// scratchBankHeld stops the current sandbox's teardown from banking its
 	// scratch: set when restoring the bank failed, so a partial scratch
 	// never replaces the bank a later resume will retry (ADR-106). Each
@@ -231,7 +241,8 @@ type Engine struct {
 	repoRoot                 string                               // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
 	containerWorkspace       string                               // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
 	workspaceIntegrity       WorkspaceIntegrity                   // sandbox-side HEAD captured at teardown for export-based drivers (zero when not applicable); read via SandboxWorkspaceIntegrity after Run/Resume returns
-	attachmentsContainerDir  string                               // in-container path the run's attachments dir is bind-mounted at; empty when nodes must read them from the host (no sandbox, degraded sandbox, or a driver that drops host binds). Authoritative only once sandboxSettled is true
+	attachmentsContainerDir  string                               // in-container path the run's attachments dir is bind-mounted or copied at; empty when nodes must read them from the host (no sandbox, degraded sandbox, or a driver that drops host binds). Authoritative only once sandboxSettled is true
+	attachmentsLocalDir      string                               // on a store with no filesystem root: the per-run directory the engine materialised the attachments into before the sandbox (materializeAttachments) — the bind or seed source, and the path nodes open when they run in this process; removed with the sandbox
 	sandboxSettled           bool                                 // true once startSandbox has run: attachmentsContainerDir is then a FACT, not a forecast. Before that, attachmentPath falls back to a pre-flight prediction (the resume path resolves file answers before the bootstrap)
 	sandboxOverride          string                               // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
 	sandboxDefault           string                               // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
@@ -252,6 +263,7 @@ type Engine struct {
 	callbackToken            string                               // optional: opaque correlation token echoed in the completion payload; set via WithCallback
 	callbackAnswerNode       string                               // optional: node whose latest artifact holds the run's final answer; set via WithCallback
 	boardMCPHandler          http.Handler                         // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
+	boardMCPConnectors       bool                                 // boardMCPHandler also serves /api/v1/mcp/connectors (the server's mux does, the cloud runner pod's does not — #2632); gates the connector endpoint handed to the executor
 	subbotRunner             SubbotRunner                         // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
 	simulation               Simulation                           // a dry run's answers to the waits on the world; zero for every production engine. Set via WithSimulation.
 	sandboxRunObserver       func(sandbox.Run)                    // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
@@ -261,10 +273,16 @@ type Engine struct {
 	extraSkills              []string                             // operator-added skills, additive to the workflow
 	extraSkillsOrigin        string                               // flag, env, or resume
 	permissionOverride       string                               // persisted run-level tool gate choice
-	botOrigin                *store.BotOrigin                     // workflow code provenance, distinct from the triggering action
-	delegation               *store.RunDelegation                 // optional host-owned worker linkage
-	worktreeBaseCommit       string                               // explicit verified base for delegated worktrees
-	budgetOverrides          *store.RunBudgetOverrides            // raw launch/resume budget intent, persisted for every later engine rebuild
+	codemodeOverride         string                               // persisted launch-time codemode choice (ADR-165)
+	codemodeBoundsOverride   *scripthost.Limits                   // persisted launch-time codemode bounds raise
+	activeResumePauseHandoff string                               // fence of the locally claimed pause handoff
+	resumePauseBudget        *store.ResumePauseBudget
+	resumeCodemodeQueuedAt   time.Time                   // exact queued marker for a published quota restatement
+	resumeCodemodeQuota      store.CodemodeScratchLimits // explicit quota-only restatement for the resume claim
+	botOrigin                *store.BotOrigin            // workflow code provenance, distinct from the triggering action
+	delegation               *store.RunDelegation        // optional host-owned worker linkage
+	worktreeBaseCommit       string                      // explicit verified base for delegated worktrees
+	budgetOverrides          *store.RunBudgetOverrides   // raw launch/resume budget intent, persisted for every later engine rebuild
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an
@@ -345,11 +363,102 @@ type SubbotRequest struct {
 	// parallel fan-out this same flag admits only overlaps while each child
 	// owns a tree of its own.
 	Isolated bool
+	// AutoMerge carries the subbot node's `auto_merge:` intent: the child's
+	// own workflow completion lands its banked branch. The host wires it
+	// into the child engine (WithAutoMerge), whose run doc then records it.
+	// The child acts on the intent through its OWN worktree finalization and
+	// through nothing else — a subbot child is never banked, so a recorded
+	// intent with FinalBranch empty is dead. Meaningful only on an isolated
+	// child (the compile refuses it elsewhere): a child in the parent's
+	// workspace has no finalization of its own, and the launch refuses the
+	// three shapes that leave the child without a worktree to finalize — a
+	// child whose own workflow renounces it (`worktree: none`), a
+	// deployment whose run store has no filesystem root, where every child
+	// runs in place, and a parent whose live sandbox the child adopts (the
+	// sandbox mounts one workspace whatever the child declares)
+	// (RefuseUnlandableSubbotLanding).
+	AutoMerge bool
+	// MergeInto / MergeStrategy carry the subbot node's landing target and
+	// strategy ("current" default, "none", or a branch; "squash" default or
+	// "merge"). Wired into the child engine beside AutoMerge.
+	MergeInto     string
+	MergeStrategy string
+}
+
+// RefuseUnlandableSubbotLanding refuses a landing intent the child cannot
+// act on. Three shapes are dead the same way. A child whose worktree mode is
+// anything but the canonical `auto` — the declared `worktree: none`, an
+// unset or foreign value — runs in place: the engine builds a child
+// worktree for `worktree: auto` and nothing else (engine_run's decisive
+// arm), so the guard mirrors that predicate rather than matching the
+// author's vocabulary alone. On a deployment whose run store has no
+// filesystem root (the cloud plane) every `worktree: auto` child runs in
+// place in its parent's workspace clone too, because there is nowhere
+// durable to host a per-run worktree. And a child that adopts its parent's
+// live sandbox (ParentSandbox carrying a started Run) runs in place as
+// well, whatever its own workflow declares: the sandbox mounts ONE
+// workspace tree, which overrides `isolated:` (worktree.go's
+// runsInParentWorkspace) — the same decisive arm reads that predicate
+// before it reads the worktree mode, so the guard reads it first too. No
+// shape has a bank for the child either (the bank serves queue-delivered
+// runs only, a child rides its parent's delivery), so the armed intent
+// sits on the run doc with FinalBranch empty and the instance's outcome
+// router declines it before the claim on every sweep, in silence. C329
+// refuses the same dead intent at the parent's compile for a child without
+// `isolated:`; this closes the hole one level down, which only the child
+// launch sees: the parent's compile never reads the child .bot, and the
+// plane is the host's fact. Every child-launch host calls it right after
+// the child compiles and before any child run is recorded, passing its
+// store's root (empty = the cloud plane) — the CLI runner `iterion run`
+// and `iterion resume` share (pkg/cli), the dispatcher daemon's direct
+// engine path (pkg/dispatcher), the studio's in-process runner
+// (pkg/runview) and the queue runner (pkg/runner).
+func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode, childStoreRoot string) error {
+	if !req.AutoMerge {
+		return nil
+	}
+	if req.ParentSandbox != nil && req.ParentSandbox.Run != nil {
+		// The parent's live sandbox is shared with this child: it mounts
+		// one workspace tree whatever the child declares, so no worktree
+		// mode gives the child a finalization of its own — refuse before
+		// the child-declaration arms, whose remediation would be false
+		// advice under the shared sandbox.
+		return fmt.Errorf("the parent run's live sandbox is shared with this child — it mounts one workspace whatever the child declares, so the child runs in place in the parent's tree, has no worktree finalization of its own to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields — the child's commits reach the forge through the parent run's own landing")
+	}
+	if childWorktreeMode == "none" {
+		return fmt.Errorf("the child workflow declares `worktree: none` — a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or remove `worktree: none` so the child owns a worktree")
+	}
+	if childStoreRoot == "" {
+		// The cloud plane: a run store with no filesystem root runs every
+		// `worktree: auto` child in place (the per-run workspace clone is
+		// already the isolation), and no bank ever writes a subbot child's
+		// branch — banking serves queue-delivered runs only, and a child
+		// rides its parent's delivery. Same dead intent, refused while the
+		// host still knows the plane.
+		return fmt.Errorf("this deployment's run store has no filesystem root (the cloud plane) — the child runs in place in its parent's workspace, has no worktree of its own to finalize and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever and the instance's outcome router would decline it in silence on every sweep; drop the landing fields — the child's commits reach the forge through the parent run's own landing — or launch the child as its own run when an independent landing is wanted")
+	}
+	if childWorktreeMode != "auto" {
+		// Unset or foreign over a rooted store: the compile canonicalizes
+		// the mode (empty resolves to `auto`, C142 refuses the rest), so a
+		// value here names a child the engine will run in place — the
+		// guard reads the engine's own predicate and lets no mode outside
+		// it pass.
+		return fmt.Errorf("the child's worktree mode is %q, not `auto` — the engine builds a child worktree only for `worktree: auto`: a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or give the child `worktree: auto`", childWorktreeMode)
+	}
+	return nil
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
 // terminal output (mapped to outputs.<subbot>.<field>). Wired by the CLI /
 // runview layer where compiling + running a child engine is possible.
+//
+// The callback receives the parent's original invocation context. A custom
+// launcher must explicitly prepare the new child's identity and format before
+// building its executor or calling Engine.Run; passing this context directly
+// to a different run ID is refused. runview.PrepareSubbotInvocation implements
+// the child-birth handoff for adapters outside this package. Keep the original
+// parent context for parent events such as OnChildAttached. A format binding
+// is not an execution grant; parent accounting/ownership must not be inherited.
 type SubbotRunner func(ctx context.Context, req SubbotRequest) (map[string]any, error)
 
 // New creates a new Engine for a raw workflow.
@@ -359,10 +468,12 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
+	validation := outputValidationFromEnv()
+	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: validation == outputValidationStrict, toolStdoutWrapped: validation == outputValidationOff, outputRefsOwed: defaultOutputRefsOwed(), outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}
+	e.installLogRedactor()
 	// `run.url` renders empty when the deployment's public origin is unusable,
 	// and a bot then publishes its run id with no link. That is the safe
 	// behaviour, not a silent one: the reason is said HERE, the first place a
@@ -384,11 +495,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
-	for _, opt := range opts {
-		opt(e)
-	}
-	return e, nil
+	return New(applied, s, exec, opts...), nil
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
@@ -416,17 +523,20 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 //     collector returns. TestFanOutAbandonedBranchDoesNotRaceRunState
 //     exercises that window under -race.
 type runState struct {
+	correctionAccounts   *correctionAccounts
+	correctionInvocation *correctionInvocation
 	// ctx is the per-run context. Stored on runState (despite the
 	// usual "no context in struct" rule) because helpers.go threads
 	// `rs *runState` deeply through emit/failRun*/checkpoint paths
 	// where adding ctx to every signature would 80+ call sites with
 	// no semantic gain — the lifetime of rs IS the lifetime of ctx.
 	// Set in Run() before execLoop().
-	ctx       context.Context
-	runID     string
-	runInputs map[string]any
-	vars      map[string]any
-	outputs   map[string]map[string]any
+	ctx           context.Context
+	runID         string
+	codemodeState model.CodemodeState
+	runInputs     map[string]any
+	vars          map[string]any
+	outputs       map[string]map[string]any
 	// inheritedOutputs is the immutable outer/trunk output snapshot visible
 	// to a branch. Branch-local outputs remain in outputs; contract dependency
 	// collection consults both to mirror the scope used to build node input.
@@ -478,6 +588,11 @@ type runState struct {
 	// or last crossed its back-edge. Persisted on the checkpoint, so a
 	// resumed run keeps measuring across the pause.
 	loopBudgetMarks map[string]loopBudgetMark
+	// loopBudgetSizes samples each sized_by loop's work signal at the
+	// moment its mark is taken — the denominator of the proration the
+	// next crossing's pricing applies (#2677). Lazily allocated: loops
+	// without the clause never touch it. Persisted beside the marks.
+	loopBudgetSizes map[string]float64
 	// branchLocal disables predictive loop pricing against the shared run
 	// budget. Concurrent sibling spend cannot price one branch's iteration;
 	// the shared 90% pre-exec and hard limits remain authoritative.
@@ -518,10 +633,12 @@ type runState struct {
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
-	events           *runEvents
-	artifactVersions map[string]int
-	nodeSessions     map[string]store.NodeSessionSlot
-	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
+	events                    *runEvents
+	artifactVersions          map[string]int
+	nodeSessions              map[string]store.NodeSessionSlot
+	pauseSessionRef           string // in-flight CLI ask_user pack (ADR-089)
+	delegateHandoffRun        *store.Run
+	delegateHandoffCheckpoint *store.Checkpoint // original delegate envelope until the successor is durable
 	// sessionLedger records the background work a CLI session's processes
 	// lost, per session id (delegate.SessionLedger). One
 	// ledger per run, shared by the trunk and every branch — its entries are
@@ -608,6 +725,18 @@ type runState struct {
 	// reset them after a successful execution. Keys are created lazily.
 	nodeAttempts map[string]map[ErrorCode]int
 
+	// nodeFailureStreaks holds, per tool node, the fingerprint of its last
+	// command failure and how many executions in a row ended on it — the
+	// count an identical repeat is promoted on (identical_failure.go). It
+	// rides the checkpoint beside nodeAttempts. Keys are created lazily.
+	nodeFailureStreaks map[string]store.NodeFailureStreak
+
+	// retrySessionCosts holds cost readings already booked during an in-place
+	// recovery sequence. Tokens always count calls; only an explicitly
+	// session-total cost with the same backend and session can overlap.
+	// Success clears the sequence after its final booking.
+	retrySessionCosts map[string]map[retrySessionCostKey]float64
+
 	// attachments holds the resolved per-attachment view exposed to
 	// templates as {{attachments.X[.path|.url|.mime|.size|.sha256]}}.
 	// Populated once at run start from Run.Attachments and the
@@ -639,7 +768,16 @@ type resumeBackendState struct {
 	// consumer's json.RawMessage assertion in applyResumeContinuity
 	// (a plain []byte silently failed it and dropped the rehydration).
 	conversation json.RawMessage
-	sessionID    string
+	// commandNarrowing is the checkpointed command narrowing (#1717),
+	// injected under delegate.ResumeCommandNarrowingKey beside the
+	// conversation.
+	commandNarrowing json.RawMessage
+	sessionID        string
+	// sessionStranded is the sandbox-mirror stranding fact (#2461)
+	// checkpointed beside the conversation; injected under
+	// delegate.ResumeSessionStrandedKey so the resumed crossing keeps
+	// its captures out of the session store.
+	sessionStranded bool
 }
 
 // markFailedBestEffort transitions the run to status=failed with a
@@ -665,7 +803,19 @@ type resumeBackendState struct {
 // classifies both (handleContextDoneWithCheckpoint); this is that
 // classification, minus the checkpoint, which no node has yet earned —
 // resume then restarts from the entry, which it is built to do.
-func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
+//
+// It RETURNS the (status, code) it decided: the caller maps that one
+// decision to the error it hands the runner (setupErrFrom), so the record
+// and the return can never be two different reads of a racing context
+// (#2862). When the compare-and-set declined — a peer recorded its own
+// outcome first, nominally the publisher's cancel — the returned decision
+// is the DOCUMENT's, re-read: the returned error must agree with what the
+// run actually says, not with this attempt's losing read.
+func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) (store.RunStatus, store.FailureCode, error) {
+	// Authority/format refusals are not an execution failure of this row.
+	if errors.Is(cause, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(cause) {
+		return "", "", cause
+	}
 	writeCtx := context.WithoutCancel(ctx)
 	status, msg, code := setupFailureStatus(ctx, phase, cause)
 	remedy := setupFailureRemedy(cause, code)
@@ -681,37 +831,49 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 				// declined CAS means a peer got there first with its own
 				// reason, and a second event would contradict the document.
 				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code, remedy)
+				return status, code, cause
 			}
-			return
+			if _, cur, lerr := store.LoadRunWithValueFormat(writeCtx, e.store, runID); lerr == nil && cur != nil {
+				return cur.Status, cur.FailureCode, cause
+			} else if errors.Is(lerr, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(lerr) {
+				return "", "", lerr
+			}
+			return status, code, cause
+		}
+		if errors.Is(err, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(err) {
+			return "", "", err
 		}
 	}
 	if e.logger != nil {
 		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
 	}
+	return status, code, cause
 }
 
 // recordSetupOutcome writes the setup phase's verdict on the run and reports
 // whether THIS call is the one that recorded it.
 //
-// A CANCELLED outcome is compare-and-set from `running`, like the resume
-// arm's: in cloud the publisher CASes the doc to `cancelled` with the
-// operator's own reason BEFORE the cancel subject reaches the engine, and an
-// unconditional write here replaced that reason with a generic "sandbox
-// start cancelled before the first node" — which is then what the run list,
-// the board card and the merge gate's synthetic status display. A decline is
-// the nominal shape, not an error, so it reports changed=false and the
-// caller stays quiet.
+// A CANCELLED or FAILED_RESUMABLE outcome — IsTerminalResumable's set, the
+// outcomes a peer may record first — is compare-and-set from `running`,
+// like the resume arm's: in cloud the publisher CASes the doc to
+// `cancelled` with the operator's own reason BEFORE the cancel subject
+// reaches the engine, and an unconditional write here replaced that reason
+// with a generic "sandbox start cancelled before the first node" — or, one
+// race later, stranded the run `failed_resumable` over the cancelled
+// document while the returned error already read as the cancel (#2862).
+// A decline is the nominal shape, not an error, so it reports changed=false
+// and the caller stays quiet.
 //
-// Every other outcome stays an unconditional write: the run is `running` and
-// owned by this engine, nothing competes for it, and the 3-attempt retry
-// above exists precisely because the store may be the thing that just
+// A plain FAILED outcome stays an unconditional write: the run is `running`
+// and owned by this engine, nothing competes for it, and the 3-attempt
+// retry above exists precisely because the store may be the thing that just
 // failed.
 func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status store.RunStatus, msg string, code store.FailureCode) (bool, error) {
-	if status == store.RunStatusCancelled {
-		return e.store.UpdateRunStatusIfCoded(ctx, runID, status, msg, code,
+	if status.IsTerminalResumable() {
+		return e.recordFailureStatusIf(ctx, runID, status, msg, code,
 			[]store.RunStatus{store.RunStatusRunning})
 	}
-	if err := e.store.UpdateRunStatusCoded(ctx, runID, status, msg, code); err != nil {
+	if err := e.recordFailureStatus(ctx, runID, status, msg, code); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -775,6 +937,14 @@ func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, stat
 // cancelling, so what surfaces is whatever the interrupted step returned
 // (a killed `kubectl exec`, a half-written worktree), never the cause.
 func setupFailureStatus(ctx context.Context, phase string, cause error) (store.RunStatus, string, store.FailureCode) {
+	// An operator's cancel that reached the run ctx wins over everything a
+	// setup phase reports: a phase timeout or an unplaced pod observed in
+	// the same instant must not record a resumable failure the redelivery
+	// would resume — the run the operator cancelled. (A drain is decided
+	// below, after the two sentinels, as before.)
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) && !errors.Is(context.Cause(ctx), ErrRunInterrupted) {
+		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause), store.FailureCancelled
+	}
 	// Checked BEFORE the ctx: a phase timeout fires on a child ctx and
 	// leaves the run ctx live, so the "ctx.Err() == nil ⇒ failed" arm
 	// below would hard-fail — and the queue would drop — a run a peer pod
@@ -795,6 +965,16 @@ func setupFailureStatus(ctx context.Context, phase string, cause error) (store.R
 			store.FailureSandboxCapacity
 	}
 	if ctx == nil || ctx.Err() == nil {
+		// The store did not hand the run's attachments over before the
+		// sandbox, the run's own context still live: nothing of the run
+		// executed, and a fresh delivery fetches again. Under the live
+		// context only — a fetch an operator's cancel or a drain cut short is
+		// the cancel's or the drain's, decided below.
+		if setupFailureCode(cause) == store.FailureAttachmentsUnfetchable {
+			return store.RunStatusFailedResumable,
+				fmt.Sprintf("%s: the run's attachments could not be fetched (resumable — nothing of this attempt executed; a redelivery fetches them again): %v", phase, cause),
+				store.FailureAttachmentsUnfetchable
+		}
 		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
 	}
 	if errors.Is(context.Cause(ctx), ErrRunInterrupted) {
@@ -827,23 +1007,52 @@ func setupFailureCode(cause error) store.FailureCode {
 	return ""
 }
 
-// setupErr decorates the error a setup phase returns so an interruption
-// stays recognisable to the runner: it NAKs on ErrRunInterrupted (the run
-// is redelivered to a healthy pod) and ACKs on anything else. Without it
-// the status written above would say resumable while the queue had
-// already dropped the run — the two halves have to agree.
+// setupErrFrom maps the ONE decision markFailedBestEffort recorded to the
+// error returned to the runner, so the record and the return can never be
+// two different reads of a racing context (#2862): previously setupErr
+// re-read the ctx after the record was written, and a cancel, a drain or
+// the run's deadline landing between the two reads made them disagree — a
+// terminal record re-offered by the runner, a cancelled run stranded
+// failed_resumable.
 //
-// A sandbox phase timeout and an unplaced sandbox are NOT dressed up as
-// an interruption: each keeps its own sentinel (sandbox.ErrPhaseTimeout /
-// sandbox.ErrCapacity, wrapped through by the driver), and the runner's
-// ack policy classifies those shapes itself — a NAK for redelivery, with
-// the DLQ park still applying on the last permitted delivery, which an
-// interruption is exempt from.
-func (e *Engine) setupErr(ctx context.Context, err error) error {
-	if ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrRunInterrupted) {
-		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
+// The mapping, by the DECIDED (status, code) — the runner NAKs on
+// ErrRunInterrupted (the run is redelivered to a healthy pod) and on the
+// two sandbox sentinels / the unfetchable code (a delayed re-offer the
+// DLQ park still bounds), and ACKs on anything else:
+//
+//   - cancelled → ErrRunCancelled, wrapped with %v so the failure's own
+//     typed code does not ride along: the runner acks the cancelled run.
+//   - failed_resumable + INTERRUPTED (a drain) → ErrRunInterrupted.
+//   - failed_resumable otherwise (a sandbox phase timeout, an unplaced
+//     pod, unfetchable attachments) → the error as passed: its sentinel
+//     (sandbox.ErrPhaseTimeout / sandbox.ErrCapacity) or typed code IS the
+//     runner's re-offer signal, and the record agrees — resumable.
+//   - terminal failed → the error as passed, minus the one re-offer
+//     signal a terminal decision can carry: ATTACHMENTS_UNFETCHABLE, typed
+//     by fetchFailure under a live ctx the deadline then took. On a
+//     terminal record that code must not reach the runner — it would
+//     re-offer a finished run — so the code is stripped while the message
+//     stays intact.
+//
+// A setup site that returns without this mapping keeps the runner's
+// generic reading.
+func setupErrFrom(status store.RunStatus, code store.FailureCode, err error) error {
+	if errors.Is(err, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(err) {
+		return err
 	}
-	return err
+	switch {
+	case status == store.RunStatusCancelled:
+		return fmt.Errorf("%w: %v", ErrRunCancelled, err)
+	case status == store.RunStatusFailedResumable && code == store.FailureInterrupted:
+		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
+	case status == store.RunStatusFailedResumable:
+		return err
+	default:
+		if code == store.FailureAttachmentsUnfetchable || setupFailureCode(err) == store.FailureAttachmentsUnfetchable {
+			return errors.New(err.Error())
+		}
+		return err
+	}
 }
 
 // newRunState builds a runState with all maps allocated. Resume paths
@@ -870,6 +1079,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		sessionLedger:      delegate.NewSessionLedger(nil),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
+		nodeFailureStreaks: make(map[string]store.NodeFailureStreak),
 		budget:             e.newRunBudget(),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
@@ -878,6 +1088,12 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 	// Publish the run's budget so the active-duration stamping callback
 	// (runview Service / runner) can read its monotonic elapsed. nil when
 	// the workflow declares no budget — ActiveElapsed then returns 0.
+	if e.correctionProtocolCapable() {
+		if rs.budget == nil {
+			rs.budget = &SharedBudget{logger: e.logger, startedAt: time.Now(), warningsEmitted: map[string]bool{}}
+		}
+		rs.correctionAccounts, _ = newCorrectionAccounts(rs.budget, nil)
+	}
 	e.activeBudget.Store(rs.budget)
 	return rs
 }

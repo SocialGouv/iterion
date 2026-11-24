@@ -3,12 +3,14 @@ import type { EdgeProps } from "@xyflow/react";
 import { SELECTED_BORDER, softColor } from "@/lib/constants";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
 import { useSelectionStore } from "@/store/selection";
+import { useUIStore } from "@/store/ui";
 import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
 
 export default function ConditionalEdge(props: EdgeProps) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected, markerEnd } = props;
 
   const hasLoop = !!(data as Record<string, unknown>)?.loop;
+  const motionReduced = useUIStore((s) => s.motionReduced);
   const grouped = useGroupedDiagnostics();
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
   const edgeDiags = grouped.byEdge.get(id) ?? [];
@@ -44,7 +46,7 @@ export default function ConditionalEdge(props: EdgeProps) {
           filter: selected
             ? `drop-shadow(0 0 4px ${softColor(SELECTED_BORDER, 60)})`
             : undefined,
-          animation: hasLoop ? "dash-flow 1s linear infinite" : undefined,
+          animation: hasLoop && !motionReduced ? "dash-flow 1s linear infinite" : undefined,
         }}
       />
       {label && (

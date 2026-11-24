@@ -1,0 +1,233 @@
+[
+  {
+    "name": "R4-1-U1-unevaluated-tuple",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ],
+      "unevaluatedItems": false
+    },
+    "valid": [
+      [
+        "a"
+      ]
+    ],
+    "invalid": [
+      [
+        "a",
+        1
+      ]
+    ]
+  },
+  {
+    "name": "R4-1-U3-unevaluated-ref",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "tuple": {
+          "prefixItems": [
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$ref": "#/$defs/tuple",
+      "unevaluatedItems": false
+    },
+    "valid": [
+      [
+        "a"
+      ]
+    ],
+    "invalid": [
+      [
+        "a",
+        1
+      ]
+    ]
+  },
+  {
+    "name": "R4-1-U4-unevaluated-allOf",
+    "input": {
+      "allOf": [
+        {
+          "prefixItems": [
+            {
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "unevaluatedItems": false
+    },
+    "valid": [
+      [
+        "a"
+      ]
+    ],
+    "invalid": [
+      [
+        "a",
+        1
+      ]
+    ]
+  },
+  {
+    "name": "R4-1-U5-unevaluated-2019-tuple",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2019-09/schema",
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "unevaluatedItems": false
+    },
+    "valid": [
+      [
+        "a"
+      ]
+    ],
+    "invalid": [
+      [
+        "a",
+        1
+      ]
+    ]
+  },
+  {
+    "name": "R4-5-W1",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "n": {
+          "$id": "https://f.test/n#item:v1",
+          "definitions": {
+            "m": {
+              "type": "integer"
+            }
+          },
+          "properties": {
+            "q": {
+              "$ref": "#/definitions/m"
+            }
+          }
+        },
+        "m": {
+          "type": "string"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n"
+        }
+      }
+    },
+    "valid": [
+      {
+        "x": {
+          "q": 1
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "x": {
+          "q": "s"
+        }
+      }
+    ]
+  },
+  {
+    "name": "R4-5-W1-draft06",
+    "input": {
+      "$schema": "http://json-schema.org/draft-06/schema#",
+      "definitions": {
+        "n": {
+          "$id": "https://f.test/n#item:v1",
+          "definitions": {
+            "m": {
+              "type": "integer"
+            }
+          },
+          "properties": {
+            "q": {
+              "$ref": "#/definitions/m"
+            }
+          }
+        },
+        "m": {
+          "type": "string"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n"
+        }
+      }
+    },
+    "valid": [
+      {
+        "x": {
+          "q": 1
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "x": {
+          "q": "s"
+        }
+      }
+    ]
+  },
+  {
+    "name": "R4-5-W5-control",
+    "input": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "definitions": {
+        "n": {
+          "id": "https://f.test/n#item:v1",
+          "definitions": {
+            "m": {
+              "type": "integer"
+            }
+          },
+          "properties": {
+            "q": {
+              "$ref": "#/definitions/m"
+            }
+          }
+        },
+        "m": {
+          "type": "string"
+        }
+      },
+      "properties": {
+        "x": {
+          "$ref": "#/definitions/n"
+        }
+      }
+    },
+    "valid": [
+      {
+        "x": {
+          "q": 1
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "x": {
+          "q": "s"
+        }
+      }
+    ]
+  }
+]

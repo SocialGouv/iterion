@@ -9,6 +9,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,17 +63,62 @@ type refContext struct {
 	// and C151 fire there too. The check stays separate from InWith so
 	// the two positions can carry their own phrasing.
 	InComputeExpr bool
+	// ImagePath is true for a reference in an LLM node's `images:` entry:
+	// rendered at the prompt sink like a prompt body, but consumed as a
+	// FILE the backend opens, so the grant finding's remedy there is the
+	// file form of the secret, never a sink grant (imagePathSecretRemedy).
+	ImagePath bool
+	// Sink names the materialization sink the text that holds the reference
+	// feeds (pkg/dsl/secretsink): a prompt body, a tool node's authored
+	// command/postcondition/script, an action's params. Empty where the
+	// site materialises nothing (a data mapping, a compute expression, an
+	// edge condition) — those have their own refusals. A `{{secrets.X}}`
+	// reference is refused where its secret does not grant the sink.
+	Sink string
+	// InScriptBody is true for a reference in a tool node's `script:`
+	// body. Its Sink is the command sink, like a `command:`'s — one
+	// materialiser reads both — but what that materialiser can SWAP
+	// differs: the single-quoted placeholder the command path hands to
+	// MaterializeAuthoredShellEnv is shell, and a script body is a
+	// program in its own language, whose environment read is its own
+	// expression. So a reference the command path resolves through the
+	// child's environment has no swap here, which C331 reads to say at
+	// compile time what the run would only say mid-node.
+	InScriptBody bool
+	// Prompt names the prompt whose body holds the reference, when it is a
+	// prompt's: one prompt's references are read by every node that names
+	// it, and validating each reference once PER READER drew R × N
+	// diagnostics (#2779) — so the readers of one reference are validated
+	// each (the verdict reads the reader's schema and its place in the
+	// graph) and the findings that come out the same for several readers
+	// merge into one that names them (validateSharedPromptRef).
+	Prompt string
+	// display is the reader's name as a finding composes it: readerMark
+	// while a shared prompt's reference is validated against each reader —
+	// the merge substitutes the readers the finding is said of — empty
+	// otherwise, and displayID is NodeID.
+	display string
+}
+
+// displayID is the consuming node's name as a diagnostic composes it: the
+// reader mark while a shared prompt's reference is validated against each
+// of its readers (validateSharedPromptRef), the node's own id otherwise.
+func (rc refContext) displayID() string {
+	if rc.display != "" {
+		return rc.display
+	}
+	return rc.NodeID
 }
 
 // refErrorf / refWarnf emit a template-reference diagnostic with the
 // context's full attribution: node, edge and the span of the text that
 // carries the reference.
 func (c *compiler) refErrorf(rc refContext, code DiagCode, format string, args ...any) {
-	c.emit(SeverityError, code, rc.NodeID, rc.EdgeID, rc.Span, "", format, args...)
+	c.emit(SeverityError, code, rc.NodeID, rc.EdgeID, rc.Span, "", "", format, args...)
 }
 
 func (c *compiler) refWarnf(rc refContext, code DiagCode, format string, args ...any) {
-	c.emit(SeverityWarning, code, rc.NodeID, rc.EdgeID, rc.Span, "", format, args...)
+	c.emit(SeverityWarning, code, rc.NodeID, rc.EdgeID, rc.Span, "", "", format, args...)
 }
 
 // collectAllRefs gathers every template reference in the workflow together
@@ -102,6 +149,8 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Location:    fmt.Sprintf("prompt %q (node %q)", p.Name, nodeID),
 					Span:        promptSpans[p.Name],
 					OnQuestions: interactionPromptOnly(w.Nodes[nodeID], p.Name),
+					Sink:        secretsink.Prompt,
+					Prompt:      p.Name,
 				})
 			}
 		}
@@ -150,7 +199,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 				out = append(out, refContext{
 					Ref:      ref,
 					NodeID:   e.From,
-					Location: fmt.Sprintf("edge %s -> %s, when %q", e.From, e.To, e.ExpressionSrc),
+					Location: fmt.Sprintf("edge %s -> %s, when %q", e.From, e.To, expr.Excerpt(e.ExpressionSrc)),
 					Span:     edgeSpans[e],
 				})
 			}
@@ -211,13 +260,29 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Ref:      ref,
 					NodeID:   t.ID,
 					Location: fmt.Sprintf("tool node %q command", t.ID),
+					Sink:     secretsink.Command,
 				})
 			}
 			for _, ref := range t.ScriptRefs {
 				out = append(out, refContext{
+					Ref:          ref,
+					NodeID:       t.ID,
+					Location:     fmt.Sprintf("tool node %q script", t.ID),
+					Sink:         secretsink.Command,
+					InScriptBody: true,
+				})
+			}
+			// The postcondition is rendered exactly as the command is
+			// (postconditionBody) and materialises the same secrets, so it is
+			// the same sink — and its references are validated here like the
+			// command's, instead of resolving a typo at the one moment the
+			// recipe's verdict depends on it.
+			for _, ref := range t.PostcondRefs {
+				out = append(out, refContext{
 					Ref:      ref,
 					NodeID:   t.ID,
-					Location: fmt.Sprintf("tool node %q script", t.ID),
+					Location: fmt.Sprintf("tool node %q postcondition", t.ID),
+					Sink:     secretsink.Command,
 				})
 			}
 			// The third recipe's arguments, for the reason the script comment
@@ -232,8 +297,45 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 						Ref:      ref,
 						NodeID:   t.ID,
 						Location: fmt.Sprintf("tool node %q action param %q", t.ID, p.Key),
+						Sink:     secretsink.Params,
 					})
 				}
+			}
+		}
+	}
+
+	// LLM node `images:` refs — the image paths a node hands its backend.
+	// The runtime renders each path through the SAME resolver a prompt body
+	// goes through (resolveTemplate, pkg/backend/model), which materialises
+	// `{{secrets.X}}` at the prompt sink — ResolveSecretRefAt(Prompt, …) —
+	// so the sink here is `prompt` and the compile verdict matches what the
+	// run renders. The field was outside the walk, so an image path was the
+	// one prompt-sink text no check read: the resolver leaves the reference
+	// of a secret whose grants withhold `prompt` AS WRITTEN, so the path
+	// reached the backend as literal DSL text with nothing said (C323), and
+	// a typo'd `{{outputs.gen.file}}` resolved to an empty path at the one
+	// moment the node needed the image.
+	for _, n := range w.Nodes {
+		f := llmFieldsOf(n)
+		if f == nil {
+			continue
+		}
+		for _, image := range f.Images {
+			refs, err := ParseRefs(image)
+			if err != nil {
+				// The declaration already drew C004 for this text
+				// (buildLLMNodeShared), naming the node and the parse
+				// error; one defect, one diagnostic.
+				continue
+			}
+			for _, ref := range refs {
+				out = append(out, refContext{
+					Ref:       ref,
+					NodeID:    n.NodeID(),
+					Location:  fmt.Sprintf("%s node %q images", n.NodeKind(), n.NodeID()),
+					Sink:      secretsink.Prompt,
+					ImagePath: true,
+				})
 			}
 		}
 	}
@@ -337,36 +439,59 @@ func refFromExpr(r expr.Ref) *Ref {
 	}
 }
 
-// buildPredecessors computes, for each node, the set of all nodes that
-// can execute before it (i.e. whose outputs are available). This follows
-// ALL edges (including conditional and loop back-edges) to ensure zero
-// false positives.
-func buildPredecessors(w *Workflow) map[string]map[string]bool {
-	// Build reverse adjacency list.
-	revAdj := make(map[string][]string)
-	for _, e := range w.Edges {
-		revAdj[e.To] = append(revAdj[e.To], e.From)
-	}
+// predecessorIndex answers "which nodes can execute before X" on demand.
+// Materialising every node's transitive predecessor set is quadratic in the
+// node count (2.0 GB at 8 000 nodes, OOM at 16 000 — #2776), so the sets are
+// computed per consumer that actually queries reachability and memoised: a
+// workflow whose caps and references never ask pays the reverse-adjacency
+// build alone, which is linear. The sets themselves follow ALL edges
+// (including conditional and loop back-edges) to ensure zero false positives.
+type predecessorIndex struct {
+	revAdj map[string][]string
+	// loopTargets are the targets of loop back-edges: such a node is
+	// effectively its own predecessor because a prior iteration's output is
+	// available on re-entry.
+	loopTargets map[string]bool
+	known       map[string]bool
+	memo        map[string]map[string]bool
+}
 
-	// Identify nodes that are targets of loop back-edges.
-	// These nodes are effectively their own predecessors because
-	// a prior iteration's output is available on re-entry.
-	loopTargets := make(map[string]bool)
+func newPredecessorIndex(w *Workflow) *predecessorIndex {
+	p := &predecessorIndex{
+		revAdj:      make(map[string][]string),
+		loopTargets: make(map[string]bool),
+		known:       make(map[string]bool, len(w.Nodes)),
+		memo:        make(map[string]map[string]bool),
+	}
 	for _, e := range w.Edges {
+		p.revAdj[e.To] = append(p.revAdj[e.To], e.From)
 		if e.LoopName != "" {
-			loopTargets[e.To] = true
+			p.loopTargets[e.To] = true
 		}
 	}
-
-	result := make(map[string]map[string]bool)
 	for id := range w.Nodes {
-		preds := computePredecessors(id, revAdj)
-		if loopTargets[id] {
-			preds[id] = true
-		}
-		result[id] = preds
+		p.known[id] = true
 	}
-	return result
+	return p
+}
+
+// sets returns the transitive predecessor set of nodeID, computing it once
+// per queried node. ok is false when nodeID is not a node of the workflow:
+// the caller then skips the reachability check, as the materialised map did
+// when it carried no entry.
+func (p *predecessorIndex) sets(nodeID string) (map[string]bool, bool) {
+	if !p.known[nodeID] {
+		return nil, false
+	}
+	preds, ok := p.memo[nodeID]
+	if !ok {
+		preds = computePredecessors(nodeID, p.revAdj)
+		if p.loopTargets[nodeID] {
+			preds[nodeID] = true
+		}
+		p.memo[nodeID] = preds
+	}
+	return preds, true
 }
 
 // computePredecessors returns all transitive predecessors of nodeID via
@@ -400,6 +525,7 @@ func (c *compiler) validateSecrets(w *Workflow) {
 	if w == nil || len(w.Secrets) == 0 {
 		return
 	}
+	c.validateSecretPlaceholders(w)
 	for name, s := range w.Secrets {
 		if s == nil {
 			continue
@@ -433,6 +559,91 @@ func (c *compiler) validateSecrets(w *Workflow) {
 					"secret %q: hosts entry %q must be a bare hostname, parent domain, or IP without scheme/path", name, h)
 			}
 		}
+		c.validateSecretSinks(name, s)
+	}
+}
+
+// validateSecretSinks checks a secret's `sinks:` grants against the
+// vocabulary and against the declaration's own shape: a grant must name a
+// sink that exists, once; a file secret must grant `file` when it grants
+// anything (the mount IS its materialisation), and a value secret cannot
+// grant `file` (nothing mounts it). An absent list grants every sink
+// (ADR-146, axis 2) and is never refused here.
+func (c *compiler) validateSecretSinks(name string, s *Secret) {
+	if len(s.Sinks) == 0 {
+		// No list, or the empty one: every sink (the parser reads `[]` as
+		// no list, so no writer or transport can change its meaning).
+		return
+	}
+	seen := map[string]bool{}
+	for _, sink := range s.Sinks {
+		if !secretsink.Known(sink) {
+			c.errorf(DiagSecretSinkInvalid,
+				"secret %q: sinks entry %q is not a materialization sink (known: %s)", name, sink, secretsink.List())
+			continue
+		}
+		if seen[sink] {
+			c.errorf(DiagSecretSinkInvalid,
+				"secret %q: sinks names %q twice", name, sink)
+		}
+		seen[sink] = true
+	}
+	if s.IsFile() && !seen[secretsink.File] {
+		c.errorf(DiagSecretSinkInvalid,
+			"secret %q: as: file materialises the secret as a mounted file, which its sinks do not grant — add `file` to sinks: [%s], or drop the list", name, strings.Join(s.Sinks, ", "))
+	}
+	if !s.IsFile() && seen[secretsink.File] {
+		c.errorf(DiagSecretSinkInvalid,
+			"secret %q: sinks grants `file`, but the secret is a value (as: value) that nothing mounts — declare as: file, or drop `file` from the list", name)
+	}
+	// `prompt` hands a model the placeholder and resolves nothing: a list
+	// that names it alone grants the secret to no sink that spends it, and
+	// the run would carry a placeholder nothing resolves.
+	if len(seen) == 1 && seen[secretsink.Prompt] {
+		c.errorf(DiagSecretSinkInvalid,
+			"secret %q: sinks names `prompt` alone, which hands a model the placeholder and resolves it nowhere — add the sink that spends the secret (agent, command, params, file or egress)", name)
+	}
+	// An explicit `egress` grant with no `hosts:` is substituted toward ANY
+	// host, and the content DLP has no approval list to refuse against: the
+	// author asked for the wire and left it open. A warning, not a refusal —
+	// a secret with no `sinks:` has always gone toward any host.
+	if seen[secretsink.Egress] && len(s.Hosts) == 0 {
+		c.warnf(DiagSecretEgressUnscoped,
+			"secret %q: sinks grants `egress` with no hosts: — the sandbox proxy substitutes the placeholder toward ANY host it is sent to; scope it with hosts: [\"api.example.com\"]", name)
+	}
+}
+
+// validateSecretPlaceholders refuses two declarations whose names derive the
+// same placeholder (`tok` and `_tok` both become `__ITERION_SECRET_tok__`):
+// the guard would register one value under the token both references
+// render, and the grants of one would govern the other's placeholder.
+//
+// It refuses too a name whose placeholder spells another's redact-only form
+// (C341: `pw_redacted`): the guard writes that form in pw's
+// place where pw must resolve nowhere, and it would resolve to this
+// secret's value instead.
+func (c *compiler) validateSecretPlaceholders(w *Workflow) {
+	if w == nil || len(w.Secrets) == 0 {
+		return
+	}
+	names := make([]string, 0, len(w.Secrets))
+	for name := range w.Secrets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	owner := map[string]string{}
+	for _, name := range names {
+		ph := secretsink.PlaceholderFor(name)
+		if secretsink.IsRedactedForm(ph) {
+			c.errorf(DiagSecretNameReserved,
+				"secret %q: its placeholder %s spells the redact-only form of another secret's placeholder — the token the engine writes where that secret must resolve nowhere — so it would resolve to this secret's value instead; rename it so it does not end in `_redacted`", name, ph)
+		}
+		if first, taken := owner[ph]; taken {
+			c.errorf(DiagDuplicateSecret,
+				"secrets %q and %q share the placeholder %s — rename one so each declaration renders its own token", first, name, ph)
+			continue
+		}
+		owner[ph] = name
 	}
 }
 
@@ -503,29 +714,130 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 		return
 	}
 
-	predecessors := buildPredecessors(w)
+	predecessors := newPredecessorIndex(w)
 	artifactProducers := buildArtifactProducers(w)
 
-	for _, rc := range refs {
-		switch rc.Ref.Kind {
-		case RefOutputs:
-			c.validateOutputsRef(w, rc, predecessors)
-		case RefVars:
-			c.validateVarsRef(w, rc)
-		case RefInput:
-			c.validateInputRef(w, rc)
-		case RefArtifacts:
-			c.validateArtifactsRef(w, rc, predecessors, artifactProducers)
-		case RefAttachments:
-			c.validateAttachmentsRef(w, rc)
-		case RefSecrets:
-			c.validateSecretsRef(w, rc)
-		case RefLoop:
-			c.validateLoopRef(w, rc)
-		case RefRun:
-			c.validateRunRef(w, rc)
+	// The references of one prompt stand consecutive in refs, one per reader
+	// (collectAllRefs): validated against each reader — the verdict reads
+	// the reader — and merged where the verdict is shared (validateSharedPromptRef).
+	for i := 0; i < len(refs); {
+		if refs[i].Prompt == "" {
+			c.validateOneRef(w, refs[i], predecessors, artifactProducers)
+			i++
+			continue
+		}
+		j := i
+		for j < len(refs) && refs[j].Prompt == refs[i].Prompt && refs[j].Ref == refs[i].Ref {
+			j++
+		}
+		c.validateSharedPromptRef(w, refs[i:j], predecessors, artifactProducers)
+		i = j
+	}
+}
+
+func (c *compiler) validateOneRef(w *Workflow, rc refContext, predecessors *predecessorIndex, artifactProducers map[string]string) {
+	switch rc.Ref.Kind {
+	case RefOutputs:
+		c.validateOutputsRef(w, rc, predecessors)
+	case RefVars:
+		c.validateVarsRef(w, rc)
+	case RefInput:
+		c.validateInputRef(w, rc)
+	case RefArtifacts:
+		c.validateArtifactsRef(w, rc, predecessors, artifactProducers)
+	case RefAttachments:
+		c.validateAttachmentsRef(w, rc)
+	case RefSecrets:
+		c.validateSecretsRef(w, rc)
+	case RefLoop:
+		c.validateLoopRef(w, rc)
+	case RefRun:
+		c.validateRunRef(w, rc)
+	}
+}
+
+// readerMark stands for the reading node while one reference of a shared
+// prompt is validated against each of its readers: composed into the
+// finding wherever the reader's id would go, so two readers draw
+// byte-identical diagnostics exactly when the verdict is the same for both,
+// and those merge into one naming the readers (validateSharedPromptRef). It is no
+// identifier (`‹` opens none), so it can never be a name the author wrote.
+const readerMark = "‹reader›"
+
+// maxReadersNamed is how many of a shared finding's readers are named; the
+// rest are counted.
+const maxReadersNamed = 32
+
+// validateSharedPromptRef validates one reference of a prompt against each of its
+// readers. The validation is the reader's — the same reference is clean
+// against one reader's schema and refused against another's — but the
+// FINDING is shared when the verdict is: each reader is validated in turn,
+// the reader marked (readerMark) in what it draws, and the findings
+// identical for several readers are emitted once, the mark replaced by the
+// readers' names. One reader is no merge: its finding is said as it ever
+// was. R references of a prompt read by N nodes draw O(R) findings, not the
+// R × N that made a valid 65 KB bot OOM `validate --json` (#2779).
+func (c *compiler) validateSharedPromptRef(w *Workflow, rcs []refContext, predecessors *predecessorIndex, artifactProducers map[string]string) {
+	if len(rcs) == 1 {
+		c.validateOneRef(w, rcs[0], predecessors, artifactProducers)
+		return
+	}
+	// A fixed reader order: the nodes map's iteration is random, and the
+	// first reader's id is the merged finding's attribution.
+	slices.SortFunc(rcs, func(a, b refContext) int { return strings.Compare(a.NodeID, b.NodeID) })
+	type finding struct {
+		d       Diagnostic
+		readers []string
+	}
+	var order []finding
+	index := map[string]int{}
+	for _, rc := range rcs {
+		rc.display = readerMark
+		rc.Location = fmt.Sprintf("prompt %q (node %q)", rc.Prompt, readerMark)
+		base := len(c.diags)
+		c.validateOneRef(w, rc, predecessors, artifactProducers)
+		drawn := c.diags[base:]
+		c.diags = c.diags[:base]
+		for _, d := range drawn {
+			key := fmt.Sprintf("%s\x00%d\x00%s\x00%d\x00%d\x00%s\x00%s\x00%s\x00%s",
+				d.Code, d.Severity, d.File, d.Line, d.Column, d.EdgeID, d.Property, d.Message, d.Hint)
+			if at, ok := index[key]; ok {
+				if !slices.Contains(order[at].readers, rc.NodeID) {
+					order[at].readers = append(order[at].readers, rc.NodeID)
+				}
+				continue
+			}
+			index[key] = len(order)
+			order = append(order, finding{d: d, readers: []string{rc.NodeID}})
 		}
 	}
+	for _, f := range order {
+		quoted, bare := readerNames(f.readers)
+		msg := strings.ReplaceAll(f.d.Message, `"`+readerMark+`"`, quoted)
+		msg = strings.ReplaceAll(msg, readerMark, bare)
+		hint := strings.ReplaceAll(f.d.Hint, `"`+readerMark+`"`, quoted)
+		hint = strings.ReplaceAll(hint, readerMark, bare)
+		sp := ast.Span{Start: ast.Pos{File: f.d.File, Line: f.d.Line, Column: f.d.Column}}
+		c.emit(f.d.Severity, f.d.Code, f.readers[0], f.d.EdgeID, sp, f.d.Property, hint, "%s", msg)
+	}
+}
+
+// readerNames is how a merged finding names its readers: quoted — `"a",
+// "b"` — where the sentence quotes the name, bare — `a, b` — where it does
+// not (an edge list's `src -> dst`). One reader is named as it ever was;
+// past maxReadersNamed the first are named and the rest counted.
+func readerNames(readers []string) (quoted, bare string) {
+	if len(readers) == 1 {
+		return `"` + readers[0] + `"`, readers[0]
+	}
+	named := readers
+	more := ""
+	if len(named) > maxReadersNamed {
+		named = named[:maxReadersNamed]
+		more = fmt.Sprintf(" and %d more", len(readers)-maxReadersNamed)
+	}
+	quoted = `"` + strings.Join(named, `", "`) + `"`
+	return quoted + more, strings.Join(named, ", ") + more
 }
 
 // validateLoopRef warns of a {{loop.X.<field>}} reference whose loop X no
@@ -538,14 +850,14 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) < 2 {
 		c.refWarnf(rc, DiagUnknownLoopRef,
 			"%s: reference %s is incomplete (expected loop.<name>.iteration, .max or .previous_output)",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	name, field := rc.Ref.Path[0], rc.Ref.Path[1]
 	if w.Loops[name] == nil {
 		c.refWarnf(rc, DiagUnknownLoopRef,
 			"%s: reference %s targets undeclared loop %q",
-			rc.Location, rc.Ref.Raw, name)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
 		return
 	}
 	switch field {
@@ -553,13 +865,13 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 		if len(rc.Ref.Path) > 2 {
 			c.refWarnf(rc, DiagUnknownLoopRef,
 				"%s: reference %s: loop.%s.%s has no sub-field",
-				rc.Location, rc.Ref.Raw, name, field)
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name), expr.Excerpt(field))
 		}
 	case "previous_output":
 	default:
 		c.refWarnf(rc, DiagUnknownLoopRef,
 			"%s: reference %s uses unknown loop field %q (expected: iteration, max, previous_output)",
-			rc.Location, rc.Ref.Raw, field)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(field))
 	}
 }
 
@@ -581,14 +893,14 @@ func (c *compiler) validateRunRef(w *Workflow, rc refContext) {
 			if len(rc.Ref.Path) > 1 {
 				c.refWarnf(rc, DiagUnknownRunMember,
 					"%s: reference %s has no sub-field — run.%s is a scalar value",
-					rc.Location, rc.Ref.Raw, member)
+					rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(member))
 			}
 			return
 		}
 	}
 	c.refWarnf(rc, DiagUnknownRunMember,
 		"%s: reference %s uses unknown run member %q (known: %s)",
-		rc.Location, rc.Ref.Raw, member, strings.Join(RunMembers, ", "))
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(member), strings.Join(RunMembers, ", "))
 }
 
 // validateSecretsRef flags a {{secrets.X}} reference whose secret X is
@@ -606,71 +918,56 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
-	name := rc.Ref.Path[0]
 	if rc.InWith {
 		c.refErrorf(rc, DiagWithSecretRef,
 			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the secret (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	if rc.InComputeExpr {
 		c.refErrorf(rc, DiagWithSecretRef,
 			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no secrets resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the secret to an execution sink that materialises it (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
-	secret, ok := w.Secrets[name]
-	if !ok {
-		c.refErrorf(rc, DiagUnknownSecret,
-			"%s: reference %s targets undeclared secret %q",
-			rc.Location, rc.Ref.Raw, name)
-		return
+	// The declaration, the grant and the sub-field are secretRefVerdict's:
+	// one matcher, read here and by the readers of a text this walk never
+	// reaches (ir.PromptSecretRefIssues, a bundle preset's body), so the
+	// same reference cannot draw two different verdicts. The grant's remedy
+	// is the site's: a sink that consumes the value's text is granted, an
+	// image path needs the secret's file form.
+	grantRemedy := secretGrantRemedy(rc.Sink)
+	if rc.ImagePath {
+		grantRemedy = imagePathSecretRemedy(rc.Ref.Path[0])
 	}
-	if len(rc.Ref.Path) == 1 {
-		return
-	}
-	sub := rc.Ref.Path[1]
-	if sub != "path" {
-		c.refErrorf(rc, DiagSecretSubfield,
-			"%s: reference %s uses unknown secret sub-field %q (expected: path)",
-			rc.Location, rc.Ref.Raw, sub)
-		return
-	}
-	if !secret.IsFile() {
-		c.refErrorf(rc, DiagSecretSubfield,
-			"%s: reference %s uses .path on non-file secret %q",
-			rc.Location, rc.Ref.Raw, name)
+	if code, reason := secretRefVerdict(w, rc.Ref, rc.Sink, grantRemedy); code != "" {
+		c.refErrorf(rc, code, "%s: %s", rc.Location, reason)
 	}
 }
 
 // validateAttachmentsRef flags an undeclared {{attachments.X}} reference
-// or an unknown sub-field. In a data mapping — an edge / subbot / emit
-// `with:` value, or a `fail message:` — the reference is refused: same
-// rule as secrets, `resolveMapping` has no arm for the namespace and a
-// compute expression cannot resolve it either. The mapping would render
-// to nil silently. Execution sinks that DO materialise an attachment:
-// a tool's `command:`/`script:`/`postcondition:`, or a prompt body.
+// or an unknown sub-field. In a compute node's `expr:` the reference is
+// refused: `pkg/dsl/expr` has no attachments resolver (evalNamespaces
+// excludes the namespace), so it would render nil silently. A data mapping
+// — an edge / subbot / emit `with:` value, or a `fail message:` — is fine:
+// `resolveRef` resolves the namespace there like a prompt body does (#2864).
+// Execution sinks that DO materialise an attachment: a tool's
+// `command:`/`script:`/`postcondition:`, or a prompt body.
 func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
 	name := rc.Ref.Path[0]
-	if rc.InWith {
-		c.refErrorf(rc, DiagWithAttachmentRef,
-			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the attachment (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
-			rc.Location, rc.Ref.Raw)
-		return
-	}
 	if rc.InComputeExpr {
 		c.refErrorf(rc, DiagWithAttachmentRef,
 			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no attachments resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the attachment reference to an execution sink (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	if _, ok := w.Attachments[name]; !ok {
 		c.refErrorf(rc, DiagUnknownAttachment,
 			"%s: reference %s targets undeclared attachment %q",
-			rc.Location, rc.Ref.Raw, name)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
 		return
 	}
 	if len(rc.Ref.Path) >= 2 {
@@ -678,12 +975,12 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 		if _, ok := AttachmentSubFields[sub]; !ok {
 			c.refErrorf(rc, DiagAttachmentSubfieldUnknown,
 				"%s: reference %s uses unknown sub-field %q (expected one of: path, url, mime, size, sha256)",
-				rc.Location, rc.Ref.Raw, sub)
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(sub))
 		}
 	}
 }
 
-func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool) {
+func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors *predecessorIndex) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
@@ -694,7 +991,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if targetNode == nil {
 		c.refErrorf(rc, DiagUnknownRefNode,
 			"%s: reference %s targets unknown node %q",
-			rc.Location, rc.Ref.Raw, targetNodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(targetNodeID))
 		return
 	}
 
@@ -702,7 +999,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if !checkReachable(rc, predecessors, targetNodeID) {
 		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets node %q which is not reachable before %q",
-			rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(targetNodeID), rc.displayID())
 		return
 	}
 
@@ -728,7 +1025,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		if !slices.Contains(implicit, fieldName) {
 			c.refErrorf(rc, DiagRefFieldNotInSchema,
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s",
-				rc.Location, rc.Ref.Raw, fieldName, targetNode.NodeKind(), targetNodeID, strings.Join(implicit, ", "))
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), targetNode.NodeKind(), expr.Excerpt(targetNodeID), strings.Join(implicit, ", "))
 		}
 		return
 	}
@@ -758,7 +1055,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		}
 		c.refWarnf(rc, DiagRefNodeNoSchema,
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
-			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(targetNodeID))
 		return
 	}
 
@@ -770,7 +1067,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if findField(schema, fieldName) == nil {
 		c.refErrorf(rc, DiagRefFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in output schema %q of node %q",
-			rc.Location, rc.Ref.Raw, fieldName, outSchema, targetNodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(outSchema), expr.Excerpt(targetNodeID))
 	}
 }
 
@@ -782,8 +1079,41 @@ func (c *compiler) validateVarsRef(w *Workflow, rc refContext) {
 	if _, ok := w.Vars[varName]; !ok {
 		c.refErrorf(rc, DiagUndeclaredVar,
 			"%s: reference %s targets undeclared variable %q",
-			rc.Location, rc.Ref.Raw, varName)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(varName))
+		return
 	}
+	c.warnMintedVarInScriptBody(rc, varName)
+}
+
+// warnMintedVarInScriptBody is C331: a `{{vars.x}}` naming a credential a
+// server mints for a run (store.ServerMintedSecretVars) in a tool node's
+// `script:` body. The run REFUSES that reference — before the script's
+// temp file is written, since the rendered bearer would rest in that file
+// in clear and a copy-based sandbox pushes it into the workspace
+// (refuseMintedScriptRef, pkg/backend/model) — while nothing said so at
+// authoring time: validation was clean and a preview rendered a tidy
+// placeholder, so the first word came mid-run, after the spend upstream.
+//
+// The condition mirrors the run's refusal — a top-level vars reference in
+// its default form — on the one term a compiler can read: the NAME. The
+// run asks its guard instead, which holds the credential env-only only
+// where a server minted it for THAT launch, so a run without the grant
+// (the var left at its empty default) renders the empty value and is not
+// refused. Hence a warning: the reference is a defect wherever the grant
+// is live, and the compiler cannot know that it is.
+func (c *compiler) warnMintedVarInScriptBody(rc refContext, varName string) {
+	if !rc.InScriptBody || len(rc.Ref.Path) != 1 || rc.Ref.Unquoted || !store.IsServerMintedSecretVar(varName) {
+		return
+	}
+	// Asked of the one derivation the guard registers and the compiler
+	// already refuses collisions on, never spelled here: the name the body
+	// must read IS the placeholder.
+	ph := secretsink.PlaceholderFor(varName)
+	c.refWarnf(rc, DiagMintedVarInScriptBody,
+		"%s: reference %s names a credential the server mints for the run, and a `script:` body resolves nothing of it — the run refuses the reference where it holds the grant, before the script's temp file is written, because the rendered bearer would rest in that file in clear. "+
+			"Read it from the interpreter's environment instead: the body names the variable itself (sh: \"$%s\", js: process.env.%s, python: os.environ.get(%q)) and the engine hands the value to the body that names it — "+
+			"or write the raw `{{!vars.%s}}` form to inline the value by your own choice",
+		rc.Location, expr.Excerpt(rc.Ref.Raw), ph, ph, ph, varName)
 }
 
 func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
@@ -853,7 +1183,8 @@ func interactionPromptOnly(n Node, name string) bool {
 // field no edge maps is empty on every path, the certain defect the dry run
 // could only name after a full pass. A warning, not an error: the fix is one
 // `with` mapping (or `{{outputs.<producer>.X}}`), and the diagnostic names
-// every incoming edge so the mapping has a place to land.
+// the first incoming edges by name and the rest by count, so the mapping
+// has a place to land.
 //
 // The claim holds only where the text IS resolved against that input, so the
 // surfaces the runtime resolves elsewhere are out: a mapping value (a
@@ -892,7 +1223,7 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 		if e == nil || e.To != rc.NodeID {
 			continue
 		}
-		incoming = append(incoming, incomingEdgeName(e))
+		incoming = append(incoming, incomingEdgeNameAs(e, rc.displayID()))
 		for _, dm := range e.With {
 			if dm.Key == fieldName {
 				mapped = true
@@ -908,31 +1239,49 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 	if mapped {
 		return
 	}
-	quoted := make([]string, len(incoming))
-	for i, name := range incoming {
-		quoted[i] = "`" + name + "`"
+	// The first few edges by name, the rest by count: the warning is said
+	// once per unmapped reference, so naming every edge every time grew as
+	// references × edges — a megabyte of input references into a node of a
+	// thousand edges was a hundred megabytes of warnings.
+	named := incoming
+	if len(named) > maxIncomingNamed {
+		named = named[:maxIncomingNamed]
 	}
+	quoted := make([]string, 0, len(named)+1)
+	for _, name := range named {
+		quoted = append(quoted, "`"+name+"`")
+	}
+	if more := len(incoming) - len(named); more > 0 {
+		quoted = append(quoted, fmt.Sprintf("and %d more", more))
+	}
+	list := strings.Join(quoted, ", ")
 	hint := fmt.Sprintf("map the field on an incoming edge (%s with { %s: \"{{outputs.<producer>.%s}}\" }) or read the producer's output directly ({{outputs.<producer>.%s}}); the incoming edges of %q: %s",
-		quoted[0], fieldName, fieldName, fieldName, rc.NodeID, strings.Join(quoted, ", "))
-	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, hint,
+		quoted[0], expr.Excerpt(fieldName), expr.Excerpt(fieldName), expr.Excerpt(fieldName), rc.displayID(), list)
+	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, "", hint,
 		"%s: reference %s reads a field %q that none of the node's incoming edges maps — empty on every path (incoming: %s)",
-		rc.Location, rc.Ref.Raw, fieldName, strings.Join(quoted, ", "))
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), list)
 }
 
-// incomingEdgeName is how a diagnostic names an edge: from -> to, with the
-// condition that guards it — two parallel edges between one pair of nodes
-// (a `when` path and its sibling) must not read as one.
-func incomingEdgeName(e *Edge) string {
-	name := e.From + " -> " + e.To
+// maxIncomingNamed is how many of a node's incoming edges C308 names; the
+// rest are counted.
+const maxIncomingNamed = 5
+
+// incomingEdgeNameAs is how a diagnostic names an edge: from -> to as the
+// reader is displayed (displayID — the reader mark while a shared prompt's
+// reference is validated against each of its readers), with the condition
+// that guards it — two parallel edges between one pair of nodes (a `when`
+// path and its sibling) must not read as one.
+func incomingEdgeNameAs(e *Edge, to string) string {
+	name := e.From + " -> " + to
 	switch {
 	case e.Condition != "":
-		cond := e.Condition
+		cond := expr.Excerpt(e.Condition)
 		if e.Negated {
 			cond = "not " + cond
 		}
 		name += " (when " + cond + ")"
 	case e.ExpressionSrc != "":
-		name += " (when " + e.ExpressionSrc + ")"
+		name += " (when " + expr.Excerpt(e.ExpressionSrc) + ")"
 	case e.IsElse:
 		name += " (else)"
 	}
@@ -974,12 +1323,12 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 			case *FailNode:
 				c.refWarnf(rc, DiagWithInputRefNoSchema,
 					"%s: reference %s resolves against the RUN's inputs — the launch payload — not against this node's input: a fail `message:` is rendered at fail time through the same resolver as a `with:` mapping, and a `fail` node has no `input:` surface, so no incoming edge can carry %q into it. If the value is declared in this workflow's `vars:`, use `{{vars.%s}}` (checked at compile time, and it carries the var's default); otherwise keep it and be aware that a launch that omits the key renders the empty string.",
-					rc.Location, rc.Ref.Raw, fieldName, fieldName)
+					rc.Location, expr.Excerpt(rc.Ref.Raw), fieldName, fieldName)
 				return
 			case *SubbotNode, *EmitNode:
 				c.refWarnf(rc, DiagWithInputRefNoSchema,
 					"%s: reference %s cannot be verified — a `%s` node has no `input:` surface, so `{{input.*}}` in its `with:` resolves against the parent's run inputs at run time. If the key is a launch-time value declared in `vars:` here, use `{{vars.%s}}` (checked at compile time); if it is forwarded from an undeclared parent payload key, keep it and be aware that a typo lands nil silently at run time (suppressing the child's declared default for the mapped key).",
-					rc.Location, rc.Ref.Raw, node.NodeKind(), fieldName)
+					rc.Location, expr.Excerpt(rc.Ref.Raw), node.NodeKind(), fieldName)
 				return
 			}
 		}
@@ -994,7 +1343,7 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 	if findField(schema, fieldName) == nil {
 		c.refErrorf(rc, DiagInputFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
-			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(inSchema), rc.displayID())
 	}
 }
 
@@ -1016,7 +1365,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 		if !slices.Contains(implicit, fieldName) {
 			c.refErrorf(rc, DiagInputFieldNotInSchema,
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s (edge with-mappings resolve {{input.*}} against the source node's output)",
-				rc.Location, rc.Ref.Raw, fieldName, node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
 		}
 		return
 	}
@@ -1028,9 +1377,9 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 			return
 		}
 		msg := fmt.Sprintf("%s: reference %s accesses field %q on node %q which has no output schema; cannot verify (edge with-mappings resolve {{input.*}} against the source node's output, not run inputs)",
-			rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), rc.NodeID)
 		if _, isVar := w.Vars[fieldName]; isVar {
-			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", expr.Excerpt(fieldName))
 		}
 		c.refWarnf(rc, DiagRefNodeNoSchema, "%s", msg)
 		return
@@ -1044,13 +1393,13 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 	}
 
 	msg := fmt.Sprintf("%s: reference %s accesses field %q not found in output schema %q of source node %q (edge with-mappings resolve {{input.*}} against the source node's output)",
-		rc.Location, rc.Ref.Raw, fieldName, outSchema, rc.NodeID)
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(outSchema), rc.NodeID)
 	if _, isVar := w.Vars[fieldName]; isVar {
-		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", expr.Excerpt(fieldName))
 	}
 	if inSchema := NodeInputSchema(node); inSchema != "" {
 		if s, ok := w.Schemas[inSchema]; ok && findField(s, fieldName) != nil {
-			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", fieldName)
+			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", expr.Excerpt(fieldName))
 		}
 	}
 	c.refErrorf(rc, DiagInputFieldNotInSchema, "%s", msg)
@@ -1069,15 +1418,15 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 		return
 	}
 	msg := fmt.Sprintf("%s: reference %s accesses field %q on router %q which does not pass it through (not supplied by an incoming with-mapping); edge with-mappings resolve {{input.*}} against the source node's output, not run inputs",
-		rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), rc.NodeID)
 	if _, isVar := w.Vars[fieldName]; isVar {
-		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", expr.Excerpt(fieldName))
 	}
 	// The catalogue fix for C032 ("add an output: schema") cannot be
 	// followed on a router, which has no output of its own: the remedy
 	// here is to map the field onto the router or read a var.
-	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span,
-		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, fieldName, fieldName),
+	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span, "",
+		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, expr.Excerpt(fieldName), expr.Excerpt(fieldName)),
 		"%s", msg)
 }
 
@@ -1147,7 +1496,7 @@ func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
 	return keys
 }
 
-func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, producers map[string]string) {
+func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors *predecessorIndex, producers map[string]string) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
@@ -1158,7 +1507,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	if !ok {
 		c.refErrorf(rc, DiagUnknownArtifact,
 			"%s: reference %s targets artifact %q which is not published by any node",
-			rc.Location, rc.Ref.Raw, artifactName)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(artifactName))
 		return
 	}
 
@@ -1166,17 +1515,17 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	if !checkReachable(rc, predecessors, producerID) {
 		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
-			rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(artifactName), expr.Excerpt(producerID), rc.displayID())
 	}
 }
 
 // checkReachable reports whether targetID is reachable from rc.NodeID's
-// predecessor set. When predecessors has no entry for rc.NodeID (reachability
-// wasn't computed for it), the check is skipped and this returns true — the
+// predecessor set. When the index does not know rc.NodeID (it is not a node
+// of the workflow), the check is skipped and this returns true — the
 // caller then does not error. For edge with-mappings, the source node itself
 // has finished, so it and its predecessors are all available (IncludeSelf).
-func checkReachable(rc refContext, predecessors map[string]map[string]bool, targetID string) bool {
-	preds, ok := predecessors[rc.NodeID]
+func checkReachable(rc refContext, predecessors *predecessorIndex, targetID string) bool {
+	preds, ok := predecessors.sets(rc.NodeID)
 	if !ok {
 		return true
 	}

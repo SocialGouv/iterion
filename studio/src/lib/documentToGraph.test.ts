@@ -96,3 +96,55 @@ describe("documentHasEditableNodes", () => {
     }
   });
 });
+
+// RGAA 10.3 (#2521): with stylesheets disabled the canvas reads in DOM
+// order, which is the node array's insertion order — the virtual __start__
+// node must come FIRST, not after the terminal nodes, or the reading order
+// runs the workflow backwards.
+describe("documentToGraph — the __start__ node order", () => {
+  const d = doc({
+    subbots: [{ name: "produce_episode", source: "episode.bot", isolated: true }],
+    workflows: [
+      {
+        name: "main",
+        entry: "plan",
+        edges: [
+          { from: "plan", to: "produce_episode" },
+          { from: "produce_episode", to: "done" },
+          { from: "produce_episode", to: "fail" },
+        ],
+      } as WorkflowDecl,
+    ],
+    tools: [{ name: "plan", command: "", output: "o" }],
+  });
+
+  it("emits __start__ before every parsed node and both terminals", () => {
+    const names = documentToGraph(d, "main").nodes.map((n) => n.id);
+    expect(names[0]).toBe("__start__");
+    expect(names.indexOf("__start__")).toBeLessThan(names.indexOf("done"));
+    expect(names.indexOf("__start__")).toBeLessThan(names.indexOf("fail"));
+  });
+
+  it("still emits the referenced done/fail terminals", () => {
+    // The first landing of this fix dropped the fail fill with the moved
+    // block, and the expanded subbot lost its ::fail child.
+    const names = documentToGraph(d, "main").nodes.map((n) => n.id);
+    expect(names).toContain("done");
+    expect(names).toContain("fail");
+  });
+
+  it("drops __start__ when the entry names no declared node", () => {
+    const broken = doc({
+      tools: [{ name: "plan", command: "", output: "o" }],
+      workflows: [{ name: "main", entry: "ghost", edges: [] } as WorkflowDecl],
+    });
+    const { nodes, edges } = documentToGraph(broken, "main");
+    expect(nodes.some((n) => n.id === "__start__")).toBe(false);
+    expect(edges.some((e) => e.source === "__start__")).toBe(false);
+  });
+
+  it("keeps the start edge aimed at the entry node", () => {
+    const { edges } = documentToGraph(d, "main");
+    expect(edges.some((e) => e.source === "__start__" && e.target === "plan")).toBe(true);
+  });
+});

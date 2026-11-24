@@ -1,0 +1,74 @@
+name: workflow-kick
+display_name: Kicky
+icon: ⏱️
+version: 0.1.0
+## 0.1.0 — first ship. The external trigger for a forge cron that does not
+## fire reliably (GitHub ran ~5 % of a repository's hourly `schedule` events,
+## #3130): an iterion schedule dispatches ONE named workflow of the
+## schedule's repository through the server's deterministic publish surface.
+## One tool node, no LLM; the dispatch token is minted server-side per call
+## and never reaches the run.
+description: |
+  Dispatches one GitHub Actions workflow of the target repository on a
+  schedule — the external trigger for a workflow whose own `schedule:`
+  cron GitHub fires late or not at all. One deterministic tool node, zero
+  LLM: it asks the iterion server to dispatch the named workflow file
+  (`workflow_dispatch`) on the repository's default branch and reports
+  what the forge answered, with a link to its run.
+
+  The bot holds no forge credential for this: its manifest declares the
+  `actions` scope, which mints the dispatch capability into the run's
+  publish grant, and the server dispatches with a GitHub App installation
+  token minted for that one call ({actions: write, metadata: read},
+  narrowed to the one repository). The grant is minted at the schedule
+  tick only, bound to the workflow the schedule row names, and dispatches
+  it once. Refused, typed, before any forge call: another workflow or
+  repository than the grant's, a file name that is not a plain
+  `*.yml`/`*.yaml`, an untrusted or ended run, a non-GitHub-App connection,
+  and a second dispatch on the same grant.
+when_to_use: |
+  Enable on a repository integration whose CI workflow must run on a
+  dependable cadence — typically a self-hosted Renovate (`renovate.yml`)
+  whose security updates must reach a pull request within the hour.
+  Requires the workflow to declare `workflow_dispatch`, and the GitHub App
+  behind the connection to hold `Actions: Read and write` (an org owner
+  approves it). Set the schedule's `workflow` var to the file name. It
+  edits nothing and posts nothing; it only starts the workflow.
+author: SocialGouv (devthejo) — bots/workflow-kick/main.bot
+category: operate
+tags: [scheduled, deps, tooling]
+schema_version: 1
+
+forge:
+  token_scopes:
+    actions: write   # mint the workflow-dispatch capability on the run's publish grant
+  rationale: |
+    Kicky dispatches ONE named workflow of this repository on a schedule
+    (workflow_dispatch, default branch, no inputs). The actions scope is
+    what mints the dispatch capability into the run's publish grant; the
+    server makes the dispatch with a GitHub App token minted for that one
+    call (actions: write, metadata: read, this repository only), so the
+    run itself never holds the Actions permission. The App installation
+    must grant "Actions: Read and write". Only a repo-bound schedule's
+    tick mints the capability, bound to the workflow its row names; a
+    pull-request or API launch never holds it. Pinning
+    forge_publish_mutations to anything but "true" on the integration
+    disarms it.
+
+invocations:
+  ## Hourly kick. Set the schedule's `workflow` var (e.g. renovate.yml):
+  ## the bot refuses to guess which workflow a repository wants dispatched.
+  - kind: schedule
+    mode: direct
+    schedule: { suggested_cron: "7 * * * *" }
+
+launch:
+  primary: [workflow, repo]
+  hidden: [forge_dispatch_url, forge_publish_token]
+
+## The dispatch capability (the `actions` scope) and the dispatch endpoint
+## (forge_dispatch_url) ship in the release this lands in — `next` until it
+## is cut, when release-floors writes its number: a build below it refuses
+## the scope at its strict manifest decode and mints no dispatch grant.
+requires:
+  iterion: ">= 5.17.0"

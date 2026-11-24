@@ -330,50 +330,6 @@ func TestNATSBus_SubscribeCancelConcurrentPublishNoWGRace(t *testing.T) {
 	_ = callbackCount.Load()
 }
 
-// schedOvershoot is this runner's scheduling delay, measured rather than
-// named: the raw worst lateness of a short timer across a few probes. It
-// is read where the caller sits — AFTER the burst it pads — so a load
-// spike during the burst that subsides before probing reads ~0 here.
-// That blind spot is exactly why the SharedBudget verdict (#2020) no
-// longer pads a ceiling with this figure and instead compares in a unit
-// measured over the burst's own window; what remains here is the ceiling
-// of TestBusSubscribeCancelClampsCallerDeadline, where cancelCeilingSlack
-// floors the slack at 200ms so a collapsed reading still leaves the
-// mechanism bound carrying the assertion.
-func schedOvershoot(t *testing.T) time.Duration {
-	t.Helper()
-	const (
-		probe  = 10 * time.Millisecond
-		rounds = 3
-	)
-	var worst time.Duration
-	for i := 0; i < rounds; i++ {
-		start := time.Now()
-		time.Sleep(probe)
-		if over := time.Since(start) - probe; over > worst {
-			worst = over
-		}
-	}
-	return worst
-}
-
-// cancelCeilingSlack sizes the slack a wall-clock ceiling leaves the
-// scheduler: one measured overshoot per timer wait the burst sits on
-// (waits), floored at the 200ms an idle machine was already granted. The
-// mechanism bounds (joinBudget, overrunPostCheckWindow) are configured and
-// exact; the slack is not, and a bare constant names a machine the merge
-// queue does not have — under a loaded -race runner every timer the cancel
-// path waits on fires late by an amount no constant describes. The ceiling
-// can grow load-tolerant, never weaker than it was (#2149, #1538).
-func cancelCeilingSlack(t *testing.T, waits int) time.Duration {
-	t.Helper()
-	const floor = 200 * time.Millisecond
-	if slack := time.Duration(waits) * schedOvershoot(t); slack > floor {
-		return slack
-	}
-	return floor
-}
-
 // TestBusSubscribeCancelSharedBudget is the #1477 medium property: N slow
 // subscribers cancelled under ONE joinCtx cost ONE budget total, not N ×
 // budget. Under the pre-fix per-subscription budget, seven slow-Mongo
@@ -631,39 +587,40 @@ func TestBusSubscribeCancelClampsCallerDeadline(t *testing.T) {
 			continue
 		}
 		t.Run(c.name, func(t *testing.T) {
-			perSubBudget := 80 * time.Millisecond
-			bus, cleanup := c.make(t, nil, perSubBudget)
-			defer cleanup()
+			synctest.Test(t, func(t *testing.T) {
+				perSubBudget := 80 * time.Millisecond
+				bus, cleanup := c.make(t, nil, perSubBudget)
+				defer cleanup()
 
-			entered := make(chan struct{})
-			var enteredOnce sync.Once
-			release := make(chan struct{})
-			defer close(release)
-			cancel, err := bus.Subscribe("runaway", trigger.Matcher{}, func(_ context.Context, _ trigger.Event) error {
-				enteredOnce.Do(func() { close(entered) })
-				<-release
-				return nil
+				entered := make(chan struct{})
+				var enteredOnce sync.Once
+				release := make(chan struct{})
+				defer close(release)
+				cancel, err := bus.Subscribe("runaway", trigger.Matcher{}, func(_ context.Context, _ trigger.Event) error {
+					enteredOnce.Do(func() { close(entered) })
+					<-release
+					return nil
+				})
+				if err != nil {
+					t.Fatalf("Subscribe: %v", err)
+				}
+				go func() { _ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard}) }()
+				<-entered
+
+				// Caller passes a very generous deadline — 30 seconds, the
+				// shape of an HTTP-request ctx. Cancel must return within the
+				// budget regardless. Virtual time removes runner scheduling delays;
+				// keep the original 200ms tolerance and the post-check grace.
+				generousCtx, gc := context.WithTimeout(context.Background(), 30*time.Second)
+				defer gc()
+				started := time.Now()
+				cancel(generousCtx)
+				elapsed := time.Since(started)
+				ceiling := perSubBudget + overrunPostCheckWindow + 200*time.Millisecond
+				if elapsed > ceiling {
+					t.Errorf("%s: cancel with 30s deadline took %v; expected clamped to ≤ %v (budget %v + grace + slack)", c.name, elapsed, ceiling, perSubBudget)
+				}
 			})
-			if err != nil {
-				t.Fatalf("Subscribe: %v", err)
-			}
-			go func() { _ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard}) }()
-			<-entered
-
-			// Caller passes a very generous deadline — 30 seconds, the
-			// shape of an HTTP-request ctx. Cancel must return within the
-			// budget regardless (plus the small grace window post-check —
-			// two waits — and a slack measured from this runner's
-			// scheduling delay).
-			generousCtx, gc := context.WithTimeout(context.Background(), 30*time.Second)
-			defer gc()
-			started := time.Now()
-			cancel(generousCtx)
-			elapsed := time.Since(started)
-			ceiling := perSubBudget + overrunPostCheckWindow + cancelCeilingSlack(t, 2)
-			if elapsed > ceiling {
-				t.Errorf("%s: cancel with 30s deadline took %v; expected clamped to ≤ %v (budget %v + grace + slack)", c.name, elapsed, ceiling, perSubBudget)
-			}
 		})
 	}
 }

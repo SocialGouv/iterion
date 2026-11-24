@@ -164,3 +164,14 @@ describe("backendForModel", () => {
     expect(backendForModel(undefined)).toBe("");
   });
 });
+
+describe("modelCapabilityWarning on a flag the catalog did not state", () => {
+  it("warns on an unknown tool_call and never blocks it", () => {
+    const w = modelCapabilityWarning(entry({ tool_call: undefined }));
+    expect(w?.level).toBe("warning");
+    expect(w?.message).toContain("not known");
+  });
+  it("still blocks a model known to lack tool calling", () => {
+    expect(modelCapabilityWarning(entry({ tool_call: false }))?.level).toBe("blocking");
+  });
+});

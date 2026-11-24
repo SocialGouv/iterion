@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -143,13 +144,17 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 	if err != nil {
 		return nil, fmt.Errorf("engine runner: detect %s: %w", workflowPath, err)
 	}
+	// No run roots at construction — one EngineRunner dispatches many runs,
+	// each on its own workspace — so the MCP resolution compiled here is
+	// construction-time validation only: Dispatch recompiles against the
+	// run's workspace before anything executes (#1800).
 	switch kind {
 	case bundle.KindBundle:
 		opened, cleanup, openErr := bundle.Open(workflowPath, r.bundleCacheRoot)
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle %s: %w", workflowPath, openErr)
 		}
-		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "", runview.AnalysisTrust)
 		if compileErr != nil {
 			_ = cleanup()
 			return nil, fmt.Errorf("engine runner: compile bundle %s: %w", workflowPath, compileErr)
@@ -165,7 +170,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle dir %s: %w", workflowPath, openErr)
 		}
-		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "", runview.AnalysisTrust)
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile bundle dir %s: %w", workflowPath, compileErr)
 		}
@@ -178,7 +183,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		// A bare <bundle>/main.bot is promoted to its bundle: the hash and
 		// the prompts the other surfaces use, AND the handle, so the
 		// bundle's skills/ reach the run as they do from `iterion run`.
-		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath)
+		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath, "", runview.AnalysisTrust)
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile %s: %w", workflowPath, compileErr)
 		}
@@ -234,10 +239,30 @@ func (r *EngineRunner) Close() error {
 	return r.closeErr
 }
 
+// compileForDispatch recompiles the runner's workflow against ONE run's
+// workspace: the compiled IR is shared across concurrent dispatches, so the
+// plugin `{{workspace}}` placeholders resolve per run here, on the run's own
+// workflow, never by mutating the shared one (#1800). The bundle handle is
+// reused — only the AST is rebuilt — and the catalog is resolved for
+// dispatchTrust.
+func (r *EngineRunner) compileForDispatch(workspace string) (*ir.Workflow, string, error) {
+	if r.bundle != nil {
+		return runview.CompileBundleWorkflow(r.workflowPath, r.bundle, workspace, dispatchTrust)
+	}
+	wf, hash, _, err := runview.CompileWorkflowPath(r.workflowPath, workspace, dispatchTrust)
+	return wf, hash, err
+}
+
+// dispatchTrust is the workspace trust a dispatched run executes under: the
+// trusted default. The dispatcher runs its own board's cards on the
+// operator's checkouts and worktrees, which is also what its connector
+// catalog is resolved for (Dispatch).
+const dispatchTrust = store.RunTrustDefault
+
 // Dispatch implements Runner. Opens the store, builds an executor for
 // this RunID, registers an event observer that bridges every event to
 // spec.OnEvent, and drives engine.Run to completion.
-func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
+func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) (retErr error) {
 	if spec.StoreDir == "" {
 		return fmt.Errorf("engine runner: spec.StoreDir is required")
 	}
@@ -257,6 +282,47 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if err != nil {
 		return fmt.Errorf("engine runner: open store: %w", err)
 	}
+	// The run's MCP catalog resolves against the workspace THIS dispatch
+	// roots at, on this run's own workflow — never on the shared IR (#1800).
+	runWf, runHash, compileErr := r.compileForDispatch(spec.WorkspacePath)
+	if compileErr != nil {
+		return fmt.Errorf("engine runner: compile workflow for workspace %s: %w", spec.WorkspacePath, compileErr)
+	}
+	if spec.ResumeFromRunID == "" {
+		// Resolve the credential-derived topology vars for a fresh dispatch
+		// (no-op unless the workflow declares review_mode / plan_review /
+		// llm_families). A per-ticket bot_arg wins over auto-detection; no
+		// dispatcher-level flag override, so pass "". Mirrors the CLI and
+		// runview surfaces. BEFORE the supervisor spawn: a pin on one of the
+		// injected vars resolves the injected value, not a literal.
+		if spec.Vars == nil {
+			spec.Vars = map[string]any{}
+		}
+		if inj := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.InventoryFromReport(detect.Detect(ctx)), ""); inj.Summary() != "" {
+			r.logger.Info("%s", inj.Summary())
+		}
+	}
+	var preparation store.RunInvocationPreparation = store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: spec.RunID, WorkflowName: runWf.Name, Inputs: spec.Vars}}
+	if spec.ResumeFromRunID != "" {
+		if spec.ResumeFromRunID != spec.RunID {
+			return fmt.Errorf("%w: resume and dispatch run IDs differ", store.ErrValueFormatChanged)
+		}
+		preparation = store.ExistingRunInvocation{ID: spec.RunID}
+	}
+	invocation, err := store.PrepareRunInvocation(ctx, baseStore, preparation)
+	if invocation.Context != nil {
+		ctx = invocation.Context
+	}
+	if err != nil {
+		return runtime.AbortPreparedRun(ctx, baseStore, invocation, err)
+	}
+	engineHandoff := false
+	defer func() {
+		if !engineHandoff {
+			retErr = runtime.AbortPreparedRun(ctx, baseStore, invocation, retErr)
+		}
+	}()
+
 	// Hold the run flock for the run's lifetime — the liveness signal the
 	// orphan reconciler probes (runview.reconcileOrphans). A dispatcher-owned
 	// run is neither in runview's manager nor a detached-.pid runner, so
@@ -285,11 +351,18 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// this wrapped logger so claude_code's per-turn lines, tool
 	// hints, and budget warnings all land in the file the SPA
 	// tails.
-	runLogger, logCloser := store.TeeRunLog(
+	runLogger, logCloser, logErr := store.TeeRunLogContext(
+		ctx,
 		r.logger, r.logger.Level(),
 		spec.StoreDir,
 		spec.RunID,
 	)
+	if store.RunLogErrorFatal(ctx, logErr) {
+		return fmt.Errorf("engine runner: open run.log: %w", logErr)
+	}
+	if logErr != nil {
+		runLogger.Warn("store: run.log tee refused: %v", logErr)
+	}
 	if logCloser != nil {
 		defer func() {
 			if cerr := logCloser.Close(); cerr != nil {
@@ -319,7 +392,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 
 	execSpec := runview.ExecutorSpec{
 		Ctx:      ctx,
-		Workflow: r.workflow,
+		Workflow: runWf,
 		Store:    s,
 		// The dispatcher's engine sets neither sandbox tier, so the
 		// workflow's own `sandbox:` block decides — which is exactly what
@@ -329,8 +402,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		SandboxTiersKnown: true,
 		Inbox:             &model.StoreInboxBinder{Store: s},
 		RunID:             spec.RunID,
-		// The run's record does not exist yet when its executor is built, so
-		// a credential the dispatch carries is known here only from the vars.
+		// The prepared run and its launch vars agree before executor effects.
 		Vars:     stringifyVars(spec.Vars),
 		Logger:   runLogger,
 		StoreDir: spec.StoreDir,
@@ -366,7 +438,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// without this the SAME `.bot` that runs from the CLI fails on a board
 	// card. The workspace is the run's own (a per-issue worktree), so a
 	// project connector tier is the checkout's, not the daemon's cwd.
-	connectors, connectorClient, cerr := runview.LocalConnectors(r.workflow, spec.WorkspacePath, spec.StoreDir, r.sealer)
+	// WHO WROTE THE CODE: the dispatcher has no trust input at all. Its runs
+	// are board cards and catalog bots over a workspace the daemon itself
+	// prepared from the tenant's own repository, so the answer is a fact of
+	// this surface rather than a field read from a document — and the fork
+	// review lane is a SERVER subscription whose launches go through the
+	// publisher to a runner, never through here (pkg/dispatcher imports no
+	// webhook code). Stated out loud through dispatchTrust, the value the
+	// run's compile reads too, so the day a lane dispatches an outsider's
+	// tree locally that constant is what has to become the run's trust.
+	connectors, connectorClient, cerr := runview.LocalConnectors(runWf, spec.WorkspacePath, spec.StoreDir, r.sealer, connection.TrustOfRun(dispatchTrust))
 	if cerr != nil {
 		return fmt.Errorf("engine runner: connector catalog: %w", cerr)
 	}
@@ -387,7 +468,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 
 	opts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
-		runtime.WithWorkflowHash(r.workflowHash),
+		runtime.WithWorkflowHash(runHash),
 		runtime.WithFilePath(r.workflowPath),
 		runtime.WithRunName(store.GenerateRunName(r.workflowPath + ":" + spec.RunID)),
 		// Without this, every transient hiccup (http2 timeout against
@@ -459,7 +540,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if len(r.runEnv) > 0 {
 		opts = append(opts, runtime.WithRunEnv(r.runEnv))
 	}
-	eng := runtime.New(r.workflow, s, exec, opts...)
+	eng := runtime.New(runWf, s, exec, opts...)
 
 	// Resume the prior run iff the dispatcher's scheduleRetry tagged
 	// this dispatch as a resume — the engine's Resume picks up at the
@@ -475,33 +556,21 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 			// the config and the issue's bot args may have moved between
 			// attempts, and a supervisor pin reading the new values would
 			// diverge from the nodes it watches.
-			if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, runLogger, eng, s); stopSup != nil {
+			if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, exec.ModelOverrides(), runLogger, eng, s); stopSup != nil {
 				defer stopSup()
 			}
 		}
+		engineHandoff = true
 		return eng.Resume(ctx, spec.ResumeFromRunID, nil)
 	}
 
-	// Resolve the credential-derived topology vars for a fresh dispatch
-	// (no-op unless the workflow declares review_mode / plan_review /
-	// llm_families). A per-ticket bot_arg wins over auto-detection; no
-	// dispatcher-level flag override, so pass "". Mirrors the CLI and
-	// runview surfaces. BEFORE the supervisor spawn: a pin on one of the
-	// injected vars resolves the injected value, not a literal.
-	if spec.Vars == nil {
-		spec.Vars = map[string]any{}
-	}
-	if inj, err := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); err != nil {
-		return fmt.Errorf("refusing to launch: %w", err)
-	} else if inj.Summary() != "" {
-		r.logger.Info("%s", inj.Summary())
-	}
 	if superviseHub != nil {
-		if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, runLogger, eng, s); stopSup != nil {
+		if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, exec.ModelOverrides(), runLogger, eng, s); stopSup != nil {
 			defer stopSup()
 		}
 	}
-	return eng.Run(ctx, spec.RunID, spec.Vars)
+	engineHandoff = true
+	return eng.RunPrepared(ctx, spec.RunID, spec.Vars, invocation)
 }
 
 // spawnSupervisors starts the workflow's declared supervisors beside the
@@ -510,13 +579,13 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 // eng.Resume replays), the launch ones before it exists — so a pin reads
 // the same values its watched nodes resolve. Returns the spawn's stop
 // func, or nil when the workflow declares no supervisor.
-func (r *EngineRunner) spawnSupervisors(ctx context.Context, hub *supervise.EventHub, runID string, launchVars map[string]any, runLogger *iterlog.Logger, eng *runtime.Engine, st store.RunStore) func() {
+func (r *EngineRunner) spawnSupervisors(ctx context.Context, hub *supervise.EventHub, runID string, launchVars map[string]any, overrides model.ModelOverrides, runLogger *iterlog.Logger, eng *runtime.Engine, st store.RunStore) func() {
 	vars := launchVars
 	if run, err := st.LoadRun(ctx, runID); err == nil && run.Inputs != nil {
 		vars = run.Inputs
 	}
 	return supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: st},
-		runID, supervise.SpecsFromWorkflow(r.workflow, eng.ResolveVars(vars), runLogger), runLogger)
+		runID, supervise.SpecsFromWorkflow(r.workflow, eng.ResolveVars(vars), overrides, runLogger), runLogger)
 }
 
 // dispatchViaService (ADR-046) runs a fresh dispatch through the shared

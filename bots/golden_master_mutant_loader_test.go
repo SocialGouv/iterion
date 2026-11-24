@@ -102,6 +102,7 @@ func runHarnessEnv(t *testing.T, ws string, extra ...string) string {
 // the set anywhere less durable — a sealed directory, a fetched ref — makes it
 // reachable, which is why this is fixed BEFORE the set moves.
 func TestMalformedHeldOutMutantRefusesInsteadOfShrinkingTheSet(t *testing.T) {
+	t.Parallel()
 	ws := mutantLoaderWorkspace(t)
 	gm := filepath.Join(ws, ".golden-master")
 	writeMutant(t, filepath.Join(gm, "mutants", "holdout", "h1-intact"), "create_lost", true)
@@ -143,6 +144,7 @@ func TestMalformedHeldOutMutantRefusesInsteadOfShrinkingTheSet(t *testing.T) {
 // Measured on a live campaign at the time of the fix: 159 entries under
 // mutants/, of which four *.md files and `audit` carry no meta.json.
 func TestTheEvidencePileAndLooseFilesAreNotReadAsMalformedMutants(t *testing.T) {
+	t.Parallel()
 	ws := mutantLoaderWorkspace(t)
 	gm := filepath.Join(ws, ".golden-master")
 	// The published pile: a directory, no meta.json, and a mutant INSIDE it.
@@ -203,6 +205,7 @@ func TestTheEvidencePileAndLooseFilesAreNotReadAsMalformedMutants(t *testing.T) 
 //
 // Same shape as `holdout_detected == holdout_total`, one gate further out.
 func TestAMalformedMutantDoesNotReadValidInValidateMode(t *testing.T) {
+	t.Parallel()
 	ws := mutantLoaderWorkspace(t)
 	gm := filepath.Join(ws, ".golden-master")
 	writeMutant(t, filepath.Join(gm, "mutants", "v3-lost-its-meta"), "create_lost", false)
@@ -241,6 +244,7 @@ func TestAMalformedMutantDoesNotReadValidInValidateMode(t *testing.T) {
 // this, and they are the failure mode the successor-on-a-ref design makes
 // reachable.
 func TestCorruptHeldOutMetaRefusesByNameInsteadOfKillingTheHarness(t *testing.T) {
+	t.Parallel()
 	ws := mutantLoaderWorkspace(t)
 	gm := filepath.Join(ws, ".golden-master")
 	writeMutant(t, filepath.Join(gm, "mutants", "holdout", "h1-intact"), "create_lost", true)
@@ -274,6 +278,7 @@ func TestCorruptHeldOutMetaRefusesByNameInsteadOfKillingTheHarness(t *testing.T)
 // Catching two decode spellings and calling it done is the enumeration trap:
 // the fix is `(ValueError, OSError)` plus a type check, not a longer list.
 func TestEveryUnreadableMetaSpellingRefusesByName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		write func(t *testing.T, dir string)

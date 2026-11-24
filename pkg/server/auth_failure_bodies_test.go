@@ -59,10 +59,7 @@ func TestAuthRoutes_StoreFailuresAnswerTheGenericBody(t *testing.T) {
 // retries the ticket, which is still valid; an unknown ticket stays 401.
 func TestHandleDesktopExchange_AStoreFailureIsNotAnInvalidTicket(t *testing.T) {
 	f := newAuthRouteFixture(t)
-	ticket, err := f.tickets.Mint(context.Background(), f.user)
-	if err != nil {
-		t.Fatalf("mint: %v", err)
-	}
+	ticket := mintDesktopTicket(t, f, f.user.User.ID)
 	exchange := func(ticket string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		f.s.handleDesktopExchange(w, httptest.NewRequest("POST", "/api/auth/desktop/exchange", strings.NewReader(fmt.Sprintf(`{"ticket":%q}`, ticket))))
@@ -149,7 +146,7 @@ func TestHandleInvitationAccept_AFailedOrgReadKeepsTheOwner(t *testing.T) {
 	if _, err := f.s.authStore().CreateTeam(ctx, identity.Team{ID: "tb", OrgID: "o1", Name: "TB", Slug: "tb", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("seed team tb: %v", err)
 	}
-	token, _, err := f.svc.CreateInvitation(ctx, "tb", fixtureEmail, identity.RoleMember, "someone-else")
+	token, _, err := f.svc.CreateInvitation(testMintVerdictContext(ctx), "tb", fixtureEmail, identity.RoleMember, "someone-else")
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}

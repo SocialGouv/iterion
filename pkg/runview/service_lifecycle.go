@@ -35,14 +35,14 @@ func (s *Service) reconcileSandboxContainers() {
 	if !s.store.Capabilities().CrossProcessLock {
 		return
 	}
-	rt, err := dockersandbox.Detect()
+	cli, err := dockersandbox.Detect()
 	if err != nil {
 		return
 	}
 	// Boot-time admin scan: peek at runs across tenants to decide
 	// whether their docker leftovers should be reaped.
 	ctx := store.WithoutTenantFilter(context.Background())
-	reaped, err := dockersandbox.ReapOrphanContainers(ctx, rt, func(runID string) bool {
+	reaped, err := cli.ReapOrphanContainers(ctx, func(runID string) bool {
 		return s.sandboxContainerReapable(ctx, runID)
 	})
 	if err != nil {
@@ -72,7 +72,7 @@ func (s *Service) reconcileSandboxK8sResources(parent context.Context) {
 	if !s.store.Capabilities().CrossProcessLock {
 		return
 	}
-	_, namespace, err := k8ssandbox.Detect()
+	kubectl, namespace, err := k8ssandbox.Detect()
 	if err != nil {
 		return // not an in-cluster runner — nothing to reconcile
 	}
@@ -81,7 +81,7 @@ func (s *Service) reconcileSandboxK8sResources(parent context.Context) {
 	// reapability predicate as the docker reaper (liveness-first). parent
 	// is the shutdown's cancellation handle on the periodic path.
 	ctx := store.WithoutTenantFilter(parent)
-	reaped, err := k8ssandbox.ReapOrphanResources(ctx, namespace, func(runID string) bool {
+	reaped, err := kubectl.ReapOrphanResources(ctx, namespace, func(runID string) bool {
 		return s.sandboxContainerReapable(ctx, runID)
 	})
 	if err != nil {
@@ -224,8 +224,13 @@ func (s *Service) reconcileOrphans(parent context.Context) {
 		// server pod, doing pointless git work + logging a spurious
 		// "cannot read worktree HEAD" every tick per finished run.
 		if canReap {
-			if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
-				s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
+			// The RUN's logger: RecoverFinalize logs the worktree's git
+			// output on the handle it is given, so it must be the handle
+			// carrying that run's secret matcher — the service logger
+			// carries none, and is shared by every run here (iterion#2822).
+			rl := s.runLoggerFor(id)
+			if recErr := runtime.RecoverFinalize(ctx, s.store, r, rl); recErr != nil {
+				rl.Warn("runview: recover finalize %s: %v", id, recErr)
 			}
 		}
 		if r.Status != store.RunStatusRunning {
@@ -440,7 +445,15 @@ func (s *Service) tryReattachByPID(runID string) bool {
 // shutdown checkpoints anyway, and the watcher's only consumer is
 // Drain (timing-sensitive) and the broker.CloseRun call (post-mortem).
 func (s *Service) reattachDetached(runID string, pid int) {
-	s.prepareRunLogNoFile(runID)
+	// A reattach at boot has no request: the run's birth is read team-blind
+	// (detached runs are local, a filesystem store).
+	blind := store.TeamBlind(context.Background())
+	logBuf := s.prepareRunLogNoFile(blind, runID)
+	// The reattach is a producer: it registers the run's log epoch (the
+	// subprocess writes run.log under the store's root) and holds the bail
+	// until the watcher owns it. Without that, a failed registration left the
+	// lane with no producer at all.
+	logOwner := s.ownRunLog(blind, runID, logBuf, s.detachedLogDurability())
 
 	done := make(chan struct{})
 	var cancelOnce sync.Once
@@ -454,15 +467,21 @@ func (s *Service) reattachDetached(runID string, pid int) {
 
 	if err := s.manager.RegisterDetached(runID, pid, cancel, done); err != nil {
 		s.logger.Warn("runview: reattach: register %s pid=%d: %v", runID, pid, err)
+		// No handle means no watcher: the bail is returned here or the lane
+		// keeps a producer that does not exist.
+		logOwner.Abandon()
 		return
 	}
 
+	// The bail changes hands synchronously, before the watcher goroutine
+	// exists: a late Abandon must not release a live run's lane.
+	logOwner.Transfer()
 	go func() {
-		watchDetachedExit(s, runID, pid, done)
+		watchDetachedExit(s, runID, pid, done, logBuf)
 	}()
 
-	startEventSource(s, runID, done)
-	startLogSource(s, runID, done)
+	startObservedEventSource(s, runID, done, store.TeamBlind(context.Background()))
+	startLogSource(s, runID, logBuf, done)
 
 	s.logger.Info("runview: re-attached detached run %s (pid=%d) across server restart", runID, pid)
 }
@@ -473,7 +492,8 @@ func (s *Service) reattachDetached(runID string, pid int) {
 // the handle (which closes done). Used only on the re-attach path
 // where we don't own the cmd. 5s cadence is fine because runners
 // typically run for minutes; a faster probe would just burn syscalls.
-func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
+// logBuf is the run's log buffer the re-attach created, the one it drops.
+func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}, logBuf *RunLogBuffer) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -485,8 +505,18 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 				if pidS := store.AsPIDStore(s.store); pidS != nil {
 					_ = pidS.RemovePIDFile(runID)
 				}
-				s.broker.CloseRun(runID)
-				s.dropRunLog(runID)
+				// The run's stored status classifies its log epoch: a runner
+				// killed while its status still reads running is LOST, never a
+				// silent terminal finish.
+				end := logEndLost
+				if r, lerr := s.store.LoadRun(store.TeamBlind(context.Background()), runID); lerr == nil {
+					end = classifyLogExit(r.Status)
+				}
+				s.closeRunAndReleaseAlerts(runID)
+				if logBuf != nil {
+					logBuf.setLogEnd(end)
+				}
+				s.dropRunLog(runID, logBuf)
 				s.manager.Deregister(runID)
 				return
 			}
@@ -494,9 +524,12 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 	}
 }
 
-// StopBackground ends every PERIODIC worker the service owns — the orphan
-// reconcile ticker, the pipeline scheduler, the alert manager's stall poll —
-// and leaves the in-flight runs strictly alone.
+// StopBackground first cancels and joins explicitly acquired observed event feeds
+// and the live event streams StreamSource serves (each ends with
+// runstream.ErrSourceClosed, not a terminal completion), within ctx, then ends
+// every PERIODIC worker the service owns — the orphan reconcile ticker, the
+// pipeline scheduler, the alert manager's stall poll — and leaves the
+// in-flight runs strictly alone.
 //
 // It exists for the caller that REPLACES a service without draining it (the
 // studio's project hot-swap): the engines that already captured this service
@@ -509,16 +542,30 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // stopPeriodicReconcile), so a scan wedged in a store call degrades the
 // promise loudly rather than hanging the caller.
 func (s *Service) StopBackground(ctx context.Context) {
+	s.stopBackground(ctx, true)
+}
+
+// stopBackground is StopBackground; liveEvents false leaves the live event
+// streams to the caller, Drain, which ends them after the runs they observe.
+func (s *Service) stopBackground(ctx context.Context, liveEvents bool) {
+	if err := s.observedEvents.stop(ctx); err != nil {
+		s.logger.Warn("observed event feeds: shutdown cleanup not joined: %v", err)
+	}
+	// Detection stops BEFORE the live event streams: their shutdown tail
+	// releases every registration (ReleaseAll), and the plan's §8 order is
+	// streams end → detection off → ReleaseAll. Releasing first would let a
+	// detection still running depart unregistered (M5).
+	if s.alertManager != nil {
+		s.alertManager.Stop()
+	}
+	if liveEvents {
+		s.stopLiveEvents(ctx)
+	}
 	s.stopPeriodicReconcile(ctx)
 	// Queued pipelines stay persisted as queued docs and are recovered by the
 	// next service built over that store, so stopping the scheduler here never
 	// strands them.
 	s.stopPipelineScheduler()
-	// Started with context.Background() so it outlives per-run contexts —
-	// nothing else reaps it.
-	if s.alertManager != nil {
-		s.alertManager.Stop()
-	}
 }
 
 // Stop cancels every active run and waits for their goroutines to
@@ -545,13 +592,26 @@ func (s *Service) Stop(ctx context.Context) {
 //     emits EventRunInterrupted. A verdict the engine already recorded — in
 //     particular an undecided effect — keeps its own classification.
 //
+// The live event streams end last, on both return paths: a stream of a
+// drained run first gets up to liveEventsDrainGrace (within ctx) to end on its
+// own with its run, delivering what the run persisted on its way out; every
+// stream still open then ends with runstream.ErrSourceClosed.
+//
 // Drain is intended to be called once during process shutdown. After
 // it returns, the service should not be used to launch new work.
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
-	s.StopBackground(ctx)
+	s.stopBackground(ctx, false)
 
 	handles := s.manager.Snapshot()
+	drained := make(map[string]bool, len(handles))
+	for _, h := range handles {
+		drained[h.RunID] = true
+	}
+	defer func() {
+		s.liveEvents.awaitRuns(ctx, drained, liveEventsDrainGrace)
+		s.stopLiveEvents(ctx)
+	}()
 
 	for _, h := range handles {
 		h.Cancel()
@@ -572,6 +632,10 @@ func (s *Service) Drain(ctx context.Context) {
 		s.markInterrupted(h.RunID)
 	}
 }
+
+// liveEventsDrainGrace bounds how long Drain lets the event streams of the
+// runs it drained end on their own before it stops them.
+const liveEventsDrainGrace = 2 * time.Second
 
 // markRemainingInterrupted marks every snapshot handle as interrupted.
 // Used on the deadline-exceeded path where we can't tell which
@@ -672,8 +736,8 @@ func (s *Service) emitOrphanReaped(ctx context.Context, runID string, status sto
 //
 // Returns the up-to-date run (post-reconcile if it fired) so the caller
 // doesn't have to re-load.
-func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
-	r, err := s.store.LoadRun(context.Background(), runID)
+func (s *Service) reconcileRun(ctx context.Context, runID string) (*store.Run, bool, error) {
+	ctx, r, err := store.LoadRunWithValueFormat(ctx, s.store, runID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -686,16 +750,19 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if s.manager.Active(runID) {
 		return r, false, nil
 	}
-	lock, err := s.store.LockRun(context.Background(), runID)
+	lock, err := s.store.LockRun(ctx, runID)
 	if err != nil {
 		// Lock held by a real process — skip reconcile.
 		return r, false, nil
 	}
 	// Re-read under the lock in case another writer raced us.
-	r2, err := s.store.LoadRun(context.Background(), runID)
+	_, r2, err := store.LoadRunWithValueFormat(ctx, s.store, runID)
 	if err != nil || r2.Status != store.RunStatusRunning {
 		_ = lock.Unlock()
 		if err != nil {
+			if store.IsValueFormatRefusal(err) {
+				return nil, false, err
+			}
 			return r, false, nil
 		}
 		return r2, false, nil
@@ -705,7 +772,7 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	// entry — either way the studio can offer the resume button.
 	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
-	if err := s.store.UpdateRunStatusCoded(context.Background(), runID, newStatus, reason, store.FailureProcessOrphaned); err != nil {
+	if err := s.store.UpdateRunStatusCoded(ctx, runID, newStatus, reason, store.FailureProcessOrphaned); err != nil {
 		_ = lock.Unlock()
 		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
 	}
@@ -713,7 +780,10 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if s.logger != nil {
 		s.logger.Info("runview: reconciled orphan run %s on demand → %s", runID, newStatus)
 	}
-	r3, _ := s.store.LoadRun(context.Background(), runID)
+	_, r3, reloadErr := store.LoadRunWithValueFormat(ctx, s.store, runID)
+	if store.IsValueFormatRefusal(reloadErr) {
+		return nil, false, reloadErr
+	}
 	if r3 == nil {
 		return r2, true, nil
 	}

@@ -51,7 +51,7 @@ export function OrgDangerZone({
 
   return (
     <section className="space-y-3 mt-6 border-t border-danger/30 pt-4">
-      <h4 className="font-medium text-danger">Danger zone</h4>
+      <h3 className="font-medium text-danger">Danger zone</h3>
       {org.status === "pending_deletion" ? (
         <>
           <p className="text-xs text-fg-muted">

@@ -3,9 +3,11 @@ package configshare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -192,7 +194,10 @@ func TestValidateLeaf_Editorial(t *testing.T) {
 }
 
 func TestTokenRoundTrip(t *testing.T) {
-	pt, hash, last4, fp, err := MintToken()
+	// The verdict the derivation gate stamps after its ask grants, issued
+	// through the same constructor the gate uses.
+	ctx := auth.ContextWithMintVerdict(context.Background(), auth.NewMintVerdict(auth.MintTeamToken, "test"))
+	pt, hash, last4, fp, err := MintToken(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +209,25 @@ func TestTokenRoundTrip(t *testing.T) {
 	}
 	if VerifyToken("iws_wrong", hash) || VerifyToken("", hash) || VerifyToken(pt, "") {
 		t.Fatal("VerifyToken accepted a bad token/hash")
+	}
+}
+
+// TestMintTokenRefusesWithoutTheDerivationVerdict is the primitive's own
+// probe: a share token is a team token (auth.MintTeamToken), the context
+// must carry the derivation chokepoint's verdict for it, and a verdict
+// minted for another mint approves nothing.
+func TestMintTokenRefusesWithoutTheDerivationVerdict(t *testing.T) {
+	_, _, _, _, err := MintToken(context.Background())
+	var missing *auth.MintVerdictMissingError
+	if !errors.As(err, &missing) {
+		t.Fatalf("a bare context minted a share token: %v, want a *auth.MintVerdictMissingError", err)
+	}
+	if missing.Primitive != "configshare.MintToken" {
+		t.Fatalf("the refusal names %q, want configshare.MintToken", missing.Primitive)
+	}
+	patCtx := auth.ContextWithMintVerdict(context.Background(), auth.NewMintVerdict(auth.MintPAT, "test"))
+	if _, _, _, _, err := MintToken(patCtx); !errors.As(err, &missing) {
+		t.Fatalf("a MintPAT verdict minted a share token: %v", err)
 	}
 }
 

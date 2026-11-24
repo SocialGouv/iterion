@@ -15,6 +15,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // cliGrantFixture blanks the host's credential env, pins a sealer that never
@@ -68,9 +69,10 @@ workflow child:
   entry: grab
   grab -> done
 `)
+	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, iterlog.Nop(),
 		RunOptions{NoInteractive: true, Vars: map[string]string{store.ForgePublishTokenVar: grant}})
-	if _, err := runner(context.Background(), runtime.SubbotRequest{
+	if _, err := runner(boundLegacySubbotFixture(t, context.Background(), "parent-run"), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{}, // the parent hands NOTHING
 		ParentRunID: "parent-run",
@@ -113,7 +115,7 @@ workflow child:
 	}
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, iterlog.Nop(),
 		RunOptions{NoInteractive: true, Vars: map[string]string{store.ForgePublishTokenVar: grant}})
-	if _, err := runner(ctx, runtime.SubbotRequest{
+	if _, err := runner(boundLegacySubbotFixture(t, ctx, "parent-run"), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"bearer": grant}, // handed under another name
 		ParentRunID: "parent-run",

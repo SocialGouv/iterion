@@ -157,6 +157,8 @@ type RemoteRunsLaunchOptions struct {
 	Compress        string
 	AutoMemory      string
 	AmbientContext  string
+	Codemode        string
+	CodemodeBounds  *ir.CodemodeBounds
 	LoopBudgetGuard string
 	Permission      string
 	ReviewMode      string
@@ -183,6 +185,9 @@ type RemoteRunsLaunchOptions struct {
 }
 
 func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts RemoteRunsLaunchOptions) error {
+	if field := ir.CodemodeBoundsNegativeField(opts.CodemodeBounds); field != "" {
+		return fmt.Errorf("codemode_bounds.%s: bound must be non-negative", field)
+	}
 	if opts.FilePath == "" && opts.BotID == "" {
 		return fmt.Errorf("a workflow file or --bot <catalog id> is required")
 	}
@@ -215,6 +220,7 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		"compress":          opts.Compress,
 		"auto_memory":       opts.AutoMemory,
 		"ambient_context":   opts.AmbientContext,
+		"codemode":          opts.Codemode,
 		"loop_budget_guard": opts.LoopBudgetGuard,
 		"permission":        opts.Permission,
 		"review_mode":       opts.ReviewMode,
@@ -229,6 +235,45 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	} {
 		if v != "" {
 			req[k] = v
+		}
+	}
+	// The bounds raise rides as its own object, only the fields the launch
+	// set — a zero field means "did not choose" and the server must not read
+	// it as one.
+	if b := opts.CodemodeBounds; b != nil {
+		body := map[string]any{}
+		if b.ToolCalls > 0 {
+			body["tool_calls"] = b.ToolCalls
+		}
+		if b.ConcurrentToolCalls > 0 {
+			body["concurrent_tool_calls"] = b.ConcurrentToolCalls
+		}
+		if b.Wall > 0 {
+			body["wall"] = b.Wall.String()
+		}
+		if b.CPU > 0 {
+			body["cpu"] = b.CPU.String()
+		}
+		if b.Memory > 0 {
+			body["memory"] = b.Memory
+		}
+		if b.ScriptBytes > 0 {
+			body["script_bytes"] = b.ScriptBytes
+		}
+		if b.ResultBytes > 0 {
+			body["result_bytes"] = b.ResultBytes
+		}
+		if b.ToolResultBytes > 0 {
+			body["tool_result_bytes"] = b.ToolResultBytes
+		}
+		if b.StoreEntries > 0 {
+			body["store_entries"] = b.StoreEntries
+		}
+		if b.StoreBytes > 0 {
+			body["store_bytes"] = b.StoreBytes
+		}
+		if len(body) > 0 {
+			req["codemode_bounds"] = body
 		}
 	}
 	if opts.AutoMerge {
@@ -400,14 +445,32 @@ type remoteWatchHealthCoordinator struct {
 	// (a hand-over in progress), expired (a holder nobody replaced, stale on
 	// every replica) or unreadable. A server older than the field sends no
 	// state, printed as unknown.
-	Elected              bool       `json:"elected"`
-	Holder               string     `json:"holder,omitempty"`
-	HolderExpiresAt      *time.Time `json:"holder_expires_at,omitempty"`
-	HolderState          string     `json:"holder_state,omitempty"`
-	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
-	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
-	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
-	Stale                bool       `json:"stale"`
+	Elected              bool                 `json:"elected"`
+	Holder               string               `json:"holder,omitempty"`
+	HolderExpiresAt      *time.Time           `json:"holder_expires_at,omitempty"`
+	HolderState          string               `json:"holder_state,omitempty"`
+	Handover             *remoteWatchHandover `json:"handover,omitempty"`
+	LastSweepStartedAt   *time.Time           `json:"last_sweep_started_at,omitempty"`
+	LastSweepCompletedAt *time.Time           `json:"last_sweep_completed_at,omitempty"`
+	LastSweepDurationMS  int64                `json:"last_sweep_duration_ms,omitempty"`
+	Stale                bool                 `json:"stale"`
+}
+
+// remoteWatchHandover is the answering replica's handover: whether its term
+// can end on the work failing (armed), where the run of failing passes stands
+// against the count that ends a term, how many terms it has handed over, and
+// whether it has stopped handing over because the peers gave the lease back
+// just as sick. A server older than the field sends none, and the line is
+// omitted rather than printed as a healthy zero.
+type remoteWatchHandover struct {
+	Armed           bool       `json:"armed"`
+	Passes          int        `json:"passes,omitempty"`
+	FailingPasses   int        `json:"failing_passes,omitempty"`
+	Handovers       int        `json:"handovers,omitempty"`
+	SickTerms       int        `json:"sick_terms,omitempty"`
+	CircuitOpen     bool       `json:"circuit_open,omitempty"`
+	LastPassAt      *time.Time `json:"last_pass_at,omitempty"`
+	LastPassVerdict string     `json:"last_pass_verdict,omitempty"`
 }
 
 type remoteWatchHealthEpisode struct {
@@ -528,6 +591,32 @@ func watchHealthReprint(prevKey, key string, printedExpiry *time.Time, sinceLast
 	return false, false
 }
 
+// formatWatchHandover is the handover on one line: what the mechanism is set
+// to, where this replica stands in it, and the last pass it classified — the
+// three facts that tell a quiet net from a blackholed one.
+func formatWatchHandover(h remoteWatchHandover) string {
+	if !h.Armed {
+		// An operator disarmed it (ITERION_LEASE_HANDOVER=off). Saying so is
+		// the point: a sick leader that never hands over is then expected,
+		// not a defect to chase.
+		return "disarmed by the operator"
+	}
+	out := fmt.Sprintf("failing passes=%d/%d handovers=%d", h.FailingPasses, h.Passes, h.Handovers)
+	if h.SickTerms > 0 {
+		out += fmt.Sprintf(" sick terms=%d", h.SickTerms)
+	}
+	if h.CircuitOpen {
+		out += " — HANDING OVER STOPPED: every peer gave the lease back just as sick"
+	}
+	if h.LastPassVerdict != "" {
+		out += " last pass=" + h.LastPassVerdict
+		if h.LastPassAt != nil {
+			out += " at " + FormatTime(*h.LastPassAt)
+		}
+	}
+	return out
+}
+
 // watchHealthChangeKey is what --follow compares between two reads: the answer
 // without the lease expiry, which the holder's renewal moves every third of
 // the TTL — a renewal is not a change worth a line.
@@ -563,6 +652,9 @@ func printRemoteWatchHealth(p *Printer, health remoteWatchHealth, heartbeat bool
 		holder += " (" + state + ")"
 	}
 	p.KV("Coordinator", fmt.Sprintf("present=%t elected=%t holder=%s stale=%t", health.Coordinator.Present, health.Coordinator.Elected, holder, health.Coordinator.Stale))
+	if h := health.Coordinator.Handover; h != nil {
+		p.KV("Handover", formatWatchHandover(*h))
+	}
 	if health.Coordinator.HolderExpiresAt != nil {
 		p.KV("Lease until", FormatTime(*health.Coordinator.HolderExpiresAt))
 	}
@@ -715,7 +807,7 @@ func RemoteRunsRaw(ctx context.Context, c *RemoteClient, p *Printer, id, endpoin
 		return err
 	}
 	if code/100 != 2 {
-		return &APIError{Status: code, Method: "GET", Path: "/api/runs/" + id + endpoint, Body: string(body)}
+		return c.refuseAPI(code, "GET", "/api/runs/"+id+endpoint, body)
 	}
 	p.Raw(append(bytes.TrimRight(body, "\n"), '\n'))
 	return nil
@@ -828,8 +920,10 @@ type RemoteRunsResumeOptions struct {
 	Force       bool
 	// AcceptScratchLoss sends the consent to resume although the run's
 	// scratch does not travel; Force does not give it.
-	AcceptScratchLoss bool
-	Timeout           string
+	AcceptScratchLoss    bool
+	Timeout              string
+	CodemodeStoreEntries int64
+	CodemodeStoreBytes   int64
 	// Budget overrides: non-zero fields beat the run doc's persisted
 	// launch ask on THIS resume — the "raise the cap + resume"
 	// recovery the local CLI has (`iterion resume --max-*`), extended
@@ -871,6 +965,22 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 	if opts.Timeout != "" {
 		req["timeout"] = opts.Timeout
 	}
+	if field := ir.CodemodeBoundsNegativeField(&ir.CodemodeBounds{
+		StoreEntries: opts.CodemodeStoreEntries, StoreBytes: opts.CodemodeStoreBytes,
+	}); field != "" {
+		return fmt.Errorf("codemode_store.%s: quota must be non-negative", field)
+	}
+	storeQuota := map[string]int64{}
+	if opts.CodemodeStoreEntries > 0 {
+		storeQuota["store_entries"] = opts.CodemodeStoreEntries
+	}
+	if opts.CodemodeStoreBytes > 0 {
+		storeQuota["store_bytes"] = opts.CodemodeStoreBytes
+	}
+	if len(storeQuota) != 0 {
+		req["codemode_store"] = storeQuota
+	}
+
 	if budget := resumeBudgetBody(opts); budget != nil {
 		// E3 (#652 review round 1): validate client-side so a typo
 		// (--max-duration "4 hours") fails immediately with an

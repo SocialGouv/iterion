@@ -1,19 +1,25 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
 import type { AdminUserDetail } from "@/api/admin";
+import { setupMatchMedia, expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 const getAdminUser = vi.fn<(id: string) => Promise<AdminUserDetail>>();
+const eraseAdminUser = vi.fn<(id: string) => Promise<unknown>>();
 const listOrgs = vi.fn(async () => [] as unknown[]);
 const listAdminOrgTeams = vi.fn(async () => [] as unknown[]);
 
 vi.mock("@/api/admin", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/admin")>();
-  return { ...actual, getAdminUser: (id: string) => getAdminUser(id) };
+  return {
+    ...actual,
+    getAdminUser: (id: string) => getAdminUser(id),
+    eraseAdminUser: (id: string) => eraseAdminUser(id),
+  };
 });
 vi.mock("@/api/orgs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/orgs")>();
@@ -62,8 +68,18 @@ function renderDrawer() {
   );
 }
 
+// Radix renders the dialog in a portal, outside render()'s container, so the
+// drawer's own subtree is reached by role and not by the render result.
+function mountDrawer(): HTMLElement {
+  renderDrawer();
+  return screen.getByRole("dialog");
+}
+
+setupMatchMedia();
+
 beforeEach(() => {
   getAdminUser.mockReset();
+  eraseAdminUser.mockReset().mockResolvedValue({});
   listOrgs.mockReset().mockResolvedValue([]);
   listAdminOrgTeams.mockReset().mockResolvedValue([]);
 });
@@ -206,5 +222,241 @@ describe("UserDrawer", () => {
 
     expect(await screen.findByLabelText("Team")).toBeTruthy();
     expect(screen.queryByText(/Add this account to an organization first/i)).toBeNull();
+  });
+});
+
+// Every DISPLAY name deliberately collides, which is the shape a fixture with
+// distinct names cannot judge: the two organizations share the name
+// "Platform", and so do the two teams. What cannot repeat is each row's slug
+// (`teams.slug` and `orgs.slug` are globally unique at the store), so that is
+// what the names carry.
+const PLACED = detail({
+  orgs: [
+    { org_id: "o1", org_name: "Platform", org_slug: "sdpc", role: "member" },
+    { org_id: "o2", org_name: "Platform", org_slug: "dnum", role: "owner" },
+  ],
+  teams: [
+    { team_id: "t1", team_name: "Core", team_slug: "pic", org_id: "o1", org_name: "Platform", role: "admin" },
+    { team_id: "t2", team_name: "Core", team_slug: "acci", org_id: "o2", org_name: "Platform", role: "member" },
+  ],
+  sso_links: [{ provider: "github", subject: "1234567", email: "someone@externes.example.org" }],
+});
+
+// The ordinary shape: the names read straight off the rows.
+const DISTINCT = detail({
+  orgs: [
+    { org_id: "o1", org_name: "SDPC", org_slug: "sdpc", role: "member" },
+    { org_id: "o2", org_name: "DNUM", org_slug: "dnum", role: "owner" },
+  ],
+  teams: [
+    { team_id: "t1", team_name: "PIC", team_slug: "pic", org_id: "o1", org_name: "SDPC", role: "admin" },
+    { team_id: "t2", team_name: "Acci", team_slug: "acci", org_id: "o2", org_name: "DNUM", role: "member" },
+  ],
+});
+
+describe("UserDrawer — repeated row controls name the row they act on", () => {
+  // Every membership row carries the same verb and, in this fixture, the same
+  // display name. Without the row's own identity in the name, a screen-reader
+  // user hears "Remove, Remove" and has to count table rows to know which
+  // organization the second one revokes.
+  it("qualifies every control of a membership row by its tenant", async () => {
+    getAdminUser.mockResolvedValue(PLACED);
+    mountDrawer();
+
+    expect(await screen.findByRole("button", { name: "Remove from sdpc" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove from dnum" })).toBeTruthy();
+    // Both team rows display the name "Core" and the organization
+    // "Platform": the slug is the only thing that separates them, and it is
+    // rendered right under the name.
+    expect(screen.getByRole("button", { name: "Revoke pic in Platform" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke acci in Platform" })).toBeTruthy();
+    // The role pickers sit in the same rows and repeat the same way: a fix
+    // that stopped at the destructive button would leave the class open.
+    expect(screen.getByRole("combobox", { name: "Org role for sdpc" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Org role for dnum" })).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Team role for pic in Platform" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Team role for acci in Platform" }),
+    ).toBeTruthy();
+    // The visible words are untouched: the name CONTAINS them (SC 2.5.3).
+    for (const [visible, count] of [
+      ["Remove", 2],
+      ["Revoke", 2],
+    ] as const) {
+      expect(screen.getAllByText(visible)).toHaveLength(count);
+    }
+  });
+
+  it("reads the organization each row displays, not an id", async () => {
+    getAdminUser.mockResolvedValue(DISTINCT);
+    mountDrawer();
+
+    expect(await screen.findByRole("button", { name: "Revoke pic in SDPC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke acci in DNUM" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /o1|o2/ })).toBeNull();
+  });
+
+  // The row this console exists for: a team grant whose org is gone carries
+  // neither org name nor org id (both omitempty on the wire), and a template
+  // that reads them straight announces "Revoke orphan in undefined".
+  it("says so rather than announcing `undefined` for a grant with no org at all", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        orgs: [],
+        teams: [
+          { team_id: "t9", team_name: "Orphan", team_slug: "orphan", role: "admin", orphan_grant: true },
+        ],
+      }),
+    );
+    mountDrawer();
+
+    expect(await screen.findByRole("button", { name: "Revoke orphan in —" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /undefined/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /undefined/ })).toBeNull();
+  });
+});
+
+describe("a11y / UserDrawer", () => {
+  it("has no violation with both rosters loaded", async () => {
+    getAdminUser.mockResolvedValue(PLACED);
+    const dialog = mountDrawer();
+    await screen.findByRole("table", { name: "Organizations this account belongs to" });
+    await expectNoViolationsStrict(dialog, "UserDrawer");
+  });
+
+  it("has no violation on the unplaced account the console exists for", async () => {
+    getAdminUser.mockResolvedValue(detail({ has_password: false }));
+    const dialog = mountDrawer();
+    await screen.findByText(/belongs to nothing/i);
+    await expectNoViolationsStrict(dialog, "UserDrawer (unplaced)");
+  });
+
+  it("has no violation while the account is still loading", async () => {
+    let release: (d: AdminUserDetail) => void = () => {};
+    getAdminUser.mockReturnValue(
+      new Promise<AdminUserDetail>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const dialog = mountDrawer();
+    // The slate is a named live region, not visible text (Spinner carries the
+    // label on role=status), so it is asserted the way it is announced.
+    await screen.findByRole("status", { name: "Loading account…" });
+    await expectNoViolationsStrict(dialog, "UserDrawer (loading)");
+    // Settled inside the test: released as the last statement, the query
+    // resolves after cleanup has unmounted the drawer and react-query's
+    // setState lands outside act(), attributed to whichever test runs next.
+    release(detail());
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "Loading account…" })).toBeNull(),
+    );
+  });
+});
+
+describe("UserDrawer — erasure", () => {
+  // The one irreversible act of the console: it asks before it acts, and
+  // the request goes out only once the operator confirmed.
+  it("asks before erasing, and erases the account it names once confirmed", async () => {
+    getAdminUser.mockResolvedValue(detail());
+    mountDrawer();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Effacer le compte (anonymisation)" }),
+    );
+    expect(await screen.findByText("Effacer ce compte ?")).toBeTruthy();
+    expect(eraseAdminUser).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Effacer le compte" }));
+    await waitFor(() => expect(eraseAdminUser).toHaveBeenCalledWith("u1"));
+  });
+
+  it("does not erase when the confirmation is declined", async () => {
+    getAdminUser.mockResolvedValue(detail());
+    mountDrawer();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Effacer le compte (anonymisation)" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText("Effacer ce compte ?")).toBeNull());
+    expect(eraseAdminUser).not.toHaveBeenCalled();
+  });
+
+  // An erased account is a pseudonym: the drawer says so, offers no grant
+  // (the server refuses every write, 409 user_erased) and never raises the
+  // "belongs to nothing — it can sign in" warning, which is false of it.
+  it("renders an erased account as a pseudonym with no roster and no erasure", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        user: {
+          id: "u1",
+          email: "erased-u1@erased.invalid",
+          status: "erased",
+          is_super_admin: false,
+          created_at: "2026-09-17T09:00:00Z",
+          updated_at: "2026-11-03T10:00:00Z",
+        },
+        has_password: false,
+      }),
+    );
+    mountDrawer();
+
+    expect(await screen.findByText("Compte effacé (anonymisé)")).toBeTruthy();
+    expect(screen.queryByText("Effacement incomplet")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Effacer le compte (anonymisation)" })).toBeNull();
+    expect(screen.queryByText(/belongs to nothing/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to org" })).toBeNull();
+    expect(screen.queryByText(/no way to sign in/i)).toBeNull();
+  });
+
+  // The erased status blocks sign-ins from the erasure's first step, so an
+  // erasure interrupted before the anonymization leaves an erased account
+  // still under its own address: the drawer says the erasure is incomplete
+  // and offers to repeat it, which completes it.
+  it("reads an erased account still under its own address as an incomplete erasure, and repeats it", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        user: {
+          id: "u1",
+          email: "alice@example.org",
+          status: "erased",
+          is_super_admin: false,
+          created_at: "2026-09-17T09:00:00Z",
+          updated_at: "2026-11-03T10:00:00Z",
+        },
+        has_password: true,
+      }),
+    );
+    mountDrawer();
+
+    expect(await screen.findByText("Effacement incomplet")).toBeTruthy();
+    expect(screen.queryByText("Compte effacé (anonymisé)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Relancer l'effacement" }));
+    await waitFor(() => expect(eraseAdminUser).toHaveBeenCalledWith("u1"));
+  });
+
+  // A complete erasure can still be repeated: the clean-up after the
+  // anonymization does not show on the account row, and a repeat is a no-op
+  // once everything is gone.
+  it("keeps the repeat on a complete erasure", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        user: {
+          id: "u1",
+          email: "erased-u1@erased.invalid",
+          status: "erased",
+          is_super_admin: false,
+          created_at: "2026-09-17T09:00:00Z",
+          updated_at: "2026-11-03T10:00:00Z",
+        },
+        has_password: false,
+      }),
+    );
+    mountDrawer();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Relancer l'effacement" }));
+    await waitFor(() => expect(eraseAdminUser).toHaveBeenCalledWith("u1"));
   });
 });

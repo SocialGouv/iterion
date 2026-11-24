@@ -16,8 +16,11 @@ import (
 
 // TestStoreEventHooks_RedactsSecretsAtSinks proves Layer 0: a real
 // secret value — and its base64 encoding — never reach events.jsonl or
-// run.log, while the placeholder does.
+// run.log, while the placeholder does. The run.log half is the logger's
+// own chokepoint since #2458: the logger carries the guard, wired exactly
+// as runview.BuildExecutor wires the run's logger.
 func TestStoreEventHooks_RedactsSecretsAtSinks(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-SUPERSECRET-abcdef0123456789ABCDEF"
 	b64 := base64.StdEncoding.EncodeToString([]byte(secret))
 	const ph = "__ITERION_SECRET_api_key__"
@@ -38,7 +41,7 @@ func TestStoreEventHooks_RedactsSecretsAtSinks(t *testing.T) {
 	}
 
 	var logBuf bytes.Buffer
-	logger := iterlog.New(iterlog.LevelTrace, &logBuf)
+	logger := iterlog.New(iterlog.LevelTrace, &logBuf).WithRedactor(guard.Redact)
 	hooks := NewStoreEventHooks(ctx, st, runID, logger, guard, nil)
 
 	// Fire the secret through every high-risk sink.
@@ -78,6 +81,7 @@ func TestStoreEventHooks_RedactsSecretsAtSinks(t *testing.T) {
 // TestStoreEventHooks_NilGuardNoRedaction confirms the kill-switch
 // (ITERION_SECRETS_REDACT=off ⇒ nil guard) leaves content untouched.
 func TestStoreEventHooks_NilGuardNoRedaction(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-PLAINTEXT-0123456789abcdefABCDEF"
 
 	st, err := store.New(t.TempDir())

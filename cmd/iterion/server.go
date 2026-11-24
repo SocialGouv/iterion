@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	iterauth "github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -31,6 +33,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -40,14 +45,17 @@ import (
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/legal"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/mail"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/memlimit"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -147,7 +155,15 @@ their settings).`,
 // zero values mean "no limit" — the safe default for existing
 // deployments. Per-org overrides live on the Team document and are
 // managed via PATCH /api/admin/orgs/{id}.
-func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
+//
+// The fork review lane's per-contributor bound is the exception
+// (ADR-162 Q4): its platform default is 20 runs / $20, because it is
+// the perimeter against an outside party rather than operator
+// convenience — an unset value is a number, and the escape hatch is
+// the explicit `unbounded` (the literal string, on either env var,
+// which resolves to no cap). Any other value that is not a positive
+// number is refused at boot (forkBoundEnvInt), 0 included.
+func orgLimitDefaultsFromEnv() (server.OrgLimitDefaults, error) {
 	intEnv := func(key string) int {
 		n, err := strconv.Atoi(os.Getenv(key))
 		if err != nil || n < 0 {
@@ -162,13 +178,121 @@ func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 	if f, err := strconv.ParseFloat(os.Getenv("ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD"), 64); err == nil && f > 0 {
 		d.MonthlyCostCapUSD = f
 	}
-	return d
+	var err error
+	if d.ForkAuthorRunQuota, err = forkBoundEnvInt(forkAuthorRunQuotaEnv, defaultForkAuthorRunQuota); err != nil {
+		return server.OrgLimitDefaults{}, err
+	}
+	if d.ForkAuthorCostCapUSD, err = forkBoundEnvFloat(forkAuthorCostCapEnv, defaultForkAuthorCostCapUSD); err != nil {
+		return server.OrgLimitDefaults{}, err
+	}
+	return d, nil
 }
 
-// forgeGitHubAppFromEnv reads the GitHub-App identity for the
-// installation-token connect mode. The PEM private key is loaded from a file
-// (the canonical k8s-secret mount), falling back to an inline env value.
-// Empty AppID → the App mode is unavailable (OAuth/PAT still work).
+// The fork review lane's per-contributor bound knobs (ADR-162 Q4) and the
+// values the platform ships when they are unset.
+const (
+	forkAuthorRunQuotaEnv       = "ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA"
+	forkAuthorCostCapEnv        = "ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD"
+	defaultForkAuthorRunQuota   = 20
+	defaultForkAuthorCostCapUSD = 20.0
+	forkBoundUnbounded          = "unbounded"
+)
+
+// forkBoundEnvInt / forkBoundEnvFloat read a fork-author bound knob. Unset
+// resolves to the shipped default, because the bound is a perimeter and its
+// unset state is a number, never "open". The literal `unbounded`
+// (case-insensitive) resolves to 0 — no cap, the ONE spelling of the escape
+// hatch. A positive number is the cap. Everything else is refused, typed, at
+// boot: a 0 would be a second, implicit spelling of `unbounded` (the
+// neighbouring ITERION_ORG_DEFAULT_* knobs read 0 as "no limit", so an
+// operator setting it by analogy would open the perimeter without meaning
+// to), and a negative or unparseable value is a typo the default must not
+// silently replace.
+func forkBoundEnvInt(key string, def int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	switch {
+	case raw == "":
+		return def, nil
+	case strings.EqualFold(raw, forkBoundUnbounded):
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, forkBoundEnvError(key, raw)
+	}
+	return n, nil
+}
+
+func forkBoundEnvFloat(key string, def float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	switch {
+	case raw == "":
+		return def, nil
+	case strings.EqualFold(raw, forkBoundUnbounded):
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, forkBoundEnvError(key, raw)
+	}
+	// One predicate for every value the counter cannot enforce as a cap —
+	// 0 and negatives, NaN, inf, a sub-millidollar amount that rounds to 0,
+	// one past int64 millidollars: each would read as "no cap" in AllowRun,
+	// a second spelling of `unbounded`.
+	if _, ok := orgusage.CostCapMillis(f); !ok {
+		return 0, forkBoundEnvError(key, raw)
+	}
+	return f, nil
+}
+
+// errForkBoundEnv types the boot refusal of a fork-author bound knob.
+var errForkBoundEnv = errors.New("server: invalid fork-author bound")
+
+func forkBoundEnvError(key, raw string) error {
+	return fmt.Errorf("%w: %s=%q — set a positive number (the per-contributor cap; a dollar cap of at least one millidollar, 0.001), the literal %q (no cap), or leave it unset (the shipped default); 0 is not a spelling of unbounded", errForkBoundEnv, key, raw, forkBoundUnbounded)
+}
+
+// trustedProxyWarning names what a trusted-proxy list costs a deployment
+// when it is empty or when it trusts everything, or "" when the operator
+// has named ranges that mean something. Both ends are honoured, never
+// refused (philosophy 1) — and both are silent in the logs otherwise.
+//
+// Empty: the chart ships the private ranges, so emptying the list was
+// deliberate; with no trusted range the forwarded client address is
+// never read, so every request carries the proxy's own address and the
+// auth rate limiter holds ONE bucket for the whole instance instead of
+// one per client (#2673).
+//
+// A /0: the config refuses `10.42.0.7/16` for widening trust by a typo
+// to a whole /16, and `0.0.0.0/0` widens it to the internet — the
+// canonical footgun of this knob, nginx's own
+// `set_real_ip_from 0.0.0.0/0`. Every client is then a proxy the
+// operator vouches for, so the audit IP and the rate-limit key are
+// whatever the request's forwarded header says.
+func trustedProxyWarning(cidrs []string) string {
+	if len(cidrs) == 0 {
+		return "server: ITERION_AUTH_TRUSTED_PROXY_CIDRS is empty — no forwarded client address is trusted, so behind a proxy every request is keyed on the proxy's own address and the auth rate limiter shares one bucket across the whole instance; set it to the range of the ingress in front (docs/environment-variables.md)"
+	}
+	// Every /0 entry, not the first: with both 0.0.0.0/0 and ::/0 named,
+	// reporting one would leave the operator fixing half of it.
+	all := []string{}
+	for _, cidr := range cidrs {
+		// An entry that does not parse is refused by config.Validate,
+		// which Load runs before this: nothing to warn about here.
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil {
+			continue
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			all = append(all, network.String())
+		}
+	}
+	if len(all) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("server: ITERION_AUTH_TRUSTED_PROXY_CIDRS contains %s — every client is then trusted to name its own address, so the audit IP and the auth rate-limit key are whatever the request's forwarded header says and one client can drain another's bucket; name the ingress controller's pod CIDR instead (docs/environment-variables.md)", strings.Join(all, " and "))
+}
+
 // forgeBrandAvatarDisabled reads ITERION_FORGE_BRAND_AVATAR: "off", "0",
 // "false" or "no" (the values every other falsy switch in the repo takes)
 // keeps iterion from uploading the iterion-bot avatar onto a bot identity at
@@ -181,6 +305,10 @@ func forgeBrandAvatarDisabled() bool {
 	return false
 }
 
+// forgeGitHubAppFromEnv reads the GitHub-App identity for the
+// installation-token connect mode. The PEM private key is loaded from a file
+// (the canonical k8s-secret mount), falling back to an inline env value.
+// Empty AppID → the App mode is unavailable (OAuth/PAT still work).
 func forgeGitHubAppFromEnv() server.ForgeGitHubAppConfig {
 	appID, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_ID")), 10, 64)
 	key := strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_PRIVATE_KEY"))
@@ -223,6 +351,21 @@ func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
 	return func(tenantID string) native.BoardStore { return factory(tenantID) }
 }
 
+// issueTenantResolver exposes the cross-team issue-id lookup the board
+// routes' by-id class needs (ADR-141). An ambiguous prefix translates to
+// the server's sentinel, so the choke point falls back to the ambient
+// stamp instead of refusing.
+func issueTenantResolver(st *mongostore.Store) func(context.Context, string) (string, error) {
+	bm := boardmongo.New(st.DB(), "")
+	return func(_ context.Context, issueID string) (string, error) {
+		team, err := bm.ResolveIssueTenant(issueID)
+		if errors.Is(err, boardmongo.ErrAmbiguousIssue) {
+			return "", server.ErrAmbiguousIssueID
+		}
+		return team, err
+	}
+}
+
 func runServer(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         serverOpts.configPath,
@@ -232,15 +375,31 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: load config: %w", err)
 	}
 
+	// Both modes of this command are deployment shapes behind a Service,
+	// so both owe the warning: a server that trusts no range keys every
+	// request on the proxy's own address.
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
+	if w := trustedProxyWarning(cfg.Auth.TrustedProxyCIDRs); w != "" {
+		logger.Warn("%s", w)
+	}
+
 	// Local mode: keep the existing studio handlers; only difference
 	// from `iterion studio` is the cloud-friendly --bind default.
 	if cfg.Mode == iterconfig.ModeLocal {
+		legalSurface, err := loadLegalSurface(cfg, cfg.Log.NewLogger(cmd.ErrOrStderr()))
+		if err != nil {
+			return err
+		}
 		return cli.RunStudio(cmd.Context(), cli.StudioOptions{
-			Port:      serverOpts.port,
-			Bind:      serverOpts.bind,
-			Dir:       serverOpts.dir,
-			StoreDir:  serverOpts.storeDir,
-			NoBrowser: true,
+			Legal:             legalSurface,
+			Port:              serverOpts.port,
+			Bind:              serverOpts.bind,
+			Dir:               serverOpts.dir,
+			StoreDir:          serverOpts.storeDir,
+			NoBrowser:         true,
+			TrustedProxyCIDRs: cfg.Auth.TrustedProxyCIDRs,
+			TrustedProxyHops:  cfg.Auth.TrustedProxyHops,
+			ForwardedHeader:   cfg.Auth.ForwardedHeader,
 		}, newPrinter())
 	}
 
@@ -248,7 +407,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// directly. We bypass cli.RunStudio because it auto-discovers a
 	// filesystem store, which doesn't make sense when persistence
 	// lives in Mongo.
-	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
+	// The GC's memory limit tracks the pod's cgroup ceiling (#2693), so the
+	// collector works before the OOM-killer does. The operator's GOMEMLIMIT
+	// wins; ITERION_MEMLIMIT=off removes the derivation. Local mode above is
+	// untouched: a studio shares the operator's machine, no pod limit.
+	memlimit.Apply(logger.Info)
 	// Couple the process logger to the error tracker (no-op unless
 	// SENTRY_DSN is set): every error line becomes an event, every warn
 	// line a breadcrumb on the next one. Init already ran at the root.
@@ -435,6 +598,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}(),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
+		// The run's effective price-feed table (ADR-163): folded at every
+		// launch and resume from the feed stores above (platform, org and
+		// team documents); nil when no feed answers and the operator table
+		// is the floor.
+		PriceFeedEffective: server.PublisherPriceFeedEffective(stores.priceFeedConfigs, stores.priceFeedStates, logger.Warn),
 		SandboxImage: func(ctx context.Context) string {
 			return sandboxResolver.Get(ctx).EffectiveImage()
 		},
@@ -446,9 +614,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Mongo change-stream source so the WS handler streams runner-pod
 	// events AND run_logs chunks (the local broker/buffer would only
 	// see this process's writes). ADR-053.
-	streamSrc := runstream.NewMongo(st.EventsCollection(), st.RunLogsCollection(), st.RunsCollection(), logger).WithMetrics(mreg)
+	streamSrc := runstream.NewMongoResolved(func(ctx context.Context, id string) (runstream.MongoSelection, error) {
+		return st.ResolveStreamSelection(ctx, id)
+	}, logger).WithMetrics(mreg)
 
-	disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
+	// The kill switch is the operator's own posture: read through envtrust,
+	// a value a project `.env` planted — what an older binary's loader could
+	// leave in a child, the current loaders refusing the grade at the plant
+	// — answers nothing, and the empty read parses to false (auth ON).
+	disableAuth, _ := strconv.ParseBool(envtrust.Inherited("ITERION_DISABLE_AUTH"))
 
 	if err := bootstrapAdmin(rootCtx, cfg, authStack.identityStore, authStack.authSvc, disableAuth, logger); err != nil {
 		return err
@@ -570,17 +744,32 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Org purge sweeper: nightly hard-purge of orgs whose soft-delete grace has
-	// elapsed — all team-scoped data across the cloud collections, then the
-	// identity cascade. Multi-replica-safe (idempotent; PurgeOrg no-ops once the
-	// org is gone).
+	// elapsed — every run of every team with its blobs through the run store,
+	// then all team-scoped data across the cloud collections, then the
+	// identity cascade. Elected on one replica by the server's lease
+	// (idempotent: PurgeOrg no-ops once the org is gone, and a deferred or
+	// failed pass leaves the org pending for the next). The run batch is the
+	// operator's bound on one pass; the force list is the escape hatch for an
+	// org a run withholds for good.
 	var orgPurgeSweeper *orgsweep.Sweeper
 	if authStack.authSvc != nil {
+		runBatch, err := orgsweep.RunBatchFromEnv()
+		if err != nil {
+			return err
+		}
+		forceSweep := orgsweep.ForceSweepFromEnv()
+		for id := range forceSweep {
+			logger.Warn("orgsweep: %s names org %s — its purge sweeps past the runs it cannot delete, abandoning their objects in the bucket", orgsweep.ForceSweepEnv, id)
+		}
 		orgPurgeSweeper = &orgsweep.Sweeper{
 			Purger: &orgsweep.Purger{
-				DB:      st.DB(),
-				Store:   authStack.identityStore,
-				Cascade: authStack.authSvc.DeleteOrgCascade,
-				Logger:  logger,
+				DB:         st.DB(),
+				Store:      authStack.identityStore,
+				Cascade:    authStack.authSvc.DeleteOrgCascade,
+				Logger:     logger,
+				Runs:       st,
+				RunBatch:   runBatch,
+				ForceSweep: forceSweep,
 			},
 			HourUTC: 2,
 			Logger:  logger,
@@ -594,6 +783,26 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	} else if horizon != boardmongo.DefaultUnleasedClaimHorizon {
 		logger.Info("board watchdog: un-leased claim horizon set to %s (%s)", horizon, boardmongo.UnleasedClaimHorizonEnv)
+	}
+
+	legalSurface, err := loadLegalSurface(cfg, logger)
+	if err != nil {
+		return err
+	}
+	orgDefaults, err := orgLimitDefaultsFromEnv()
+	if err != nil {
+		return err
+	}
+	// The connector ingress lane's dials: a value that does not parse
+	// refuses to start the server rather than read as the default — the
+	// operator stated a bound.
+	intakeRetention, err := intake.RetentionFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	intakeBacklogMax, err := intake.BacklogMaxFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
 	}
 
 	srv := server.New(server.Config{
@@ -610,6 +819,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// real net is runtime: boardNow warns on any non-FS board without
 		// a server clock, so a wrapper degrades LOUDLY, never silently.
 		CloudBoardFor:         cloudBoardFor(st),
+		IssueTenantResolver:   issueTenantResolver(st),
 		CloudBoardCoordinator: boardmongo.NewCoordinator(st.DB()),
 		TriggerStore:          trigger.NewMongoSubscriptionStore(st.DB()),
 		ScheduledBots:         cloudsched.NewMongoStore(st.DB()),
@@ -645,18 +855,26 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 			return highWater, superseded, nil
 		},
-		AuthService:                 authStack.authSvc,
-		AuthSigner:                  authStack.signer,
-		OIDCRegistry:                registry,
-		OIDCStates:                  stores.oidcState,
-		DesktopTickets:              stores.desktopTickets,
-		WSTickets:                   stores.wsTickets,
-		OrgSSO:                      stores.orgSSO,
-		OrgDomains:                  stores.orgDomain,
-		ApiKeys:                     stores.apiKeys,
-		GenericSecrets:              stores.genericSecrets,
-		BotBindings:                 stores.botBindings,
-		ForgeConnections:            stores.forgeConn,
+		AuthService:      authStack.authSvc,
+		AuthSigner:       authStack.signer,
+		OIDCRegistry:     registry,
+		OIDCStates:       stores.oidcState,
+		DesktopTickets:   stores.desktopTickets,
+		WSTickets:        stores.wsTickets,
+		OrgSSO:           stores.orgSSO,
+		OrgDomains:       stores.orgDomain,
+		ApiKeys:          stores.apiKeys,
+		GenericSecrets:   stores.genericSecrets,
+		BotBindings:      stores.botBindings,
+		ForgeConnections: stores.forgeConn,
+		Connections:      stores.connections,
+		// The cloud catalog (#2757): the platform tier over the baked floor.
+		// The TEAM tier is per-tenant, so it composes where a tenant is known
+		// — ConnectorPackageStore below, which every tenant-known site reads
+		// (the facade per grant, the connection CRUD, the connector webhook
+		// lane). This static view serves only what names no tenant.
+		ConnectorCatalog:            connection.NewLayeredCatalog(connection.PlatformCatalog(stores.connectorPkgs), connection.BakedCatalog()),
+		ConnectorPackageStore:       stores.connectorPkgs,
 		ForgeIntegrations:           stores.forgeIntegration,
 		BoardBindings:               stores.boardBinding,
 		ProvisionApprovals:          stores.forgeApprovals,
@@ -667,6 +885,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PluginSourceFetcher:         pluginFetcher,
 		BotSources:                  stores.botSources,
 		BotRolesSettings:            stores.botRoles,
+		PriceFeedConfigs:            stores.priceFeedConfigs,
+		PriceFeedStates:             stores.priceFeedStates,
 		RunnerPoolsSettings:         stores.runnerPools,
 		BotVarsSettings:             stores.botVars,
 		MaintenanceSettings:         stores.maintenance,
@@ -681,12 +901,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookDeliveries:           stores.webhooks.Deliveries,
 		WebhookCounter:              stores.webhooks.Counter,
 		WebhookDeferred:             stores.webhooks.Deferred,
+		ConnectorIntakes:            intake.NewMongoStore(st.DB()),
+		ConnectorPollers:            poller.NewMongoStore(st.DB()),
+		ConnectorIntakeRetention:    intakeRetention,
+		ConnectorIntakeBacklogMax:   intakeBacklogMax,
 		ConfigShares:                stores.configShares,
 		OrgUsage:                    stores.orgUsage,
 		CredUsage:                   stores.credUsage,
-		OrgDefaults:                 orgLimitDefaultsFromEnv(),
+		OrgDefaults:                 orgDefaults,
 		CredPoolBroker:              credBroker,
 		CredPoolPools:               stores.credPools,
+		CredPoolAttachments:         stores.credAttachments,
+		PoolUsageProbe:              cloudpublisher.AnthropicForfaitProbe(8 * time.Second),
 		CredPoolPledges:             stores.credPledges,
 		CredPoolLeases:              stores.credLeases,
 		CredPoolLedger:              stores.credLedger,
@@ -718,9 +944,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		RefreshTTL:                  cfg.Auth.RefreshTTL,
 		PublicURL:                   cfg.Auth.PublicURL,
 		CanonicalRedirect:           cfg.Auth.CanonicalRedirect,
+		Legal:                       legalSurface,
 		SignupMode:                  cfg.Auth.SignupMode,
 		CookieDomain:                cfg.Auth.CookieDomain,
 		CookieSecure:                cfg.Auth.CookieSecure,
+		TrustedProxyCIDRs:           cfg.Auth.TrustedProxyCIDRs,
+		TrustedProxyHops:            cfg.Auth.TrustedProxyHops,
+		ForwardedHeader:             cfg.Auth.ForwardedHeader,
 		DisableAuth:                 disableAuth,
 		Metrics:                     mreg,
 		ModelPrefs:                  modelPrefStore,
@@ -777,7 +1007,9 @@ type cloudStores struct {
 	botBindings      *secrets.MongoBotSecretBindingStore
 	webhooks         *webhooks.MongoStores
 	configShares     *configshare.MongoStore
-	forgeConn        *forge.MongoConnectionStore
+	forgeConn        *connection.MongoForgeStore
+	connections      *connection.MongoStore
+	connectorPkgs    *connection.MongoPackageStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	boardBinding     *forge.MongoBoardBindingStore
 	forgeApprovals   *forge.MongoProvisionApprovalStore
@@ -793,11 +1025,14 @@ type cloudStores struct {
 	credUsage        *credusage.MongoCounter
 	credPools        *credpool.MongoPoolStore
 	credPledges      *credpool.MongoPledgeStore
+	credAttachments  *credpool.MongoAttachmentStore
 	credLeases       *credpool.MongoLeaseStore
 	credLedger       *credpool.MongoLedger
 	audit            *audit.MongoStore
 	usageCapSettings *usagecap.MongoSettingsStore
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	priceFeedConfigs pricefeed.ConfigStore
+	priceFeedStates  pricefeed.StateStore
 	runnerPools      *platformcfg.MongoStore[platformcfg.RunnerPools]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
@@ -826,7 +1061,9 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		botBindings:      secrets.NewMongoBotSecretBindingStore(st.DB()),
 		webhooks:         webhooks.NewMongoStores(st.DB()),
 		configShares:     configshare.NewMongoStore(st.DB()),
-		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
+		forgeConn:        connection.NewMongoForgeStore(st.DB()),
+		connections:      connection.NewMongoStore(st.DB()),
+		connectorPkgs:    connection.NewMongoPackageStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),
 		forgeApprovals:   forge.NewMongoProvisionApprovalStore(st.DB()),
@@ -834,6 +1071,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		priceFeedConfigs: pricefeed.NewMongoConfigStore(st.DB()),
+		priceFeedStates:  pricefeed.NewMongoStateStore(st.DB()),
 		runnerPools:      platformcfg.NewMongoRunnerPools(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),
@@ -851,6 +1090,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		orgUsage:         orgusage.NewMongoCounter(st.DB()),
 		credUsage:        credusage.NewMongoCounter(st.DB()),
 		credPools:        credpool.NewMongoPoolStore(st.DB()),
+		credAttachments:  credpool.NewMongoAttachmentStore(st.DB()),
 		credPledges:      credpool.NewMongoPledgeStore(st.DB()),
 		credLeases:       credpool.NewMongoLeaseStore(st.DB()),
 		credLedger:       credpool.NewMongoLedger(st.DB()).WithLogger(logger),
@@ -861,11 +1101,13 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via
-	// ITERION_CLOUD_MARKETPLACE because the submit/install paths are
-	// local-mode only today (cloud is rejected pending a vetted submission
-	// flow — see pkg/server/marketplace_routes.go). When enabled it surfaces
-	// the read-only browse view + sets marketplace_enabled. Local self-host
-	// wires a JSONStore unconditionally in pkg/cli/studio.go.
+	// ITERION_CLOUD_MARKETPLACE. When enabled it serves the public browse
+	// view (account ids and moderation metadata projected away for
+	// non-owners — marketplace.ForViewer), authenticated submissions that
+	// land pending moderation, and the moderation queue; the install and
+	// uninstall paths stay local-only (see pkg/server/marketplace_routes.go).
+	// It also sets marketplace_enabled. Local self-host wires a JSONStore
+	// unconditionally in pkg/cli/studio.go.
 	marketplaceEnabled, _ := strconv.ParseBool(os.Getenv("ITERION_CLOUD_MARKETPLACE"))
 
 	schemas := []schemaEnsurer{
@@ -877,6 +1119,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"bot_secret_bindings", s.botBindings.EnsureSchema},
 		{"webhooks", func(c context.Context) error { return webhooks.EnsureSchema(c, st.DB()) }},
 		{"forge_connections", s.forgeConn.EnsureSchema},
+		{"connections", s.connections.EnsureSchema},
+		{"connector_packages", s.connectorPkgs.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
 		{"forge_board_bindings", s.boardBinding.EnsureSchema},
 		{"forge_provision_approvals", s.forgeApprovals.EnsureSchema},
@@ -894,9 +1138,17 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
 		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},
+		{"connector_intake", func(c context.Context) error { return intake.EnsureSchema(c, st.DB()) }},
+		{"connector_poller", func(c context.Context) error { return poller.EnsureSchema(c, st.DB()) }},
 		{"assistant_run_watches", func(c context.Context) error { return runwatch.NewMongoStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
 		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
+		// The server READS and WRITES the usage-cap records (the admin
+		// settings routes and the cap gate), so it owes their indexes too:
+		// before this line only the runner ensured them, and a deployment
+		// whose runner had never booted served the cap surface on an
+		// unindexed collection.
+		{"usage_caps", func(c context.Context) error { return usagecap.EnsureSchema(c, st.DB()) }},
 	}
 	if marketplaceEnabled {
 		schemas = append(schemas, schemaEnsurer{"marketplace", func(c context.Context) error { return marketplace.EnsureSchema(c, st.DB()) }})
@@ -1307,4 +1559,29 @@ func rotatedOAuthKinds(cfg iterconfig.Config) []secrets.OAuthKind {
 		kinds = append(kinds, secrets.OAuthKindClaudeCode)
 	}
 	return kinds
+}
+
+// loadLegalSurface reads the operator's legal surface (ADR-160) ONCE, before
+// the server exists: a deployment that names a dir it cannot read, or a file
+// that names no document, refuses to start rather than publish half a
+// surface. A cloud deployment that publishes no document at all starts —
+// the texts are the operator's to write, never the code's to refuse — but
+// says so at WARN, because a public service owes its visitors a legal
+// notice, a privacy policy and an accessibility statement.
+func loadLegalSurface(cfg iterconfig.Config, logger *iterlog.Logger) (legal.Surface, error) {
+	docs, err := legal.Load(cfg.Legal.DocumentsDir)
+	if err != nil {
+		return legal.Surface{}, fmt.Errorf("server: ITERION_LEGAL_DOCUMENTS_DIR: %w", err)
+	}
+	switch {
+	case len(docs) > 0:
+		logger.Info("server: %d legal document(s) published from %s", len(docs), cfg.Legal.DocumentsDir)
+	case cfg.Mode == iterconfig.ModeCloud:
+		logger.Warn("server: no legal document published (ITERION_LEGAL_DOCUMENTS_DIR unset or empty) — a public deployment owes its visitors a legal notice, a privacy policy and an accessibility statement (config.legal.* in the chart, ADR-160)")
+	}
+	return legal.Surface{
+		Documents:     docs,
+		ContactEmail:  strings.TrimSpace(cfg.Legal.ContactEmail),
+		Accessibility: cfg.Legal.Accessibility(),
+	}, nil
 }

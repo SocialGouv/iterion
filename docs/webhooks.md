@@ -43,8 +43,10 @@ Diagram: [Flow — webhook-to-run: the admission gates, every refusal, and the o
    - Generic → any HTTP client, header `X-Iterion-Webhook-Token: iwh_…`
 3. From then on, each delivery is admitted through the middleware,
    parsed by the provider, dispatched to a bot, and recorded as a
-   `Delivery` row. The token plaintext is **not** kept at rest — only a
-   salted hash, the last 4 chars, and a SHA-256 fingerprint
+   `Delivery` row. The token plaintext is **not** kept at rest — only its
+   unsalted SHA-256 hash (the token is 256 random bits, see
+   [ADR-156](adr/156-bearer-token-hashing-doctrine.md)), the last 4 chars,
+   and a SHA-256 fingerprint
    ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)).
 
 Rotate or revoke at any time: `POST /api/teams/{id}/webhooks/{webhook_id}/rotate`
@@ -107,14 +109,17 @@ the PATCH, on purpose: a wrong base does not fail when it is set — it fails
 as hooks that register successfully and never arrive.
 
 Re-provisioning a repo is the gesture that applies it, and it is a
-**reconcile**: `POST /api/teams/{id}/forge/repo-bots` with the repo's current
+**reconcile** — and it mints nothing, so a stored personal access token may
+run it where the repo's first enable is refused
+([cloud-cli](cloud-cli.md#tenant-scope-teams--orgs)):
+`POST /api/teams/{id}/forge/repo-bots` with the repo's current
 `bot_ids` and nothing else (`launch_vars`, `overlap`,
 `auto_fix_on_gate_failure` and `hold_labels` all mean "leave the stored one
 alone" when omitted, so re-sending them is a chance to mistype
 `gate_context`, not a safety). It compares the address the forge *should* be
 calling against the one it is, and rewrites the hook in place when they
-differ — same hook id, same webhook id, and the fresh `iwh_` reaches both
-ends together. Where nothing has moved it touches the forge not at all, so
+differ — same hook id, same webhook id, and the same durable `iwh_` secret.
+A legacy hook without a recoverable secret migrates through a new webhook URL. Where nothing has moved it touches the forge not at all, so
 it is safe to re-run across a whole fleet.
 
 That comparison is what makes a public-URL change reachable at all: the
@@ -185,48 +190,38 @@ and it is one of four:
   refuses in turn is the common second mistake: the 422 is about the
   address, not about a pin being missing.
 
-**A refused re-provision leaves the working hook working.** A re-provision
-mints a fresh `iwh_` and stores the new webhook config *before* it touches
-the forge hook, since the two ends have to move together. What iterion does
-when that hook upsert fails follows what the failure proves about the forge:
+**A refused re-provision keeps its webhook identity.** Ordinary retries reuse
+one sealed secret for that webhook ID. A per-repo lease reduces overlapping
+work; optimistic config and integration versions reject stale local writes.
+Even a request that finishes after lease expiry sends the same epoch secret.
+A legacy hash-only hook migrates through a new URL without changing the old
+hook's secret. The integration selects the new active URL atomically after a
+confirmed write; inbound admission rejects pending and retired epochs.
 
-- **A failure the forge could not have applied** leaves the forge holding
-  the hook it already had, and the previous stored config goes back, so the
-  old URL and old secret keep authenticating the deliveries that are still
-  arriving. That is: a forge 4xx other than 408 and 499 (the 422 above, a
-  401/403 on the grant, a hook that is gone); a request that never left
-  (a DNS failure, a refused connection, a failed TLS certificate check); a
-  step that ended on a read — the probe that looks the hook up by its
-  delivery URL — when nothing before it was applied; a hook request that was
-  never sent, because the credential it goes with could not be minted (a
-  GitHub App's installation token); or no forge call at all (opening the
-  connection's admin client failed).
-- **A failure that proves nothing** may have been applied: the forge may
-  already sign with the new secret. That is a 408 or a 499 (a gateway may
-  have forwarded the write before giving up), a 5xx, a timeout or a reset
-  mid-flight, a cancelled request. Restoring the old config there is what
-  would break the hook, so the new one stays and the error says so, naming
-  the remedy — re-run the same request, provisioning converges. Such an
-  outcome is also logged at Warn with the webhook id, since it may need an
-  operator who is not the one watching the answer.
+- **A failure the forge could not have applied** — a forge 4xx other than
+  408 and 499, a request that never left (DNS, dial, TLS certificate), a step
+  that ended on a read with no preceding indeterminate write, a hook request
+  that was never sent, or no forge call at all — can restore the previous
+  **settings**, while keeping the immutable verification identity.
+- **A failure that proves nothing** keeps the attempted settings and durable
+  retry identity. That is a 408 or a 499, a 5xx, a timeout or a reset mid-flight,
+  a cancelled request, or a write redirect: the first write may have applied.
 
-The restore is a compare-and-set rather than a blind write: it re-reads the
-stored config and puts the previous one back only while the token hash is
-still the one this provision wrote. A concurrent provision that won the race
-is left alone — its secret is the one the forge now holds. A re-read or a
-write that fails in turn is returned with the hook failure instead of being
-swallowed: a hook nobody can authenticate is not something to learn from the
-delivery log. That answer is a 500 that tells the restore's story first; when
-the hook failure behind it was a refused address, it keeps the
-`hook_url_refused` code and the remedy above after it. A *fresh* provision has nothing to restore and keeps its own
-rollback, deleting the config it just created.
+The restore is a compare-and-set on the config version after checking the token
+hash. A concurrent provision that won the race is left alone. After correcting
+the reported cause, re-run the same request. A fresh failed attempt also retains
+its candidate and credential, without making it operational.
 
-**Known limit: concurrent re-provisions of the same repo are not
-serialised.** Two that overlap can interleave their config write and their
-hook write, and leave the stored config and the forge hook on different
-secrets — the compare-and-set bounds what a loser's restore can overwrite,
-it does not order the two provisions. Re-run the request if two raced: a
-re-provision reconciles both ends from the stored config.
+Forge writes never follow 301/302/303/307/308 redirects. The error names the
+status and sanitized target so the operator can correct the forge base URL;
+Go cannot silently turn an update into a successful GET. A redirect does not
+prove that the original write was unapplied. Reads keep their existing policy.
+
+Disable retains verification tombstones and retires the integration before
+cleanup. Re-enable reserves a new webhook ID and secret after cleanup finishes.
+A delayed old write cannot activate that retired endpoint. Pending attempts
+need a retry; automatic periodic reconciliation and late-orphan collection are
+specified, not implemented, in [ADR-138](adr/138-forge-provisioning-immutable-identities.md).
 
 ## Auth modes — token vs HMAC
 
@@ -281,8 +276,12 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   (`source_project_id`/`target_project_id` and the source project's own
   path under `object_attributes.source`), so a proven fork is filtered
   with a reason naming the fork (`gitlab.Parsed.IsFork`) — the same
-  posture as the GitHub/Forgejo lanes; a payload naming neither project
-  stays on its way, and the API-side lanes fail closed on it.
+  posture as the GitHub/Forgejo lanes. The project ids decide before the
+  paths: two different ids are a fork whatever the paths say, so a source
+  path that merely compares equal to the base's never proves a same-repo
+  head (`gitlab.Parsed.SameRepoAsBase`). A payload naming neither project
+  is filtered too (`head project unproven`): same-repo is never assumed,
+  only proven.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
   /revi" mid-text never triggers (anti-oscillation guard —
@@ -418,8 +417,8 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   under iterion's own identity. Serving forks needs a lane of its own
   (read-only, no publish grant, no fixer launch, no repo secrets, project
   settings not honoured), not a switch on the existing ones — see
-  [the fork review lane](#fork-review-lane) for the half of that lane that
-  ships today.
+  [the fork review lane](#fork-review-lane) and
+  [the fork review gesture](#fork-review-gesture) that opts one commit in.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —
   including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
@@ -445,8 +444,11 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `feature_prompt` (issue title + body), `open_mr=true`, and
   `source_issue_ref` (the issue URL), so an implementer bot (featurly)
   implements the issue, opens a PR, and comments the PR URL back onto the
-  issue. Scope which label fires with **`label_allowlist`** (below);
-  re-applying the same label is an idempotent replay.
+  issue. Scope which label fires with **`label_allowlist`** (below).
+  Each (repository, issue, label) is a re-armable
+  [trigger lane](#issue-trigger-lanes): a redelivery of the same event is
+  an idempotent replay, and re-applying the label launches again once the
+  previous run for it has ended.
 - **`issues`** with action `opened` + **`auto_implement_on_open`** → the
   zero-touch lane, now **author-gated**: the issue AUTHOR must be
   trusted — on the static `author_allowlist`, OR
@@ -468,11 +470,14 @@ The label path (GitHub `issues` and GitLab `Issue Hook`) routes through
 the same dispatcher sink as the `/command` path, so when a tenant cloud
 board is wired it also **materialises a one-way tracking card** for the
 issue — a read-only mirror linked back to the source issue via
-`source_issue_ref` (idempotent per issue). GitHub/GitLab stay the source
-of truth; iterion only writes back to them (PR + back-link comment). With
-a board *coordinator* running, the card is the unit of work the dispatcher
-executes; without one, the card is a tracking record and the run launches
-directly ([pkg/server/invocation_dispatch.go:dispatchInvocation](../pkg/server/invocation_dispatch.go)).
+`source_issue_ref`. GitHub/GitLab stay the source of truth; iterion only
+writes back to them (PR + back-link comment). With a board *coordinator*
+running, the card is the unit of work the dispatcher executes — one card
+per claim of the issue's [trigger lane](#issue-trigger-lanes). Without
+one, the card is a tracking record, not a claim: the run launches directly,
+the lane's delivery rows decide every launch, and the tracking card is
+written once per `cmd:issue:<n>` subject label, as for a comment
+([pkg/server/invocation_dispatch.go:dispatchInvocation](../pkg/server/invocation_dispatch.go)).
 
 ### Forgejo / Gitea (`POST /api/webhooks/forgejo/{id}`)
 
@@ -494,12 +499,13 @@ no-fork guarantees hold regardless.
 ### <a name="fork-review-lane"></a>The fork review lane — what ships today
 
 A fork pull request is still refused on every ordinary lane, unconditionally,
-and no setting lifts that. What exists now is the **enforcement half** of the
-separate lane [#874](https://github.com/SocialGouv/iterion/issues/874)
-specifies: the controls that make serving a fork survivable. The **admission**
-half — the maintainer gesture that opts one pull request in, and the
-per-contributor budget — is a follow-up, so today **nothing produces a fork
-launch** and the lane admits nothing.
+and no setting lifts that. The lane [#874](https://github.com/SocialGouv/iterion/issues/874)
+specifies has LANDED (ADR-162): the enforcement half — the controls that make
+serving a fork survivable — plus the **admission half**: a maintainer's
+`/command` gesture on the fork pull request opts one commit of one PUBLIC
+base in, on a config the operator created for it, bounded per contributor.
+The gesture and its delivery rows are the next section
+([The fork review gesture](#fork-review-gesture)).
 
 **A run says who wrote its code.** `store.RunTrust` rides the run document,
 not the launching surface, because the decisions it governs are taken again
@@ -516,22 +522,25 @@ capabilities rather than inheriting them.
 | The forge publish grant (review, comment, and the `revi/review` commit status that gates the merge) | `injectForgePublishVars` refuses to MINT; `runOwnsGrant` refuses to HONOUR — on opposite sides of the run's creation, so no single mistake clears both | `forge publish grant refused for an untrusted workspace`; audit `forge.grant.untrusted_run` |
 | The tenant's workflow secrets — chiefly `forge_token`, which the runner writes into the clone as a git credential store | the cloud publisher skips the generic credential tier, on launch AND on resume | a declared secret that is not `optional:` makes the launch fail loudly rather than run with it unset |
 | The same token by its SECOND carrier — the secret id pinned on the run, opened server-side at merge time | `forgeTokenForRun` | `runs on an untrusted workspace … the tenant's forge token is never opened for it` |
+| The tenant's bound connector connections, for ANY `action:` operation — read or mutating, and an effect this build does not recognise refuses as though it mutated | the resolution that produces the credential (`pkg/connection`), before the alias is looked up and before anything is unsealed — so the refusal cannot answer which aliases the tenant holds | typed, naming the operation, its effect and the binding: `such a run resolves no connector action at all` (ADR-162 decision 6: what the run reads can leave through the run's one route out) |
 | Executing a tree nobody approved | the runner compares the fetched commit against the one the admission pinned (`RepoSHAExpected`), after the fetch and before the checkout | the run is refused, naming both commits |
+| The pull request's hand-offs, both ways: an untrusted run is seeded with no earlier run's `review` or `review_ledger`, and its own artifacts seed no later consumer — the fixer reads a `review` as `prior_review` and pushes commits (#1639) | `stampHandoffs` takes the launched run's trust and seeds an untrusted target with nothing; `realWebhookHandoff` skips a producing run that is not trusted | none: a hand-off miss is silent by design, and the consumer starts from its default |
 
-**And what it does NOT withdraw yet.** That table is not #874's five
-constraints. Two are **unenforced**, and belong to the admission half:
+**And what the admission and the deployment add.** That table is the
+enforcement floor; #874's remaining two constraints landed with the gesture
+(ADR-162 U6), and where a fork run executes landed with U7's first part.
+Every row, what ships and what does not yet:
 
-| #874 constraint | State | Why |
+| Constraint | State | Where |
 |---|---|---|
-| **4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **deferred to PR2** | `store.RunTrust` *does* reach `pkg/runtime` and `pkg/runner` — it rides the queue message, refuses a pinless untrusted workspace, and is stamped onto a sub-bot's document. What no path routes it into is the **toolchain and network policy**: `resolveRepoDevbox(override, workflow)` takes no trust argument, and the sandbox network policy has none either |
-| **5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **deferred to PR2** | among those surfaces only the gate-context write is trust-gated; `applyWebhookVarLayers` layers `cfg.LaunchVars`/`OperatorLaunchVars` whatever the trust, the hold-label veto is trust-blind, and `orgusage.ForkAuthorSubject` has no production caller |
-
-Deferred rather than done here because nothing sets `RunTrustFork`: this half's
-safety is **safety-by-refusal**, so the marker's READERS must be right before
-anything can carry it. 4b and 5 are admission-time controls — they shape how a
-fork run is *built*, which is the half that does not exist yet, and a guard
-whose condition can never be true reads as working while proving nothing. Both
-are on #874's remainder.
+| **#874 4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **floored (U5)** | `resolveRepoDevbox(override, workflow, trust)` answers false for every untrusted workspace, the repo's devcontainer is not read, and the sandbox network policy floors to the credential's own host |
+| **#874 5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **floored (U6)** | `applyWebhookVarLayers` layers NEITHER `cfg.LaunchVars` NOR `cfg.OperatorLaunchVars` onto an untrusted target (and no routing gate is narrowed through the repo's vars — `trustedVarNames` stays empty); the hold label BLOCKS the gesture (Q2); and the per-contributor bound is metered by the launch gate on `orgusage.ForkAuthorSubject`, runs and dollars, beside the org's own quota (decision 5) |
+| **The pod's own money** — an untrusted run spends only the credentials sealed for it (decision 7) | **floored (#3126)** | the publisher stamps `AmbientLLMRefused` on every untrusted run's bundle, and the runner derives the same refusal from the run's wire trust when no bundle was sealed at all (`store.RunTrust.AmbientLLMRefused`, one predicate both sides read): every fallback to the pod's environment answers a typed refusal |
+| **What funds it** — the team's own API keys alone (its vendor keys, and its `openai_compatible` gateway key on the literal gateway routes it serves), on routes decided before the run: a pool-stamped fork run is sealed no shared tier (ADR-154 D13), the runner refuses its env and a forfait cannot cross its sandbox (decision 7) | **floored (U7 part 1)** | the launch gate's funding arm refuses a fork run those keys cannot fund, typed (`fork_run_unfunded`), BEFORE the org's counter or the author's bound moves — a provider no team key funds, a route riding the runner's `openai_compatible` gateway (no gateway key of the team's own funds it), a route the pool's runner decides itself (an `${…}` dial, a late var), a route the server cannot attribute to a provider, a route that may spend the anthropic wire's default credential the team holds no slot of — on the gesture's delivery, the debounce flush, the durable retry and every gated resume; the judge is the publisher's own unfunded decision — [funding a fork run](#fork-lane-funding) |
+| **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **the pool ships (U7 part 1); its sandbox waits on #2965** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool). The chart's `runnerPools[].sandbox.enabled` is the flag that would sandbox that pool alone, but with the chart's defaults (`serviceAccount.create`) and under the prod values (`networkPolicy.enabled`) turning it on FAILS the render until #2965 renders the pool's ServiceAccount, Role and standing policy; until then the operator brings them by hand ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools), at the cost it names), and a pool deployed without its sandbox refuses every fork run at the runner (`untrusted_without_sandbox`) |
+| **The pool's boundary** — its own ServiceAccount and Role, the pool label on its sandbox siblings, its standing NetworkPolicy (ADR-154 decisions 1–3) | **not yet: #2965** | until it lands the chart REFUSES a pool sandbox where the release does not provision one, under `serviceAccount.create` and under `networkPolicy.enabled` ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)) |
+| **The CNI enforces NetworkPolicy** on the cloud cluster (matryoshka) | **not yet: the operator's gesture** | verified before the pool is enabled; the sandbox start probe (U5) then witnesses it per run, and refuses a run on a CNI that applies the policy as a no-op |
+| **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first, and a team whose keys fund `review-pr`'s literal routes (ADR-169), or the cells over them ([below](#fork-lane-funding)); its cost goes in its commit |
 
 **Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
 KIND, not a permission. The check sits at the launch tail
@@ -543,16 +552,33 @@ directions are refused: a fork target on an ordinary subscription (the
 dangerous one — that config carries the repo's grant and secret pins), and a
 same-repo target on the fork lane. A board-mode route is refused separately
 inside `dispatchInvocation`: it returns before the tail, and a board card has
-no seat for provenance.
+no seat for provenance. **Gate relaunch and gate auto-fix stay refused on a
+fork-lane config** by the same disjointness gate — the targets they rebuild
+are trusted zero-provenance ones, and the fork lane refuses exactly that
+pairing.
 
-`ForkLane` is **not settable through the API yet**, deliberately — no
-create/PATCH request struct carries it — so every config decodes `false`. When
-the admission half makes it settable, the PATCH route must refuse changing it
-on an existing config, because the per-contributor budget will be keyed on it.
+`ForkLane` is **settable at creation only** (ADR-162 decision 1): `POST
+/api/teams/{id}/webhooks` accepts `fork_lane`, **github-only** — creation
+refuses it typed on every other provider, naming the witness that provider
+lacks (GitLab's MR head ref is unwired; Forgejo's head-repository proof,
+author id and ref have no witness; generic has no pull request). The PATCH
+route refuses a CHANGE of it on an existing config (a restatement of the
+stored value is a no-op): flipping the kind under a config would re-read its
+parked debounce targets as the other kind and re-interpret the per-author
+budget's rows.
 
-**An opt-in is a GESTURE, not a record.** The admission half will be a
-maintainer `/command` on the pull request, authorised by the collaborator-
-permission gate the `/command` lanes already apply, resolving the head through
+A fork-lane config also names **its pool** at creation: `fork_lane_pool`,
+REQUIRED with `fork_lane` and refused without it (and refused on an ordinary
+config, and when it is not a pool name — the registry's grammar), immutable
+afterwards on the same terms — the PATCH route refuses a change or a clear
+(409), a restatement is a no-op. A new pool under a live config would split
+the lane across two pools: the in-flight runs resume on the pool their
+documents froze, the next ones would launch on the other. See
+[the lane's pool](#fork-lane-pool).
+
+**An opt-in is a GESTURE, not a record.** The admission is a
+maintainer `/command` on the pull request, authorised by the commenter's live
+collaborator permission on the base repository, resolving the head through
 the forge API at that moment and pinning THAT commit onto the launch. Iterion
 stores no "this PR is opted in" row, deliberately — and this is the design's
 invariant, not an implementation detail:
@@ -571,14 +597,16 @@ invariant, not an implementation detail:
 
 The cost is honest and small: re-reviewing a new head is a new gesture.
 
-**GitLab: the seam is named, and nothing refuses it yet.** The lane's launch
+**GitLab: the seam is named, and the lane is refused.** The lane's launch
 pair needs the base project's own merge-request head ref —
 `refs/merge-requests/<iid>/head`, GitLab's twin of `refs/pull/<n>/head` — and
 that is the seam a GitLab fork lane would be built on. It is named here rather
-than wired. Nothing refuses a GitLab fork-lane config today for the simple
-reason that nothing can set `ForkLane` at all; the admission half must add
-that provider refusal in the same change that makes the field settable, or
-GitLab gets a half-built path instead of an honest "no".
+than wired, and a `fork_lane` config is refused at creation on GitLab (typed,
+naming the unwired ref) so the provider gets an honest "no" instead of a
+half-built path. The ordinary GitLab MR lane, for its part, **fails closed on
+a head neither project names** (ADR-162 decision 1): a payload that proves
+neither a fork nor a same-repo head is filtered — same-repo is never assumed,
+only proven — instead of being stamped "trusted" on the forge's silence.
 
 **Why a fork lane can name one repository at all.** The launch pair that made
 the original refusal unconditional was `<base>.CloneURL` + a head branch
@@ -587,6 +615,247 @@ repo's own pull-request head ref (`refs/pull/<n>/head` on GitHub and Forgejo),
 which names ONE repository — the base — and resolves to the fork's commit. The
 base stays the clone's only remote, so `base_ref` and `origin/<base>` remain
 the base's, not a tree the contributor controls.
+
+### <a name="fork-review-gesture"></a>The fork review gesture — admission
+
+The gesture is the lane's whole comment lane
+([pkg/server/webhooks_fork_gesture.go](../pkg/server/webhooks_fork_gesture.go)):
+a `/revi` (or a command the config's own table names) on a fork pull request,
+delivered to a fork-lane config. One gesture admits one commit of one
+public-base fork:
+
+- **Who may gesture** (decision 2): the commenter's LIVE collaborator
+  permission on the base repository, at or above `developer` (GitHub's
+  `write`) — whatever the route or webhook configured lower, the floor holds.
+  The `AuthorizedRepliers` login short-circuit the ordinary `/command` lanes
+  consult is deliberately NOT consulted here: a login is renameable — free,
+  instant and unlimited on GitHub — so a login-keyed authorization resets
+  itself on demand. The self-comment loop guard stays (the note below would
+  otherwise re-trigger itself).
+- **What it admits** (decision 3): the pull request as the forge API answers
+  it at the moment of the gesture — OPEN, head repository NAMED and not the
+  base (a proven fork), base visibility PUBLIC, the author's NUMERIC forge
+  id present. An optional SHA argument narrows the gesture to that commit;
+  a head that moved needs a new gesture. The launch runs on the base's
+  clone URL and `refs/pull/<n>/head` with `RepoSHAExpected` pinned, so the
+  runner refuses a push that landed between the gesture and the fetch.
+- **What the maintainer sees** (Q1): a note on the fork pull request naming
+  the run link and the pinned commit, and NOTHING the run wrote — the run
+  holds no publish grant at all, so its findings live on the run the note
+  links. Posted by the server, from the same forge identity that read the
+  pull request, once the gesture's own launch returns a run. A launch that
+  first failed and is relaunched from the delivery's durable retry row (the
+  retry sweeper, the super-admin manual retry) posts NO note: the row does
+  not carry the note's inputs, so the run is found from the delivery row
+  and the studio — a known gap.
+- **What the base's configuration may do** (decision 4 + Q2): stop the
+  gesture — a configured hold label blocks it — and nothing else. Neither
+  `LaunchVars` nor `OperatorLaunchVars` is layered onto the launch, no
+  routing gate is narrowed through the repo's vars, and model routing
+  resolves from the database cascade, because it spends the tenant's money,
+  not the repository's.
+- **What it costs** (decision 5 + Q4): the launch gate meters the org's
+  budget as it does every launch, AND the pull request author's own
+  per-contributor bound — runs and dollars per month on
+  `orgusage.ForkAuthorSubject` (the author's numeric forge id), defaulting
+  to 20 runs / $20 with an explicit `unbounded` escape hatch, held on the
+  org beside its quota (see
+  [quotas-and-limits.md](quotas-and-limits.md)). The runner charges the
+  author's dollars beside the org's, and every resume or retry re-enters
+  the same subject — an untrusted launch the gate cannot meter is REFUSED,
+  never admitted unmetered (the amendment to ADR-033). A resume that
+  crosses no gate (`/answer-human`, an async answer's auto-resume, an
+  assistant mission) is refused on a fork run (`resume_not_admitted`), and
+  a run document the gate cannot read is an unknown trust, refused as
+  transient (`resume_run_unreadable`). A launch that names a fork run as
+  its `parent_run_id` or delegation `source_run_id` is judged as the fork
+  run — the same author's spend, on every arm — and the run service
+  publishes no untrusted launch its gate did not judge on that trust
+  (`launch_not_admitted`).
+
+**The delivery-row reasons.** Every refusal is a typed, stable reason on the
+delivery row (200/filtered — a 4xx would teach the forge to disable the
+hook). Each row has a witness in
+[pkg/server/webhooks_fork_gesture_test.go](../pkg/server/webhooks_fork_gesture_test.go)
+(the last one in
+[pkg/server/webhooks_fork_lane_pool_test.go](../pkg/server/webhooks_fork_lane_pool_test.go))
+that replays a real GitHub delivery through the handler on a fake forge:
+
+| Row | Reason (stable shape) | Refused because |
+|---|---|---|
+| No route | `fork gesture: no route — …` | the lane routes its own table; the command is on none of it |
+| Board-mode route | `fork gesture: a board-mode route cannot carry a fork launch …` | a card holds only bot args — no seat for the launch's provenance |
+| Wrong surface | `fork gesture: the command is not enabled on issue comments …` | the gesture reviews a fork pull request, not an issue |
+| Bot out of scope | `fork gesture: bot "…" is not permitted by this webhook` | the webhook's bot scope |
+| Hold label | `fork gesture: hold label "…" …` | the base's configuration can stop a fork run, never steer it (Q2) |
+| Non-writer | `fork gesture: … holds no write-level permission on …` | live permission only, floored at developer; the replier allowlist is never consulted (a login is renameable) |
+| Closed pull request | `fork gesture: the pull request is closed/merged …` | one gesture reviews one commit of an OPEN pull request |
+| Loop guard: identity unreadable | `loop guard unevaluable: the bot's own identity is unreadable: …` | the lane cannot tell its own note from a maintainer's gesture, so it does not guess (the forge's error is quoted) |
+| Loop guard: no login | `loop guard unevaluable: … the forge named no login` | same — an identity with no login matches nobody, so nothing can be excluded |
+| Loop guard: own comment | `self comment (loop-guard)` | the comment was written by the identity the lane speaks as — its own note echoing back |
+| Same-repo | `fork gesture: same-repo pull request …` | the lane admits a PROVEN fork; the repo's own PRs belong to its ordinary webhook |
+| Head withheld | `fork gesture: head repo withheld …` | the forge declared a head repository and did not name it (a deleted or blocked fork has exactly this shape) |
+| Head not named | `fork gesture: head repo not named …` | a fork is never assumed, only proven |
+| Private base | `fork gesture: the base repository is not PROVEN public …` | an untrusted clone holds no forge token, and one handed to it would persist in the fork's workspace — refused BEFORE the per-author bound is metered |
+| No author id | `fork gesture: the pull request names no numeric author id …` | the per-contributor bound is keyed on it; unkeyed means unbounded (an answer whose user carries no id, or is null, stays id-less — never user `0`) |
+| No head commit | `fork gesture: the pull request names no head commit …` | the gesture pins the commit it admits; a pin against nothing disables the runner's comparison |
+| Stale SHA | `fork gesture: the gesture pinned … but the pull request's head is …` | a new head needs a new gesture |
+| Bad args | `fork gesture: /revi takes an optional commit SHA to pin, nothing else …` | prose is not a pin |
+| No pool | `fork lane names no runner pool — …` | the config was stored before `fork_lane_pool` existed; a fork run executes only on the pool its lane names, so the launch tail refuses it BEFORE either budget is metered (the durable retry exhausts the row, the board branch writes no card — the same precondition) |
+| Unfunded | `fork_run_unfunded` (`launch_error`, HTTP 422 with the publisher's sentence as `detail`) | the team holds no vendor API key of its own for a provider the bot's routes pin, or a route rides the `openai_compatible` gateway, or a route is decided on the runner (an `${…}` dial, a late var), or a route names no provider the server can read, or a route may spend the anthropic wire's default credential and the team holds none of its slots — the shared tiers, the runner's env and a forfait fund no fork run ([funding a fork run](#fork-lane-funding)); refused BEFORE either budget is metered |
+| Pool refused | `fork_lane_pool_refused` (`launch_error`, 422) | the lane's pool fails the fork lane's pool rule now — the team was mapped to a sovereign pool since the lane was created, another team holds the pool, or the registry does not route it (unknown, `disabled`) ([the lane's pool](#fork-lane-pool)); judged with the funding, BEFORE either budget is metered, permanent — a pool `provisioning` or `draining` answers `fork_funding_unreadable` instead, transient |
+| Program unjudgeable | `fork_funding_unjudgeable` (`launch_error`, 422) | the program the run would execute cannot be built — the bot is gone from its catalog, its source no longer compiles, the launch funnel refuses an input; permanent |
+| Funding undecided | `fork_funding_unreadable` (`launch_error`, 503) | the funding judge could not answer — a credential store read failed, a tier's metadata was unreadable, the pool registry could not be read; fail-closed, retryable |
+
+A fork-lane config serves the gesture and nothing else: every OTHER entry it
+has — an issue label, a zero-touch open — composes a trusted target, and
+every launch from a config crosses one provenance precondition
+(`webhookProvenanceRefusal`: the launch tail, the durable retry, and the
+board branch of a board-mode route before it writes any card — a Ready card
+the dispatcher would launch never reaches the tail), so each is filtered
+with `fork-lane mismatch — this subscription is the opt-in fork review lane
+…` before anything is carded or metered.
+
+The bound's own refusals (denial tokens `fork_author_run_quota_exceeded`,
+`fork_author_cost_cap_exceeded`, and the fail-closed arms
+`fork_team_unreadable` / `fork_org_unreadable` / `fork_metering_unavailable`
+/ `fork_metering_error`) and the funding arm's (`fork_run_unfunded`,
+`fork_lane_pool_refused`, `fork_funding_unjudgeable`,
+`fork_funding_unreadable`) arrive through the launch gate's standard denial
+envelope — see [quotas-and-limits.md](quotas-and-limits.md) — whichever
+surface entered (delivery, debounce flush, retry sweeper).
+
+### <a name="fork-lane-pool"></a>Where a fork run executes — the lane's pool
+
+A fork run executes only through the publisher, on a runner whose sandbox
+resolves active on an enforcing driver (ADR-162 decision 10) — in the cloud,
+the dedicated pool its fork-lane config names (Q3), a pool of ADR-154's
+registry. The pool travels with the run, never re-derived:
+
+| Carrier | What it does with the pool |
+|---|---|
+| The gesture's launch, the debounce flush, the delivery's durable retry | the launch tail hands the config's `fork_lane_pool` to the run service (`LaunchSpec.ForkLanePool`) for an untrusted target, nothing for a trusted one; the retry re-reads the config |
+| A launch built FROM a fork run (`parent_run_id`, a delegation's `source_run_id`) | inherits the source run's frozen pool with its trust and author; two sources on two pools, or a launch naming another pool, are refused |
+| The publisher's launch | stamps the pool as the run's `RunnerPool` on the document and the queue message, so the run lands on that pool's stream alone and its pod's admission (msg ≡ doc ≡ pod) holds |
+| A resume, a usage-window retry, a forked child, a sub-bot child | follow the frozen stamp; the resume re-judges it under the rule below |
+
+**The rule** (`cloudpublisher.forkLanePoolRefusal`, at the launch and at every
+resume): an untrusted run names a pool, a pool name; a team mapped to a
+sovereign pool runs everything there, so its fork lane must name THAT pool;
+an unmapped team's lane names a pool no team holds — another team's pool is
+that team's sovereign boundary. A trusted launch naming a lane pool is
+refused too. Each refusal is `ErrForkLanePool`, before anything is persisted
+or published, and the retry sweeper abandons a resume refused with it (it is
+permanent, like a pool remap); a store that cannot say who holds the pool
+refuses as the transient it is. The pool then crosses the registry's routing
+gate like every pool (registered, `active`); for an untrusted run the
+registry's decided refusal — a pool it does not know, a `disabled` one — is
+`ErrForkLanePool` too, since the fork-lane config names the pool and cannot
+be edited (register and activate it, or recreate the webhook), while a pool
+`provisioning` or `draining` — a lifecycle step the operator's next change
+cures — and a registry that cannot be read stay transient, so a parked fork
+run is re-armed rather than abandoned. The team mapping route
+(`PUT /api/admin/teams/{id}/runner-pool`) refuses, 409, a pool another
+team's fork-lane config names, disabled or not: mapping a team there would
+put that lane's in-flight runs on the team's sovereign pods. The launch gate asks the same
+rule and the same routing gate BEFORE it meters (the funding judge reads
+them first): a gesture, a durable retry or a resume whose pool the rule now
+refuses is `fork_lane_pool_refused` (422) with neither budget charged.
+
+Because the pool IS a pool, ADR-154's pool semantics apply to a fork run in
+full: the publisher consults no shared credential tier for it (D13 — the
+org's and the platform's keys are never sealed into a pool run), so the lane
+spends the team's own keys alone — its vendor API keys, and its
+`openai_compatible` gateway key, sealed with its canonical base URL for the
+gateway routes it serves — while the pool pod's own gateway credential is the
+ambient env decision 7 refuses.
+
+### <a name="fork-lane-funding"></a>Funding a fork run — the team's own keys
+
+**A team that enables the fork lane must hold its own LLM API key** for
+every provider the lane's bot pins: a vendor key of the team's BYOK tier, or,
+for a route riding the gateway (a literal `openai_compatible/…` model), the
+team's key stored with a gateway base URL (`openai_compatible`). The walk
+seals that gateway key with its canonical base URL when it serves the lane's
+bot and the delivery's repository and can seal (the run's providers allowlist
+admits the slot, its secret opens), and judges the route as the
+`openai_compatible` provider, like a vendor route. Nothing else funds a fork
+run:
+
+| Funding | Why it does not fund a fork run |
+|---|---|
+| The org's shared keys, a contributor pool, the platform's keys | a fork run is pool-stamped, and D13 seals no shared tier into a pool run — the pool pod never holds anyone else's key |
+| The runner's environment — its vendor keys, its pool's `openai_compatible` gateway | decision 7's ambient refusal: an untrusted run spends only what was sealed for it, so a route riding the runner's gateway alone is refused too |
+| A connected forfait (Claude, ChatGPT) | the sandbox's egress proxy substitutes a bearer placeholder toward the credential's host and cannot hold an OAuth credential and its refresh flow (`credroute.ErrCrossingRefused`) — so the team's routing policy lands no forfait rung on a fork run either: a forfait pair is not held under the untrusted posture |
+
+**And the routes must be decided before the run.** The judge reads the
+bot's routes in the server; the run takes them on the lane's pool, so three
+route classes are refused — the first unless the team's own gateway key funds
+it, the other two whatever the team holds — and a fourth is judged per route,
+each named by the route sites in the refusal:
+
+| Route | Why the judge refuses it |
+|---|---|
+| One riding the runner's `openai_compatible` gateway: a literal `openai_compatible/…` model no gateway key of the team's own funds, or a dial this server expands to one | the pool's gateway is the refused environment. The team's gateway key, provisioned for the lane's bot and the delivery's repository, funds the literal route instead (the refusal's remedy) — on a resume, only when the run's launch sealed it: the resume replays the frozen content boundary, so a route edited to the gateway since a launch that sealed no gateway key is refused whatever key the team holds, the refusal naming that boundary and a new launch as the remedy; a dial stays refused whatever the team holds — the runner decides it (next row) |
+| One the runner decides itself: a routing field — the provider (or its override), the model, the backend — that reads an `${…}` dial, or a run var the launch leaves undecided | the pool's runner expands the dial with ITS environment, whose env block pins the routing dials ahead of the platform record ([sovereign-pools.md](sovereign-pools.md#routing-dials-the-pools-env-block-is-pinned)) — the route this server reads is not the one the run takes, and a verdict on it would admit, and meter, a run the runner then refuses ambient |
+| One that names no provider the server can read: a model with no `provider/` prefix, an `auto`, empty or unknown provider step, a sub-bot node (its child bot's routes are not read), a supervisor with no model | no verdict says the team's keys fund it — the runner resolves what it spends. The cost: a `claude_code` route on a bare model the team's Anthropic key would serve is refused too; pinning its provider (`provider: anthropic`, or a routing override) lifts it |
+| Judged per route: one that may spend the anthropic wire's default credential — a `claude_code` route that pins no anthropic-wire provider (`provider: openai` on `claude_code` included), a route whose backend no field names (the runner's default backend and credential detection pick it) | funded only when the team holds one of the wire slots it may read (the Anthropic, z.ai or Moonshot key, per the route) or an anthropic-wire provider it names: otherwise the runner's slot-order walk finds no sealed key and refuses the route ambient. A providers allowlist that admits none of the route's slots leaves it nothing it may spend, refused the same way |
+
+A bot that reads a route through an `${…}` dial is refused
+`fork_run_unfunded` on that route until a run's settings arrive frozen at
+claim ([ADR-132](adr/132-a-run-reads-no-environment.md)). A bot whose routes
+are literal — every route of `review-pr`, its nodes, its supervisors and its
+rescue route, since [ADR-169](adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md)
+— or whose routes the integration's routing overrides pin (provider, model
+and backend — [ADR-129](adr/129-per-integration-typed-routing-overrides.md);
+a supervisor through `bot/supervisor:<name>`, an authored rescue route
+through `bot/<node>#<route>`), is judged on those routes.
+
+**Refused before anything is metered.** The launch gate asks a funding judge
+for every untrusted subject, after its own refusals and BEFORE its first
+charge, so neither the org's monthly counter nor the outside author's bound
+moves for a fork run nobody can fund: the gesture's delivery, the debounce
+flush and the delivery's durable retry (`webhookForkFunding`), and every
+gated resume of a fork run — the runs API, its WS answer twin, the retry
+sweeper (`resumeLaunchSubject`'s `forkResumeFunding`, so a team that removed
+its key since the launch is refused at the resume). The refusal is typed:
+`fork_run_unfunded`, a 422 whose `detail` is the publisher's own sentence
+naming each unfunded provider, gateway route, runner-decided route, unattributed route and unfunded wire-default route by its site; the
+retry sweeper abandons a resume refused with it. The judge answers the
+lane's pool rule first (`fork_lane_pool_refused`, 422, permanent), a program
+that cannot be built is `fork_funding_unjudgeable` (422, permanent — the bot
+is gone, its source no longer compiles), and a judge that cannot answer
+refuses as `fork_funding_unreadable` (503, retryable).
+
+**One decision, read three ways.** The judge is the publisher's own unfunded
+decision (`unfundedRefusalFor`'s untrusted arm), read through the credential
+preview's metadata walk (`Publisher.FundingRefusal` /
+`Publisher.ResumeFundingRefusal`) on the program the launch or the resume
+would judge — the same arm the publisher's walk applies at publish, and the
+same verdict the credential preview prints: `POST
+/api/teams/{id}/credentials/preview` with a fork-lane webhook as its source
+previews the lane's own launch (the fork's trust, the lane's pool), so a team
+checks its lane is funded before the first gesture. A launch built
+FROM a fork run (`parent_run_id`, a delegation source) carries no judge to
+the gate: the publisher refuses it at publish with the same typed sentence
+(`runview.ErrNoLLMCredential`, 422) and the launch handler refunds the gate's
+charge, since no run was created.
+
+A deployment whose publisher seals no credential at all decides nothing
+about funding — at the gate or at publish — and its fork runs meet the
+runner's ambient refusal instead.
+
+**What the server does not know**: whether the named pool's runners actually
+resolve a sandbox. The runner does — `admitRun` refuses an untrusted run
+whose sandbox does not resolve active (`untrusted_without_sandbox`), and the
+sandbox start probe refuses one on a non-enforcing CNI — so a pool deployed
+without its sandbox refuses every fork run, typed, at the runner, after the
+gate metered it. The chart's `runnerPools[].sandbox.enabled` is the flag
+that sandboxes that pool alone
+([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)), with the
+render refusals that hold until #2965 — and a pool that follows a
+release-wide sandbox under `networkPolicy.enabled` fails every fork run at
+its first egress, for want of the same standing policy.
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 
@@ -879,6 +1148,111 @@ operator is the security-critical knob — a malicious caller cannot escalate by
 renaming a key the org-admin has pinned (`handleGenericWebhook` in
 [pkg/server/webhooks_generic.go](../pkg/server/webhooks_generic.go)).
 
+## The connector lane: a webhook believed through a connection
+
+A webhook bound to a [pkg/connection](../pkg/connection/connection.go) record
+(`connector_connection_id` on create/PATCH, validated at write) leaves the
+provider switch to the connector lane (#2761, ADR-098): the connection must
+hold the `trigger` grant — the consent given when it was entrusted — and the
+event is matched against what the connector **package** declares
+(`triggers.yaml`), not an engine list. The signature gate is unchanged (the
+secret stays the webhook's own `hmac_secret_sealed`). Shipped on Forgejo;
+unbound webhooks run the legacy lane unchanged.
+
+Three properties hold on top, both when the binding is written and when each
+delivery is read: a connection that is not usable (revoked, needs reauth)
+vouches for nothing — binding one is a 400, and a delivery under one is
+filtered naming the status; the webhook's own `project_allowlist` and
+`author_allowlist` (the delivery's sender) still narrow what the package
+declared; and the hold-label veto applies, this being an auto-launch lane —
+a delivery whose issue carries a hold label is filtered, not launched.
+
+## <a name="connector-ingress"></a>A connector ingress: `POST /api/webhooks/c/{id}`
+
+A connector trigger is delivered through an ingress or read by a poller: a
+polled trigger (an RSS feed, a Jira JQL) needs no ingress and no webhook
+configuration — see [event sources](event-sources.md#running-pollers). This
+section is the delivered half.
+
+A webhook with `provider: connector` is a connector package's **ingress**
+([ADR-168](adr/168-an-event-source-is-a-connector-package.md) §3, §6): the
+vendor is the bound connection's, and the package's `ingress:` block in
+`triggers.yaml` says how a delivery is verified and read — no vendor's name
+lives in the lane ([pkg/server/webhooks_ingress.go](../pkg/server/webhooks_ingress.go),
+the reader [pkg/connector/ingress](../pkg/connector/ingress/read.go)). An
+ingress launches nothing: it writes an accepted delivery to the durable
+intake and answers; matching and launching run after the answer.
+
+**Creating one** (`POST /api/teams/{id}/webhooks`):
+
+| Field | Rule |
+|---|---|
+| `provider` | `connector` |
+| `connector_connection_id` | Required: a connection of the team holding the `trigger` grant, live, whose package declares an `ingress:` block and at least one trigger. |
+| `installation` | Required exactly when the package reads one (`installation:` — a Slack `team_id`): the value the connection's installation carries. A delivery carrying another is refused. |
+| `vendor_secret` | Required when the package's credential is `secret: vendor` (the vendor generates it — a Slack signing secret): one token, at least 16 characters, no whitespace. Refused when the credential is `minted`, where the answer shows the minted secret once instead. Sealed, never answered back, and no piece of it (last four, fingerprint) is shown. |
+| `contract_digest` | Optional: the digest of the package's `ingress:` block the operator read. When stated it must be the contract the package resolves to (409 otherwise). |
+| `bot_ids`, `wildcard_bots`, `default_bot_id`, `sign_mode` | Refused: a trigger subscription binds a bot to its events, and the package declares the verification. |
+
+The row records `connector` (the vendor, from the connection), `contract_digest`
+(the pinned contract), `installation` and `secret_origin` (`minted` or
+`vendor`). A PATCH that changes `connector_connection_id` or `installation`
+re-validates them against the package as it resolves now; a restated value is
+no change, so a client that echoes the row back re-pins nothing. **The pin
+moves only by consent**: a PATCH carrying `contract_digest` equal to the
+contract the package resolves to — the digest a refused delivery's 409 names.
+A contract whose secret origin differs from the ingress's needs a rotation
+first. An ingress cannot be unbound (`""`) nor moved to another vendor's
+connection, even once its connection is gone: it holds that vendor's secret.
+**Rotation** (`POST …/rotate`) mints a new secret, or takes the vendor's new
+one as `{"vendor_secret": …}`, as the package declares now; it works while the
+connection is revoked — rotating a leaked secret is incident response.
+
+**A delivery**, in order — every refusal before the intake write changes no
+durable state (no intake row, no monthly count):
+
+1. The ingress resolves — an unknown id and another provider's id answer the
+   same 401, after one read and with no rate-limit state created for them.
+2. A per-(client address, ingress) limit, the only one before the sender is
+   proven: junk aimed at other ingresses from a vendor's shared address does
+   not starve this one. The body is read under the 5 MiB cap (413 above it);
+   before the proof nothing decodes it into a tree — a credential or
+   timestamp in the body is read by a top-level scan of at most 10000
+   members.
+3. The binding can vouch — the connection exists, names the ingress's
+   connector, holds `trigger` and is live, and the package resolves to the
+   pinned contract — or **409** naming what to fix; a changed contract names
+   both digests until consented to. A store that cannot answer is **503**,
+   never a binding verdict.
+4. The package's reader authenticates the delivery: the declared scheme over
+   the raw bytes, the replay window, then — after a handshake, which carries
+   none — the installation, read from the signed body only. Failing answers
+   **401**, with the reason (bounded) in the server log only. An event past
+   12 MiB, Mongo's document bound less the row, answers **413**.
+5. Admission, as on every lane: enabled (410), the provisioning epoch, the
+   per-webhook rate bucket (429), the team may launch (403).
+6. A handshake is answered with its challenge; a delivery no trigger declares,
+   or that a trigger's loop guard drops, gets the package's ack. Neither is
+   stored nor counted.
+7. A redelivery — the same signed body, including a vendor's retry re-signed
+   at a later instant — meets its stored row and gets the ack, charged
+   nothing; the vendor's delivery-id header is unsigned and never part of
+   that identity.
+8. Over the team's backlog cap (`ITERION_CONNECTOR_INTAKE_BACKLOG_MAX`) the
+   answer is **503** with `Retry-After` — a soft bound: concurrent deliveries
+   that each read room may overshoot it by the deliveries in flight. Then the
+   monthly quota is charged (429 past it), the intake row written, and the
+   package's `ack` answers (200 and an empty body by default). The write runs
+   detached from the request; a write that meets a row a concurrent twin
+   wrote first gives the quota unit back, and so does a failed write whose
+   row is then proven absent — a lost answer over a stored row is acked and
+   keeps its unit. Only an answered delivery marks the ingress
+   `last_used_at`.
+
+What is stored is the **sanitized event**: the trigger's outputs, the body
+without the credential field and the `redact:` fields, and only the headers
+the package lists — never `Authorization`, `Cookie` or the credential header.
+
 ## Matching: project + event + author allowlists, bot scope
 
 Every webhook carries four selection filters plus a bot-agnostic hold gate
@@ -1012,12 +1386,16 @@ across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
 | `gh\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
+| `gh\|issue\|` | `(tenant, webhook, project_path, issue_number, label OR "opened")` | the first claim of a [trigger lane](#issue-trigger-lanes) |
+| `gl\|issue\|` | `(tenant, webhook, project_id, issue_iid, label)` | the first claim of a [trigger lane](#issue-trigger-lanes) |
 
 Rows recorded as terminal without ever being claimed — `invalid`, `filtered`,
 and the `launch_error` rows written as their own audit row rather than a
 claimed delivery — get a **random UUID** as their idempotency key, so they never
 collide with the real dedup key
 ([pkg/server/webhooks_common.go:recordTerminalWebhookDelivery](../pkg/server/webhooks_common.go)).
+The one terminal row keyed otherwise is a trigger lane's absorbed delivery,
+keyed on that delivery's own identity ([below](#issue-trigger-lanes)).
 A claimed launch failure with no run keeps the real key and becomes
 `launch_error`. Its saved target allows a bounded periodic sweep or a
 super-admin `POST /api/webhooks/deliveries/{id}/retry` to claim the same row.
@@ -1026,6 +1404,77 @@ A replay that already produced a run never launches again. Intake now answers
 launch continues on a bounded context detached from the connection.
 See [receipts and retry](webhooks/retry.md) for backoff, attempt limits,
 shutdown behavior and terminal refusals.
+
+### Issue trigger lanes
+
+An issue trigger — a label applied to an issue (GitHub `issues` `labeled`,
+GitLab `Issue Hook` label added) or GitHub's zero-touch `opened` — is a
+request a person can make again, so it is not claimed once for good like a
+comment. Each (repository, issue, trigger) is a **lane** whose claims form a
+sequence, decided before anything is metered
+([pkg/server/webhooks_trigger_lane.go](../pkg/server/webhooks_trigger_lane.go)):
+
+- **A redelivery is a duplicate.** An event is known by the forge's own
+  delivery id, which its redeliveries carry again — GitHub's
+  `X-GitHub-Delivery`, GitLab's `webhook-id` / `Idempotency-Key` (GitLab
+  17.4+, documented as kept across retries and *Resend request*, whose
+  bytes it does not promise; `X-Gitlab-Event-UUID` is not an event id) — and
+  by the SHA-256 of its body,
+  which an exact retransmission repeats and a fresh application of the label
+  never does (the issue's `updated_at` moves). A delivery row records the id
+  as `forge_delivery_id`. A claim made for an event answers its redeliveries
+  for as long as it exists, without touching the quota.
+- **A fresh trigger launches once the lane's latest claim has ended**: on the
+  direct lane, its run is terminal (`finished`, `failed`,
+  `failed_resumable`, `cancelled`) or gone, or its launch was exhausted; on
+  the board lane, its card sits in a terminal column (`done`, `blocked`). A
+  claim whose launch failed before any run existed is retried by the next
+  trigger, as a redelivery would.
+- **A fresh trigger while the latest claim still serves is absorbed** — a
+  `duplicate` (direct) or `carded` (board) answer that starts nothing,
+  recorded as a `duplicate` delivery row under its own identity, so its own
+  redelivery stays a duplicate after the claim has ended. A claim serves while
+  its run is not terminal, while its launch is in flight, when its launch is
+  uncertain or was stranded by a crash (a run may exist that no row names),
+  and while its card sits in any non-terminal column. Under
+  `overlap: supersede` a direct lane's fresh trigger replaces the serving run
+  instead, through the launch tail's supersede pass.
+- **The next claim is atomic.** The direct lane's n-th claim (n ≥ 1) is the
+  row under `sha256(<first key>|gen|n)` (the first is the table's key, so rows
+  written before lanes existed are the lanes' first claims); the board lane's
+  next card takes a `native:<uuid>` id derived from the lane and the cards it
+  already holds. Two fresh triggers racing for a free lane collide on that
+  key, and the loser answers as a duplicate.
+
+A lane card carries the subject label `cmd:issue:<n>`, its lane label
+`cmd:lane:<project>#issue:<n>#<trigger>` and the identity of the event it was
+carded for, `cmd:delivery:delivery:<forge id>` (or `cmd:delivery:sha256:<hash>`
+when the forge sends no id), all under the board-local `cmd:`
+namespace the forge label sync preserves. A card carded before lanes existed
+carries only the subject label: it serves every lane of its subject — of its
+own repository when its launch context names one — until it reaches a
+terminal column. So does a tracking card written without a coordinator: a
+deployment that enables a coordinator later finds it serving until an
+operator closes it.
+
+A board lane is named by the project's path, as the card's launch context
+is: a project renamed while one of its cards still serves starts a second
+lane under the new path (the direct lane, keyed by GitLab's project id, does
+not split).
+
+The cards are the board lane's memory of the events it carded. Deleting a
+lane card forgets its event: a redelivery of that event then cards again,
+and deleting a card still serving frees its lane — the operator's manual
+re-arm gesture, not a leak to guard against.
+
+A lane the server cannot read — the delivery store, the run store or the
+board failing to answer — refuses the delivery with `503` and a
+`launch_error` audit row under a random key, before anything is metered, so
+the forge's own retry or a redelivery can try again.
+
+Comment commands are unchanged: a comment (`comment:<id>`, `note:<id>`) is
+its own unique subject, claimed once by its key and, on the board, by its
+`cmd:<subject>` card.
 
 ## The path a delivery takes
 
@@ -1214,8 +1663,15 @@ The `POST` create response shape:
 ```
 
 The `token` field is the **only** way to recover the plaintext — once
-the response is closed, only the salted hash remains. The studio shows
+the response is closed, only the unsalted SHA-256 hash remains. The studio shows
 it inside a "copy now, you won't see it again" affordance.
+
+An optional `pins_unreconciled` list beside them names the api keys or
+stored secrets that a `key_overrides` / `secret_overrides` pin names and
+that the route could not re-check once the row was stored
+([byok.md](byok.md#per-webhook-key-override)). The webhook exists and the
+token has no second copy, so the answer stays a 201: re-read those records
+and clear a pin naming a deleted one.
 
 ### `key_overrides` — pin a BYOK key per webhook
 
@@ -1229,6 +1685,19 @@ several webhooks for the same bot against different keys (e.g. one
 webhook on a sandbox key). Mismatched provider, missing key, or a key
 that belongs to another org are 400s
 ([pkg/server/webhooks_routes.go:validateKeyOverrides](../pkg/server/webhooks_routes.go)).
+
+**Pin an org-scoped key, not a personal one.** A webhook fires under the
+synthetic identity `webhook:<webhook_id>`, and `secrets.Resolve` measures a
+key's visibility against the identity that spends it: a key scoped to a USER
+is never visible to that actor, so a pin on one would be dropped at launch
+and the run would seal the team's default instead — invisibly, because the
+walk reports a key it *withholds*, never a pin it never saw. Such a pin is a
+400 at write (`not spendable by this lane`), like the `openai_compatible`
+gateway pin above and like its `secret_overrides` twin, which
+requires an org-scoped secret. The team key list an admin picks from
+(`GET /api/teams/{id}/api-keys`) offers the team's own keys only, so a
+personal one never appears there; the refusal is what tells an operator that
+a webhook can never spend one.
 
 ### `launch_vars` — pin run vars from the org config
 
@@ -1252,7 +1721,7 @@ accepted with the key dropped, never refused
 | `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer. It is also the set the publish tail **withdraws from `requested_reviewers` after posting a review** — GitHub never lifts the request itself (the review is posted by `<app_slug>[bot]`, not by the requested account), so without the withdrawal the pastille stays pending and the gesture is not repeatable; read-then-intersect, so a login that is not pending costs no write, and `pull_requests: write` is what it degrades without. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. Also the knob for the [mixed-identity setup](#two-identities) where a webhook rides an App connection for reads and a `forge_token` PAT for writes — list the PAT's login here so both guards recognise the bot's own posts. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). The lane is debounced (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default `3m`): a push volley costs one review of the final head — see the GitHub section above. |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. An explicit clear via PATCH (`"overlap": ""`) is normalized to `allow` — enforcement-identical, but readable as a decision, so the gesture survives re-provisioning (stored `""` would read as never-set and the integration's stale value would win). `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
-| `operator_launch_vars` | — | Vars layered **over** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. Written by the integration rather than this API: `launch_vars` on `POST /api/teams/{id}/forge/repo-bots` or `PATCH …/repo-bots/{integration_id}` lands here (the per-repo `gate_enabled` / `gate_context` pins, for example), and a re-provision carries it. |
+| `operator_launch_vars` | — | Vars layered **over** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). A carded run (board or ticket lane) reads both layers live at launch too — `launch_vars` under the card's `bot_args`, these over them, their names trusted for the routing gate — and a `bot_arg` carrying one of these names is ignored and signalled (#2665). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. Written by the integration rather than this API: `launch_vars` on `POST /api/teams/{id}/forge/repo-bots` or `PATCH …/repo-bots/{integration_id}` lands here (the per-repo `gate_enabled` / `gate_context` pins, for example), and a re-provision carries it. |
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
 | `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. A stored value overrides the layers below and survives a re-provision, but no webhook route sets one — the webhook request struct declares none of the four — so a webhook-launched run takes its bot manifest's policy and the machine default, clamped by the platform ceiling (`ITERION_CLOUD_RETRY_MAX_ATTEMPTS`, `ITERION_CLOUD_RETRY_MAX_WAIT`). |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |

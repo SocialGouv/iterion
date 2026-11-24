@@ -28,6 +28,7 @@ func (s *Server) registerTeamLifecycleRoutes() {
 	s.mux.Handle("GET /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleGetTeam)))
 	s.mux.Handle("PATCH /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateTeam)))
 	s.mux.Handle("POST /api/teams/{id}/status", s.requireAuth(http.HandlerFunc(s.handleSetTeamStatus)))
+	s.mux.Handle("PUT /api/teams/{id}/run-visibility", s.requireAuth(http.HandlerFunc(s.handleSetTeamRunVisibility)))
 	s.mux.Handle("DELETE /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTeam)))
 	s.mux.Handle("PUT /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handlePutTeamMember)))
 	s.mux.Handle("PUT /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handlePutOrgMember)))
@@ -94,8 +95,8 @@ func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	if u.Status == identity.UserStatusDisabled {
-		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before granting it an org", u.Email)
+	if refusal := grantRefusal(u, "an org"); refusal != "" {
+		httpError(w, http.StatusUnprocessableEntity, "%s", refusal)
 		return
 	}
 	if err := s.authStore().UpsertOrgMembership(r.Context(), identity.OrgMembership{
@@ -210,6 +211,50 @@ func (s *Server) handleSetTeamStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, toTeamSummaryView(t))
 }
 
+// handleSetTeamRunVisibility writes Team.RunVisibility (ADR-148): who
+// beyond the team may READ its runs by id. Exposure of a team's run
+// contents to the org is a governance act exactly like suspension — the
+// same org gate, the same double audit — and resetting to team-private is
+// the revocation half of the axis: the choke point reads the field LIVE,
+// so closing it ends every org-shared read and passive socket within the
+// standing tick. An org membership is the audience, not a team roster:
+// removing a TEAM membership never revokes the sharing.
+func (s *Server) handleSetTeamRunVisibility(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.orgAdminOfTeam(r.Context(), id, teamID) && !id.IsSuperAdmin {
+		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	var req struct {
+		RunVisibility *string `json:"run_visibility"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// A PUT without the field says nothing: refusing it keeps "" (the
+	// reset) an explicit, audited act instead of a client's omission.
+	if req.RunVisibility == nil {
+		httpError(w, http.StatusBadRequest, `run_visibility is required (send "" to reset to team-private)`)
+		return
+	}
+	if !identity.ValidRunVisibility(*req.RunVisibility) {
+		httpError(w, http.StatusBadRequest, `invalid run_visibility (use "" or "org")`)
+		return
+	}
+	t, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunVisibility: req.RunVisibility})
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	meta := map[string]any{"run_visibility": *req.RunVisibility}
+	s.auditTenant(r, teamID, "team.run_visibility_changed", "team", teamID, meta)
+	if t.OrgID != "" {
+		s.auditOrg(r, t.OrgID, "team.run_visibility_changed", "team", teamID, meta)
+	}
+	writeJSON(w, toTeamSummaryView(t))
+}
+
 // teamResidue names what still lives under a team, in the order an operator
 // must tear it down. Empty means the team can be deleted with nothing left
 // behind.
@@ -252,10 +297,15 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 		}
 	}
 	if s.apiKeys != nil {
-		if keys, err := s.apiKeys.ListByTeam(tctx, teamID, ""); err != nil {
+		// CountByTeam, not ListByTeam with no requesting user: the list's
+		// contract reads "" as "team-wide rows only", so a team holding ONLY
+		// user-scoped keys would count empty through it and be deleted with
+		// sealed credentials left behind in a tenant nothing can reach
+		// (#1687).
+		if n, err := s.apiKeys.CountByTeam(tctx, teamID); err != nil {
 			out = append(out, fmt.Sprintf("api keys (unreadable: %v)", err))
-		} else if len(keys) > 0 {
-			out = append(out, fmt.Sprintf("%d api key(s)", len(keys)))
+		} else if n > 0 {
+			out = append(out, fmt.Sprintf("%d api key(s)", n))
 		}
 	}
 	// Anything that still FIRES after the team is gone. A webhook is the
@@ -273,11 +323,24 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 	// Anything that still holds a CREDENTIAL. Left behind, these are sealed
 	// secrets belonging to a tenant nothing can reach — the same leak the
 	// org purge sweeper exists to prevent, arrived at by a different door.
+	// The whole-team view, personal scopes included: ListByTeam with no
+	// requesting user is one user's resolution view and skips every
+	// user-scoped row, the blind spot above (#1687). A store without the
+	// whole-team read is answered as "unreadable": the gate fails CLOSED —
+	// an emptiness it cannot prove is not one.
 	if s.genericSecrets != nil {
-		if secs, err := s.genericSecrets.ListByTeam(tctx, teamID, ""); err != nil {
-			out = append(out, fmt.Sprintf("secrets (unreadable: %v)", err))
-		} else if len(secs) > 0 {
-			out = append(out, fmt.Sprintf("%d named secret(s)", len(secs)))
+		lister, ok := s.genericSecrets.(interface {
+			ListAllInTeam(context.Context, string) ([]secrets.GenericSecret, error)
+		})
+		switch {
+		case !ok:
+			out = append(out, "secrets (unreadable: the store has no whole-team view)")
+		default:
+			if secs, err := lister.ListAllInTeam(tctx, teamID); err != nil {
+				out = append(out, fmt.Sprintf("secrets (unreadable: %v)", err))
+			} else if len(secs) > 0 {
+				out = append(out, fmt.Sprintf("%d named secret(s)", len(secs)))
+			}
 		}
 	}
 	if s.oauthStore != nil {
@@ -412,8 +475,8 @@ func (s *Server) handlePutTeamMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	if u.Status == identity.UserStatusDisabled {
-		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before granting it a team", u.Email)
+	if refusal := grantRefusal(u, "a team"); refusal != "" {
+		httpError(w, http.StatusUnprocessableEntity, "%s", refusal)
 		return
 	}
 	if !s.requireOrgMembershipForGrant(w, r, t.OrgID, memberID) {

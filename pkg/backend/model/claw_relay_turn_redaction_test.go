@@ -72,6 +72,7 @@ func relayedTurnWireStrings(t *testing.T) []string {
 // redacted; a field it names must come back in clear, so the list cannot
 // quietly outlive its reason either.
 func TestClawRelay_PersistsNoRelayedTurnInClear(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-TURNWITNESS0123456789abcdefghij"
 
 	// What a field is allowed to look like once the run has written it.
@@ -153,8 +154,8 @@ func TestClawRelay_PersistsNoRelayedTurnInClear(t *testing.T) {
 			for k, v := range s.put {
 				payload[k] = v
 			}
-			b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 0}, sessionSeed{}).
-				OnEvent(relayTurnCaptureType, payload)
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 0}, sessionSeed{}, newCrossingApprovalState())
+			handler.OnEvent(relayTurnCaptureType, payload)
 
 			if _, err := st.LoadTurn(context.Background(), runID, "campaign", 0, 0); err != nil {
 				t.Fatalf("scenario broken: the relayed turn was not persisted: %v", err)

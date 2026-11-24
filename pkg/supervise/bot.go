@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/auxllm"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -130,7 +131,7 @@ type LLMEvaluator struct {
 // NewLLMEvaluator constructs an evaluator. The model client is resolved
 // on the first Evaluate call so construction never blocks on detection.
 func NewLLMEvaluator() *LLMEvaluator {
-	return &LLMEvaluator{registry: model.NewRegistry()}
+	return &LLMEvaluator{registry: auxllm.Registry()}
 }
 
 // ResolveModel is the model spec a supervisor's evaluator resolves at its
@@ -147,7 +148,7 @@ func ResolveModel(ctx context.Context, specModel, providerHint string) (string, 
 // detector's first suggestion. Returns ErrNoSupervisorModel when none
 // resolve.
 func resolveModel(ctx context.Context, specModel, providerHint string) (string, error) {
-	// The DSL pin may be an env form ("${ITERION_VIBE_MODEL_X:-a/b}") —
+	// The DSL pin may be an env form ("${ITERION_X_MODEL:-a/b}") —
 	// expand it exactly like the executor expands a node's model
 	// (executor_build_task.go resolvedModel). Unexpanded, the raw string
 	// reaches ParseModelSpec, which splits at the first "/" into a

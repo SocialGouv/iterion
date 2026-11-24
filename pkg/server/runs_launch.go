@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -55,6 +56,28 @@ const runNotResumableErrorCode = "run_not_resumable"
 // travel: the resume needs accept_scratch_loss — force never gives it — and,
 // when also_needs_force is set, force too for a change it names.
 const scratchNotPortableErrorCode = "scratch_not_portable"
+
+// credentialAtCapacityErrorCode tells a client that the resume was refused
+// because a key the run sealed is full of other runs, or a pool entry the run
+// needs exists but is busy now (cloudpublisher.ErrCredentialAtCapacity):
+// nothing was published, the run was put back as it was, and the same request
+// succeeds once a slot frees. Every operator surface that resumes a run
+// answers it (writeCredentialAtCapacityError, and the WS answer's error code),
+// and so does a launch refused on a busy pool entry.
+const credentialAtCapacityErrorCode = "credential_at_capacity"
+
+// resumeNotAdmittedErrorCode tells a client that the run service refused a
+// resume whose admission does not match the run (runview.ErrResumeNotAdmitted):
+// an untrusted run resumed by a surface that crossed no admission gate, or a
+// run document that moved under the gate. Nothing was claimed or published;
+// the remedy is the gated resume (POST /api/runs/{id}/resume, the WS answer).
+const resumeNotAdmittedErrorCode = "resume_not_admitted"
+
+// launchNotAdmittedErrorCode is its launch twin (runview.ErrLaunchNotAdmitted):
+// a run the launch names as its parent or delegation source changed trust
+// between the gate's read and the run service's. Nothing was published; the
+// remedy is to retry the launch, which the gate judges afresh.
+const launchNotAdmittedErrorCode = "launch_not_admitted"
 
 // --- Request / response shapes ---
 
@@ -88,15 +111,36 @@ type launchRunRequest struct {
 	// against its own tiers and stamp the canonical name it discovered. With
 	// inline source the value is not read as an identity anywhere — the run is
 	// gated, funded, bound and attributed as work naming no bot.
-	BotID string            `json:"bot_id,omitempty"`
-	RunID string            `json:"run_id,omitempty"`
-	Vars  map[string]string `json:"vars,omitempty"`
+	BotID string `json:"bot_id,omitempty"`
+	// ExpectSourceSHA256 pins a launch that resolves a bot to the program its
+	// caller read: the sha256 GET /api/v1/bots/{name}/launch-source issued —
+	// the identity of the whole program (entry source, bundle prompts and
+	// presets, fragments, included files). The run service compares it with
+	// the identity of the program its compile reads
+	// (runview.LaunchSpec.ExpectProgramHash) and refuses a mismatch (409
+	// bot_source_changed) — a file of the bot changed, or another tier now
+	// serves the name, since the form was rendered. It is the cloud lane's
+	// guarantee: outside cloud the launch reads the bot's files again after
+	// it is accepted, and a pin is refused (400 launch_pin_unsupported)
+	// rather than compared and outrun. It pins a RESOLVED bot only:
+	// malformed, beside an inline source or on a launch that resolves no bot
+	// it is refused (400) rather than left unchecked, and from a caller who
+	// may not read the bot's program (403) — only a reader can have been
+	// issued one. Absent, nothing is compared.
+	ExpectSourceSHA256 string            `json:"expect_source_sha256,omitempty"`
+	RunID              string            `json:"run_id,omitempty"`
+	Vars               map[string]string `json:"vars,omitempty"`
 	// SourceRunID asks the host to launch the selected worker against the
 	// repository that owns one failed run's workflow source. The host resolves
 	// provenance, injects a bounded attested failure envelope, and enforces an
 	// isolated no-merge worktree.
-	SourceRunID  string `json:"source_run_id,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
+	SourceRunID string `json:"source_run_id,omitempty"`
+	// SourceRunBirth is the birth the caller expects of SourceRunID
+	// (checkCarriedBirth): a source replaced under its ID is refused 409
+	// run_origin_lost instead of delegated in the original's place.
+	// Optional; "historical" expects a run with no birth.
+	SourceRunBirth string `json:"source_run_birth,omitempty"`
+	Instructions   string `json:"instructions,omitempty"`
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Maps directly to LaunchSpec.Preset; the engine
 	// records it on Run.Preset for resume.
@@ -137,6 +181,20 @@ type launchRunRequest struct {
 	// "workspace" | "operator" | "all", ADR-119). Empty inherits the
 	// workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT.
 	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the run-level codemode override ("on"|"off"; ADR-165).
+	// Empty inherits the workflow/node codemode: DSL — deliberately no
+	// environment rung (ADR-132 §1). It wins over the authored rungs in BOTH
+	// directions; a backend that serves no codemode tool refuses at
+	// dispatch, and the cost preview screens that before the run.
+	Codemode string `json:"codemode,omitempty"`
+	// CodemodeBounds raises codemode bounds for the run, field by field —
+	// the HTTP twin of the CLI --codemode-* flags, in the DSL's orthography:
+	// durations as strings ("60s"), sizes and counts as raw integers. A zero
+	// or absent field means the launch did not choose, and the authored
+	// value stands. Every value still passes scripthost.Clamp at spawn (the
+	// ceiling, the memory floor, the OnClamp report), so a request can be
+	// warned but never bypass a bound by asking.
+	CodemodeBounds *runview.CodemodeBoundsRequest `json:"codemode_bounds,omitempty"`
 	// LoopBudgetGuard is the run-level override for the loop back-edge
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
@@ -149,9 +207,10 @@ type launchRunRequest struct {
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
 	Permission string `json:"permission,omitempty"`
-	// ReviewMode is the run-level mono/dual review-topology override
-	// ("auto"|"mono"|"dual") for bi-model review-loop bots. Empty/"auto"
-	// resolves from detected providers at launch. See pkg/reviewtopology.
+	// ReviewMode is the run-level review-topology override
+	// ("auto"|"single"|"paired") for review-loop bots. Empty/"auto" resolves
+	// to single; the retired "mono"/"dual" spellings still read as
+	// single/paired. See pkg/reviewtopology.
 	ReviewMode string `json:"review_mode,omitempty"`
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each targets nodes by selector (node id, id
@@ -163,7 +222,8 @@ type launchRunRequest struct {
 	// (ADR-121, pkg/llmroute): the launcher's own opinion, folded as the
 	// HEAD layer — the seat whose explicit lock may reopen strict (the
 	// ADR's "only the launcher, for their own run, through an explicit
-	// lock"). Optional; validated with the rest of the chain.
+	// lock"). Optional; it meets the write gate at the request
+	// (validateRequestRouting), then folds with the rest of the chain.
 	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 	// RoutingPolicy is the launch-frozen outcome contract: what
 	// "success" and "blocked" mean for this run (bot-DSL expressions
@@ -330,6 +390,14 @@ type resumeRunRequest struct {
 	// the cap. Zero fields inherit. Wired through
 	// runview.ResumeSpec.Budget → cloudpublisher.SubmitResume. #652 part 2.
 	Budget *launchBudgetSpec `json:"budget,omitempty"`
+	// CodemodeStore restates only the run bank quotas: zero inherits each
+	// previous override, and restating never clears the bank.
+	CodemodeStore *resumeCodemodeStoreRequest `json:"codemode_store,omitempty"`
+}
+
+type resumeCodemodeStoreRequest struct {
+	StoreEntries int64 `json:"store_entries,omitempty"`
+	StoreBytes   int64 `json:"store_bytes,omitempty"`
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -362,10 +430,57 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid run source")
 		return
 	}
+	// The launch's own routing block is one the request supplies: it meets
+	// the write gate here, on the caller's payload alone, before admission
+	// meters a slot — the launch reads every layer, this one included, with
+	// the stored rule only (resolveRunLLMRoutePolicy).
+	if err := validateRequestRouting("llm_routing", req.LLMRouting); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		span.SetStatus(codes.Error, "invalid llm_routing")
+		return
+	}
 	if req.FilePath == "" && req.Source == "" && req.BotID == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
+	}
+	// The launch's codemode override, validated where the other string
+	// overrides are: a typo is a 400, never a silent inherit downstream of
+	// a surface that did not check. The bounds' duration strings parse here
+	// for the same reason the budget's max_duration does (a bad value must
+	// be a 400, not a run that reads it as nothing).
+	if !ir.ValidCodemode(req.Codemode) {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "codemode: %q is not a codemode value (on|off, empty inherits the DSL)", req.Codemode)
+		span.SetStatus(codes.Error, "invalid codemode")
+		return
+	}
+	codemodeBounds, err := req.CodemodeBounds.ToBounds()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		span.SetStatus(codes.Error, "invalid codemode_bounds")
+		return
+	}
+	if pin := req.ExpectSourceSHA256; pin != "" {
+		// A pin is judged with the payload, before admission meters a slot:
+		// what it must look like, and what it may stand beside.
+		if !launchPinPattern.MatchString(pin) {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "expect_source_sha256 is not a pin: a pin is the sha256 GET /api/v1/bots/{name}/launch-source answered for the bot, as it wrote it (64 lowercase hex digits) — this value is %d characters long", len(pin))
+			span.SetStatus(codes.Error, "malformed pin")
+			return
+		}
+		if req.Source != "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "expect_source_sha256 pins a bot the server resolves (bot_id), and an inline source is its own program — send one or the other")
+			span.SetStatus(codes.Error, "pin beside an inline source")
+			return
+		}
+		if s.cfg.Mode != "cloud" {
+			// Outside cloud no lane publishes a frozen program, and the
+			// request alone says so: refused here, by name, rather than
+			// compared at a compile the run then outruns.
+			s.httpErrorCode(w, r, http.StatusBadRequest, launchPinUnsupportedErrorCode, "%s", launchPinUnsupportedSentence)
+			span.SetStatus(codes.Error, "pin on a lane that cannot hold it")
+			return
+		}
 	}
 	if req.Source != "" && strings.TrimSpace(req.BotID) != "" {
 		// An inline source names no bot: the label beside it is ignored, so
@@ -426,7 +541,35 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			inferredAdmission = true
 		}
 	}
-	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: launchBotLabel})
+	// A launch built FROM other runs — a REST child or a cloud shard naming
+	// parent_run_id, a delegation naming source_run_id — runs under the lowest
+	// of their trusts and meters their fork author (Service.Launch's
+	// inheritSourceTrust). The gate judges THAT subject, read off the same
+	// documents through the same rule, so the run it admits is the run Launch
+	// publishes: a launch naming a fork run is the author's spend, refused on
+	// the super-admin and local-mode arms and metered on the author's bound
+	// like the gesture that created the fork run (ADR-162 decision 5). The run
+	// service compares the two (runview.CheckLaunchAdmitted) and refuses a
+	// launch whose admission names another trust or author.
+	//
+	// These are the only store reads ahead of the suspend check, and only a
+	// request naming a source pays them — the order a resume takes, whose
+	// subject comes from a run document too. A source that cannot be read
+	// refuses the launch here with the answer the run service gave it before.
+	var sourceAdm runview.GateAdmission
+	if s.runs != nil {
+		var serr error
+		if sourceAdm, serr = s.runs.LaunchSourceAdmission(r.Context(), req.ParentRunID, strings.TrimSpace(req.SourceRunID)); serr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", serr)
+			span.SetStatus(codes.Error, "launch source unreadable")
+			return
+		}
+	}
+	subjectFor := func(bot string) launchSubject {
+		return launchSubject{BotID: bot}.withStoredTrust(sourceAdm.Trust, sourceAdm.ForkAuthorSubject)
+	}
+	gateSubj := subjectFor(launchBotLabel)
+	adm, d := s.gateLaunch(r.Context(), gateSubj)
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		span.SetStatus(codes.Error, "launch denied")
@@ -496,7 +639,33 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	trustedCatalogPath := ""
 	if resolvesBot {
 		id, _ := auth.FromContext(r.Context())
-		lb, lbErr := s.resolveBotTiered(r.Context(), id.TeamID, req.BotID, req.FilePath)
+		resolveCtx := r.Context()
+		if req.ExpectSourceSHA256 != "" {
+			// Only a reader of the program can have been issued a pin for it,
+			// so a pinned launch resolves under the read's own guard and a
+			// caller the read refuses is refused here in the same words. The
+			// guard protects the TEXT. The digest is no secret: it is the
+			// workflow_hash on the header of every run of the bot, readable
+			// by whoever may view one.
+			resolveCtx = s.withTierReadGuard(resolveCtx, r, id)
+		}
+		lb, lbErr := s.resolveBotTiered(resolveCtx, id.TeamID, req.BotID, req.FilePath)
+		var unreadable *tierReadRefusal
+		if errors.As(lbErr, &unreadable) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "expect_source_sha256 is issued by the read of the bot's program (GET /api/v1/bots/{name}/launch-source), which this caller may not make — %s; launch it by id with no pin", unreadable.Error())
+			span.SetStatus(codes.Error, "pin from a caller who may not read the bot")
+			return
+		}
+		var tierDown *tierUnavailableError
+		if errors.As(lbErr, &tierDown) {
+			// A stored tier did not answer — the bot's own, or that of a
+			// bundle its freeze resolves. Transient, and the store's words
+			// are the server's: a 5xx body is masked, where the 400 below
+			// would hand the caller the store's address. The slot goes back.
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "resolve bot: %v", lbErr)
+			span.SetStatus(codes.Error, "a bot tier did not answer")
+			return
+		}
 		if lbErr != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve bot: %v", lbErr)
 			span.SetStatus(codes.Error, "bot resolution failed")
@@ -514,10 +683,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		if lb != nil {
 			launchLB = lb
 			defer launchLB.Cleanup()
-			req.FilePath, botID = lb.Path, lb.BotID
-			if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
-				req.Source = lb.Source
-			} else {
+			botID = lb.BotID
+			var onDisk bool
+			req.FilePath, req.Source, onDisk = s.launchProgramOf(lb)
+			if onDisk {
 				// The resolver already constrained this absolute path to a
 				// configured catalog root and read it successfully. Keep the real
 				// file so bundle-relative skills/prompts remain adjacent.
@@ -525,12 +694,21 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if req.ExpectSourceSHA256 != "" && launchLB == nil {
+		// A pin nobody checks is a false guarantee: the launch that carries
+		// one runs a bot the server resolved, or does not run. A file launch
+		// names no bot, so there is no read that could have issued its pin.
+		s.httpErrorFor(w, r, http.StatusBadRequest, "expect_source_sha256 pins a bot the server resolves, and this launch resolves none (a file names no bot) — name the bot (bot_id), or drop the pin")
+		span.SetStatus(codes.Error, "pin without a resolved bot")
+		return
+	}
 	// A canonical path can resolve to a stored spelling variant. Re-admit that
 	// real identity instead of publishing it under the inferred reservation.
 	if inferredAdmission && launchLB != nil && botID != launchBotLabel {
 		adm.rollback(s.logger)
 		adm = nil
-		adm, d = s.gateLaunch(r.Context(), launchSubject{BotID: botID})
+		gateSubj = subjectFor(botID)
+		adm, d = s.gateLaunch(r.Context(), gateSubj)
 		if d != nil {
 			s.writeLaunchDenial(w, r, d)
 			span.SetStatus(codes.Error, "launch denied")
@@ -597,16 +775,23 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		bundleDir := ""
+		bundleEntry := ""
 		if launchLB != nil {
 			bundleDir = launchLB.BundleDir
+			bundleEntry = launchLB.BundleEntry
 		}
-		if _, err := compileDelegatedWorker(absPath, req.Source, bundleDir); err != nil {
+		if _, err := compileDelegatedWorker(absPath, req.Source, bundleDir, bundleEntry); err != nil {
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
 			return
 		}
 		var err error
-		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.Instructions, req.Vars)
+		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.SourceRunBirth, req.Instructions, req.Vars)
 		if err != nil {
+			if carriedBirthFailure(err) {
+				s.writeCarriedBirthFailure(w, r, err)
+				span.SetStatus(codes.Error, "source run origin")
+				return
+			}
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
 			return
 		}
@@ -636,9 +821,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, _ := auth.FromContext(r.Context())
-		conn, err := s.forgeConnections.Get(r.Context(), req.ConnectionID)
-		if err != nil || conn.TenantID != id.TeamID {
-			// Cross-team ids 404 (non-enumeration), like every forge route.
+		conn, err := s.forgeConnections.Get(r.Context(), id.TeamID, req.ConnectionID)
+		if err != nil {
+			// Cross-team ids 404 (non-enumeration), like every forge route —
+			// since #2760 the tenant is the store's filter, not a check here.
 			s.httpErrorFor(w, r, http.StatusNotFound, "connection not found")
 			span.SetStatus(codes.Error, "connection not found")
 			return
@@ -660,7 +846,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo host mismatch")
 			return
 		}
-		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
+		// The same canonicalisation whatever the URL's spelling: a "…/widgets.git/"
+		// tail that kept its own trim would split the quota key and launch the
+		// over-quota repository under a key no ceiling aims at. The trim runs
+		// to a fixed point and folds the suffix's case; the slug's own case is
+		// folded where the quota and the usage listing READ it, not here — a
+		// forge resolves case-variant slugs to one repository (see
+		// CanonicalRepoSlug). ProjectPathOnBase is the derivation the board
+		// and scheduled lanes share, so one repository is one key everywhere.
+		repoProjectPath = forge.ProjectPathOnBase(base, req.RepoURL)
 		// The repository half of the admission, taken at the FIRST line where
 		// this surface knows which repository it targets. `repoProjectPath` is
 		// the identity the run is stamped with below (spec.ProjectPath), which
@@ -778,6 +972,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", routeErr)
 		return
 	}
+	// The pool attachment resolves beside the routing policy (ADR-164); an
+	// unreadable level, a vanished pool or a garbage block refuses the
+	// launch the same way.
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(r.Context(), retryTeamID, botID)
+	if poolErr != nil {
+		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", poolErr)
+		return
+	}
 
 	spec := runview.LaunchSpec{
 		FilePath:  absPath,
@@ -802,6 +1004,8 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Compress:           req.Compress,
 		AutoMemory:         req.AutoMemory,
 		AmbientContext:     req.AmbientContext,
+		Codemode:           req.Codemode,
+		CodemodeBounds:     codemodeBounds,
 		LoopBudgetGuard:    req.LoopBudgetGuard,
 		Supervisors:        req.Supervisors,
 		Permission:         req.Permission,
@@ -813,6 +1017,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(r.Context(), retryTeamID, botID),
 		LLMRoutePolicy:     routePolicy,
+		PoolAttachment:     poolAttachment,
 		ModelOverrides:     req.ModelOverrides,
 		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,
@@ -831,6 +1036,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		WorkDir:            delegationTarget.WorkDir,
 		WorktreeBaseCommit: delegationTarget.WorktreeBaseCommit,
 		Delegation:         delegation,
+		// What the gate above judged — the trust the source runs hand this
+		// launch, and the author subject it charged — for the run service to
+		// hold against the trust it publishes under (CheckLaunchAdmitted).
+		Admitted: gateAdmitted(gateSubj, adm),
+		// The pin, for the run service to hold against the program its
+		// compile reads — the one comparison, where what is compared is what
+		// runs (runview.ErrProgramChanged).
+		ExpectProgramHash: req.ExpectSourceSHA256,
 	}
 	if origin, originErr := inferRunBotOrigin(&store.Run{FilePath: absPath}); originErr == nil {
 		spec.BotOrigin = origin
@@ -866,7 +1079,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// failure charges per attempt; release every error and a run that started
 	// gets refunded.
 	runMayExist = true
-	res, err := s.runs.Launch(ctx, spec)
+	res, err := s.launchRun(ctx, requestLaunch(r), spec)
 	if err != nil {
 		// The callee reports whether anything durable happened; the caller no
 		// longer infers it. Absent that marker nothing was persisted and no
@@ -896,6 +1109,30 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "run id taken")
 			return
 		}
+		if errors.Is(err, runview.ErrLaunchPinUnsupported) {
+			// The run service owns the lane decision: a cloud server whose
+			// service publishes nothing refuses the pin there, in the same
+			// words as the mode refusal above, and the slot goes back.
+			s.httpErrorCode(w, r, http.StatusBadRequest, launchPinUnsupportedErrorCode, "%s", launchPinUnsupportedSentence)
+			span.SetStatus(codes.Error, "pin on a lane that cannot hold it")
+			return
+		}
+		if errors.Is(err, runview.ErrProgramChanged) {
+			// The bot is no longer the program the pin names: nothing was
+			// compiled into a run, and the metered slot goes back above.
+			s.httpErrorCode(w, r, http.StatusConflict, botSourceChangedErrorCode,
+				"bot %q changed since the launch form read it: the %s tier now serves another program than the one the form shows — reload the form, check its fields and launch again", botID, spec.BotSourceTier)
+			span.SetStatus(codes.Error, "bot source changed")
+			return
+		}
+		if errors.Is(err, runview.ErrLaunchNotAdmitted) {
+			// A source run's trust moved between the gate's read and the run
+			// service's: nothing was published, and the same launch is judged
+			// afresh on retry.
+			s.httpErrorCode(w, r, http.StatusConflict, launchNotAdmittedErrorCode, "%s", err.Error())
+			span.SetStatus(codes.Error, "launch not admitted")
+			return
+		}
 		if errors.Is(err, bundle.ErrAuthorDocument) {
 			s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
 			span.SetStatus(codes.Error, "author document")
@@ -903,7 +1140,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.writeQueueOutageError(w, r, "launch", err) {
 			span.RecordError(err)
-			span.SetStatus(codes.Error, "queue unavailable")
+			span.SetStatus(codes.Error, "retryable outage")
+			return
+		}
+		if s.writeCredentialAtCapacityError(w, r, "launch", err) {
+			span.SetStatus(codes.Error, "credential at capacity")
 			return
 		}
 		if s.writeNoLLMCredentialError(w, r, "launch", err) {
@@ -916,13 +1157,19 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
-	// A deferred launch (over the local concurrency cap) reports the queued
-	// status + position so the studio doesn't claim "running" for a
-	// pipeline still waiting for a slot. QueuePosition is 0 for the normal
-	// immediate-start path (and always 0 in cloud mode, which uses the
-	// NATS queue, not this local gate).
+	// The status the launch path persisted the run in wins when it reports
+	// one: the cloud publisher's queued, or the failed_resumable of a launch
+	// it PARKED before publishing (a sealed credential at its hard
+	// concurrency cap) — a CLI, a webhook or the studio must not be told the
+	// run runs while it waits for a slot. The local path reports none: its
+	// run starts in-process (running), or waits in the local pipeline-
+	// concurrency queue (queued + position, so the studio doesn't claim
+	// "running" for a pipeline still waiting for a slot).
 	status := store.RunStatusRunning
-	if res.QueuePosition > 0 {
+	switch {
+	case res.Status != "":
+		status = res.Status
+	case res.QueuePosition > 0:
 		status = store.RunStatusQueued
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -960,6 +1207,17 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// A failure of a resume the gate admitted on its expected birth answers
+	// run_origin_lost when the run behind the ID is no longer that birth
+	// (writeActionFailure), whichever step refused it. Its load below stays
+	// unbound (the subject and the source are resolved from it); Resume
+	// verifies the run it re-enters against expect, and the upload promotion
+	// is bound to the admitted run.
+	origin := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, origin)
+	if !ok {
+		return
+	}
 	var (
 		gateMeta    *store.Run
 		gateMetaErr = errors.New("run service unavailable")
@@ -967,14 +1225,23 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	)
 	// Nil in a degraded/local wiring — and the gate must still answer there,
 	// so an unreadable run costs the subject, never the admission.
+	// resumeLaunchSubject is the seam that carries the run's TRUST and, on
+	// a fork run, the author subject the launch metered (decision 5): an
+	// untrusted resume is metered on both counters again, and every arm of
+	// the gate that would admit it unmetered refuses instead.
 	if s.runs != nil {
 		gateMeta, gateMetaErr = s.runs.LoadRunCtx(r.Context(), id)
 		if gateMetaErr == nil && gateMeta != nil {
-			subj = launchSubject{ExistingRun: true, BotID: gateMeta.BotID, Repo: gateMeta.ProjectPath}
+			subj = s.resumeLaunchSubject(gateMeta)
 		}
 	}
 	adm, d := s.gateLaunch(r.Context(), subj)
 	if d != nil {
+		// The subject was read from the run behind the ID now: on a lost
+		// origin the denial judged another run, and the loss is the answer.
+		if s.writeActionFailure(w, r, origin, d.err()) {
+			return
+		}
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -995,6 +1262,16 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	if req.CodemodeStore != nil {
+		if field := ir.CodemodeBoundsNegativeField(&ir.CodemodeBounds{
+			StoreEntries: req.CodemodeStore.StoreEntries, StoreBytes: req.CodemodeStore.StoreBytes,
+		}); field != "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "codemode_store.%s: quota must be non-negative", field)
+			span.SetStatus(codes.Error, "invalid codemode store quota")
+			return
+		}
+	}
+
 	// The budget ask is validated at admission, before any store access:
 	// a malformed max_duration ("4 hours") would otherwise ride
 	// RunMessage.Budget onto the queue, fail the runner's
@@ -1013,6 +1290,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// one, and its TenantID scopes the resume's Mongo queries (see below).
 	runMeta, err := gateMeta, gateMetaErr
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		span.SetStatus(codes.Error, "run not found")
 		return
@@ -1038,6 +1319,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		runMeta,
 	)
 	if pathErr != nil {
+		// Resolved from the run read above: on a lost origin, another run's.
+		if s.writeActionFailure(w, r, origin, pathErr) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
 		s.httpSourcePathError(w, r, pathErr, "%v")
 		span.SetStatus(codes.Error, "resume source unresolvable")
 		return
@@ -1069,6 +1355,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx = store.WithTenant(ctx, tenantID)
 
+	var codemodeBounds *ir.CodemodeBounds
+	if quota := req.CodemodeStore; quota != nil && (quota.StoreEntries > 0 || quota.StoreBytes > 0) {
+		codemodeBounds = &ir.CodemodeBounds{StoreEntries: quota.StoreEntries, StoreBytes: quota.StoreBytes}
+	}
+
 	// Promote any operator upload attached to this answer BEFORE handing
 	// the answers to the engine: a `file` field must already be a
 	// resolvable attachment by the time the resumed workflow renders a
@@ -1090,13 +1381,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			Answers:           answers,
 			Force:             req.Force,
 			AcceptScratchLoss: req.AcceptScratchLoss,
+			CodemodeBounds:    codemodeBounds,
+			Admitted:          gateAdmitted(subj, adm),
 		}
 		if resumeLB != nil {
-			pfSpec.BundleDir, pfSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
+			resumeLB.stampResumeBundle(&pfSpec)
 		}
 		if pfErr := s.runs.PreflightResume(ctx, pfSpec); pfErr != nil {
-			s.writeResumeError(w, r, pfErr)
 			span.RecordError(pfErr)
+			if s.writeActionFailure(w, r, origin, pfErr) {
+				span.SetStatus(codes.Error, "run origin lost")
+				return
+			}
+			s.writeResumeError(w, r, pfErr)
 			span.SetStatus(codes.Error, "resume preflight failed")
 			return
 		}
@@ -1104,10 +1401,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		if runMeta.Checkpoint != nil {
 			pausedNode = runMeta.Checkpoint.PausedNodeID()
 		}
-		promoted, promoteErr := s.promoteAnswerUploads(ctx, id, pausedNode, answers, req.Attachments)
+		promoteCtx, ok := s.bindAction(w, r, origin, ctx)
+		if !ok {
+			span.SetStatus(codes.Error, "scope unavailable")
+			return
+		}
+		promoted, promoteErr := s.promoteAnswerUploads(promoteCtx, id, pausedNode, answers, req.Attachments)
 		if promoteErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
 			span.RecordError(promoteErr)
+			if s.writeActionFailure(w, r, origin, promoteErr) {
+				span.SetStatus(codes.Error, "run origin lost")
+				return
+			}
+			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
 			span.SetStatus(codes.Error, "attach upload failed")
 			return
 		}
@@ -1121,19 +1427,29 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Answers:           answers,
 		Force:             req.Force,
 		AcceptScratchLoss: req.AcceptScratchLoss,
+		CodemodeBounds:    codemodeBounds,
 		Timeout:           timeout,
 		Budget:            budget,
+		// What the gate above judged on the run it read: the run service
+		// refuses the resume when the document it re-enters names another
+		// trust or another fork author subject.
+		Admitted:     gateAdmitted(subj, adm),
+		ExpectOrigin: expect,
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
 		span.RecordError(historyErr)
+		if s.writeActionFailure(w, r, origin, historyErr) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
 		span.SetStatus(codes.Error, "chat history projection failed")
 		return
 	}
 	resumeSpec.HostInputs = hostInputs
 	if resumeLB != nil {
-		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
+		resumeLB.stampResumeBundle(&resumeSpec)
 	}
 	// Past this statement the slot is spent unless the run service says
 	// otherwise — see handleLaunchRun. A resume publish can report an error
@@ -1149,6 +1465,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// routine and must not meter the studio's own chat.
 		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false
+		}
+		if s.writeActionFailure(w, r, origin, err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "run origin lost")
+			return
 		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
@@ -1182,6 +1503,9 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
 		return
 	}
+	if s.writeCredentialAtCapacityError(w, r, "resume", err) {
+		return
+	}
 	status, code := http.StatusBadRequest, ""
 	var rt *runtime.RuntimeError
 	switch {
@@ -1195,6 +1519,8 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		code = artifactContractIncompatibleErrorCode
 	case errors.Is(err, runview.ErrRunNotResumable):
 		status, code = http.StatusConflict, runNotResumableErrorCode
+	case errors.Is(err, runview.ErrResumeNotAdmitted):
+		status, code = http.StatusConflict, resumeNotAdmittedErrorCode
 	}
 	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}
 	if code != "" {
@@ -1202,6 +1528,29 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	}
 	runtime.RemedyOf(err).Record(body)
 	s.writeJSONError(w, r, status, body)
+}
+
+// writeCredentialAtCapacityError answers a resume the cloud publisher
+// refused because a key the run sealed is full of other runs, or a pool entry
+// it needs exists but is busy now (cloudpublisher.ErrCredentialAtCapacity):
+// 429 with credentialAtCapacityErrorCode — the resume was refused before
+// publishing and the run put back as it was, a parked run keeping its armed
+// retry, which the sweeper asks again; any other is the caller's to resume
+// once a slot frees. The answer the launch gate gives a concurrency cap, with
+// the same remedy (wait, or free a slot). Shared by every HTTP surface that
+// resumes a run — resume, answer-human, an async answer's auto-resume, a
+// host event — so none answers the refusal as a server failure, and by the
+// launch, which a busy pool entry refuses the same way. operation prefixes
+// the error ("resume", "launch").
+func (s *Server) writeCredentialAtCapacityError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
+	if !errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+		return false
+	}
+	s.writeJSONError(w, r, http.StatusTooManyRequests, map[string]any{
+		"error":      fmt.Sprintf("%s: %v", operation, err),
+		"error_code": credentialAtCapacityErrorCode,
+	})
+	return true
 }
 
 // writeNoLLMCredentialError answers a launch or resume the cloud publisher
@@ -1220,19 +1569,31 @@ func (s *Server) writeNoLLMCredentialError(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
-// writeQueueOutageError is shared by launch and both resume error sites
-// (upload preflight and publication). errors.As deliberately handles the
-// wrapping and errors.Join shapes produced when queue publication and the
+// retryableOutage is a launch or resume refusal the same request clears once
+// a backend answers again, its stable code and retry verdict carried by the
+// error itself: the queue that cannot accept the run
+// (runview.QueueUnavailableError), the price-feed fold that cannot read a
+// level (PriceFeedUnreadError). Its message is the one the caller reads.
+type retryableOutage interface {
+	error
+	Code() string
+	Retryable() bool
+}
+
+// writeQueueOutageError answers a retryable outage — 503 with its code and
+// retryable — and is shared by launch and both resume error sites (upload
+// preflight and publication). errors.As deliberately handles the wrapping
+// and errors.Join shapes produced when queue publication and the
 // compensating run-status update both fail.
 func (s *Server) writeQueueOutageError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
-	var queueErr *runview.QueueUnavailableError
-	if !errors.As(err, &queueErr) {
+	var outage retryableOutage
+	if !errors.As(err, &outage) || !outage.Retryable() {
 		return false
 	}
 	s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
-		"error":      fmt.Sprintf("%s: %v", operation, queueErr),
-		"error_code": queueErr.Code(),
-		"retryable":  queueErr.Retryable(),
+		"error":      fmt.Sprintf("%s: %v", operation, outage),
+		"error_code": outage.Code(),
+		"retryable":  true,
 	})
 	return true
 }

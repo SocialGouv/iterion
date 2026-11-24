@@ -133,7 +133,7 @@ func TestAShellsLabelStaysInPlaceholderForm(t *testing.T) {
 func TestAnEchoedInputComesBackInPlaceholderForm(t *testing.T) {
 	const secret = "s3cr3t-VALUE-7f6e5d4c3b2a"
 	g := secretguard.New([]secretguard.Secret{{Name: "DEPLOY_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	handler := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	handler := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	run := func(tool string, response any) any {
 		t.Helper()
 		out, err := handler(context.Background(), claudesdk.HookCallbackInput{ToolName: tool, ToolResponse: response})
@@ -168,7 +168,7 @@ func TestAnEchoedInputComesBackInPlaceholderForm(t *testing.T) {
 func TestEveryToolButTheWorkspaceReadersIsUnmaterialised(t *testing.T) {
 	const secret = "s3cr3t-VALUE-7f6e5d4c3b2a"
 	g := secretguard.New([]secretguard.Secret{{Name: "DEPLOY_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	handler := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	handler := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	replaced := func(tool string) bool {
 		t.Helper()
 		out, err := handler(context.Background(), claudesdk.HookCallbackInput{ToolName: tool, ToolResponse: map[string]any{"text": "token=" + secret}})
@@ -192,8 +192,46 @@ func TestEveryToolButTheWorkspaceReadersIsUnmaterialised(t *testing.T) {
 	}
 	both := installMaterializeSecretsHook(Task{MaterializeSecrets: func(s string) string { return s }, UnmaterializeSecrets: func(s string) string { return s }}, nil)
 	one := installMaterializeSecretsHook(Task{MaterializeSecrets: func(s string) string { return s }}, nil)
-	if len(both) != 2 || len(one) != 1 {
-		t.Fatalf("hooks installed: %d with the mirror, %d without; want 2 and 1", len(both), len(one))
+	// A run whose secrets are all kept off the agent has no materialiser
+	// and still owes the mirror: the values an echoing tool quotes go back
+	// to placeholders, as claw does with the same closures.
+	mirrorOnly := installMaterializeSecretsHook(Task{UnmaterializeSecrets: func(s string) string { return s }}, nil)
+	if len(both) != 2 || len(one) != 1 || len(mirrorOnly) != 1 {
+		t.Fatalf("hooks installed: %d with the mirror, %d without, %d with the mirror alone; want 2, 1 and 1", len(both), len(one), len(mirrorOnly))
+	}
+}
+
+// A call that carried a placeholder the proxy resolves on the wire carried a
+// secret as much as one the agent materialised: the raw tools' output goes
+// back to placeholders when the call named a secret kept off the agent.
+func TestARawToolsOutputIsUnmaterialisedWhenItsCallNamedAnEgressOnlySecret(t *testing.T) {
+	const value = "wire-only-4f9c2e7a1b3d"
+	g := secretguard.New([]secretguard.Secret{{Name: "tok", Value: value, Sinks: []string{"prompt", "egress"}}}, secretguard.DefaultConfig())
+	ph := secretguard.PlaceholderForName("tok")
+	if g.Materialize(ph) != ph {
+		t.Fatal("scenario broken: the agent materialiser resolved an egress-only secret")
+	}
+	in := claudesdk.HookCallbackInput{
+		ToolName:     "Bash",
+		ToolInput:    map[string]any{"command": "curl -H 'Authorization: Bearer " + ph + "' https://api.example.com"},
+		ToolResponse: map[string]any{"stdout": "echoed " + value},
+	}
+	blind := unmaterializeOutputHandler(nil, g.Unmaterialize, nil, "")
+	out, err := blind(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.UpdatedToolOutput != nil {
+		t.Fatalf("scenario broken: without the grant-agnostic reading the raw tool's output was rewritten: %+v", out.UpdatedToolOutput)
+	}
+	aware := unmaterializeOutputHandler(nil, g.Unmaterialize, g.NamesMaterializableSecret, "")
+	out, err = aware(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := out.UpdatedToolOutput.(map[string]any)
+	if got == nil || strings.Contains(got["stdout"].(string), value) || !strings.Contains(got["stdout"].(string), ph) {
+		t.Fatalf("the value the call's egress-only secret resolved on the wire reached the model raw: %+v", out.UpdatedToolOutput)
 	}
 }
 
@@ -214,20 +252,38 @@ func TestTheRunLogCutsAHugeValueRedactedPastTheCut(t *testing.T) {
 	}
 }
 
-// Redacting a whole multi-megabyte tool result (a base64 image) costs
-// seconds on the stream loop: the run log redacts what it can show.
-func TestTheRunLogRedactsAHugeResultInBoundedTime(t *testing.T) {
+// Both tool inputs and results redact only the display window plus the
+// secret-recognition margin. Count bytes entering the real redactor: a
+// wall-clock ceiling measures runner load as well as this work (#3412).
+// Assistant TextBlocks are deliberately unbounded and are not this class.
+func TestTheRunLogRedactsOnlyABoundedWindowOfHugeToolValues(t *testing.T) {
 	g := secretguard.New([]secretguard.Secret{{Name: "DEPLOY_TOKEN", Value: "s3cr3t-VALUE-7f6e5d4c3b2a"}}, secretguard.DefaultConfig())
 	raw := make([]byte, 3<<20)
 	for i := range raw {
 		raw[i] = byte(i*7919 + i>>7)
 	}
 	result := base64.StdEncoding.EncodeToString(raw)
-	start := time.Now()
-	logAssistantContent(iterlog.New(iterlog.LevelInfo, io.Discard), "node", 1, []claudesdk.ContentBlock{
-		&claudesdk.ToolResultBlock{ToolUseID: "t1", Content: result}}, g.Redact, g.LongestLiteral())
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("logging a %d-byte result took %s", len(result), d)
+	for _, tc := range []struct {
+		name  string
+		block claudesdk.ContentBlock
+	}{
+		{"tool input", &claudesdk.ToolUseBlock{ID: "t1", Name: "Bash", Input: map[string]any{"command": result}}},
+		{"tool result", &claudesdk.ToolResultBlock{ToolUseID: "t1", Content: result}},
+		{"tool error", &claudesdk.ToolResultBlock{ToolUseID: "t1", Content: result, IsError: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var scanned int
+			redact := func(s string) string {
+				scanned += len(s)
+				return g.Redact(s)
+			}
+			logAssistantContent(iterlog.New(iterlog.LevelInfo, io.Discard), "node", 1,
+				[]claudesdk.ContentBlock{tc.block}, redact, g.LongestLiteral())
+			limit := runLogShowMax + max(runLogRedactMargin, g.LongestLiteral())
+			if scanned == 0 || scanned > limit {
+				t.Fatalf("logging a %d-byte tool value redacted %d bytes, want nonzero work bounded by %d", len(result), scanned, limit)
+			}
+		})
 	}
 }
 
@@ -461,7 +517,7 @@ func TestARedactionThatLengthensTheTextStillShowsAtMostTheBound(t *testing.T) {
 func TestOnlyANotebookEditsLanguageIsCoerced(t *testing.T) {
 	const secret = "s3cr3t-VALUE-7f6e5d4c3b2a"
 	g := secretguard.New([]secretguard.Secret{{Name: "DEPLOY_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	out, err := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")(context.Background(), claudesdk.HookCallbackInput{
+	out, err := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")(context.Background(), claudesdk.HookCallbackInput{
 		ToolName: "mcp__lint__analyze", ToolResponse: map[string]any{"language": 3.0, "report": "token " + secret}})
 	if err != nil {
 		t.Fatal(err)
@@ -506,7 +562,7 @@ func TestAKeptInputStaysInPlaceholderForm(t *testing.T) {
 func TestAReaderWhoseCallCarriedASecretIsUnmaterialised(t *testing.T) {
 	const secret = "s3cr3t-VALUE-7f6e5d4c3b2a"
 	g := secretguard.New([]secretguard.Secret{{Name: "DEPLOY_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	handler := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	handler := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	for _, cmd := range []string{"curl -v -H 'Authorization: Bearer __ITERION_SECRET_DEPLOY_TOKEN__' api", "curl -v -H 'Authorization: Bearer " + secret + "' api"} {
 		out, err := handler(context.Background(), claudesdk.HookCallbackInput{ToolName: "Bash",
 			ToolInput: map[string]any{"command": cmd}, ToolResponse: map[string]any{"stdout": "> Authorization: Bearer " + secret}})
@@ -526,7 +582,7 @@ func TestAReaderWhoseCallCarriedASecretIsUnmaterialised(t *testing.T) {
 func TestAReadOfABackgroundTasksOutputIsUnmaterialised(t *testing.T) {
 	const secret = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
 	g := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	printed := "> Authorization: token " + secret + "\n"
 	for _, c := range []struct {
 		tool  string
@@ -587,7 +643,7 @@ func TestACommandNamingASecretIsNotCompressed(t *testing.T) {
 func TestReadsOfTheTaskOutputDirectoryAreUnmaterialised(t *testing.T) {
 	const secret = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
 	g := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	const dir = "/tmp/claude-1000/claude-1000/-tmp-proj/198cb05b-c420-42d3-9c91-19d606a63388/tasks"
 	for _, c := range []struct {
 		tool  string
@@ -617,7 +673,7 @@ func TestReadsOfTheTaskOutputDirectoryAreUnmaterialised(t *testing.T) {
 func TestATaskOutputReadIsFoundWhateverTheLeafOrder(t *testing.T) {
 	const secret = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
 	g := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	for i := 0; i < 64; i++ {
 		out, err := h(context.Background(), claudesdk.HookCallbackInput{ToolName: "Bash",
 			ToolInput:    map[string]any{"command": "tail -n 50 /tmp/claude-1000/-home-jo-proj/5f0c2a9e/tasks/b7k2m9q4x.output", "description": "tail the build log"},
@@ -636,7 +692,7 @@ func TestATaskOutputReadIsFoundWhateverTheLeafOrder(t *testing.T) {
 func TestABackgroundAgentsOutputReadIsUnmaterialised(t *testing.T) {
 	const secret = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
 	g := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	out, err := h(context.Background(), claudesdk.HookCallbackInput{ToolName: "Read",
 		ToolInput:    map[string]any{"file_path": "/tmp/claude-1000/-home-jo-proj/5f0c2a9e-1d2b-4c3d-9e8f-0a1b2c3d4e5f/tasks/a0123456789abcdef.output"},
 		ToolResponse: map[string]any{"stdout": "token " + secret}})
@@ -653,7 +709,7 @@ func TestABackgroundAgentsOutputReadIsUnmaterialised(t *testing.T) {
 func TestAWorkspaceDotOutputFileStaysRaw(t *testing.T) {
 	const secret = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
 	g := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	out, err := h(context.Background(), claudesdk.HookCallbackInput{ToolName: "Read",
 		ToolInput:    map[string]any{"file_path": "/work/repo/ci/build.output"},
 		ToolResponse: map[string]any{"stdout": "token " + secret}})
@@ -681,6 +737,9 @@ func TestASessionsCLICarriesTheRunEnvWhateverTheMode(t *testing.T) {
 	script := `#!/bin/sh
 printf 'db=%s recall=%s\n' "${RTK_DB_PATH-unset}" "${RTK_RECALL-unset}" > "$ITERION_TEST_CAPTURE"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{}","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"env-test"}'
+# A real CLI reads its control channel until the parent half-closes it; a
+# fixture that exits first turns the one-shot hook registration into EPIPE.
+cat >/dev/null
 `
 	if err := os.WriteFile(cli, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -706,7 +765,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 		task := Task{NodeID: "n", CompressMode: c.mode, Rewriters: []plugin.RewriterSpec{c.spec},
 			ExtraEnv: []string{"RTK_RECALL=1", "ITERION_TEST_CAPTURE=" + capture}}
 		// Execute's order: the spawn's per-task env, then the hooks.
-		opts := installRewriteHook(task, append([]claudesdk.Option{claudesdk.WithCLIPath(cli)}, perTaskSpawnOpts(task)...))
+		b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+		opts := b.installRewriteHook(task, append([]claudesdk.Option{claudesdk.WithCLIPath(cli)}, perTaskSpawnOpts(task)...))
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_, err := claudesdk.Prompt(ctx, "go", opts...)
 		cancel()
@@ -738,6 +798,9 @@ func TestTheFormattingPassCarriesTheRunEnv(t *testing.T) {
 	script := `#!/bin/sh
 printf 'db=%s recall=%s\n' "${RTK_DB_PATH-unset}" "${RTK_RECALL-unset}" > "$ITERION_TEST_CAPTURE"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{}","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"env-test"}'
+# A real CLI reads its control channel until the parent half-closes it; a
+# fixture that exits first turns the one-shot hook registration into EPIPE.
+cat >/dev/null
 `
 	if err := os.WriteFile(cli, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -814,7 +877,7 @@ func TestAWorkspaceReachedThroughASymlinkIsReadRaw(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, link)
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, link)
 	for _, path := range []string{resolved + "/tasks/main.yml", link + "/tasks/main.yml"} {
 		out, err := h(context.Background(), claudesdk.HookCallbackInput{ToolName: "Read",
 			ToolInput:    map[string]any{"file_path": path},
@@ -835,7 +898,7 @@ func TestAWorkspaceReachedThroughASymlinkIsReadRaw(t *testing.T) {
 func TestReadsThroughTheCLIsTmpRootAreUnmaterialised(t *testing.T) {
 	const secret = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
 	g := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secret}}, secretguard.DefaultConfig())
-	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")
+	h := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")
 	const sess = "/tmp/claude-1000/-home-jo-proj/5f0c2a9e-1d2b-4c3d-9e8f-0a1b2c3d4e5f"
 	for _, c := range []struct {
 		tool  string
@@ -887,18 +950,18 @@ func TestAWorkspaceNamedByTheRunsUUIDIsReadRaw(t *testing.T) {
 	} {
 		in := claudesdk.HookCallbackInput{ToolName: c.tool, ToolInput: c.input,
 			ToolResponse: map[string]any{"stdout": "token=" + secret + "\n"}}
-		out, err := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, c.ws)(context.Background(), in)
+		out, err := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, c.ws)(context.Background(), in)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if out.UpdatedToolOutput != nil {
 			t.Errorf("workspace %s: %s %v returned placeholders", c.ws, c.tool, c.input)
 		}
-		if out, _ := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, "")(context.Background(), in); out.UpdatedToolOutput == nil {
+		if out, _ := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, "")(context.Background(), in); out.UpdatedToolOutput == nil {
 			t.Errorf("scenario broken: %s %v is no task output read even without a workspace", c.tool, c.input)
 		}
 	}
-	out, err := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, wt)(context.Background(), claudesdk.HookCallbackInput{ToolName: "Read",
+	out, err := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, wt)(context.Background(), claudesdk.HookCallbackInput{ToolName: "Read",
 		ToolInput:    map[string]any{"file_path": "/tmp/claude-1000/-home-jo-proj/5f0c2a9e-1d2b-4c3d-9e8f-0a1b2c3d4e5f/tasks/b7k2m9q4x.output"},
 		ToolResponse: map[string]any{"stdout": "token=" + secret + "\n"}})
 	if err != nil {

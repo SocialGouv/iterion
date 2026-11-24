@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -524,7 +525,7 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		// A PAT connection carrying its managed secret already: the launch
 		// then reaches neither the App reachability probe nor a mint, which
 		// is what lets this test drive the handler with no forge at all.
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		if err := conns.Create(context.Background(), forge.Connection{
 			ID: "conn-1", TenantID: "t1", Provider: forge.ProviderGitHub,
 			Kind: forge.KindPAT, ManagedSecretID: "sec-1",
@@ -605,6 +606,57 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
 		if rec := launch(t, s, ctx, "o/quiet"); rec.Code == http.StatusPaymentRequired {
 			t.Fatalf("an unrelated repository was refused: %s", rec.Body.String())
+		}
+	})
+
+	// The spelling is not an identity: "o/hungry.git/" is the SAME
+	// repository the quota aims at, and a derivation keeping its own trim
+	// made the over-ceiling repository launch under a key no quota matches.
+	t.Run("the .git/ spelling of an over-quota repository is refused too", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		rec := launch(t, s, ctx, "o/hungry.git/")
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402 — the trailing-slash spelling split the quota key and escaped the ceiling: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+			t.Errorf("body = %s, want it to name %s", rec.Body.String(), denyRepoQuota)
+		}
+	})
+
+	// The spelling is not an identity, and ".git/" was only one neighbour of
+	// it. A forge resolves every spelling below to the SAME repository (the
+	// ".git" suffix is URL furniture a copy-paste can recase or double, and
+	// the slug itself resolves case-insensitively), so each must read the
+	// honest key's quota and be refused by it. A spelling the derivation or
+	// the reads do not fold launches the over-ceiling repository under a key
+	// no ceiling aims at.
+	t.Run("every spelling neighbour of an over-quota repository is refused", func(t *testing.T) {
+		for _, repo := range []string{"o/hungry.GIT", "O/Hungry", "o/hungry.git//", "o/hungry.git.git"} {
+			s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+			seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+			rec := launch(t, s, ctx, repo)
+			if rec.Code != http.StatusPaymentRequired {
+				t.Fatalf("repo_url %q: status = %d, want 402 — the spelling escaped the ceiling: %s", repo, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+				t.Errorf("repo_url %q: body = %s, want it to name %s", repo, rec.Body.String(), denyRepoQuota)
+			}
+		}
+	})
+
+	// The honest spelling changes no key: a quota written the way the forge
+	// spells the slug is read by that very spelling — the fold never bends a
+	// caller's legitimate casing away from its own ceiling.
+	t.Run("the forge's own casing reads its own quota", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "O/Hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "O/Hungry", 12.0, 3)
+		rec := launch(t, s, ctx, "O/Hungry")
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+			t.Errorf("body = %s, want it to name %s", rec.Body.String(), denyRepoQuota)
 		}
 	})
 

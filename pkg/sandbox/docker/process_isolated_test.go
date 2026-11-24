@@ -41,11 +41,12 @@ func TestStart_readsWhetherTheContainerHasItsOwnProcessNamespace(t *testing.T) {
 				"  run*) echo 0123456789abcdef ;;\n" +
 				"esac\n" +
 				"exit 0\n"
-			if err := os.WriteFile(filepath.Join(shimDir, string(rt)), []byte(shim), 0o755); err != nil {
+			cli := CLI{rt: rt, path: filepath.Join(shimDir, string(rt))}
+			if err := os.WriteFile(cli.path, []byte(shim), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			d := &Driver{rt: rt, logger: iterlog.Nop()}
+			d := &Driver{cli: cli, logger: iterlog.Nop()}
 			ctx := context.Background()
 			prepared, err := d.Prepare(ctx, sandbox.Spec{Mode: sandbox.ModeInline, Image: "example.invalid/sandbox:test"})
 			if err != nil {

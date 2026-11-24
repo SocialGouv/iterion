@@ -201,6 +201,14 @@ type botSourcePutReq struct {
 	// bytes, or none, is a 409 naming what changed. A file kept byte for
 	// byte asks nothing.
 	StoredSHA256 map[string]string `json:"stored_sha256,omitempty"`
+	// AllowFold is the escape hatch on the fold refusal (#1612, #1679), off
+	// by default: this route takes the author's OWN bytes, so an author who
+	// deliberately collapses every multi-line value of a file may say so —
+	// the write then lands and the response's warnings say what folded. A
+	// fold the reader cannot TELL (a stored file past the read budget) stays
+	// refused either way: no hatch asks a write to proceed on a question
+	// nobody could answer.
+	AllowFold bool `json:"allow_fold,omitempty"`
 }
 
 // handlePutBotSource creates or replaces a bot's whole bundle. The bundle is
@@ -239,6 +247,13 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.botSourceError(w, r, err)
 		return
 	}
+	// The write compiles the bundle before it persists: a reading like the
+	// editor's, taking its share of the aggregate bound (#2693).
+	release, admitted := s.admitDSLRead(w, r, mapBytes(req.Files))
+	if !admitted {
+		return
+	}
+	defer release()
 	// The bundle as stored, read once: every check below is asked of it,
 	// and the write is pinned to its version (storeBotSource), so a write
 	// that landed meanwhile makes this one a conflict rather than a write
@@ -261,11 +276,19 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	// whole bundle: this is where the studio's CLOUD save of a bot in
 	// several files lands, and where a push that folds a stored value
 	// would otherwise replace it with a text its author never wrote. A
-	// creation has no before and no claim.
-	if !s.bundleFoldsNothing(w, r, storedBundle, bs.Files) {
+	// creation has no before and no claim. The bytes are the author's own,
+	// so the refusal keeps an explicit hatch (allow_fold, #1679): the write
+	// then lands and each fold is a warning of the response.
+	foldsNothing, foldWarnings := s.bundleFoldsNothing(w, r, storedBundle, bs.Files, req.AllowFold)
+	if !foldsNothing {
 		return
 	}
-	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
+	diags, err := s.validateBundleCompileFor(r.Context(), s.authoringFragmentsForWrite(tenantID), bs.Files, nil)
+	if err != nil {
+		s.botSourceFragmentError(w, r, err)
+		return
+	}
+	if len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
@@ -279,7 +302,7 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	if !ok {
 		return
 	}
-	warnings := append(s.platformPushWarnings(tenantID, bs), engineWarnings...)
+	warnings := append(s.platformPushWarnings(tenantID, bs), append(foldWarnings, engineWarnings...)...)
 	presented := make(map[string]string, len(req.StoredSHA256))
 	for path, digest := range req.StoredSHA256 {
 		presented[path] = digest
@@ -342,6 +365,10 @@ type botSourceFilePutReq struct {
 	// refusal left empty was issued no digest, and its save carries none.
 	// A digest of other bytes than the stored ones is a 409.
 	StoredSHA256 string `json:"stored_sha256,omitempty"`
+	// AllowFold is the escape hatch on the fold refusal (#1612, #1679), off
+	// by default — see botSourcePutReq.AllowFold, the same hatch on the
+	// whole-bundle write.
+	AllowFold bool `json:"allow_fold,omitempty"`
 }
 
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
@@ -407,7 +434,11 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	// refusal canon.Text makes of a document (#1612), and it belongs here
 	// because this is the one write a CLIENT performs — the studio's cloud
 	// single-file save and the files drawer, neither of which goes through
-	// a save path of ours.
+	// a save path of ours. The bytes are the author's own, so the refusal
+	// has an explicit hatch (allow_fold, #1679): an author who collapses a
+	// value on purpose says so, and the write lands carrying the fold in
+	// its warnings rather than being refused.
+	var foldWarnings []string
 	if workflowfile.IsWorkflowFile(path) {
 		line, size, folds, err := canon.Folds(path, stored, body.Content)
 		if err != nil {
@@ -415,13 +446,28 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 			return
 		}
 		if folds {
-			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
-			return
+			if !body.AllowFold {
+				s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it — or repeat the write with allow_fold set when the collapse is deliberate", path, line, size)
+				return
+			}
+			foldWarnings = append(foldWarnings, foldAllowedWarning(path, line, size))
 		}
 	}
 	// The file put is what is checked: a companion workflow through its
-	// own unit, a fragment through every workflow that may import it.
-	if diags := validateBundleCompileSelected(bs.Files, []string{path}); len(diags) > 0 {
+	// own unit, a fragment through every workflow that may import it. That
+	// compile reads the WHOLE bundle, so the aggregate bound (#2693) weighs
+	// the bundle, not the file.
+	release, admitted := s.admitDSLRead(w, r, mapBytes(bs.Files))
+	if !admitted {
+		return
+	}
+	defer release()
+	diags, err := s.validateBundleCompileFor(r.Context(), s.authoringFragmentsForWrite(tenantID), bs.Files, []string{path})
+	if err != nil {
+		s.botSourceFragmentError(w, r, err)
+		return
+	}
+	if len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
@@ -436,7 +482,7 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	if body.StoredSHA256 != "" {
 		presented = map[string]string{path: body.StoredSHA256}
 	}
-	s.writeBotSource(w, r, tenantID, userID, bs, presented, "", engineWarnings...)
+	s.writeBotSource(w, r, tenantID, userID, bs, presented, "", append(engineWarnings, foldWarnings...)...)
 }
 
 func (s *Server) handleDeleteBotSourceFile(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +527,10 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// query as the version does; the store write carries it, so the
 	// identity guard judges the PRESENTED id against its own fresh read —
 	// a re-creation between this route's read and the store write is a 409.
-	botID := strings.TrimSpace(r.URL.Query().Get("bot_id"))
+	botID, ok := s.parseIfMatchBotID(w, r)
+	if !ok {
+		return
+	}
 	if version != 0 && botID == "" {
 		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: a delete pinned to a version presents the id its read answered (the bundle response's), and none came — reload the bot and redo the edit", slug)
 		return
@@ -505,7 +554,13 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// still shed a file), one it draws only without the file is — a
 	// fragment an import reaches is load-bearing at parse time. And its
 	// manifest still declares the floor its sources need.
-	before := validateBundleCompileSelected(bs.Files, []string{path})
+	// A resolution FAILURE is scoped the same way, and that matters for one
+	// delete above all: the way out of a bundle whose declared dependency
+	// shadows a file it ships is to delete that file. A gate that refused on
+	// the BEFORE reading would wedge the author inside the state the delete
+	// repairs.
+	fragments := s.authoringFragmentsForWrite(tenantID)
+	before, beforeErr := s.validateBundleCompileFor(r.Context(), fragments, bs.Files, []string{path})
 	bs.Files = files
 	// Pinned to the version read above when the client presents none.
 	if version != 0 {
@@ -515,7 +570,15 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.botSourceError(w, r, err)
 		return
 	}
-	if fresh := newDiagnostics(before, validateBundleCompileSelected(bs.Files, []string{path})); len(fresh) > 0 {
+	after, afterErr := s.validateBundleCompileFor(r.Context(), fragments, bs.Files, []string{path})
+	if fragmentFailureIntroduced(beforeErr, afterErr) {
+		// The delete itself made the declarations unresolvable — removing
+		// the bundle's record of what an install materialized, say, which
+		// turns its own fragment into the shadow the launch refuses.
+		s.botSourceFragmentError(w, r, afterErr)
+		return
+	}
+	if fresh := newDiagnostics(before, after); len(fresh) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot no longer compiles without %s: %s", path, strings.Join(fresh, "; "))
 		return
 	}
@@ -645,7 +708,37 @@ func (s *Server) deleteBotSourceFor(w http.ResponseWriter, r *http.Request, tena
 		s.botSourceError(w, r, err)
 		return
 	}
-	if err := s.botSources.Delete(ctx, bs.ID); err != nil {
+	// The if-match token and the identity the per-file DELETE beside this one
+	// takes, on the same query tokens and the same contract: removing a WHOLE
+	// bot is the heaviest write of the family, so it is held to no less than
+	// the removal of one of its files. Absent = last-write-wins, which is
+	// what a caller holding no token gets; malformed is refused rather than
+	// read as absent (parseIfMatchVersion).
+	version, ok := s.parseIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
+	// The bot's identity as the caller's read answered it. Required when a
+	// version is presented — a version alone cannot tell one incarnation of
+	// a slug from another, since a bot deleted and re-created is v1 again
+	// (#2678's second sequence), so a stale client's delete would land on the
+	// NEW bot. Judged against the id this route's read resolved: a
+	// re-creation between the caller's read and this one is a 409 naming it,
+	// never a deletion of a bot the caller never saw. The store's own
+	// (id, version) filter then holds the removal to the row this id names.
+	botID, ok := s.parseIfMatchBotID(w, r)
+	if !ok {
+		return
+	}
+	if version != 0 && botID == "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: a delete pinned to a version presents the id its read answered (the bundle response's), and none came — reload the bot and redo the delete", slug)
+		return
+	}
+	if botID != "" && botID != bs.ID {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q is no longer the bot this delete was decided on: it was deleted and re-created since — reload the bot and redo the delete", slug)
+		return
+	}
+	if err := s.botSources.Delete(ctx, bs.ID, version); err != nil {
 		s.botSourceError(w, r, err)
 		return
 	}
@@ -767,30 +860,132 @@ func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, er
 	return files, botID, nil
 }
 
-// validateBundleCompile materializes a bundle to a temp dir and runs the same
-// parse → merge-bundle-prompts → compile path as `iterion validate`, returning
-// the SeverityError diagnostics (empty = compiles). This is the compilability
-// oracle the pure structural botsource.Validate deliberately leaves to the
-// route, where the full bundle context is available.
-func validateBundleCompile(files map[string]string) []string {
-	return validateBundleCompileSelected(files, nil)
+// validateBundleCompileSelected compiles main.bot plus every explicitly
+// modified companion .bot, resolving NOTHING: a bundle whose declared
+// dependencies.fragments are not materialized is refused, with the
+// dependency named. It is the gate for the planes that have no tier to
+// resolve through — a LOCAL authoring target, whose working tree
+// materializes the dependency itself — and the shape every test of the
+// compile rule itself exercises. Every plane that HAS the team resolves
+// first: validateBundleCompileFor, which the bot-source routes and the
+// assistant's cloud target go through.
+func validateBundleCompileSelected(files map[string]string, modified []string) []string {
+	diags, _ := compileBundleSelected(files, modified, declaredFragments(files, ""))
+	return diags
 }
 
-// validateBundleCompileSelected compiles main.bot plus every explicitly
-// modified companion .bot. A bundle may contain independently-invoked subbots;
-// compiling only main.bot would let an assistant batch persist a broken one.
-func validateBundleCompileSelected(files map[string]string, modified []string) []string {
+// validateBundleCompileFor is validateBundleCompileSelected with ADR-145's
+// resolution in front of it (#2865): a bundle may DECLARE a shared fragment
+// instead of shipping it, and the gate that refuses the import such a
+// declaration exists for refuses a bundle the launch resolves and runs. The
+// compile rule stays in one place (compileBundleSelected); what this adds is
+// the lazy resolution, which costs nothing until a compile has actually
+// missed a declared path.
+//
+// A dependency no tier serves is still refused, by the compile's own
+// diagnostic — recompiled so the refusal carries what the resolution of that
+// entry found, rather than a working tree the server has not got.
+//
+// It answers (diags, err): a resolution that FAILED is not a verdict about
+// the bundle's compilability, and flattening it into the diagnostic slice
+// cost the caller the one thing it has to tell apart — a tier blip to retry
+// from a declaration to change.
+func (s *Server) validateBundleCompileFor(ctx context.Context, a authoringFragments, files map[string]string, modified []string) ([]string, error) {
+	fd := a.declaredFragments(files)
+	diags, missed := compileBundleSelected(files, modified, fd)
+	// Always asked, and cheap when nothing missed: the resolution also
+	// holds the launch's no-shadow verdict, which is about the entries a
+	// miss cannot report, and reads no tier until a miss triggers one.
+	res, err := a.resolve(ctx, files, fd, missed)
+	if err != nil {
+		// Explicit, and NOT folded into the diagnostics: a tier that did
+		// not answer is not "the bundle does not compile" and is not
+		// silence either, and a shadow is the bundle's own declaration
+		// against its own files. The routes answer each as itself.
+		return nil, err
+	}
+	if !res.resolved {
+		return diags, nil
+	}
+	// The first pass's diagnostics are discarded whole: they were drawn
+	// before the dependencies were placed, and before the resolution knew
+	// why the rest are missing, so answering them would send a cloud author
+	// to the working tree remedy this plane cannot offer.
+	resolved, _ := compileBundleSelected(res.files, modified, res.deps)
+	return resolved, nil
+}
+
+// fragmentFailureIntroduced answers whether the resolution failure a mutated
+// bundle draws is one the MUTATION introduced — the scope rule the per-file
+// routes hold over the compile, held over the resolution too: a failure the
+// bundle already drew is not this edit's, and the way out of a bundle whose
+// declared dependency shadows a file it ships is to DELETE that file.
+//
+// The comparison reads the violating PATHS a refusal carries, never its
+// sentence: a no-shadow refusal met every declared entry, so a verdict read
+// off one message reads the walk order instead of the states, and a delete
+// that removed one of two shadows is refused while the same delete on the
+// other file is taken.
+func fragmentFailureIntroduced(before, after error) bool {
+	if after == nil {
+		return false
+	}
+	if before == nil {
+		return true
+	}
+	var afterShadow fragmentShadowRefusal
+	if !errors.As(after, &afterShadow) {
+		// Neither reading resolved, and not over the bundle's own files:
+		// the same tier is down for both readings, which is no verdict
+		// about this edit. A tier that fell over only AFTER the edit is
+		// still the same tier, and the edit did not push it.
+		return false
+	}
+	var beforeShadow fragmentShadowRefusal
+	if !errors.As(before, &beforeShadow) {
+		// The before reading failed at a tier, which happens AFTER the
+		// no-shadow verdict: there was no shadow then, so this one is the
+		// edit's.
+		return true
+	}
+	return !beforeShadow.covers(afterShadow.rels)
+}
+
+// botSourceFragmentError answers a failure of a write gate's OWN resolution
+// of a declared shared fragment: transient when a tier did not answer (503,
+// retry — a store blip must not read as a permanent refusal and retire a
+// bundle that resolves), the bundle's own declaration against its own files
+// otherwise (400, the sentence as its own, never dressed as "bot does not
+// compile"). It is the write plane's half of unitRequestError's rule, so one
+// class is answered one way on both planes.
+func (s *Server) botSourceFragmentError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errBotSnapshotResolve) {
+		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "%v", err)
+		return
+	}
+	s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+}
+
+// compileBundleSelected is the compile rule: materialize the bundle to a temp
+// dir and run the same parse → merge-bundle-prompts → compile path as
+// `iterion validate`, returning the SeverityError diagnostics (empty =
+// compiles) and the declared dependencies.fragments entries the loads MISSED
+// — what a resolution is triggered by, and nothing else reads. This is the
+// compilability oracle the pure structural botsource.Validate deliberately
+// leaves to the route, where the full bundle context is available.
+func compileBundleSelected(files map[string]string, modified []string, fd fragmentDependencies) ([]string, map[string]bundle.FragmentDependency) {
 	dir, err := os.MkdirTemp("", "botsource-validate-*")
 	if err != nil {
-		return []string{"internal: " + err.Error()}
+		return []string{"internal: " + err.Error()}, nil
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	if err := botsource.Materialize(dir, files); err != nil {
-		return []string{err.Error()}
+		return []string{err.Error()}, nil
 	}
 
 	var diags []string
+	var missed map[string]bundle.FragmentDependency
 	paths := []string{botsource.MainBotFile}
 	seen := map[string]bool{botsource.MainBotFile: true}
 	add := func(rel string) {
@@ -842,7 +1037,17 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 			if d.Severity == parser.SeverityError {
 				// The unit was read from a temporary directory the editor
 				// never sees: a diagnostic names the file as the bundle holds it.
-				diags = append(diags, rel+": "+strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), ""))
+				msg := rel + ": " + strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), "")
+				// Each workflow is loaded ROOTED BESIDE ITSELF, so its rels
+				// are read in its own frame, never the bundle's.
+				if dep, depRel, ok := fd.asDiskLoadOf(rel).miss(d); ok {
+					msg += " — " + fd.note(depRel, dep)
+					if missed == nil {
+						missed = make(map[string]bundle.FragmentDependency, len(fd.declared))
+					}
+					missed[depRel] = dep
+				}
+				diags = append(diags, msg)
 			}
 		}
 		if u.Merged == nil || len(u.Merged.Workflows) == 0 {
@@ -859,7 +1064,7 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 			}
 		}
 	}
-	return diags
+	return diags, missed
 }
 
 // newDiagnostics is what after reports that before did not.
@@ -902,6 +1107,30 @@ func (s *Server) parseIfMatchVersion(w http.ResponseWriter, r *http.Request) (in
 	return v, true
 }
 
+// parseIfMatchBotID reads the `bot_id` token a bodyless bot-source write
+// presents beside its version: the bot's identity as the caller's read
+// answered it. An ABSENT key is "", which both delete doors read as "no
+// identity presented" — last-write-wins on the identity, the behaviour a
+// caller holding no id has to get.
+//
+// PRESENT AND EMPTY is refused, for the reason parseIfMatchVersion refuses a
+// malformed version: `?bot_id=` is what `?bot_id=${id ?? ""}` produces, and
+// `Get` cannot tell it from an absent key. Read as absent it would hand a
+// caller that asked for the identity check the one that does not check, with
+// no way to tell the two apart.
+func (s *Server) parseIfMatchBotID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	q := r.URL.Query()
+	if !q.Has("bot_id") {
+		return "", true
+	}
+	raw := strings.TrimSpace(q.Get("bot_id"))
+	if raw == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bot_id must name the bot the caller's read answered, got %q", q.Get("bot_id"))
+		return "", false
+	}
+	return raw, true
+}
+
 // botSourceError maps store errors to actionable status codes.
 func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
@@ -923,11 +1152,14 @@ func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err erro
 // bundleFoldsNothing reports whether a whole-bundle write leaves every
 // stored workflow's multi-line values over their lines, answering the
 // refusal itself when it does not. stored is the bundle as the write read
-// it; nil — nothing stored — is a creation, which folds nothing.
-func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stored *botsource.BotSource, files map[string]string) bool {
+// it; nil — nothing stored — is a creation, which folds nothing. With
+// allowFold the refusal lifts (#1679): each fold is returned as a warning
+// instead, so the write lands saying what it collapsed.
+func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stored *botsource.BotSource, files map[string]string, allowFold bool) (bool, []string) {
 	if stored == nil {
-		return true
+		return true, nil
 	}
+	var warnings []string
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)
@@ -940,12 +1172,23 @@ func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stor
 		line, size, folds, err := canon.Folds(path, stored.Files[path], files[path])
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: %v", path, err)
-			return false
+			return false, nil
 		}
 		if folds {
-			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
-			return false
+			if !allowFold {
+				s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it — or repeat the write with allow_fold set when the collapse is deliberate", path, line, size)
+				return false, nil
+			}
+			warnings = append(warnings, foldAllowedWarning(path, line, size))
 		}
 	}
-	return true
+	return true, warnings
+}
+
+// foldAllowedWarning is what a client-authored write says when allow_fold
+// let it collapse a value: the file, the line the stored text wrote it on,
+// and the line length it now has — the refusal's facts, carried by the write
+// that was allowed to make them true.
+func foldAllowedWarning(path string, line, size int) string {
+	return fmt.Sprintf("%s: the value at line %d was written over several lines and this write folded it onto one, as a single line of %d characters (#1612) — allowed because the write named allow_fold", path, line, size)
 }

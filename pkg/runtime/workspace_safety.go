@@ -613,13 +613,25 @@ func llmToolSurfaceCanWrite(
 	// The declared list is not the list the node holds. `assembleEffectiveTools`
 	// folds the runtime's own opt-ins over it, and two of them widen the
 	// workspace surface: `auto_memory: on` grants write_file on claw, and
-	// ultracode grants claw's unbounded `agent` subagent tool — unbounded
-	// wherever a host wires a subagent runner into the registry
-	// (`ClawDefaults.Subagent`, as the e2e coverage test does); iterion's own
-	// runs wire none, so there every `agent` call is typed-refused and this
-	// arm reads the worst case over hosts rather than this run. A node that
-	// declared `tools: [read_file]` and is admitted read-only on that basis
-	// then shares one worktree with N siblings while holding a writer.
+	// ultracode grants claw's `agent` subagent tool, which both shipped hosts
+	// serve (`ClawDefaults.Subagent`, #1940). A node that declared
+	// `tools: [read_file]` and is admitted read-only on that basis then shares
+	// one worktree with N siblings while holding a writer.
+	//
+	// Since #1940 the SHIPPED runner (model.NewSubagentRunner) draws a child
+	// conversation from the NODE's effective tools, so on the shipped hosts
+	// `agent` adds no reach the arms below do not already read off the node's
+	// own list. This arm keeps reading it as unsafe all the same, and #2811
+	// decided that reading stands: whether the runner bounds the child to the
+	// node's list is a property of the HOST's wiring — `ClawDefaults.Subagent`
+	// is a host's to set — which neither this name reading nor the
+	// program-only executor (`validate --exec`, whose answers must agree with
+	// dispatch's) can see. "Safe only for the shipped hosts" is a verdict the
+	// seam cannot carry today; relaxing here would trade a refused fan-out for
+	// an unsound admission the moment an embedding wires its own runner over a
+	// registry of its choosing. The over-approximation costs a shared
+	// worktree, never safety, and `readonly:` is the escape hatch for the
+	// author who knows the branch does not write.
 	//
 	// Asked, never re-derived: both opt-ins resolve outside the IR.
 	if surfaces == nil {
@@ -824,11 +836,11 @@ func unrestrictedRouteWriteReason(
 	// A DECLARED-EMPTY `tools: []` reaches exactly the verdict an undeclared
 	// list reaches, and that is deliberate: it is not a proof that the node
 	// holds nothing. On claude_code the bound is `--disallowedTools` over
-	// `claudeNativeTools`, a hardcoded 14-name enumeration of a roster
-	// iterion does not own — the package's own `orchestrationTools` names
-	// `Agent`, `TaskOutput` and `Monitor` outside it, and MCP tools are not
-	// on it either, so which of them survive is the CLI's call (`Monitor` and
-	// every MCP tool do). On claw the runtime's own
+	// `claudeNativeTools`, a twenty-name declaration of a roster iterion does
+	// not own — the package's own `orchestrationTools` still names
+	// `TaskOutput` and `Monitor` outside it, and MCP tools are not on it
+	// either, so which of them survive is the CLI's call (`Monitor` and every
+	// MCP tool do). `Agent` joined the roster with #1651 and is bounded. On claw the runtime's own
 	// `interaction:` append puts `ask_user` back, and the appends below it
 	// `todo_write` and, under `auto_memory:`, `write_file` (C270 says so at
 	// compile time). The declared-name loop the caller runs before this one

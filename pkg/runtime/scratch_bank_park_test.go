@@ -25,6 +25,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // askingWorkflow: measure writes the scratch, ask — an agent that pauses
@@ -1630,6 +1631,7 @@ func adoptedChild(t *testing.T, ctx context.Context, st store.RunStore, id, hash
 	x.on("read", func(map[string]any) (map[string]any, error) {
 		return nil, &RuntimeError{Code: ErrCodeAuthFailed, NodeID: "read", Message: "401 invalid token"}
 	})
+	storetest.SeedParentRun(t, st, "run-parent")
 	e := New(scratchChildWorkflow(), st, x, WithWorkDir(t.TempDir()), WithSandboxOverride("none"), WithParentRunID("run-parent"),
 		WithSharedSandbox(&SharedSandbox{Run: parent, WorkspaceFolder: t.TempDir(), ScratchContainerLocal: true}),
 		WithRecoveryDispatch(parkOnAuth))
@@ -1651,6 +1653,12 @@ type shareRecordRefused struct {
 	refused     int
 	cancelAfter int
 	cancel      context.CancelFunc
+}
+
+// This fault wrapper owns AppendEvent; expose only the explicit birth port,
+// without making unrelated capabilities of its delegate visible.
+func (s *shareRecordRefused) CreateRunWithValueFormat(ctx context.Context, spec store.RunCreateSpec) (*store.Run, error) {
+	return store.CreateRunWithValueFormat(ctx, s.RunStore, spec)
 }
 
 func (s *shareRecordRefused) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {

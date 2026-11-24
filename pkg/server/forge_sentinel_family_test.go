@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 )
@@ -40,6 +41,8 @@ type forgeSentinelFamily struct {
 // directory it lives in, so the completeness sweep below can compare it to
 // what pkg/forge actually declares.
 var forgeSentinelFamilies = map[string]forgeSentinelFamily{
+	"forge.ErrProvisionBusy":       {err: forge.ErrProvisionBusy, why: "local provisioning lease contention; provisioning answers 409"},
+	"forge.ErrIntegrationConflict": {err: forge.ErrIntegrationConflict, why: "local integration snapshot conflict; provisioning answers 409"},
 	"forge.ErrNotFound": {
 		err: forge.ErrNotFound, inNotFoundClass: true, wantStatus: http.StatusNotFound,
 		why: "the class itself",
@@ -56,6 +59,16 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	"forge.ErrLocalPreflight": {
 		err: forge.ErrLocalPreflight, wantStatus: 0,
 		why: "iterion's own preparation failed before any byte reached the network — writeForgeUpstreamError renders it 500, not the 502 its route defaults to",
+	},
+
+	// A credential refusal, not a forge answer and not a forge fault: the
+	// derivation chokepoint turned down the mint of a NEW hook identity
+	// before any byte reached the network. Outside the class, status 0 —
+	// the route answers the CREDENTIAL's status, which is neither 404 nor
+	// a provisioning fault.
+	"forge.ErrMintNotApproved": {
+		err: forge.ErrMintNotApproved, wantStatus: 0,
+		why: "the derivation chokepoint refused the credential asking for the team token a repo's first provisioning mints — writeForgeProvisionError hands it to derivationError, which answers 401 for a credential that no longer stands and 403 for one that may never mint, never a 502",
 	},
 
 	// Store misses. Every "…but could not be recorded on connection X: %w"
@@ -83,7 +96,7 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	},
 	"forge.ErrLaunchVarsDrop": {
 		err: forge.ErrLaunchVarsDrop, wantStatus: 0,
-		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400, naming the pins to echo",
+		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400 launch_vars_drop, naming the pins to echo both in the message and as launch_vars_keys",
 	},
 	"forge.ErrProjectBotNotPermitted": {
 		err: forge.ErrProjectBotNotPermitted, wantStatus: 0,
@@ -99,11 +112,11 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	},
 	"forge.ErrProvisionDiverged": {
 		err: forge.ErrProvisionDiverged, wantStatus: 0,
-		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 with the converge-on-rerun remedy",
+		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 provision_diverged; internal/httpx floors a 5xx to its code and retryability, so the converge-on-rerun prose reaches the LOG, not the caller",
 	},
 	"forge.ErrProvisionDivergedRetry": {
 		err: forge.ErrProvisionDivergedRetry, wantStatus: 0,
-		why: "the retry-convergent flavors of ErrProvisionDiverged, carried BESIDE it — the approval arm spares them (the retry lands), the provisioning route's 500 mapping is unchanged",
+		why: "the retry-convergent flavors of ErrProvisionDiverged, carried BESIDE it — the approval arm spares them (the retry lands), and the route's 500 says so with provision_diverged_retry + retryable: a client must not ask an operator to restate pins for a divergence that converges on its own",
 	},
 	"forge.ErrBotNotProvisionable": {
 		err: forge.ErrBotNotProvisionable, wantStatus: 0,
@@ -178,6 +191,14 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	"forge.ErrNotMergeable": {
 		err: forge.ErrNotMergeable, wantStatus: 0,
 		why: "the merge request cannot take a merge/arming right now — the caller reports it, the forge stays authoritative",
+	},
+
+	// The workflow dispatch. A marker riding BESIDE the forge's own answer
+	// (a typed 404, a 422, a permission error), never a class: it says
+	// "nothing was queued", which the dispatch endpoint reports itself.
+	"forge.ErrWorkflowNotDispatched": {
+		err: forge.ErrWorkflowNotDispatched, wantStatus: 0,
+		why: "the forge answered a dispatch with a refusal (or a read it depends on was refused) — the dispatch endpoint answers 422 workflow_dispatch_refused_by_forge itself",
 	},
 }
 
@@ -258,7 +279,7 @@ func TestForgeSentinelFamilies_CoverEveryDeclaredSentinel(t *testing.T) {
 // request whose avatar did land.
 func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 	s := newForgeTestServer(t)
-	s.forgeConnections = &recordRefusingStore{ConnectionStore: s.forgeConnections, err: forge.ErrConnectionNotFound}
+	s.forgeConnections = &recordRefusingStore{ForgeStore: s.forgeConnections, err: forge.ErrConnectionNotFound}
 	gl := &mockGitLabAvatar{bot: true}
 	srv := gl.server()
 	defer srv.Close()
@@ -270,13 +291,13 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 	if gl.count() != 1 {
 		t.Fatalf("the upload did not happen (%d), so this is not the failure under test", gl.count())
 	}
-	if !strings.Contains(w.Body.String(), "avatar uploaded but could not be recorded") {
-		t.Fatalf("reached a different failure than the record one: code=%d body=%s", w.Code, w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "avatar uploaded but could not be recorded") {
+		t.Fatalf("reached a different failure than the record one: code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
 	if w.Code == http.StatusNotFound {
 		t.Fatalf("a connection-store failure was answered 404: forge.ErrConnectionNotFound now satisfies "+
 			"errors.Is(_, forge.ErrNotFound), so forgeUpstreamStatus reads this wrap as the forge saying "+
-			"it has no such thing — for a write iterion failed, after an avatar that DID land. body=%s", w.Body.String())
+			"it has no such thing — for a write iterion failed, after an avatar that DID land. body=%s", w.Diagnostic(t))
 	}
 	// 5xx, not an exact code: what this guard proves is the CLASS — the store
 	// failed, so the answer belongs to iterion's side and not to the forge.
@@ -286,7 +307,7 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 	// Tightening it is a behaviour change of its own — see #969.
 	if w.Code < 500 {
 		t.Fatalf("code=%d, want a 5xx: the store failed, which is iterion's side, not an answer the forge gave. body=%s",
-			w.Code, w.Body.String())
+			w.Code, w.Diagnostic(t))
 	}
 }
 
@@ -294,7 +315,7 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 // records an outcome fails. Reads still work, so the handler resolves the
 // connection and reaches the record step.
 type recordRefusingStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	err error
 }
 

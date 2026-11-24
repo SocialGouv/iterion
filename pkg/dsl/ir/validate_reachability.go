@@ -178,6 +178,7 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 
 func (c *compiler) validateLoopIterations(w *Workflow) {
 	c.validateLoopCapExpressions(w)
+	c.validateLoopSizeExpressions(w)
 	for _, loop := range w.Loops {
 		// Dynamic caps carry MaxIterations=0; their types/references are checked
 		// above and the actual value is validated at each attempted crossing.

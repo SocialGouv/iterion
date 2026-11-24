@@ -56,6 +56,9 @@ func TestDispositionsAreDistinct(t *testing.T) {
 		{store.FailureContextLengthExceeded, true, false},
 		{store.FailureExecutionFailed, false, true},
 		{store.FailureUsageLimitBlocked, false, true},
+		// Parked on a credential's hard concurrency cap: a slot frees when
+		// a holder ends, so a wait is the cure and a CLI loop may re-drive it.
+		{store.FailureCredSlotWait, false, true},
 		{store.FailureBudgetExceeded, false, true},
 		{store.FailureInterrupted, false, false},
 		{store.FailureSandboxCapacity, false, false},

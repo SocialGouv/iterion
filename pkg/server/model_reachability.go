@@ -131,6 +131,14 @@ func noteProviderPresence(into map[string]string, k secrets.ApiKey, now time.Tim
 	if !k.Provider.Valid() {
 		return
 	}
+	// A catalog request names no bot and no repository, so it asks the
+	// audience gates Resolve applies at launch with neither: a key that
+	// names bots or repositories is withheld from such a launch, and which
+	// launches it does fund is not this request's to know. Its specs read
+	// "unknown" like every unproven one, never a blocking unreachable.
+	if !k.ServesBotForLaunch("") || !k.ServesRepoForLaunch("") {
+		return
+	}
 	name := modelcatalog.DetectProviderName(k.Provider)
 	if name == "" {
 		return

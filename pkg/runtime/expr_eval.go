@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -11,14 +12,15 @@ import (
 // guard so a panic in the expression evaluator (e.g. an unguarded
 // type assertion in a future evalNode extension) surfaces as a
 // structured error and terminates the node cleanly, instead of
-// crashing the daemon mid-run.
-func evalComputeExpr(ast *expr.AST, exprCtx *expr.Context) (val any, err error) {
+// crashing the daemon mid-run. The node's ctx reaches the evaluator,
+// so a cancelled or timed-out run interrupts the evaluation itself.
+func evalComputeExpr(ctx context.Context, ast *expr.AST, exprCtx *expr.Context) (val any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("compute expression panicked: %v", r)
 		}
 	}()
-	return ast.Eval(exprCtx)
+	return ast.EvalContext(ctx, exprCtx)
 }
 
 // exprContext builds an expression context against the run's trunk scope
@@ -88,8 +90,8 @@ func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[stri
 // expression rested on a value it invented: then the stand-in decides the
 // edge, as a shaped bool would, and the pass reads the edge on both sides
 // across its two biases instead of never.
-func (e *Engine) edgeWhenHolds(edge *ir.Edge, fromNodeID string, exprCtx *expr.Context) (bool, error) {
-	ok, err := edge.Expression.EvalBool(exprCtx)
+func (e *Engine) edgeWhenHolds(ctx context.Context, edge *ir.Edge, fromNodeID string, exprCtx *expr.Context) (bool, error) {
+	ok, err := edge.Expression.EvalBoolContext(ctx, exprCtx)
 	if err == nil {
 		return ok, nil
 	}

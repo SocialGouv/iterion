@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
-	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/permissions"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
@@ -79,8 +80,25 @@ type ExecutorSpec struct {
 	// redacts the parent's server-minted credentials: the child receives them
 	// through `with:`, under any name, before its own record exists.
 	ParentRunID string
-	Logger      *iterlog.Logger
-	StoreDir    string
+	// SecretGuardSink, when set, is called with the per-run secret guard the
+	// moment BuildExecutor builds it — the LATE-BOUND handle a caller whose
+	// own work starts before BuildExecutor (the cloud runner's mid-run secret
+	// rotation loops, #2756) reads the live guard through. The guard's
+	// Register seam is how a rotated credential joins redaction after launch.
+	// A nil argument means redaction built to nothing (the kill switch, or a
+	// run with no known value and the heuristic pass off): such a run has no
+	// guard to register into. Nil sink = the caller has no use for the guard.
+	SecretGuardSink func(*secretguard.Guard)
+	// Logger is THIS RUN's logger, and BuildExecutor sets the run's secret
+	// matcher on it (iterlog.SetRedactor) so the launch surface's own lines
+	// cross the same pass the executor's and the engine's do. The slot is
+	// per-handle, so the handle must be a fork this run owns — every
+	// surface builds one (a per-run tee, or iterlog.WithOwnRedactor when it
+	// has nothing to tee): handing a shared process logger would install
+	// this run's matcher where the next run replaces it (iterion#2822).
+	// Nil builds a fresh stderr logger, whose slot is its own by construction.
+	Logger   *iterlog.Logger
+	StoreDir string
 	// WorkDir is the effective workspace of this run. It is the root used by
 	// Claw's relative file tools. Empty preserves the historical os.Getwd()
 	// fallback for callers that execute in their intended workspace.
@@ -125,6 +143,8 @@ type ExecutorSpec struct {
 	// below). Engine-level events reach the same observers through
 	// runtime.WithEventObserver; the two event sets are disjoint.
 	EventObservers []func(store.Event)
+	// EventBroker is the runtime-owned, non-reentrant live event fan-out.
+	EventBroker *EventBroker
 	// Inbox, when non-nil, wires the operator chatbox plumbing into
 	// the claw backend so queued messages are delivered between
 	// agent-loop iterations. Nil disables the inbox (CLI mode +
@@ -146,6 +166,11 @@ type ExecutorSpec struct {
 	// explicitly and win over the node's DSL backend:/model:, so a run can
 	// re-target the bot per node-group without editing the .bot. Empty = no-op.
 	ModelOverrides model.ModelOverrides
+	// LaunchModelOverrides are the launch's own rows among ModelOverrides,
+	// before the routing policy's cells folded in — what lets the executor
+	// say which of the two asked for a node's effort. nil when the path does
+	// not know them; a non-nil empty value says the launch carried none.
+	LaunchModelOverrides *model.ModelOverrides
 	// PolicyLadder is the adaptive-routing policy's computed ladder
 	// (ADR-121 §1): the held (harness, credential) pairs in policy order,
 	// applied through ir.ApplyPolicyLadder's screen right after
@@ -153,6 +178,12 @@ type ExecutorSpec struct {
 	// node's own model at materialization. Cloud only: a local launch
 	// seals no channels, so no ladder exists to apply.
 	PolicyLadder []ir.PolicyLadderStage
+	// ContentBoundary is the run's frozen content boundary (ADR-131 §4,
+	// queue.RunMessage.ContentBoundary): under team_gateway the ladder's
+	// screen lands no stage on a node routed to the team's gateway — a
+	// crossing would carry that node's content to a vendor credential. Nil
+	// (a local launch, a run stamped before the producer) screens as before.
+	ContentBoundary *store.RunContentBoundary
 	// LLMRouteTriggers is the run's RESOLVED adaptive-routing trigger set
 	// (ADR-121, the launch-frozen snapshot) — threaded to the executor so
 	// the route cooldown ledger arms the categories the policy names
@@ -195,6 +226,14 @@ type ExecutorSpec struct {
 	// the sandbox for real. Pass them.
 	SandboxOverride string
 	SandboxDefault  string
+	// BotSourceTier is the bot-resolution tier that served this run's
+	// launch (store.BotSourceTier*), when the surface resolved one. The
+	// #1959 isolation floor reads it: the fallback screen's sandbox probe
+	// and the MCP start policy must judge the workflow the run EXECUTES
+	// under — after a non-operator source's `sandbox: none` is
+	// neutralized — not the declared one. Empty means the operator's own
+	// launch (or a surface with no bot resolution): no floor.
+	BotSourceTier string
 	// SandboxTiersKnown tells the two cases the empty strings cannot:
 	// "this surface knows the tiers and they are genuinely empty" from
 	// "this surface did not look". Set it wherever both tiers above are
@@ -232,6 +271,11 @@ type ExecutorSpec struct {
 	// registry and returns the token. nil (CLI) leaves sandboxed
 	// board-emit disabled.
 	BoardRegister func(caps []string, sourceIssueID, runID string) string
+	// BoardRevoke ends a token BoardRegister minted, as the node that held
+	// it returns. Wired beside the minter — the registry's TTL is the
+	// backstop for a process that died, not a grant's lifetime, and this
+	// token authenticates the connector facade (#2758).
+	BoardRevoke func(token string)
 	// Compress is the run-level command-output-compression override ("",
 	// "on", "ultra", "off"), forwarded to the executor as the highest-priority
 	// input to rewrite.Resolve (above node/workflow DSL and ITERION_COMPRESS).
@@ -245,6 +289,17 @@ type ExecutorSpec struct {
 	// "workspace", "operator", "all"), highest-priority input to
 	// ambient.ResolveSourced (ADR-119).
 	AmbientContext string
+
+	// Codemode is the run-level codemode override ("", "on", "off"),
+	// highest-priority rung of ir.ResolveCodemode (ADR-165): it wins over
+	// node and workflow DSL in both directions, and there is deliberately no
+	// environment rung. CodemodeBounds is the launch's field-by-field bounds
+	// raise (the scripthost.Limits numbers; a zero field means the
+	// launch did not choose). Both travel on the queue message (schema v33 onward) —
+	// a stale runner ignoring an explicit off would run the capability the
+	// operator asked away: the knob failing open.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 
 	// UsageGuard enforces the operator's subscription usage cap
 	// (pkg/usagecap) for this run. The cloud runner injects one backed by
@@ -296,6 +351,15 @@ type ExecutorSpec struct {
 	// tenant chose, so an unguarded client is a way to reach a metadata
 	// endpoint from inside the deployment.
 	ConnectorClient *http.Client
+
+	// ActionTransports are the NATIVE action transports this run executes in
+	// process (ADR-151, iterion#2834) — the board's facade over the
+	// instance's own store being the first. A surface that holds the store
+	// builds one with NativeBoardTransport; a surface that does not (the
+	// golden recorder) leaves this empty, and a workflow whose board action
+	// then reaches it is refused at admission with the wiring named, never
+	// reported as a success the node never performed.
+	ActionTransports []model.ActionTransport
 }
 
 // BuildExecutor wires up the default ClawExecutor: registry, default
@@ -305,9 +369,6 @@ type ExecutorSpec struct {
 // state directory. Used by both the CLI and the HTTP service so the
 // two transports stay aligned on tool policies, MCP auth, and
 // executor lifecycle.
-// declaredSecretNames returns the names of the workflow's declared
-// `secrets:` block — the only names a `{{secrets.X}}` reference can legally
-// use (compile-checked). Nil-safe.
 // StampLocalCredentials resolves the workflow's declared `secrets:` names
 // from the local sealed store and returns a context carrying them — the
 // in-process equivalent of the cloud runner's injectCredentials. Returns
@@ -334,9 +395,12 @@ func StampLocalCredentials(
 	if _, already := secrets.CredentialsFromContext(ctx); already {
 		return ctx, nil
 	}
-	creds, err := secrets.ResolveLocalCredentials(ctx, localSecrets, sealer, declaredSecretNames(wf), logger)
+	creds, err := secrets.ResolveLocalCredentials(ctx, localSecrets, sealer, storedSecretNames(wf), logger)
 	if err != nil {
 		return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
+	}
+	if err := warnShadowedStoreEntries(ctx, wf, localSecrets, logger); err != nil {
+		return nil, err
 	}
 	// Required-secret launch gate (parity with the cloud publisher): a
 	// non-`optional` declared secret with no inline value MUST resolve to
@@ -354,15 +418,61 @@ func StampLocalCredentials(
 	return secrets.WithCredentials(ctx, creds), nil
 }
 
-func declaredSecretNames(wf *ir.Workflow) []string {
+// storedSecretNames returns the declared secret names the local store
+// fills: those declared without an inline `value:`, which the run resolves
+// from its own expression. The cloud publisher asks its store for the same
+// names (genericSecretNamesForWorkflow), so a declaration resolves to the
+// same source on either launch path. Nil-safe.
+func storedSecretNames(wf *ir.Workflow) []string {
 	if wf == nil || len(wf.Secrets) == 0 {
 		return nil
 	}
 	names := make([]string, 0, len(wf.Secrets))
-	for name := range wf.Secrets {
+	for name, s := range wf.Secrets {
+		if s.HasInlineValue() {
+			continue
+		}
 		names = append(names, name)
 	}
 	return names
+}
+
+// warnShadowedStoreEntries names each local store entry an inline-valued
+// declaration shadows. The run resolves such a secret from its own `value:`
+// expression, on this launch path as on the cloud's, so the entry is not read
+// — its value, nor the host scope `iterion secret set --hosts` gave it, which
+// the secret guard would otherwise have narrowed the value's egress to. An
+// operator who set that scope learns it is inert here, rather than finding it
+// dropped. A store that cannot be listed fails the launch, as the resolution
+// above does.
+func warnShadowedStoreEntries(ctx context.Context, wf *ir.Workflow, store secrets.GenericSecretStore, logger *iterlog.Logger) error {
+	if wf == nil || logger == nil {
+		return nil
+	}
+	inline := map[string]bool{}
+	for name, s := range wf.Secrets {
+		if s.HasInlineValue() {
+			inline[name] = true
+		}
+	}
+	if len(inline) == 0 {
+		return nil
+	}
+	stored, err := store.ListByTeam(ctx, secrets.LocalScopeTeam, "")
+	if err != nil {
+		return fmt.Errorf("runview: list local secrets: %w", err)
+	}
+	for _, rec := range stored {
+		if !inline[rec.Name] {
+			continue
+		}
+		if len(rec.AllowedHosts) > 0 {
+			logger.Warn("secret %q is declared with an inline value, so the run resolves it from that expression: the local store's entry of the same name is not read, nor its host scope %v — the secret guard does not narrow the value's egress to those hosts. Declare `hosts:` on the secret to scope it, or drop its `value:` to read the stored one", rec.Name, rec.AllowedHosts)
+			continue
+		}
+		logger.Warn("secret %q is declared with an inline value, so the run resolves it from that expression: the local store's entry of the same name is not read. Drop the declaration's `value:` to read the stored one", rec.Name)
+	}
+	return nil
 }
 
 // requiredSecretNames returns the declared secret names that MUST resolve to a
@@ -377,7 +487,7 @@ func requiredSecretNames(wf *ir.Workflow) []string {
 	}
 	names := make([]string, 0, len(wf.Secrets))
 	for name, s := range wf.Secrets {
-		if s == nil || s.Optional || strings.TrimSpace(s.Value) != "" {
+		if s == nil || s.Optional || s.HasInlineValue() {
 			continue
 		}
 		names = append(names, name)
@@ -395,11 +505,100 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.RunID == "" {
 		return nil, fmt.Errorf("runview: run ID is required")
 	}
-	if err := ValidateModelOverridePermissions(spec.Workflow, spec.ModelOverrides, spec.Permission); err != nil {
+	// The screens read the node's backend the way this executor dispatches
+	// it: a run-level backend replaces the workflow's default
+	// (model.WithDefaultBackend below).
+	runWF := withRunDefaultBackend(spec.Workflow, spec.Backend)
+	if err := ValidateModelOverridePermissions(runWF, spec.ModelOverrides, spec.Permission); err != nil {
+		return nil, err
+	}
+	// Every plane builds its executor here — the CLI, the launch API, a
+	// resume, a subbot, the dispatcher, the cloud runner, a replay — so this
+	// is the one place a `.bot` whose `action:` nodes nothing can serve is
+	// refused for all of them. Wiring the refusal at each launch surface
+	// instead is how the catalog became a capability some surfaces had and
+	// others silently lacked (LocalConnectors' own doc).
+	//
+	// The NATIVE board transport (ADR-151) is served by the fs store this
+	// same function opens below for the claw board tools whenever a StoreDir
+	// is set — so a local surface owes nothing for a board.* action, and the
+	// admission check must see that default or it would refuse the very runs
+	// the wiring serves. The placeholder carries no store (admission reads
+	// only its facade Package); the REAL registration happens where the store
+	// is opened. An explicit ActionTransports entry — the cloud runner's
+	// Mongo board (#2465) — always wins over the fs default.
+	admitTransports := spec.ActionTransports
+	boardDefaultApplies := spec.StoreDir != "" && WorkflowHasNativeBoardAction(spec.Workflow) &&
+		!actionTransportsOwn(spec.ActionTransports, boardops.ConnectorID)
+	if boardDefaultApplies {
+		admitTransports = append(admitTransports, boardops.NewActionTransport(nil, boardops.CallEnv{}))
+	}
+	if err := admitConnectorActions(spec.Workflow, spec.Connectors, admitTransports); err != nil {
 		return nil, err
 	}
 	if spec.Logger == nil {
 		spec.Logger = iterlog.NewFromEnv(os.Stderr)
+	}
+	ctx := spec.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The caller owns preparation and keeps this original binding for the
+	// engine as well. A format intention alone does not authorize credentials,
+	// callbacks or filesystem effects: an existing row must still match it.
+	if err := store.RequireRunValueFormat(ctx, spec.RunID); err != nil {
+		return nil, err
+	}
+	runs := spec.Runs
+	if runs == nil {
+		runs, _ = spec.Store.(RunLoader)
+	}
+	if _, _, err := store.LoadRunWithValueFormat(ctx, runs, spec.RunID); err != nil {
+		return nil, err
+	}
+	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
+	// workflow's declared `secrets:` names from the local sealed store and
+	// stamp them into ctx — the in-process equivalent of the cloud runner's
+	// injectCredentials. Skipped when the cloud path already put Credentials
+	// in ctx (never overwrite pre-resolved cloud credentials).
+	stamped, err := StampLocalCredentials(ctx, spec.Workflow, spec.LocalSecrets, spec.LocalSealer, spec.Logger)
+	if err != nil {
+		return nil, err
+	}
+	ctx = stamped
+	// Build the per-run secret guard (Layer 0/1/2) from the resolved
+	// credentials in ctx + sensitive host env + declared workflow
+	// secrets, then thread it through the event hooks so every sink is
+	// scrubbed before persistence.
+	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
+	// Hand the live guard to the caller that asked for it BEFORE anything
+	// else can fail: the runner's rotation loops start before BuildExecutor
+	// runs and read the guard through this handle once it lands (#2756).
+	if spec.SecretGuardSink != nil {
+		spec.SecretGuardSink(guard)
+	}
+	// …and through the run's LOGGER, the redaction chokepoint
+	// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458): every record that logger keeps crosses
+	// guard.Redact before the write and before the warn+ hook, so a
+	// producer hands the log third-party text raw and no per-sink pass is
+	// owed. Set before the FIRST line this run logs, so the fallback /
+	// policy refusals below are covered too, and inherited by every fork
+	// taken afterwards (the engine, the per-node field forks, the delegate
+	// registry, the run's supervisors).
+	//
+	// SET, not fork: the matcher lands on the handle the SURFACE still
+	// holds, so the lines the surface logs on its own per-run logger —
+	// `executor close`, an MCP server's stderr, a steer the supervisor
+	// quotes — reach run.log scrubbed too (iterion#2822). The surface owes
+	// that handle to be its run's own fork; see ExecutorSpec.Logger.
+	//
+	// A nil guard (no known values, no file hint, heuristic off) wires no
+	// redactor on this handle: the no-secrets run pays nothing.
+	// ITERION_SECRETS_REDACT=off is the kill switch — it MUTES this pass,
+	// building a holding guard whose Redact returns the line unchanged; a
+	// nil guard comes only from a run that knows no value at all.
+	if guard != nil {
+		spec.Logger.SetRedactor(guard.Redact)
 	}
 	// Materialise the operator's launch-time fallback chain onto the
 	// compiled workflow BEFORE anything reads it. The engine is
@@ -420,10 +619,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// existed to survive. The refusal now also lands on the run's timeline
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
-	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
+	sandboxedHere := runtime.RunWillBeSandboxed(
+		flooredWorkflow(spec), spec.SandboxOverride, spec.SandboxDefault,
 		runtime.EngineRepoRoot(spec.sandboxProbeRoot()), spec.SandboxDrivers)
 	overrides := spec.ModelOverrides
-	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
+	fallbackRefusals := ir.ApplyRunFallback(runWF, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
 	})
@@ -435,31 +635,39 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// node's own model, and the stage's On carries the resolved policy's
 	// trigger set — the chain's default set would stop the auth-typed
 	// failure the launch-time selection exists to fall through.
-	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
-		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		if ov.Model != "" {
-			return ir.ExpandEnvWithDefault(ov.Model)
-		}
-		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-	}, func(n ir.LLMNode) string {
+	policyRefusals := ir.ApplyPolicyLadder(runWF, spec.PolicyLadder, sandboxedHere, spec.Vars, overrides.LadderRoute, func(n ir.LLMNode) string {
 		// The dispatch reads the override backend FIRST — the screen reads
 		// the same, or a cross-backend crossing crosses a session-bearing
 		// node unscreened (the review's F2).
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
-	}, llmroute.ResolveClasses(spec.LLMRouteClasses))
+	}, llmroute.ResolveClasses(spec.LLMRouteClasses), spec.ContentBoundary.TeamGateway())
 	for _, refusal := range policyRefusals {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
 	}
 	fallbackRefusals = append(fallbackRefusals, policyRefusals...)
+	// A backend whose CLI no published sandbox image carries is refused at run
+	// start, where the resolved image is known (#1643) — and the launch's own
+	// `model_overrides` route is one the compiler never saw, so C321 cannot
+	// have warned about it. Said here, on the one path every plane builds its
+	// executor through, while the run is still free. A warning and not a
+	// refusal: the image this run resolves may be the operator's own and may
+	// well ship the CLI, which is what the refusal checks and this reading
+	// cannot.
+	if sandboxedHere {
+		for _, gap := range ir.SandboxImageGaps(spec.Workflow, func(n ir.LLMNode) string {
+			if ov := overrides.ForNode(n.NodeID(), n.NodeKind()); ov.Backend != "" {
+				return ir.SourceBackendName(ov.Backend)
+			}
+			return ir.SourceSandboxRoute(spec.Workflow)(n)
+		}) {
+			spec.Logger.Warn("sandboxed run — %s %q: %s", gap.NodeKind, gap.NodeID, gap.Reason())
+		}
+	}
 
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(spec.Logger)
 
-	ctx := spec.Ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	// Best effort on purpose: a timeline that cannot take the refusal must
 	// not stop a run the screen already made safe — the log line above
 	// remains, and the failure to record is itself logged.
@@ -473,21 +681,6 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			}
 		}
 	}
-	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
-	// workflow's declared `secrets:` names from the local sealed store and
-	// stamp them into ctx — the in-process equivalent of the cloud runner's
-	// injectCredentials. Skipped when the cloud path already put Credentials
-	// in ctx (never overwrite pre-resolved cloud credentials).
-	stamped, err := StampLocalCredentials(ctx, spec.Workflow, spec.LocalSecrets, spec.LocalSealer, spec.Logger)
-	if err != nil {
-		return nil, err
-	}
-	ctx = stamped
-	// Build the per-run secret guard (Layer 0/1/2) from the resolved
-	// credentials in ctx + sensitive host env + declared workflow
-	// secrets, then thread it through the event hooks so every sink is
-	// scrubbed before persistence.
-	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
 	// The routing handoff recorder (ADR-121 § Delivery 2) exists only for
 	// a run whose resolved posture is ACTIVE. Its fallback root is the
 	// run's artifact files dir (the shared state dir arrives later, from
@@ -495,18 +688,50 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// hooks observe post-redaction copies of the neutral event types.
 	var handoff *model.HandoffRecorder
 	artifactDir := ""
-	if fs, ok := spec.Store.(store.RunFilesStore); ok {
+	var runFilesGrant store.RunFilesGrant
+	grantTransferred := false
+	defer func() {
+		if runFilesGrant != nil && !grantTransferred {
+			_ = runFilesGrant.Close()
+		}
+	}()
+	if binding, ok := store.RunDataBindingFrom(ctx); ok && binding.Header().Protocol == store.IncarnationRunData {
+		filesStore, _ := spec.Runs.(store.RunStore)
+		if filesStore == nil {
+			filesStore, _ = spec.Store.(store.RunStore)
+		}
+		{
+			grants := store.AsRunFilesGrantStore(filesStore)
+			if grants == nil {
+				return nil, store.ErrRunDataCapability
+			}
+			var grantErr error
+			runFilesGrant, grantErr = grants.OpenRunFilesGrant(ctx, spec.RunID)
+			if grantErr != nil {
+				return nil, grantErr
+			}
+			if runFilesGrant == nil {
+				return nil, store.ErrRunDataCapability
+			}
+			artifactDir = runFilesGrant.HostPath()
+		}
+	} else if fs, ok := spec.Store.(store.RunFilesStore); ok {
 		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
 			artifactDir = dir
 		}
 	}
+
 	if llmroute.CrossHarnessActive(spec.LLMRouteCrossHarness) {
-		handoff = model.NewHandoffRecorder(artifactDir)
+		handoff = model.NewHandoffRecorder(artifactDir, guard)
 	}
 	// The recorder rides INSIDE the hooks constructor: the capability
 	// detection must see the store's own interfaces, and the wrap lands
 	// between the redaction boundary and the store.
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, spec.EventObservers...)
+	var publish func(store.Event)
+	if spec.EventBroker != nil {
+		publish = spec.EventBroker.Publish
+	}
+	hooks := model.NewStoreEventHooksWithBroker(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, publish, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}
@@ -528,6 +753,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// run-level failed_resumable.
 	retryPolicy := model.RetryPolicyFromEnv()
 	clawOpts = append(clawOpts, model.WithClawLogger(spec.Logger))
+	clawOpts = append(clawOpts, model.WithSlashCommandCeiling(model.SlashCommandMaxBytesForRegistry()))
 	clawBackend := model.NewClawBackend(reg, hooks, retryPolicy, clawOpts...)
 	backendReg.Register(delegate.BackendClaw, clawBackend)
 
@@ -537,6 +763,41 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// The read tools' scope, shared by the registry (clawDefaults below)
+	// and the executor (WithClawReadScope): the engine's SetScratchDirs push
+	// — run start and resume, after the sandbox decision — attaches the
+	// run's scratch read roots (#2650; the run family's subtree first, the
+	// shared ${PROJECT_SCRATCH_DIR} behind it while still referenced,
+	// #2869) to the VERY registry the agents call; a scope of runview's
+	// own would widen reads nobody makes.
+	//
+	// The scope's WORKSPACE is the executor's live workDir, through the one
+	// provider every workspace-scoped tool shares (#2870, #2889): the
+	// prompt path reads that field, and the engine replaces it at run start
+	// via SetWorkDir when `worktree: auto` produces a per-run worktree —
+	// after this registry exists. Binding bash's cwd, write_file's rebase
+	// and the read tools' containment to the same field the `command`/
+	// `skill` lookups take makes all of them share one source by
+	// construction; a captured string resolved in the construction-time
+	// checkout while the prompt path read the worktree's — two checkouts,
+	// possibly two commits. The fallback keeps the construction-time
+	// workspace for a direct executor use no engine ever pushes a workDir
+	// into (empty answers would disable the tools there). The closure is
+	// built BEFORE NewClawExecutor — the scope has to exist for
+	// WithClawReadScope below — and reads the variable at call time, which
+	// is safe: the executor consults the registry per Execute, never at
+	// construction, and every call happens after BuildExecutor returns.
+	var executor *model.ClawExecutor
+	workspaceProvider := func() string {
+		if executor != nil {
+			if dir := executor.WorkDir(); dir != "" {
+				return dir
+			}
+		}
+		return workspace
+	}
+	readScope := tool.NewReadScopeWithProvider(workspaceProvider)
 
 	planActive := false
 	planDir := filepath.Join(spec.StoreDir, "plan-mode")
@@ -560,8 +821,13 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithRetryPolicy(retryPolicy),
 		model.WithLLMRouteTriggers(spec.LLMRouteTriggers),
 		model.WithAllowedProviders(spec.LLMProviders),
+		// The ladder screen above read the spec's vars; dispatch reads the
+		// vars the engine pushes (a resume restores the launch's after this
+		// build), so the boundary holds a gateway-routed node at dispatch too.
+		model.WithContentBoundary(spec.ContentBoundary),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
+		model.WithClawReadScope(readScope),
 		model.WithLogger(spec.Logger),
 		model.WithLifecycleHooks(lifecycle),
 		model.WithStoreDir(dispatcherStoreDir),
@@ -570,6 +836,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithCompressOverride(spec.Compress),
 		model.WithAutoMemoryOverride(spec.AutoMemory),
 		model.WithAmbientContextOverride(spec.AmbientContext),
+		model.WithCodemodeOverride(spec.Codemode),
+		model.WithCodemodeBoundsOverride(spec.CodemodeBounds),
 		// The auto-memory mirror persists through the SAME store as the
 		// `memory:` block, so a cloud runner's Mongo store is what carries
 		// MEMORY.md past the pod's ephemeral disk. nil keeps the local
@@ -582,6 +850,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.Connectors != nil {
 		opts = append(opts, model.WithConnectors(spec.Connectors, spec.ConnectorClient))
 	}
+	if len(spec.ActionTransports) > 0 {
+		opts = append(opts, model.WithActionTransports(spec.ActionTransports...))
+	}
 	usageGuard, err := resolveUsageGuard(spec)
 	if err != nil {
 		return nil, err
@@ -589,13 +860,16 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if usageGuard != nil {
 		opts = append(opts, model.WithUsageGuard(usageGuard))
 	}
-	if sid := resolveSourceIssueID(spec); sid != "" {
+	if sid := SourceIssueIDOf(spec); sid != "" {
 		opts = append(opts, model.WithSourceIssueID(sid))
 	}
 	if spec.BoardRegister != nil {
 		opts = append(opts, model.WithBoardRegister(func(caps []string, sourceIssueID string) string {
 			return spec.BoardRegister(caps, sourceIssueID, spec.RunID)
 		}))
+	}
+	if spec.BoardRevoke != nil {
+		opts = append(opts, model.WithBoardRevoke(spec.BoardRevoke))
 	}
 	if spec.Inbox != nil {
 		opts = append(opts, model.WithExecutorInbox(spec.Inbox))
@@ -608,6 +882,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if !spec.ModelOverrides.Empty() {
 		opts = append(opts, model.WithModelOverrides(spec.ModelOverrides))
+	}
+	if spec.LaunchModelOverrides != nil {
+		opts = append(opts, model.WithLaunchModelOverrides(*spec.LaunchModelOverrides))
 	}
 
 	if spec.BotID != "" {
@@ -622,12 +899,15 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if artifactDir != "" {
 		opts = append(opts, model.WithArtifactFilesDir(artifactDir))
 	}
+	if runFilesGrant != nil {
+		opts = append(opts, model.WithRunFilesGrant(runFilesGrant))
+	}
 	if handoff != nil {
 		opts = append(opts, model.WithHandoffRecorder(handoff))
 	}
 
 	checker := buildToolChecker(spec.Workflow)
-	classifier, classErr := newLLMClassifierFromEnv(reg, spec.Logger)
+	classifier, classErr := newLLMClassifierFromEnv(spec.Ctx, reg, spec.Logger, spec.ContentBoundary)
 	if classErr != nil {
 		return nil, fmt.Errorf("runview: build LLM classifier: %w", classErr)
 	}
@@ -647,41 +927,17 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithMCPManager(mcpManager))
 	}
 
-	clawDefaults := tool.ClawDefaults{
-		Workspace:                   workspace,
-		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
-		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
-	}
-	if planDir != "" {
-		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
-	}
-	if mcpManager != nil {
-		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
-	}
-	// Privacy tools — pure-Go detector, always available when a
-	// store directory is wired. No external process or model
-	// download; activating the pair surfaces privacy_filter and
-	// privacy_unfilter to every workflow that allows them via
-	// tool_policy.
-	if spec.StoreDir != "" {
-		clawDefaults.Privacy = &privacy.Config{
-			StoreDir:     spec.StoreDir,
-			Detector:     detector.New(),
-			RunIDFromCtx: model.RunIDFromContext,
-		}
-	}
-	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
-		spec.Logger.Warn("runview: RegisterClawAll: %v", err)
-	}
-
 	// Register the native-board MCP tools so claw nodes that declare
 	// board capabilities can actually call mcp.iterion_board.* (and
 	// the claude_code-FQN alias mcp__iterion_board__*). Without this
 	// the registry is empty for board tools and Resolve correctly
 	// returns "unknown tool" for any board call. We pass all known
-	// board capabilities so every tool registers; per-node access is
-	// gated downstream by the workflow's checkNodeToolAccess (which
-	// reads the node's `capabilities:` list).
+	// board capabilities so every tool registers, and each node is held to
+	// its OWN grant downstream, per tool: model.checkNodeToolAccess reads
+	// the capability ir.HostToolCapabilityInFamily maps the tool to, in the
+	// family that serves it. Iterion's own servers answer to that grant and
+	// not to the node's `mcp:` scope, which bounds the servers the host may
+	// START and can never name an in-process family.
 	if dispatcherStoreDir != "" {
 		ns, err := native.NewStore(dispatcherStoreDir)
 		if err != nil {
@@ -697,10 +953,19 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 				Capabilities: boardops.AllCapabilities(),
 				// The owning ticket travels with the tools so board.create
 				// auto-stamps parent_id / spawned_from on spawned children.
-				SourceIssueID: resolveSourceIssueID(spec),
+				SourceIssueID: SourceIssueIDOf(spec),
 			}
 			if err := tool.RegisterClawBoardTools(toolReg, boardCfg); err != nil {
 				spec.Logger.Warn("runview: RegisterClawBoardTools: %v", err)
+			}
+			// The board's NATIVE action transport (ADR-151): same store the
+			// claw tools just got, so a `tool … action: board.*` node and an
+			// agent's board MCP call read ONE board. An explicit
+			// ActionTransports entry — the cloud runner's Mongo board — was
+			// already wired above and wins: the fs default yields to it.
+			if boardDefaultApplies {
+				opts = append(opts, model.WithActionTransports(
+					NativeBoardTransport(ns, SourceIssueIDOf(spec))))
 			}
 		}
 	}
@@ -708,8 +973,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// Register the native-board WATCH tools so claw nodes that declare
 	// watch.subscribe / watch.unsubscribe can opt their run into the
 	// runtime watch fan-out (MVP3b). All known watch caps are registered;
-	// per-node access is gated downstream by checkNodeToolAccess via the
-	// node's `capabilities:` list, mirroring the board tools. The claw
+	// each node is held to its own watch grant downstream, per tool, by
+	// model.checkNodeToolAccess, mirroring the board tools. The claw
 	// executor is per-run, so spec.RunID binds every subscription to the
 	// correct run. spec.Store is the RunStore (it carries the
 	// AddWatchedIssues/RemoveWatchedIssues mutators); the type-assertion
@@ -745,7 +1010,72 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		}
 	}
 
-	executor := model.NewClawExecutor(reg, spec.Workflow, opts...)
+	executor = model.NewClawExecutor(reg, spec.Workflow, opts...)
+
+	clawDefaults := tool.ClawDefaults{
+		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
+		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
+		ReadScope:                   readScope,
+
+		// The workspace-command capability's dials resolve HERE, on the
+		// host: the runner's environment carries neither, so the kill
+		// switch becomes the tool's absence and the ceiling a value.
+		DisableWorkspaceCommands: model.SlashCommandsDisabled(),
+		CommandMaxBytes:          model.SlashCommandMaxBytesForRegistry(),
+		// The `command` tool's provenance floor (ADR-162 U3) consults the
+		// executor's LIVE trust — pushed by the engine after this registry
+		// exists, the same doctrine as the skill allowlist below.
+		WorkspaceTrust: executor.WorkspaceTrust,
+	}
+	// The workspace-scoped tools (`command`/`skill` lookups, bash,
+	// write_file, file_edit and the read tools through the scope above)
+	// resolve against the executor's LIVE workDir — the field the prompt
+	// path (model.expandWorkspaceSlashCommand) reads, and the one the
+	// engine replaces at run start via SetWorkDir when `worktree: auto`
+	// produces a per-run worktree after this registry exists (#2870,
+	// #2889). The closure is the one the read scope was built with, so all
+	// surfaces share one source by construction.
+	clawDefaults.WorkspaceProvider = workspaceProvider
+	// The pinned skill mode (iterion#1719) is armed by the engine AFTER the
+	// registry exists — the mirror pass runs at run start — so the registry
+	// consults the executor's live answer per `skill` call, the same
+	// closure doctrine as workspaceProvider (#2870).
+	clawDefaults.SkillAllowlist = func() (map[string]string, bool) {
+		return executor.SkillAllowlist()
+	}
+	if planDir != "" {
+		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
+	}
+	if mcpManager != nil {
+		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
+	}
+	// Synchronous subagents (#1940). The `agent` tool spawns a real child
+	// conversation against this run's model registry and returns its result;
+	// with no runner here claw's own executor would answer {"status":
+	// "running"} and start nothing. The child is bounded by the node that
+	// spawned it — its effective tools, its permission policy, its step
+	// budget and its spend all ride the context (model.ParentLoop,
+	// model.WithParentPermission, model.SubagentSpend) — so the empty default
+	// model is deliberate: the node's own model serves, resolved per call,
+	// since this closure is built once per RUN and the model is a property of
+	// the node. The sandboxed path wires its own against the container's
+	// tools (cmd/iterion registerSandboxLocalTools).
+	clawDefaults.Subagent = model.NewSubagentRunner(reg, toolReg, hooks, lifecycle, "")
+	// Privacy tools — pure-Go detector, always available when a
+	// store directory is wired. No external process or model
+	// download; activating the pair surfaces privacy_filter and
+	// privacy_unfilter to every workflow that allows them via
+	// tool_policy.
+	if spec.StoreDir != "" {
+		clawDefaults.Privacy = &privacy.Config{
+			StoreDir:     spec.StoreDir,
+			Detector:     detector.New(),
+			RunIDFromCtx: model.RunIDFromContext,
+		}
+	}
+	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
+		spec.Logger.Warn("runview: RegisterClawAll: %v", err)
+	}
 
 	if len(spec.Vars) > 0 {
 		// resolveVars' rule, one filter for both readers of a launch's raw
@@ -759,9 +1089,16 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		// declared vars only — took no opinion on: the screen refused
 		// nothing and dispatch took the crossing. The dispatch view
 		// (model.RouteViewForDispatch) reads the same filter.
-		executor.SetVars(ir.DeclaredVarsOnly(spec.Workflow, spec.Vars))
+		//
+		// The values are launch TEXT, so they are seeded through the
+		// executor's reading of a var's text (SetLaunchVars), not stored
+		// as text: the engine's pre-run admissions and an engine-less
+		// caller read this seed, and a raw one hands a `string[]` var to
+		// an `array` action param as a string (#2991).
+		executor.SetLaunchVars(ir.DeclaredVarsOnly(spec.Workflow, spec.Vars))
 	}
 
+	grantTransferred = true
 	return executor, nil
 }
 
@@ -915,6 +1252,7 @@ func expandHatchAdvice() string {
 // engine settles the sandbox. mcp.WithConfigRefresher is where it goes back.
 func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.Logger) map[string]*mcp.ServerConfig {
 	catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
+	untrusted := wf.MCPPrepared != nil && !store.RunTrust(wf.MCPPrepared.Trust).Trusted()
 	for name, server := range wf.ResolvedMCPServers {
 		origin := mcp.Origin(server.Origin)
 		// Whose environment answers `${VAR}` here? The launcher's — an
@@ -956,6 +1294,20 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 			// that was not.
 			Env:  maps.Clone(server.Env),
 			Auth: mcp.FromIRAuth(server.Auth),
+		}
+		// On a workspace its tenant did not write, a stdio server iterion
+		// boots itself — the health check, claw's in-process manager — starts
+		// from the filesystem root, not from iterion's working directory: a
+		// nested `iterion run` is started IN the checkout, and a launcher
+		// reads its configuration from its cwd (`npx` runs a checkout's
+		// node_modules/.bin shadow of the pinned package). The CLI backends'
+		// own spawns get the same start (resolveTaskMCPServers), so a server
+		// has one working directory whichever backend runs it. This lives in
+		// expandMCPCatalog — not in buildMCPManager's one pass — so the
+		// settled-policy refresher, which rebuilds the catalog through this
+		// same function, cannot hand a server its checkout cwd back.
+		if untrusted && catalog[name].Transport == mcp.TransportStdio {
+			catalog[name].WorkDir = "/"
 		}
 		// A reference that was dropped can leave the config unusable — an
 		// empty `command` for a stdio server, an empty `url` for http/sse.
@@ -1137,14 +1489,36 @@ func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger
 // servers only. The engine replaces the prediction with the settled
 // fact — ClawExecutor.SetSandbox, called with the live sandbox or with
 // nil when the run settles without one.
+//
+// The sandbox answer here is the MODE's (WorkflowSandboxActive), not the
+// driver's (RunWillBeSandboxed) — on purpose (#2166). A `sandbox: auto` run
+// this host degrades to the pod predicts operator servers only and starts
+// its workflow-controlled servers once the engine settles: a few seconds of
+// fail-closed delay. The permissive prediction is the one that must never
+// be wrong, and asking the driver from the launch surface would need the
+// repository root and the driver registry for an answer the engine gives
+// anyway.
 func predictedStartPolicy(spec ExecutorSpec) mcp.StartPolicy {
 	if !spec.SandboxTiersKnown {
 		return mcp.StartPolicyUnknown
 	}
-	if runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault) {
+	if runtime.WorkflowSandboxActive(flooredWorkflow(spec), spec.SandboxOverride, spec.SandboxDefault) {
 		return mcp.StartOperatorServersOnly
 	}
 	return mcp.StartAllServers
+}
+
+// flooredWorkflow is the workflow the run EXECUTES under: spec.Workflow
+// after the #1959 isolation floor neutralized a non-operator source's
+// `sandbox: none`. Both sandbox predictions of the launch surface (the
+// fallback screen's driver probe and the MCP start policy's mode reading)
+// must judge this one — the permissive answer is the one that must never
+// be wrong, and a prediction made from the declared mode would start a
+// team-authored workflow's MCP servers beside the launcher for a run the
+// floor in fact sandboxes.
+func flooredWorkflow(spec ExecutorSpec) *ir.Workflow {
+	effective, _ := runtime.ApplySandboxFloor(spec.Workflow, spec.BotSourceTier, spec.SandboxOverride)
+	return effective
 }
 
 func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, policy mcp.StartPolicy) (*mcp.Manager, *mcp.OAuthBroker, error) {
@@ -1277,18 +1651,46 @@ func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
 	return tool.BuildChecker(wf.ToolPolicy, nodeOverrides, nil)
 }
 
+// ErrClassifierBoundaryRefused is the build-time refusal of a vendor LLM
+// classifier on a run held to its team's gateway (ADR-131 §4): the
+// classifier reads every tool call's arguments, the gateway nodes' included.
+var ErrClassifierBoundaryRefused = errors.New("runview: the run's content boundary (team_gateway) refuses a vendor LLM classifier")
+
 // newLLMClassifierFromEnv builds an LLMClassifier when the
 // ITERION_LLM_CLASSIFIER_MODEL env var is set (e.g.
 // "anthropic/claude-haiku-4-5"). The classifier is chained over the
 // default RuleClassifier and uses a 30-minute TTL cache.
 //
 // Returns (nil, nil) when the env var is empty.
-func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
+//
+// Under the run's team_gateway content boundary a spec that is not a route
+// to the gateway is refused here, before any resolution, and the run fails
+// at executor build — the answer a gateway-only run already got from the
+// ambient refusal, now given to a mixed run too, whose bundle holds the
+// team's vendor key the spec would otherwise resolve on. A gateway spec
+// stays admitted: the run's sealed pair serves it.
+func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *iterlog.Logger, boundary *store.RunContentBoundary) (permissions.Classifier, error) {
+	// Four production surfaces construct an ExecutorSpec with a nil Ctx
+	// (the studio launch and resume, both CLI paths): the classifier
+	// resolves under the run's credentials when there are any, under a
+	// background ctx when there are not — a nil dereference is not one of
+	// the answers.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	spec := strings.TrimSpace(ir.LookupEnv("ITERION_LLM_CLASSIFIER_MODEL"))
 	if spec == "" {
 		return nil, nil
 	}
-	client, err := reg.Resolve(spec)
+	if boundary.TeamGateway() && !llmroute.GatewayRoute(spec) {
+		return nil, fmt.Errorf("%w: ITERION_LLM_CLASSIFIER_MODEL %q is not a route to the team's gateway %q, and the classifier reads every tool call's arguments — set it to an openai_compatible/<model> spec the gateway serves, or unset it", ErrClassifierBoundaryRefused, spec, boundary.GatewayHost)
+	}
+	// ResolveWithContext, never Resolve: an ambient-refused run funds its
+	// LLM routes from the sealed credentials only, so the classifier's
+	// env fallback is the typed ambient refusal — and a gateway spec
+	// resolves from the run's pair, uncached (ResolveWithContext builds
+	// the client per call).
+	client, err := reg.ResolveWithContext(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("resolve classifier model %q: %w", spec, err)
 	}
@@ -1306,6 +1708,18 @@ func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permi
 // RunLoader reads a run's record.
 type RunLoader interface {
 	LoadRun(ctx context.Context, id string) (*store.Run, error)
+}
+
+// runLoaderOf is the ONE reading of where a spec's run records come from:
+// Runs when the caller set it (a Store that wraps the run store — the cloud
+// runner's metrics emitter — cannot load records), else Store when it can.
+// Nil when neither reads runs.
+func runLoaderOf(spec ExecutorSpec) RunLoader {
+	if spec.Runs != nil {
+		return spec.Runs
+	}
+	loader, _ := spec.Store.(RunLoader)
+	return loader
 }
 
 // maxLineageWalk bounds a walk up a run's ParentRunID chain (sub-bot
@@ -1326,10 +1740,7 @@ func recordedMintedSecrets(ctx context.Context, spec ExecutorSpec) map[string][]
 	if spec.RunID == "" && spec.ParentRunID == "" {
 		return nil
 	}
-	loader := spec.Runs
-	if loader == nil {
-		loader, _ = spec.Store.(RunLoader)
-	}
+	loader := runLoaderOf(spec)
 	if loader == nil {
 		if spec.Store != nil && spec.Logger != nil {
 			spec.Logger.Warn("secret guard: the store of run %s (%T) cannot load run records and ExecutorSpec.Runs is unset — the minted credentials of this run's records and its ancestors' are not redacted from this execution's sinks", spec.RunID, spec.Store)
@@ -1383,21 +1794,25 @@ func recordedMintedSecrets(ctx context.Context, spec ExecutorSpec) map[string][]
 	return out
 }
 
-// resolveSourceIssueID returns the ticket that owns this run: explicit
-// ExecutorSpec.SourceIssueID first, else LoadRun(Source.IssueID) when the
-// store can load the record. Empty for ad-hoc launches.
-func resolveSourceIssueID(spec ExecutorSpec) string {
+// SourceIssueIDOf returns the ticket that owns this run: explicit
+// ExecutorSpec.SourceIssueID first, else the run record's Source.IssueID,
+// read through the spec's run loader (runLoaderOf: Runs, else Store) — the
+// cloud runner's Store wraps the run store and loads no records, so a
+// reading of Store alone answers "" there and every board transport of a
+// cloud run would stamp no planner provenance. Empty for ad-hoc launches.
+//
+// Exported for the one surface that builds a board transport itself (the
+// cloud runner's native transport over the tenant's board): the transport
+// carries the same owning ticket as the ones BuildExecutor wires.
+func SourceIssueIDOf(spec ExecutorSpec) string {
 	if id := strings.TrimSpace(spec.SourceIssueID); id != "" {
 		return id
 	}
 	if spec.RunID == "" {
 		return ""
 	}
-	type runLoader interface {
-		LoadRun(ctx context.Context, id string) (*store.Run, error)
-	}
-	loader, ok := spec.Store.(runLoader)
-	if !ok {
+	loader := runLoaderOf(spec)
+	if loader == nil {
 		return ""
 	}
 	ctx := spec.Ctx

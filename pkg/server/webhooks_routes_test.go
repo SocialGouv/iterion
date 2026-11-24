@@ -2,8 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -17,6 +21,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
+	"os"
+	"path/filepath"
 )
 
 func newWebhookTestServer(t *testing.T) *Server {
@@ -34,6 +40,17 @@ func newWebhookTestServer(t *testing.T) *Server {
 	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
 		ID: "t2", Name: "t2", Slug: "webhook-t2", CreatedAt: time.Now(),
 	}); err != nil {
+		t.Fatal(err)
+	}
+	// The label door's visibility gate (#2676) judges the catalogue: the
+	// fixtures pin feature-dev, so the workspace carries it (a deployment
+	// whose webhook pins a bot has that bot in its catalogue). A test that
+	// needs a different workspace replaces cfg.WorkDir after this.
+	s.cfg.WorkDir = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(s.cfg.WorkDir, "bots"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.cfg.WorkDir, "bots", "feature-dev.bot"), []byte(testBotMain), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
@@ -57,8 +74,8 @@ func newWebhookTestServer(t *testing.T) *Server {
 	// tests pin the flow around it. The default stub authorizes a /revi
 	// command (replyInThread=false); tests targeting the reply-in-thread
 	// route override this seam to return replyInThread=true.
-	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
-		return true, false, "", "test-gate", nil
+	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, webhooks.ThreadAnchor, error) {
+		return true, false, "", "test-gate", webhooks.ThreadAnchor{}, nil
 	}
 	// Allow-all generic command gate — the real gate needs a forge token +
 	// live GitLab API too (loop-guard, allowlist/role authz), same posture as
@@ -88,7 +105,10 @@ func whReq(ctx context.Context, method, path, body, teamID, webhookID string) *h
 	} else {
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
 	}
-	r = r.WithContext(ctx)
+	// Past the mux, so past the gateDerivation wrapper that stamps the
+	// derivation verdict on the real routes; the mint handlers refuse a
+	// context without it. Same constructor the gate uses.
+	r = r.WithContext(testMintVerdictContext(ctx))
 	if teamID != "" {
 		r.SetPathValue("id", teamID)
 	}
@@ -299,7 +319,7 @@ func TestHandleRotateWebhook(t *testing.T) {
 	s := newWebhookTestServer(t)
 	ctx := superAdminCtx()
 	// seed a config with a known token
-	pt, hash, last4, fp, _ := webhooks.MintToken()
+	pt, hash, last4, fp, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	cfg := webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true,
 		TokenHash: hash, TokenLast4: last4, Fingerprint: fp, BotIDs: []string{"review-pr"}, CreatedAt: time.Now()}
 	if err := s.webhookConfigs.Create(ctx, cfg); err != nil {
@@ -349,7 +369,7 @@ func runWebhookAuth(s *Server, cfgID, token string) (status int, ran bool, tenan
 
 func TestWebhookAuth_Admission(t *testing.T) {
 	s := newWebhookTestServer(t)
-	pt, hash, last4, fp, _ := webhooks.MintToken()
+	pt, hash, last4, fp, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	cfg := webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true,
 		TokenHash: hash, TokenLast4: last4, Fingerprint: fp, BotIDs: []string{"review-pr"},
 		RateLimit: webhooks.Rate{Rate: 100, Burst: 100}, CreatedAt: time.Now()}
@@ -375,37 +395,92 @@ func TestWebhookAuth_Admission(t *testing.T) {
 	}
 }
 
-// TestWebhookAuth_HMACModeSkipsTokenCheck pins the SignModeHMAC branch:
-// a webhook configured for HMAC signing MUST NOT require a header
-// token. Body verification happens in the provider handler — the
-// middleware just admits the call. Other admission checks (enabled,
-// rate, quota, suspend) still apply, but no token header is read.
-func TestWebhookAuth_HMACModeSkipsTokenCheck(t *testing.T) {
-	s := newWebhookTestServer(t)
+// hmacModeConfig stores an hmac-mode GitHub webhook whose secret is
+// sealed under the test server's sealer, and returns its plaintext.
+// TokenHash is deliberately empty: an hmac-mode webhook may carry a
+// token mirror for management UX, but the middleware must not consult it.
+func hmacModeConfig(t *testing.T, s *Server, id string, rate webhooks.Rate, monthly int) string {
+	t.Helper()
+	const secret = "hmac-mode-secret"
+	sealed, err := webhooks.SealHMACSecret(s.sealer, id, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := webhooks.Config{
-		ID: "ghub", TenantID: "t1", Provider: webhooks.ProviderGitHub,
-		SignMode: webhooks.SignModeHMAC, Enabled: true, BotIDs: []string{"review-pr"},
-		// TokenHash deliberately empty: an hmac-mode webhook may have
-		// a TokenHash mirror (for management UX) but the middleware
-		// must NOT consult it.
-		RateLimit: webhooks.Rate{Rate: 100, Burst: 100}, CreatedAt: time.Now(),
+		ID: id, TenantID: "t1", Provider: webhooks.ProviderGitHub,
+		SignMode: webhooks.SignModeHMAC, HMACSecretSealed: sealed, Enabled: true,
+		BotIDs: []string{"review-pr"}, RateLimit: rate, MonthlyCallLimit: monthly, CreatedAt: time.Now(),
 	}
 	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	var ran bool
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return secret
+}
+
+// serveHMACWebhook sends body through webhookAuth for a GitHub hook,
+// signed with secret ("" sends no signature header), and reports the
+// status, whether the next handler ran, and the body that handler read.
+func serveHMACWebhook(s *Server, id, body, secret string) (status int, ran bool, seen string) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ran = true
+		b, _ := io.ReadAll(r.Body)
+		seen = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	h := s.webhookAuth(webhooks.ProviderGitHub, next)
-	r := httptest.NewRequest("POST", "/api/webhooks/github/ghub", strings.NewReader(`{}`))
-	r.SetPathValue("id", "ghub")
-	// No X-Gitlab-Token / X-Iterion-Webhook-Token / etc.
+	r := httptest.NewRequest("POST", "/api/webhooks/github/"+id, strings.NewReader(body))
+	r.SetPathValue("id", id)
+	if secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(body))
+		r.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !ran {
-		t.Fatalf("hmac-mode admission failed: code=%d ran=%v body=%s", w.Code, ran, w.Body.String())
+	s.webhookAuth(webhooks.ProviderGitHub, next).ServeHTTP(w, r)
+	return w.Code, ran, seen
+}
+
+// TestWebhookAuth_HMACModeAdmitsASignedBodyAndRestoresIt pins the
+// SignModeHMAC branch's success path: no header token is read, the body
+// signature is the credential, and the provider handler still reads the
+// whole body the middleware verified.
+func TestWebhookAuth_HMACModeAdmitsASignedBodyAndRestoresIt(t *testing.T) {
+	s := newWebhookTestServer(t)
+	secret := hmacModeConfig(t, s, "ghub", webhooks.Rate{Rate: 100, Burst: 100}, 0)
+	const body = `{"action":"opened","number":7}`
+	code, ran, seen := serveHMACWebhook(s, "ghub", body, secret)
+	if code != http.StatusOK || !ran {
+		t.Fatalf("a correctly signed delivery must be admitted: code=%d ran=%v", code, ran)
+	}
+	if seen != body {
+		t.Fatalf("the provider handler must read the body the middleware verified: got %q, want %q", seen, body)
+	}
+}
+
+// TestWebhookAuth_HMACRefusalChargesNoAdmission is the #3276 witness: an
+// hmac-mode delivery that fails authentication must not spend the hook's
+// rate bucket nor the tenant's monthly quota, or anyone holding the URL
+// can exhaust both. Burst 1 and a monthly limit of 1: after three refused
+// deliveries, a signed one is still admitted — and a second signed one is
+// refused, which proves the limits are live rather than unset.
+func TestWebhookAuth_HMACRefusalChargesNoAdmission(t *testing.T) {
+	s := newWebhookTestServer(t)
+	secret := hmacModeConfig(t, s, "ghq", webhooks.Rate{Rate: 0.0001, Burst: 1}, 1)
+	const body = `{"action":"opened"}`
+	for _, forged := range []struct{ name, secret string }{
+		{"unsigned", ""},
+		{"signed with another secret", "not-the-hook-secret"},
+		{"signed with another secret, again", "still-not-it"},
+	} {
+		code, ran, _ := serveHMACWebhook(s, "ghq", body, forged.secret)
+		if code != http.StatusUnauthorized || ran {
+			t.Fatalf("%s: want 401 before any admission step, got code=%d ran=%v", forged.name, code, ran)
+		}
+	}
+	if code, ran, _ := serveHMACWebhook(s, "ghq", body, secret); code != http.StatusOK || !ran {
+		t.Fatalf("the refused deliveries spent the hook's admission: a signed delivery got code=%d ran=%v", code, ran)
+	}
+	if code, ran, _ := serveHMACWebhook(s, "ghq", body, secret); code != http.StatusTooManyRequests || ran {
+		t.Fatalf("the second signed delivery must meet the live limit: code=%d ran=%v", code, ran)
 	}
 }
 
@@ -414,7 +489,7 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	ctx := context.Background()
 
 	// disabled → 410
-	pt, hash, l4, fp, _ := webhooks.MintToken()
+	pt, hash, l4, fp, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "off", TenantID: "t1", Provider: webhooks.ProviderGitLab,
 		Enabled: false, TokenHash: hash, TokenLast4: l4, Fingerprint: fp, BotIDs: []string{"x"}, RateLimit: webhooks.Rate{Rate: 100, Burst: 100}})
 	if code, ran, _, _ := runWebhookAuth(s, "off", pt); code != http.StatusGone || ran {
@@ -422,7 +497,7 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	}
 
 	// rate limit: burst 1 → first ok, second 429
-	pt2, h2, l42, fp2, _ := webhooks.MintToken()
+	pt2, h2, l42, fp2, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "rl", TenantID: "t1", Provider: webhooks.ProviderGitLab,
 		Enabled: true, TokenHash: h2, TokenLast4: l42, Fingerprint: fp2, BotIDs: []string{"x"}, RateLimit: webhooks.Rate{Rate: 0.0001, Burst: 1}})
 	if code, _, _, _ := runWebhookAuth(s, "rl", pt2); code != http.StatusOK {
@@ -433,7 +508,7 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	}
 
 	// monthly quota: per-webhook limit 1, high rate so RL doesn't trip
-	pt3, h3, l43, fp3, _ := webhooks.MintToken()
+	pt3, h3, l43, fp3, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "mq", TenantID: "t2", Provider: webhooks.ProviderGitLab,
 		Enabled: true, TokenHash: h3, TokenLast4: l43, Fingerprint: fp3, BotIDs: []string{"x"},
 		RateLimit: webhooks.Rate{Rate: 100, Burst: 100}, MonthlyCallLimit: 1})
@@ -442,6 +517,19 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	}
 	if code, _, _, _ := runWebhookAuth(s, "mq", pt3); code != http.StatusTooManyRequests {
 		t.Fatalf("mq second should be 429 (monthly quota): code=%d", code)
+	}
+
+	// a suspended team → 403, the handler never runs
+	if _, err := s.authStore().CreateTeam(ctx, identity.Team{
+		ID: "tsus", Name: "tsus", Slug: "webhook-tsus", Status: identity.TeamStatusSuspended, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pt4, h4, l44, fp4, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
+	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "sus", TenantID: "tsus", Provider: webhooks.ProviderGitLab,
+		Enabled: true, TokenHash: h4, TokenLast4: l44, Fingerprint: fp4, BotIDs: []string{"x"}, RateLimit: webhooks.Rate{Rate: 100, Burst: 100}})
+	if code, ran, _, _ := runWebhookAuth(s, "sus", pt4); code != http.StatusForbidden || ran {
+		t.Fatalf("suspended team: code=%d ran=%v, want 403 and no handler", code, ran)
 	}
 }
 

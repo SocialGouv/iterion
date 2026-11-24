@@ -41,6 +41,9 @@ type ToolDef struct {
 
 	// Origin tracks where this tool came from.
 	Origin Origin
+
+	// concurrentSafe is set only by audited native registration sites.
+	concurrentSafe bool
 }
 
 // Origin describes the provenance of a tool.
@@ -93,6 +96,10 @@ func NewRegistry() *Registry {
 // RegisterBuiltin adds a built-in tool. The name must not contain dots.
 // Returns an error if the name collides with an existing registration.
 func (r *Registry) RegisterBuiltin(name string, desc string, schema json.RawMessage, exec func(ctx context.Context, input json.RawMessage) (string, error)) error {
+	return r.registerBuiltin(name, desc, schema, exec, false)
+}
+
+func (r *Registry) registerBuiltin(name string, desc string, schema json.RawMessage, exec func(context.Context, json.RawMessage) (string, error), concurrentSafe bool) error {
 	if strings.Contains(name, ".") {
 		return fmt.Errorf("tool: builtin name %q must not contain dots", name)
 	}
@@ -101,11 +108,12 @@ func (r *Registry) RegisterBuiltin(name string, desc string, schema json.RawMess
 	}
 
 	td := &ToolDef{
-		QualifiedName: name,
-		Description:   desc,
-		InputSchema:   schema,
-		Execute:       exec,
-		Origin:        Origin{Kind: OriginBuiltin},
+		QualifiedName:  name,
+		Description:    desc,
+		InputSchema:    schema,
+		Execute:        exec,
+		Origin:         Origin{Kind: OriginBuiltin},
+		concurrentSafe: concurrentSafe,
 	}
 	return r.register(td)
 }
@@ -253,7 +261,25 @@ func (r *Registry) resolve(ref string, aliases bool) (*ToolDef, error) {
 // Listing
 // ---------------------------------------------------------------------------
 
-// List returns all registered tools. The order is not guaranteed.
+// Every listing below returns its tools sorted by qualified name, for
+// prompt-cache stability. The registry is a map and Go randomises map
+// iteration per iteration, so an unsorted listing returned a DIFFERENT order
+// on each call over an unchanged registry — and these listings end up as the
+// tools array of a model request, whose last element is where buildRequest
+// puts the ephemeral cache breakpoint. A prefix is cached up to and including
+// the marked element, so a reordered tail means the next turn writes a new
+// entry instead of reading the previous one: the whole tools prefix re-billed,
+// silently, on a tree that did not change.
+//
+// Sorting here rather than at each caller is deliberate: these three methods
+// are the only places the map is ranged, so this is the one chokepoint every
+// path crosses. Two non-test callers consumed the unsorted order — the
+// subagent tool set (pkg/backend/model/subagent.go) and tool_search's haystack
+// (claw_builtins.go) — and a third would have inherited the defect.
+//
+// sortByQualifiedName is what TestEveryRegistryListingIsDeterministic pins.
+
+// List returns all registered tools, sorted by qualified name.
 func (r *Registry) List() []*ToolDef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -262,10 +288,10 @@ func (r *Registry) List() []*ToolDef {
 	for _, td := range r.tools {
 		result = append(result, td)
 	}
-	return result
+	return sortByQualifiedName(result)
 }
 
-// ListByOrigin returns tools filtered by origin kind.
+// ListByOrigin returns tools filtered by origin kind, sorted by qualified name.
 func (r *Registry) ListByOrigin(kind OriginKind) []*ToolDef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -276,10 +302,11 @@ func (r *Registry) ListByOrigin(kind OriginKind) []*ToolDef {
 			result = append(result, td)
 		}
 	}
-	return result
+	return sortByQualifiedName(result)
 }
 
-// ListByServer returns tools from a specific MCP server.
+// ListByServer returns tools from a specific MCP server, sorted by qualified
+// name.
 func (r *Registry) ListByServer(server string) []*ToolDef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -290,7 +317,15 @@ func (r *Registry) ListByServer(server string) []*ToolDef {
 			result = append(result, td)
 		}
 	}
-	return result
+	return sortByQualifiedName(result)
+}
+
+// sortByQualifiedName orders a listing by the key that identifies a tool to
+// every consumer. QualifiedName is unique in the registry — `register`
+// refuses a duplicate — so the order is total and two calls cannot disagree.
+func sortByQualifiedName(defs []*ToolDef) []*ToolDef {
+	sort.Slice(defs, func(i, j int) bool { return defs[i].QualifiedName < defs[j].QualifiedName })
+	return defs
 }
 
 // Len returns the number of registered tools.

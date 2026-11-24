@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -99,9 +100,22 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 		return
 	}
 
-	s.assistantDependencyMu.Lock()
-	defer s.assistantDependencyMu.Unlock()
-	result, err := assistantDependencyBotsUpdateInPaths(r.Context(), workDir, req, discoveryPaths)
+	// The update writes the repository of the workdir it was admitted for:
+	// its whole working tree and its index are what it locks.
+	repo, err := identifyGitRepository(r.Context(), workDir)
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	result, err := assistantDependencyBotsUpdateHolding(r.Context(), workDir, req, discoveryPaths, assistantDependencyHolds{
+		tree: func(ctx context.Context) (func(), error) {
+			_, release, err := s.holdRepository(ctx, repo, botTreeWriterDependencyUpdate, false)
+			return release, err
+		},
+		git: func(ctx context.Context) (func(), error) {
+			return s.holdRepositoryIndex(ctx, repo, botTreeWriterDependencyUpdate)
+		},
+	})
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -127,13 +141,21 @@ func (s *Server) handleAssistantDependencyBotsLocalize(w http.ResponseWriter, r 
 		s.authoringError(w, r, err)
 		return
 	}
+	// The consumer bundle is resolved under the lock its write holds: a
+	// bundle resolved before it may be another one by the time of the
+	// write. The localization reaches no network, and from its copy to its
+	// lock's sync the tree is provisional: both locks are held throughout,
+	// the repository's index first, then its whole working tree.
+	_, release, ok := s.lockRepositoryForEditor(w, r, botTreeWriterDependencyLocalize, req.EditorPath, true)
+	if !ok {
+		return
+	}
+	defer release()
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
 	}
-	s.assistantDependencyMu.Lock()
-	defer s.assistantDependencyMu.Unlock()
 	result, err := assistantDependencyBotsLocalize(r.Context(), target, req)
 	if err != nil {
 		s.authoringError(w, r, err)
@@ -174,10 +196,39 @@ func assistantDependencyBotsUpdate(ctx context.Context, workdir string, req assi
 	return assistantDependencyBotsUpdateInPaths(ctx, workdir, req, nil)
 }
 
-func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string) (response assistantDependencyBotsUpdateResponse, err error) {
+func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string) (assistantDependencyBotsUpdateResponse, error) {
+	return assistantDependencyBotsUpdateHolding(ctx, workdir, req, discovery, assistantDependencyHolds{})
+}
+
+// assistantDependencyHolds are the server's write locks a dependency update
+// takes, each around the phase it orders; a nil member takes nothing.
+type assistantDependencyHolds struct {
+	tree, git func(context.Context) (func(), error)
+}
+
+func (h assistantDependencyHolds) take(ctx context.Context, lock func(context.Context) (func(), error)) (func(), error) {
+	if lock == nil {
+		return func() {}, nil
+	}
+	return lock(ctx)
+}
+
+// assistantDependencyBotsUpdateHolding runs the update in three phases. The
+// workspace, its lock, its cache and the repository's state are snapshotted
+// under the bot tree's lock; the candidate is fetched and staged privately
+// under none — that is where the network is; and the commit installs it
+// under the repository's lock, then the tree's, verifying every snapshot
+// first. A writer that changed what the snapshot holds in between makes the
+// update the conflict (409) its stale snapshot is.
+func assistantDependencyBotsUpdateHolding(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string, holds assistantDependencyHolds) (response assistantDependencyBotsUpdateResponse, err error) {
 	if err = validateAssistantDependencyBotsUpdate(req); err != nil {
 		return response, err
 	}
+	releaseTree, err := holds.take(ctx, holds.tree)
+	if err != nil {
+		return response, err
+	}
+	defer func() { releaseTree() }()
 	workdir, err = filepath.Abs(workdir)
 	if err != nil {
 		return response, err
@@ -225,8 +276,36 @@ func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, r
 		return response, err
 	}
 	defer func() { err = transaction.discard(err) }()
-	prepared, err := transaction.prepare(ctx, req)
+	if err = transaction.snapshot(ctx, req); err != nil {
+		return response, err
+	}
+	// A remote source is fetched with no lock held; a local one is a read of
+	// the filesystem — perhaps of the workspace itself — and is fetched under
+	// the locks the commit takes, the repository's before the tree's.
+	remote := !botdeps.SourceIsLocal(workdir, previous)
+	releaseTree()
+	var prepared *botdeps.PreparedUpdate
+	var fetched botdeps.SyncResult
+	if remote {
+		if prepared, fetched, err = transaction.fetch(ctx, req); err != nil {
+			return response, err
+		}
+	}
+	releaseGit, err := holds.take(ctx, holds.git)
 	if err != nil {
+		return response, err
+	}
+	defer releaseGit()
+	if releaseTree, err = holds.take(ctx, holds.tree); err != nil {
+		releaseTree = func() {}
+		return response, err
+	}
+	if !remote {
+		if prepared, fetched, err = transaction.fetch(ctx, req); err != nil {
+			return response, err
+		}
+	}
+	if err = transaction.stage(ctx, prepared, fetched); err != nil {
 		return response, err
 	}
 	commit, err := commitAttestedAuthoringFilesWithDependency(ctx, root, []string{lockRel}, map[string]string{lockRel: contentSHA256(string(prepared.CandidateLock))}, req.Message, transaction)
@@ -250,6 +329,20 @@ func assistantDependencyBotsLocalize(ctx context.Context, target *authoringTarge
 	}
 	if !manifestDeclaresWorkflowDependency(target.manifest, req.Name) {
 		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("open bundle does not declare workflow dependency %q", req.Name)}
+	}
+	// The localize lands a real bundle under plugins/<name> INSIDE the
+	// consumer's directory, which discovery only skips while it CLAIMS the
+	// consumer. The claim is bundle.DirClaim's verdict — the same one the
+	// walk uses (ADR-140) — so a directory cannot be a bundle on one
+	// surface and a descent on another: an unclaimed or unopenable
+	// consumer is refused before anything moves
+	// (docs/agents/engine/bot-catalog-regeneration.md records the corner).
+	claimed, openable, _ := bundle.DirClaim(target.bundleDir)
+	if !claimed {
+		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{"consumer bundle is not one discovery claims (its manifest is not iterion's) — a localized dependency under an unclaimed consumer shadows the catalogue and drops the consumer from it"}
+	}
+	if !openable {
+		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("consumer bundle is claimed but carries no %s — discovery would skip it and the localized copy would shadow the catalogue", bundle.MainBotFile)}
 	}
 	gitRootOut, err := assistantDependencyGit(ctx, target.workDir, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -644,9 +737,18 @@ func restoreAssistantDependencyLock(path string, contents []byte, mode os.FileMo
 func assistantDependencyGit(ctx context.Context, workdir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workdir}, args...)...)
 	cmd.Env = gitlib.SanitizeEnv(os.Environ())
-	out, err := cmd.CombinedOutput()
+	// The answer is stdout: these callers read a SHA, a path they then create
+	// a lock file at, a NUL-separated list, `git version` under Sscanf. git
+	// writes warnings, hints and advice on stderr whenever the environment
+	// gives it a reason to, and spliced into the answer such a line IS the
+	// value — a path that resolves nowhere, a version that parses as older
+	// than the one installed. git's reason stays in the error, the only place
+	// these callers read it (one matches "not a git repository" there).
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
 }

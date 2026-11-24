@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -63,7 +62,7 @@ func shellWatchPeriod() time.Duration {
 }
 
 func envDurationOrDefault(name string, def time.Duration) time.Duration {
-	if v := os.Getenv(name); v != "" {
+	if v := envOperator(name); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
@@ -149,7 +148,7 @@ func (s *Server) handleRunShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("server: post-mortem shell opened for run %s in %s (from %s)", run.ID, run.WorkDir, r.RemoteAddr)
+		s.logger.Info("server: post-mortem shell opened for run %s in %s (from %s)", run.ID, run.WorkDir, s.clientIP(r))
 	}
 	// Snapshot the authenticated identity: r.Context() dies with the upgrade,
 	// and the credential it names is what the watchdog asks about for as long

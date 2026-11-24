@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
@@ -35,6 +35,9 @@ func buildFullClawRegistry(t *testing.T) *Registry {
 		IncludeComputerUse:          true,
 		IncludeWorkspaceDiagnostics: true,
 		PlanMode:                    &clawtools.PlanModeState{Active: &planActive, Dir: t.TempDir()},
+		// Not an optional family, but the guard counts every field: the
+		// scope the read tools share, workspace-only here.
+		ReadScope: NewReadScope(""),
 		Privacy: &privacy.Config{
 			StoreDir:     t.TempDir(),
 			Detector:     detector.New(),
@@ -281,6 +284,19 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		"Subagent":     "nil registers the agent tool as a typed refusal, which IS the registered form",
 		"AskUser":      "nil keeps the pause/resume handler, which IS the registered form",
 		"Config":       "an empty config map still registers the `config` tool",
+		// The zero values REGISTER the `command` family: the switch is
+		// inverted (false = the tool registers; true is the kill switch)
+		// and 0 is the built-in ceiling, not an off.
+		"DisableWorkspaceCommands": "false registers the command tool — the disable is the non-zero value",
+		"CommandMaxBytes":          "0 is DefaultWorkspaceCommandMaxBytes, and the family registers either way",
+		// nil wraps the Workspace string into the provider (#2870): the
+		// command and skill families register either way, against a static
+		// root.
+		"WorkspaceProvider": "nil derives the provider from Workspace — the families register either way",
+		// nil is the trusted default (ADR-162 U3): the withdrawal is a
+		// per-call answer, not a registration switch — the `command` family
+		// registers either way.
+		"WorkspaceTrust": "nil reads as trusted — the command family registers either way",
 		// RegisterClawAll allocates a fresh empty registry for each of
 		// these when nil, so the family registers either way. Their doc
 		// comment says so; if that ever changes, the family stops
@@ -291,6 +307,10 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		"Crons":       "RegisterClawAll allocates one when nil",
 		"LSP":         "RegisterClawAll allocates one when nil",
 		"MCPProvider": "RegisterClawAll wires an empty Registry-backed provider when nil",
+		// Not a family switch: nil is the DEFAULT (the workspace walk a
+		// trusted run takes); a non-nil provider only narrows what the
+		// already-registered `skill` tool serves (#1719).
+		"SkillAllowlist": "nil disarms the pinned mode — the skill family registers either way",
 	}
 	for i := 0; i < ty.NumField(); i++ {
 		f, name := v.Field(i), ty.Field(i).Name

@@ -2,6 +2,7 @@ import { resumeRun } from "@/api/runs";
 import type { RunHeader } from "@/api/runs";
 import { Button } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 import { useUIStore } from "@/store/ui";
@@ -18,6 +19,7 @@ interface Props {
 // pause→resume is expected).
 export default function OperatorPauseBanner({ run }: Props) {
   const { busy, error, run: runAction } = useAsyncAction();
+  const canAct = useRunCanAct();
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const addToast = useUIStore((s) => s.addToast);
@@ -45,19 +47,21 @@ export default function OperatorPauseBanner({ run }: Props) {
           ? `Agent halted before ${checkpointNode}.`
           : "Agent halted at the next safe boundary."}
       </span>
-      <span className="text-fg-subtle">
+      <span className="text-fg-muted">
         The run will not progress until you click Resume.
       </span>
       <div className="ml-auto flex items-center gap-2">
         {error && <span className="text-micro text-danger">{error}</span>}
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={busy}
-          onClick={() => void onResume()}
-        >
-          {busy ? "…" : "Resume"}
-        </Button>
+        {canAct && (
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy}
+            onClick={() => void onResume()}
+          >
+            {busy ? "…" : "Resume"}
+          </Button>
+        )}
       </div>
     </div>
   );

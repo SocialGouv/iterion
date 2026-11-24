@@ -45,6 +45,7 @@ func countCalls(b *providerScriptedBackend, hint string) int {
 // the run-level usage-window retry and the credential-pool donor
 // cooldown both key on.
 func TestUsageWindow_SkipsRetryBudgetWhenFallbackRemains(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	e := newFallbackExecutor(nil, rec.hook())
 	fake := &providerScriptedBackend{fail: map[string]error{"zai": usageWindowErr()}}
@@ -75,6 +76,7 @@ func TestUsageWindow_SkipsRetryBudgetWhenFallbackRemains(t *testing.T) {
 // exactly right — retry, then surface the typed error upward so the
 // run-level policy can wait the window out.
 func TestUsageWindow_KeepsRetryBudgetOnLastElement(t *testing.T) {
+	t.Parallel()
 	e := newFallbackExecutor(nil, EventHooks{})
 	fake := &providerScriptedBackend{fail: map[string]error{"zai": usageWindowErr()}}
 
@@ -98,6 +100,7 @@ func TestUsageWindow_KeepsRetryBudgetOnLastElement(t *testing.T) {
 // narrow: a plain throttle or 5xx is worth re-issuing against the same
 // element, so it must still pay its budget before the chain advances.
 func TestTransientStillBurnsBudgetWithFallback(t *testing.T) {
+	t.Parallel()
 	e := newFallbackExecutor(nil, EventHooks{})
 	fake := &providerScriptedBackend{fail: map[string]error{
 		"zai": &delegate.ErrTransient{Provider: "zai", Reason: "5xx upstream"},
@@ -121,6 +124,7 @@ func TestTransientStillBurnsBudgetWithFallback(t *testing.T) {
 // model than the one it asked for is indistinguishable, after the fact,
 // from a clean one.
 func TestModelFallbackEventReachesStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {

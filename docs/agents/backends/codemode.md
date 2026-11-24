@@ -1,0 +1,212 @@
+# Codemode — the model writes code that calls the node's own tools
+
+One tool whose argument is JavaScript. It runs harness-side, in a child process
+that holds no credential, and its only capability is calling the tools the node
+already declares. The script loops, filters and aggregates where the model's
+context would otherwise carry every declaration and every result; what comes
+back is what the script chose to return.
+
+**Read the decision first: [ADR-165](../../adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md).**
+This page is the operational half — what is built, what is not, and the
+contract anything new has to honour.
+
+## What is built, as of 2026-11-13
+
+Three pieces. **The door**: `toolDispatcher` in
+[pkg/backend/model/generation_toolexec.go](../../../pkg/backend/model/generation_toolexec.go)
+holds a node's dispatch state as a value and `dispatch(ctx, block)` *is*
+`executeOneTool`, so a nested call takes the pipeline the model's own loop
+takes — lifecycle hooks, the `allowed-tools:` command scope,
+`permission.Policy`, secret materialization, the events, the `tool_search` pin.
+
+**The confined host**: [pkg/scripthost](../../../pkg/scripthost) plus the
+hidden `iterion __script-host` sub-command. A caller hands it JavaScript, it
+runs in a child process with an empty environment under kernel bounds, and one
+JSON document comes back. Its bounds, the kernel mechanism behind each and the
+witness that was seen to fail without it are in
+[codemode-confinement](codemode-confinement.md) — which also records the five
+statements measurement refuted, three of them in this page.
+
+**And the binding between them**: descriptors 3 and 4, newline-delimited JSON,
+one global, `call(name, input)`, with discovery, [batches and structured
+results](codemode-concurrency.md) and [run state](codemode-state.md).
+The parent dispatches through `d.dispatch`. Both forms block in JavaScript:
+the VM does not pump an event loop. `scriptToolServer` lives in
+`pkg/backend/model` because it must: the dispatcher, its context key and its
+fields are unexported, so a broker outside would need the funnel widened —
+which is giving the funnel a second door.
+
+Measured against the shipping `CGO_ENABLED=0` binary: a five-iteration loop
+crossed the pipe five times and returned **one** number — compose outside the
+model's context, return the distilled result.
+
+**A model on claw can reach it.** `codemode: on|off` is declared on an agent,
+a judge or a workflow; the executor resolves node > workflow > off
+(`ir.ResolveCodemode`, no environment rung). Two ceilings bound it and no
+`.bot` raises either: the capability cell — `claw` `shipped`, every other
+backend `typed-refused`, a CLI-agent loop owning no dispatcher a program could
+call back through — and `scripthost.Ceiling`, clamped in the parent. A
+declared `on` elsewhere is refused, never dropped: **C339** at compile where
+the route is known (a `${VAR:-name}` is read as its source default and says
+so), a typed `ErrCapabilityUnsupported` at dispatch where it is not. That
+refusal ENDS the node — no `fallbacks:` route is tried, as ambient's does not
+either. C338 is retired.
+
+**Discovery** (CM-3): an index in the description, `call.describe`
+and `call.search` in the program — [codemode-discovery](codemode-discovery.md).
+#3155's bench holds; what it still owes is named in
+[posture bench](../testing/deployment-posture-bench.md). Epic
+[#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,
+#3182, #3195).
+
+### Four decisions the binding owes its reviewers
+
+- **The script source keeps its `{{placeholders}}`.** The script host is in
+  `keepsPlaceholders`, so a model writing `{{SECRET}}` does not get the
+  cleartext substituted into the text that crosses the pipe into a child built
+  to hold no credential. Each nested call is materialised at **its own**
+  dispatch instead, with `rewrite.Off` set for that call alone rather than for
+  the whole script.
+- **The withheld set is a CLASS, not a list of names.** `permission.IsInfrastructureTool`
+  keys on the namespace and normalises every separator spelling, so the same
+  tool cannot be reached as `ask_user`, `askUser`, `mcp__iterion__ask_user` or
+  `mcp.iterion.ask_user`. Withheld: the pause family (a script cannot wait for
+  an operator), `send_user_message` (permission-exempt, so the call budget
+  would be its only bound), `structured_output` (it answers for the node), the
+  `mcp_iterion` control surface, `agent` (a sub-agent needs its own reserve) and
+  the script host itself.
+- **Discovery answers with the set the script will be served.** `dispatch`
+  applies a narrowing the caller declared, so `tool_search` cannot offer a
+  script a tool the server then refuses — two answers to one question is how a
+  model learns to retry a call that can never succeed. The filter is derived
+  from the predicate that refuses, so the two cannot drift.
+- **The call budget is the PARENT's.** The child counts too, to save a round
+  trip, but a child is what is being bounded and cannot be what bounds. An
+  over-budget call never reaches the server, so no hook fires and no permission
+  verdict is computed for it.
+
+## The contract — a host dispatches with the context the dispatcher vouches for
+
+`newToolDispatcher(ctx, …)` returns the dispatcher **and** a context, and
+`dispatch` refuses any context that does not descend from it. That refusal is
+the gate's own shape: a synthetic `isError` tool_result, not a panic and not a
+silent pass.
+
+It exists because five per-node facts ride the context rather than the struct,
+and **three of them fail open** — the `allowed-tools:` command scope (#1717),
+the policy a child inherits (absent: a child spawned through `agent` is
+**ungated entirely**), and the parent loop shape bounding a child's tools. The
+other two fail loud: the Ask degradation (#2877) pauses the run, and
+`tool.HostCapabilitiesFrom` refuses — the precedent this guard follows.
+
+Each fact, what its absence costs, the 17 tests that redden when the conduit
+is cut across the four that ride the dispatch context, and the two things the guard deliberately does NOT do — it checks
+provenance rather than content, and it does not re-pin those facts (tried,
+and it erases a narrowing that was present, with the whole suite green) — are
+in `dispatch`'s own doc comment, which is where they bind. Do not reintroduce
+the re-pinning.
+
+A second path into the tool-running funnel is refused mechanically:
+`toolFunnelCallers` in
+[generation_toolexec_callers_test.go](../../../pkg/backend/model/generation_toolexec_callers_test.go)
+pins `executeOneTool` to `dispatch` and `runToolExecution` to `executeOneTool`.
+A lot that wants its own path has to widen that map and say which controls it
+holds instead.
+
+## Confinement comes from the kernel, not the interpreter
+
+goja cannot bound itself. ADR-098 F19 closed on the measurement:
+*"goja's interrupt does not preempt native calls and bounds no heap"*. A native
+regex bomb hangs the runner, not the script. So the host is a **child process**
+and the limits are applied before the interpreter exists — `RLIMIT_AS` /
+`RLIMIT_DATA` for a real memory cap (room above the child's own segment), `RLIMIT_CPU`, `no-new-privs`,
+non-dumpable, a parent-death signal, and Landlock in deny-all where the kernel
+offers it.
+
+**The binding list is not the surface**, which is why the host was written
+rather than borrowed. claw's own `internal/runtime/workflow.go` runs
+model-authored JavaScript on a `goja_nodejs` event loop, and
+`eventloop.NewEventLoop()` installs `require`, `console` and the timers by
+default — measured, `typeof require` is `function` and
+`require('<path>.json')` reads a file off the host filesystem. So "no Go object
+is reflected in" and "a script is deterministic" are properties
+[pkg/scripthost](../../../pkg/scripthost) **builds** on a bare `goja.New()`;
+they are not inherited. A seam that crosses claw is still improved in its
+`.works/` worktree and bumped — never forked here.
+
+`GOMEMLIMIT` is a GC target. It is not a cap, and it is not an answer here.
+
+Where Landlock is missing on an in-pod runner, codemode is granted only to a
+node that **already** holds a `class:shell` tool, and is otherwise refused as
+`codemode_unavailable`. Two corrections to the reasoning that wrote that rule:
+Landlock costs nothing to adopt — `golang.org/x/sys/unix` is already a direct,
+vendored dependency carrying the syscalls and every constant, no cgo — and it
+its network rights are TCP-only from ABI 4 — so the child's network wall is a
+seccomp filter denying socket creation, on every kernel (ADR-165, 2026-11-18):
+a script holds a network guarantee a shell tool does not, Landlock or not. And nothing in this
+repository mentions gVisor or `runsc` — no part of the confinement comes from a
+runtime class here.
+
+## The cloud posture, which is not the one people assume
+
+Production runs are **not** sandboxed. `charts/iterion/values.yaml` ships
+`runner.sandbox.enabled: false` and the configmap renders
+`ITERION_SANDBOX_OVERRIDE: "none"`, saying why: *"pod is the isolation
+boundary"*. So the script host, the bash a node already holds and the runner
+are siblings in one pod under one uid.
+
+In that posture `__script-host` is also the **first** credential-less child
+iterion spawns: the `__claw-runner` precedent is started only when a run is
+sandboxed, which production never is. ADR-029 is the template for the IPC and
+the hidden-subcommand convention, not for the spawn — and `SysProcAttr` carries
+no rlimit field, so the child applies its own limits after `exec`.
+
+Two named topologies: **in-pod** is the default and the one that must be proven
+first; **sibling pod** is the stronger form and a deployment choice, not a
+per-bot one. The sandbox crossing is a later lot, for the sandbox pools and the
+ADR-162 fork pool — not the default posture.
+
+This is also why the first bench is in-pod: a bench on the sandbox crossing
+would prove a posture nobody runs.
+
+## What a script may not do
+
+- **Pause the run.** `ask_user` inside a script is a typed refusal naming the
+  direct call as the way to ask. A deferred tool whose verdict can be `Ask`
+  would otherwise be reachable only from a place that cannot honour it.
+- **Choose a child's model**, or spawn children without a finite reserve booked
+  before they run.
+- **Hold a credential.** Its environment and its `/proc` carry none.
+- **Survive a restart.** Journal-and-replay depends on mid-node resume
+  ([#1403](https://github.com/SocialGouv/iterion/issues/1403)) and is out of
+  v1: a script is re-run, never resumed.
+
+## Bounds
+
+Every bound has an operator override **and** a platform ceiling the tenant
+cannot raise — philosophy 1 forbids a limit with no escape hatch, cloud
+multi-tenancy forbids an escape hatch with no ceiling. The precedent to copy is
+`applyCloudBudgetCeiling` in [pkg/runner/loop.go](../../../pkg/runner/loop.go),
+which clamps a workflow's budget to a ceiling the bundle cannot lift.
+
+The axes: wall clock, CPU time, address space, bytes returned to the model,
+tool calls per script, concurrent tool calls, nested children per invocation
+and per node, and `store()` entries and bytes per run. Ten carry an
+author surface, the `codemode:` block:
+[codemode-confinement](codemode-confinement.md#the-authors-surface). Each
+ships a witness on **both** arms — refused above the bound, allowed below —
+because a false refusal in a blocking path costs as much as a hole and is
+harder to see.
+
+## Two traps worth knowing before you touch the guards
+
+Both were paid on this seam, and both make a green test meaningless:
+
+- **A mutation bench reads the whole package.** Measuring which tests a mutant
+  reddens under a `-run` filter hides the characterization suite: a claim of
+  "only test X reddened" was 1 where the truth was 2 and 21. Publish the
+  mutant × witness matrix, not a sentence.
+- **`go test -overlay` cannot mutate a guard that reads the filesystem.** The
+  census walks `os.ReadDir(".")`, so an overlay hands it a file the walk never
+  sees and the mutation comes back **falsely green**. Write the probe to disk,
+  run, remove it, and check `git status`.

@@ -316,6 +316,18 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 	if t.ExpiresAt != nil {
 		expires = t.ExpiresAt.UTC()
 	}
+	// The pin is a property of the TOKEN: an explicit team on the row bounds
+	// every team- and org-addressed route this bearer reaches
+	// (auth.Identity.PinRefusesTeam / PinRefusesOrg), not merely the team it
+	// authenticates with. A token with NO explicit team pins nothing — it
+	// follows whatever default team its owner has at each use — so it keeps
+	// the owner's full reach, and the two cases stay distinguishable here
+	// where t.TeamID is still readable (teamID above has already collapsed
+	// them onto the resolved team).
+	var teamPin, orgPin string
+	if t.TeamID != "" {
+		teamPin, orgPin = t.TeamID, orgID
+	}
 	return auth.Identity{
 		UserID: u.ID,
 		Email:  u.Email,
@@ -328,6 +340,8 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		Credential:   auth.CredentialPAT,
 		CredentialID: t.ID,
 		ExpiresAt:    expires,
+		TeamPin:      teamPin,
+		OrgPin:       orgPin,
 	}, nil
 }
 

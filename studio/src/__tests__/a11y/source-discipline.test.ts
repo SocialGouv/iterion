@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { absoluteTargetHits } from "./_adminNestLinks";
-import { hit, isIntrinsic, jsxClassed } from "./_jsx";
+import { scanClickableRows, where } from "./_clickableRows";
+import { hit, isIntrinsic, jsxAncestral, jsxClassed } from "./_jsx";
 import { files, scan, scanWhole } from "./_scanner";
 
 // Source-discipline regression traps. Each scans every source module as raw
@@ -256,6 +259,26 @@ describe("source discipline", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("never animates opacity on an element that carries a text colour (RGAA 3.2)", () => {
+    // `animate-pulse` / `animate-ping` run an opacity animation; at the
+    // trough the element's text colour drops under the 3:1 floor — the
+    // animated twin of the static-opacity ban above. The static ban
+    // targets the onAccent pair (a light text on a solid colour, the
+    // pairing with no contrast headroom); softer pairs pass at the trough
+    // and their remaining motion is governed by the reduced-motion gate.
+    const re = /(?<![\w:-])animate-(?:pulse|ping)(?![\w-])/;
+    const textColour = /(?:^|\s)(?:hover:|focus-visible:)?text-fg-onAccent(?![\w-])/;
+    const hits = jsxClassed()
+      .filter((e) => isIntrinsic(e.tag) && re.test(e.classes) && textColour.test(e.classes))
+      .map((e) => hit(e, "opacity animation + text colour"));
+    if (hits.length) {
+      throw new Error(
+        `an opacity animation on a text-coloured element drops the label under 3:1 at the trough (RGAA 3.2) — keep the pulse icon-only, or drop it:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
   it("no native control or control primitive draws its boundary with a chrome border token (RGAA 3.3)", () => {
     // An <input>, <textarea>, <select> — or a className handed to one of
     // the control primitives, which overrides theirs (Tailwind emits
@@ -388,5 +411,359 @@ describe("source discipline", () => {
       );
     }
     expect(hits).toHaveLength(0);
+  });
+
+  it("user-facing text never clamps raw — clamp via ClampText so the full text stays recoverable (RGAA 10.12)", () => {
+    // The allowlist: the audited sites are CONVERTED to ClampText; new raw
+    // truncates on user-facing text red here. (A hard zero-guard would
+    // start red against the ~257-site census — the drain is its own wave.)
+    // The seeded drain list: the raw-truncate census at guard-seeding time
+    // (#2526). Files here are the DRAIN WAVE's job; new files red.
+    const allowedPrefixes = [
+      "/src/components/Home/RecentFilesPanel.tsx",
+      "/src/views/Bots/index.tsx",
+      "/src/components/shared/SidebarContext.tsx",
+      "/src/components/Catalog/BotCatalogDialog.tsx",
+      "/src/components/ChatDock/AttachedReferences.tsx",
+      "/src/components/ChatDock/ContextChip.tsx",
+      "/src/components/ChatDock/ConversationStrip.tsx",
+      "/src/components/Editor/BundleFilesDrawer.tsx",
+      "/src/components/FilePicker/FilePicker.tsx",
+      "/src/components/Home/CloudReposPanel.tsx",
+      "/src/components/Home/RunsPanel.tsx",
+      "/src/components/Home/WhatsNextCard.tsx",
+      "/src/components/Inspector/InspectorEdge.tsx",
+      "/src/components/Inspector/InspectorMulti.tsx",
+      "/src/components/Inspector/InspectorNode.tsx",
+      "/src/components/Inspector/NodeRunsChip.tsx",
+      "/src/components/Library/LibraryItemCard.tsx",
+      "/src/components/Runs/ArtifactFilesPanel.tsx",
+      "/src/components/Runs/AttachmentFieldInput.tsx",
+      "/src/components/Runs/BranchDiffModal.tsx",
+      "/src/components/Runs/CommitDetailDialog.tsx",
+      "/src/components/Runs/CommitsPanel.tsx",
+      "/src/components/Runs/CostPreviewChip.tsx",
+      "/src/components/Runs/FileEditDialog.tsx",
+      "/src/components/Runs/FilesPanel.tsx",
+      "/src/components/Runs/IRNode.tsx",
+      "/src/components/Runs/LaunchView.tsx",
+      "/src/components/Runs/LogLinesView.tsx",
+      "/src/components/Runs/QueuedBanner.tsx",
+      "/src/components/Runs/ReportTab.tsx",
+      "/src/components/Runs/RunHeader.tsx",
+      "/src/components/Runs/SubbotRunFrame.tsx",
+      "/src/components/Runs/conversation/BannerCard.tsx",
+      "/src/components/Runs/conversation/GateAttachments.tsx",
+      "/src/components/Runs/conversation/GateInboundFile.tsx",
+      "/src/components/Runs/detail/ChangesTab.tsx",
+      "/src/components/Runs/detail/DetailHeader.tsx",
+      "/src/components/Runs/detail/LLMTrace.tsx",
+      "/src/components/Runs/eventLog/EventRow.tsx",
+      "/src/components/Runs/launchView/AutoManagedVarsSection.tsx",
+      "/src/components/Runs/launchView/ModelOverridesSection.tsx",
+      "/src/components/Runs/leftPanel/InfoPrimitives.tsx",
+      "/src/components/Runs/leftPanel/overview/AdvancedSection.tsx",
+      "/src/components/Runs/leftPanel/overview/ConfigurationSection.tsx",
+      "/src/components/Runs/leftPanel/overview/StatusHero.tsx",
+      "/src/components/Runs/runHeader/BotChip.tsx",
+      "/src/components/Runs/runHeader/DeliverablesRow.tsx",
+      "/src/components/Runs/runHeader/DeploymentRow.tsx",
+      "/src/components/Runs/runHeader/FinalizationRow.tsx",
+      "/src/components/Runs/runHeader/ResultLinksRow.tsx",
+      "/src/components/Runs/runHeader/SourceTicketRow.tsx",
+      "/src/components/Runs/runList/FilterMenu.tsx",
+      "/src/components/Runs/runList/RunListCard.tsx",
+      "/src/components/Runs/runList/RunListRow.tsx",
+      "/src/components/SourceView/SourceView.tsx",
+      "/src/components/Toolbar/Toolbar.tsx",
+      "/src/components/WhatsNext/PreFlightPanel.tsx",
+      "/src/components/WhatsNext/WatchPanel.tsx",
+      "/src/components/WhatsNext/whatsNextView/SessionHeader.tsx",
+      "/src/components/icons/BackendBadge.tsx",
+      "/src/components/shared/BotIdentity.tsx",
+      "/src/components/shared/CommandPalette.tsx",
+      "/src/components/shared/DispatcherControlBar.tsx",
+      "/src/components/shared/GateFileInput.tsx",
+      "/src/components/shared/InnerTabBar.tsx",
+      "/src/components/shared/LabelFilterPopover.tsx",
+      "/src/components/shared/NavLinks.tsx",
+      "/src/components/shared/OrgSwitcher.tsx",
+      "/src/components/shared/RepoSwitcher.tsx",
+      "/src/components/shared/UserTeamChip.tsx",
+      "/src/components/ui/Chip.tsx",
+      "/src/components/ui/Combobox.tsx",
+      "/src/components/ui/DropdownMenu.tsx",
+      "/src/components/ui/Meter.tsx",
+      "/src/components/ui/RefAwarePopup.tsx",
+      "/src/views/Board/ApproveTriage.tsx",
+      "/src/views/Board/Column.tsx",
+      "/src/views/Board/Fields.tsx",
+      "/src/views/Board/IssueCard.tsx",
+      "/src/views/Board/SelectionToolbar.tsx",
+      "/src/views/Board/issueModal/LastRunSection.tsx",
+      "/src/views/Board/issueModal/PullRequestsSection.tsx",
+      "/src/views/Bots/BotHome/ConfigSharesCard.tsx",
+      "/src/views/Bots/BotHome/RecentRunsCard.tsx",
+      "/src/views/ConfigShare/index.tsx",
+      "/src/views/Dispatcher/RetriesTable.tsx",
+      "/src/views/Dispatcher/RunningTable.tsx",
+      "/src/views/Marketplace/CopyPluginInstall.tsx",
+      "/src/views/Marketplace/MarketplaceCard.tsx",
+      "/src/views/Marketplace/MarketplaceDetail.tsx",
+      "/src/views/Marketplace/ModerationQueue.tsx",
+      "/src/views/Marketplace/index.tsx",
+      "/src/views/PipelineBoard/ExternalActiveRunsNotice.tsx",
+      "/src/views/PipelineBoard/PipelineCardDetails.tsx",
+      "/src/views/PipelineBoard/PipelineCardPage.tsx",
+      "/src/views/PipelineBoard/PipelineColumns.tsx",
+      "/src/views/PipelineBoard/ProducedElements.tsx",
+      "/src/views/PipelineBoard/QueueBanner.tsx",
+      "/src/views/PipelineBoard/ReviewScopePanel.tsx",
+      "/src/views/PipelineBoard/SequentialReviews.tsx",
+      "/src/views/ProjectSwitcher/index.tsx",
+      "/src/views/SettingsDialog/ProjectsTab.tsx",
+      "/src/views/Welcome/steps/CliCheck.tsx",
+      "/src/views/account/SettingsPage.tsx",
+      "/src/views/configEditorShell/ConflictDialog.tsx",
+      "/src/views/configEditorShell/ShareBrowser.tsx",
+      "/src/views/plugins/PluginCard.tsx",
+      "/src/views/plugins/PluginDetail.tsx",
+      "/src/views/teams/tabs/IntegrationsTab.tsx",
+      "/src/views/teams/tabs/integrations/ConnectionCard.tsx",
+      "/src/views/teams/tabs/integrations/OAuthAppsSection.tsx",
+      "/src/workspace/WorkspaceShell.tsx",
+      // The canvas nodes live in fixed-size graph boxes by design; their
+      // full text surfaces through the canvas selection popover.
+      "/src/components/Canvas/",
+    ];
+    const hits = jsxClassed()
+      .filter((e) => isIntrinsic(e.tag) || /^[A-Z]/.test(e.tag))
+      .filter((e) => /(?:^|\s)(?:truncate|line-clamp-\d+)(?:$|\s)/.test(e.classes))
+      .filter((e) => !allowedPrefixes.some((p) => e.path.startsWith(p) || e.path === p))
+      .map((e) => hit(e, "raw clamp"));
+    if (hits.length) {
+      throw new Error(
+        `raw truncate/line-clamp on user-facing text — route through ClampText so the full text stays recoverable (RGAA 10.12):\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("text-fg-subtle never INHERITS onto a -soft tint from an ancestor either", () => {
+    // The sibling canary above judges ONE variant string: when the tint and
+    // the colour sit on two different elements (a tinted banner, a subtle
+    // child) no variant ever holds both and the case is invisible. The
+    // ancestry walker sees the composition.
+    const soft = /\bbg-(danger|warning|success|info|live|accent)-soft\b/;
+    const hits = jsxAncestral().flatMap((e) =>
+      e.ancestors
+        .filter((a) => soft.test(a))
+        .flatMap(() =>
+          e.variants
+            .filter((v) => /\btext-fg-subtle\b/.test(v))
+            .map(
+              (v) =>
+                `${e.path}:${e.line}  <${e.tag}> ${v} — inherited from a -soft ancestor`,
+            ),
+        ),
+    );
+    if (hits.length) {
+      throw new Error(
+        `text-fg-subtle inherited onto a -soft tint (RGAA 3.2) — text-fg-muted or the tint's own -fg:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("links in prose distinguish themselves at rest, not by colour alone (RGAA 10.6, #2523)", () => {
+    // The seeded drain list: the colour-only census at guard-seeding time
+    // (#2523). Files here are the DRAIN WAVE's job; the audited site
+    // (PipelineBoard) is fixed and OUT of this list.
+    const allowedPrefixes = [
+      "/src/components/ChatDock/ContextChip.tsx",
+      "/src/components/ChatDock/ConversationStrip.tsx",
+      "/src/components/Home/CloudReposPanel.tsx",
+      "/src/components/Home/GettingStartedCard.tsx",
+      "/src/components/Runs/ArtifactFilesPanel.tsx",
+      "/src/components/Runs/TestRunPane.tsx",
+      "/src/components/Runs/conversation/GateInboundFile.tsx",
+      "/src/components/Runs/runHeader/DeliverablesRow.tsx",
+      "/src/components/Runs/runHeader/ResultLinksRow.tsx",
+      "/src/components/WhatsNext/PreFlightPanel.tsx",
+      "/src/components/WhatsNext/WatchPanel.tsx",
+      "/src/components/WhatsNext/whatsNextView/SessionHeader.tsx",
+      "/src/views/Board/issueModal/LastRunSection.tsx",
+      "/src/views/Board/issueModal/PullRequestsSection.tsx",
+      "/src/views/Bots/BotHome/ActionsRow.tsx",
+      "/src/views/Bots/BotHome/AutomationsCard.tsx",
+      "/src/views/Bots/BotHome/ConfigSharesCard.tsx",
+      "/src/views/Bots/BotHome/RecentRunsCard.tsx",
+      "/src/views/Bots/BotHome/SecretBindingsCard.tsx",
+      "/src/views/PipelineBoard/PipelineCardDetails.tsx",
+      "/src/views/PipelineBoard/PipelineCardPage.tsx",
+      "/src/views/PipelineBoard/PipelineColumns.tsx",
+      "/src/views/PipelineBoard/ProducedElements.tsx",
+      "/src/views/PipelineBoard/SequentialReviews.tsx",
+      "/src/views/RepoDetail/index.tsx",
+      "/src/views/Sitemap/index.tsx",
+      "/src/views/Triggers/TriggerFamiliesExplainer.tsx",
+      "/src/views/admin/users/UserDrawer.tsx",
+      "/src/views/integrations/BindBotWizard.tsx",
+      "/src/views/orgs/OrgPage.tsx",
+      "/src/views/teams/tabs/integrations/ConnectionCard.tsx",
+      "/src/views/teams/tabs/integrations/GitHubAppLogoHint.tsx",
+      "/src/views/teams/tabs/integrations/OAuthAppsSection.tsx",
+    ];
+    const hits = jsxClassed()
+      .filter((e) => e.tag === "a" || e.tag === "Link")
+      .filter((e) => !allowedPrefixes.some((p) => e.path.startsWith(p)))
+      .filter((e) => /(?:^|\s)(?:hover:)?text-accent-text(?:$|\s)/.test(e.classes))
+      .filter((e) => !/(?:^|\s)underline(?:$|\s)|underline-offset/.test(e.classes))
+      .map((e) => hit(e, "colour-only link at rest"));
+    if (hits.length) {
+      throw new Error(
+        `links distinguished by colour only at rest (1.64:1, RGAA 10.6) — an at-rest underline is required:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("NavLinks wires its group lists to their captions (RGAA 9.3, #2519)", () => {
+    // The anonymous mount renders one unlabelled workspace group, so the
+    // labelled-by wiring cannot be asserted from the DOM there; the source
+    // pin holds the mechanism instead: the caption carries the id the ul
+    // references, and the collapsed rail names its lists directly.
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/shared/NavLinks.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("id={captionId}");
+    expect(src).toContain(
+      'aria-labelledby={group.label && !collapsed ? captionId : undefined}',
+    );
+    expect(src).toContain(
+      'aria-label={group.label && collapsed ? group.label : undefined}',
+    );
+  });
+
+  it("a hidden run tab marks its subtree hidden, and the run keyboard consults the flag (#1812)", () => {
+    // RunsTabsView keeps every hydrated run tab MOUNTED (the per-run store
+    // and websocket accumulate in the background), so the run console of a
+    // hidden tab must reach nothing on screen — the #1788 class. What the
+    // kit's portals do inside a hidden subtree is pinned by
+    // ui/hiddenSubtree.test.tsx, and the keyboard's gate by
+    // hooks/useRunKeyboard.test.tsx; what holds the WIRING is the source:
+    // the host provides the flag per tab, and the hook consults it.
+    const host = readFileSync(
+      resolve(process.cwd(), "src/components/Runs/RunsTabsView.tsx"),
+      "utf8",
+    );
+    expect(host).toContain("HiddenSubtreeContext.Provider value={!visible}");
+    const keyboard = readFileSync(
+      resolve(process.cwd(), "src/hooks/useRunKeyboard.ts"),
+      "utf8",
+    );
+    expect(keyboard).toContain("useHiddenSubtree");
+    expect(keyboard).toContain("if (hidden) return;");
+  });
+});
+
+// The clickable-row pair's own discipline, over the real tree (#2766). One
+// scan every call site crosses, rather than one strict axe entry per
+// surface: fourteen surfaces each prove themselves and let the fifteenth
+// call site drift. The rules the scan applies — and the shapes it must stay
+// quiet on — are exercised on purpose-written sources in
+// clickable-rows.test.ts; this is where they judge what the tree does.
+const ROWS = scanClickableRows();
+
+/**
+ * A descendant the scan cannot follow (an external package's component) is
+ * reported, never assumed harmless — and a decision about one lives here,
+ * with what was read to make it. A waiver that matches nothing FAILS: it is
+ * a live claim about a call site, and a dead one is how a list like this
+ * stops describing the tree it guards.
+ */
+const UNFOLLOWED: { path: string; detail: string; reason: string }[] = [
+  {
+    path: "/src/components/Canvas/AuxiliaryNode.tsx",
+    detail: "<Handle>",
+    reason:
+      "React Flow's connection handle renders a plain <div> with no role and no tabIndex (measured in @xyflow/react's bundle: data-handleid, the nodrag class, onMouseDown/onTouchStart/onClick) — a pointer-only connection affordance, outside the tab order, so it is no nested control; the call site passes no tabIndex of its own, which the scan would have read",
+  },
+  {
+    path: "/src/components/Canvas/DetailSubNode.tsx",
+    detail: "<Handle>",
+    reason:
+      "same React Flow handle, same reading: a div with no role and no tabIndex, and no tabIndex from the call site",
+  },
+];
+
+describe("clickable rows (#2766)", () => {
+  it("scans the rows it claims to scan, in both shapes", () => {
+    // Non-vacuity: an empty scan satisfies every rule below.
+    expect(ROWS.sites.length).toBeGreaterThanOrEqual(10);
+    const helpers = new Set(ROWS.sites.map((h) => h.helper));
+    expect([...helpers].sort()).toEqual(["clickableRowProps", "pointerRowProps"]);
+  });
+
+  it("leaves no row that IS a control holding another one", () => {
+    if (ROWS.nested.length) {
+      throw new Error(
+        `clickableRowProps rows holding a focusable descendant — a button inside a button (axe nested-interactive, WCAG 4.1.2). Such a row takes pointerRowProps, and its keyboard path becomes a real control inside it:\n${ROWS.nested
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(ROWS.nested).toHaveLength(0);
+  });
+
+  it("leaves no pointer row mouse-only", () => {
+    if (ROWS.mouseOnly.length) {
+      throw new Error(
+        `pointerRowProps rows with nothing focusable inside: the row's click is the only way in, which is mouse-only (RGAA 7.3). Either the row holds a real control, or it takes clickableRowProps and becomes the control itself:\n${ROWS.mouseOnly
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(ROWS.mouseOnly).toHaveLength(0);
+  });
+
+  it("leaves no row shadowing the props the helper spreads", () => {
+    if (ROWS.shadowed.length) {
+      throw new Error(
+        `rows writing their own role / tabIndex / onClick / onKeyDown beside the helper's spread: a later JSX prop WINS, so the helper's handler silently stops running (this is how one row opened on Enter and selected on click). Pass what the site needs THROUGH the helper — the activation carries the cursor position:\n${ROWS.shadowed
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(ROWS.shadowed).toHaveLength(0);
+  });
+
+  it("decides every descendant it could not follow", () => {
+    const undecided = ROWS.unresolved.filter(
+      (h) => !UNFOLLOWED.some((w) => w.path === h.path && w.detail === h.detail),
+    );
+    if (undecided.length) {
+      throw new Error(
+        `rows holding a descendant this scan cannot follow — decide each one in UNFOLLOWED with what you read, or give the component a definition the scan can reach:\n${undecided
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(undecided).toHaveLength(0);
+  });
+
+  it("carries no decision the tree no longer needs", () => {
+    const dead = UNFOLLOWED.filter(
+      (w) => !ROWS.unresolved.some((h) => h.path === w.path && h.detail === w.detail),
+    );
+    if (dead.length) {
+      throw new Error(
+        `entries matching nothing — the scan follows that descendant now, drop them:\n${dead
+          .map((w) => `  ${w.path}  ${w.detail}: ${w.reason}`)
+          .join("\n")}`,
+      );
+    }
+    expect(dead).toHaveLength(0);
   });
 });

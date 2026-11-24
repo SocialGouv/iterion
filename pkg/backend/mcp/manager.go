@@ -630,6 +630,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 			if err != nil {
 				return "", err
 			}
+			observeRichResult(callCtx, result)
 			text, fmtErr := formatToolResult(result)
 			// Auto-retry Read with a smaller limit on "exceeds maximum tokens".
 			// Gated on (a) tool name, (b) error string, (c) schema declares limit,
@@ -651,6 +652,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 					if retryErr != nil {
 						return "", retryErr
 					}
+					observeRichResult(callCtx, retryResult)
 					return formatToolResult(retryResult)
 				}
 			}
@@ -828,6 +830,32 @@ func schemaDeclaresLimit(raw json.RawMessage) bool {
 	}
 	_, ok := s.Properties["limit"]
 	return ok
+}
+
+// observeRichResult hands a successful call's structured content to the
+// call's rich-result sink, when one is armed (a codemode nested call — CM-7).
+// Both the first result and the Read auto-retry's result pass through here,
+// so the sink always holds the LAST result, which is the program's answer.
+// A FAILED result is skipped, not just unobserved: an error result's
+// structured content belongs to a call whose outcome throws, and keeping it
+// would hand the program a payload beside a retry's text — the stale-pair
+// shape the program cannot tell apart from its own answer.
+//
+// A marshal failure is a data bug in the server's structured content. The
+// model-facing text contract is unaffected — formatToolResult renders the
+// text path unchanged, and a server that reports structured content it
+// cannot marshal has already broken its own content — so the call keeps its
+// text result and only the sink write is skipped.
+func observeRichResult(ctx context.Context, result *ToolCallResult) {
+	sink, ok := tool.RichResultSinkFrom(ctx)
+	if !ok || result == nil || result.IsError || result.StructuredContent == nil {
+		return
+	}
+	data, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		return
+	}
+	sink.Observe(data)
 }
 
 func formatToolResult(result *ToolCallResult) (string, error) {

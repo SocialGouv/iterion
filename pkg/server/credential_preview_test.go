@@ -35,11 +35,11 @@ func (p *credentialPreviewPublisher) PreviewCredentials(_ context.Context, s run
 	p.previewWF = wf
 	return runview.CredentialPreview{Context: s.Context, Candidates: []runview.CredentialPreviewCandidate{}, Warnings: []string{}}, nil
 }
-func (p *credentialPreviewPublisher) SubmitLaunch(ctx context.Context, _ string, s runview.LaunchSpec, wf *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (p *credentialPreviewPublisher) SubmitLaunch(ctx context.Context, _ string, s runview.LaunchSpec, wf *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	p.launched = s
 	p.launchedWF = wf
 	p.launchedOwner, _ = store.OwnerFromContext(ctx)
-	return 0, nil
+	return runview.LaunchSubmission{}, nil
 }
 
 func callCredentialPreview(s *Server, body string, id auth.Identity) *httptest.ResponseRecorder {
@@ -64,7 +64,7 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 		t.Fatal(err)
 	}
 	t.Setenv("ITERION_PREVIEW_MODEL_TEST", "anthropic/claude-sonnet-4-6")
-	if _, _, err := runview.CompileWorkflowFromSource("probe.bot", row.Files[botsource.MainBotFile]); err != nil {
+	if _, _, err := runview.CompileWorkflowFromSource("probe.bot", row.Files[botsource.MainBotFile], "", store.RunTrustDefault); err != nil {
 		t.Fatalf("LLM fixture compile: %v", err)
 	}
 	pub := &credentialPreviewPublisher{}
@@ -86,8 +86,8 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 		t.Fatal("stored bundle did not reach preview compilation")
 	}
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
-	vars := applyWebhookVarLayers(map[string]string{}, cfg)
-	if _, err := s.launchWebhookBot(ctx, cfg, "probe", vars, "", "", "", cfg.KeyOverrides, nil, store.RunTrustDefault, ""); err != nil {
+	vars := applyWebhookVarLayers(map[string]string{}, cfg, store.RunTrustDefault)
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", vars, "", "", "", cfg.KeyOverrides, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if pub.preview.OwnerID != pub.launchedOwner || pub.preview.OwnerID != "webhook:hook" {
@@ -297,5 +297,98 @@ func TestCredentialPreview_ScreensThePermissionTheCallerLaunchesWith(t *testing.
 	w = callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe",`+pin+`}`, id)
 	if w.Code != http.StatusOK {
 		t.Fatalf("plain preview = %d %s, want the pin served", w.Code, w.Body.String())
+	}
+}
+
+// The personal lane's vars ride the preview the way the launch reads them
+// (rv3-F3): operator-owned values, trusted for the routing pre-flights, and
+// an input no var declares is refused as the launch refuses it (#1757).
+func TestCredentialPreviewPersonalCarriesTheCallerVars(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	row, err := s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Files[botsource.MainBotFile] = "agent TEAMFORK:\n  backend: claw\n  model: \"${ITERION_PREVIEW_MODEL_TEST3:-openai/gpt-5.6-sol}\"\n\nvars:\n  rescue_provider: string = \"anthropic\"\n\nworkflow team_model:\n  entry: TEAMFORK\n  TEAMFORK -> done\n"
+	if _, err := s.botSources.Update(store.WithTenant(t.Context(), "t1"), row); err != nil {
+		t.Fatal(err)
+	}
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	id := auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember}
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","vars":{"rescue_provider":"zai"}}`, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
+	}
+	if !reflect.DeepEqual(pub.preview.Launch.Vars, map[string]string{"rescue_provider": "zai"}) {
+		t.Fatalf("preview vars = %+v, want the caller's map", pub.preview.Launch.Vars)
+	}
+	if !reflect.DeepEqual(pub.preview.Launch.TrustedVarNames, []string{"rescue_provider"}) {
+		t.Fatalf("trusted names = %v, want the caller's own names (the personal lane trusts its --var values)", pub.preview.Launch.TrustedVarNames)
+	}
+	// An input no var of the workflow declares is refused as the launch
+	// refuses it — the preview never answers for a launch that would not run.
+	w = callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","vars":{"typo_var":"x"}}`, id)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "typo_var") {
+		t.Fatalf("unknown-var preview=%d %s, want a 422 naming the key", w.Code, w.Body.String())
+	}
+}
+
+// The webhook lane resolves its vars from the config layers and the
+// delivery payload: caller values are refused, never silently dropped —
+// and its own undeclared config keys ride the lane's warn-and-proceed
+// with a visible warning, not a silent default read.
+func TestCredentialPreviewWebhookRefusesCallerVarsAndWarnsOnUnknownConfigVars(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	configs := webhooks.NewMemoryConfigStore()
+	s.webhookConfigs = configs
+	cfg := webhooks.Config{ID: "hook", TenantID: "t1", Enabled: true, BotIDs: []string{"probe"}, DefaultBotID: "probe", LaunchVars: map[string]string{"undeclared_var": "configured"}}
+	if err := configs.Create(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	id := auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember}
+	w := callCredentialPreview(s, `{"source":{"kind":"webhook","id":"hook"},"vars":{"rescue_provider":"zai"}}`, id)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("caller-vars webhook preview=%d %s, want a 400", w.Code, w.Body.String())
+	}
+	w = callCredentialPreview(s, `{"source":{"kind":"webhook","id":"hook"}}`, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
+	}
+	var out runview.CredentialPreview
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(out.Warnings, "\n")
+	if !strings.Contains(joined, "undeclared_var") || !strings.Contains(joined, "opt-out") {
+		t.Fatalf("warnings = %v, want the unknown-input ride-on naming the key", out.Warnings)
+	}
+}
+
+// The preview folds the cells a team fork's launch folds: the served
+// manifest's name rides the preview's launch shape beside the slug, so a
+// cell naming the catalogue bot the fork keeps the name of reaches it.
+func TestCredentialPreview_ATeamForkFoldsItsManifestNameCells(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	row, err := s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Files[botsource.MainBotFile] = "agent TEAMFORK:\n  backend: claw\n  model: \"claude-opus-5\"\n\nworkflow tier_probe:\n  worktree: none\n  entry: TEAMFORK\n  TEAMFORK -> done\n"
+	row.Files["manifest.yaml"] = "name: catalog-probe\nschema_version: 1\n"
+	if _, err := s.botSources.Update(store.WithTenant(t.Context(), "t1"), row); err != nil {
+		t.Fatal(err)
+	}
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","llm_routing":{"overrides":[{"selector":"catalog-probe/TEAMFORK","model":"openai_compatible/x"}]}}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview = %d %s", w.Code, w.Body.String())
+	}
+	want := []runview.ModelOverrideEntry{{Selector: "TEAMFORK", Model: "openai_compatible/x"}}
+	if got := pub.preview.Launch.ModelOverrides; !reflect.DeepEqual(got, want) {
+		t.Fatalf("preview folded %+v, want the cell naming the fork's manifest name", got)
 	}
 }

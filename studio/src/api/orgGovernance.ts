@@ -62,6 +62,12 @@ export interface ProvisionApproval {
    *  CLEARS it. Hand-typed: this route carries no openapi schema. */
   routing?: Record<string, unknown> | null;
   routing_set?: boolean;
+  /** The pool block the request speaks about (ADR-164) — which key pool
+   *  funds the repo's unattended runs. pool_set marks that the request
+   *  SPOKE: a block present REPLACES the stored one, absent CLEARS it.
+   *  Hand-typed: this route carries no openapi schema. */
+  pool?: { pool_id: string; enabled: boolean; strategy?: Record<string, unknown> } | null;
+  pool_set?: boolean;
   requested_by: string;
   created_at: string;
 }

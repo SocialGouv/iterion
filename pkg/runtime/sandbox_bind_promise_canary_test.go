@@ -28,11 +28,27 @@ import (
 // driver actually keeps. It walks the REAL wiring twice, once on a driver
 // that honours host binds and once on one that does not, so the dropped
 // targets are measured rather than listed.
+//
+// ADR-143 states that rule as the contract it always was: it is about a
+// KEPT MOUNT, never about bind-ness. A read-back path (ADR-143 §2-3) is
+// served on a pod by storage the driver owns and drained at teardown —
+// so once that seam lands, the run-files variable becomes legal on a pod
+// because a kept mount serves it, and this walk goes green on the new
+// behaviour with no edit here. What must never go green is a path the
+// runtime names and NO kept mount serves.
+//
+// TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt pins
+// the converse, which is the half the read-back seam turns on: named
+// EXACTLY when served, measured in both directions.
 
 // specCapturingDriver records the spec handed to Prepare and then refuses
 // to Start: the canary reads what the runtime BUILT, and nothing must run.
+// Without host binds it is the pod's shape — kubernetes drains the
+// read-back paths it cannot bind — unless noDrain makes it a driver with
+// neither (noop's shape).
 type specCapturingDriver struct {
 	hostBinds bool
+	noDrain   bool
 	captured  sandbox.Spec
 }
 
@@ -45,6 +61,7 @@ func (d *specCapturingDriver) Capabilities() sandbox.Capabilities {
 		SupportsImage:          true,
 		SupportsMounts:         true,
 		SupportsHostBindMounts: d.hostBinds,
+		SupportsReadBackDrain:  !d.hostBinds && !d.noDrain,
 		SupportsPostCreate:     true,
 		SupportsRemoteUser:     true,
 	}
@@ -63,12 +80,20 @@ func (d *specCapturingDriver) Start(context.Context, sandbox.PreparedSpec, sandb
 // with the given host-bind capability and returns the spec it produced.
 func buildSandboxSpecFor(t *testing.T, hostBinds bool, p SandboxParams) sandbox.Spec {
 	t.Helper()
+	return buildSandboxSpecOn(t, &specCapturingDriver{hostBinds: hostBinds}, p)
+}
+
+// buildSandboxSpecOn runs the production mount wiring against d, logging
+// to p.Logger when the caller set one.
+func buildSandboxSpecOn(t *testing.T, d *specCapturingDriver, p SandboxParams) sandbox.Spec {
+	t.Helper()
 	t.Setenv("ITERION_MODE", "local") // pin the factory preference to docker,podman,noop
-	d := &specCapturingDriver{hostBinds: hostBinds}
 	p.Drivers = map[string]sandbox.DriverConstructor{
 		"docker": func() (sandbox.Driver, error) { return d, nil },
 	}
-	p.Logger = iterlog.Nop()
+	if p.Logger == nil {
+		p.Logger = iterlog.Nop()
+	}
 	p.EmitEvent = func(store.EventType, map[string]any) error { return nil }
 	if _, err := resolveAndStartSandbox(context.Background(), p); !errors.Is(err, errCanaryStop) {
 		t.Fatalf("resolveAndStartSandbox = %v, want the canary driver's refusal — the wiring did not reach Prepare, so this test proves nothing", err)
@@ -131,6 +156,67 @@ func TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt(t *testing.T) {
 			t.Errorf("post_create names %s, under the dropped bind %s — the snippet runs against a path the container never had (it fails soft, so a bot's devbox.json silently provisions nothing)", ref, target)
 		}
 	}
+}
+
+// TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt is the
+// read-back contract's own canary (ADR-143): the run-files variable is
+// named EXACTLY when a mount the driver keeps serves the path it names.
+//
+// Both directions are defects, and only one of them has ever happened:
+//
+//   - named, not served — #815: the variable pointed at a directory the
+//     pod never had, and a gate wrapper died on "Directory nonexistent".
+//   - served, not named — the defect the read-back seam can introduce:
+//     an emptyDir at the declared path, drained at teardown, and the
+//     tool inside the pod told nothing, so it writes to a temp dir that
+//     dies with the pod and the drain collects an empty directory.
+//
+// Measured on the real wiring, driver by driver, rather than asserted
+// per driver: when the seam lands, the pod case flips from
+// (not named, not served) to (named, served) and this test does not
+// change. A test that pinned "unset on a pod" would have to be edited to
+// let the fix in, which is how a canary becomes a snapshot.
+func TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt(t *testing.T) {
+	p := canaryParams(t)
+	for _, tc := range []struct {
+		name   string
+		driver specCapturingDriver
+	}{
+		{"a driver with a host filesystem", specCapturingDriver{hostBinds: true}},
+		{"a driver without one that drains (the pod case)", specCapturingDriver{}},
+		{"a driver with neither (noop's shape)", specCapturingDriver{noDrain: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := buildSandboxSpecOn(t, &tc.driver, p)
+			named := strings.TrimSpace(spec.Env[runFilesEnvVar])
+			// Asked of the path the runtime NAMED, not of the one the
+			// params declared: a variable pointing somewhere else is the
+			// same broken promise as a variable with no mount at all.
+			servingNamed := mountServing(spec.Mounts, named)
+			servingDeclared := mountServing(spec.Mounts, p.RunFilesContainerPath)
+
+			switch {
+			case named != "" && servingNamed == "":
+				t.Errorf("spec.Env[%s] = %s and no kept mount serves it — the "+
+					"runtime promises a directory the container never had "+
+					"(mounts: %v)", runFilesEnvVar, named, spec.Mounts)
+			case named == "" && servingDeclared != "":
+				t.Errorf("the mount %s serves %s and spec.Env[%s] is unset — the "+
+					"container has the directory and nothing tells the tool, so "+
+					"it writes elsewhere and the read-back drains nothing",
+					servingDeclared, p.RunFilesContainerPath, runFilesEnvVar)
+			}
+		})
+	}
+}
+
+// mountServing answers "which mount serves this path" through the sandbox
+// package's one serving predicate — the admission walk and the runtime's
+// storage decision ask the same function this test reads, so a predicate
+// that drifts in production drifts here instead of passing under a private
+// re-implementation.
+func mountServing(mounts []string, containerPath string) string {
+	return sandbox.MountServing(mounts, containerPath)
 }
 
 // droppedMountTargets returns the mount targets present in `all` and gone

@@ -98,17 +98,26 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		// copied here: a hand-copied list drifts the same way the strip did.
 		var mintedKeys []string
 		for k := range minted {
-			if strings.HasPrefix(k, "forge_publish") || strings.HasPrefix(k, "forge_pr_state") || strings.HasPrefix(k, "forge_delivery") {
+			if strings.HasPrefix(k, "forge_publish") || strings.HasPrefix(k, "forge_pr_state") || strings.HasPrefix(k, "forge_delivery") || strings.HasPrefix(k, "forge_dispatch") {
 				mintedKeys = append(mintedKeys, k)
 			}
 		}
-		if len(mintedKeys) < 4 {
-			t.Fatalf("the trusted mint produced %v — expected at least 4 grant vars, so this test would not notice one surviving", mintedKeys)
+		// The dispatch endpoint is the one server-minted var a pull-request
+		// mint never writes (only a repo-bound schedule's grant carries the
+		// dispatch); the caller may still have put one in the vars, so it is
+		// carried here by hand and must be withdrawn like the rest.
+		if _, ok := minted[forgePublishVarDispatch]; ok {
+			t.Fatalf("the pull-request mint named the dispatch endpoint %q — only a schedule's dispatch grant does", minted[forgePublishVarDispatch])
+		}
+		if len(mintedKeys) < len(store.ServerMintedLaunchVars)-1 {
+			t.Fatalf("the trusted mint produced %v — expected every server-minted var but the dispatch endpoint, so this test would not notice one surviving", mintedKeys)
 		}
 		carried := prVars()
 		for _, k := range mintedKeys {
 			carried[k] = minted[k]
 		}
+		carried[forgePublishVarDispatch] = "https://elsewhere.example" + forgeDispatchWorkflowPath
+		mintedKeys = append(mintedKeys, forgePublishVarDispatch)
 		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", carried, nil, store.RunTrustFork)
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil", err)

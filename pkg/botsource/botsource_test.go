@@ -109,8 +109,49 @@ func TestMemoryStore_CRUD(t *testing.T) {
 		t.Fatalf("ListByTenant team-1: %v len=%d", err, len(list))
 	}
 
-	if err := st.Delete(ctx, created.ID); err != nil {
+	if err := st.Delete(ctx, created.ID, 0); err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := st.Get(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound after delete, got %v", err)
+	}
+}
+
+// Delete takes the SAME if-match token Update does: removing a row is a
+// write, and the heaviest one — a deletion decided on a version another
+// editor has since replaced must be a refusal, not a silent removal (#2689
+// item 4). 0 stays "no if-match", the last-write-wins a caller holding no
+// token has to get.
+func TestDeleteHonoursTheIfMatchVersion(t *testing.T) {
+	st := NewMemoryStore()
+	ctx := store.WithTenant(context.Background(), "team-1")
+	created, err := st.Create(ctx, validSource("team-1", "reviewer"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Files["skills/help.md"] = "# help"
+	updated, err := st.Update(ctx, created)
+	if err != nil || updated.Version != 2 {
+		t.Fatalf("Update: %v version=%d", err, updated.Version)
+	}
+
+	// The token the first reader held is stale now: refused, row intact.
+	if err := st.Delete(ctx, created.ID, 1); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale token = %v, want ErrVersionConflict", err)
+	}
+	if _, err := st.Get(ctx, created.ID); err != nil {
+		t.Fatalf("refused delete removed the row anyway: %v", err)
+	}
+
+	// An unknown id is ErrNotFound whatever the token, never a conflict: a
+	// caller told "someone else wrote" would reload a row that is gone.
+	if err := st.Delete(ctx, "no-such-id", 2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id = %v, want ErrNotFound", err)
+	}
+
+	// The fresh token goes through.
+	if err := st.Delete(ctx, created.ID, 2); err != nil {
+		t.Fatalf("fresh token: %v", err)
 	}
 	if _, err := st.Get(ctx, created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound after delete, got %v", err)

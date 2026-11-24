@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -54,6 +55,17 @@ func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[strin
 // non-bundle path).
 func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
 	cleanup := func() error { return nil }
+	// The resumed engine roots the run at the workspace the run RECORDED;
+	// the plugin `{{workspace}}` placeholders expand against that same
+	// directory, never against the recompiled file's (#1800).
+	// The catalog is resolved for the run's RECORDED trust too: a resumed
+	// fork run is still a fork run.
+	workspace := ""
+	trust := store.RunTrustDefault
+	if r != nil {
+		workspace = r.WorkDir
+		trust = r.Trust
+	}
 	if r != nil && r.BundlePath != "" {
 		bundleHandle, bundleCleanup, openErr := openResumeBundle(r.BundlePath)
 		if openErr != nil {
@@ -65,7 +77,7 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 			if resolveErr != nil {
 				return nil, "", iterFile, bundleHandle, cleanup, resolveErr
 			}
-			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleWorkflowPath, bundleHandle)
+			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleWorkflowPath, bundleHandle, workspace, trust)
 			if compileErr != nil {
 				return nil, "", bundleWorkflowPath, bundleHandle, cleanup, compileErr
 			}
@@ -75,7 +87,7 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 	// A bare <bundle>/main.bot named by --file is promoted to its bundle the
 	// way every other surface promotes it, so the hash compared against the
 	// run's is the bundle's, and the engine gets the handle for its skills.
-	wf, hash, promoted, compileErr := runview.CompileWorkflowPath(iterFile)
+	wf, hash, promoted, compileErr := runview.CompileWorkflowPath(iterFile, workspace, trust)
 	if compileErr != nil {
 		return nil, "", iterFile, nil, cleanup, compileErr
 	}
@@ -126,6 +138,7 @@ func resumeSandboxOverride(opts ResumeOptions, r *store.Run) string {
 }
 
 func buildResumeExecutor(
+	ctx context.Context,
 	opts ResumeOptions,
 	wf *ir.Workflow,
 	s store.RunStore,
@@ -157,11 +170,15 @@ func buildResumeExecutor(
 	if err != nil {
 		return nil, err
 	}
-	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger)
+	// The connectors resolve for the trust the run RECORDED, the one
+	// resumeOpenWorkflow compiled it for: a resumed fork run is still a fork
+	// run.
+	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger, runview.ConnectorTrustOfRun(r))
 	if err != nil {
 		return nil, err
 	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+		Ctx:      ctx,
 		Workflow: wf,
 		Vars:     nil,
 		Store:    s,
@@ -193,11 +210,13 @@ func buildResumeExecutor(
 		// answered "no sandbox" while the engine started one would arm the
 		// MCP start policy against the run it is in.
 		SandboxOverride:   resumeSandboxOverride(opts, r),
-		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(logger),
 		SandboxTiersKnown: true,
 		RunFallback:       []ir.Fallback{runFallback},
 		AutoMemory:        opts.AutoMemory,
 		AmbientContext:    opts.AmbientContext,
+		Codemode:          opts.Codemode,
+		CodemodeBounds:    opts.CodemodeBounds,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.
 		BotID:          runview.BotIDForRun(r),
@@ -215,7 +234,9 @@ func buildResumeExecutor(
 		return nil, err
 	}
 	if r != nil && len(r.Inputs) > 0 {
-		exec.SetVars(r.Inputs)
+		// The stored inputs are the launch's TEXT, undeclared names
+		// included: SetLaunchVars reads them as the launch seed does.
+		exec.SetLaunchVars(r.Inputs)
 	}
 	return exec, nil
 }

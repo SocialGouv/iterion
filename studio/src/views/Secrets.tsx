@@ -22,6 +22,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
+import { SecretNameField } from "@/components/shared/SecretNameField";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 
 // Secrets manages the local (non-cloud) sealed secret store: machine-global
@@ -193,10 +194,27 @@ function SecretsTable({
               {s.allowed_hosts && s.allowed_hosts.length > 0 ? s.allowed_hosts.join(", ") : "—"}
             </Td>
             <Td align="right" className="space-x-1 whitespace-nowrap">
-              <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
+              {/* Every row's actions read "Rotate" / "Delete", so the
+                  accessible name carries the row the control acts on —
+                  name AND scope, the pair this table's key is built from
+                  (one name can exist both globally and per project). The
+                  visible word stays first, so the name contains the label
+                  (SC 2.5.3); the visible text is untouched. */}
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Rotate ${s.name} (${s.scope})`}
+                onClick={() => onRotate(s)}
+              >
                 Rotate
               </Button>
-              <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-danger"
+                aria-label={`Delete ${s.name} (${s.scope})`}
+                onClick={() => onDelete(s)}
+              >
                 Delete
               </Button>
             </Td>
@@ -285,19 +303,7 @@ function UpsertSecretDialog({
       <div className="space-y-3 text-sm">
         {!rotate && (
           <>
-            <label className="block">
-              <div className="text-xs text-fg-muted mb-1">Name</div>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                error={name !== "" && !v.ok}
-                placeholder="GITHUB_TOKEN"
-                autoFocus
-              />
-              <div className={`text-xs mt-1 ${v.ok ? "text-fg-muted" : "text-danger"}`}>
-                {v.ok ? "OK" : v.error ?? "—"}
-              </div>
-            </label>
+            <SecretNameField value={name} onChange={setName} placeholder="GITHUB_TOKEN" />
             <label className="block">
               <div className="text-xs text-fg-muted mb-1">Scope</div>
               <Select
@@ -318,6 +324,9 @@ function UpsertSecretDialog({
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder="paste here — never shown again"
+            // "new-password", not "off": a browser ignores "off" on a password
+            // input and fills the saved login's password into it.
+            autoComplete="new-password"
             autoFocus={rotate}
           />
         </label>

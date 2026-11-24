@@ -51,16 +51,16 @@ function store() {
 describe("group operations reach an annotation carried by a declaration", () => {
   it("removeGroup drops it from the declaration that holds it", () => {
     const s = store();
-    expect(documentGroups(s.getState().document)).toHaveLength(1);
+    expect(documentGroups(s.getState().document).groups).toHaveLength(1);
     s.getState().removeGroup("review");
-    expect(documentGroups(s.getState().document)).toEqual([]);
+    expect(documentGroups(s.getState().document).groups).toEqual([]);
     expect(s.getState().document!.agents[0]!.comments).toEqual([]);
   });
 
   it("updateGroup rewrites it in place", () => {
     const s = store();
     s.getState().updateGroup("review", { nodeIds: ["plan", "write"] });
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["plan", "write"] },
     ]);
     expect(s.getState().document!.agents[0]!.comments![0]!.text).toBe(
@@ -73,7 +73,7 @@ describe("group operations reach an annotation carried by a declaration", () => 
     s.getState().addGroup({ name: "review", nodeIds: ["write", "ship"] });
     // Unchanged: the duplicate is refused, and no second `review` is
     // appended to the head list where nothing would notice the collision.
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["plan", "write", "ship"] },
     ]);
     expect(s.getState().document!.comments).toEqual([]);
@@ -82,7 +82,7 @@ describe("group operations reach an annotation carried by a declaration", () => 
   it("renameNode rewrites the member list of an attached annotation", () => {
     const s = store();
     s.getState().renameNode("write", "draft");
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["plan", "draft", "ship"] },
     ]);
   });
@@ -90,7 +90,7 @@ describe("group operations reach an annotation carried by a declaration", () => 
   it("removeNode drops the node from an attached annotation", () => {
     const s = store();
     s.getState().removeNode("ship");
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["plan", "write"] },
     ]);
   });
@@ -101,10 +101,10 @@ describe("group operations reach an annotation carried by a declaration", () => 
   // before the operation that is supposed to take it away.
   it("removeNode dissolves an attached annotation that falls below two members", () => {
     const s = store();
-    expect(documentGroups(s.getState().document)).toHaveLength(1);
+    expect(documentGroups(s.getState().document).groups).toHaveLength(1);
     s.getState().removeNode("write");
     s.getState().removeNode("ship");
-    expect(documentGroups(s.getState().document)).toEqual([]);
+    expect(documentGroups(s.getState().document).groups).toEqual([]);
     expect(s.getState().document!.agents[0]!.comments).toEqual([]);
   });
 
@@ -118,9 +118,9 @@ describe("group operations reach an annotation carried by a declaration", () => 
 describe("a group outliving the declaration that carried it", () => {
   it("keeps the group when its carrier is removed and two members remain", () => {
     const s = store();
-    expect(documentGroups(s.getState().document)).toHaveLength(1);
+    expect(documentGroups(s.getState().document).groups).toHaveLength(1);
     s.getState().removeNode("plan");
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["write", "ship"] },
     ]);
   });
@@ -129,7 +129,7 @@ describe("a group outliving the declaration that carried it", () => {
     const s = store();
     s.getState().removeNode("write");
     s.getState().removeNode("plan");
-    expect(documentGroups(s.getState().document)).toEqual([]);
+    expect(documentGroups(s.getState().document).groups).toEqual([]);
   });
 });
 
@@ -141,7 +141,7 @@ describe("duplicating a node that carries a group annotation", () => {
   it("does not clone the annotation", () => {
     const s = store();
     s.getState().duplicateNode("plan");
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["plan", "write", "ship"] },
     ]);
   });
@@ -185,8 +185,65 @@ describe("re-declaring an orphaned group when the name is already taken", () => 
       comments: [],
     });
     s.getState().removeNode("plan");
-    expect(documentGroups(s.getState().document)).toEqual([
+    expect(documentGroups(s.getState().document).groups).toEqual([
       { name: "review", nodeIds: ["write", "ship"] },
     ]);
+  });
+});
+
+// #1745 — a hand-written `.bot` can declare the same group twice; the reader
+// draws the first and reports the rest as `dropped`. A canvas operation
+// keyed on the name settles the DRAWN annotation only: the duplicate is the
+// author's line on a carrier the canvas never drew, and a drag or a delete
+// must not rewrite it behind their back.
+describe("group operations with a duplicate annotation (#1745)", () => {
+  function docWithDuplicate(): IterDocument {
+    return {
+      prompts: [],
+      schemas: [],
+      agents: [
+        agent("build", { comments: [{ text: "@group deploy: build, verify" }] }),
+        agent("ship"),
+        agent("verify"),
+      ],
+      judges: [],
+      routers: [],
+      humans: [],
+      tools: [],
+      computes: [],
+      workflows: [{ name: "w", entry: "build", edges: [] }],
+      comments: [{ text: "@group deploy: build, ship" }],
+    };
+  }
+
+  function storeWithDuplicate() {
+    const s = createDocumentStore();
+    s.getState().setDocument(docWithDuplicate());
+    return s;
+  }
+
+  it("updateGroup rewrites the drawn annotation and leaves the author's duplicate as written", () => {
+    const s = storeWithDuplicate();
+    // One drag on the canvas.
+    s.getState().updateGroup("deploy", { nodeIds: ["build", "ship", "verify"] });
+    expect(s.getState().document!.comments).toEqual([
+      { text: "@group deploy: build, ship, verify" },
+    ]);
+    expect(s.getState().document!.agents[0]!.comments).toEqual([
+      { text: "@group deploy: build, verify" },
+    ]);
+  });
+
+  it("removeGroup drops the drawn annotation only — the duplicate survives and is drawn next", () => {
+    const s = storeWithDuplicate();
+    // One "delete group" click.
+    s.getState().removeGroup("deploy");
+    expect(s.getState().document!.comments).toEqual([]);
+    expect(s.getState().document!.agents[0]!.comments).toEqual([
+      { text: "@group deploy: build, verify" },
+    ]);
+    const read = documentGroups(s.getState().document);
+    expect(read.groups).toEqual([{ name: "deploy", nodeIds: ["build", "verify"] }]);
+    expect(read.dropped).toEqual([]);
   });
 });

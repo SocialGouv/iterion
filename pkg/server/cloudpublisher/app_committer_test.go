@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -17,7 +18,7 @@ import (
 func TestAppBotLoginForForgeToken(t *testing.T) {
 	ctx := context.Background()
 	const tenant = "team-1"
-	store := forge.NewMemoryConnectionStore()
+	store := connection.NewMemoryForgeStore()
 	mustCreate := func(c forge.Connection) {
 		t.Helper()
 		if err := store.Create(ctx, c); err != nil {

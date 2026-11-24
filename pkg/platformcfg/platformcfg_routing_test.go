@@ -42,6 +42,14 @@ func TestPlatformCredentials_RoutingValidate(t *testing.T) {
 	if err := (PlatformCredentials{}.Validate()); err != nil {
 		t.Fatalf("Validate(nil routing): %v", err)
 	}
+	// The record's routing is read as a launch reads a stored layer
+	// (llmroute.ValidateStored): a gateway step dispatch never builds — the
+	// tail of a claw chain — refuses nothing here; the write rule runs where
+	// a request supplies the block (the server's decodeRoutingBlock).
+	deadTail := llmroute.Policy{Overrides: []llmroute.Override{{Selector: "work", Provider: "zai,openai_compatible:scaleway/deepseek-v4.1-flash"}}}
+	if err := (PlatformCredentials{Routing: &deadTail}).Validate(); err != nil {
+		t.Fatalf("Validate(stored dead gateway tail) = %v, want the launch's reading (accepted)", err)
+	}
 }
 
 // The reader's precedence: the record's routing block, then the env dial,

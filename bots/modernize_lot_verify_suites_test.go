@@ -60,6 +60,7 @@ func pathExists(path string) bool {
 // its exit_gate ran no test, it converged — and the trunk's integration suite
 // went red on a test still sending the GET.
 func TestModernizeLotVerifyRunsTheDeclaredSuites(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	// The suite appends to a marker outside the workspace, and fails while a
@@ -245,6 +246,7 @@ lots:
 // oracle would spend their hours on a lot its suites cannot judge — and the
 // refusal names the path. What git ignores is not the lot's work.
 func TestModernizeLotVerifySuitesJudgeOnlyWhatLands(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	ctl := t.TempDir()
@@ -383,13 +385,14 @@ func TestModernizeLotVerifySuitesJudgeOnlyWhatLands(t *testing.T) {
 // script scratch — is not the lot's uncommitted work. The engine names it in
 // $ITERION_TREE_NOISE, which every tool node receives.
 func TestModernizeLotVerifySuitesLeaveTheEnginesScaffoldAlone(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	marker := filepath.Join(t.TempDir(), "suite.marker")
 	ws, base, _ := suitesWorkspace(t, suitesPlan("", "suites:\n  - "+strconv.Quote("touch "+marker)+"\n", "true", "todo"))
 	writeContract(t, ws, ".claude/skills/bot.md", "the engine's mirror\n")
 	writeContract(t, ws, ".iterion-script-0a1b2c.py", "print()\n")
-	env := append(os.Environ(), treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
+	env := append(modernizeChildEnv(t), treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
 	res, raw, exit := modernizeLotVerifyRaw(t, script, ws, "L1", base, "true", env)
 	if exit != 0 || !pathExists(marker) || !res.SuitesPassed || !lotGateHolds(t, "converged", raw) {
 		t.Fatalf("exit %d, suites ran=%v: the engine's scaffold read as the lot's work: %+v", exit, pathExists(marker), res)
@@ -399,6 +402,7 @@ func TestModernizeLotVerifySuitesLeaveTheEnginesScaffoldAlone(t *testing.T) {
 // TestModernizeLotVerifySuitesAfterTheGate pins what happens between the lot's
 // own gate and its suites, and what a lot the worker declared blocked is told.
 func TestModernizeLotVerifySuitesAfterTheGate(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	commitBlocked := func(t *testing.T, ws, plan string, git func(args ...string) string) {
@@ -477,7 +481,7 @@ func TestModernizeLotVerifySuitesAfterTheGate(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(ws, ".tmp"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		env := append(os.Environ(), "TMPDIR="+filepath.Join(ws, ".tmp"))
+		env := append(modernizeChildEnv(t), "TMPDIR="+filepath.Join(ws, ".tmp"))
 		res, _, exit := modernizeLotVerifyRaw(t, script, ws, "L1", base, "true", env)
 		// The oracle's own guard refuses a report tempfile inside the
 		// workspace — an environment failure of the run, said as such. What
@@ -635,6 +639,7 @@ func TestModernizeLotVerifySuitesAfterTheGate(t *testing.T) {
 // assume-unchanged or skip-worktree, a stat cache the repository's
 // configuration tells git to trust — and the oracle reads the disk.
 func TestModernizeLotVerifySeesAReferenceRewrittenBehindGitsCache(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const ref = ".golden-master/refs/001.txt"
@@ -680,6 +685,7 @@ func TestModernizeLotVerifySeesAReferenceRewrittenBehindGitsCache(t *testing.T) 
 // the references' parent however refs_dir is spelled, and a file there is not
 // the lot's uncommitted work.
 func TestModernizeLotVerifySuitesLeaveTheNetToItsOwnChecks(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	plan := suitesPlan("", "suites:\n  - \"true\"\n", "true", "todo")

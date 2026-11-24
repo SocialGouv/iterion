@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 func TestWithParentRunIDPersistsLineage(t *testing.T) {
@@ -23,6 +24,7 @@ func TestWithParentRunIDPersistsLineage(t *testing.T) {
 	}
 
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	eng := New(wf, s, newStubExecutor(), WithParentRunID("run-parent"))
 	if err := eng.Run(context.Background(), "run-child", nil); err != nil {
 		t.Fatalf("Run: %v", err)

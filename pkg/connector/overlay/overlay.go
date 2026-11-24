@@ -40,13 +40,15 @@
 package overlay
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
+	"path"
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
@@ -160,9 +162,22 @@ type ParamOverlay struct {
 // Load reads an overlay from a package directory. A missing file is not an
 // error — a package whose description says everything needs no overlay — but
 // an unreadable or malformed one is.
-func Load(dir string) (*Overlay, error) {
-	body, err := os.ReadFile(filepath.Join(dir, File))
-	if os.IsNotExist(err) {
+func Load(dir string) (*Overlay, error) { return LoadFS(spec.DirFS(dir), ".") }
+
+// LoadFS is Load against any filesystem — the seam spec.LoadFS opens, so the
+// authored half travels with the generated one wherever a package is served
+// from. dir is the package's own directory WITHIN fsys ("." when fsys is
+// rooted at it).
+func LoadFS(fsys fs.FS, dir string) (*Overlay, error) {
+	// The path is checked before the read rather than after: an fs that
+	// answers "does not exist" to a path it cannot address — fstest.MapFS
+	// does — would reach the clause below and report "this package has no
+	// overlay", which serves the generated half UNCORRECTED and looks fine.
+	if err := spec.CheckPackageDir(dir); err != nil {
+		return nil, err
+	}
+	body, err := fs.ReadFile(fsys, path.Join(dir, File))
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
@@ -186,7 +201,7 @@ func Parse(body []byte) (*Overlay, error) {
 		return nil, fmt.Errorf("overlay: %s declares schema_version %d, newer than supported %d (upgrade iterion)", File, probe.SchemaVersion, SchemaVersion)
 	}
 	var ov Overlay
-	if err := yaml.UnmarshalStrict(body, &ov); err != nil {
+	if err := yamlx.UnmarshalStrict(body, &ov); err != nil {
 		return nil, fmt.Errorf("overlay: parse %s: %w", File, err)
 	}
 	return &ov, nil
@@ -432,12 +447,18 @@ func quoteAll(in []string) []string {
 // One loader, used by both, is what keeps that from coming back. A package
 // has two halves and only their SUM is a package; a function that returns one
 // of them should not be named as though it returns the thing.
-func LoadPackage(dir string) (*spec.Package, error) {
-	pkg, err := spec.LoadGenerated(dir)
+func LoadPackage(dir string) (*spec.Package, error) { return LoadPackageFS(spec.DirFS(dir), ".") }
+
+// LoadPackageFS is LoadPackage against any filesystem: the ONE loader a
+// directory on disk, a stored package and the packages baked into the binary
+// all go through. dir is the package's own directory WITHIN fsys ("." when
+// fsys is rooted at it).
+func LoadPackageFS(fsys fs.FS, dir string) (*spec.Package, error) {
+	pkg, err := spec.LoadGeneratedFS(fsys, dir)
 	if err != nil {
 		return nil, err
 	}
-	ov, err := Load(dir)
+	ov, err := LoadFS(fsys, dir)
 	if err != nil {
 		return nil, err
 	}

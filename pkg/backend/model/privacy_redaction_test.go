@@ -9,6 +9,7 @@ import (
 )
 
 func TestRedactJSONTextField_DropsText(t *testing.T) {
+	t.Parallel()
 	in := []byte(`{"text":"alice@example.com","mode":"redact","min_score":0.7}`)
 	out := redactJSONTextField(in)
 	var m map[string]any
@@ -30,6 +31,7 @@ func TestRedactJSONTextField_DropsText(t *testing.T) {
 }
 
 func TestRedactJSONTextField_NoText(t *testing.T) {
+	t.Parallel()
 	in := []byte(`{"mode":"detect"}`)
 	out := redactJSONTextField(in)
 	if string(out) != string(in) {
@@ -38,6 +40,7 @@ func TestRedactJSONTextField_NoText(t *testing.T) {
 }
 
 func TestRedactJSONTextField_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	in := []byte(`{not json}`)
 	out := redactJSONTextField(in)
 	if string(out) != string(in) {
@@ -46,6 +49,7 @@ func TestRedactJSONTextField_InvalidJSON(t *testing.T) {
 }
 
 func TestRedactJSONTextField_PreservesSiblings(t *testing.T) {
+	t.Parallel()
 	in := []byte(`{"text":"Hello alice@example.com","substituted":["PII_aaaaaaaa"],"missing":[]}`)
 	out := redactJSONTextField(in)
 	var m map[string]any

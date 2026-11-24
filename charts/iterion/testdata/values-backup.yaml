@@ -1,0 +1,9 @@
+# Render fixture for the chart tests: the off-cluster backup enabled on top of
+# values-prod — destination coordinates in values, credentials by Secret name.
+backup:
+  enabled: true
+  destination:
+    endpoint: https://s3.other-region.example
+    region: other
+    bucket: iterion-artifacts-backup
+    existingSecret: iterion-backup-destination

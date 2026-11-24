@@ -134,6 +134,9 @@ type RepoSummary struct {
 
 // HookSpec describes the webhook to register on the forge.
 type HookSpec struct {
+	// Version identifies the durable provisioning attempt. Providers cannot fence
+	// late HTTP writes with it; the immutable epoch secret supplies that safety.
+	Version int64
 	// URL is the iterion inbound endpoint
 	// (PublicURL + /api/webhooks/{provider}/{webhook_id}).
 	URL string

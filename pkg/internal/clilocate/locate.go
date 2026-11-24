@@ -3,22 +3,23 @@
 // previously-duplicated discovery logic in pkg/backend/detect and
 // pkg/backend/delegate/claudesdk into one path, and is the source of
 // truth for the "well-known install locations" fallback list used when
-// exec.LookPath misses because the process was started without an
+// envtrust.LookPath misses because the process was started without an
 // interactive shell rc (GUI launcher, devbox/nix wrapper, Homebrew on
 // a host where `brew shellenv` isn't loaded into PATH).
 package clilocate
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // Spec describes how to look for a CLI binary.
 type Spec struct {
-	// Name is the bare binary name handed to exec.LookPath.
+	// Name is the bare binary name handed to envtrust.LookPath.
 	Name string
 	// Fallbacks is an ordered list of absolute paths consulted when
 	// LookPath misses. First executable file wins.
@@ -32,8 +33,13 @@ type Spec struct {
 //     a miss is a hard miss). The same predicate as the fallback arm: a
 //     probe that accepts a path the spawn will fail on with EACCES reports a
 //     backend that cannot run.
-//   - Otherwise, try exec.LookPath(spec.Name), then iterate Fallbacks and
-//     return the first executable file.
+//   - Otherwise, try envtrust.LookPath(spec.Name) — never exec.LookPath:
+//     the binary a backend then spawns with the operator's credentials is an
+//     authority question, and a PATH a project .env planted must not answer
+//     it (#2876, the class #2809 closed site by site) — then iterate
+//     Fallbacks and return the first executable file. The fallbacks are
+//     absolute well-known install locations, so they answer the same
+//     question whether or not the PATH arm refused.
 //
 // Returns the resolved path and true on success; "", false on miss.
 func Locate(explicit string, spec Spec) (string, bool) {
@@ -43,7 +49,7 @@ func Locate(explicit string, spec Spec) (string, bool) {
 		}
 		return "", false
 	}
-	if path, err := exec.LookPath(spec.Name); err == nil {
+	if path, err := envtrust.LookPath(spec.Name); err == nil {
 		return path, true
 	}
 	for _, p := range spec.Fallbacks {

@@ -23,6 +23,10 @@ func (f *exportingRun) ExportWorkspace(context.Context) error {
 	return f.err
 }
 
+// ExportRunFiles: the widened seam's second half. The export tests pin the
+// workspace half; the drain half has its own witnesses beside the canary.
+func (f *exportingRun) ExportRunFiles(context.Context) error { return nil }
+
 // plainRun has no exporter capability (docker/noop shape).
 type plainRun struct{ sandbox.Run }
 

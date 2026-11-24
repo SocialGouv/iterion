@@ -25,6 +25,7 @@ export const SOURCE_KIND_ORDER: ReadonlyArray<RunSourceKind> = [
   "manual",
   "studio_chat",
   "webhook",
+  "connector",
   "schedule",
   "dispatcher",
   "fork",
@@ -63,6 +64,14 @@ export const SOURCE_META: Record<RunSourceKind, SourceMeta> = {
   webhook: {
     label: "Webhook",
     description: "Triggered by an inbound webhook event.",
+    Icon: LightningBoltIcon,
+    variant: "accent",
+  },
+  // A connector event (Slack, Jira, Sentry…) matched to a subscription —
+  // a vendor's event read through its connector package (ADR-168).
+  connector: {
+    label: "Connector",
+    description: "Triggered by a connector event matched to a subscription.",
     Icon: LightningBoltIcon,
     variant: "accent",
   },
@@ -111,6 +120,7 @@ export const SOURCE_META: Record<RunSourceKind, SourceMeta> = {
 export function normalizeSourceKind(raw: string | undefined | null): RunSourceKind {
   switch (raw) {
     case "webhook":
+    case "connector":
     case "schedule":
     case "dispatcher":
     case "fork":

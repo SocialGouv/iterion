@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
-	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -59,8 +62,9 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 	case gitlab.EventHeaderMergeRequest:
 		s.handleGitLabMergeRequestEvent(ctx, w, r, cfg, body, payloadHash, srcIP)
 	case gitlab.EventHeaderNote:
-		// Conversational layer: a /revi command (or, later, a reply to
-		// the bot's thread). See docs/forge-conversations.md.
+		// Conversational layer: a slash command (`/revi` included), or a
+		// plain reply in a thread the bot is part of, which routes to the
+		// converse bot. See docs/forge-conversations.md.
 		s.handleGitLabNote(ctx, w, r, cfg, body, payloadHash, srcIP)
 	case gitlab.EventHeaderIssue:
 		// Issue lifecycle: adding a trigger label (e.g. "implement") launches
@@ -143,14 +147,16 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// budget), and the launch pair (this project's clone URL + the fork's
 	// branch name) names no repository — the checkout misses, or hits a
 	// same-named branch here and the bot reviews the wrong code under the
-	// bot's identity. The payload names both projects (ids + source path),
-	// so a PROVEN fork is filtered here, naming the fork. A payload naming
-	// neither stays on its way: this lane refuses what the payload proves,
-	// while the lanes that resolve the MR through the API fail closed on an
-	// unproven head. A collaborator runs a bot on fork code deliberately,
-	// from a branch in this project.
-	if p.IsFork() {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, gitlabForkRefusal(p.HeadRepoFullName))
+	// bot's identity. FAILS CLOSED on the head (ADR-162 decision 1, the
+	// GitLab row): a PROVEN fork is filtered naming the fork, and a payload
+	// that names NEITHER project is filtered too — this lane stamps
+	// "trusted" on exactly what the payload proves, so a head neither
+	// project names is refused, never assumed same-repo on the forge's
+	// silence (forkGuardRefusal's shape, the GitHub site next door). A
+	// collaborator runs a bot on fork code deliberately, from a branch in
+	// this project.
+	if reason := gitlabHeadRefusal(p); reason != "" {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
@@ -260,16 +266,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra,
-		// The MR lane refuses a PROVEN fork above (`p.IsFork()`), and
-		// deliberately lets a payload naming neither project through — its
-		// own comment says so, and the API-resolving lanes fail closed on
-		// that shape instead. So this stamps "trusted" on a head this lane
-		// did not prove, which is weaker than the GitHub site next door
-		// (forkGuardRefusal fails closed on a withheld or unnamed head).
-		// It matches today's behaviour exactly — origin/main carried no
-		// marker at all — but when the admission half lands, an unproven
-		// GitLab head must get a non-trusted class here rather than this
-		// default.
+		// The head gate above (`gitlabHeadRefusal`, ADR-162 decision 1)
+		// refuses everything but a PROVEN same-repo head, so the default
+		// trust here is stated rather than guessed: only a payload that
+		// proves the head lives in this project reaches the launch.
 		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
@@ -297,6 +297,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	meta := gitlabIssueMeta(p)
+	meta.DeliveryID = forgeDeliveryID(r, webhooks.ProviderGitLab)
 	label := webhooks.FirstMatchingLabel(cfg.LabelAllowlist, p.AddedLabels)
 	if p.State != "opened" || label == "" ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "issues", "issues") ||
@@ -316,16 +317,24 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	if !ok {
 		return
 	}
-
-	// Idempotency: one launch per (tenant, webhook, project, issue, label).
+	// The visibility gate (#2676): a label starts a bot the catalogue
+	// enables — a disabled bot no more launches by its label than by its
+	// card, and a refused overlay starts nothing.
+	if !s.gateLabelBotVisibility(ctx, w, cfg, meta, botID, payloadHash, srcIP) {
+		return
+	}
 	// "gl|issue|" keeps the key space disjoint from the mr|/note|/cmd| paths.
+	// The key is the first claim of the (issue, label) trigger lane: re-adding
+	// the label launches again once the lane's previous run has ended, a
+	// redelivery of a claimed event replays no-op (webhooks_trigger_lane.go).
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
-	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
+	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{},
+		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, label))
 }
 
 // gitlabIssueLabeledVars composes the implementer-bot launch vars for a
@@ -448,7 +457,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	if gate == nil {
 		gate = s.realWebhookNoteGate
 	}
-	authorized, _, threadContext, reason, aerr := gate(ctx, cfg, p, converseBot)
+	authorized, _, threadContext, reason, rootAnchor, aerr := gate(ctx, cfg, p, converseBot)
 	if aerr != nil {
 		s.failWebhookAuthorization(ctx, w, cfg, gitlabNoteMeta(p), payloadHash, srcIP, "authz check", aerr)
 		return
@@ -478,13 +487,22 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	question := strings.TrimSpace(p.NoteBody)
-	vars := applyWebhookVarLayers(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, map[string]string{
+	// The thread root's diff position, when the discussion fetch found one;
+	// the arriving note's own position covers the fresh-inline-comment case
+	// (a `/revi <question>` that OPENED a diff thread — its note carries the
+	// position, and it IS the root). The converse bot focuses its diff read
+	// on this hunk instead of walking the whole change.
+	anchor := rootAnchor
+	if !anchor.Set() {
+		anchor = p.ThreadAnchor()
+	}
+	vars := applyWebhookVarLayers(withForgeBaseURL(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, mergeVarsInto(map[string]string{
 		"conversation_mode": "reply",
 		"discussion_id":     p.DiscussionID,
 		"trigger_note":      p.NoteBody,
 		"replier":           p.AuthorUsername,
 		"converse_question": question,
-	}), cfg)
+	}, anchor.LaunchVars())), cfg), cfg, store.RunTrustDefault)
 	// The discussion transcript the gate fetched — the operator's reply
 	// typically references Revi's earlier review note; the bot grounds its
 	// answer in it.
@@ -575,7 +593,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	}
 	var vars map[string]string
 	if surface == "issue" {
-		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
+		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg, store.RunTrustDefault)
 	} else {
 		// Fork guard, fail-CLOSED — the same class of gap #683 closed on the
 		// GitHub/Forgejo command lane: the launch pair (this project's
@@ -602,7 +620,31 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			filtered(gitlabCommandForkRefusal(cmd, resolved))
 			return
 		}
-		vars = applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg)
+		// The thread ROOT's diff position: the anchor a command fired
+		// INSIDE a diff thread (a `/revi <question>` as a reply to Revi's
+		// inline comment) focuses its scope read on. The same best-effort
+		// fetch that grounds the transcript carries it; the arriving
+		// note's own position — present only on the note that opened a
+		// diff thread — covers the rest.
+		anchor := webhooks.ThreadAnchor{}
+		transcript := ""
+		if strings.TrimSpace(cmdArgs) != "" {
+			tc, rootAnchor := s.gitlabNoteThreadContext(ctx, cfg, p, route.BotID)
+			if tc != "" {
+				transcript = tc
+			}
+			anchor = rootAnchor
+		}
+		if !anchor.Set() {
+			anchor = p.ThreadAnchor()
+		}
+		// The anchor block merges into the vars BEFORE the webhook's var
+		// layers: cfg.LaunchVars (the operator's explicit pins) apply last
+		// and win, so an EMPTY anchor clobbers nothing and a real one
+		// cannot silently replace a pinned thread_anchor_* — the same
+		// precedence the reply lane and the prforge lane already have
+		// (round-1 B-M1).
+		vars = applyWebhookVarLayers(withForgeBaseURL(mergeVarsInto(buildCommandVars(p, route, cmdArgs, nil), anchor.LaunchVars()), cfg), cfg, store.RunTrustDefault)
 		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, p.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the MR head.
@@ -619,6 +661,12 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars["trigger_command"] = cmd
 		vars["trigger_args"] = cmdArgs
 		vars["replier"] = p.AuthorUsername
+		// thread_context is the same best-effort transcript the reply lane
+		// carries (a fetch failure leaves it absent, never a refusal); it
+		// rides after the layers like the reply lane's does.
+		if transcript != "" {
+			vars["thread_context"] = transcript
+		}
 		// re_review marks the posted summary the way review-pr's bare
 		// `/revi` always has: a when_args_present sibling sharing the same
 		// command (revi-converse) is answering a QUESTION, not re-reviewing,
@@ -627,15 +675,6 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		// pair inherits the same convention for free.
 		if route.Disambiguator == "when_args_empty" {
 			vars["re_review"] = "true"
-		}
-		// thread_context is best-effort and gate-fetched: one API call,
-		// worth paying only when the command carries text to ground (a bare
-		// command has nothing to ground). A fetch failure degrades to an
-		// absent var, never a refusal.
-		if strings.TrimSpace(cmdArgs) != "" {
-			if tc := s.gitlabNoteThreadContext(ctx, cfg, p, route.BotID); tc != "" {
-				vars["thread_context"] = tc
-			}
 		}
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
@@ -646,7 +685,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if surface == "issue" {
 		ref = p.DefaultBranch
 	}
-	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{}, nil)
 }
 
 // buildCommandVars composes the launch vars for a generic command on a GitLab
@@ -861,18 +900,20 @@ func (s *Server) gitlabGateClientFor(ctx context.Context, cfg webhooks.Config, b
 // it is only worth attempting for a command that carries text to ground; a
 // bare command has nothing to ground and the caller skips this entirely.
 // A fetch failure degrades to an absent var, never a refusal — grounding is
-// additive, the command already cleared authorization without it.
-func (s *Server) gitlabNoteThreadContext(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) string {
+// additive, the command already cleared authorization without it. The
+// thread ROOT's diff position comes back with it (same fetch), the anchor
+// a conversational bot focuses its diff read on.
+func (s *Server) gitlabNoteThreadContext(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (string, webhooks.ThreadAnchor) {
 	if p.DiscussionID == "" {
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil || token == "" {
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
 	baseURL, refusal := resolveForgeBaseURL(cfg, p.MRURL)
 	if refusal != "" {
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
 	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
 	var botUserID int64
@@ -884,9 +925,9 @@ func (s *Server) gitlabNoteThreadContext(ctx context.Context, cfg webhooks.Confi
 		if s.logger != nil {
 			s.logger.Warn("webhooks: gitlab discussion %s fetch failed (continuing without thread context): %v", p.DiscussionID, derr)
 		}
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
-	return gitlab.FormatThreadTranscript(notes, botUserID, maxThreadContextChars)
+	return gitlab.FormatThreadTranscript(notes, botUserID, maxThreadContextChars), gitlab.ThreadRootAnchor(notes)
 }
 
 // realWebhookReviewRequestGate is the production replier gate of the
@@ -935,6 +976,24 @@ func (s *Server) canRouteToConverseBot(ctx context.Context, cfg webhooks.Config,
 // lanes refuse the same MR (same-project only), so the refusal never
 // advertises them as an escape hatch: fork work needs a branch in this
 // project before any bot runs on it.
+// gitlabHeadRefusal is the MR auto-lane's fail-closed head gate (ADR-162
+// decision 1, the GitLab row): "" only when the payload PROVES the head
+// lives in this project. A proven fork keeps gitlabForkRefusal's wording;
+// a head neither project names — a minimal or legacy answer, or a payload
+// a proxy rewrote — gets its own, because the two refusals send the
+// operator looking in different places (a fork to close, an unproven head
+// to fix the delivery). Same-repo is never assumed, only proven.
+func gitlabHeadRefusal(p gitlab.Parsed) string {
+	switch {
+	case p.SameRepoAsBase():
+		return ""
+	case p.IsFork():
+		return gitlabForkRefusal(p.HeadRepoFullName)
+	default:
+		return "head project unproven — the payload names neither the MR's source nor its target project, so neither a fork nor a same-repo head is proven, and this lane stamps \"trusted\" on exactly what the payload proves — auto-launch blocked (same-repo is never assumed, only proven)"
+	}
+}
+
 func gitlabForkRefusal(head string) string {
 	where := "the head lives in another project"
 	if head != "" {
@@ -991,16 +1050,16 @@ const maxThreadContextChars = 16000
 // realWebhookCommandGate instead) — replyInThread is therefore always true
 // alongside authorized=true; it is still returned so the caller's intent
 // ("this is a reply, not a command") stays explicit at the call site.
-func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, err error) {
+func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, anchor webhooks.ThreadAnchor, err error) {
 	// Resolve the bot's forge token (honouring per-webhook secret overrides):
 	// it authenticates the auth checks AND is the identity the bot posts as.
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil || token == "" {
-		return false, false, "", "no forge token resolved (configure a forge_token binding)", nil
+		return false, false, "", "no forge token resolved (configure a forge_token binding)", webhooks.ThreadAnchor{}, nil
 	}
 	baseURL, refusal := resolveForgeBaseURL(cfg, p.MRURL)
 	if refusal != "" {
-		return false, false, "", refusal, nil
+		return false, false, "", refusal, webhooks.ThreadAnchor{}, nil
 	}
 	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
 	return s.gitlabNoteGateWithAPI(ctx, cfg, p, api)
@@ -1013,14 +1072,15 @@ func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p
 // confirmed bot identity — without one we can't tell a Revi thread from any
 // other, so an unresolved identity refuses rather than guesses), then
 // allowlist/role authorization. Returns the discussion transcript for the
-// converse bot's grounding.
-func (s *Server) gitlabNoteGateWithAPI(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, api gitlabNoteAPI) (authorized, replyInThread bool, threadContext, reason string, err error) {
+// converse bot's grounding, and the thread ROOT's diff position (the anchor
+// the bot focuses its diff read on) from the same fetch.
+func (s *Server) gitlabNoteGateWithAPI(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, api gitlabNoteAPI) (authorized, replyInThread bool, threadContext, reason string, anchor webhooks.ThreadAnchor, err error) {
 	bot, berr := api.CurrentUser(ctx)
 	if berr == nil && bot.ID == p.AuthorID {
-		return false, false, "", "self note (loop-guard)", nil
+		return false, false, "", "self note (loop-guard)", webhooks.ThreadAnchor{}, nil
 	}
 	if berr != nil {
-		return false, false, "", "bot identity unresolved; cannot classify reply", nil
+		return false, false, "", "bot identity unresolved; cannot classify reply", webhooks.ThreadAnchor{}, nil
 	}
 	var notes []gitlab.DiscussionNote
 	if p.DiscussionID != "" {
@@ -1028,25 +1088,26 @@ func (s *Server) gitlabNoteGateWithAPI(ctx context.Context, cfg webhooks.Config,
 		if err != nil {
 			// Classification needs the thread — fail the request (502) so
 			// the forge retries.
-			return false, false, "", "", err
+			return false, false, "", "", webhooks.ThreadAnchor{}, err
 		}
 	}
 	if !gitlab.NotesHaveAuthor(notes, bot.ID) {
-		return false, false, "", "not a /revi command or a reply in a Revi thread", nil
+		return false, false, "", "not a /revi command or a reply in a Revi thread", webhooks.ThreadAnchor{}, nil
 	}
 	replyInThread = true
 	threadContext = gitlab.FormatThreadTranscript(notes, bot.ID, maxThreadContextChars)
+	anchor = gitlab.ThreadRootAnchor(notes)
 	ok, authReason, aerr := gitlabAuthorizeReplier(ctx, api, gitlab.ReplierAuth{
 		AuthorID: p.AuthorID, AuthorUsername: p.AuthorUsername, ProjectID: p.ProjectID,
 		Allowlist: cfg.AuthorizedRepliers, MinRole: cfg.MinReplierRole,
 	})
 	if aerr != nil {
-		return false, replyInThread, "", "", aerr
+		return false, replyInThread, "", "", webhooks.ThreadAnchor{}, aerr
 	}
 	if !ok {
-		return false, replyInThread, "", "replier not authorized: " + p.AuthorUsername, nil
+		return false, replyInThread, "", "replier not authorized: " + p.AuthorUsername, webhooks.ThreadAnchor{}, nil
 	}
-	return true, replyInThread, threadContext, authReason, nil
+	return true, replyInThread, threadContext, authReason, anchor, nil
 }
 
 // resolveForgeToken resolves the bot's forge_token for the webhook's tenant,
@@ -1086,7 +1147,7 @@ func hostFromURL(raw string) string {
 // payload cannot exfiltrate the token elsewhere. Empty env = no restriction
 // (any well-formed host), preserving prior behaviour.
 func forgeHostAllowed(host string) bool {
-	raw := strings.TrimSpace(os.Getenv("ITERION_WEBHOOK_FORGE_HOSTS"))
+	raw := strings.TrimSpace(envOperator("ITERION_WEBHOOK_FORGE_HOSTS"))
 	if raw == "" {
 		return true
 	}
@@ -1263,6 +1324,12 @@ func deliveryRowEquals(a, b webhooks.Delivery) bool {
 // gate meters it on the schedule's own team.
 const scheduledLaunchActor = "cloud-scheduler"
 
+// scheduledLaunchOwner is the store owner a schedule's tick launches under —
+// the identity the credential walk resolves keys for. A schedule's key pin is
+// judged against it when the schedule routes write the pin and again at the
+// tick (judgeScheduleKeyPins), so both read the identity from here.
+func scheduledLaunchOwner(botID string) string { return "scheduler:" + botID }
+
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
 // run for its tenant through the run service (cloud → publisher), past the
 // shared org launch gate. The tenant identity is stamped on the ctx so the
@@ -1271,6 +1338,10 @@ const scheduledLaunchActor = "cloud-scheduler"
 // the repo before the bot starts —
 // mandatory for stateful bots that persist state to git (feed-watch
 // state_commit=true), which need a workspace with push credentials wired.
+// The launch names the repository it serves (scheduledProjectPath) — the
+// identity the credential walk's repository audience, the launch gate's
+// per-repository quota and the runner's spend meter all read — and carries
+// the key pins scheduledKeyOverrides composes.
 // Generic secrets declared by the bot (e.g. `webhooks`) resolve via the
 // publisher's bot-secret bindings, so SecretOverrides plumbing is not needed
 // here.
@@ -1278,7 +1349,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if s.runs == nil {
 		return errors.New("run service unavailable")
 	}
-	ctx = store.WithIdentity(ctx, sb.TenantID, "scheduler:"+sb.BotID)
+	ctx = store.WithIdentity(ctx, sb.TenantID, scheduledLaunchOwner(sb.BotID))
 	lb, err := s.resolveBotSource(ctx, sb.TenantID, sb.BotID)
 	if err != nil {
 		return err
@@ -1295,8 +1366,36 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if routeErr != nil {
 		return routeErr
 	}
+	// The schedule's own pool block is the BINDING layer (ADR-164): the
+	// most specific answer the fold reads, validated at record-write time
+	// (the schedule routes' consent check).
+	var poolHigher []credpool.BindingLayer
+	if bl, ok := sb.PoolBindingLayer(); ok {
+		poolHigher = append(poolHigher, bl)
+	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, sb.TenantID, sb.BotID, poolHigher...)
+	if poolErr != nil {
+		return poolErr
+	}
 	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry, route)
-	overrides, err := s.scheduledForgeOverrides(ctx, sb)
+	spec.PoolAttachment = poolAttachment
+	binding, err := s.scheduledRepoBinding(ctx, sb)
+	if err != nil {
+		return err
+	}
+	// Before the forge-token mint and the pins: a clone off the integration's
+	// forge, or a refused pin, mints nothing.
+	repo, err := scheduledProjectPath(sb, binding)
+	if err != nil {
+		return err
+	}
+	spec.ProjectPath = repo
+	keyPins, err := s.scheduledKeyOverrides(ctx, sb, binding, pinAudience{bot: botregistry.NormalizeName(lb.BotID), repo: repo})
+	if err != nil {
+		return err
+	}
+	spec.KeyOverrides = keyPins
+	overrides, err := s.scheduledForgeOverrides(ctx, sb, binding)
 	if err != nil {
 		return err
 	}
@@ -1312,12 +1411,25 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if deny != nil {
 		return deny.err()
 	}
-	if _, err = s.runs.Launch(ctx, spec); err != nil {
+	// A bot that declares the workflow-dispatch capability gets its publish
+	// grant here, after admission so a denied tick mints nothing; every
+	// other scheduled launch mints none, as buildScheduledLaunchSpec says.
+	// The capability is read from lb.Manifest — the bundle this tick runs —
+	// so the source and the grant come from one resolution.
+	vars, minted, err := s.scheduledDispatchGrant(ctx, sb, lb.Manifest, spec.Vars)
+	if err != nil {
+		adm.rollback(s.logger)
+		return err
+	}
+	spec.Vars = vars
+	if _, err = s.launchRun(ctx, systemLaunch(scheduledLaunchActor), spec); err != nil {
 		// The slot follows the error's own fact (#1725): a launch proven
 		// not to have started hands the metered unit back; a publish that
 		// landed keeps it — the run it describes exists or may be claimed.
+		// The grant follows the same fact: nothing holds it.
 		if !runview.RunMayHaveStarted(err) {
 			adm.rollback(s.logger)
+			s.revokeUnlaunchedGrant(minted)
 		}
 		return err
 	}
@@ -1334,7 +1446,31 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 // its token; letting the tick limp on to a doomed clone would just move the
 // failure three minutes later and strip its cause. A schedule with no pinned
 // integration keeps the legacy bot-secret-binding resolution (nil overrides).
-func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.ScheduledBot) (map[string]string, error) {
+func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding) (map[string]string, error) {
+	if b == nil {
+		return nil, nil
+	}
+	secID, err := s.forgeOrchestrator.ManagedSecretFor(store.WithTenant(ctx, b.connection.TenantID), &b.connection, b.integration.RepoFullName, scheduledLaunchOwner(sb.BotID))
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
+	}
+	return map[string]string{"forge_token": secID}, nil
+}
+
+// scheduledBinding is a repo-bound schedule's integration and the forge
+// connection it rides, read once per tick and tenant-checked: the clone
+// token, the repository the launch names and the integration's key pins all
+// come from this one read.
+type scheduledBinding struct {
+	integration forge.RepoIntegration
+	connection  forge.Connection
+}
+
+// scheduledRepoBinding resolves the integration a schedule is bound to (nil,
+// nil when it names none). Explicit errors, never a silent fall-through: a
+// schedule that pinned an integration wants its token, its repository and its
+// pins, and launching without them is a launch on someone else's terms.
+func (s *Server) scheduledRepoBinding(ctx context.Context, sb cloudsched.ScheduledBot) (*scheduledBinding, error) {
 	if sb.RepoIntegrationID == "" {
 		return nil, nil
 	}
@@ -1348,15 +1484,147 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 	if integ.TenantID != sb.TenantID {
 		return nil, fmt.Errorf("schedule %s: repo integration %s belongs to another tenant", sb.ID, sb.RepoIntegrationID)
 	}
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), integ.ConnectionID)
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), integ.TenantID, integ.ConnectionID)
 	if err != nil {
 		return nil, fmt.Errorf("schedule %s: resolve forge connection %s: %w", sb.ID, integ.ConnectionID, err)
 	}
-	secID, err := s.forgeOrchestrator.ManagedSecretFor(store.WithTenant(ctx, conn.TenantID), &conn, integ.RepoFullName, "scheduler:"+sb.BotID)
-	if err != nil {
-		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
+	return &scheduledBinding{integration: integ, connection: conn}, nil
+}
+
+// scheduledProjectPath names the repository a scheduled launch serves — the
+// forge slug the credential walk's repository audience reads (a key
+// restricted to that repository funds the schedule that clones it), the
+// launch gate's per-repository quota binds and the runner's spend meter
+// charges. A schedule bound to an integration names the integration's
+// repository, spelled as the forge writes it, when its clone URL names that
+// repository by the very predicate the create route bound it with
+// (repoURLNamesRepo), or when it clones nothing. A clone URL naming another
+// repository of the integration's forge — a repo_url edited since — names
+// that repository, read through the same normalisation. A clone URL off the
+// integration's forge refuses the tick: the integration's forge token is
+// aimed at the host it belongs to only (the REST lane's rule), and the
+// integration's pins fund its forge's repositories. A schedule bound to none
+// derives the slug from its clone URL alone, the board lane's reading for a
+// card naming no integration; one that clones nothing serves no repository.
+func scheduledProjectPath(sb cloudsched.ScheduledBot, b *scheduledBinding) (string, error) {
+	if b == nil {
+		return forge.ProjectPathFromCloneURL(sb.RepoURL), nil
 	}
-	return map[string]string{"forge_token": secID}, nil
+	own := forge.CanonicalRepoSlug(b.integration.RepoFullName)
+	base := b.connection.BaseURL()
+	if strings.TrimSpace(sb.RepoURL) == "" || repoURLNamesRepo(sb.RepoURL, base, b.integration.RepoFullName) {
+		return own, nil
+	}
+	slug, onForge := repoOnForgeBase(sb.RepoURL, base)
+	if !onForge {
+		return "", fmt.Errorf("schedule %s: repo_url %q is not on %s, the forge of its repo integration %s — the integration's forge token is aimed at that forge only: point repo_url at a repository there, or recreate the schedule unbound", sb.ID, sb.RepoURL, base, b.integration.ID)
+	}
+	return slug, nil
+}
+
+// pinAudience is what a schedule's tick launches for, as the credential walk
+// reads it: the bot (botregistry's normalisation, the walk's audienceBotID)
+// and the repository the tick names (scheduledProjectPath).
+type pinAudience struct {
+	bot  string
+	repo string
+}
+
+// scheduledKeyOverrides composes the key pins a scheduled launch carries
+// (provider → api key id). A schedule bound to an integration inherits that
+// integration's pins, read LIVE from its webhook config at the tick under a
+// tenant check — never a copy frozen on the row, so a repin, a clear or the
+// delete sweep of a revoked key on the integration reaches the next tick. The
+// schedule's own pins win over them provider by provider, and are judged at
+// the tick by the rule the write applied and by the key's audiences against
+// aud (judgeScheduleKeyPins): a pin whose key is gone or no longer serves the
+// schedule refuses the tick by name instead of letting the walk spend
+// another key in its place.
+func (s *Server) scheduledKeyOverrides(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding, aud pinAudience) (map[string]string, error) {
+	if err := s.judgeScheduleKeyPins(ctx, sb, aud); err != nil {
+		return nil, err
+	}
+	inherited, err := s.scheduledIntegrationKeyPins(ctx, sb, b)
+	if err != nil {
+		return nil, err
+	}
+	if len(inherited) == 0 && len(sb.KeyOverrides) == 0 {
+		return nil, nil
+	}
+	pins := make(map[string]string, len(inherited)+len(sb.KeyOverrides))
+	maps.Copy(pins, inherited)
+	maps.Copy(pins, sb.KeyOverrides)
+	return pins, nil
+}
+
+// scheduledIntegrationKeyPins reads the key pins of the integration a
+// schedule is bound to, from the integration's webhook config — where the
+// webhook lane reads them, and where the delete sweep clears a revoked key's
+// pin. An integration with no webhook config yet has no pins to give; one
+// naming a config this server cannot read, or one of another team, refuses
+// the tick: launching without the integration's pins would spend a key the
+// integration did not choose.
+func (s *Server) scheduledIntegrationKeyPins(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding) (map[string]string, error) {
+	if b == nil || b.integration.WebhookID == "" {
+		return nil, nil
+	}
+	if s.webhookConfigs == nil {
+		return nil, fmt.Errorf("schedule %s: repo integration %s names webhook config %s, whose key pins this server cannot read (no webhook config store wired)", sb.ID, b.integration.ID, b.integration.WebhookID)
+	}
+	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), b.integration.WebhookID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: read the key pins of repo integration %s (webhook config %s): %w", sb.ID, b.integration.ID, b.integration.WebhookID, err)
+	}
+	if cfg.TenantID != sb.TenantID {
+		return nil, fmt.Errorf("schedule %s: repo integration %s names webhook config %s, which belongs to another tenant", sb.ID, b.integration.ID, b.integration.WebhookID)
+	}
+	return cfg.KeyOverrides, nil
+}
+
+// judgeScheduleKeyPins holds a schedule's own key pins, at the tick, to the
+// rule the schedule routes applied when they wrote them (keyPinFault against
+// scheduledLaunchOwner: the key exists, is the team's, of the pinned
+// provider and visible to the tick's identity) and to the key's audiences:
+// its `bots` must admit the bot the tick launches and its `repos` the
+// repository it names (aud). A pin does not lift an audience — the walk
+// withholds such a key and, for a vendor provider, spends the team's next
+// one — and the key PATCH route can narrow both audiences after the pin was
+// written. A schedule row is not one of the homes the key delete's sweep
+// clears — its store has no version to fence a concurrent full-row write or
+// the integration rebuild with, so a swept pin could be written back unseen
+// — so a pin is judged here, where it is spent, instead: a key deleted or
+// no longer serving the schedule refuses the tick by name, the schedule's
+// last_error says which pin, and no other key is spent in its place. Pins
+// are judged in provider order, so the refusal names the same pin every
+// tick.
+func (s *Server) judgeScheduleKeyPins(ctx context.Context, sb cloudsched.ScheduledBot, aud pinAudience) error {
+	if len(sb.KeyOverrides) == 0 {
+		return nil
+	}
+	if s.apiKeys == nil {
+		return fmt.Errorf("schedule %s pins api keys (key_overrides) but this server has no api key store to honour them", sb.ID)
+	}
+	tctx := store.WithTenant(ctx, sb.TenantID)
+	for _, prov := range slices.Sorted(maps.Keys(sb.KeyOverrides)) {
+		keyID := sb.KeyOverrides[prov]
+		k, err := s.apiKeys.Get(tctx, keyID)
+		switch {
+		case errors.Is(err, secrets.ErrApiKeyNotFound):
+			return fmt.Errorf("schedule %s: key_overrides[%s] names api key %q, which no longer exists — a schedule's pin is never replaced by another key: repin or clear the schedule's key_overrides", sb.ID, prov, keyID)
+		case err != nil:
+			return fmt.Errorf("schedule %s: key_overrides[%s]: read api key %q: %w", sb.ID, prov, keyID, err)
+		}
+		if err := keyPinFault(prov, keyID, k, sb.TenantID, scheduledLaunchOwner(sb.BotID)); err != nil {
+			return fmt.Errorf("schedule %s: %w", sb.ID, err)
+		}
+		if !k.ServesBotForLaunch(aud.bot) {
+			return fmt.Errorf("schedule %s: key_overrides[%s]: api key %q does not serve bot %q — its bots audience leaves it out, and a pin does not lift an audience: widen the key's bots, or repin or clear the schedule's key_overrides", sb.ID, prov, keyID, aud.bot)
+		}
+		if !k.ServesRepoForLaunch(aud.repo) {
+			return fmt.Errorf("schedule %s: key_overrides[%s]: api key %q does not serve repository %q — its repos audience leaves it out, and a pin does not lift an audience: widen the key's repos, or repin or clear the schedule's key_overrides", sb.ID, prov, keyID, aud.repo)
+		}
+	}
+	return nil
 }
 
 // buildScheduledLaunchSpec is the pure-data half of launchScheduledBot,
@@ -1365,6 +1633,14 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
 func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy, route *store.RunLLMRoutePolicy) runview.LaunchSpec {
+	// A schedule row mints no grant: the publish bearer and the endpoints it
+	// is presented to are the server's own, minted per launch (for a bot
+	// declaring the workflow-dispatch capability, by scheduledDispatchGrant
+	// at the tick), so a value stored under those names on the row is a stale
+	// token or an endpoint of someone's choosing. Dropped before
+	// TrustedVarNames too — nothing is trusted by a name that no longer
+	// reaches the run.
+	vars := store.DropServerMintedVars(sb.Vars)
 	return runview.LaunchSpec{
 		// Tenant-configured vars ride blind (#1725's opt-out): the schedule
 		// editor owns them, the runview refusal is for operator-typed
@@ -1375,11 +1651,11 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 		// edited by team admins, its defaults come from the bot manifest,
 		// and no delivery payload ever writes here) — exactly the layer
 		// ADR-129 §4 rule 2 lets narrow the routing gate.
-		TrustedVarNames: trustedVarNames(sb.Vars),
+		TrustedVarNames: trustedVarNames(vars),
 		FilePath:        path,
 		Source:          source,
 		BotID:           sb.BotID,
-		Vars:            sb.Vars,
+		Vars:            vars,
 		RepoURL:         sb.RepoURL,
 		RepoRef:         sb.RepoRef,
 		// Resolved by the caller across the schedule row, the bot manifest
@@ -1404,20 +1680,22 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 // webhookLauncherFor builds the production launch path for one inbound
 // webhook config and ONE target of it. It is a closure rather than a plain
 // method because the launch needs facts the seam's positional signature does
-// not carry: the config's retry policy, and the target's own trust and
-// admitted commit. Those last two ride the closure rather than two more
-// positional parameters because the seam has 149 test doubles — and because a
-// test double that stands in for the launcher is not the thing that builds a
-// LaunchSpec, so widening it would prove nothing it does not already prove.
-func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+// not carry: the config's retry policy, the target's own trust and admitted
+// commit, and the id of the delivery row this launch answers. Those ride the
+// closure rather than more positional parameters because the seam has 149
+// test doubles — and because a test double that stands in for the launcher is
+// not the thing that builds a LaunchSpec, so widening it would prove nothing
+// it does not already prove.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget, deliveryID string, from launchOrigin) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA)
+		return s.launchWebhookBot(ctx, from, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA, t.forkAuthorSubject(), deliveryID)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
-// service (which, in cloud mode, routes to the publisher).
-func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA string) (string, error) {
+// service (which, in cloud mode, routes to the publisher). from is the
+// delivery the launch answers, as its audit line records it.
+func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA, forkAuthorSubject, deliveryID string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1433,6 +1711,13 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 	if routeErr != nil {
 		return "", routeErr
 	}
+	// The webhook config's pool block is the BINDING layer (ADR-164) — the
+	// enforcement half of the forge integration's block, written only by
+	// the provisioner after the integration surface validated its consent.
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, cfg.TenantID, botID, poolLayersOf(&cfg)...)
+	if poolErr != nil {
+		return "", poolErr
+	}
 	spec := runview.LaunchSpec{
 		Vars:        vars,
 		RepoURL:     repoURL,
@@ -1442,8 +1727,17 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		// lane itself seeds vars from the delivery payload (reviewPRVars,
 		// fixerPRVars, the fork lane), and a payload-written name must
 		// leave a routing field undecided at the gate, never certify the
-		// payload's choice (ADR-129 §4 rule 2 — the O6 witness).
-		TrustedVarNames: trustedVarNames(cfg.OperatorLaunchVars),
+		// payload's choice (ADR-129 §4 rule 2 — the O6 witness). An
+		// UNTRUSTED launch certifies none at all (decision 4): the
+		// operator layer is the base repository's configuration, which
+		// may stop a fork run, never steer it — and a routing gate
+		// narrowed through the repo's own vars is the repo steering.
+		TrustedVarNames: trustedVarNamesFor(trust, cfg.OperatorLaunchVars),
+		// The fork review lane's per-contributor metering subject, as the
+		// admission gate composed it (never re-derived here): it rides the
+		// document and the wire so the runner charges the author's dollars
+		// and every resume re-enters the same subject.
+		ForkAuthorSubject: forkAuthorSubject,
 		// This lane injects server-computed keys blindly (forge_publish_*,
 		// canonical PR vars — the contract forge_publish.go documents), so
 		// the #1757 unknown-input refusal does not apply to it: a launched
@@ -1456,6 +1750,17 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		// from — this launch's verdict has to outlive this launch.
 		Trust:           trust,
 		RepoSHAExpected: expectedSHA,
+		// The trust and author subject above ARE the tail's admission: the
+		// target's trust is the subject its gate judged, and its author
+		// subject the one that gate charged (stamped back onto the target
+		// before webhookLauncherFor hands it here). The run service holds
+		// the launch to them (CheckLaunchAdmitted).
+		Admitted: &runview.GateAdmission{Trust: trust, ForkAuthorSubject: forkAuthorSubject},
+		// The pool the fork lane names (ADR-162 Q3): an untrusted run
+		// executes there and nowhere else — the publisher stamps it as the
+		// run's RunnerPool on the document and the wire. A trusted launch
+		// names none and keeps its team's mapping.
+		ForkLanePool:    forkLanePoolFor(cfg, trust),
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,
@@ -1466,9 +1771,21 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 			Policy: cfg.RetryPolicy(),
 		}),
 		LLMRoutePolicy: routePolicy,
+		PoolAttachment: poolAttachment,
+	}
+	if deliveryID != "" {
+		// Typed provenance: the run-outcome spine is keyed by RUN, so the
+		// run is what carries the delivery it answers (#1501, ARB-41 option
+		// B). The Kind is the same classification the run list already
+		// derived from the "webhook:" owner prefix, so no reader changes;
+		// what the pair adds is the back-reference nothing else holds.
+		spec.SourceRef = &store.RunSource{
+			Kind:       store.RunSourceKindWebhook,
+			DeliveryID: deliveryID,
+		}
 	}
 	lb.Stamp(&spec)
-	res, err := s.runs.Launch(ctx, spec)
+	res, err := s.launchRun(ctx, from, spec)
 	if err != nil {
 		return "", err
 	}

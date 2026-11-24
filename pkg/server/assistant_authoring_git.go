@@ -81,16 +81,29 @@ func (g authoringGitIndex) tree(ctx context.Context, parent string, paths []stri
 }
 
 func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []string, hashes map[string]string, message string) (published string, err error) {
-	return commitAttestedAuthoringFilesWithDependency(ctx, root, paths, hashes, message, nil)
+	return commitAttestedAuthoring(ctx, root, paths, hashes, message, nil, nil)
 }
 
+// commitAttestedAuthoringFilesWithDependency commits a dependency
+// transaction's lock: it installs the candidate into the worktree before the
+// hooks and restores it on failure, so the tree is the transaction's through
+// the publication and its caller holds it throughout, the signature included.
 func commitAttestedAuthoringFilesWithDependency(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction) (published string, err error) {
+	return commitAttestedAuthoring(ctx, root, paths, hashes, message, dependency, nil)
+}
+
+// commitAttestedAuthoring commits the attested files. tree is the caller's
+// hold of the bot tree's lock on root's working tree, or nil when the caller
+// holds it throughout: everything that reads or writes the worktree — the
+// staging, the hooks, the publication and its index — runs under it, and a
+// signing commit lets it go around commit-tree -S alone, which reads the
+// tree object built here and may wait on a person (a pinentry).
+func commitAttestedAuthoring(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction, tree *treeHold) (published string, err error) {
 	version, err := runAuthoringGit(ctx, root, "version")
 	if err != nil {
 		return "", err
 	}
-	var major, minor int
-	if _, err := fmt.Sscanf(version, "git version %d.%d", &major, &minor); err != nil || major < 2 || (major == 2 && minor < 46) {
+	if !gitVersionAtLeast(version, 2, 46) {
 		return "", errors.New("attested authoring commits require Git 2.46 or newer for guarded ref transactions")
 	}
 	indexPath, err := runAuthoringGit(ctx, root, "rev-parse", "--path-format=absolute", "--git-path", "index")
@@ -256,9 +269,15 @@ func commitAttestedAuthoringFilesWithDependency(ctx context.Context, root string
 	args := []string{"commit-tree", verifiedTree, "-p", parent, "-F", "-"}
 	if sign == "true" {
 		args = append(args, "-S")
+		tree.leave()
 	}
 	commit, err := g.run(ctx, string(msg), args...)
 	if err != nil {
+		return "", err
+	}
+	// The publication runs git's reference-transaction hooks, installs the
+	// index and runs post-commit: the worktree's again.
+	if err := tree.take(ctx); err != nil {
 		return "", err
 	}
 	commit = strings.TrimSpace(commit)

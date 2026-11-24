@@ -20,6 +20,23 @@ import (
 //   - in SignupInviteOnly mode, returns ErrSignupClosed unless the
 //     user was already provisioned.
 func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, userAgent, ip string) (LoginResult, error) {
+	return s.loginWithExternal(ctx, ext, userAgent, ip, nil)
+}
+
+// LoginWithExternalDesktop is LoginWithExternal for a DESKTOP SSO flow: the
+// same identity work at the IdP callback, but the session is DEFERRED to the
+// ticket's redemption (RedeemDesktopLogin) — nothing is signed, no session
+// row is written, and no refresh token exists while the ticket waits, so the
+// ticket store never rests a credential (#2635).
+func (s *Service) LoginWithExternalDesktop(ctx context.Context, ext oidc.ExternalUser, userAgent, ip string) (DesktopLogin, error) {
+	var d DesktopLogin
+	if _, err := s.loginWithExternal(ctx, ext, userAgent, ip, &d); err != nil {
+		return DesktopLogin{}, err
+	}
+	return d, nil
+}
+
+func (s *Service) loginWithExternal(ctx context.Context, ext oidc.ExternalUser, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
 	if ext.Subject == "" {
 		return LoginResult{}, fmt.Errorf("auth: external user missing subject")
 	}
@@ -69,7 +86,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLogin(ctx, u, userAgent, ip)
+		return s.finishExternalLogin(ctx, u, "", userAgent, ip, desktop)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -112,7 +129,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLogin(ctx, u, userAgent, ip)
+		return s.finishExternalLogin(ctx, u, "", userAgent, ip, desktop)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -126,7 +143,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	gated := gh.provider && gh.active
 	if gated && len(gh.rows) == 0 {
 		if s.githubUngrantedPolicy == GitHubUngrantedSubmitter {
-			return s.provisionSubmitter(ctx, ext, email, now, userAgent, ip)
+			return s.provisionSubmitter(ctx, ext, email, now, userAgent, ip, desktop)
 		}
 		return LoginResult{}, ErrSSORestricted
 	}
@@ -189,12 +206,14 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 			return LoginResult{}, terr
 		}
 		patch.DefaultOrgID = &space.orgID
-		patch.DefaultTeamID = &space.teamID
+		patch.DefaultTeamID = &space.team.ID
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
-		return LoginResult{}, err
-	}
-	return s.issueNewAccountLogin(ctx, u, preferredTeam, userAgent, ip)
+	// Best-effort, logged: the account, its SSO link and its grants are
+	// written, and an SSO first login that answers an error over them cannot
+	// be retried — the second attempt finds the email taken and, under the
+	// default config, answers 409 link_required forever (patchBestEffort).
+	u = s.patchBestEffort(ctx, u, patch, "the landing defaults of the new SSO account")
+	return s.finishNewAccountLogin(ctx, u, preferredTeam, userAgent, ip, desktop)
 }
 
 // provisionSubmitter creates a teamless account for a GitHub login that is
@@ -203,7 +222,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 // account can authenticate + submit to the marketplace (auth-only) but has no
 // team-scoped rights. If the user is later added to an allow-listed team, the
 // returning-user grant re-evaluation in LoginWithExternal upgrades them.
-func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser, email string, now time.Time, userAgent, ip string) (LoginResult, error) {
+func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser, email string, now time.Time, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
 	u := identity.User{
 		ID:        uuid.NewString(),
 		Email:     email,
@@ -225,12 +244,12 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 	}); err != nil {
 		return LoginResult{}, err
 	}
-	// The stamp alone, on the account this call just created.
-	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); err != nil {
-		return LoginResult{}, err
-	}
+	// The stamp alone, on the account this call just created — best-effort
+	// and logged: LastLoginAt is cosmetic, and the account plus its SSO link
+	// are already written (patchBestEffort).
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{LastLoginAt: &now}, "the sign-in stamp of the new submitter account")
 	// No team: the login lands with an empty active team.
-	return s.issueNewAccountLogin(ctx, u, "", userAgent, ip)
+	return s.finishNewAccountLogin(ctx, u, "", userAgent, ip, desktop)
 }
 
 // LoginWithExternalForOrg completes a per-org OIDC flow (a tenant's own
@@ -243,6 +262,21 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 // tenantID at the provider's DefaultRole (grant-only, never downgraded, capped
 // below owner) and lands in that org.
 func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.ExternalUser, tenantID, providerID, userAgent, ip string) (LoginResult, error) {
+	return s.loginWithExternalForOrg(ctx, ext, tenantID, providerID, userAgent, ip, nil)
+}
+
+// LoginWithExternalForOrgDesktop is LoginWithExternalForOrg for a DESKTOP SSO
+// flow: the session is deferred to the ticket's redemption, as
+// LoginWithExternalDesktop defers it (#2635).
+func (s *Service) LoginWithExternalForOrgDesktop(ctx context.Context, ext oidc.ExternalUser, tenantID, providerID, userAgent, ip string) (DesktopLogin, error) {
+	var d DesktopLogin
+	if _, err := s.loginWithExternalForOrg(ctx, ext, tenantID, providerID, userAgent, ip, &d); err != nil {
+		return DesktopLogin{}, err
+	}
+	return d, nil
+}
+
+func (s *Service) loginWithExternalForOrg(ctx context.Context, ext oidc.ExternalUser, tenantID, providerID, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
 	if s.orgSSO == nil {
 		return LoginResult{}, oidc.ErrUnknownProvider
 	}
@@ -290,7 +324,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
+		return s.finishExternalLogin(ctx, u, tenantID, userAgent, ip, desktop)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -306,7 +340,14 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if refusal := ssoRefusal(existing); refusal != nil {
 			return LoginResult{}, refusal
 		}
-		if !s.canAutoLink(ctx, row, existing, email) {
+		allowed, linkErr := s.canAutoLink(ctx, row, existing, email)
+		if linkErr != nil {
+			// A read that could not decide is not the policy's refusal: 409
+			// link_required is permanent for an account with no password,
+			// and its cause used to vanish unlogged.
+			return LoginResult{}, linkErr
+		}
+		if !allowed {
 			return LoginResult{}, ErrLinkRequiresConsent
 		}
 		if err := s.store.UpsertOIDCLink(ctx, identity.OIDCLink{
@@ -327,7 +368,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLoginInTeam(ctx, existing, tenantID, userAgent, ip)
+		return s.finishExternalLogin(ctx, existing, tenantID, userAgent, ip, desktop)
 	} else if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
 	}
@@ -367,13 +408,11 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 	}, identity.MembershipSourceOIDCSSO, now); err != nil {
 		return LoginResult{}, err
 	}
-	// The stamp alone, on the account this call just created. Best-effort:
-	// LastLoginAt is cosmetic; a store outage surfaces at the session write
-	// on the next line.
-	if patched, uerr := s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); uerr == nil {
-		u = patched
-	}
-	return s.issueNewAccountLogin(ctx, u, tenantID, userAgent, ip)
+	// The stamp alone, on the account this call just created. Best-effort,
+	// through the one tolerant writer, so the cause reaches the log instead
+	// of nothing at all (patchBestEffort).
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{LastLoginAt: &now}, "the sign-in stamp of the new org SSO account")
+	return s.finishNewAccountLogin(ctx, u, tenantID, userAgent, ip, desktop)
 }
 
 // LinkExternalToUser attaches a freshly-authenticated external identity to an
@@ -724,17 +763,28 @@ func (s *Service) applyGitHubGrants(ctx context.Context, userID string, gh githu
 // the org controls its own signing keys), and the target is not a privileged
 // account whose takeover would escalate beyond the org: never a super-admin,
 // and never an admin/owner of a non-personal org other than the linking one.
-func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, target identity.User, email string) bool {
+//
+// (false, nil) is the POLICY's refusal, which the caller answers as
+// ErrLinkRequiresConsent — "sign in, then link". An error is a read that
+// could not decide: the caller owes it its own answer, because a 409 for a
+// failed read is permanent (the account the SSO login matched has no
+// password, so the "sign in, then link" remedy is a dead end) and the cause
+// used to disappear with nothing logged. Policy and failure answer apart.
+func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, target identity.User, email string) (bool, error) {
 	if !row.AutoLinkOnEmail || s.domains == nil || target.IsSuperAdmin {
-		return false
+		return false, nil
 	}
 	ok, err := s.domains.IsVerifiedForTenant(ctx, row.TenantID, orgsso.EmailDomain(email))
-	if err != nil || !ok {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("auth: read whether domain %s is verified for tenant %s: %w",
+			orgsso.EmailDomain(email), row.TenantID, err)
+	}
+	if !ok {
+		return false, nil
 	}
 	ms, err := s.store.ListMembershipsByUser(ctx, target.ID)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("auth: read the grants of account %s the auto-link would take over: %w", target.ID, err)
 	}
 	for _, m := range ms {
 		if m.TeamID == row.TenantID || !m.Role.AtLeast(identity.RoleAdmin) {
@@ -742,12 +792,19 @@ func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, ta
 		}
 		// admin/owner of another team — allowed only if it's a personal team
 		// (every user owns theirs; that confers no cross-tenant power).
-		if t, terr := s.store.GetTeam(ctx, m.TeamID); terr == nil && t.Personal {
+		t, terr := s.store.GetTeam(ctx, m.TeamID)
+		if terr != nil {
+			// The team that decides whether this grant is privileged cannot
+			// be read: the refusal stands (the safe direction), and it says
+			// why instead of claiming the policy refused.
+			return false, fmt.Errorf("auth: read team %s to decide whether the grant of account %s is privileged: %w", m.TeamID, target.ID, terr)
+		}
+		if t.Personal {
 			continue
 		}
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // ssoRefusal is the answer of an SSO sign-in for an account no session may be
@@ -756,10 +813,10 @@ func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, ta
 // reset (or its administrator) for one that signs in through SSO only. Nil
 // for an active account.
 func ssoRefusal(u identity.User) error {
-	switch u.Status {
-	case identity.UserStatusDisabled:
-		return ErrAccountDisabled
-	case identity.UserStatusPendingPasswordChange:
+	if refusal := accountRefusal(u); refusal != nil {
+		return refusal
+	}
+	if u.Status == identity.UserStatusPendingPasswordChange {
 		return ErrPasswordChangeRequired
 	}
 	return nil

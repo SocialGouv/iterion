@@ -38,6 +38,8 @@ type fakeRetryLister struct {
 	probeRefs  []mongostore.RetryDueRef
 	probeCalls []probeScan
 	probeErr   error
+	// credRefs is what the credential probe's scan returns.
+	credRefs []mongostore.RetryDueRef
 	// dueErr is the same shape for the DUE scan: rows AND an error, so the
 	// caller's error check is what the test exercises rather than an empty
 	// slice that would pass either way.
@@ -70,6 +72,10 @@ func (f *fakeRetryLister) ListRunsForRetryProbe(_ context.Context, now time.Time
 	return f.probeRefs, f.probeErr
 }
 
+func (f *fakeRetryLister) ListRunsForCredentialProbe(_ context.Context, _ time.Time, _ int) ([]mongostore.RetryDueRef, error) {
+	return f.credRefs, nil
+}
+
 // fakeRetryStore records the sweeper's decisions. Embedding store.RunStore
 // leaves every unused method nil — a call to one panics loudly rather than
 // passing silently, which is what we want from a fake.
@@ -84,6 +90,9 @@ type fakeRetryStore struct {
 	cleared   []string
 	abandoned map[string]string
 	rearmed   map[string]time.Time
+	// delayedAs is the reason each DelayRunRetry re-tagged its row with —
+	// empty when the deferral kept the row's own.
+	delayedAs map[string]string
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
 	// armWall is the wall each arming carried, abandonExpected the CAS
 	// argument each settlement carried, abandonCASLoses makes every
@@ -116,6 +125,7 @@ func newFakeRetryStore() *fakeRetryStore {
 		loadRun:         map[string]*store.Run{},
 		abandoned:       map[string]string{},
 		rearmed:         map[string]time.Time{},
+		delayedAs:       map[string]string{},
 		armBudget:       map[string]int{},
 		armWall:         map[string]time.Time{},
 		abandonExpected: map[string]time.Time{},
@@ -137,6 +147,11 @@ func (f *fakeRetryStore) PullRunRetry(ctx context.Context, runID string, expecte
 		return false, f.pullErr
 	}
 	return f.pullOK, nil
+}
+
+// ReleaseRunRetry is a pull on a probe's answer, recorded with the pulls.
+func (f *fakeRetryStore) ReleaseRunRetry(ctx context.Context, runID string, expectedAfter, releaseAt time.Time, _ string) (bool, error) {
+	return f.PullRunRetry(ctx, runID, expectedAfter, releaseAt)
 }
 
 // RearmProbedRunRetry models the store's CAS on the marker: no marker on the
@@ -190,10 +205,11 @@ func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at, w
 	return true, 2, nil
 }
 
-func (f *fakeRetryStore) DelayRunRetry(_ context.Context, runID string, _, delayedUntil time.Time) (bool, error) {
+func (f *fakeRetryStore) DelayRunRetry(_ context.Context, runID string, _, delayedUntil time.Time, reason, _ string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rearmed[runID] = delayedUntil
+	f.delayedAs[runID] = reason
 	return true, nil
 }
 
@@ -393,14 +409,29 @@ func TestCircuitRetryDelaySpreadsRunsAndHonorsOriginalHorizon(t *testing.T) {
 
 // TestSweepDueRetries_TransientDenialReArms pins the denial classification: a
 // monthly quota refills on the 1st and a concurrency cap clears in minutes,
-// so those must defer the retry rather than throw the run away.
+// so those must defer the retry rather than throw the run away. Every token
+// by name, the fork lane's included (ADR-162 decision 5): an unreadable team
+// or org, an unreachable or erring counter and the author's monthly ceilings
+// are blips or calendar conditions, and a fork run's paid continuation is
+// never abandoned on one (the sweeper's abandonRetry).
+//
+// Mutation: narrow the fork case of retryDenialIsTransient to
+// denyForkTeamUnreadable → the six other fork tokens red, each by name.
 func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
-	for _, reason := range []string{denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited} {
+	for _, reason := range []string{
+		denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota,
+		denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError,
+		denyForkAuthorRuns, denyForkAuthorCost, denyResumeRunUnreadable, denyForkFundingUnreadable,
+	} {
 		if !retryDenialIsTransient(reason) {
 			t.Errorf("%s classified permanent — the run would be dropped for a condition that clears itself", reason)
 		}
 	}
-	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, "some_future_code"} {
+	// An unfunded fork run is refused identically on every cycle until a
+	// key is provisioned: abandoned, and the operator's resume wakes it.
+	// Nor is a fork run whose program cannot be built, or whose pool the
+	// lane's rule refuses: both answer identically on every cycle.
+	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, denyForkRunUnfunded, denyForkFundingUnjudgeable, denyForkLanePoolRefused, "some_future_code"} {
 		if retryDenialIsTransient(reason) {
 			t.Errorf("%s classified transient — it needs a human, and re-arming would loop forever", reason)
 		}
@@ -740,6 +771,34 @@ func TestSweepDueRetries_APoolRemapAbandonsInsteadOfReArming(t *testing.T) {
 	// the pool branch adds NO second rollback (ReleaseRun is a
 	// non-idempotent $inc). Asserting the count needs the cloud-gate harness
 	// (auth store + org resolution wired) — deferred to P1b, which wires it.
+}
+
+// The fork lane's pool rule is a PERMANENT refusal on the same terms as a
+// pool remap (ADR-162 Q3): an untrusted run whose frozen pool its team's
+// mapping or another team's sovereignty now forbids is refused identically
+// every cycle, so the sweeper abandons it with the refusal's own words.
+// Mutation: drop the ErrForkLanePool branch → the retry is re-armed (red on
+// the abandon assertion).
+func TestSweepDueRetries_AForkLanePoolRefusalAbandonsInsteadOfReArming(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-a"] = true
+	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: resume of run %s refused: %w: team %s is mapped to the sovereign pool %q, and its untrusted run names %q",
+		"run-a", cloudpublisher.ErrForkLanePool, "t1", "sovereign", "forks")}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-a", at)}}, resumer, time.Now().UTC())
+
+	reason, ok := st.abandoned["run-a"]
+	if !ok {
+		t.Fatalf("a fork-lane pool refusal must ABANDON the retry, got abandoned=%v re-armed=%v", st.abandoned, st.rearmed)
+	}
+	if !strings.Contains(reason, "sovereign") {
+		t.Fatalf("the abandon reason %q does not carry the refusal's own words", reason)
+	}
+	if len(st.rearmed) != 0 {
+		t.Fatalf("a fork-lane pool refusal must never be re-armed: %v", st.rearmed)
+	}
 }
 
 // A run whose last failure left an effect undecided is final for automation:

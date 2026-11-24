@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/proctest"
+
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -439,6 +441,89 @@ func TestASweepThatCannotLookSaysSoInTheEvent(t *testing.T) {
 	}
 }
 
+// leftoverEndRun is a sandbox whose exec that ends a spawn prints a clean
+// sweep report — the sweep program's own last line, proc's sweepLineDone —
+// leaves a process holding the output it was given, and exits 0: the shape
+// any driver can produce, because killing an exec does not reach what it
+// forked and a copier ends only when every holder of the pipe has closed it.
+type leftoverEndRun struct {
+	sandbox.Run
+	holds   time.Duration
+	pidFile string
+}
+
+func (r *leftoverEndRun) Command(ctx context.Context, _ []string, _ sandbox.ExecOpts) *exec.Cmd {
+	return exec.CommandContext(ctx, "sh", "-c",
+		"sleep "+strconv.Itoa(int(r.holds.Seconds()))+" &\n"+
+			"echo $! > "+r.pidFile+"\n"+
+			"printf '%s\\n' 'iterion-node-session done'\n"+
+			"exit 0")
+}
+
+// The exec that ends a spawn hands the node back even when it leaves a
+// process holding its output: its own deadline reaches the exec, never the
+// subshells and scans the exec forked, so with no bound on the drain the wait
+// ends only when that process does — 19 minutes, measured on a loaded host
+// where one sweep scan sat on a /proc entry it could not read (#2469). The
+// bound is that end, and because the report is then read short, the node's
+// event says so and names the bound that ran and the knob that widens it.
+//
+// Mutation seen red: drop the proc.SetWaitDelay call in
+// killSandboxDelegateReporting — the end of the spawn waits the holder out,
+// and calls a report it never finished reading a clean sweep.
+func TestTheEndOfASpawnReturnsWhileALeftoverHoldsItsOutput(t *testing.T) {
+	const holds = 30 * time.Second
+	// The bound asserted below is the SITE's, so the environment this suite
+	// runs in does not get to choose it.
+	t.Setenv(proc.WaitDelayEnv, "")
+	pidFile := filepath.Join(t.TempDir(), "holder.pid")
+	// The holder is this test's, and is killed only while it still is the
+	// process this test started.
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || pid <= 1 {
+			return
+		}
+		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err == nil && string(cmdline) == fmt.Sprintf("sleep\x00%d\x00", int(holds.Seconds())) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	var events []BackgroundWork
+	task := Task{NodeID: "agent", Hooks: TaskHooks{OnBackgroundWork: func(bw BackgroundWork) { events = append(events, bw) }}}
+	_, end := SandboxNodeSession(&leftoverEndRun{holds: holds, pidFile: pidFile}, task,
+		BackendClaw, iterlog.New(iterlog.LevelWarn, io.Discard))
+
+	// The wait is MEASURED, never waited out: a regression that parks the
+	// node has to fail this test in seconds instead of holding the package to
+	// its timeout, the way it held the gate.
+	done := make(chan []string, 1)
+	go func() { done <- end() }()
+	var labels []string
+	select {
+	case labels = <-done:
+	case <-time.After(holds / 2):
+		t.Fatalf("the end of the spawn did not return in %s: the node waits for the output a process it left holds", holds/2)
+	}
+
+	if len(labels) != 0 {
+		t.Errorf("a sweep whose report was read short reported stopping %q", labels)
+	}
+	if len(events) != 1 || !strings.HasPrefix(events[0].Reason, nodeSessionUnsureReason) {
+		t.Fatalf("events = %+v, want one event saying the end of the spawn did not finish", events)
+	}
+	for _, want := range []string{spawnEndDrainBound.String(), proc.WaitDelayEnv} {
+		if !strings.Contains(events[0].Reason, want) {
+			t.Errorf("the event does not name %q — the bound that ran, and the knob that widens it: %q", want, events[0].Reason)
+		}
+	}
+}
+
 // dockerishRun is localRun where, as with `docker exec`, the cmd the backend
 // holds is a client: killing it — an abort, a timeout — leaves the
 // in-container CLI running. The exec that ends the spawn runs as is.
@@ -557,6 +642,19 @@ func TestOnlyTheNodesWorkReachesItsEvents(t *testing.T) {
 // group to kill — -1 every process of the uid — 1 is the container's init, and
 // a second line could forge a sweep's report.
 func TestTheSandboxPidfileIsTrustedOnlyAsAPid(t *testing.T) {
+	// P is the probe's ANSWER, read off stdout: stderr is where the shell's
+	// environment talks (a profile echo, a MOTD), and read through the
+	// combined stream its first line IS the pid. SplitOutput is the seam;
+	// the polluted run at the bottom is the witness that the value survives
+	// a talking environment.
+	probe := func(script string) (string, string) {
+		t.Helper()
+		stdout, stderr, err := proctest.SplitOutput(exec.Command("sh", "-c", script))
+		if err != nil {
+			t.Fatalf("the probe failed: %v\nstdout: %q\nstderr: %q", err, stdout, stderr)
+		}
+		return string(stdout), stderr
+	}
 	pidFile := filepath.Join(t.TempDir(), "spawn.pid")
 	for content, want := range map[string]string{
 		"4567\n":                          "4567",
@@ -573,17 +671,27 @@ func TestTheSandboxPidfileIsTrustedOnlyAsAPid(t *testing.T) {
 		if err := os.WriteFile(pidFile, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, err := exec.Command("sh", "-c", readSandboxDelegatePID(pidFile)+`printf '%s' "$P"`).CombinedOutput()
-		if err != nil {
-			t.Fatalf("pidfile %q: the shell failed: %v\n%s", content, err, out)
-		}
-		if string(out) != want {
-			t.Errorf("pidfile %q: P = %q, want %q", content, out, want)
+		got, _ := probe(readSandboxDelegatePID(pidFile) + `printf '%s' "$P"`)
+		if got != want {
+			t.Errorf("pidfile %q: P = %q, want %q", content, got, want)
 		}
 	}
-	out, err := exec.Command("sh", "-c", readSandboxDelegatePID(filepath.Join(t.TempDir(), "absent.pid"))+`printf '%s' "$P"`).CombinedOutput()
-	if err != nil || len(out) != 0 {
-		t.Errorf("no pidfile: P = %q (%v), want nothing", out, err)
+	got, _ := probe(readSandboxDelegatePID(filepath.Join(t.TempDir(), "absent.pid")) + `printf '%s' "$P"`)
+	if got != "" {
+		t.Errorf("no pidfile: P = %q, want nothing", got)
+	}
+	// The environment talks and the pid still reads: one warning before the
+	// answer must not become part of it.
+	polluted := filepath.Join(t.TempDir(), "spawn.pid")
+	if err := os.WriteFile(polluted, []byte("4567\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, stderr := probe(`printf 'warning: the environment talks\n' >&2; ` + readSandboxDelegatePID(polluted) + `printf '%s' "$P"`)
+	if got != "4567" {
+		t.Errorf("a stderr line reached the value: P = %q, want 4567", got)
+	}
+	if !strings.Contains(stderr, "the environment talks") {
+		t.Errorf("stderr %q does not carry the injected warning — the witness would prove nothing", stderr)
 	}
 }
 
@@ -668,5 +776,26 @@ func TestTheWrapperOfARespawnEndsThePreviousAttempt(t *testing.T) {
 	case <-waited:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the previous attempt still runs after the respawn's wrapper")
+	}
+}
+
+// A detached process survives SDK process-group cleanup and is stopped by the
+// node sweep. Its label joins the protocol task in hook, result and ledger.
+func TestExecuteDeadWorkTurnIncludesTheNodeSweep(t *testing.T) {
+	w := newNodeSessionWorld(t, strings.Replace(fakeClaudeScripted, "#!/bin/sh\n", "#!/bin/sh\n"+detachedLeftover, 1))
+	result := executeDeadWorkTurn(t, w.stand(), w.dir)
+	left := w.left()
+	if len(left) != 1 {
+		t.Fatalf("fixture recorded %v, want one detached process", left)
+	}
+	for _, pid := range left {
+		if processRuns(pid) {
+			t.Fatalf("owned process %d outlived the node", pid)
+		}
+		if !slices.ContainsFunc(result.TerminatedBackgroundTasks, func(label string) bool {
+			return strings.Contains(label, fmt.Sprintf("(pid %d)", pid))
+		}) {
+			t.Fatalf("owned process %d missing from result %v", pid, result.TerminatedBackgroundTasks)
+		}
 	}
 }

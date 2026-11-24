@@ -269,7 +269,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				output = deepCopyAnyMap(branchCP.ResumeAnswers)
 				branchCP.ResumeAnswers = nil
 				branchCP.ResumeAnswered = false
-				if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
+				if err := e.validateNodeOutput(branchRS, currentNodeID, node, output); err != nil {
 					// The interaction was already recorded as answered before the
 					// branch restarted. Re-pause with a checkpoint that omits the bad
 					// answer so the operator can correct it instead of wedging every
@@ -441,6 +441,7 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 		local.loopPreviousOutput = copyOutputs(cp.LoopPreviousOutput)
 		local.loopCurrentOutput = copyOutputs(cp.LoopCurrentOutput)
 		restoreLoopBudgetMarks(local, cp.LoopBudgetMarks)
+		restoreLoopBudgetSizes(local, cp.LoopBudgetSizes)
 	}
 	return local
 }
@@ -470,6 +471,7 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 		LoopPreviousOutput: copyOutputs(rs.loopPreviousOutput),
 		LoopCurrentOutput:  copyOutputs(rs.loopCurrentOutput),
 		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
+		LoopBudgetSizes:    snapshotLoopBudgetSizes(rs),
 		SelectedIncoming:   cloneIncoming(result.selectedIncoming),
 		SettledIncoming:    cloneIncoming(result.settledIncoming),
 		JoinNodeID:         result.joinNodeID,
@@ -517,9 +519,13 @@ func (e *Engine) abandonBranchResume(parent, branchRS *runState, result *branchR
 	}
 	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
 	cp.Parallel = ps
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to save abandoned branch resume %s at %q: %v", result.branchID, gateNodeID, err)
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil {
+		if e.logger != nil {
+			e.logger.Error("failed to save abandoned branch resume %s at %q: %v", result.branchID, gateNodeID, err)
+		}
+		return
 	}
+	parallel.markWritten()
 }
 
 func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState, completeResume bool) {
@@ -537,6 +543,15 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 		updated = parallel.updateBranch(branch)
 	}
 	if !updated {
+		return
+	}
+	if !completed && !completeResume && result.err == nil {
+		// A healthy restart boundary rides the coalescing saver (#561).
+		// A boundary carrying a failure or a cancellation is its own
+		// durability contract — the run's context may already be dying, and
+		// deferring its write past the cancellation would turn the old
+		// best-effort attempt into one that can never succeed.
+		e.requestParallelSave(parent, parallel, result.branchID, currentNodeID)
 		return
 	}
 	ps := parallel.snapshot()
@@ -560,6 +575,7 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 		// This snapshot carries the run budget, so any spend booked before it
 		// is now durable and persistBranchSpend has nothing left to write.
 		result.spendUncheckpointed = false
+		parallel.markWritten()
 	}
 	if barrier != nil {
 		close(barrier)
@@ -631,6 +647,7 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	if err := e.store.PauseRun(parent.ctx, parent.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause branch: %w", err)
 	}
+	parallel.markWritten()
 	pausePersisted = true
 	return ErrRunPaused
 }
@@ -650,9 +667,13 @@ func (e *Engine) persistParallelCheckpointLocked(parent *runState, parallel *par
 		cp.InteractionID = ps.PendingInteractionID
 		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
 	}
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to save deferred branch checkpoint %s at %q: %v", branchID, nodeID, err)
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil {
+		if e.logger != nil {
+			e.logger.Error("failed to save deferred branch checkpoint %s at %q: %v", branchID, nodeID, err)
+		}
+		return
 	}
+	parallel.markWritten()
 }
 
 // emitBranchNodeStarted records one logical branch-node attempt. Human gates
@@ -869,9 +890,25 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	execCtx = model.WithRunnerHomeScope(execCtx, model.RunnerHomeScopeForBranch(runID, branchID))
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executeWithResources(execCtx, node, nodeInput)
+	output, err := e.executeCorrectionInvocation(execCtx, rs, currentNodeID, ledgerKey, node, nodeInput)
+	if errors.Is(err, errCorrectionOwnershipLost) {
+		result.err = err
+		return nil, true
+	}
 	stampNodeDuration(output, execStart)
 	if err != nil {
+		// The branch classifies a cut from what IT knows, as the trunk does
+		// at its node boundary: a node that returns once the branch's context
+		// has ended was stopped — a sibling's failure retired it, the run was
+		// cancelled — whatever the executor's words for it. A sandboxed
+		// crossing says "signal: killed" or "closed pipe" and never
+		// context.Canceled, so read from its chain alone a stopped sibling
+		// was a failure of its own, erasing the typed code the run should
+		// carry (#2456). The executor's words stay as the detail; an
+		// undecided effect keeps its own classification.
+		if ctxErr := ctx.Err(); ctxErr != nil && !IsAmbiguousEffect(err) {
+			err = fmt.Errorf("%w (%v)", e.wrapContextErr(ctxErr), err)
+		}
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
 		// The delegate stamps what the attempt burned on the result it
 		// returns beside the error, and this is the last frame that can see
@@ -897,7 +934,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		output = mergeRouterPassThrough(nodeInput, output)
 	}
 
-	validatedOutput, validationErr := e.correctAndValidateNodeOutput(execCtx, rs, currentNodeID, node, output)
+	validatedOutput, validationErr := e.correctAndValidateNodeOutputInScope(execCtx, rs, currentNodeID, ledgerKey, node, output)
 	output = validatedOutput
 	if validationErr != nil {
 		// Charge both the original call and any correction call before the
@@ -943,10 +980,24 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 // recordBranchUsage is this plus the verdict, recordFailedBranchSpend is this
 // alone.
 func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) *budgetCheckResult {
+	if accountedInvocation(rs, currentNodeID) {
+		result.spendUncheckpointed = true
+		return findExceeded(rs.budget.Check())
+	}
 	spend := extractSpend(output)
 	costUSD := spend.costUSD
 
-	if e.dailyCap != nil && costUSD > 0 {
+	if rs.correctionAccounts != nil {
+		if err := rs.correctionAccounts.book(ledgerKey, store.OutputCorrectionUsage{Tokens: spend.tokens, CostUSD: spend.costUSD, UnreportedCalls: spend.unreportedCalls}, true); err != nil {
+			result.err = err
+			return nil
+		}
+		if err := rs.correctionAccounts.flushDaily(ctx, e.dailyCap); err != nil {
+			result.err = err
+			return nil
+		}
+		result.spendUncheckpointed = true
+	} else if e.dailyCap != nil && costUSD > 0 {
 		*branchCostUSD += costUSD
 		// The branch's DURABLE cost cursor just moved — the figure a resume
 		// re-seeds from, and the one the ledger's monotonic-max entry is
@@ -962,7 +1013,12 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 	if rs.budget == nil {
 		return nil
 	}
-	checks := rs.budget.RecordUsage(spend)
+	var checks []budgetCheckResult
+	if rs.correctionAccounts != nil {
+		checks = rs.budget.Check()
+	} else {
+		checks = rs.budget.RecordUsage(spend)
+	}
 	if !spend.empty() {
 		// The run budget just moved in memory. Every exit of this branch that
 		// writes no checkpoint would leave it there: a failed node, a fail
@@ -998,6 +1054,10 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 // detached from the branch's, so a teardown mid-branch cannot refuse the
 // ledger write it is the last chance to make.
 func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) {
+	if accountedInvocation(rs, currentNodeID) {
+		result.spendUncheckpointed = true
+		return
+	}
 	spend := extractSpend(output)
 	if spend.empty() {
 		return
@@ -1083,7 +1143,9 @@ func (e *Engine) persistBranchSpend(parent *runState, parallel *parallelExecutio
 	// should not be left around to be copied back.
 	if err := e.store.SaveCheckpoint(writeCtx, parent.runID, cp); err != nil {
 		e.logger.Error("failed to persist branch %s spend: %v", result.branchID, err)
+		return
 	}
+	parallel.markWritten()
 }
 
 // publishBranchArtifact persists the node's output as a versioned artifact
@@ -1165,7 +1227,7 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 			if rs.loopCounters[loopName] > 0 && !loop.Entries[selected.To] {
 				continue
 			}
-			markLoopBudget(rs, loopName)
+			e.markLoopBudget(rs, loopName)
 			if !loop.Entries[selected.To] {
 				continue
 			}
@@ -1184,7 +1246,7 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 	}
 	if selected.LoopName != "" {
 		rs.loopCounters[selected.LoopName]++
-		markLoopBudget(rs, selected.LoopName)
+		e.markLoopBudget(rs, selected.LoopName)
 		if staged, ok := rs.loopCurrentOutput[selected.LoopName]; ok {
 			rs.loopPreviousOutput[selected.LoopName] = staged
 		}

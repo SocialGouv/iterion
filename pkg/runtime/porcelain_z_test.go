@@ -56,7 +56,7 @@ func TestRunOutputPathsARenameSourceHoldingAnArrowAgainstRealGit(t *testing.T) {
 	gittest.Run(t, repo, "commit", "-qm", "track the arrowed name")
 	gittest.Run(t, repo, "mv", "x -> y.md", "z.md")
 
-	porcelain, err := runGit(repo, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(repo, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}

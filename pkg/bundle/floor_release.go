@@ -32,6 +32,14 @@ var releaseNotesMarkers = map[string]string{
 	// #1615 lands as `feat(dsl): an empty tools: list …`, so the notes of
 	// its release carry the two words the declaration is spelled with.
 	"bundle.DeclaredEmptyToolsSince": "empty tools",
+	// #1520 lands as `feat(bots): the six-verb navigation spine — manifest
+	// category + tags …`, so the notes of 3.225.0 carry the word the key is
+	// spelled with.
+	"bundle.CatalogTaxonomySince": "category",
+	// #2763 lands as `feat(bundle): a shared skill is declared on both
+	// sides — exports.skills …`, so the notes of the release the cut gives
+	// this pin carry the word both keys are spelled with.
+	"bundle.SkillSharingSince": "skills",
 }
 
 // ReleaseNotesMarker is the word the release notes of a floor's pinned

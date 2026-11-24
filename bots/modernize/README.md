@@ -138,3 +138,21 @@ its legitimate no-op on an exhausted programme.
 
 Prerequisite: a behavioural net in the target repo. Build it with the
 `golden-master` bot first.
+
+A lot runs under a 12h wall and a 150 $ cap, which a direct launch overrides
+(`--max-duration`, `--max-cost-usd`) and which nothing raises when `campaign`
+runs the lot; the contract sizes its gate to that wall
+([plan-contract](skills/plan-contract.md)). Under `campaign`, the first
+node (`campaign_room`) takes the lot only where the campaign can still
+finish one: campaign passes its clock at each start (`campaign_elapsed_s`,
+`campaign_wall_s`, `campaign_lot_room_s`), and the child applies campaign's
+own `lot_room` predicate to it — a resumed campaign starts a fresh child
+without passing `lot_room`. With no room the run ends at once, no lot
+taken. A direct launch passes no clock and is not held to one.
+
+`upgrade_campaign` may take a launch route onto claw (`--fallback`, a
+routing-policy ladder stage). On claw its `web_search` tool resolves only
+where the runner enables web search — `ITERION_WEB_SEARCH=on`, or a search
+backend (`SEARXNG_URL`, `SEARXNG_ENDPOINT`, `BRAVE_API_KEY`). The shipped
+chart sets none of them, so on a default deployment the claw route fails at
+that node, naming the tool, although the launch admits it.

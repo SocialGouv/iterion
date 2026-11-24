@@ -224,7 +224,7 @@ export default function PipelineBoardView() {
               per card; more in ⋯. Cards advance automatically as their runs
               progress — the only drag here is Opened → In progress, which
               launches a ticket immediately, unlike the{" "}
-              <Link href="/board" className="text-accent-text hover:underline">
+              <Link href="/board" className="text-accent-text underline hover:underline">
                 Board
               </Link>
               .

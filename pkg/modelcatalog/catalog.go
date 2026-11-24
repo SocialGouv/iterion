@@ -41,18 +41,26 @@ type Entry struct {
 	// served over the Anthropic-compatible API, so `anthropic/glm-5.3` needs a
 	// "zai" credential, not an Anthropic one.
 	CredentialProvider string `json:"credential_provider"`
-	// Source is where the capability values came from: "aggregator" (models.dev)
-	// or "curated" (the static fallback table).
+	// Source is the table the capability values came from: "aggregator"
+	// (models.dev) or "curated" (the static fallback table) for a vendor id;
+	// for a gateway id (openai_compatible/<id>) the gateway catalog's table —
+	// "operator", "catalog-live", "catalog-snapshot" — or "unknown" when no
+	// table carries it (llmtypes.CapabilitySource).
 	Source string `json:"source"`
 
-	ContextWindow   int  `json:"context_window"`
-	MaxOutputTokens int  `json:"max_output_tokens,omitempty"`
-	Reasoning       bool `json:"reasoning"`
-	// ToolCall is the hard capability gate: a model without it cannot drive
-	// board tools, skills, or run introspection, so an agent node on it is
-	// broken rather than degraded.
-	ToolCall    bool `json:"tool_call"`
-	Temperature bool `json:"temperature"`
+	ContextWindow   int `json:"context_window"`
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// Reasoning, ToolCall and Temperature are ABSENT (nil) when the source
+	// answered none — a gateway id whose catalog record carries no flags — and
+	// a reader says "unknown", never "no": a false that was really "nobody
+	// said" would hide tools or block a launch the model may well serve
+	// (#2103). A vendor id always carries all three.
+	Reasoning *bool `json:"reasoning,omitempty"`
+	// ToolCall is the hard capability gate: a model KNOWN to lack it cannot
+	// drive board tools, skills, or run introspection, so an agent node on
+	// it is broken rather than degraded; an unknown one is a warning.
+	ToolCall    *bool `json:"tool_call,omitempty"`
+	Temperature *bool `json:"temperature,omitempty"`
 	// UltracodeCapable reports whether `reasoning_effort: ultracode` holds on
 	// this model. Ultracode's workflow-orchestration prerogative rides
 	// Anthropic mid-conversation system messages and is reliable only on
@@ -265,7 +273,7 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 		if in, out, ok := cost.EffectiveRate(rc.Spec); ok {
 			e.InputCostPerM, e.OutputCostPerM, e.PriceKnown = in, out, true
 		}
-		e.Backends, e.CredentialSource, e.UnusableReason = availability(*report, e.Provider, e.Model, e.CredentialProvider)
+		e.Backends, e.CredentialSource, e.UnusableReason = availability(*report, scope, e.Provider, e.Model, e.CredentialProvider)
 		e.Usable = len(e.Backends) > 0
 		e.Reachability = scope
 		if opts.UnprovenIsUnknown && !e.Usable {
@@ -318,8 +326,10 @@ func UltracodeCapable(spec string) bool {
 
 // availability answers "can this host drive this spec right now", returning the
 // backends that can, the credential that would be used, and — when none can —
-// why not.
-func availability(report detect.Report, specProvider, modelID, credProvider string) (backends []string, credSource, reason string) {
+// why not. surface is the credential surface the report describes
+// (ReachabilityLocal or ReachabilityCloud): it decides which credentials pi
+// can spend.
+func availability(report detect.Report, surface, specProvider, modelID, credProvider string) (backends []string, credSource, reason string) {
 	prov, known := providerStatus(report, credProvider)
 	if known {
 		credSource = prov.Source
@@ -340,10 +350,21 @@ func availability(report detect.Report, specProvider, modelID, credProvider stri
 			if claudeCodeFits {
 				backends = append(backends, name)
 			}
-		case detect.BackendClaw, detect.BackendPi:
-			// Both resolve a provider credential from the environment, so
-			// they can drive whatever the detected provider unlocks.
+		case detect.BackendClaw:
+			// claw resolves a provider credential from the environment, so
+			// it can drive whatever the detected provider unlocks.
 			if prov.Available {
+				backends = append(backends, name)
+			}
+		case detect.BackendPi:
+			// pi resolves from the environment too, but only the providers
+			// it can actually spend on this surface — on a host, the ones it
+			// reads (never the gateway row's OPENAI_COMPATIBLE_* variables);
+			// in the cloud, the keys the runner forwards it. Pairing it
+			// otherwise would offer a model on a credential pi cannot spend
+			// (detect's probe and the cloud report light pi on the same
+			// question).
+			if prov.Available && piSpends(surface, credProvider) {
 				backends = append(backends, name)
 			}
 		case detect.BackendOpenCode:

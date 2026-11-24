@@ -22,6 +22,17 @@ import (
 //
 // In-package, because what is under test is the bound itself.
 
+// walkCredentialValue is the credential every walk here authenticates with.
+//
+// A realistic token rather than a one-character placeholder: the executor
+// redacts the credential out of the vendor's decoded body, and a secret short
+// enough to occur inside a field NAME ("x" inside "next") would rewrite the
+// pagination protocol the walk reads by name — which reports a collection as
+// COMPLETE when the vendor is still saying there is more. A credential of one
+// character is not a credential; this fixture is about the bound, not about
+// the degenerate case.
+const walkCredentialValue = "s3cret-walk-token-value"
+
 // walkFixture is a cursor-paginated collection that NEVER ends: the vendor
 // always answers a next cursor, so nothing but iterion's own ceiling stops
 // the walk.
@@ -83,7 +94,7 @@ func TestAPackagesOwnMaxPagesIsClamped(t *testing.T) {
 
 	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 5000)
-	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: walkCredentialValue})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
@@ -122,7 +133,7 @@ func TestACursorThatDoesNotAdvanceStopsTheWalk(t *testing.T) {
 
 	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 50)
-	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: walkCredentialValue})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
@@ -167,7 +178,7 @@ func TestAWalkStopsOnItsByteBudget(t *testing.T) {
 	// A page ceiling far above what the byte budget allows, so the stop can
 	// only come from the bytes.
 	pkg, op := walkFixture(srv.URL, 400)
-	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: walkCredentialValue})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
@@ -218,7 +229,7 @@ func TestAWalkThatFailsMidWayStillReportsWhatItSpent(t *testing.T) {
 
 	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 50)
-	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: walkCredentialValue})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
@@ -270,7 +281,7 @@ func TestAWalkThatDiesOnTransportReportsThePagesItSpent(t *testing.T) {
 
 	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 50)
-	_, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	_, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: walkCredentialValue})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}

@@ -221,6 +221,14 @@ type SessionStore interface {
 	// `before`; it returns the number of sessions deleted. Revocation
 	// records are kept.
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
+	// DeleteAccountSessions DELETES every session row of userID — live,
+	// revoked, claimed or not — and answers how many. A session row carries
+	// the IP and user agent of a sign-in, so an account's erasure removes
+	// the rows where a revocation would only mark them. The account's
+	// revocation records stay: they carry no such thing, and the record a
+	// caller lands before the delete keeps refusing an access token minted
+	// before it.
+	DeleteAccountSessions(ctx context.Context, userID string) (int64, error)
 	// Now reads the store's clock — the clock RotateSession stamps a
 	// rotation with — so the reuse window is measured on one clock, whichever
 	// replica rotated the session and whichever answers its presentation.
@@ -271,8 +279,19 @@ var (
 // refreshTokenBytes is the entropy of a refresh token, random or derived.
 const refreshTokenBytes = 48
 
-// HashRefreshToken returns the hex SHA-256 of a plaintext refresh
-// token. Stored on the Session and consulted at refresh time.
+// HashRefreshToken returns the hex SHA-256 of a plaintext bearer token —
+// refresh, PAT, reset, invitation, webhook and config-share tokens all hash
+// through it. Stored on the record under a unique token_hash index: refresh,
+// reset, invitation and PAT resolve the row by that index, while webhook and
+// config-share fetch it by id and compare the digests in constant time.
+//
+// The hash is deliberately unsalted and unkeyed (ADR-156): every input is
+// either 32 to 48 bytes of crypto/rand or, for a refresh successor, 48 bytes
+// of HMAC output under a server key, so a preimage is infeasible and a salt
+// — a defence for guessable inputs — would only break the index lookup. Do
+// not feed it a human-chosen value (passwords are argon2id, HashPassword;
+// an enumerable identifier such as an e-mail takes a peppered HMAC or is not
+// stored).
 func HashRefreshToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -282,10 +301,12 @@ func HashRefreshToken(token string) string {
 // every successor copies — and the account session generation it is born
 // under. A login resolves its root before it commits anything (NewSessionRoot,
 // NewAccountRoot) and signs it into the access token it answers with, so a
-// switch can check the token against the revocations of its session.
+// switch can check the token against the revocations of its session. The bson
+// tags are its stored form where a desktop SSO ticket carries it
+// (auth.DesktopLogin).
 type SessionRoot struct {
-	ID         string
-	Generation int64
+	ID         string `bson:"id" json:"id"`
+	Generation int64  `bson:"generation,omitempty" json:"generation,omitempty"`
 }
 
 // NewSessionRoot names the root a login of an existing account will write:
@@ -628,6 +649,18 @@ func (m *MemorySessionStore) SessionRevoked(_ context.Context, s Session) (bool,
 		return true, nil
 	}
 	return m.generations[s.UserID] > s.Generation, nil
+}
+
+func (m *MemorySessionStore) DeleteAccountSessions(_ context.Context, userID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id := range m.byUserID[userID] {
+		m.removeLocked(m.byID[id])
+		n++
+	}
+	delete(m.byUserID, userID)
+	return n, nil
 }
 
 func (m *MemorySessionStore) DeleteExpired(_ context.Context, before time.Time) (int64, error) {
@@ -980,6 +1013,14 @@ func (s *MongoSessionStore) Now(ctx context.Context) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("auth: the session store's clock answered %d row(s)", len(rows))
 	}
 	return rows[0].Now.UTC(), nil
+}
+
+func (s *MongoSessionStore) DeleteAccountSessions(ctx context.Context, userID string) (int64, error) {
+	res, err := s.coll.DeleteMany(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		return 0, fmt.Errorf("auth: delete the sessions of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
 }
 
 func (s *MongoSessionStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {

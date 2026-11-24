@@ -21,6 +21,7 @@ export interface PermissionMarker {
   tool?: string;
   input?: Record<string, unknown>;
   rule?: string;
+  exact_input_json?: string;
 }
 
 /**

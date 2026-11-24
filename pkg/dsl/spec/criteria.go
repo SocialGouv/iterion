@@ -31,9 +31,11 @@ type PublicCriterionSpec struct {
 }
 
 // PublicCriteria is the set of evaluators the engine ships. The declaration
-// surface is open: a contract may name a kind this table does not have — it
-// is declared, rendered, and not evaluated (C303) — so a plugin-supplied
-// evaluator is the seam, not a registry edit.
+// surface is open: a contract may name a kind this table does not have, and
+// C303 names it as declared and rendered — so a plugin-supplied evaluator is
+// the seam, not a registry edit. Shipping an evaluator is not running it: no
+// surface evaluates a declared criterion, of a registered kind or not
+// (ADR-153 clause 4).
 var PublicCriteria = []PublicCriterionSpec{
 	{
 		Name: "min_length", Description: "Minimum Unicode character or array element count",

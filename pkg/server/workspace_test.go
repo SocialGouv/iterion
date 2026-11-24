@@ -300,11 +300,12 @@ func TestWorkspaceScopedAssetMissNeverServesTheShell(t *testing.T) {
 // easiest to break: FileServer renders an index of every chunk and sourcemap.
 // Guarding SPAHandler alone left this surface serving the listing.
 func TestWorkspaceAssetDirectoryIsNotEnumerable(t *testing.T) {
-	host := &WorkspaceHost{static: fstest.MapFS{
+	static := fstest.MapFS{
 		"index.html":        &fstest.MapFile{Data: []byte("<html>SHELL</html>")},
 		"assets/app.js":     &fstest.MapFile{Data: []byte("console.log('hi')")},
 		"assets/app.js.map": &fstest.MapFile{Data: []byte(`{"sources":["../../src/secret.tsx"]}`)},
-	}}
+	}
+	host := &WorkspaceHost{static: static, files: newStaticFileServer(static)}
 
 	for _, target := range []string{"/assets/", "/assets"} {
 		t.Run(target, func(t *testing.T) {

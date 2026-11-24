@@ -19,9 +19,11 @@ import (
 // Two of those opt-ins widen the WORKSPACE surface, and neither is visible in
 // the IR: `auto_memory: on` grants write_file on claw (and resolves through a
 // launch flag, the workflow, and ITERION_AUTO_MEMORY), and ultracode grants
-// the unbounded `agent`/`workflow` pair (and resolves through a per-node model
-// override). So the guard asks the production executor rather than re-deriving
-// the rules — the same seam, and the same reason, as EffectiveBackendName.
+// claw's `agent` subagent tool (and resolves through a per-node model
+// override) — a writer by the arm's reading, since the child's bound is the
+// host's runner wiring, which no name list can see (#2811). So the guard asks
+// the production executor rather than re-deriving the rules — the same seam,
+// and the same reason, as EffectiveBackendName.
 //
 // The resolver here is the REAL *model.ClawExecutor, never a stub: a stub that
 // answers what the test wants certifies the test, not the product.
@@ -98,10 +100,10 @@ func TestParallelAdmissionReadsTheToolsANodeWillHoldNotTheOnesItDeclared(t *test
 			why:     "re-deriving the append rules from the IR cannot see a launch flag",
 		},
 		{
-			name:    "ultracode grants the unbounded agent subagent tool",
+			name:    "ultracode grants agent, and its child's bound is the host's wiring",
 			node:    agentNode("n", readOnlyList, "claw", func(n *ir.AgentNode) { n.ReasoningEffort = "ultracode" }),
 			mutates: true,
-			why:     "a subagent may do anything the parent could",
+			why:     "the shipped runner bounds the child to the node's own list, but that bound is the host's to wire — a name reading cannot see it (#2811)",
 		},
 		// …and the shapes that must NOT flip. A blocking guard's false
 		// positive refuses a legitimate workflow at run start, which on this
@@ -137,6 +139,17 @@ func TestParallelAdmissionReadsTheToolsANodeWillHoldNotTheOnesItDeclared(t *test
 		{
 			name:    "runs.read adds tools that act on the run store",
 			node:    agentNode("n", readOnlyList, "claw", func(n *ir.AgentNode) { n.Capabilities = []string{"runs.read"} }),
+			mutates: false,
+		},
+		{
+			// The connector facade is the third host-owned MCP surface, and
+			// it acts on a VENDOR over HTTP — further from the shared
+			// worktree than the board is, not closer. Left out of the name
+			// predicate, its pair turned an admitted fan-out into a refusal
+			// on claw and made the refusal's stated cause the author's
+			// `tools:` list, which naming the tool does not fix.
+			name:    "the connectors capability adds tools that act on a VENDOR",
+			node:    agentNode("n", readOnlyList, "claw", func(n *ir.AgentNode) { n.Capabilities = []string{"connectors"} }),
 			mutates: false,
 		},
 		// A backend that never RECEIVES the list cannot be bounded by it.

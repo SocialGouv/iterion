@@ -315,17 +315,14 @@ workflow w:
 		expectNoDiag(t, r, DiagPermissionRulesNoGate)
 	})
 
-	t.Run("a_recovery_bound_without_policy_recover_is_silent_and_C106_speaks", func(t *testing.T) {
-		// The reader test is WIDER than the gate: NodeUsesLLM counts a tool
-		// node on max_agent_attempts > 0 alone, while the ladder runs rungs
-		// 3-4 only under policy: recover (pkg/backend/model,
-		// TestOnlyPolicyRecoverHandsTheGoalToTheRungAgent). So C111 stays
-		// silent on this graph although nothing can read the list — stated
-		// as measured in docs/permissions.md, and tolerable only because
-		// C106 names the dead recovery config, which is the author's real
-		// next step. Red when C111 narrows (then the doc paragraph is stale,
-		// not the code) or when C106 stops reaching this shape (then the
-		// author is left with silence on both).
+	t.Run("a_recovery_bound_without_policy_recover_earns_both_C111_and_C106", func(t *testing.T) {
+		// The reader test is the GATE: ToolRecoveryAgentRung needs the bound
+		// AND policy: recover, which is what the ladder runs rungs 3-4 under
+		// (pkg/backend/model, TestOnlyPolicyRecoverHandsTheGoalToTheRungAgent).
+		// So this graph has no reader at all and gets BOTH findings: C111 on
+		// the rule lists nothing can read, C106 on the recovery config that
+		// can never run. Red if either goes quiet — the author would be left
+		// believing the half that still speaks is the whole problem.
 		src := `
 schema empty:
   ok: bool
@@ -347,7 +344,7 @@ workflow w:
   deploy -> done
 `
 		r := compileFile(t, src)
-		expectNoDiag(t, r, DiagPermissionRulesNoGate)
+		expectDiagMessage(t, r, DiagPermissionRulesNoGate, "no node issues LLM tool calls")
 		expectDiagMessage(t, r, DiagRecoveryWithoutRecov, "recovery rungs only run under policy: recover")
 	})
 

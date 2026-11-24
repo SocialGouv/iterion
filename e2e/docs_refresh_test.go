@@ -29,6 +29,12 @@ type docsRefreshState struct {
 // stubDocsRefresh registers the baseline green-path stubs. Individual
 // tests override nodes afterward (later .on wins).
 func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
+	// The entry: the run base, recorded before any pass can write. The
+	// delivery gate is measured on it, and an empty one refuses — so the
+	// green path records a sha here.
+	exec.on("record_run_base", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"base_sha": "0123456789abcdef0123456789abcdef01234567", "_tokens": 1}, nil
+	})
 	exec.on("scan_hints", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{
 			"doc_files": []any{"README.md"}, "doc_count": 1,
@@ -66,21 +72,56 @@ func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
 	exec.on("scope_check", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"scope_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
 	})
+	// available=true keeps the opt-in PR path reachable; the probe only runs
+	// behind the open_mr gate, so the scenarios that leave open_mr at its
+	// default never reach it.
+	exec.on("forge_auth_probe", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"available": true, "reason": "env:GH_TOKEN", "_tokens": 1}, nil
+	})
+	// The deterministic delivery bound on the only in-edge of finalize_mr.
+	// It is stubbed on the green path because the edge is FAIL-CLOSED: an
+	// output carrying no `delivery_ok` refuses, which is the behaviour the
+	// refusal witness relies on and the reason an unstubbed node would take
+	// every PR-tail scenario to the typed failure.
+	exec.on("delivery_gate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"delivery_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
+	})
+	// open_mr defaults false, so only the scenarios that ask for the tail
+	// reach this one — and they must reach a node that ANSWERS: an unstubbed
+	// agent returns no `opened`, and the run then dies of NO_OUTGOING_EDGE,
+	// which would make every delivery assertion below read a graph error
+	// instead of the behaviour it is about.
+	exec.on("finalize_mr", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"opened": true, "url": "https://forge/pr/11", "branch": "iterion/docs-refresh/demo",
+			"back_linked": false, "skipped_reason": "", "summary": "PR opened", "_tokens": 5,
+		}, nil
+	})
 }
 
 func runDocsRefresh(t *testing.T, exec *scenarioExecutor, runID string) *store.Run {
 	t.Helper()
+	run, err := runDocsRefreshWith(t, exec, runID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return run
+}
+
+// runDocsRefreshWith drives the bot with the run's inputs and RETURNS the
+// engine's error instead of ending the test on it: a typed refusal is a
+// failed run, which is exactly what the delivery witness asserts.
+func runDocsRefreshWith(t *testing.T, exec *scenarioExecutor, runID string, inputs map[string]any) (*store.Run, error) {
+	t.Helper()
 	wf := compileFixtureStubSafe(t, "docs-refresh/main.bot")
 	s := tmpStore(t)
 	eng := newEngine(t, wf, s, exec)
-	if err := eng.Run(context.Background(), runID, nil); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	runErr := eng.Run(context.Background(), runID, inputs)
 	run, err := s.LoadRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	return run
+	return run, runErr
 }
 
 // TestDocsRefresh_ConvergesFirstPass: aligned + green scope gate on
@@ -150,6 +191,84 @@ func TestDocsRefresh_ScopeViolationRoutesBack(t *testing.T) {
 	}
 	if len(st.failLogsSeen) < 2 || !strings.Contains(st.failLogsSeen[1], "SCOPE VIOLATION") {
 		t.Errorf("second campaign pass fail_log = %v, want the scope violation so the agent reverts it", st.failLogsSeen)
+	}
+}
+
+// TestDocsRefresh_ExhaustedLoopNeverDeliversAScopeViolation: the campaign
+// claims the docs aligned and never reverts its out-of-scope write, so every
+// pass is red on the writeable-set gate and the continuation loop runs out.
+// The loop-exhaustion exit then hands the banked series to the PR tail — and
+// the deterministic delivery gate refuses it there, typed, naming the path.
+// Before the gate existed this run PUSHED: a `.github/workflows/**` path
+// died at the forge as a raw 403, and anything else was delivered.
+//
+// Mutation that reddens it: delete `delivery_gate -> delivery_paths_refused`
+// from bots/docs-refresh/main.bot and let the gate's output be ignored (or
+// put back `forge_auth_probe -> finalize_mr when available`) — finalize_mr
+// fires and the run finishes.
+func TestDocsRefresh_ExhaustedLoopNeverDeliversAScopeViolation(t *testing.T) {
+	t.Parallel()
+	exec := newScenarioExecutor()
+	st := &docsRefreshState{alignedBy: 1, hintCount: 1} // claims aligned every pass
+	stubDocsRefresh(exec, st)
+	const offender = "pkg/foo/bar.go"
+	exec.on("scope_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"scope_ok": false, "out_of_scope": []any{offender},
+			"log": "SCOPE VIOLATION: this run changed files outside the doc writeable-set: " + offender, "_tokens": 1,
+		}, nil
+	})
+	// What the real node answers about that tree: the path is not a doc, so
+	// the delivery does not own it (bots/delivery_gate_test.go runs the
+	// program itself against a git fixture).
+	exec.on("delivery_gate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"delivery_ok": false, "out_of_scope": []any{offender},
+			"log": "DELIVERY PATHS REFUSED: the delivery would carry 1 path(s) outside the doc writeable-set (.md anywhere, never under .github/workflows/, never a path the run committed under .claude/): " + offender, "_tokens": 1,
+		}, nil
+	})
+
+	run, runErr := runDocsRefreshWith(t, exec, "run-dr-delivery-refused", map[string]any{"max_passes": 1, "open_mr": true})
+	if runErr == nil {
+		t.Fatalf("Run returned no error — a typed refusal ends the run failed, and this one delivered instead (status %s)", run.Status)
+	}
+	if run.Status != store.RunStatusFailed {
+		t.Errorf("status = %s, want %s — the refusal is terminal: nothing about this run changes by resuming it", run.Status, store.RunStatusFailed)
+	}
+	if run.FailureCode != "DELIVERY_PATHS_REFUSED" {
+		t.Errorf("failure_code = %q, want DELIVERY_PATHS_REFUSED — an untyped refusal is indistinguishable from every other fail node in the fleet (error: %s)", run.FailureCode, run.Error)
+	}
+	if !strings.Contains(run.Error, offender) {
+		t.Errorf("error = %q, want it to name %q: the paths to revert are what the operator reads", run.Error, offender)
+	}
+	// The message must say where the commits ARE — an operator told "nothing
+	// was pushed" never goes looking for them, and for a
+	// `.github/workflows/**` offender the raw 403 this gate exists to replace
+	// then arrives on that push instead. It must also say so TRUE in every
+	// deployment: `iterion/run-<run id>` is built in ONE place, the cloud
+	// runner's bank for a repo-targeted run (pkg/runner/loop_gitws.go, which
+	// serves queued runs), so a local `iterion run` has no such branch and an
+	// unqualified claim sends that operator looking for a ref nothing wrote.
+	// The commits are on the run's own branch in both.
+	if strings.Contains(run.Error, "nothing was pushed") {
+		t.Errorf("error = %q claims nothing was pushed — the commits are on the run's own branch, so the claim is false and sends the operator looking in the wrong place", run.Error)
+	}
+	if !strings.Contains(run.Error, "storage branch") {
+		t.Errorf("error = %q, want it to name where the commits ARE (the run's own branch, banked to its storage branch on a cloud run): reading or cherry-picking them is the operator's next act", run.Error)
+	}
+	if !strings.Contains(run.Error, "cloud run") {
+		t.Errorf("error = %q names a storage branch with no deployment qualifier — only the cloud runner of a repo-targeted run banks one (pkg/runner/loop_gitws.go), so an unqualified sentence is false for every local run", run.Error)
+	}
+	if exec.wasCalled("finalize_mr") {
+		t.Errorf("finalize_mr fired on a loop-exhausted scope violation — the banked commits must stay on the run's branch, un-delivered")
+	}
+	if exec.wasCalled("surface_pr_link") {
+		t.Errorf("surface_pr_link fired on a refused delivery — nothing was opened, so there is no link to surface")
+	}
+	// N+1: the cap counts BACK-EDGE crossings, so max_passes=1 permits two
+	// executions of the loop body — then the exhaustion exit fires.
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Errorf("campaign called %d times, want 2 (max_passes=1 permits one crossing, hence two passes; the loop is then spent)", got)
 	}
 }
 
@@ -246,8 +365,8 @@ func TestDocsRefresh_Structural(t *testing.T) {
 	t.Parallel()
 	wf := compileFixtureStubSafe(t, "docs-refresh/main.bot")
 
-	if wf.Entry != "context_gate" {
-		t.Errorf("workflow entry = %q, want %q (the opt-in context gate leads; with no source configured it branches straight to scan_hints)", wf.Entry, "context_gate")
+	if wf.Entry != "record_run_base" {
+		t.Errorf("workflow entry = %q, want %q — the RUN BASE is read before anything can write, because the delivery gate cannot re-derive it from the campaign's own commit messages afterwards", wf.Entry, "record_run_base")
 	}
 	// the ONE adaptive agent
 	if node, ok := wf.Nodes["campaign"]; !ok {
@@ -261,7 +380,7 @@ func TestDocsRefresh_Structural(t *testing.T) {
 	} else if _, ok := node.(*ir.ComputeNode); !ok {
 		t.Errorf("node context_gate is %T, want *ir.ComputeNode", node)
 	}
-	for _, id := range []string{"context_ingest", "scan_hints", "scope_check", "forge_auth_probe", "surface_pr_link"} {
+	for _, id := range []string{"record_run_base", "context_ingest", "scan_hints", "scope_check", "forge_auth_probe", "delivery_gate", "surface_pr_link"} {
 		node, ok := wf.Nodes[id]
 		if !ok {
 			t.Fatalf("workflow missing expected tool node %q", id)
@@ -297,6 +416,8 @@ func TestDocsRefresh_Structural(t *testing.T) {
 		}
 	}
 	for _, w := range []struct{ from, to, cond string }{
+		// the base is recorded at the entry, once, before the loop
+		{"record_run_base", "context_gate", ""},
 		// the gate lifts the compound route decision into single bools
 		// (C011 simple form): coverage runs only with reference context.
 		{"gate", "coverage_inventory", "converged_with_context"},
@@ -305,6 +426,14 @@ func TestDocsRefresh_Structural(t *testing.T) {
 		{"coverage_audit", "coverage_route", ""},
 		{"coverage_route", "scan_hints", "needs_remediation"},
 		{"coverage_route", "mr_gate", ""},
+		// The delivery bound sits on the ONLY in-edge of finalize_mr, so
+		// every route into the tail — converged, converged_without_context,
+		// the coverage route, the spent loop — crosses its verdict, and the
+		// bare exit is the refusal (bots/forge_delivery_class_test.go proves
+		// the dominance mechanically).
+		{"forge_auth_probe", "delivery_gate", "available"},
+		{"delivery_gate", "finalize_mr", "delivery_ok"},
+		{"delivery_gate", "delivery_paths_refused", ""},
 	} {
 		found := false
 		for _, e := range wf.Edges {

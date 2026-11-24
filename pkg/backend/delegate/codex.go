@@ -15,6 +15,7 @@ import (
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -44,6 +45,18 @@ type CodexBackend struct {
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// The resolver's answer for this leg (ADR-161) before anything else of
+	// the dispatch: until codex's arm lands, a stamped leg is refused here.
+	if err := dispatchRefusal(ctx, BackendCodex, task); err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
+	// No floor (ADR-162 U3): codex reads the project's own config — its
+	// AGENTS.md, its ~/.codex config overlays, its MCP servers — and no floor
+	// covering all of that has been measured, so there is none: the workspace
+	// is refused, typed, before the binary is probed.
+	if !task.WorkspaceTrust.Trusted() {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, refuseUntrustedWorkspace(BackendCodex)
+	}
 	task.Model = codexTaskModel(task.Model)
 	if task.Permission.Enabled() {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(
@@ -69,6 +82,41 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	codexCLIPath, err := validateCodexWebSearchCapability(ctx, b.Command)
 	if err != nil {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
+	// Keep credential setup in one helper: structured-output formatting starts a
+	// second CLI process and must use the exact same per-run auth source.
+	// The same environment carries the ambient-context policy's CODEX_HOME
+	// (codexSpawnEnv), computed once so both passes see the same home and the
+	// formatting pass resumes the session the work pass wrote.
+	spawnEnv, releaseHome, err := codexSpawnEnv(ctx, task)
+	if err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
+	defer func() {
+		if rerr := releaseHome(); rerr != nil {
+			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
+		}
+	}()
+	// A node that opted out of the ambient MCP set must get none of the
+	// servers codex's own configuration starts (CODEX_HOME's config.toml, a
+	// trusted project's .codex/config.toml). codex can disable one only
+	// through a boolean (`mcp_servers.<name>.enabled = false`), and the
+	// pinned SDK hands the app-server its config overrides as strings, which
+	// codex 0.156.1 refuses for a boolean at thread start (measured). So such
+	// a node is refused, typed, when codex's configuration lists a server —
+	// its fallbacks get their turn; one that lists none runs.
+	if task.MCPInheritDisabled {
+		servers, lerr := codexConfiguredMCPServers(ctx, codexCLIPath, spawnEnv, task.WorkDir)
+		if lerr != nil {
+			return Result{ExitCode: -1, BackendName: BackendCodex}, lerr
+		}
+		if len(servers) > 0 {
+			return Result{ExitCode: -1, BackendName: BackendCodex}, &ErrCapabilityUnsupported{
+				NodeID: task.NodeID, Backend: BackendCodex,
+				Capability: "`mcp: inherit: false` (codex's own configuration starts MCP server(s) " + strings.Join(servers, ", ") + ")",
+				Remedy:     "the pinned codex SDK cannot pass the boolean that disables them; route the node to claw or claude_code, or remove those servers from codex's configuration",
+			}
+		}
 	}
 
 	var opts []codexsdk.Option
@@ -125,20 +173,6 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	// Stream stderr for live observability and capture for diagnostics.
 	var stderrCapture codexStderrCapture
-	// Keep credential setup in one helper: structured-output formatting starts a
-	// second CLI process and must use the exact same per-run auth source.
-	// The same environment carries the ambient-context policy's CODEX_HOME
-	// (codexSpawnEnv), computed once so both passes see the same home and the
-	// formatting pass resumes the session the work pass wrote.
-	spawnEnv, releaseHome, err := codexSpawnEnv(ctx, task)
-	if err != nil {
-		return Result{ExitCode: -1, BackendName: BackendCodex}, err
-	}
-	defer func() {
-		if rerr := releaseHome(); rerr != nil {
-			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
-		}
-	}()
 	// What either pass starts carries the node session and ends with this run
 	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md), before the
 	// home it works in is released.
@@ -196,7 +230,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if resultMsg.IsError && resultMsg.Subtype != "success" {
 		return result, fmt.Errorf("delegate: codex error: subtype=%s", resultMsg.Subtype)
 	}
-	if terminalErr := codexTerminalFailure(resultMsg, result.Stderr); terminalErr != nil {
+	if terminalErr := codexTerminalFailure(resultMsg, result.Stderr, task.RedactSecrets); terminalErr != nil {
 		return result, terminalErr
 	}
 
@@ -283,7 +317,7 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 			switch m := msg.(type) {
 			case *codexsdk.AssistantMessage:
 				emitCodexToolHooks(task.Hooks, m, inFlightTools)
-				b.logAssistantActivity(task.NodeID, task.Iteration, m)
+				b.logAssistantActivity(task.NodeID, task.Iteration, m, task.RedactSecrets)
 			case *codexsdk.ResultMessage:
 				resultMsg = m
 			case *codexsdk.SystemMessage:
@@ -413,7 +447,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 	if rm.IsError && rm.Subtype != "success" {
 		return rm, duration, fmt.Errorf("codex formatting pass error: subtype=%s", rm.Subtype)
 	}
-	if terminalErr := codexTerminalFailure(rm, stderrCapture.String()); terminalErr != nil {
+	if terminalErr := codexTerminalFailure(rm, stderrCapture.String(), task.RedactSecrets); terminalErr != nil {
 		return rm, duration, terminalErr
 	}
 	return rm, duration, nil
@@ -461,16 +495,26 @@ func asInt(v any) int {
 
 // logAssistantActivity logs tool calls, text output, and tool errors from an
 // AssistantMessage in real-time, mirroring the claude_code backend's activity
-// streaming.
-func (b *CodexBackend) logAssistantActivity(nodeID string, iteration int, msg *codexsdk.AssistantMessage) {
+// streaming. redact is Task.RedactSecrets, threaded to the branches that cut
+// (contentBlocksText) or display-cut (the tool-use header detail).
+func (b *CodexBackend) logAssistantActivity(nodeID string, iteration int, msg *codexsdk.AssistantMessage, redact func(string) string) {
 	for _, block := range msg.Content {
 		switch blk := block.(type) {
 		case *codexsdk.ToolUseBlock:
-			header := fmt.Sprintf("[%s#%d/codex] 🔧 %s %s", nodeID, iteration, blk.Name, toolUseDetail(blk.Name, blk.Input))
-			b.Logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(blk.Name, blk.Input))
+			// Every leaf is redacted before the display helpers cut the
+			// input (a header detail keeps 100 bytes): a secret the cut
+			// splits is one no matcher recognises — the discipline
+			// logAssistantContent applies on the claude_code side
+			// (iterion#2822). RedactLeaves works on the DECODED strings,
+			// so a value JSON-escaped in transit is still matched.
+			input, _ := secretguard.RedactLeaves(blk.Input, func(s string) string { return redactWith(redact, s) }).(map[string]any)
+			header := fmt.Sprintf("[%s#%d/codex] 🔧 %s %s", nodeID, iteration, blk.Name, toolUseDetail(blk.Name, input))
+			b.Logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(blk.Name, input))
 		case *codexsdk.ToolResultBlock:
 			if blk.IsError {
-				b.Logger.Info("[%s#%d/codex] ❌ tool error: %s", nodeID, iteration, contentBlocksText(blk.Content))
+				// Model-emitted content quoted into the run's log, and cut:
+				// the pass runs first (iterion#2822).
+				b.Logger.Info("[%s#%d/codex] ❌ tool error: %s", nodeID, iteration, contentBlocksText(blk.Content, redact))
 			}
 		case *codexsdk.TextBlock:
 			if blk.Text != "" {
@@ -562,8 +606,10 @@ func inspectCodexRollout(ctx context.Context, threadID string) string {
 	return ""
 }
 
-// contentBlocksText flattens a ContentBlock slice for logging; truncates to 500 chars.
-func contentBlocksText(blocks []codexsdk.ContentBlock) string {
+// contentBlocksText flattens a ContentBlock slice for logging; truncates to
+// 500 bytes. The pass runs before the cut (iterion#2822) — nil redact keeps
+// the text raw.
+func contentBlocksText(blocks []codexsdk.ContentBlock, redact func(string) string) string {
 	if len(blocks) == 0 {
 		return "<empty>"
 	}
@@ -574,7 +620,7 @@ func contentBlocksText(blocks []codexsdk.ContentBlock) string {
 		}
 		switch b := blk.(type) {
 		case *codexsdk.TextBlock:
-			sb.WriteString(b.Text)
+			sb.WriteString(redactWith(redact, b.Text))
 		default:
 			fmt.Fprintf(&sb, "<%s>", blk.BlockType())
 		}
@@ -637,7 +683,12 @@ func codexCredEnvForCLI(ctx context.Context) map[string]string {
 // nominal ResultMessage whose text is actually a terminal CLI/API error.
 // Without this guard a single-string schema can wrap that text as a valid
 // result, or an empty result can look like a successful side-effect-only task.
-func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
+// redact is the run's sink pass (Task.RedactSecrets): every text this
+// function quotes into a returned error crosses it BEFORE the 500-byte cut,
+// because the error is logged and recorded whole while the cut may split a
+// declared value — and a split value is one no downstream pass recognises
+// (iterion#2822). Nil disables the pass.
+func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string, redact func(string) string) error {
 	if rm == nil {
 		return nil
 	}
@@ -650,19 +701,22 @@ func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
 	if rm.Result != nil {
 		resultText = strings.TrimSpace(*rm.Result)
 	}
+	// Typed through the shared reading of the provider's words, so a plan
+	// window ("you've hit your usage limit") parks like every other
+	// backend's while a capacity or throttle notice stays transient.
 	if isCodexBareLimitNotice(resultText) {
-		return &ErrRateLimited{Provider: BackendCodex, Detail: resultText}
+		return RateLimitedFromRefusal(BackendCodex, resultText, time.Now())
 	}
 	if resultText != "" && hasCodexTerminalErrorEnvelope(resultText) {
 		lower := strings.ToLower(resultText)
 		if isCodexRateLimitError(lower) {
-			return &ErrRateLimited{Provider: BackendCodex, Detail: resultText}
+			return RateLimitedFromRefusal(BackendCodex, resultText, time.Now())
 		}
 		if isCodexTerminalNetworkError(lower) {
 			return &ErrTransient{Provider: BackendCodex, Reason: "network", Detail: resultText}
 		}
 		if isCodexAuthOrAPIStatusError(lower) {
-			return fmt.Errorf("delegate: codex terminal error: %s", truncate(resultText, 500))
+			return fmt.Errorf("delegate: codex terminal error: %s", truncate(redactWith(redact, resultText), 500))
 		}
 	}
 	// Structured output is empty and the result text carries no error
@@ -679,7 +733,7 @@ func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
 		return &ErrTransient{
 			Provider: BackendCodex,
 			Reason:   "network",
-			Detail:   truncate(strings.TrimSpace(stderr), 500),
+			Detail:   truncate(redactWith(redact, strings.TrimSpace(stderr)), 500),
 		}
 	}
 	return nil
@@ -793,48 +847,19 @@ func hasNonEmptyStructuredOutput(value any) bool {
 }
 
 // codexSandboxForAllowedTools picks the least-privilege codex sandbox mode
-// compatible with the intent expressed by a DECLARED AllowedTools list (an
-// empty one names nothing that writes, so it stays read-only).
-// Iterion accepts both Claude-style TitleCase names and its native snake_case
-// aliases, so normalise before deciding whether filesystem mutation is needed.
+// compatible with the intent a DECLARED AllowedTools list expresses. The
+// table that reads the names is the catalogue's
+// (toolcatalog.CodexDeclaredListIsReadOnly), so the compiler and the runtime's
+// pre-run readers ask the very classifier this delegate runs.
 //
 // "danger-full-access" is intentionally never chosen here — workflows that
 // truly need unrestricted network or out-of-workspace writes must request it
 // with the node-level `full_access: true`, not by listing a mutating tool.
 func codexSandboxForAllowedTools(allowed []string) string {
-	for _, t := range allowed {
-		if isCodexWebSearchTool(t) {
-			continue
-		}
-		// Classified by the CANONICAL name, not by a spelling list of this
-		// file's own: `find` and `glob` are one tool, and a private table
-		// gave them different sandboxes (#1579 — the same disagreement, on a
-		// fourth table).
-		//
-		// Unifying the spellings also settles three names the old list did
-		// not carry at all, so they fell to `default` and forced
-		// workspace-write: `toolsearch`, `todowrite`, `skill` — plus the
-		// `list_dir` spelling of `ls`. (`websearch` was already exempt, one
-		// line above, through isCodexWebSearchTool.) None of them writes the
-		// workspace — a todo list is session state, a skill is a read — so a
-		// node declaring read-ish names beside one of them is now read-only,
-		// which is what this function's contract (the LEAST-PRIVILEGE mode
-		// compatible with the declared intent) asks for. Measured over 53
-		// spellings and all 2809 ordered pairs: it narrows, never widens. The
-		// one `.bot` in the tree on `backend: "codex"` also sets
-		// `readonly: true`, so it short-circuits before this classifier.
-		switch toolcatalog.CanonicalToolName(t) {
-		case "read", "glob", "grep", "ls", "websearch", "toolsearch", "todowrite", "skill":
-			continue
-		case "bash", "edit", "write", "notebookedit":
-			return "workspace-write"
-		default:
-			// Unknown/custom tool names cannot prove the task is read-only. Prefer
-			// preserving writer semantics; explicit `readonly:` remains the lock.
-			return "workspace-write"
-		}
+	if toolcatalog.CodexDeclaredListIsReadOnly(allowed, true) {
+		return codexSandboxReadOnly
 	}
-	return codexSandboxReadOnly
+	return "workspace-write"
 }
 
 // codexSandboxReadOnly is the mode a task gets when nothing it declares can
@@ -843,26 +868,12 @@ func codexSandboxForAllowedTools(allowed []string) string {
 const codexSandboxReadOnly = "read-only"
 
 // CodexDeclaredListIsReadOnly reports whether a DECLARED `tools:` list alone
-// puts codex in that mode. It is the question a pre-run reader of a node's
-// surface asks, answered by the classifier the delegate runs for real, so the
-// reader cannot drift from the sandbox the task will get.
-//
-// The read-only set is CODEX's, and it OVERLAPS a reader's own read-only
-// vocabulary rather than nesting inside it, in both directions. It is `read`,
-// `glob`, `grep`, `ls`, `websearch`, `toolsearch`, `todowrite` and `skill` by
-// CANONICAL name, and nothing else: `web_fetch`, `git_diff`, `git_status`,
-// `list_files`, `search_codebase` and `tree` buy workspace-write here while
-// pkg/runtime reads them as read-only, and `ls`, `websearch`, `toolsearch`,
-// `todowrite` and `skill` are read-only here while that map does not carry
-// them at all. The canonicalisation is the other half of the difference: this
-// classifier reads `Read` and `read_file` as the same tool, a reader matching
-// its own map literally does not.
-//
-// It answers for what the AUTHOR declared. An undeclared list is no bound at
-// all, and the runtime's own appends are outside the question: `interaction:`
-// puts `ask_user` on a non-empty list, and that name buys workspace-write.
-// `readonly:` and `full_access:` are the author's own locks, read by
-// codexSandboxForTask before a declared list is ever classified.
+// puts codex in its read-only sandbox, through the task path this delegate
+// runs for real — the author's `readonly:` and `full_access:` locks first, then
+// the catalogue's table (toolcatalog.CodexDeclaredListIsReadOnly, where the
+// set and its reasons are written down). A reader that holds a Task asks here;
+// a reader that holds only the declaration asks the catalogue, and the two
+// cannot drift: this is that table.
 func CodexDeclaredListIsReadOnly(tools []string, declared bool) bool {
 	return codexSandboxForTask(Task{ToolsDeclared: declared, AllowedTools: tools}) == codexSandboxReadOnly
 }

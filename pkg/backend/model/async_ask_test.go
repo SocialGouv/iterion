@@ -24,6 +24,7 @@ func asyncBinderFixture(t *testing.T) (*StoreAsyncAskBinder, store.RunStore, []s
 }
 
 func TestStoreAsyncAskBinder_PostPendingCollect(t *testing.T) {
+	t.Parallel()
 	b, s, _ := asyncBinderFixture(t)
 	ctx := context.Background()
 	hook := b.BindAsyncAsk(ctx, "r1", "asker")
@@ -105,6 +106,7 @@ func TestStoreAsyncAskBinder_PostPendingCollect(t *testing.T) {
 }
 
 func TestStoreAsyncAskBinder_NilPaths(t *testing.T) {
+	t.Parallel()
 	var b *StoreAsyncAskBinder
 	if hook := b.BindAsyncAsk(context.Background(), "r1", "n1"); hook != nil {
 		t.Error("nil binder must bind nil hook")
@@ -123,6 +125,7 @@ func TestStoreAsyncAskBinder_NilPaths(t *testing.T) {
 }
 
 func TestCollectAsyncAnswersText_NothingPosted(t *testing.T) {
+	t.Parallel()
 	b, _, _ := asyncBinderFixture(t)
 	hook := b.BindAsyncAsk(context.Background(), "r1", "asker")
 	text, err := hook.CollectAnswers(context.Background())
@@ -135,6 +138,7 @@ func TestCollectAsyncAnswersText_NothingPosted(t *testing.T) {
 }
 
 func TestFormatAsyncAnswerMessage(t *testing.T) {
+	t.Parallel()
 	got := FormatAsyncAnswerMessage("r1_asker_async_1", "color?", "blue")
 	for _, want := range []string{"r1_asker_async_1", "color?", "blue", "[Answer to question"} {
 		if !strings.Contains(got, want) {

@@ -50,7 +50,11 @@ func TestFork_HappyPath(t *testing.T) {
 			"step1":  {"value": "alpha"},
 			"legacy": {"value": "old-checkpoint"},
 		},
-		Vars: map[string]any{"workflow_var": "v"},
+		// The parent's pause carried the sandbox-mirror stranding fact
+		// (#2461): the conversation the fork pins is a stranded crossing's
+		// own turns, and the child's resumed crossing must know.
+		BackendSessionStranded: true,
+		Vars:                   map[string]any{"workflow_var": "v"},
 	}
 	parent.WorkflowHash = "hash-abc"
 	parent.WorkflowSource = "import \"lib/x.bot\"\n"
@@ -190,6 +194,9 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	if len(child.Checkpoint.BackendConversation) == 0 {
 		t.Error("expected child.Checkpoint.BackendConversation populated from turn messages")
+	}
+	if !child.Checkpoint.BackendSessionStranded {
+		t.Error("the stranding fact did not travel with the pinned conversation — the child's resumed crossing would mirror its captures into the session")
 	}
 	// step2's stale output (parent had none here) should be absent so
 	// re-execution starts fresh.

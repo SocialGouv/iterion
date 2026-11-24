@@ -70,7 +70,7 @@ func TestConfigShare_EndToEnd(t *testing.T) {
 	  "config_path":"feed-watch.json","category":"a11y",
 	  "allowed_paths":["categories.a11y.feeds","categories.a11y.editorial"],
 	  "visible_paths":["categories.a11y.feeds","categories.a11y.editorial","categories.a11y.digest_title"]}`
-	cr := httptest.NewRequest("POST", "/api/teams/t1/config-shares", strings.NewReader(body)).WithContext(adminCtx)
+	cr := httptest.NewRequest("POST", "/api/teams/t1/config-shares", strings.NewReader(body)).WithContext(testMintVerdictContext(adminCtx))
 	cr.SetPathValue("id", "t1")
 	cw := httptest.NewRecorder()
 	s.handleCreateConfigShare(cw, cr)

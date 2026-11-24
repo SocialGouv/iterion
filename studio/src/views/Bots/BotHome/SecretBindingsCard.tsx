@@ -1,14 +1,15 @@
 // Extracted from BotHome/index.tsx to keep that file focused.
-// Secret bindings card (cloud mode only) — the team's secrets bound to
-// this bot, linking to Integrations → Bindings for management.
+// Secret bindings card (cloud mode only) — the team's secrets and context
+// documents bound to this bot, linking to Integrations → Bindings for
+// management.
 
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 
-import { listBindings, type BotSecretBinding } from "@/api/botBindings";
+import { effectiveKind, listBindings, type BotSecretBinding } from "@/api/botBindings";
 import { FeatureUnavailableError } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
-import { Card, InlineBanner, Spinner } from "@/components/ui";
+import { Badge, Card, InlineBanner, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 
 import SectionTitle from "./SectionTitle";
@@ -33,7 +34,7 @@ export default function SecretBindingsCard({ botName }: { botName: string }) {
   return (
     <Card>
       <div className="flex items-center justify-between">
-        <SectionTitle flush>Secret bindings</SectionTitle>
+        <SectionTitle flush>Bindings</SectionTitle>
         <Link
           href="/integrations?tab=bindings"
           className="text-caption text-accent-text hover:underline"
@@ -52,7 +53,8 @@ export default function SecretBindingsCard({ botName }: { botName: string }) {
         </div>
       ) : (bindings ?? []).length === 0 && !err ? (
         <p className="py-1 text-xs text-fg-subtle">
-          No secrets bound to this bot — bind one from Integrations → Bindings.
+          Nothing bound to this bot — bind a secret or a context document from Integrations →
+          Bindings.
         </p>
       ) : (
         <ul className="mt-1 space-y-1">
@@ -62,6 +64,12 @@ export default function SecretBindingsCard({ botName }: { botName: string }) {
               className="flex items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5 text-xs"
             >
               <span className="font-mono text-fg-default">{b.secret_name_for_workflow}</span>
+              {effectiveKind(b) === "context" && <Badge variant="info">context</Badge>}
+              {b.degraded_reason && (
+                <Badge variant="warning" title={b.degraded_reason}>
+                  degraded
+                </Badge>
+              )}
               {b.allowed_hosts && b.allowed_hosts.length > 0 && (
                 <span className="text-caption text-fg-subtle">
                   hosts: {b.allowed_hosts.join(", ")}

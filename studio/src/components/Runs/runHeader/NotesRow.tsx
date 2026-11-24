@@ -10,6 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { addNote, listNotes, type RunNote } from "@/api/runs";
 import { Button, InlineBanner, Textarea } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 
@@ -19,6 +20,7 @@ import { formatRelative } from "@/lib/format";
 // first cut, so there's no edit/delete affordance.
 export default function NotesRow({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
+  const canAct = useRunCanAct();
   const notesQuery = useQuery({
     queryKey: ["run-notes", runId],
     queryFn: ({ signal }) => listNotes(runId, { signal }),
@@ -84,25 +86,27 @@ export default function NotesRow({ runId }: { runId: string }) {
       ) : (
         <div className="text-micro text-fg-subtle">No notes yet.</div>
       )}
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Add a note… (⌘/Ctrl+Enter to save)"
-          rows={2}
-          className="flex-1 min-h-0"
-          aria-label="Add a run note"
-        />
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => void onAdd()}
-          disabled={addAction.busy || draft.trim() === ""}
-        >
-          Add note
-        </Button>
-      </div>
+      {canAct && (
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Add a note… (⌘/Ctrl+Enter to save)"
+            rows={2}
+            className="flex-1 min-h-0"
+            aria-label="Add a run note"
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void onAdd()}
+            disabled={addAction.busy || draft.trim() === ""}
+          >
+            Add note
+          </Button>
+        </div>
+      )}
       {error && (
         <InlineBanner
           tone="danger"

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -16,7 +17,7 @@ import (
 // connection — a GitHub App's `<app_slug>[bot]` or (GitLab only) the connected
 // account — never a generic `[bot]` that would catch Dependabot/Renovate.
 func TestRealIterionBotAuthor(t *testing.T) {
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	// GitHub App connection: bot login = iterion-forge-1234[bot].
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c-gh", TenantID: "t1", Provider: forge.ProviderGitHub, AppSlug: "iterion-forge-1234",

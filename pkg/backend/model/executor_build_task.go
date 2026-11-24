@@ -10,18 +10,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
-	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/google/uuid"
 )
 
@@ -30,6 +35,7 @@ import (
 type backendFields struct {
 	id               string
 	kind             string // what the id names in an error subject: "" = "node", "llm router" for the router path
+	inChain          bool   // the correction runs inside the chain, before the attempt's own delegate event
 	model            string
 	backend          string
 	provider         string
@@ -50,10 +56,13 @@ type backendFields struct {
 	capabilities     []string
 	skills           []string
 	cursors          *ir.CursorInvocation
-	compress         string // node-level `compress:` value ("" = unset)
-	autoMemory       string // node-level `auto_memory:` value ("" = inherit workflow)
-	ambientContext   string // node-level `ambient_context:` value ("" = inherit workflow)
-	permission       string // node-level `permission:` mode override ("" = inherit)
+	compress         string             // node-level `compress:` value ("" = unset)
+	autoMemory       string             // node-level `auto_memory:` value ("" = inherit workflow)
+	ambientContext   string             // node-level `ambient_context:` value ("" = inherit workflow)
+	codemode         string             // node-level `codemode:` value ("" = inherit workflow)
+	codemodeDefer    string             // node-level `codemode:` defer value ("" = inherit workflow)
+	codemodeBounds   *ir.CodemodeBounds // node-level `codemode:` bounds (nil = inherit workflow, field by field)
+	permission       string             // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
 	// ir.EffectivePermissionRules, the single implementation of that rule.
@@ -104,6 +113,9 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
 			ambientContext:   n.AmbientContext,
+			codemode:         n.Codemode,
+			codemodeDefer:    n.CodemodeDefer,
+			codemodeBounds:   n.CodemodeBounds,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -133,6 +145,9 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
 			ambientContext:   n.AmbientContext,
+			codemode:         n.Codemode,
+			codemodeDefer:    n.CodemodeDefer,
+			codemodeBounds:   n.CodemodeBounds,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -145,6 +160,28 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
 	}
+}
+
+// effectiveCapabilitiesOf is the ONE reading of the capability grant: a nil
+// list inherits the workflow's; a DECLARED empty one (`capabilities: []`,
+// #1801) is an explicit no-grant and stays empty; and the workspace-trust
+// floor (store.RunTrust.HostCapabilities) withdraws the whole list from a run
+// whose workspace its tenant did not write.
+//
+// buildTask, the EffectiveToolNames seam and the reserved-namespace grant
+// check (internalMCPToolGrant) all read it here, on the field
+// extractBackendFields produces, so no site can answer a different grant for
+// the same node. A tool node reads it too, on the node's own list, through
+// nodeCapabilities — its registry recipe's host tools, its native action and
+// its rung-4 recovery agent (#78=A, ADR-151): one grant rule for every node
+// kind.
+//
+// withdrawn is what the floor took; it is empty on a trusted workspace.
+func effectiveCapabilitiesOf(declared, wfCapabilities []string, trust store.RunTrust) (held, withdrawn []string) {
+	if declared == nil {
+		declared = wfCapabilities
+	}
+	return trust.HostCapabilities(declared)
 }
 
 // resolvePermissionPolicy builds the effective tool-permission policy for
@@ -180,11 +217,45 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 	if mode == permission.ModeOff {
 		return &permission.Policy{}, nil
 	}
-	return permission.NewPolicy(mode,
+	pol, err := permission.NewPolicy(mode,
 		slices.Concat(ir.EffectivePermissionRules(f.permAllow, e.wfPermAllow), e.permAllowRules),
 		slices.Concat(ir.EffectivePermissionRules(f.permAsk, e.wfPermAsk), e.permAskRules),
 		slices.Concat(ir.EffectivePermissionRules(f.permDeny, e.wfPermDeny), e.permDenyRules),
 	)
+	if err != nil {
+		return nil, err
+	}
+	// The gate resolves a model-supplied relative path against the very
+	// directory the agent's tools run in, so a rule written as an absolute
+	// path bounds `./secrets/key` too. The root is read here rather than
+	// from the ambient process: the engine updates workDir at run start for
+	// `worktree: auto`, and the gate rebuilt in a child process receives
+	// this value through PolicyConfig.
+	pol.SetPathRoot(e.WorkDir())
+	// The per-node secrets bound (#1710): every gated node is refused the
+	// run's well-known secret locations by construction — the mounted file
+	// secrets and the seeded CLI credential directories — so "the agent
+	// cannot read the secrets" is a guarantee of the gate, not a belt the
+	// author has to remember to buckle. A location a given run does not
+	// populate costs a deny rule that matches nothing. The shell stays
+	// unbound: it is the legitimate sink channel a secret is spent through.
+	if err := pol.DenyPathTrees(secretGateLocations()...); err != nil {
+		return nil, err
+	}
+	return pol, nil
+}
+
+// secretGateLocations are the well-known locations a run's secrets and
+// seeded credentials occupy inside a sandbox (pkg/secrets), armed as deny
+// trees on every gated node's policy. The runner already refuses a file
+// secret mounted outside SecretFilesMountDir, so the constant covers every
+// per-secret mount path too.
+func secretGateLocations() []string {
+	return []string{
+		secrets.SecretFilesMountDir,
+		secrets.ClaudeCodeSandboxConfigDir,
+		secrets.CodexSandboxConfigDir,
+	}
 }
 
 // GateCanAsk reports whether the permission gate this executor arms for node
@@ -215,7 +286,16 @@ func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
 // model / context window / peak load / output cap (claude_code; left
 // unset by backends that don't report them). The four "_model" /
 // "_context_*" / "_max_output_tokens" keys drive the run-view's
-// per-node model label and context-usage gauge.
+// per-node model label and context-usage gauge. A gateway route's catalog
+// provenance is re-stamped from Result.GatewaySpec as `_gateway_spec` —
+// harness-recorded like the counters, so it survives the wipe a
+// model-written key of the same name does not (#2786). The effort the
+// call's model request carried lands as `_reasoning_effort_applied`, who
+// decided it as `_reasoning_effort_source`, the level asked for, when the
+// route or the backend replaced it, as `_reasoning_effort_requested`, and a
+// lower level a later request of the call carried as
+// `_reasoning_effort_lowered` (Result.ReasoningEffort): a report reads what
+// the run used instead of the dial it was set from.
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
@@ -240,6 +320,9 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	output["_tokens"] = result.Tokens
 	if result.CostUSD > 0 {
 		output["_cost_usd"] = result.CostUSD
+	}
+	if result.CostIsSessionTotal {
+		output["_cost_is_session_total"] = true
 	}
 	cost.SetUnreportedCalls(output, result.UnreportedCalls)
 	if result.ParseFallback {
@@ -274,7 +357,31 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if result.ThinkingMs > 0 {
 		output["_thinking_ms"] = result.ThinkingMs
 	}
+	if len(result.GatewaySpec) > 0 {
+		output["_gateway_spec"] = result.GatewaySpec
+	}
+	for key, value := range map[string]string{
+		OutputReasoningEffortApplied:   result.ReasoningEffort,
+		OutputReasoningEffortSource:    result.ReasoningEffortSource,
+		OutputReasoningEffortRequested: result.ReasoningEffortRequested,
+		OutputReasoningEffortLowered:   result.ReasoningEffortLowered,
+	} {
+		if value != "" {
+			output[key] = value
+		}
+	}
 }
+
+// The output keys stampDelegateOutputMeta records the effort a call ran at
+// under (delegate.Result.ReasoningEffort). None is `_reasoning_effort`: that
+// is the INPUT key an edge raises a node's effort with, and a stamp of that
+// name would read, wherever an output is mapped whole, as an edge's request.
+const (
+	OutputReasoningEffortApplied   = "_reasoning_effort_applied"
+	OutputReasoningEffortSource    = "_reasoning_effort_source"
+	OutputReasoningEffortRequested = "_reasoning_effort_requested"
+	OutputReasoningEffortLowered   = "_reasoning_effort_lowered"
+)
 
 // meteredFailureOutput renders what a FAILED delegation spent, in the shape
 // the engine books from (`_tokens` / `_cost_usd`).
@@ -297,7 +404,23 @@ func meteredFailureOutput(out chainOutcome, backendName string) map[string]any {
 	// failure path must too, or a delegate that filled Result.Tokens
 	// without touching the map reports a spend of zero.
 	stampDelegateOutputMeta(output, out.Result, firstNonEmpty(out.BackendName, backendName))
+	stampForkOrigin(output, out.Task)
 	return output
+}
+
+// stampServingRoute publishes the provider half of the selected route on
+// the node's output: `_model`/`_backend` alone name a label, and on the
+// anthropic wire the same label reaches Anthropic, a forfait, or a facade
+// — the provider is what says whose endpoint answered (#2772). Stamped
+// whenever the serving route NAMED its provider (a hint, a spec prefix);
+// absent on a route that deferred to the wire's default precedence, where
+// `_session_fingerprint` is the record. Nothing is stamped on a skip:
+// nothing served.
+func stampServingRoute(output map[string]any, out chainOutcome) {
+	if output == nil || out.Provider == "" || out.Skipped {
+		return
+	}
+	output["_provider"] = out.Provider
 }
 
 // stampFallbackMeta records, on the node's own output, that the node ran
@@ -394,6 +517,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 	baseModel string,
 	build elementBuilder,
 	sess *nodeBuildSession,
+	schemas ...*ir.Schema,
 ) (chainOutcome, error) {
 	if len(chain) == 0 {
 		// The allowlist dropped every element: there is no route to serve
@@ -411,13 +535,17 @@ func (e *ClawExecutor) dispatchWithObservability(
 			DeclaredModel: baseModel,
 		})
 	}
-	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build)
+	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build, schemas...)
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
 			bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 			di := delegateInfoFromResult(bn, out.Result)
+			di.CostUSD = max(0, di.CostUSD-out.CorrectionCost)
+			di.Tokens = max(0, di.Tokens-out.CorrectionTokens)
 			di.DeclaredModel = baseModel
 			di.RouteModel = out.Route
+			di.Provider = out.Provider
+			di.FoldedSpend = out.FoldedSpend
 			di.Error = err
 			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
@@ -427,8 +555,12 @@ func (e *ClawExecutor) dispatchWithObservability(
 	if e.hooks.OnDelegateFinished != nil {
 		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 		di := delegateInfoFromResult(bn, out.Result)
+		di.CostUSD = max(0, di.CostUSD-out.CorrectionCost)
+		di.Tokens = max(0, di.Tokens-out.CorrectionTokens)
 		di.DeclaredModel = baseModel
 		di.RouteModel = out.Route
+		di.Provider = out.Provider
+		di.FoldedSpend = out.FoldedSpend
 		// A skip outcome finished nothing: keep BackendName (the spend's
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.
@@ -474,8 +606,37 @@ type nodeBuildSession struct {
 	// node invoking the same command with a broader `tools:` set is a
 	// different exposure and has to be told.
 	ignoredFrontmatter []string
+	// commandNarrowing carries the `allowed-tools:` of a PROMPT-invoked
+	// workspace command (#1717), as DECLARED spellings: the build folds and
+	// intersects the node's resolved ToolDefs with them
+	// (tool.CommandNarrowedSet). nil = the invocation declared none (or none
+	// was invoked); an empty non-nil slice = a declared empty list, which
+	// narrows to the always-allowed trio. commandNarrowingBy names the
+	// command for the log line.
+	commandNarrowing   []string
+	commandNarrowingBy string
 	boardToken         string
 	boardMinted        bool
+	// withdrawalsAnnounced keeps each trust-floor withdrawal to one
+	// announcement per node execution: every element of a `fallbacks:`
+	// chain rebuilds the task, and each would say it again.
+	withdrawalsAnnounced map[string]bool
+}
+
+// claimWithdrawal reports whether THIS build announces the node's `what`
+// withdrawal, and records that it did.
+func (s *nodeBuildSession) claimWithdrawal(what string) bool {
+	if s == nil {
+		return true
+	}
+	if s.withdrawalsAnnounced[what] {
+		return false
+	}
+	if s.withdrawalsAnnounced == nil {
+		s.withdrawalsAnnounced = map[string]bool{}
+	}
+	s.withdrawalsAnnounced[what] = true
+	return true
 }
 
 // describeDivergence records on the outgoing delegate event that the
@@ -535,6 +696,19 @@ func (s *nodeBuildSession) noteIgnoredFrontmatter(keys []string) bool {
 	return true
 }
 
+// noteCommandNarrowing records the `allowed-tools:` narrowing of the
+// workspace command this node's prompt invoked, as the DECLARED spellings
+// the build folds and applies to the resolved ToolDefs. Declared
+// distinguishes an absent key from an empty one: only a DECLARED list
+// narrows.
+func (s *nodeBuildSession) noteCommandNarrowing(command string, allowed []string, declared bool) {
+	if s == nil || !declared {
+		return
+	}
+	s.commandNarrowing = append([]string{}, allowed...)
+	s.commandNarrowingBy = command
+}
+
 // boardTokenFor returns the node's board run token, minting it on first
 // use and reusing it for every later element.
 func (s *nodeBuildSession) boardTokenFor(mint func() string) string {
@@ -548,9 +722,32 @@ func (s *nodeBuildSession) boardTokenFor(mint func() string) string {
 	return s.boardToken
 }
 
+// revokeBoardToken ends the grant this node minted, once, at the node's end.
+//
+// Here rather than at each of the three applyXEndpoint sites because ONE token
+// serves all of them (boardTokenFor mints once per node and every later chain
+// element reuses it): a revoke per wiring site would end a grant the next
+// element still needs. Idempotent, so a caller that defers it and also calls
+// it explicitly does not revoke a token a LATER node has since been handed —
+// tokens are random, so that cannot happen, but a second call must still be
+// free.
+func (s *nodeBuildSession) revokeBoardToken(revoke func(token string)) {
+	if s == nil || revoke == nil || !s.boardMinted || s.boardToken == "" {
+		return
+	}
+	token := s.boardToken
+	s.boardToken, s.boardMinted = "", false
+	revoke(token)
+}
+
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
-func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+//
+// The error is a NAMED result because the per-node `timeout:` below NAMES its
+// own cut on the way out — every exit past that bound passes through the
+// defer that reads the outcome; nothing reads the output there, hence the
+// blank name beside it.
+func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]any) (_ map[string]any, err error) {
 	f, err := extractBackendFields(node)
 	if err != nil {
 		return nil, err
@@ -563,11 +760,48 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// context.DeadlineExceeded and fails the node cleanly. Compile-time
 	// validation (C122) already rejects malformed durations, so a parse
 	// error here is defensive: skip the bound rather than fail the node.
+	var correctionDeadline time.Time
+	var correctionTimeout time.Duration
 	if f.timeout != "" {
 		if d, derr := time.ParseDuration(ir.ExpandEnvWithDefault(f.timeout)); derr == nil && d > 0 {
+			correctionTimeout = d
+			correctionDeadline = time.Now().Add(d)
+			runCtx := ctx
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, d)
+			ctx, cancel = context.WithDeadline(ctx, correctionDeadline)
 			defer cancel()
+			nodeCtx := ctx
+			// This bound is the ENGINE's, so the cut it makes is named here
+			// rather than left to be read from the words that come back:
+			// what a node reports when this deadline kills it is whatever
+			// its backend saw — a sandboxed crossing's killed runner, a
+			// closed pipe, or the bare context error the in-node retry loop
+			// hands up when the bound cuts its backoff — and recovery
+			// dispatch's last tier reads words, where the last of those
+			// matches a network-transient needle and re-runs the node six
+			// times against the one bound its author declared (#2456). See
+			// [ErrNodeDeadline] for why the cause travels in the chain and
+			// stays out of the text.
+			//
+			// Registered AFTER `defer cancel()` so it runs BEFORE it and
+			// reads the deadline's own verdict. Only while the parent is
+			// still live: a run cancelled, or out of its duration budget, is
+			// the engine's own reading at the node boundary
+			// (runtime.handleContextDoneWithCheckpoint, the budget arm), and
+			// this node must not re-model it as its own bound.
+			defer func() {
+				if err == nil || runCtx.Err() != nil {
+					return
+				}
+				if !errors.Is(nodeCtx.Err(), context.DeadlineExceeded) {
+					return
+				}
+				var already *ErrNodeDeadline
+				if errors.As(err, &already) {
+					return
+				}
+				err = &ErrNodeDeadline{NodeID: f.id, Timeout: d, Observed: err}
+			}()
 		}
 	}
 
@@ -585,6 +819,17 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// The node's effects (its llm_prompt event, its board run token) fire
 	// once here however many chain elements the dispatch below walks.
 	sess := &nodeBuildSession{}
+	// …and the token's GRANT ends here too, on every exit: the node's own
+	// return, its `timeout:` cut, a panic unwinding. Deferred before the task
+	// is built so a failure DURING the build cannot leave a minted token
+	// behind — boardTokenFor runs inside buildTask.
+	lifetime := &correctionLifetime{revoke: func() { sess.revokeBoardToken(e.boardRevoke) }}
+	transferred := false
+	defer func() {
+		if !transferred {
+			lifetime.release()
+		}
+	}()
 	task, err := e.buildTask(ctx, node, f, input, backendName, sess)
 	if err != nil {
 		return nil, err
@@ -613,9 +858,15 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// against the primary backend; fall-through elements inherit the dir
 	// below so a route change does not drop MEMORY.md mid-node.
 	syncAutoMemory := e.applyAutoMemory(ctx, &task, f, backendName)
-	defer syncAutoMemory()
+	lifetime.syncMemory = syncAutoMemory
 
 	chain := collapseHintOnlyChain(e.resolveChain(node), backendName)
+	if exactClawApprovalFrom(ctx) != nil {
+		if backendName != delegate.BackendClaw || len(chain) == 0 || (chain[0].Backend != "" && chain[0].Backend != delegate.BackendClaw) {
+			return nil, fmt.Errorf("model: node %q cannot resume an exact claw approval on another backend", f.id)
+		}
+		chain = chain[:1]
+	}
 	build := e.newElementBuilder(f.id, backendName, backend,
 		func(ctx context.Context, bn string) (*delegate.Task, error) {
 			// The base backend's task is already built above; only an
@@ -646,7 +897,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			}
 			return &built, nil
 		})
-	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build, sess)
+	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build, sess, e.schemas[f.outputSchema])
 	if err != nil {
 		// A failed delegation still SPENT, and everything below this line
 		// went to trouble to keep the figure: claude_code's `typedFailure`
@@ -706,6 +957,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampFallbackMeta(result.Output, out)
+	stampServingRoute(result.Output, out)
 	if f.session == ir.SessionPersist && result.SessionID != "" {
 		if blob := e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID); len(blob) > 0 {
 			if result.Output == nil {
@@ -755,7 +1007,17 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				// hand a claw conversation to claude_code.
 				Backend:          servingBackendName,
 				Conversation:     result.PendingConversation,
+				PermissionInput:  result.PendingPermissionInput,
 				PendingToolUseID: result.PendingToolUseID,
+				// The narrowing the paused generation held rides beside the
+				// conversation (#1717): the resume re-pins it, so the bound
+				// survives the operator's answer.
+				CommandNarrowing: result.PendingCommandNarrowing,
+				// The stranding fact rides the pause: a stranded crossing's
+				// checkpointed conversation is its own blind turns, and the
+				// resumed crossing must know or its capture becomes the
+				// session.
+				SessionStranded: result.SessionStranded,
 			}
 			if f.session == ir.SessionPersist && result.SessionID != "" {
 				ni.SessionStateBlob = e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID)
@@ -772,7 +1034,24 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// IR regression or a programmatic schema-map mutation.
 	if f.outputSchema != "" {
 		if schema, ok := e.schemas[f.outputSchema]; ok {
-			validated, err := e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
+			failure, prepareErr := e.prepareOutputCorrection(ctx, node, f, servingBackendName, servingBackend, servingTask, result, schema, out, correctionDeadline, correctionTimeout, lifetime)
+			if prepareErr != nil {
+				return meteredFailureOutput(out, servingBackendName), prepareErr
+			}
+			if failure != nil {
+				output := meteredFailureOutput(out, servingBackendName)
+				transferred = true
+				return output, failure
+			}
+			// Ownership is an invocation contract, including an ineligible answer.
+			// Absence of a correction handle must not buy a legacy retry.
+			validated := result
+			var err error
+			if _, owned := OutputCorrectionOwnershipFromContext(ctx); owned {
+				err = ValidateOutputWithRegistry(result.Output, schema, e.schemas)
+			} else {
+				validated, err = e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
+			}
 			if err != nil {
 				// The node failed AFTER the model answered and the call was
 				// paid for — often twice, since a retry-eligible failure
@@ -794,48 +1073,17 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			// deterministic gate fail OPEN on a degraded verdict and
 			// erases the "fell back" row from the run header.
 			stampFallbackMeta(result.Output, out)
+			stampServingRoute(result.Output, out)
 		} else {
 			e.logger.Warn("[%s#%d/%s] node declares output schema %q but no schema with that name is registered — IR compiler should have rejected this; output passes through unvalidated",
 				f.id, task.Iteration, backendName, f.outputSchema)
 		}
 	}
 
+	stampForkOrigin(result.Output, servingTask)
 	return result.Output, nil
 }
 
-// validateAndRetry validates result.Output against the node's schema. On
-// success, the input result is returned unchanged. On a validation
-// failure that one more ask can plausibly fix (parse-fallback OR missing-
-// required-field), the model is RE-ASKED once, through retryDelegateLoop
-// so the re-ask inherits the standard transient-backoff budget, and the
-// re-ask's answer is re-validated. The re-ask continues the model's work
-// rather than repeating it (planSchemaReask): on claw the completed
-// conversation is replayed with the validation error as its next user turn
-// (one schema-forced call, tools off); on a backend that resumes by session
-// id the first answer's session is resumed with the validation error as the
-// new prompt; where neither is possible the turn restarts with the error
-// appended to the prompt. The re-ask is a real turn and is observed as one:
-// OnDelegateRetry announces it (with its mode), its own OnDelegateStarted /
-// OnDelegateFinished / OnDelegateError fire marked attempt 2, and token /
-// duration / cost are folded across every generation the node paid for —
-// the first attempt, the re-ask, and the claw recovery below when it ran —
-// so per-node accounting reflects the full cost paid; stampDelegateOutputMeta
-// is re-applied after the re-ask so observability keys remain consistent.
-// Any other validation failure (type mismatch, enum violation) fails the
-// node without a re-ask; a re-ask that still fails surfaces the validation
-// error WITH the re-ask's own error wrapped beside it; the caller propagates.
-//
-// Why retry on missing-field errors: a real-world failure mode (Seki's
-// voter judges on gpt-5.5/forfait — see docs/bot-runs/sec-audit-source.md)
-// is the backend returning *valid* JSON that simply omits required fields
-// when the model is overwhelmed or the response is truncated. Without
-// a retry, one transient empty response hard-fails the whole run on the
-// first voter, even though the downstream aggregator (majority_verdict
-// behind `await: best_effort`) is already designed to tolerate a missing
-// voter. One retry on a missing-field error is the bounded-and-cheap
-// counterpart to the existing parse-fallback retry. Type / enum errors
-// stay non-retryable: those are the model returning the *wrong shape*,
-// which a second call from the same model is unlikely to flip.
 // textOf extracts the plain text a parse-fallback result wraps (the wrapped
 // {"text": …} shape); empty when the output carries no text field.
 func textOf(output map[string]any) string {
@@ -843,6 +1091,17 @@ func textOf(output map[string]any) string {
 		return text
 	}
 	return ""
+}
+
+func validateStructuredResult(result delegate.Result, schema *ir.Schema) error {
+	if result.ParseFallback {
+		detail := result.ParseError
+		if detail == "" {
+			detail = textOf(result.Output)
+		}
+		return fmt.Errorf("structured response could not be parsed: %s", iterlog.Truncate(detail, 2048))
+	}
+	return ValidateOutput(result.Output, schema)
 }
 
 func (e *ClawExecutor) validateAndRetry(
@@ -854,124 +1113,118 @@ func (e *ClawExecutor) validateAndRetry(
 	result delegate.Result,
 	schema *ir.Schema,
 ) (delegate.Result, error) {
-	err := ValidateOutput(result.Output, schema)
-	if err == nil {
-		return result, nil
-	}
-	// A backend whose stream died on a provider error hands the error text
-	// to the parser as if it were the answer: « API Error: … » wrapped as
-	// plain text (ParseFallback), then validated as missing fields. Name
-	// THAT — the schema was never the problem; the fix is the provider
-	// route. Seen twice mislabeled in the field before this branch
-	// (#2465's publish judge, run 01a144f5, chased as a schema bug).
-	if text := textOf(result.Output); strings.Contains(text, "API Error:") {
-		line := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
-		return result, fmt.Errorf("model: %s: the backend produced no structured output — its result is the provider's own error: %s", f.subject(), line)
-	}
-	// Retry-eligible: parse-fallback (LLM returned non-JSON the executor
-	// wrapped in a text field) OR missing-required-field (LLM returned
-	// truncated/empty JSON). Non-eligible (type mismatch, enum violation)
-	// are returned by the model in a stable shape; a second call is
-	// unlikely to change them.
-	retryEligible := result.ParseFallback || isMissingFieldError(err)
-	if !retryEligible {
-		return result, fmt.Errorf("model: %s: structured output invalid: %w", f.subject(), err)
-	}
-	// The re-ask: the validation error as the model's next input, in the
-	// conversation or session the first answer ran in wherever the backend
-	// can continue one. The ORIGINAL task is preserved untouched — its
-	// token/duration accounting has already been accumulated above and
-	// must not be disturbed.
-	reask := e.planSchemaReask(ctx, backendName, task, result, formatSchemaRetryFeedback(err))
-	e.logger.Warn("[%s#%d/%s] structured output validation failed, re-asking the model (%s): %v", f.id, task.Iteration, backendName, reask.label(), err)
-	// Fire OnDelegateRetry so observers (Prometheus exporter, event sink)
-	// see the re-ask coming — the outer retryDelegateLoop only knows about
-	// transient errors, not schema-shape failures.
-	if e.hooks.OnDelegateRetry != nil {
-		di := delegateInfoFromResult(backendName, result)
-		di.DeclaredModel = task.Model
-		di.Error = err
-		di.Attempt = 1
-		di.Reask = reask.mode
-		e.hooks.OnDelegateRetry(f.id, di)
-	}
-	retryTask := reask.task
-	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: 2, Reask: reask.mode})
-	}
-	// Route the re-ask through retryDelegateLoop so it inherits the same
-	// transient-error backoff every other delegate call gets — a direct
-	// backend.Execute here skipped the retry budget and gave up on the
-	// first transient SDK hiccup.
-	retryResult, retryErr := e.retryDelegateLoopReask(ctx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
-		return backend.Execute(ctx, retryTask)
-	})
-	// Whether the two attempts share one session decides how their figures
-	// fold (a session TOTAL folds at the max, per-call figures sum) — read
-	// off the results where both name their session, off the task otherwise.
-	sameSession := foldSameSession(result, retryResult, sharesSession(&retryTask))
-	e.emitReaskOutcome(f.id, backendName, task.Model, reask, result, retryResult, retryErr, sameSession)
-	if retryErr != nil || retryResult.ParseFallback {
-		// The same backend still couldn't emit schema-valid JSON. The steady
-		// state here is claude_code under the Anthropic OAuth *forfait*, which
-		// cannot produce native structured output at all (proven: even a
-		// trivial 2-field schema fails, while free-form prompts succeed). The
-		// forfait is usable ONLY by claude_code, so we can't just switch the
-		// node to claw. Instead, keep the agent's reasoning (done under the
-		// forfait) and extract the schema from its free-form text via claw with
-		// whatever provider the host has (openai/anthropic, key or forfait) — so
-		// a structured-output node works on EVERY backend×credential combo, not
-		// only api-key Anthropic. Fires only on the already-failing path, so it
-		// can only turn a hard failure into a success.
-		recovered, recoverySpend, ok := e.extractStructuredViaClaw(ctx, f.id, task, retryResult, result, schema, backendName)
-		if ok {
-			// The recovery ANSWERED — and it is a THIRD billed generation on
-			// top of two the node already owes. Folded in this order because
-			// the two rules differ and composing them the other way round
-			// breaks the first: the delegation and its retry fold by the
-			// session rule (a MAX when both report one cumulative total),
-			// and the recovery — a different provider, its own session —
-			// SUMS onto whatever that yields.
-			return foldSpend(recoverySpend, foldSpend(result, recovered, sameSession), false), nil
+	policy := outputCorrectionPolicy(ctx)
+	var costs correctionCosts
+	costs.add(result, task, backendName)
+	// The extraction fallback reads the same allowance, including when the
+	// executor is used directly without a runtime.
+	ctx = WithOutputCorrectionPolicy(ctx, policy)
+	for attempt := 1; ; attempt++ {
+		validationErr := validateStructuredResult(result, schema)
+		if validationErr == nil {
+			return result, nil
 		}
-		// The retry was a second generation and it was billed, whether it
-		// errored or came back parse-fallback again. Returning the first
-		// attempt alone reports half the bill to the caller that books it
-		// — the same accumulation the success path does at the bottom of
-		// this function, on the exit where the money is already spent and
-		// nothing downstream can recover it.
-		//
-		// FOLDED, not summed: `retryTask` is a copy of the task and keeps
-		// its SessionID, so on a node with `session: inherit/persist` both
-		// attempts report the SAME session — and claude_code's figure is a
-		// session TOTAL that already contains the first attempt's. Summing
-		// there bills those tokens twice on the very backend this exit
-		// exists for (the OAuth forfait that cannot emit structured output
-		// at all), and an over-count kills runs that still had budget. Same
-		// rule, same arguments as the success path below.
-		//
-		// `recoverySpend` is the recovery's own claw call, which was billed
-		// even though it gave up (a stream cut mid-answer, JSON the model
-		// malformed) — zero when it never reached a provider. Same two rules,
-		// same order as the recovered exit above.
-		return foldSpend(recoverySpend, foldSpend(result, retryResult, sameSession), false),
-			schemaReaskFailure(f.subject(), err, reask, retryErr)
+		if exactClawApprovalFrom(ctx) != nil {
+			return result, validationErr
+		}
+		if text := textOf(result.Output); strings.Contains(text, "API Error:") {
+			line := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
+			return result, fmt.Errorf("model: %s: the backend produced no structured output — its result is the provider's own error: %s", f.subject(), line)
+		}
+		callCtx, cancelCall, err := policy.begin(ctx, result.Output, validationErr)
+		if err != nil {
+			return result, err
+		}
+		reask := e.planSchemaReask(ctx, backendName, task, result, formatSchemaRetryFeedback(validationErr))
+		e.logger.Warn("[%s#%d/%s] structured output validation failed, re-asking the model (%s): %v", f.id, task.Iteration, backendName, reask.label(), validationErr)
+		if e.hooks.OnDelegateRetry != nil {
+			di := delegateInfoFromResult(backendName, result)
+			di.DeclaredModel, di.Error, di.Attempt, di.Reask = task.Model, validationErr, attempt, reask.mode
+			e.hooks.OnDelegateRetry(f.id, di)
+		}
+		if e.hooks.OnDelegateStarted != nil {
+			e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: attempt + 1, Reask: reask.mode, ReaskInChain: f.inChain})
+		}
+		retryTask := reask.task
+		// A re-ask is a conversation of its own — a restart runs the node's
+		// tool loop again — and its in-place retries replay what its dead
+		// attempt left, charged against the anchor its first attempt fixed.
+		var turnsAnchor toolTurnsAnchorCarry
+		retryResult, retryErr := e.retryDelegateLoopReask(callCtx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
+			res, err := e.executeDelegate(callCtx, backend, turnsAnchor.attempt(retryTask))
+			turnsAnchor.observe(res)
+			return res, err
+		})
+		marginalCost := costs.add(retryResult, &retryTask, backendName)
+		e.emitReaskOutcome(f.id, backendName, task.Model, reask, retryResult, retryErr, marginalCost, attempt+1)
+		if retryResult.SessionID == "" && !retryTask.ForkSession {
+			retryResult.SessionID = retryTask.SessionID
+		}
+
+		previous := result
+		result = costs.apply(foldSpend(result, retryResult, false))
+		stampDelegateOutputMeta(result.Output, result, backendName)
+		outcome := retryErr
+		if outcome == nil {
+			outcome = validateStructuredResult(result, schema)
+		}
+		unchanged := retryErr == nil && !result.ParseFallback && outcome != nil && outcome.Error() == validationErr.Error() && answeredText(previous) == answeredText(result)
+		if unchanged {
+			outcome = &OutputSchemaError{Cause: outcome, Unchanged: true}
+		}
+		afterErr := policy.After(callCtx, result.Output, outcome)
+		cancelCall()
+		if afterErr != nil {
+			return result, afterErr
+		}
+		if unchanged {
+			return result, outcome
+		}
+		if outcome == nil {
+			return result, nil
+		}
+		if retryErr != nil || result.ParseFallback {
+			recovered, spent, ok, recoveryErr := e.extractStructuredViaClaw(ctx, f.id, task, result, previous, schema, backendName)
+			costs.add(spent, task, backendName)
+			extractionErr := recoveryErr
+			if extractionErr == nil && !ok {
+				extractionErr = errors.New("structured-output recovery did not yield a schema-valid answer")
+			}
+			e.emitExtractionOutcome(f.id, task.Model, spent, extractionErr)
+			if recoveryErr != nil {
+				var exhausted *OutputSchemaError
+				if retryErr != nil && errors.As(recoveryErr, &exhausted) {
+					return foldSpend(spent, result, false), schemaReaskFailure(f.subject(), validationErr, reask, retryErr)
+				}
+				return foldSpend(spent, result, false), recoveryErr
+			}
+			if ok {
+				return foldSpend(spent, recovered, false), nil
+			}
+			result = foldSpend(spent, result, false)
+		}
+		if retryErr != nil {
+			return result, schemaReaskFailure(f.subject(), validationErr, reask, retryErr)
+		}
+		if result.ParseFallback && outcome != nil && outcome.Error() == validationErr.Error() && answeredText(previous) == answeredText(result) {
+			stopped := &OutputSchemaError{Cause: outcome, Unchanged: true}
+			if err := policy.After(ctx, result.Output, stopped); err != nil {
+				return result, err
+			}
+			return result, stopped
+		}
 	}
-	// Accumulate the first attempt from here so per-node accounting
-	// reflects the full cost paid (dropping it understated the run's real
-	// usage and broke budget enforcement at the margins). This is a retry
-	// IN PLACE, so it folds exactly like one — through foldSpend, rather
-	// than the hand-rolled `+=` that stood here: that one summed the
-	// struct fields only, and what enforcement reads is the OUTPUT MAP
-	// (runtime.extractUsage), so the first attempt's tokens never reached
-	// max_tokens and its cost was dropped outright.
-	retryResult = foldSpend(result, retryResult, sameSession)
-	// Re-attach metadata and re-validate.
-	stampDelegateOutputMeta(retryResult.Output, retryResult, backendName)
-	if retryValErr := ValidateOutput(retryResult.Output, schema); retryValErr != nil {
-		return retryResult, fmt.Errorf("model: %s: structured output invalid after retry: %w", f.subject(), retryValErr)
-	}
-	return retryResult, nil
+}
+
+// DetectedClawSpec is the model a claw node that names none sends: the
+// detector's suggestion over the providers this host holds, vetted against
+// the run's provider allowlist (allowlistedDetectorPick) — "" when the
+// detector suggests none. The dispatch builds such a node's task on it, the
+// launch's credential admission judges the same spec (ADR-161 decision 2: a
+// pod-detected pick is an input), and the usage-cap pre-flight keys it
+// (DetectedClawSpecUnder, the same pick for a reader with no executor).
+func (e *ClawExecutor) DetectedClawSpec(nodeID string) (string, error) {
+	return e.allowlistedDetectorPick(nodeID, e.detectorSuggestedModel())
 }
 
 // allowlistedDetectorPick vets the HOST's model pick against the run's
@@ -982,19 +1235,26 @@ func (e *ClawExecutor) validateAndRetry(
 // cannot check, or that names a provider outside it, returns the typed
 // refusal and the caller skips or fails with the truth.
 func (e *ClawExecutor) allowlistedDetectorPick(nodeID, spec string) (string, error) {
-	if e.allowedProviders == nil || spec == "" {
+	return allowlistedPick(e.allowedProviders, nodeID, spec)
+}
+
+// allowlistedPick is allowlistedDetectorPick over allowed, the run's provider
+// allowlist (nil: none): the one predicate the dispatch and every reader of
+// its pick apply (DetectedClawSpecUnder).
+func allowlistedPick(allowed map[string]bool, nodeID, spec string) (string, error) {
+	if allowed == nil || spec == "" {
 		return spec, nil
 	}
 	prov := providerOfModelSpec(spec)
-	if e.allowedProviders[prov] {
+	if allowed[prov] {
 		return spec, nil
 	}
 	if prov == "" {
 		return "", fmt.Errorf("node %q: the detected model %q names no provider — unchecked under this run's provider allowlist (%s): %w",
-			nodeID, spec, ProviderAllowlistNames(e.allowedProviders), ErrRouteUnreadableUnderAllowlist)
+			nodeID, spec, ProviderAllowlistNames(allowed), ErrRouteUnreadableUnderAllowlist)
 	}
 	return "", fmt.Errorf("node %q: the detected model %q spends provider %q, outside this run's provider allowlist (%s): %w",
-		nodeID, spec, prov, ProviderAllowlistNames(e.allowedProviders), ErrProviderOutsideAllowlist)
+		nodeID, spec, prov, ProviderAllowlistNames(allowed), ErrProviderOutsideAllowlist)
 }
 
 // extractStructuredViaClaw is the last-resort structured-output recovery. When
@@ -1025,16 +1285,16 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	secondary delegate.Result,
 	schema *ir.Schema,
 	sourceBackend string,
-) (out delegate.Result, spent delegate.Result, ok bool) {
+) (out delegate.Result, spent delegate.Result, ok bool, correctionErr error) {
 	if len(task.OutputSchema) == 0 {
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	text := fallbackText(primary.Output)
 	if strings.TrimSpace(text) == "" {
 		text = fallbackText(secondary.Output)
 	}
 	if strings.TrimSpace(text) == "" {
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	// A gateway-served node's recovery would be a VENDOR call the
 	// deployment never asked for: the detector picks a vendor default,
@@ -1042,27 +1302,28 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	// leak #2028 exists to close. Skip, named.
 	if modelroute.Parse(task.Model).Gateway() {
 		e.logger.Warn("[%s] structured-output recovery skipped: the node is served by the OpenAI-compatible gateway, and the recovery would spend a vendor default", nodeID)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	modelSpec := e.detectorSuggestedModel()
 	if modelSpec == "" {
 		e.logger.Warn("[%s] structured-output recovery skipped: no claw provider detected", nodeID)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	modelSpec, err := e.allowlistedDetectorPick(nodeID, modelSpec)
 	if err != nil {
 		// The node has already failed — the original error surfaces; the
 		// recovery just does not add a spend the list forbids.
 		e.logger.Warn("[%s] structured-output recovery skipped: %v", nodeID, err)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
-	client, err := e.registry.Resolve(modelSpec)
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery: resolve %q: %v", nodeID, modelSpec, err)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	genOpts := GenerationOptions{
-		Model: modelSpec,
+		Model:      modelSpec,
+		Credential: credential,
 		System: "You convert an assistant's finished answer into the required structured JSON. " +
 			"Use ONLY information present in the answer — never invent, add, or drop data. Populate every required field.",
 		Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{
@@ -1072,19 +1333,37 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 		ExplicitSchema: task.OutputSchema,
 	}
 	// The recovery is a claw call on the model this function picked, not on
-	// the node's own — pricing its usage is the task's only role here.
+	// the node's own — pricing its usage is the task's only role here. Its
+	// bill names what the call spent, the arm's Spend its client was built
+	// from: the recovery's own delegate event carries it as its credential
+	// keys (ADR-161 decision 8), and the ledger and the fine table book it
+	// there, never on the node's row by prediction.
 	recoveryTask := delegate.Task{Model: modelSpec}
-	obj, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	bill := func(u Usage) delegate.Result {
+		r := meteredFailure(ctx, recoveryTask, u)
+		r.Credential = credential
+		return r
+	}
+	policy := outputCorrectionPolicy(ctx)
+	callCtx, cancelCall, err := policy.begin(ctx, primary.Output, validateStructuredResult(primary, schema))
+	if err != nil {
+		return delegate.Result{}, delegate.Result{}, false, err
+	}
+	defer cancelCall()
+	obj, err := GenerateObjectDirect[map[string]any](callCtx, client, e.generationForModel(genOpts))
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) failed: %v", nodeID, modelSpec, err)
-		return delegate.Result{}, meteredFailure(recoveryTask, objectUsage(obj)), false
+		spent := bill(objectUsage(obj))
+		persistErr := policy.After(callCtx, foldSpend(spent, primary, false).Output, err)
+		return delegate.Result{}, spent, false, persistErr
 	}
 	out = primary
 	out.Output = obj.Object
 	out.ParseFallback = false
 	if verr := ValidateOutput(out.Output, schema); verr != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) still invalid: %v", nodeID, modelSpec, verr)
-		return delegate.Result{}, meteredFailure(recoveryTask, obj.TotalUsage), false
+		spent := bill(obj.TotalUsage)
+		return delegate.Result{}, spent, false, policy.After(callCtx, foldSpend(spent, primary, false).Output, verr)
 	}
 	if out.Output == nil {
 		out.Output = map[string]any{}
@@ -1095,7 +1374,8 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
-	return out, meteredFailure(recoveryTask, obj.TotalUsage), true
+	spent = bill(obj.TotalUsage)
+	return out, spent, true, policy.After(callCtx, foldSpend(spent, out, false).Output, nil)
 }
 
 // fallbackText returns the free-form text a parse-fallback output wraps
@@ -1121,7 +1401,7 @@ const schemaRetryFeedbackMarker = "[OUTPUT SCHEMA VALIDATION FAILED]"
 func formatSchemaRetryFeedback(err error) string {
 	return fmt.Sprintf(
 		"%s\n%s\nReturn a corrected response that matches the required output schema exactly. Output only the JSON object.",
-		schemaRetryFeedbackMarker, err,
+		schemaRetryFeedbackMarker, err.Error(),
 	)
 }
 
@@ -1132,6 +1412,22 @@ func appendSchemaRetryFeedback(prompt, feedback string) string {
 		return feedback
 	}
 	return prompt + "\n\n" + feedback
+}
+
+// taskExtraEnv is Task.ExtraEnv: the environment the engine hands a delegate
+// task, which every CLI-agent spawn and the claw bash builtin apply — the
+// run-level provisioning, the canonical tree-noise pathspecs, and the
+// invocation-class marker last so the engine's own entry wins on a duplicate
+// key.
+//
+// The marker is what tells an `iterion` an agent runs in the workspace that it
+// is the engine's child, not a human's CLI call, so it leaves the
+// repository's `.env` alone (#2844, internal/envtrust EnvEngineChild).
+// Concat, not append: processExtraEnv returns the executor's own slice when
+// there is no engine layer, and appending into its spare capacity would write
+// into the run's env behind its back.
+func (e *ClawExecutor) taskExtraEnv() []string {
+	return slices.Concat(e.processExtraEnv(), e.treeNoiseEnvAppend(nil), []string{envtrust.EngineChildEnvEntry()})
 }
 
 // buildTask assembles the delegate.Task for an agent/judge LLM node from the
@@ -1155,6 +1451,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if err != nil {
 		return delegate.Task{}, err
 	}
+	codemodePolicy, codemodeBounds, err := e.codemodePolicy(f, backendName)
+	if err != nil {
+		return delegate.Task{}, err
+	}
+	// The deferral is resolved beside the mode, over the same rungs, and
+	// lands on the task only where the capability is granted: without
+	// codemode there is no catalogue to defer to, and demoting tools on a
+	// codemode-off node would strand them behind a program the model has no
+	// way to run.
+	codemodeDefer := codemodePolicy.On && e.codemodeDeferOn(f)
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
@@ -1168,7 +1474,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	outputSchema := e.resolveOutputSchema(f.outputSchema)
 
-	effort := e.effortForNode(node, f.reasoningEffort, input)
+	effort, effortSource := e.requestedEffort(node, f.reasoningEffort, input)
 	// "ultracode" is a mode (xhigh + workflow-orchestration prerogative),
 	// not a wire effort value. Remap to xhigh for the provider and carry the
 	// mode separately so the task can enable the orchestration prompt + tool.
@@ -1183,16 +1489,21 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = ov.Model
 	}
 	if resolvedModel == "" && backendName == delegate.BackendClaw {
-		picked, err := e.allowlistedDetectorPick(f.id, e.detectorSuggestedModel())
+		picked, err := e.DetectedClawSpec(f.id)
 		if err != nil {
 			return delegate.Task{}, err
 		}
 		resolvedModel = picked
 	}
 
-	effectiveCaps := f.capabilities
-	if effectiveCaps == nil {
-		effectiveCaps = e.wfCapabilities
+	effectiveCaps, withdrawnCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, e.WorkspaceTrust())
+	if len(withdrawnCaps) > 0 && sess.claimWithdrawal("capabilities") {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What:  "capabilities",
+			Items: withdrawnCaps,
+			Reason: "this run's workspace was not written by its tenant, and a host capability reaches the tenant's own state — " +
+				"its board, its run store, the watch fan-out — where a card names a bot and the args it launches with",
+		})
 	}
 
 	// Resolve node-level image inputs (templated paths) so the codex backend can
@@ -1204,11 +1515,15 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 			resolvedImages = append(resolvedImages, p)
 		}
 	}
+	scratchAnchor, scratchRoots := e.scratchScope()
 
 	task := delegate.Task{
 		NodeID:                f.id,
 		AmbientContext:        ambientPolicy,
 		AmbientContextSource:  ambientSource,
+		Codemode:              codemodePolicy.On,
+		CodemodeDefer:         codemodeDefer,
+		CodemodeBounds:        codemodeBounds,
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,
@@ -1226,13 +1541,14 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		RunStoreDir:           e.runStoreDir,
 		OutputSchema:          outputSchema,
 		Model:                 resolvedModel,
+		ContextWindow:         taskContextWindow(func(name string) string { return envGetenv(ctx, name) }, resolvedModel),
 		HasTools:              len(f.tools) > 0,
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
-		WorkDir:               e.workDir,
 		HomeScope:             RunnerHomeScopeFromContext(ctx),
-		ExtraEnv:              append(e.processExtraEnv(), e.treeNoiseEnvAppend(nil)...),
+		ExtraEnv:              e.taskExtraEnv(),
 		ReasoningEffort:       wireEffort(effort),
+		ReasoningEffortSource: effortSource,
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,
 		SessionLedger:         SessionLedgerFromContext(ctx),
@@ -1242,14 +1558,26 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		RedactSecrets:         e.secretRedactor(),
 		RedactSecretsSpan:     e.secretGuard.LongestLiteral(),
 		UnmaterializeSecrets:  e.secretUnmaterializer(),
+		NamesSecret:           e.secretNamer(),
 		CompactThresholdRatio: compactRatio,
 		CompactPreserveRecent: compactPreserve,
 		Sandbox:               e.sandbox,
+		// The sandbox crossing's read roots (#2869): the run family's
+		// scratch subtree first, the shared project scratch behind it while
+		// the workflow still references it, and the project scratch they
+		// lie beneath. The launcher-side claw backend narrows the
+		// in-container runner's scope to this list; unsandboxed executions
+		// never read it (their scope is the registry's).
+		ScratchReadRoots: scratchRoots,
+		ScratchAnchor:    scratchAnchor,
 		// ProviderHint is set per-attempt by dispatchWithProviderFallback
 		// as it walks the node's provider chain.
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
+	// The workspace and who wrote it, from the one stamp every task that
+	// names the workspace takes (stampWorkspace).
+	e.stampWorkspace(&task)
 	// interaction: async (ADR-081) — bind the non-blocking question
 	// closures. Both backends key their ask_user_async / await_answers
 	// tool registration on PostAsyncQuestion being non-nil.
@@ -1265,7 +1593,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// one of those consumers made the other silently key on WorkDir instead,
 	// which for a `worktree: auto` run is a fresh path every time: the space
 	// changed per run and the memory was always empty.
-	task.RepoRoot = e.repoRoot
+	task.RepoRoot = e.RepoRoot()
 	// Command-output compression mode (precedence: run override > node DSL >
 	// workflow DSL > ITERION_COMPRESS env). Stored as a string so the delegate
 	// layer + IPC wire form stay decoupled from the rewrite enum; "" (off) is
@@ -1324,20 +1652,40 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		}
 		task.Permission = pol
 	}
+	// The bot's `memory:` space is the tenant's, and only the claw backend
+	// hands it to an agent: on a workspace its tenant did not write, claw
+	// withdraws it (ClawBackend.Execute) — said here, where the run's timeline
+	// is reachable, once per node execution. A task for another backend was
+	// never going to carry it, so nothing is withdrawn from it to announce.
+	if f.memory != nil && f.memory.Enabled && backendName == delegate.BackendClaw && !e.WorkspaceTrust().Trusted() && sess.claimWithdrawal("memory") {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What: "memory",
+			Reason: "this run's workspace was not written by its tenant, and the `memory:` space is the tenant's — " +
+				"neither its notes nor its tools are handed to this agent",
+		})
+	}
 	e.applyMemorySpec(&task, f.memory)
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 	task.SkillHints = e.resolveSkillHints(f.skills)
 	task.MirroredSkills = e.mirroredSkills
+	// The pinned skill mode is a RUN property the engine arms (untrusted
+	// workspace, #1719): every node of the run serves the same pinned set,
+	// and the sandbox crossing re-roots it for the runner.
+	if allowed, armed := e.SkillAllowlist(); armed {
+		task.SkillAllowlist = allowed
+	}
+	task.SkillChannelRoot = e.SkillChannelRoot()
 	task.SharedStateDir = e.sharedStateDir
 	e.applyPresetFragment(&task, input, td)
 
-	effectiveTools := e.assembleEffectiveTools(f, backendName, effectiveCaps, ultracode)
+	effectiveTools, runtimeAppended := e.assembleEffectiveToolsAndAppends(f, backendName, effectiveCaps, ultracode)
 	if !sameStringSlice(effectiveTools, f.tools) {
 		task.AllowedTools = effectiveTools // CLI backends read this
 		task.HasTools = len(effectiveTools) > 0
 	}
 	e.applyBoardEndpoint(&task, effectiveCaps, sess)
 	e.applyRunsEndpoint(&task, effectiveCaps, sess)
+	e.applyConnectorEndpoint(&task, effectiveCaps, sess)
 	e.applyAskUserEndpoint(&task)
 
 	// Mark the tools the runtime opened for its OWN interaction/capability
@@ -1468,9 +1816,31 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 				clawTools = append(clawTools, "mcp."+srv+".*")
 			}
 		}
-		toolDefs, refusedMCP, toolErr := e.resolveToolsForNode(ctx, node, clawTools)
+		toolDefs, refusedMCP, toolErr := e.resolveToolsForNode(ctx, node, clawTools, toolAuthorship{author: f.tools, runtime: runtimeAppended})
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
+		}
+		// A prompt-invoked workspace command's `allowed-tools:` (#1717)
+		// narrows the node's set — INTERSECT, never widen: a name the command
+		// lists and the node never declared resolves to nothing on both ends
+		// of the fold. The model-invoked surface narrows mid-loop instead
+		// (tool.CommandScope), dispatch-side; the prompt surface narrows the
+		// ADVERTISED set, which the sandbox crossing then enforces for free —
+		// the runner serves only the tools this task advertises.
+		if sess != nil && sess.commandNarrowing != nil {
+			narrowed := tool.CommandNarrowedSet(sess.commandNarrowing)
+			declared := len(toolDefs)
+			kept := toolDefs[:0]
+			for _, td := range toolDefs {
+				if narrowed(td.Name) {
+					kept = append(kept, td)
+				}
+			}
+			toolDefs = kept
+			if e.logger != nil {
+				e.logger.Info("[%s#%d/claw] /%s allowed-tools narrows this node's tools to %d of %d",
+					f.id, LoopIterationFromContext(ctx), sess.commandNarrowingBy, len(toolDefs), declared)
+			}
 		}
 		task.ToolDefs = toolDefs
 		// Carried, not raised. A build error aborts the node before its
@@ -1495,6 +1865,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if mcpForwardingBackends[backendName] && len(f.activeMCPServers) > 0 && e.mcpManager != nil {
 		task.MCPServers = e.resolveTaskMCPServers(f.activeMCPServers)
 	}
+	// A node that opted out of the ambient set holds every backend to its
+	// declared set, the servers a CLI loads from its own configuration
+	// included (delegate.Task.MCPInheritDisabled).
+	task.MCPInheritDisabled = !nodeInheritsAmbientMCP(node)
 
 	e.unpackInboundSession(ctx, input, backendName)
 	e.applySessionContinuity(&task, f, input)
@@ -1551,7 +1925,34 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// the tools is a question the timeline answers, with the fallback event
 	// beside this one.
 	e.reportMCPDegrades(f.id, degraded)
+	// Held to the same exit, for the same reason: it describes how THIS
+	// task runs, and a build that fails runs nothing. A deferring node that
+	// crosses a sandbox runs UNDEFERRED: the envelope carries no defer
+	// (ToIOTask, deliberately — no queue schema bump), so the in-container
+	// runner declares every tool. Safe — the same tools, on the wire — but
+	// a declaration the run does not honour, on exactly the routes the
+	// isolation floor sandboxes (non-operator sources: a cloud team's bots).
+	// Said once per node execution — the claim is taken here too, so a
+	// failed element of a `fallbacks:` chain does not spend it — through
+	// the logger the codemode family warns on, so the author's `defer: on`
+	// is never replaced in silence.
+	if codemodeDefer && task.Sandbox != nil && e.logger != nil && sess.claimWithdrawal("codemode-defer") {
+		e.logger.Warn("[%s] codemode: `defer: on` is not applied on this route — the node runs in a sandbox, and the sandboxed runner declares every tool to the model; the deferral applies only to unsandboxed execution", f.id)
+	}
 	return task, nil
+}
+
+// nodeInheritsAmbientMCP reports whether node takes the workflow's ambient
+// MCP set: its `mcp: inherit:` unset or true, mcp.PrepareWorkflow's reading.
+func nodeInheritsAmbientMCP(node ir.Node) bool {
+	var cfg *ir.MCPConfig
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		cfg = n.MCP
+	case *ir.JudgeNode:
+		cfg = n.MCP
+	}
+	return cfg == nil || cfg.Inherit == nil || *cfg.Inherit
 }
 
 // mcpForwardingBackends are the backends that consume Task.MCPServers — the
@@ -1605,7 +2006,7 @@ func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields
 	// ask_user prepend just below, and the schema re-ask that appends its
 	// feedback to this text. Expanding later would emit one prompt and
 	// send another.
-	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+	expanded, hit := e.expandWorkspaceSlashCommand(userText, backendName, f.id, LoopIterationFromContext(ctx), sess)
 	if hit {
 		userText = expanded
 		// The blocks above were split around the INVOCATION, so their TEXT
@@ -1675,9 +2076,11 @@ func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 // applyPresetFragment wires the launch-time preset bias ("## Focus")
 // onto the task: the preset's prompt body {{vars}}-resolved against
 // this node's context, plus an optional relevant-skills hint line.
-// Applies run-wide to every LLM node, so a "sous-bot" focus (e.g.
-// Willy as improve-quality SRE) shapes the reviewer and fixer alike
-// without the author wiring it into each prompt.
+// buildTask is its one caller, so the bias reaches every model task the
+// run builds — the set ir.Workflow.RendersPresetPrompt counts, not every
+// LLM node — and a "sous-bot" focus (e.g. Willy as improve-quality SRE)
+// shapes the reviewer and fixer alike without the author wiring it into
+// each prompt.
 func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]any, td *TemplateData) {
 	if e.presetPrompt == "" && len(e.presetSkills) == 0 {
 		return
@@ -1732,6 +2135,42 @@ func (e *ClawExecutor) resolveSkillHints(nodeSkills []string) []delegate.SkillHi
 // final union the CLI backends honour via AllowedTools and the claw
 // backend resolves into ToolDefs.
 func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName string, effectiveCaps []string, ultracode bool) []string {
+	tools, _ := e.assembleEffectiveToolsAndAppends(f, backendName, effectiveCaps, ultracode)
+	return tools
+}
+
+// runtimeAppends is the set of names the runtime appends to a node's tool
+// list — the ONE record both the append site and the codemode deferral's
+// author marker read (resolveToolsForNode). A name is recorded whenever the
+// runtime asks for it, INCLUDING when the author already listed it and the
+// append is a no-op: that single entry then serves the runtime's posture
+// (the task-list reseed, the auto-memory instructions, the ask channel), so
+// it is never the author's alone to defer. Node-scoped rather than a fixed
+// name list because the appends are conditional — the memory trio
+// (read_file, write_file, glob) is the runtime's only where auto-memory is
+// on, and an author's read_file elsewhere is theirs to defer.
+type runtimeAppends map[string]bool
+
+// ensure is ensureToolPresent with the record: every runtime append of a
+// single name goes through it.
+func (r runtimeAppends) ensure(tools []string, name string) []string {
+	r[name] = true
+	return ensureToolPresent(tools, name)
+}
+
+// add is the family append (board, connectors, runs) with the record.
+func (r runtimeAppends) add(tools []string, names ...string) []string {
+	for _, name := range names {
+		r[name] = true
+	}
+	return append(tools, names...)
+}
+
+// assembleEffectiveToolsAndAppends is assembleEffectiveTools plus the
+// record of what the runtime contributed. Every append below goes through
+// the recorder (TestEveryRuntimeAppendIsRecorded holds it).
+func (e *ClawExecutor) assembleEffectiveToolsAndAppends(f backendFields, backendName string, effectiveCaps []string, ultracode bool) ([]string, runtimeAppends) {
+	appended := runtimeAppends{}
 	// When interaction is enabled, ensure `ask_user` is in the node's
 	// tool list so the LLM can natively escalate. We don't require the
 	// workflow author to declare it in their `tools:` field — the
@@ -1759,69 +2198,83 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	effectiveTools := f.tools
 	interactionGranted := len(effectiveTools) > 0 || backendName == delegate.BackendClaw
 	if f.interaction != ir.InteractionNone && interactionGranted {
-		effectiveTools = ensureToolPresent(effectiveTools, askUserToolName)
+		effectiveTools = appended.ensure(effectiveTools, askUserToolName)
 	}
 	// interaction: async (ADR-081) additionally grants the non-blocking
 	// pair; the blocking ask_user above stays available for hard stops.
 	if f.interaction == ir.InteractionAsync && interactionGranted {
-		effectiveTools = ensureToolPresent(effectiveTools, delegate.AskUserAsyncToolName)
-		effectiveTools = ensureToolPresent(effectiveTools, delegate.AwaitAnswersToolName)
+		effectiveTools = appended.ensure(effectiveTools, delegate.AskUserAsyncToolName)
+		effectiveTools = appended.ensure(effectiveTools, delegate.AwaitAnswersToolName)
 	}
 	// When board capabilities are granted and the node already restricts
 	// its tool set (non-empty tools:), append the board MCP tools so
 	// the CLI backend's allowlist exposes them. Empty tools: means "no
 	// restriction" — the MCP server is still registered and discoverable.
 	if delegate.HasBoardCapability(effectiveCaps) && len(effectiveTools) > 0 {
-		effectiveTools = append(effectiveTools, delegate.BoardToolsFor(effectiveCaps)...)
+		effectiveTools = appended.add(effectiveTools, delegate.BoardToolsFor(effectiveCaps)...)
+	}
+	// The connector facade's discovery pair (and the tool glob for its
+	// curated set) join a RESTRICTED tool set the same way: a node that
+	// names tools: and declares `connectors` must still be able to reach
+	// mcp__iterion_connectors__*.
+	if delegate.HasConnectorsCapability(effectiveCaps) && len(effectiveTools) > 0 {
+		effectiveTools = appended.add(effectiveTools, delegate.ConnectorToolsFor(effectiveCaps)...)
 	}
 	if delegate.HasRunsReadCapability(effectiveCaps) && len(effectiveTools) > 0 {
-		effectiveTools = append(effectiveTools, delegate.RunToolsFor(effectiveCaps)...)
+		effectiveTools = appended.add(effectiveTools, delegate.RunToolsFor(effectiveCaps)...)
 	}
 	// Ultracode grants standing consent to orchestrate subagents. On claw the
 	// orchestration surface is the `agent` subagent tool (claw's own
-	// `workflow` tool is not granted — see withClawOrchestrationTools); ensure
-	// it is in the allowlist when the node restricts its tool set (mirrors the
-	// board-tools append above). An unrestricted tool set already exposes the
-	// claw builtins, and the claude_code backend orchestrates via its native
-	// mechanism, so neither needs the explicit append. A sandboxed node keeps
-	// the grant: the runner registers `agent` in the container.
+	// `workflow` tool is not granted — see clawOrchestrationTool); ensure
+	// it is in the allowlist when the node holds a tool set (mirrors the
+	// board-tools append above). The guard reads the RUNNING UNION, not the
+	// author's declaration: appending to an EMPTY union would make `agent` the
+	// node's whole surface on claw, where the list IS the surface. A node that
+	// declared `interaction:` already has a union — the ask_user append above
+	// is deliberately unguarded on claw — so there the grant does fire, and a
+	// node that declared neither gets nothing. `tools: []` reads here exactly
+	// like no line at all — the union is what this guard sees, and that is the
+	// one place where the author's declaration and the running union come
+	// apart (toolcatalog.ToolsDeclared is what keeps them distinct elsewhere).
+	// claude_code orchestrates via its native mechanism and needs no append.
+	// A sandboxed node keeps the grant: the runner registers `agent` in the
+	// container.
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
-		effectiveTools = withClawOrchestrationTools(effectiveTools)
+		effectiveTools = appended.ensure(effectiveTools, clawOrchestrationTool)
 	}
 	// Keep the agent's task list available so the per-run Session board
-	// (Tasks tab) is populated regardless of a node's `tools:` list. Only
+	// (Tasks tab) is populated whatever a node's `tools:` list names. Only
 	// the claw backend needs the append: claude_code always has its native
-	// TodoWrite under bypassPermissions, and an unrestricted claw set
-	// already exposes `todo_write` via RegisterClawAll. The posture nudge
+	// TodoWrite under bypassPermissions. The same running-union guard applies —
+	// `todo_write` must not be what gives a surface-less claw node its whole
+	// surface — so a node whose union is empty gets none, while one that
+	// declared `interaction:` or a `tools:` list gets it. The posture nudge
 	// (agenticOperatingPosture) prompts claw to actually maintain it.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
-		effectiveTools = ensureToolPresent(effectiveTools, "todo_write")
+		effectiveTools = appended.ensure(effectiveTools, "todo_write")
 	}
 	// Auto-memory is maintained with ORDINARY FILE TOOLS — that is the whole
 	// mechanism, on both backends. claude_code always has its native toolset
-	// under bypassPermissions, and an unrestricted claw set already exposes
-	// these; but a claw node that restricts `tools:` would be told to keep a
-	// MEMORY.md it has no way to read or write. Grant exactly the three the
-	// instructions call for.
+	// under bypassPermissions; on claw there is no "unrestricted set" to fall
+	// back on — the list IS the surface — so a claw node would be told to keep
+	// a MEMORY.md it has no way to read or write whatever it declared. Grant
+	// exactly the three the instructions call for.
 	//
-	// The names must be claw's OWN (toolcatalog is the catalog): the grant
-	// lands in the list resolveToolsForNode resolves against the registry, so
-	// a name claw does not have does not degrade — it fails the node before
-	// its first token. `glob` is how claw lists a directory; it read
-	// `list_files` until 2026-08, which turned `auto_memory: on` into a hard
-	// failure on every claw node that restricted its tools.
+	// The grant itself is declared beside the switch (automemory.ClawToolGrant),
+	// so the reader that asks whether auto-memory gives a node a durable write
+	// path reads the SAME three names this appends instead of restating them.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 && e.autoMemoryMode(f).Enabled() {
-		for _, name := range []string{"read_file", "write_file", "glob"} {
-			effectiveTools = ensureToolPresent(effectiveTools, name)
+		for _, name := range automemory.ClawToolGrant() {
+			effectiveTools = appended.ensure(effectiveTools, name)
 		}
 	}
 	// CLI-based backends can't accept inline images on stdin: forward
 	// the image path via {{attachments.X}} text interpolation and
 	// auto-enable `read_image` so the agent can pull the bytes itself.
 	if backendName != delegate.BackendClaw && len(e.imageAttachs) > 0 && promptReferencesImage(f.userPrompt, e.prompts, e.imageAttachs) {
-		effectiveTools = ensureToolPresent(effectiveTools, "read_image")
+		effectiveTools = appended.ensure(effectiveTools, "read_image")
 	}
-	return effectiveTools
+	return effectiveTools, appended
 }
 
 // applyBoardEndpoint wires the per-run board MCP HTTP transport onto
@@ -1855,6 +2308,28 @@ func (e *ClawExecutor) applyRunsEndpoint(task *delegate.Task, effectiveCaps []st
 		return
 	}
 	task.RunsHTTPEndpoint = strings.TrimSuffix(e.boardEndpoint, "/api/v1/mcp/board") + "/api/v1/mcp/runs"
+	task.BoardRunToken = sess.boardTokenFor(func() string {
+		return e.boardRegister(effectiveCaps, e.sourceIssueID)
+	})
+}
+
+// applyConnectorEndpoint wires the per-run connector MCP facade transport
+// (#2758) onto the task for sandboxed nodes declaring the `connectors`
+// capability: the facade's URL on the gateway listener the engine pushed
+// (SetConnectorEndpoint), plus the per-node token — whose grant then
+// carries this node's caps, so the facade's own capability check reads
+// exactly what the node was granted. The endpoint arrives ONLY when the
+// listener's mux serves the facade; a host that does not (no server, no
+// sandbox, no connection plane — or the cloud runner pod, which serves
+// board/runs only, #2632) pushes nothing, leaving the node without the
+// endpoint, and the delegate warns loudly — board-style silent disablement
+// is the wrong default for a capability a workflow declared (ADR-098), and
+// a 404-per-call endpoint is worse than none.
+func (e *ClawExecutor) applyConnectorEndpoint(task *delegate.Task, effectiveCaps []string, sess *nodeBuildSession) {
+	if !delegate.HasConnectorsCapability(effectiveCaps) || e.sandbox == nil || e.connectorEndpoint == "" || e.boardRegister == nil {
+		return
+	}
+	task.ConnectorHTTPEndpoint = e.connectorEndpoint
 	task.BoardRunToken = sess.boardTokenFor(func() string {
 		return e.boardRegister(effectiveCaps, e.sourceIssueID)
 	})
@@ -1968,6 +2443,13 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 // the LLM's exact pre-pause state instead of restarting from the
 // rendered system+user prompts.
 func applyResumeContinuity(task *delegate.Task, input map[string]any) {
+	// The stranding fact travels beside the conversation and stands on
+	// its own: a stranded pause resumed without one (the conversation
+	// lost, the checkpoint edited) still bars the resumed crossing's
+	// captures from the session store.
+	if stranded, _ := input[delegate.ResumeSessionStrandedKey].(bool); stranded {
+		task.SessionStranded = true
+	}
 	conv, ok := input[delegate.ResumeConversationKey].(json.RawMessage)
 	if !ok || len(conv) == 0 {
 		return
@@ -1979,24 +2461,32 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 	if a, ok := input[delegate.ResumeAnswerKey].(string); ok {
 		task.ResumeAnswer = a
 	}
+	// The narrowing the paused generation held (#1717) decodes beside the
+	// conversation; a blob that does not decode restores nothing rather
+	// than failing the resume — the conversation itself is the load-bearing
+	// half, and a lost bound re-narrows on the next command invocation.
+	if raw, ok := input[delegate.ResumeCommandNarrowingKey].(json.RawMessage); ok && len(raw) > 0 {
+		var st delegate.CommandNarrowingState
+		if err := json.Unmarshal(raw, &st); err == nil {
+			task.ResumeCommandNarrowing = &st
+		}
+	}
 }
 
-// withClawOrchestrationTools is what ultracode grants a claw node that
-// restricts its tools: the `agent` subagent tool. Idempotent: a tool already
-// listed is not listed twice.
+// clawOrchestrationTool is what ultracode grants a claw node that restricts
+// its tools: the `agent` subagent tool, appended once through the recorder
+// (runtimeAppends.ensure is idempotent like ensureToolPresent).
 //
-// Every name added here must be one iterion registers — the node's list is
-// resolved against the registry and an unknown name is an error, not a skip,
-// so a name granted without a registration kills the node at dispatch.
-// claw-code-go's own `workflow` tool is not among them: iterion builds its own
-// registry and registers `agent` alone. Until a host wires a subagent runner,
-// calling it earns the typed capability refusal naming claude_code's native
-// Agent tool (legacy name Task) as the way out
-// (pkg/backend/tool.RegisterClawSubagents) — the grant stands so the model is
-// told why the delegation it was invited to make cannot happen.
-func withClawOrchestrationTools(tools []string) []string {
-	return ensureToolPresent(tools, "agent")
-}
+// It must be a name iterion registers — the node's list is resolved against
+// the registry and an unknown name is an error, not a skip, so a name granted
+// without a registration kills the node at dispatch. claw-code-go's own
+// `workflow` tool is not granted: iterion builds its own registry and
+// registers `agent` alone. Until a host wires a subagent runner, calling it
+// earns the typed capability refusal naming claude_code's native Agent tool
+// (legacy name Task) as the way out (pkg/backend/tool.RegisterClawSubagents)
+// — the grant stands so the model is told why the delegation it was invited
+// to make cannot happen.
+const clawOrchestrationTool = "agent"
 
 // mcpDegradeReport is one held "this task's tool set lacks that server"
 // report, waiting for the task to actually be built.
@@ -2031,4 +2521,45 @@ func (e *ClawExecutor) reportMCPDegrades(nodeID string, reports []mcpDegradeRepo
 			e.hooks.OnMCPServerDegraded(nodeID, r.info)
 		}
 	}
+}
+
+// stampForkOrigin projects the executed task's parent, never a model value.
+func stampForkOrigin(output map[string]any, task *delegate.Task) {
+	if output == nil {
+		return
+	}
+	delete(output, "_session_forked_from")
+	if task != nil && task.ForkSession && task.SessionID != "" {
+		output["_session_forked_from"] = task.SessionID
+	}
+}
+
+// announceTrustWithdrawal says out loud what the workspace-trust floor took
+// from a node: a warning in the process log and a workspace_trust_withdrawal
+// event on the run's timeline. The node runs on without it.
+func (e *ClawExecutor) announceTrustWithdrawal(nodeID string, info TrustWithdrawalInfo) {
+	if e.logger != nil {
+		if len(info.Items) > 0 {
+			e.logger.Warn("[%s] %s withdrawn (%s): %s", nodeID, info.What, strings.Join(info.Items, ", "), info.Reason)
+		} else {
+			e.logger.Warn("[%s] %s withdrawn: %s", nodeID, info.What, info.Reason)
+		}
+	}
+	if e.hooks.OnTrustWithdrawal != nil {
+		e.hooks.OnTrustWithdrawal(nodeID, info)
+	}
+}
+
+// nodeHostCapabilities is the grant stamped onto a node execution's context,
+// read by every host tool when it is CALLED: the node's own `capabilities:`
+// list, else the workflow's; any other node — a tool node naming a host tool
+// in `command:` — holds what the workflow grants. Both through the one
+// resolver, so the grant a tool checks and the list a task carries agree.
+// withdrawn is what the floor took from that declaration.
+func (e *ClawExecutor) nodeHostCapabilities(node ir.Node) (held, withdrawn []string) {
+	// The SAME per-kind extraction the resolution grant (nodeCapabilities)
+	// reads — a tool node's own list included (#78=A) — so the stamp a
+	// host tool is held to at call time cannot disagree with what the node
+	// was offered.
+	return e.nodeCapabilitiesBoth(node, e.WorkspaceTrust())
 }

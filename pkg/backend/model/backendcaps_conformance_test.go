@@ -17,6 +17,7 @@ import (
 // Pin both sides of the migration: backendcaps tests hold the HEAD oracle;
 // this test makes an adapter that stops reading that authority observable.
 func TestBackendCapabilityConsumersConform(t *testing.T) {
+	t.Parallel()
 	exec := NewClawExecutor(NewRegistry(), verdictWorkflow())
 	delegates := delegate.DefaultRegistry(nil)
 	names := append(backendcaps.Names(), "custom", "auto", "CLAUDE_CODE", " claude_code ")

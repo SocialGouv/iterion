@@ -57,7 +57,7 @@ vi.mock("@/components/Runs/RunsTabsView", () => ({ default: function RequestedRu
 
 import App from "@/App";
 import { cancelScheduledRefresh, SIGN_OUT_PENDING_KEY } from "@/api/client";
-import { heldnessOf } from "@/api/signOutMachine";
+import { heldnessOf, stopLoop } from "@/api/signOutMachine";
 import { useServerInfoStore } from "@/store/serverInfo";
 import type { ServerInfo } from "@/api/types";
 
@@ -157,12 +157,25 @@ afterEach(async () => {
   offJsdomError?.();
   offJsdomError = null;
   await new Promise((r) => setTimeout(r, 10));
+  // React cleanup does not destroy module timers: a presentation ladder armed
+  // here would present this test's record into the next test's wire log.
+  stopLoop();
   cancelScheduledRefresh();
   cleanup();
   localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+
+// ladderParkedFor holds the machine's declared re-presentation ladder off for
+// the window an arm measures — see the twin in
+// signOutMachineTransitions.test.tsx for why it parks by timer ORDER rather
+// than by a margin, and for the measurement that forced it.
+function ladderParkedFor(fn: () => Promise<void>): Promise<void> {
+  stopLoop();
+  const parker = setInterval(stopLoop, 50);
+  return fn().finally(() => clearInterval(parker));
+}
 
 // Signs out of a session whose identity the studio has READ — the ordinary
 // case: the operator is looking at their account when they click.
@@ -201,15 +214,23 @@ describe("a pending sign-out is bound to the session it was set for", () => {
     await screen.findByText("Sign-out not confirmed", {}, { timeout: 8000 });
     expect(marked()).not.toBeNull();
 
-    const before = logoutsSent().length;
-    (await screen.findByRole("button", { name: "Continue with GitHub" })).click();
-    // The click presents the logout again; it still fails — and the start is
-    // HELD: this browser still holds the named session, and a landing here
-    // would deliver a new one the sign-out never got to end (r7c F2, I4).
-    await new Promise((r) => setTimeout(r, 300));
-    console.log("[sso-named] navigations:", navigations.length, "| logouts:", JSON.stringify(logoutsSent()), "| alerts:", JSON.stringify(alerts()));
+    let before = 0;
+    await ladderParkedFor(async () => {
+      before = logoutsSent().length;
+      (await screen.findByRole("button", { name: "Continue with GitHub" })).click();
+      // The click presents the logout again; it still fails — and the start is
+      // HELD: this browser still holds the named session, and a landing here
+      // would deliver a new one the sign-out never got to end (r7c F2, I4).
+      await new Promise((r) => setTimeout(r, 300));
+      // The EXACT count stays: this is the only assertion in the package that
+      // reddens when the SSO start stops presenting at all, and "exactly one
+      // per explicit act" is real behaviour — the single-flight in
+      // signOutMachine's present() and client.ts's join. It survived until now
+      // only because its 300 ms window is shorter than the ladder's 2 s first
+      // step; the parker is what makes that an argument instead of a margin.
+      expect(logoutsSent().length).toBe(before + 1);
+    });
     expect(navigations).toEqual([]);
-    expect(logoutsSent().length).toBe(before + 1);
     expect(logoutsSent()[before]).toContain("?lineage=L0");
     expect(screen.getByRole("button", { name: "Continue with GitHub anyway" })).toBeTruthy();
 

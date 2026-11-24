@@ -47,6 +47,11 @@ export interface ActiveEditorDocumentSnapshot {
   // including the common case where there was nothing to save.
   dirty: boolean;
   source?: string;
+  /** Set when the tab's bot is in several files: `source` is the MERGED
+   *  program (the flatten display form, never a file), and a proposal is
+   *  ONE file's complete text — `draft_bot` — with `editor_file` naming
+   *  which of these it is (#1647). */
+  unit?: { main: string; files: string[] };
   /** Set when the tab holds a salvage the server's READER made — the file
    *  past its read budget or size cap: the document is withheld (complete
    *  false, no source), never sent as the file's, and nothing applied or

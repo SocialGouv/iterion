@@ -106,8 +106,10 @@ An **OAuth App** (the `iterion` SSO app) takes the same file through
 *Application logo → Upload new logo → Set new application logo*.
 
 Done on the SocialGouv org on 2026-09-06 (the four `iterion-forge-*` /
-`iterion-watch-*` Apps and the `iterion` / `iterion preprod` OAuth Apps). An App
-the manifest flow creates afterwards starts without a logo: repeat the steps.
+`iterion-watch-*` Apps and the `iterion` / `iterion preprod` OAuth Apps — the
+latter serves the ovh-dev development deployment; Iterion runs no
+preproduction, the App keeps its historical name). An App the manifest flow
+creates afterwards starts without a logo: repeat the steps.
 
 ### GitLab group bot accounts already connected (the PIC)
 

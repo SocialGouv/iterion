@@ -13,6 +13,7 @@ import (
 // with it — a write stopped half-way leaves auth.json.tmp.<pid> — and never
 // what the node wrote there itself.
 func TestTheForfaitCleanupTakesTheWritersTempFiles(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "dispatch")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)

@@ -28,15 +28,16 @@ Nobody can reissue them, so they do not move:
 | `/cli-auth` | `iterion remote login` opens it |
 | `/config/<id>#<token>` | a config-share link; the token rides in the fragment |
 | `/marketplace` | public, browsable without an account. A visitor who already has a session is carried on to `/studio/marketplace` — the same catalogue, inside the studio shell. Both addresses answer; neither 404s |
+| `/legal/<slug>` | public, the operator's legal documents — `mentions-legales`, `confidentialite`, `cgu`, `accessibilite` — linked from the product home, the sign-in card and every studio page; served at the root to a visitor with or without a session, content from deployment configuration ([ADR-160](adr/160-legal-content-is-deployment-configuration.md)); a document the deployment did not configure is a 404 and no link |
 | `/api/…` | **every integration**: inbound forge webhooks, OAuth and OIDC callbacks, the REST API, the MCP server, the remote CLI |
 | `/brand/…`, `/healthz`, `/readyz` | public assets and probes |
 
 **The link preview's image is absolutised by the server.** `studio/index.html`
 ships `og:image` as a RELATIVE path, because the same bundle is served from
-iterion.cloud, from preprod and from every self-hosted deployment, and no
-build-time value is right for all three. OpenGraph specifies an absolute URL
-and LinkedIn in particular drops a relative one, so the preview would render
-text-only.
+iterion.cloud, from the ovh-dev development deployment and from every
+self-hosted deployment, and no build-time value is right for all three.
+OpenGraph specifies an absolute URL and LinkedIn in particular drops a
+relative one, so the preview would render text-only.
 
 The server is the first place that knows its own origin, so `serveIndex`
 rewrites `og:image` and `twitter:image` into `PublicURL` + the path when one is
@@ -50,6 +51,25 @@ carries an absolute URL in its VitePress config.
 
 **No integration was affected by the move.** Anything a third party calls lives
 under `/api/`, which the studio base does not touch.
+
+## What the browser may keep
+
+The studio tree is embedded in the binary, and an embedded file has no
+modtime, so `http.FileServer` alone sends nothing a browser can revalidate
+against — every module of the build was fetched again on every visit. One
+handler, `staticFileServer` in
+[`pkg/server/static_cache.go`](../pkg/server/static_cache.go), decides the
+policy for every surface that serves the tree: the server catch-all, the
+workspace host, the dispatcher's studio and the desktop proxy.
+
+| Path | Policy | Why |
+|---|---|---|
+| `/assets/…` — bundler output, content-hashed names | `Cache-Control: public, max-age=31536000, immutable`, on the bytes only | the URL names the content; a new build is a new URL. A 404 under the prefix stays `no-store`: it becomes valid once a rollout converges |
+| `index.html` and the SPA fallback | `no-cache` (`no-store` for a scoped workspace shell) | the shell is what names the current build |
+| unhashed statics at the root — `favicon.ico`, `manifest.json`, `service-worker.js`, the icons | a strong `ETag` hashed from the bytes once per process, `Cache-Control: public, max-age=3600`, `304` on a matching `If-None-Match` | the name survives a build, so a held copy is revalidated within the hour |
+
+Compression is the ingress's job, not the server's. The tag is compared
+weakly on the way back, because an ingress that gzips rewrites it to `W/"…"`.
 
 ## Pre-move links still resolve
 

@@ -16,9 +16,10 @@ interactive sessions).
   `iterion map find|neighbours|impact|path`, or the
   `local_map_*` tools of the iterion MCP server (`engine` in this repo's
   `.mcp.json`); committed indexes in [`docs/references/`](docs/references/map-packages.md).
-- **Semantic** — how does X work, which docs explain this code: graphify when
-  `graphify-out/` exists (MCP `query_graph`, CLI `graphify query "<q>"`) —
-  operator-local, so check its commit against HEAD ([graph](docs/agents/orientation/graphify.md)).
+- **Semantic** — how does X work, which docs explain this code: grep `docs/`
+  and `docs/adr/`, the [doc map](docs/references/map-docs.md) and the tree. A
+  blind bench found no gain from the operator-local graphify graph over that
+  ([graph](docs/agents/orientation/graphify.md#measured-value-for-agents)).
 
 ## Setup and the gate you owe
 
@@ -33,17 +34,15 @@ interactive sessions).
 
 ## Non-negotiables
 
-- **Review loop.** Every change lands reviewed: a PR whose `revi/review` gate
-  is green, or the operator's admin-only direct-landing lane — local full gate + train +
-  converged loop, push to `main`, CI as witness ([merge and
+- **Review loop.** Every change lands reviewed, by one of three doors: a green
+  `revi/review`; a local loop at the parity bar its own page states; or the
+  operator's direct-landing lane — local gate + train, CI as witness ([merge and
   gate](docs/agents/workflow/review-and-merge.md)). Findings decide the next
-  round, the budget caps it, you fix them, and reviewed work carries
-  `Adversarial-Rounds:` / `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md)).
+  round, the budget caps it, and reviewed work carries `Adversarial-Rounds:` /
+  `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md)).
 - **Do not comment `/billy`** — the fixer is paused here
   ([why, and the re-arm](docs/agents/workflow/billy.md#billy-is-paused)).
-- **Never hand-edit `CHANGELOG.md`.** Bump `claw-code-go` only with
-  `scripts/bump-claw.sh`; first-party — improve it in its `.works/` worktree
-  when a seam crosses it, then bump.
+- **Never hand-edit `CHANGELOG.md`.**
 - **`.bot` traps.** A tool node's `command:` runs under `bash -c`; a `script:`
   with `language: sh` runs `sh`, so keep it POSIX ([pitfalls](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes)).
   A literal `{{` in a template is `{{"{{"}}` ([delimiters](docs/dsl.md#literal-template-delimiters)).
@@ -53,6 +52,9 @@ interactive sessions).
   per command, `cmd/iterion/`), output through `Printer`. Logs: `pkg/log`.
   Errors and tracing: extend `pkg/errtrack`, never a second tracker. Run state
   lives in `.iterion/`.
+- **Provider/model config lives in the DB** — the override cascade
+  (global/org/team/bot/bot-in-team/binding) is the ladder; env tables are
+  runner-side fallbacks ([gateway.md](docs/agents/backends/gateway.md)).
 - **Pay discoveries back.** A discovery lands in the tree: content in its
   page, one line in its index. A paragraph that would grow this file belongs
   there.

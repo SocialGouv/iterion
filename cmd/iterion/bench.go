@@ -97,11 +97,17 @@ doing: reading, searching and listing (orientation) versus writing
 repository cost?" — the question an index, a repo map or a code graph
 has to beat before it earns its keep.
 
-What it can attribute, and what it cannot: token usage is recorded once
-per node, at node end, by both backend paths — so the split INSIDE a
-node is not reported anywhere and is never imputed here. Tokens are
-attributed only to nodes that never mutated anything, where the whole
-spend is orientation by construction. Every table states its coverage.
+What it can attribute, and what it cannot: a node that never mutated
+anything carries its whole spend as orientation by construction, and a
+node that wrote is split at its first write — turn-granular, which is
+the finest the checkpoints support, so a turn mixing reads and a write
+counts whole to work. Nothing is imputed, and every table states its
+coverage.
+
+The report also reconciles the two independent recordings of the same
+spend, field by field: the per-message feed (one llm_step_finished per
+model message) against the turn checkpoints. A producing site that
+stopped emitting shows up there as a gap on its node.
 
 Examples:
   # The corpus this store already holds.

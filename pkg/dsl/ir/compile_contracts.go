@@ -526,7 +526,9 @@ func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort, 
 // compilePublicCriterion holds a criterion to a port of the contract and
 // to its evaluator: a registered kind takes the port's type — a file port is
 // a file, whatever its declared type — and its parameters compile; an
-// unregistered kind is declared, not evaluated.
+// unregistered kind draws C303. No criterion is evaluated, registered or
+// not: the evaluator is looked up to check the port's class and the
+// parameters, and nothing runs it (ADR-153 clause 4).
 func (c *compiler) compilePublicCriterion(contract string, k *ast.CriterionDecl, ports map[string]*PublicPort) *PublicCriterion {
 	pk := &PublicCriterion{Name: k.Name, Kind: k.Kind, Port: k.Port, Params: k.Params}
 	if k.Kind == "" {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -58,8 +59,17 @@ func (s *Server) handleDeliverHostEvent(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "kind is required")
 		return
 	}
-	err := s.deliverHostEvent(r.Context(), r.PathValue("id"), req.Kind, req.Event)
+	// Under an admitted expectation the resume the event drives carries it.
+	a := s.admittedAction(r, r.PathValue("id"))
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
+	err := s.deliverHostEventWithService(r.Context(), s.runs, r.PathValue("id"), req.Kind, req.Event, true, "", expect)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, errAssistantHostRunNotFound):
 			s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
@@ -67,6 +77,10 @@ func (s *Server) handleDeliverHostEvent(w http.ResponseWriter, r *http.Request) 
 			s.httpErrorFor(w, r, http.StatusConflict, "assistant is not at a chat boundary")
 		case errors.Is(err, errAssistantHostResumable):
 			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+		case errors.Is(err, cloudpublisher.ErrCredentialAtCapacity):
+			// The event resumes the run: a key it sealed is full of other
+			// runs, answered as every resume surface answers it.
+			s.writeCredentialAtCapacityError(w, r, "resume", err)
 		default:
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "deliver host event: %v", err)
 		}
@@ -79,13 +93,16 @@ func (s *Server) handleDeliverHostEvent(w http.ResponseWriter, r *http.Request) 
 // deliverHostEvent is shared by the scoped HTTP endpoint and host-owned
 // background producers such as cross-project handoff receipts.
 func (s *Server) deliverHostEvent(ctx context.Context, runID, kind string, event map[string]any) error {
-	return s.deliverHostEventWithService(ctx, s.runs, runID, kind, event, true, "")
+	return s.deliverHostEventWithService(ctx, s.runs, runID, kind, event, true, "", runview.ActionOrigin{})
 }
 
 // deliverHostEventWithService captures the project run service and exposes a
 // strict no-force mode for durable missions. receiptID is stamped by the host
 // and consumed by reconciliation; callers cannot smuggle it through event.
-func (s *Server) deliverHostEventWithService(ctx context.Context, runs *runview.Service, runID, kind string, event map[string]any, force bool, receiptID string) error {
+// expect is the origin a checked surface admitted for runID: the resume
+// carries it (ResumeSpec.ExpectOrigin), whose verification decides which run
+// is re-entered; the zero value is unchecked.
+func (s *Server) deliverHostEventWithService(ctx context.Context, runs *runview.Service, runID, kind string, event map[string]any, force bool, receiptID string, expect runview.ActionOrigin) error {
 	run, err := runs.LoadRunCtx(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errAssistantHostRunNotFound, err)
@@ -127,6 +144,7 @@ func (s *Server) deliverHostEventWithService(ctx context.Context, runs *runview.
 		// A host receipt is allowed to adopt a redeployed Copi source only
 		// after the safe chat-boundary admission above.
 		Force: force, ExpectedStatus: run.Status, ReceiptID: receiptID,
+		ExpectOrigin: expect,
 	}); err != nil {
 		if errors.Is(err, runview.ErrRunNotResumable) {
 			return fmt.Errorf("%w: %v", errAssistantHostResumable, err)

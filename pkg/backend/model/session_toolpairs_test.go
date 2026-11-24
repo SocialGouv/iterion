@@ -3,12 +3,13 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
 )
 
 func toolUseMessage(ids ...string) api.Message {
@@ -28,6 +29,7 @@ func toolResultMessage(ids ...string) api.Message {
 }
 
 func TestSanitizeToolPairs_ValidTranscriptIsByteIdentical(t *testing.T) {
+	t.Parallel()
 	in := []api.Message{
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "inspect"}}},
 		toolUseMessage("a", "b", "c"),
@@ -51,6 +53,7 @@ func TestSanitizeToolPairs_ValidTranscriptIsByteIdentical(t *testing.T) {
 }
 
 func TestSanitizeToolPairs_PrunesBothOrphanDirections(t *testing.T) {
+	t.Parallel()
 	in := []api.Message{
 		toolResultMessage("missing-use"),
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "keep me"}}},
@@ -71,6 +74,7 @@ func TestSanitizeToolPairs_PrunesBothOrphanDirections(t *testing.T) {
 }
 
 func TestSanitizeToolPairs_PreservesOnlyExplicitPendingAsk(t *testing.T) {
+	t.Parallel()
 	in := []api.Message{
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "start"}}},
 		toolUseMessage("already-ran", "ask-pending"),
@@ -86,6 +90,7 @@ func TestSanitizeToolPairs_PreservesOnlyExplicitPendingAsk(t *testing.T) {
 }
 
 func TestCompactMessagesToolSafe_RepairsBoundaryFromRun4893(t *testing.T) {
+	t.Parallel()
 	large := strings.Repeat("boundary filler ", 200)
 	seed := make([]api.Message, 12)
 	for i := range seed {
@@ -116,13 +121,23 @@ func TestCompactMessagesToolSafe_RepairsBoundaryFromRun4893(t *testing.T) {
 	if err := validateToolPairs(res.CompactedMessages); err != nil {
 		t.Fatalf("boundary repair invalid: %v", err)
 	}
-	raw, _ := json.Marshal(res.CompactedMessages)
-	if strings.Contains(string(raw), "call_mLlgpMRfNzIL1t7PmYviSIWg") {
-		t.Fatalf("orphaned boundary result survived: %s", raw)
+	// The summary names the folded turn (foldedToolTurnsMarker); no tool
+	// block of the call may survive it.
+	for _, m := range res.CompactedMessages {
+		for _, b := range m.Content {
+			if (b.Type == "tool_use" && b.ID == "call_mLlgpMRfNzIL1t7PmYviSIWg") || (b.Type == "tool_result" && b.ToolUseID == "call_mLlgpMRfNzIL1t7PmYviSIWg") {
+				raw, _ := json.Marshal(res.CompactedMessages)
+				t.Fatalf("orphaned boundary result survived: %s", raw)
+			}
+		}
+	}
+	if got := toolTurnKeys(res.CompactedMessages); !slices.Equal(got, []string{"call_mLlgpMRfNzIL1t7PmYviSIWg"}) {
+		t.Fatalf("the summary names folded turns %v, want the boundary call's", got)
 	}
 }
 
 func TestNodeSessionStoreCompactUsesToolSafeWrapper(t *testing.T) {
+	t.Parallel()
 	const runID, slot = "run-compact", "assistant_conversation"
 	large := strings.Repeat("store filler ", 300)
 	in := []api.Message{
@@ -145,6 +160,7 @@ func TestNodeSessionStoreCompactUsesToolSafeWrapper(t *testing.T) {
 }
 
 func TestForceCompactToTokens_TightBudgetStillShrinks(t *testing.T) {
+	t.Parallel()
 	large := strings.Repeat("tight budget ", 500)
 	in := []api.Message{
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: large}}},
@@ -164,6 +180,7 @@ func TestForceCompactToTokens_TightBudgetStillShrinks(t *testing.T) {
 }
 
 func TestBuildRequestRejectsMalformedToolTranscript(t *testing.T) {
+	t.Parallel()
 	_, err := buildRequest(GenerationOptions{Model: "test"}, []api.Message{toolResultMessage("orphan")}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "has no earlier tool_use") {
 		t.Fatalf("buildRequest error=%v", err)
@@ -171,6 +188,7 @@ func TestBuildRequestRejectsMalformedToolTranscript(t *testing.T) {
 }
 
 func TestUnpackSessionRepairsLegacyOrphans(t *testing.T) {
+	t.Parallel()
 	env := clawPersistEnvelope{
 		Version:   clawPersistVersion,
 		SessionID: "session-4893",
@@ -199,6 +217,7 @@ func TestUnpackSessionRepairsLegacyOrphans(t *testing.T) {
 }
 
 func TestTaskSessionRollbackAndEvictionUseNamedSlot(t *testing.T) {
+	t.Parallel()
 	const runID = "run-slot"
 	sessions := newNodeSessionStore()
 	baseline := []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "remember me"}}}}

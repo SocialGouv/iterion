@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 )
 
 // loadEnv overlays ITERION_* env vars onto cfg. An empty / unset env
@@ -85,6 +88,9 @@ func loadEnv(cfg *Config) error {
 	if err := lookupDuration("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", &cfg.Runner.SchemaMismatchDelay); err != nil {
 		return err
 	}
+	if err := lookupBool("ITERION_RUNNER_DISABLE_STALL_SELFHEAL", &cfg.Runner.DisableStallSelfHeal); err != nil {
+		return err
+	}
 	if err := lookupUint64("ITERION_RUNNER_EPOCH", &cfg.Rollout.RunnerEpoch); err != nil {
 		return err
 	}
@@ -112,15 +118,28 @@ func loadEnv(cfg *Config) error {
 		cfg.Log.Level = strings.ToLower(v)
 	}
 
-	if v, ok := lookup("ITERION_SANDBOX_DEFAULT"); ok {
-		cfg.Sandbox.Default = strings.ToLower(v)
+	// The two sandbox MODE tiers are read through internal/isolationenv, the
+	// ONE reader of a name that can LOWER a run's isolation: `lookup` reads
+	// the live environment, which a `.env` beside the process's working
+	// directory fills in, and neither the deployment's sandbox default nor its
+	// CLI-strength override is a repository's answer to give. host_state is
+	// NOT in that class and keeps `lookup`: its only lowering value is the
+	// built-in default, and the isolationenv doc says so.
+	lookupIsolation := func(name string, dst *string) {
+		value, planted := isolationenv.Value(name)
+		if planted {
+			cfg.Sandbox.PlantedIgnored = append(cfg.Sandbox.PlantedIgnored, name)
+			return
+		}
+		if value = strings.TrimSpace(value); value != "" {
+			*dst = strings.ToLower(value)
+		}
 	}
+	lookupIsolation(isolationenv.SandboxDefault, &cfg.Sandbox.Default)
 	if v, ok := lookup("ITERION_SANDBOX_HOST_STATE"); ok {
 		cfg.Sandbox.HostState = strings.ToLower(v)
 	}
-	if v, ok := lookup("ITERION_SANDBOX_OVERRIDE"); ok {
-		cfg.Sandbox.Override = strings.ToLower(v)
-	}
+	lookupIsolation(isolationenv.SandboxOverride, &cfg.Sandbox.Override)
 
 	lookupString("ITERION_JWT_SECRET", &cfg.Auth.JWTSecret)
 	lookupString("ITERION_SECRETS_KEY", &cfg.Auth.SecretsKey)
@@ -155,6 +174,15 @@ func loadEnv(cfg *Config) error {
 	if v, ok := lookup("ITERION_AUTH_TRUSTED_AUTO_LINK_PROVIDERS"); ok {
 		cfg.Auth.TrustedAutoLinkProviders = splitCSV(v)
 	}
+	if v, ok := lookup("ITERION_AUTH_TRUSTED_PROXY_CIDRS"); ok {
+		cfg.Auth.TrustedProxyCIDRs = splitCSV(v)
+	}
+	if err := lookupInt("ITERION_AUTH_TRUSTED_PROXY_HOPS", &cfg.Auth.TrustedProxyHops); err != nil {
+		return err
+	}
+	if v, ok := lookup("ITERION_AUTH_FORWARDED_HEADER"); ok {
+		cfg.Auth.ForwardedHeader = strings.TrimSpace(v)
+	}
 
 	if err := lookupBool("ITERION_OIDC_GOOGLE_ENABLED", &cfg.Auth.OIDC.Google.Enabled); err != nil {
 		return err
@@ -188,6 +216,12 @@ func loadEnv(cfg *Config) error {
 	lookupString("ITERION_WEBPUSH_VAPID_PUBLIC_KEY", &cfg.WebPush.VAPIDPublicKey)
 	lookupString("ITERION_WEBPUSH_VAPID_PRIVATE_KEY", &cfg.WebPush.VAPIDPrivateKey)
 	lookupString("ITERION_WEBPUSH_SUBSCRIBER", &cfg.WebPush.Subscriber)
+
+	lookupString("ITERION_LEGAL_DOCUMENTS_DIR", &cfg.Legal.DocumentsDir)
+	lookupString("ITERION_LEGAL_CONTACT_EMAIL", &cfg.Legal.ContactEmail)
+	lookupString("ITERION_LEGAL_ACCESSIBILITY_STATUS", &cfg.Legal.AccessibilityStatus)
+	lookupString("ITERION_LEGAL_ACCESSIBILITY_DATE", &cfg.Legal.AccessibilityDate)
+	lookupString("ITERION_LEGAL_ACCESSIBILITY_RATE", &cfg.Legal.AccessibilityRate)
 
 	lookupString("ITERION_ALERTS_WEBHOOK_URL", &cfg.Alerts.Webhook.URL)
 	if err := lookupBool("ITERION_ALERTS_DESKTOP_ENABLED", &cfg.Alerts.Desktop.Enabled); err != nil {
@@ -372,7 +406,21 @@ func splitCSV(v string) []string {
 // `unset FOO` and `FOO=` behave identically; this matches the precedence
 // rule in the plan ("env > yaml > defaults" means a present-but-empty
 // env var is a no-op, not an override-to-empty).
+//
+// The operator-grade names read through envtrust: this surface IS the
+// operator's configuration (the sandbox, the auth stack, the store wires,
+// the secrets), and a value a project `.env` planted — what an older
+// binary's loader could still leave in a child, since the current loaders
+// refuse the grade at the plant — is not the operator. A planted value
+// reads as unset, and the YAML and defaults answer instead.
 func lookup(key string) (string, bool) {
+	if envtrust.OperatorGradeRefused(key) {
+		v := envtrust.Inherited(key)
+		if v == "" {
+			return "", false
+		}
+		return v, true
+	}
 	v, ok := os.LookupEnv(key)
 	if !ok {
 		return "", false

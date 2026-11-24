@@ -163,6 +163,46 @@ func TestRegisterInviteOnlyRequiresToken(t *testing.T) {
 	}
 }
 
+// mintVerdictCtx carries the verdict the derivation gate stamps after its
+// ask grants — issued through the same constructor the gate uses, so a test
+// mints under exactly the context a gated handler runs under.
+// Service.CreateInvitation is a team-token mint primitive and refuses a
+// context without one.
+func mintVerdictCtx(ctx context.Context) context.Context {
+	return ContextWithMintVerdict(ctx, NewMintVerdict(MintTeamToken, "test"))
+}
+
+// TestCreateInvitation_RefusesWithoutTheDerivationVerdict is the primitive's
+// own probe: an invitation token is a team token (MintTeamToken) that
+// outlives the credential minting it, so the context must carry the
+// chokepoint's verdict for it — a bare context, or one carrying a verdict
+// for another mint, refuses, fail closed.
+func TestCreateInvitation_RefusesWithoutTheDerivationVerdict(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, SignupInviteOnly)
+	adminUser, _, err := svc.CreateUserAndPersonalTeam(ctx, "admin@example.com", "Admin", "correcthorse", true, identity.UserStatusActive)
+	if err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
+	}
+	team, err := svc.store.CreateTeam(ctx, identity.Team{ID: "team-gate", Name: "Gate", Slug: "gate"})
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	_, _, err = svc.CreateInvitation(ctx, team.ID, "invitee@example.com", identity.RoleMember, adminUser.ID)
+	var missing *MintVerdictMissingError
+	if !errors.As(err, &missing) {
+		t.Fatalf("a bare context minted an invitation: %v, want a *MintVerdictMissingError", err)
+	}
+	patCtx := ContextWithMintVerdict(ctx, NewMintVerdict(MintPAT, adminUser.ID))
+	if _, _, err := svc.CreateInvitation(patCtx, team.ID, "invitee@example.com", identity.RoleMember, adminUser.ID); !errors.As(err, &missing) {
+		t.Fatalf("a MintPAT verdict minted an invitation: %v", err)
+	}
+	// The control: the verdict the gate stamps mints.
+	if _, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), team.ID, "invitee@example.com", identity.RoleMember, adminUser.ID); err != nil {
+		t.Fatalf("the gate's verdict minted nothing: %v", err)
+	}
+}
+
 func TestInvitationFlow(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, SignupInviteOnly)
@@ -182,7 +222,7 @@ func TestInvitationFlow(t *testing.T) {
 	}
 
 	// Admin invites Carol as member.
-	tok, inv, err := svc.CreateInvitation(ctx, team.ID, "Carol@example.com", identity.RoleMember, adminUser.ID)
+	tok, inv, err := svc.CreateInvitation(mintVerdictCtx(ctx), team.ID, "Carol@example.com", identity.RoleMember, adminUser.ID)
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}
@@ -410,7 +450,7 @@ func TestAcceptInvitation_anOrgMirrorThatFailsLeavesNoTeamGrant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create team: %v", err)
 		}
-		tok, _, err := svc.CreateInvitation(ctx, team.ID, inviteeEmail, identity.RoleMember, admin.ID)
+		tok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), team.ID, inviteeEmail, identity.RoleMember, admin.ID)
 		if err != nil {
 			t.Fatalf("CreateInvitation: %v", err)
 		}
@@ -550,7 +590,7 @@ func TestAcceptInvitation_claimsTheInvitationBeforeAnyAccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create team: %v", err)
 		}
-		tok, _, err := svc.CreateInvitation(ctx, team.ID, inviteeEmail, identity.RoleMember, admin.ID)
+		tok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), team.ID, inviteeEmail, identity.RoleMember, admin.ID)
 		if err != nil {
 			t.Fatalf("CreateInvitation: %v", err)
 		}
@@ -617,7 +657,7 @@ func TestAcceptInvitation_claimsTheInvitationBeforeAnyAccess(t *testing.T) {
 		if _, err := svc.Login(ctx, "newbie@example.com", "correcthorse", "ua", "ip"); err != nil {
 			t.Fatalf("logging in with the password the lost registration set: %v", err)
 		}
-		next, _, err := svc.CreateInvitation(ctx, "t1", "newbie@example.com", identity.RoleMember, "admin")
+		next, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "newbie@example.com", identity.RoleMember, "admin")
 		if err != nil {
 			t.Fatalf("a fresh invitation to the same address: %v", err)
 		}
@@ -704,10 +744,10 @@ func TestAcceptInvitation_aLoweringOverAnExistingGrantCallsTheRankReconcile(t *t
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := svc.CreateInvitation(ctx, "t1", "third@example.com", identity.RoleOwner, invitee.ID); err != nil {
+		if _, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "third@example.com", identity.RoleOwner, invitee.ID); err != nil {
 			t.Fatalf("seeding the outstanding row: %v", err)
 		}
-		tok, _, err := svc.CreateInvitation(ctx, "t1", "invitee@example.com", identity.RoleMember, admin.ID)
+		tok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "invitee@example.com", identity.RoleMember, admin.ID)
 		if err != nil {
 			t.Fatalf("CreateInvitation: %v", err)
 		}
@@ -814,11 +854,11 @@ func TestAcceptInvitation_aRaiseAnAtRankAndACreationReconcileNothing(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raiseTok, _, err := svc.CreateInvitation(ctx, "t1", "raiser@example.com", identity.RoleAdmin, admin.ID)
+	raiseTok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "raiser@example.com", identity.RoleAdmin, admin.ID)
 	if err != nil {
 		t.Fatalf("the raise invitation: %v", err)
 	}
-	atTok, _, err := svc.CreateInvitation(ctx, "t1", "atrank@example.com", identity.RoleAdmin, admin.ID)
+	atTok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "atrank@example.com", identity.RoleAdmin, admin.ID)
 	if err != nil {
 		t.Fatalf("the at-rank invitation: %v", err)
 	}
@@ -831,11 +871,11 @@ func TestAcceptInvitation_aRaiseAnAtRankAndACreationReconcileNothing(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	offTok, _, err := svc.CreateInvitation(ctx, "t1", "offladder@example.com", identity.RoleConfigEditor, admin.ID)
+	offTok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "offladder@example.com", identity.RoleConfigEditor, admin.ID)
 	if err != nil {
 		t.Fatalf("the off-ladder invitation: %v", err)
 	}
-	regTok, _, err := svc.CreateInvitation(ctx, "t1", "newbie@example.com", identity.RoleMember, admin.ID)
+	regTok, _, err := svc.CreateInvitation(mintVerdictCtx(ctx), "t1", "newbie@example.com", identity.RoleMember, admin.ID)
 	if err != nil {
 		t.Fatalf("the registration invitation: %v", err)
 	}

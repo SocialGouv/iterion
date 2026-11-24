@@ -108,7 +108,12 @@ func piAmbientFiles(task Task) []piContextFile {
 		d := dirs[i]
 		switch {
 		case d == root || strings.HasPrefix(d, strings.TrimSuffix(root, sep)+sep):
-			if task.AmbientContext.IncludesWorkspace() {
+			// FLOOR (ADR-162 U3): on a workspace its tenant did not write,
+			// these files are the checkout's own prose — the agent reading
+			// them is reviewing their author's diff. The policy's
+			// workspace half is withheld; the operator's half below is not
+			// (it names no file the checkout can write).
+			if task.WorkspaceTrust.Trusted() && task.AmbientContext.IncludesWorkspace() {
 				add(piContextFileFromDir(d))
 			}
 		case d != boundary && (d == sep || strings.HasPrefix(boundary, strings.TrimSuffix(d, sep)+sep)):
@@ -139,8 +144,17 @@ func piContextSection(files []piContextFile) string {
 
 // piSystemPromptSuffix is pi's contribution to the composed system prompt:
 // the context files its policy allows, rendered, when pi's own loading is off.
+//
+// The render crosses the model boundary the task carries (ScreenModelText):
+// these bytes come off the workspace's own disk, not from a Task field, so
+// the executor's field pass never saw them — a value an earlier node's agent
+// wrote into an AGENTS.md reaches pi as its placeholder. Both transports
+// take it here, the RPC one through piComposeSystemPrompt and the print one
+// through the protocol hook, so neither can grow a second unscreened path.
+// Under `all` pi loads the files ITSELF and iterion composes nothing: that
+// text never passes through this process, like codex's and claude_code's.
 func piSystemPromptSuffix(task Task) string {
-	return piContextSection(piAmbientFiles(task))
+	return task.ScreenedModelText(piContextSection(piAmbientFiles(task)))
 }
 
 // piComposeSystemPrompt is the system prompt the RPC transport hands pi: the

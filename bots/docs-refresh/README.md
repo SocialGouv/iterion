@@ -45,14 +45,70 @@ reported the corpus aligned.
 ## Shape (v3)
 
 ```
+record_run_base ──▶ context_gate   — the run base, read before any pass can write
 context_gate ──(context configured)──▶ context_ingest ──▶ scan_hints ──▶ campaign ──▶ scope_check ──▶ gate
 context_gate ──(no context)─────────────────────────────────▶ scan_hints
 gate ──(converged)────────────────▶ mr_gate
 gate ──▶ scan_hints   as continuation_loop(max_passes)  — fresh hints, next pass
-mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ finalize_mr ──▶ surface_pr_link ──▶ done
+mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ delivery_gate ──(paths owned)──▶ finalize_mr ──▶ surface_pr_link ──▶ done
+delivery_gate ──▶ delivery_paths_refused   (typed fail: DELIVERY_PATHS_REFUSED)
 mr_gate ──(not open_mr)──────────────────────────────────────────────▶ done
 ```
 
+**What the delivery owns, and what it refuses:** the push carries `.md`
+files and nothing else — never a symlink (a link wearing the doc suffix
+publishes a host path, and the next edit of it writes outside the
+repository), never a path under `.github/workflows/`, whatever its suffix
+(the one directory the forge credential refuses to push), and never a file
+the run committed under `.claude/`, where a `.md` file is executable
+instruction rather than documentation (`CLAUDE.md`, `skills/**/SKILL.md`,
+`agents/*.md`, `commands/*.md` are auto-loaded by every agent harness that
+opens the branch). `scope_check` carries the same rule, measured in the same
+window and read in the same frame, so a pass is asked to revert exactly what
+the tail would refuse — a path only one of them refuses has no remediation
+route, and the two are asserted equal on one tree
+(`bots/delivery_gate_test.go`, `TestTheLoopGateAndTheDeliveryGateAgree`). A
+run that still touches anything else when the loop is spent ends on
+`DELIVERY_PATHS_REFUSED` with every offending path named: no pull request is
+opened and nothing is delivered. The series is not lost and not secret
+either — the commits stay on the run's own branch, and a repo-targeted
+**cloud** run banks them to its storage branch `iterion/run-<run id>`, which
+the refusal's message names.
+
+The window those paths are measured in is the one `record_run_base` reads at
+the entry, before any pass has written, handed to BOTH nodes on their
+in-edges: a base re-derived from the campaign's own commit messages would let
+one commit missing the `Bot: docs-refresh` trailer (what `git revert` writes,
+what the engine's wip bank writes before a resume) choose the window it is
+audited on. Both read the committed series and the worktree with
+`--no-renames` (a protected file moved onto a doc path reports its deletion,
+not only its destination) and `core.quotePath=false` (an accented doc name
+compares equal), and both read the symlink term in both windows, keyed on
+the destination mode (a link committed then removed from the worktree stays
+refused; a stale link the run removes is a cleanup). The engine's `.claude/`
+mirror and the tree noise it declares are skipped only while they stay
+UNCOMMITTED, the state in which no pass can revert them (and in which the
+most they reach is the run's own bank, never the pull request); anything the
+run committed is judged whatever its name. An unborn HEAD — the engine's
+in-place degradation for a freshly created repository — records git's empty
+tree as the window, so the first commit is judged rather than refused for
+want of a base.
+
+What the gate does NOT bound is the same actor on two routes: `finalize_mr`
+is an agent holding bash and the mounted `forge_token`, and one that pushes
+from inside its own node is bounded by nothing here; and under `repo_devbox`
+the workspace's own devbox profile is prepended to the run's PATH
+(`pkg/runtime/devbox_host.go`), so the campaign — bash in that very tree —
+can rewrite the `git` and `python3` the gate resolves. The gate's scrub
+covers git STATE the campaign can plant (replace refs, grafts, an inherited
+`GIT_DIR`), not the toolchain; the cure for the toolchain is the engine's (a
+gate node resolving its binaries from the engine's PATH, never the run's).
+
+
+- **`record_run_base`** — the ENTRY: `git rev-parse HEAD` in the
+  workspace, before any pass can write. It is the window `delivery_gate`
+  measures the delivered paths in, and an empty one refuses the delivery
+  rather than falling back to a guess.
 - **`context_gate`** — entry gate (mr_gate shape): at least one context
   source configured (`context_git` / `context_jira_base`) → materialize;
   none → the run never executes the ingest node and is unchanged.
@@ -83,7 +139,9 @@ mr_gate ──(not open_mr)─────────────────�
   dismiss+ledger / promise+promises-ledger / code-bug→board — and
   commits each aligned doc in stride. git is the durable state.
 - **`scope_check`** — deterministic writeable-set containment (`.md`
-  only) vs the run base. The bot only touches docs.
+  only, never a symlink, never under `.github/workflows/`, never a path
+  committed under `.claude/`) vs the recorded run base — the same rule,
+  window and frame as `delivery_gate`. The bot only touches docs.
 - **`gate`** — `converged = scope_ok ∧ campaign.docs_aligned` —
   **nothing else**. There is no build gate: a docs-only change can't
   break the build, so running it would verify an invariant the bot
@@ -95,7 +153,7 @@ mr_gate ──(not open_mr)─────────────────�
 
 | Var | Default | Description |
 |---|---|---|
-| `doc_globs` | READMEs + docs/ + AGENTS.md + CLAUDE.md | Doc footprint (universal default) |
+| `doc_globs` | READMEs + docs/ + AGENTS.md + CLAUDE.md | Doc footprint (universal default). A match under `.github/workflows/` or `.claude/` — reachable only through an explicit glob, `**` never enters a hidden directory — is set aside whatever the globs or `excluded_dirs` say, because the delivery refuses both trees by name, and `scan_hints` says so in its note |
 | `scope_notes` | `""` | Operator attention pin |
 | `mode` | `full` | `full` = whole-corpus semantic sweep (monthly reconciliation); `incremental` = semantic pass scoped to the code changed since the last alignment (auto-detected), for weekly/per-PR runs |
 | `diff_since` | `""` | Explicit incremental base (`git diff <ref>...HEAD`). Usually empty — `mode: incremental` auto-detects it from the `Bot: docs-refresh` commit trailer; pin it to force a base (e.g. a PR base) |

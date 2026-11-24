@@ -89,6 +89,13 @@ func NewFileStore(path string) (*FileStore, error) {
 	return s, nil
 }
 
+// WithClock pins the clock, so a test can assert on timestamps — the same
+// offer the memory and mongo twins make.
+func (s *FileStore) WithClock(now func() time.Time) *FileStore {
+	s.clock = now
+	return s
+}
+
 // DefaultPath is where a store dir keeps its connections.
 func DefaultPath(storeDir string) string {
 	return filepath.Join(storeDir, "connections.json")
@@ -285,12 +292,15 @@ func (s *FileStore) Update(_ context.Context, c Connection) error {
 		if !ok || prev.TenantID != c.TenantID {
 			return ErrNotFound
 		}
+		if err := checkUnchanged(prev, c); err != nil {
+			return err
+		}
 		if err := checkAliasFree(s.byID, c, c.ID); err != nil {
 			return err
 		}
 		c.SealedPayload = keptCredential(prev, c)
 		c.CreatedAt = prev.CreatedAt
-		c.UpdatedAt = s.clock()
+		c.UpdatedAt = nextStamp(prev.UpdatedAt, s.clock())
 		s.byID[c.ID] = c
 		return nil
 	})

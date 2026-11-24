@@ -1,11 +1,13 @@
-//go:build desktop
-
 package main
 
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 // TestReloadIterionEnvFile_ClearsCommentedKey reproduces the dogfood
@@ -107,5 +109,121 @@ func TestReloadIterionEnvFile_RereadsActiveKey(t *testing.T) {
 	ReloadIterionEnvFile()
 	if got := os.Getenv("MY_KEY"); got != "second" {
 		t.Errorf("after reload: env = %q, want second", got)
+	}
+}
+
+// The desktop env-file loader closes the same routing class as the CLI and
+// the studio lanes: a route the file names is not applied — whatever the
+// path resolves to, since a direnv symlink can point this very file at a
+// PROJECT's `.env` — and the refusal names the file, the key and the
+// opt-in on stderr. The operator's own credentials keep flowing: what IS
+// applied here is not marked planted, because the file sits in the
+// operator's home and its values ARE the operator's own — the mark exists
+// for files that sit in a repository.
+func TestTheDesktopEnvFileLeavesNoRoutingNameInTheEnvironment(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	t.Setenv(envtrust.DotenvEndpointsOptIn, "")
+	os.Unsetenv("SEARXNG_URL")
+	os.Unsetenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+	t.Cleanup(func() {
+		os.Unsetenv("SEARXNG_URL")
+		os.Unsetenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+	})
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env")
+	if err := os.WriteFile(envPath, []byte(strings.Join([]string{
+		"SEARXNG_URL=https://repo-under-review.example/search",
+		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME=https://repo-under-review.example/bedrock",
+		"OPENAI_API_KEY=sk-the-operator-owns-it",
+	}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("ITERION_ENV_FILE", envPath)
+	dotenvMu.Lock()
+	dotenvAppliedKeys = nil
+	dotenvMu.Unlock()
+
+	said := captureStderr(t, loadIterionEnvFile)
+
+	for _, name := range []string{"SEARXNG_URL", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"} {
+		if got, present := os.LookupEnv(name); present {
+			t.Errorf("%s = %q: the file chose where a connection goes", name, got)
+		}
+		for _, want := range []string{name, envPath, envtrust.DotenvEndpointsOptIn + "=allow"} {
+			if !strings.Contains(said, want) {
+				t.Errorf("the refusal does not say %q — it said: %s", want, said)
+			}
+		}
+	}
+	// The operator's own credentials keep flowing, unmarked.
+	if got := os.Getenv("OPENAI_API_KEY"); got != "sk-the-operator-owns-it" {
+		t.Errorf("OPENAI_API_KEY = %q: the keys stashed in the operator's own file are what this loader exists for", got)
+	}
+	if envtrust.Planted("OPENAI_API_KEY") {
+		t.Error("the operator's own key reads as planted: the mark is for repository files, not the home")
+	}
+}
+
+// captureStderr runs fn with os.Stderr on a pipe and returns what it wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	return stdiotest.Run(t, &os.Stderr, fn)
+}
+
+// The substitution refusal on the desktop lane, like on the CLI and studio
+// ones: a value spelling command substitution does not exist after the
+// load, and the refusal names the file. Nothing here evaluates values, but
+// the trigger does not travel either — the H-10 review measured the studio
+// lane RUNNING `$(touch …)` from the file, and the same bytes must not be
+// handed to a run on this lane either.
+func TestTheDesktopEnvFileRunsNothingACommandSubstitutionSpells(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	envtrust.ResetForTest()
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env")
+	marker := filepath.Join(dir, "substituted-ran")
+	content := "FIRST=ok\n" +
+		"FOO=$(touch " + marker + ")\n" +
+		"BAR=`touch " + marker + "`\n" +
+		"LAST=also-ok\n"
+	if err := os.WriteFile(envPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_ENV_FILE", envPath)
+
+	// Reset package globals between tests, and leave the witness names
+	// unset (t.Setenv cannot express "absent").
+	dotenvMu.Lock()
+	dotenvAppliedKeys = nil
+	dotenvMu.Unlock()
+	for _, name := range []string{"FIRST", "FOO", "BAR", "LAST"} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+
+	said := captureStderr(t, loadIterionEnvFile)
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the substitution marker exists: the file's command RAN (stat err %v)", err)
+	}
+	for _, name := range []string{"FOO", "BAR"} {
+		if _, set := os.LookupEnv(name); set {
+			t.Errorf("%s reached the environment: a refused value was applied", name)
+		}
+		if !strings.Contains(said, name) || !strings.Contains(said, envPath) {
+			t.Errorf("the substitution refusal does not name %s and the file — it said: %s", name, said)
+		}
+	}
+	if got := os.Getenv("FIRST"); got != "ok" {
+		t.Errorf("FIRST = %q: the refusals must not cost the file its ordinary plants", got)
+	}
+	if got := os.Getenv("LAST"); got != "also-ok" {
+		t.Errorf("LAST = %q: the refusals must not cost the file its ordinary plants", got)
 	}
 }

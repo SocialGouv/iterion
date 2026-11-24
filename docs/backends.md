@@ -40,7 +40,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode run --format json [-m provider/model[#variant]]`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176) and typed (`CAPABILITY_UNSUPPORTED`) at dispatch; `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -72,8 +72,85 @@ read ceiling (64 MiB): zlib holds ~1000:1, so a compressed bomb — or
 many small streams summing to one — fails the read with an explicit
 `ErrBudgetExceeded` instead of allocating. claude_code reads PDFs
 natively; this is the same capability wired on claw (the parity
-doctrine above). Scratch/attachment paths stay outside `read_file`'s
-workspace containment — reach them through `bash`.
+doctrine above). The run's scratch is a READ root of claw's
+`read_file`/`glob`/`grep`/`read_image` beside the workspace
+(#2650 — a bot's agents must read the briefs the run itself wrote
+there, as claude_code's unbounded `Read` does); other attachment paths
+stay outside the read scope — reach them through `bash`.
+
+Which scratch, since #2869: the run family's OWN subtree
+(`${RUN_SCRATCH_DIR}` — `<project scratch>/runs/<family root>`, where the
+family root is the run's id, or the topmost ancestor's for a sub-bot
+child) is always the first root, and the SHARED project scratch
+(`${PROJECT_SCRATCH_DIR}` — `<iterion home>/projects/<encoded repo
+root>/scratch`, the iterion home being `$ITERION_HOME` or `~/.iterion`)
+rides along as a second root only while the workflow still references it
+in a resolved var. A bot whose state all moved to `${RUN_SCRATCH_DIR}`
+reads no other run's leftovers; an unmigrated one keeps the breadth
+claude_code's unbounded `Read` already had. The fan-in survives the
+narrowing: a child and its parent key on the same family root, so the
+child writes where the parent reads. The cross-run caches that keep
+referencing the shared scratch (docs-refresh, sec-audit-deps, wiki-gen)
+keep it readable — that is exactly what "still references" measures. The
+signal's bound, named: it reads the RESOLVED vars — a reference spelled
+inline in a tool body or a prompt template, never through a var, is not
+seen, and the shared root then stays out (fail-closed; no in-tree bot
+reads the scratch that way — they all go through a `run_dir`-shaped var,
+and an inline `${PROJECT_SCRATCH_DIR}` in a tool body already draws C315).
+The reach never grew: another repository encodes another key, another
+operator resolves another iterion home, and a driver with no host
+filesystem (kubernetes — a pod rejects `type=bind`) gets a
+container-local scratch that the teardown banks per run (ADR-106). The
+family root is a path component, so every id the parent walk adopts must
+be one the store accepts (`store.SanitizePathComponent`): a
+`parent_run_id` shaped like `../..` ends the walk at the last valid id
+instead of moving the subtree out of the project scratch. The subtree is
+attached BENEATH the project scratch, never through it: sandboxed runs
+write the shared scratch through their bind, so `runs/<id>` can be a link
+one of them planted, and a root that followed it would become the link's
+target. Only the project scratch is canonicalized; the path from it to
+the subtree stays lexical, a target counts as inside only when its
+resolved path lies under that lexical root, and it is opened by a
+no-follow walk from the project scratch — a link anywhere below contains
+nothing. The engine and the in-container runner create the subtree as a
+chain of real directories (`safepath.EnsureRealBindSourceDir`), so a
+planted `runs/` link never receives it. The narrowed list crosses the
+sandbox envelope as `IOTask.ScratchReadRoots` with the project scratch as
+`IOTask.ScratchAnchor`; `ScratchDir`, the one root a runner that predates
+the list registers, is the shared scratch when the push carries it (the
+subtree lies beneath it, so the old runner reads the same union) and the
+subtree when it rides alone. The age sweep (`ITERION_SCRATCH_RETENTION`,
+`iterion clean`) judges each `runs/<id>` as its own entry: judged as one,
+`runs/` stays fresh while any run of the repository works.
+
+Under every read root the credential exclusion applies alike, and since
+#2868 its list is not a frozen name table: it follows the paths a
+credential is actually read from (claw's first-party
+`CredentialReadGuard`, vendored). Real layouts refuse at any depth
+(`.kube/config`, `.aws/`, `.codex/auth.json`, `.docker/config.json`,
+`.claude/.credentials.json`, `.config/gh/hosts.yml`, the gcloud ADC, ssh
+and gnupg dirs), the process's own env/home-derived locations refuse
+wherever a root reaches them (`KUBECONFIG`, `NPM_CONFIG_USERCONFIG`,
+`CODEX_HOME`, `AWS_SHARED_CREDENTIALS_FILE`, `DOCKER_CONFIG`,
+`GH_CONFIG_DIR`, `CLAUDE_CONFIG_DIR`, `HOME` — in a sandboxed runner that
+is the runner's own env, whose HOME lives under the scratch root),
+`.npmrc` refuses at a project position (the root of the workspace — in
+its spelling and its symlink-resolved one — or of a declared read root),
+and the intrinsic carriers (the `.env` family,
+`.netrc`, `.git-credentials`, `cli-auth.json`, private keys, the clone's
+`.git/iterion-credentials`, the iterion home's `secrets.json`) refuse
+wherever they appear. The consequence an author feels: a fixture or
+template carrying one of those names OUTSIDE a real location —
+`testdata/auth.json`, `fixtures/credentials`, a `kubeconfig.tpl` — reads
+freely. The verdict is always a refusal, never a redaction.
+
+Only reads take the extra root. `write_file` and `file_edit` are not
+scope-aware: a relative path rebases onto the workspace, an absolute one
+passes through, exactly as before. And a path one read tool emits is
+spelled so another read tool opens the same file — workspace-relative
+inside the workspace, absolute under any other read root, since
+`read_file` joins a relative path onto the workspace and would otherwise
+open its homonym.
 
 ### Per-backend capability matrix
 
@@ -95,8 +172,13 @@ from a plausible one (#1417). The cells:
   parity rule above ("wired — or typed-refused — for the other") is not
   yet honoured. Each one is a gap a session can pick up.
 - **unwired (no image)** — a variant of the gap above: the code path is
-  there, but the stock sandbox image does not ship the CLI, so the
-  capability cannot be reached from a sandboxed run at all.
+  there, but no image iterion publishes ships the CLI, so the capability
+  cannot be reached from a sandboxed run at all. The gap is the image's
+  contents, not the backend: a sandboxed run whose RESOLVED image is one
+  iterion publishes is refused before the pulls, naming the image and the
+  missing executable (`CAPABILITY_UNSUPPORTED`), and the compiler warns
+  (C321) where it cannot know the image — an operator image that bakes the
+  CLI lifts both (#1643).
 - **unknown** — wired in code (path cited below), but no live e2e through
   this backend exercises it yet. It may work; nothing has paid to find
   out. Turning an unknown into proven costs one live e2e — extend
@@ -145,20 +227,44 @@ The citations, per cell that is not self-evident from the table:
     is refused wherever it points, because `os.Root` rejects absolute
     targets outright. What the boundary buys is that the repository under
     review cannot reach the host through it.
-  - A command's **frontmatter** other than `description:` (`model:`,
-    `allowed-tools:`, `argument-hint:`, `disable-model-invocation:`) is
-    honoured by `claude_code` and **ignored** by `claw`, which keeps only
-    the body. A command that narrows itself with `allowed-tools:` therefore
-    keeps the node's full tool set on `claw` — bound it with the node's own
-    `tools:` instead. This is the divergence with a security consequence, so
-    it is the one the runtime says out loud: a command
-    declaring any of those keys logs a warning naming them and #1717, where
-    the enforcement is tracked, and the keys ride the node's
-    `delegate_finished` event (`command_frontmatter_ignored`) so a
-    deterministic gate can read them out of `events.jsonl` — a log line
-    cannot be asserted on. It is keyed per NODE, not per command file: a
-    second node invoking the same command with a broader `tools:` set is a
-    different exposure. Documenting it was never enough.
+  - A command's **frontmatter** other than `description:` and
+    `allowed-tools:` (`model:`, `argument-hint:`,
+    `disable-model-invocation:`) is honoured by `claude_code` and
+    **ignored** by `claw`, which keeps only the body. A command declaring
+    any of those keys logs a warning naming them and #1717, and the keys
+    ride the node's `delegate_finished` event
+    (`command_frontmatter_ignored`) so a deterministic gate can read them
+    out of `events.jsonl` — a log line cannot be asserted on. It is keyed
+    per NODE, not per command file. `allowed-tools:` is the exception, and
+    the one with a security consequence: it is **honoured** — a command
+    that declares it narrows the node's tool set to that list (folded onto
+    claw's tool names, plus the always-allowed `command` / `tool_search` /
+    `todo_write`), on BOTH surfaces. A prompt-invoked command narrows the
+    node's advertised tools at build time — intersect, never widen — and a
+    model-invoked one (the `command` tool) narrows the rest of the
+    generation dispatch-side: a call outside the list is refused with the
+    command's name. The model-invoked narrowing is **intersect-only** — a
+    deliberate divergence from claude_code, where the operator's next turn
+    lifts the bound: on this surface EVERY invocation is model-side, so a
+    command without `allowed-tools:` changes nothing and a later command
+    can only shrink the scope further — a restriction the model could lift
+    itself would be none at all. The bound survives the loop's own
+    continuations: the tool-use nudge and retries share the generation's
+    scope, a pause (ask_user, permission gate) checkpoints it beside the
+    conversation, and a delegated subagent's set is intersected with it.
+    Two refinement rules (#2905): an intersection keeps a member the other
+    side's family covers — `mcp__srv__*` ∩ `mcp__srv__tool` keeps the
+    member rather than intersecting to empty — and a generation whose
+    conversation no longer shows the invocation's notice (a retry
+    replaying from the bare prompt, a checkpoint compaction that folded
+    the turn away) gets the bound re-stated on its last user turn, so a
+    refusal never names a command the conversation cannot place.
+    Three published value shapes fold with documented approximations:
+    `Bash(git:*)` grants the WHOLE `bash` tool (iterion has no per-prefix
+    granularity), `mcp__srv__tool` / `mcp__srv__*` fold to the sanitized
+    `mcp_srv_tool` / the server's whole family, and a bare `*` declares an
+    explicit no-restriction. `model:` stays refused-by-silence,
+    deliberately: a contributed command must not re-route a node's spend.
   - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
     on `claw` (`$1` is the first argument) and **zero-based** on
     `claude_code`, whose docs define `$N` as shorthand for `$ARGUMENTS[N]`
@@ -185,6 +291,55 @@ The citations, per cell that is not self-evident from the table:
   invocation TEXT and the image blocks travel untouched, so the model
   receives the bytes on `claw` exactly as it does on `claude_code`. The
   attachment's path also survives as an argument.
+
+  The MODEL-invoked half (#1716): on `claw`, a node that grants `command`
+  in its `tools:` gives the model a tool that resolves
+  `<workspace>/.claude/commands/<name>.md` mid-conversation, through the
+  same contained `pkg/api/commands` lookup, under the same byte ceiling and
+  the same kill switch (`ITERION_CLAW_SLASH_COMMANDS=off` drops both
+  surfaces — the tool is not even registered, so a node declaring it fails
+  loudly at dispatch rather than half-living). Both dials are read on the
+  HOST, because the tool is sandbox-placed and a container holds no dial of
+  its own: the switch arrives as the tool's absence from the advertised set,
+  and the ceiling as a value the task carries (`slash_command_max_bytes`) —
+  so an operator who tightens it for a checkout under review reaches the
+  registration that actually executes. The returned body is inert
+  text: executing anything it asks for takes the node's own declared tools,
+  so a `command` grant hands over no capability the node did not already
+  hold. `claude_code`'s native equivalent is its `SlashCommand` tool, which
+  iterion withholds from every headless spawn whatever the node declares:
+  a command THERE can be Bash-backed and would reach a shell the node never
+  declared — the asymmetry is deliberate, and claw's text-only body is the
+  safe form of the same capability. The frontmatter divergence below covers
+  both paths: `disable-model-invocation:` is among the keys the lookup
+  reads and discards, so on claw the model path is not bounded by it.
+  `allowed-tools:` is bounded, on both paths (#1717): the `command` tool's
+  invocation narrows the rest of the generation's dispatches to the folded
+  list, the refusal naming the command that narrowed — and the tool's
+  answer OPENS with a notice saying so, beside the keys still discarded and
+  the body forms this backend expands differently, so the model reports a
+  command whose header claims what does not apply — and the host persists
+  that answer on the node's `tool_called` event, where a deterministic gate
+  can read it. The deterministic witness is
+  `pkg/backend/tool/claw_command_test.go`; the live one is the
+  `via_claw_model_tool` node of `TestLive_Feat_WorkspaceCommands`, whose
+  prompt does not open with the invocation.
+
+  "The workspace" is the run's, even when it moves: the engine replaces
+  the executor's workDir at run start when `worktree: auto` produces a
+  per-run worktree (`ClawExecutor.SetWorkDir`), and the `command` and
+  `skill` tools resolve through a workspace PROVIDER bound to that same
+  field (`ClawDefaults.WorkspaceProvider`, consulted on every call) rather
+  than a string captured when the registry was built — so the tools and
+  the prompt path can never resolve `.claude/commands/` and
+  `.claude/skills/` in two different checkouts (#2870). The same provider
+  backs bash's shell cwd and validation, `write_file`'s and `file_edit`'s
+  relative-path rebase, and the read tools' containment (their scope is
+  built over it), so the file and shell tools follow the same per-run
+  worktree (#2889). The witnesses are
+  `TestBuildExecutor_WorkspaceLookupToolsFollowSetWorkDir` and
+  `TestBuildExecutor_WorkspaceFileToolsFollowSetWorkDir`
+  (pkg/runview/executor_workspace_follow_test.go).
 
   A command whose body — **or whose expanded text** — exceeds
   `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` (256 KiB by default) is refused
@@ -219,10 +374,19 @@ The citations, per cell that is not self-evident from the table:
   and stops resolving under a list that names only `user` — measured both
   ways. So the flag does not *enable* project commands, it *scopes* them:
   iterion always passes it, and the ambient-context policy (above) decides
-  which scopes accompany it. `workspace`, the default, keeps the project
-  scope that carries them; the operator's own `~/.claude/commands/` need
-  `all` — which also closes the old asymmetry where a `claude_code` node
-  saw them and a `claw` node never did (#1716).
+  which scopes accompany it. What the policy leaves of the user-scope
+  question (#1716's (e)) is decided, per value: under `none` and
+  `workspace` (the default) NEITHER backend sees the operator's own
+  `~/.claude/commands/` — `claude_code` passes no `user` scope there and
+  claw never reads one — so the default-posture asymmetry the ticket
+  measured is gone; under `operator` and `all` a `claude_code` node sees
+  it and a `claw` node never does. That residue is deliberate, and the
+  ticket closes on it rather than on an opt-in. Containment is the whole
+  reason: claw's lookup is rooted at the workspace through `os.Root`, and
+  a sandboxed or multi-tenant run holds no host home to root a user scope
+  at. If symmetry is ever wanted it is re-proven by need — a measured
+  case of an operator reaching for it earns the design, and nothing is
+  built ahead of one.
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its
@@ -272,21 +436,32 @@ The citations, per cell that is not self-evident from the table:
   (`pkg/backend/delegate/pi.go`), which is its own parity gap. Nothing
   pi does has a live e2e; every pi cell stays unknown.
 - **opencode.** The gate is refused in **both** modes (C176): opencode
-  exposes no `PreToolUse` hook at all, and its own declarative policy
-  (`OPENCODE_PERMISSION`) is deliberately not wired — gate membership is
-  earned by a live denial, and none has been bought. `ask_user` is
+  exposes no `PreToolUse` hook at all, and its own declarative policy is
+  deliberately not wired — gate membership is earned by a live denial, and
+  none has been bought. The 1.x delivery (`OPENCODE_PERMISSION`) is
+  **removed from the 2.x line** (zero occurrences in the 2.2.5 binary); the
+  2.x mechanism is `OPENCODE_CONFIG_CONTENT`, re-measured on 2.2.5 by
+  `TestCLILiveOpenCodeConfigContentDeny` — see
+  [the fail-open table](#opencode-permission-not-a-gate-alone). A gated node
+  that reaches dispatch anyway (a launch-time override route the compiler
+  never saw) is refused with the **typed** capability refusal
+  (`CAPABILITY_UNSUPPORTED`), never run ungated and never retried. `ask_user` is
   `refused (C267)` for the async pair and `warned (C271)` for the
   synchronous one (the tool list never reaches the CLI, so the node
   never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
-  the stock image ships no opencode binary, so a sandboxed node dies at
-  `exec: not found` with nothing refusing it earlier — see
+  no published image ships an opencode binary, so a sandboxed run on a
+  published image is refused at start — the refusal names the image, the
+  `opencode` executable and both exits (`sandbox: none`, or an image of the
+  operator's own that ships it), and C321 says it at compile time — see
   [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork is
   proven by `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the
-  real opencode 1.19.0 CLI, driven through iterion's own `Execute`, against
-  a scripted model on `127.0.0.1` — the resumed turn's request carries the
-  earlier turn, a fork answers under a new id with the whole history, and an
-  unknown id fails with `Session not found`. No credential and no model
-  spend: what is proven is the CLI's rehydration, not a model's use of it.
+  real opencode **2.2.5** CLI, driven through iterion's own `Execute` in the
+  2.x argv, against a scripted model on `127.0.0.1` — the resumed turn's
+  request carries the earlier turn, and a fork answers under a new id with
+  the whole history. An unknown id is version-dependent and the test asserts
+  the version it probes ([the opencode section](#opencode)). No credential
+  and no model spend: what is proven is the CLI's rehydration, not a model's
+  use of it.
   `session: persist` stays unwired: opencode keeps its sessions in one
   SQLite database, with no per-session file for the packer, so
   `SessionResumeCapability` does not list it and a persist node logs
@@ -420,7 +595,10 @@ On a containerised run kimi reads the image's home, and iterion leaves it
 alone.
 
 **opencode, read from source** (1.19.0, the `opencode-ai` package, and
-2.0.26, `@opencode/cli`; no live measurement). opencode reads its global
+2.0.26, `@opencode/cli`), with one half now measured live on **2.2.5**: the
+WORKSPACE's own `AGENTS.md` reaches the prompt the CLI sends, and the project
+it reads is the one `PWD` names — see [the opencode section](#opencode). The
+operator-side reading below stays read-from-source. opencode reads its global
 `AGENTS.md` from its config directory, every file its global configuration
 lists under `instructions`, and — 2.x — every `AGENTS.md` from the working
 directory up to the home directory, past the repository root: nothing keeps
@@ -458,10 +636,33 @@ will work without any further configuration. The agent in the
 default template has empty `backend:` and `model:` — both are
 filled in at run time from what's available.
 
+## Compilation and target capabilities
+
+`ir.Compile` never discovers credentials, reads CLI auth files or probes
+executables on the compiling host. With no model, node backend or workflow
+default, C018 warns that execution must resolve a backend on its target. A
+caller with an authoritative target snapshot can use
+`CompileWithCapabilities`: available suppresses that diagnostic, unavailable
+refuses agents and judges, and unknown keeps the warning. LLM routers retain
+their advisory C018 for unavailable or unknown targets. Human LLM interaction
+requirements are unchanged. Explicit DSL choices remain the operator’s intent.
+
+Server validation, cost preview, run-view compilation and runner transport
+compilation use the unknown-target entry point. They do not substitute the
+server’s credentials for those of a future runner. The executor remains the
+execution boundary: it resolves the backend on its target, builds its model
+client and returns the build error when no model can be resolved. Compilation
+is not credential validation. Explicit environment expansion, including
+`ITERION_DEFAULT_SUPERVISOR_MODEL`, retains its existing contract.
+
+The forfait-first and Anthropic-wire preflight reader deliberately stops at
+`auto` or an unresolved template. It cannot certify which backend a future
+runner selects, so falling through there would narrow a protective guard.
+
 ## Resolution chain
 
 When a node, workflow, and env are all silent, the runtime resolves
-a backend in this order (first non-empty wins):
+a backend in this order:
 
 1. `node.Backend` — the `backend:` line on the agent/judge/router
 2. `workflow.default_backend` — the workflow-level `default_backend:`
@@ -487,7 +688,12 @@ actually read — the launch-time `--fallback` admission, which runs in the
 process that dispatches the node.
 
 Two forms fall through to the next step of the chain: an empty field, and
-`auto` — on a NODE. A third kind is undecided: a field the source writes
+`auto` — on a node or the workflow default. Both use
+`ir.BackendFallsThrough` after template and environment expansion. An explicit
+`default_backend: auto` deliberately leaves the choice to the execution
+target — and when nothing in the chain decides, C018 answers as it does for
+no default at all (unknown capabilities: a warning; a target reporting none:
+an error). A third kind is undecided: a field the source writes
 but does not answer — a `${X}` with no `:-` default, a bare `$X`, a
 `{{vars.x}}` a launch may override. Those do **not** fall through to
 `default_backend:`, because which branch the run takes is not knowable from
@@ -526,7 +732,7 @@ that drives it, and how hard it is asked to think.
   on *inherit* to keep the DSL default.
 - **CLI** — repeatable `--model` / `--backend` / `--effort-for`, each a
   `selector=value` (or a bare `value` for every LLM node). A selector matches
-  by exact node id (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or
+  by exact node id (`reviewer_alternate`), id glob (`reviewer_*`, `fix_*`), or
   node kind (`agent`|`judge`). Most specific match wins; resolution is
   per-field so the three compose:
 
@@ -542,7 +748,12 @@ that drives it, and how hard it is asked to think.
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
   backend, effort}]`. An `effort` outside
   `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
-  reaches the provider verbatim.
+  reaches the provider verbatim. The selector carries no bot part (a
+  `<bot>/` prefix is a 400): a `<node>#<route>` row pins backend, model and
+  one provider hint, a `supervisor:<name>` row a model only, and `effort` on
+  a route, a `,` chain, a stray `,`, a `hint:model` step or a `${…}`/`{{…}}`
+  template in a route's `provider`, or `backend`/`provider` on a supervisor
+  is a 400.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
 and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
@@ -550,9 +761,9 @@ already sit at the top of the chain. A bot that escalates effort per branch is
 therefore flattened by a run-wide `*` override — which is what asking for one
 means. See [ADR-090](adr/090-model-registry-and-operator-model-choice.md).
 
-This composes with the mono/dual `--review-mode` topology (ADR-052): the
-review mode chooses *which family* runs (one or two), the override chooses
-*which model/backend* each running node uses. A run launched through the studio / HTTP
+This composes with the `--review-mode` topology (ADR-052, amended by
+ADR-169): the review mode chooses *how many* reviewers run (one or two), the
+override chooses *which model/backend* each running node uses. A run launched through the studio / HTTP
 API re-applies its launch-time model/backend rules on resume (they are read
 back off the run document) — on every launch surface, `iterion run` included,
 so the flags do not have to be repeated on `iterion resume`. `--compress` remains
@@ -776,7 +987,7 @@ first, then each route.
 |---|---|---|
 | `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
 | `auth` | rejected or expired credential | `claude_code`, `pi` |
-| `unavailable` | model the credential cannot reach | `claude_code` |
+| `unavailable` | model the credential cannot reach — a bad or withdrawn id, or one a facade would substitute with its own model under the requested label (z.ai answers any id with GLM, Moonshot with Kimi: refused before the spawn, #2772) | `claude_code`, `claw` |
 | `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
 | `any` | escape hatch — clears the filter | — |
 
@@ -799,6 +1010,19 @@ the IPC boundary, and `kimi`/`grok` have no error channel at all.
 A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
+
+A refusal's reset instant is read in the zone the refusal gives, most explicit
+first:
+
+1. a designator written on the instant (`2026-10-01T00:00:00Z`, `+02:00`);
+2. a zone named in parentheses after the reset word (`resets 9pm (Europe/Paris)`);
+3. for the z.ai facade's zone-less sentence (`Your limit will reset at
+   2026-11-08 01:20:00`), Beijing time (UTC+8), the clock its request ids
+   carry;
+4. UTC for anything else.
+
+A named zone the binary cannot load yields no instant, and the run falls back
+to the bounded blind wait rather than to an instant hours off.
 
 When a `usage_window` failure carries a provider reset instant, the executor
 also puts the effective `(backend, credential hint, model)` route on a reactive
@@ -865,6 +1089,11 @@ lie. `on: [any]` opts in explicitly. The compiler (C173) refuses a skip
 route that also names a backend/model/provider/metered, an unknown
 `action:`, and a skip that is not the LAST route (everything after a
 terminal is unreachable).
+
+A claw structured parse failure first uses the bounded schema correction loop.
+If correction stops without an answer, it reaches the remaining `fallbacks:`
+as an unclassified failure, so another executable route can supply the answer.
+The invocation's correction allowance remains shared across routes.
 
 `when:` gates any route on an expression over `vars` — evaluated at
 dispatch, so an ordinary `--var` picks the active route set per run
@@ -974,32 +1203,85 @@ attempt to the route's last-good, provider-neutral message snapshot. This keeps
 a named durable chat slot intact without carrying partial output into the next
 route.
 
-### A schema-invalid answer gets one more turn (the schema re-ask)
+### A schema-invalid answer gets bounded correction turns (the schema re-ask)
 
-An LLM node's answer that fails its `output:` schema on a shape one more ask
-can fix — a required field missing, or text where JSON was expected — is not
-the node's verdict yet: the executor **re-asks the model once**, with the
-validation error as its next input, in the context the answer was produced
-in. A type or enum mismatch is the model's answer in a stable shape and fails
-the node without a re-ask; so does a second answer that is still invalid
-(`structured output invalid after retry`).
+An LLM node's answer that fails its `output:` schema is corrected by the
+executor with the validation error as the model's next input. Missing fields,
+parse fallbacks, type mismatches, enum violations and forbidden nulls all use
+this same bounded loop. The runtime supplies the correction budget per node
+invocation (each loop/foreach counter vector identifies an invocation)
+(default **2**, overridden by `ITERION_OUTPUT_CORRECTION_BUDGET` or
+`WithOutputCorrectionBudget`; **0** disables correction), persists attempts
+before calling the model, and emits `node_recovery` events with
+`strategy: schema_output_correction`. Exhaustion surfaces `SCHEMA_VALIDATION`;
+in-process generic recovery does not repeat the business prompt without
+feedback. Cloud redelivery can still re-execute a failed node within its
+delivery limit; the invocation's persisted correction allowance does not reset.
+An unchanged invalid answer stops the loop early. Malformed budget values emit
+`OUTPUT_CORRECTION_BUDGET_INVALID` before using the default. Each offending
+enum value is capped at 2048 bytes before quoting; escaping can enlarge its
+rendered quotation. Each parse diagnostic is capped at 2048 bytes. These caps
+use a UTF-8-safe boundary and a truncation marker; other field violations
+remain in the feedback. Parse diagnostics travel separately from model answer
+text, including across the sandbox boundary; extraction reads only answer text.
 
 How the re-ask continues the model's work depends on what the backend can
 continue. The mode rides the `delegate_retry` event (`reask`) and the
 re-ask's own `delegate_started` / `delegate_finished` / `delegate_error`,
-marked `attempt: 2`:
+marked with their attempt number (the first re-ask is `attempt: 2`):
 
 | Backend | `reask` | What the model is sent |
 |---|---|---|
 | `claw`, in-process or sandboxed | `continue_conversation` | The conversation it just completed — its own answer as the last assistant turn — then the validation error as a user turn: one schema-forced call, tools off, run in-process (nothing in it touches the workspace) |
 | `claude_code`, `codex`, `pi` | `resume_session` | The session the answer ran in, resumed by id (never forked, never best-effort), with the validation error as the new prompt; the backend's own structured-output pass runs on top |
-| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get. One exception, reachable only when the capture itself failed (an in-container runner without the capture sink): a claw node resumed from a pause replays the pause behind the restart and the appended error is dropped with the prompt — the turn runs again without the feedback |
+| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get. An answered pause contributes its operator answer without replaying its control fields |
 
-**Budget: one re-ask.** A re-ask that comes back as unstructured text still
-gets the last-resort extraction (a direct claw call over that text, below); a
-re-ask that comes back invalid, or fails, fails the node — with the re-ask's
-own error wrapped beside the validation error, so a usage window hit during
-the re-ask is still the typed refusal the run-level retry keys on.
+**One allowance for every correction.** The last-resort claw extraction of
+unstructured text consumes an attempt from the same budget. An unavailable
+extraction route consumes none. A failed re-ask tries extraction before
+returning its own typed transport, authentication or quota failure. An
+extraction failure is logged and stays inside the schema correction loop;
+the host extraction credential is not the node credential. A typed re-ask
+refusal retains its type when the extraction allowance is exhausted. The
+extraction's own call is booked by its own `delegate_finished` /
+`delegate_error`, marked `reask: "extract"` and named after claw, the
+detected model and its provider, so the run's meter counts it on that route.
+The event carries the credential keys of the claw arm's Spend for the call
+(ADR-161 decision 8): the spend ledger books it on the run slot it spent
+and the credential plan's fine table on that slot's fingerprint — a donor's
+lent key included — never on the node's plan row by prediction; the pod's
+money books on nobody and is no plan miss. Under the stamp, an extraction the
+pod alone would fund is refused by the arm: nothing is sent, nothing booked
+(`credparity.RecoveryRows`).
+
+**Runtime output schemas are advisory by default for outputs the executor does
+not validate** (tool, human, subbot and wait). A mismatch emits
+`node_output_schema_mismatch` and a warning log naming the schema and missing
+or incorrect fields, without values. Only nodes without prior mandatory
+validation succeed as before with their output. COMPUTE conformance remains
+mandatory (#792): integral floats become integers; fractional integers and
+wrong field types fail with `SCHEMA_VALIDATION`, including in advisory mode.
+LLM outputs retain executor validation and bounded correction.
+One shape is refused in that default: a tool node's `command:` / `script:`
+that declares `output:` and prints non-empty stdout that is not a JSON object
+fails its node with `TOOL_FAILED_PERMANENT`, naming the schema and never the
+output ([the output contract](dsl.md#tool)).
+`WithOutputValidation(true)` selects strict rejection (`SCHEMA_VALIDATION`,
+or deterministic `TOOL_FAILED_PERMANENT` for tools to prevent cloud redelivery
+from repeating side effects). `ITERION_STRICT_OUTPUT_VALIDATION=1` (also `true`,
+`yes`, `y`, `on`, `enabled`, case-insensitive) selects the same strict default
+for run, resume, subbot, studio, runner and dispatcher. The dial has a third
+position: written out as off (`0`, `false`, `no`, `n`, `off`, `disabled`, or
+`WithOutputValidation(false)`), it also restores the `{"result": "<text>"}`
+wrapper for that non-JSON stdout — unset is not off. An explicit engine option
+overrides the environment; unknown values warn with `OUTPUT_VALIDATION_INVALID`
+and read as unset. Raising the correction budget on resume reopens
+an exhausted or unchanged episode without resetting spent attempts. Correction
+deadlines apply to corrective calls only;
+expiration of
+the run duration budget remains `BUDGET_EXCEEDED`. The durable ledger scrubs
+errors before persistence, distinguishes nested loop invocations and follows
+a replacement child under the same parent subbot attachment.
 
 **Cost: a real turn, billed as one.** The re-ask's tokens and cost fold onto
 the node's `_tokens` / `_cost_usd` under the rule an in-place retry follows
@@ -1072,7 +1354,10 @@ crossing on a tools-less node is **dropped with a warning**, never
 silently taken — and what makes it visible to the three pre-run
 analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
-crossings the compiler refuses in the `.bot`.
+crossings the compiler refuses in the `.bot`. A routing cell that re-pins
+an authored route's `backend` (`<bot>/<node>#<route>`, below) meets the
+compiler's crossing refusals (C176, C135) through the same predicates, and
+is refused at launch.
 
 The screen reads a node's backend the way the run itself will: a
 `${VAR:-default}` dial by the launching process's environment, and a
@@ -1111,24 +1396,30 @@ CLI contract that structurally cannot return an error, so no typed
 trigger can fire for them; Codex is not included in the v1 fallback lane. A sandboxed `claw` route
 works — the trigger comes from the failing route, which `claude_code`
 types correctly — but its own failure is always unclassifiable, and it
-**cannot serve a node whose permission policy can produce an Ask
-decision** (mode `ask`, or any explicit `ask:` rule — which outranks
-mode `deny`).
+**cannot serve an ask that reaches a container-executed tool** (mode
+`ask`, or an explicit `ask:` rule naming one — which outranks mode
+`deny`).
 
-> **Sandboxed `claw` enforces the permission gate for deny-shaped
-> policies.** The policy crosses the IPC as a pre-task
-> `permission_policy` envelope (`permission.PolicyConfig`, re-parsed
-> in-container by the same parser), and the `__claw-runner`'s own tool
-> loop applies it before every tool — local builtins and proxied tools
-> alike. The pre-task position is the mixed-fleet guarantee: a runner
-> binary too old to know the envelope fatals on "unexpected envelope
-> before task" instead of running the gated node with an empty policy,
-> so the combination fails CLOSED, never open. What cannot cross is an
-> **Ask decision** — nothing inside the container can pause the parent
-> run — so an ask-capable policy is refused loudly at dispatch (and
-> C136 warns at compile time). Run the workflow unsandboxed
-> (`sandbox: none` / `--sandbox none` — a node-level `sandbox:` is not
-> honoured at run time), or route the node to `claude_code`.
+> **Sandboxed `claw` enforces the permission gate and serves Ask
+> decisions through the approval channel (#3513).** The policy crosses
+> the IPC as a pre-task `permission_policy` envelope
+> (`permission.PolicyConfig`, re-parsed in-container by the same
+> parser), and the `__claw-runner`'s own tool loop applies it before
+> every tool — local builtins and proxied tools alike. The pre-task
+> position is the mixed-fleet guarantee: a runner binary too old to
+> know the envelope fatals on "unexpected envelope before task"
+> instead of running the gated node with an empty policy, so the
+> combination fails CLOSED, never open. The served scope is
+> **launcher-placed tools** (MCP, in-memory registries): an Ask
+> crosses back as `permission_ask`, the launcher binds the exact call,
+> consumes the approval and executes it itself, and a run-level pause
+> suspends for a human — the container's own words never reach the
+> operator. An ask that can reach a **container-executed tool** (bash,
+> the file tools) refuses the node loudly at dispatch (and C136 warns
+> at compile time): the launcher cannot certify an execution inside
+> the container. Run the workflow unsandboxed (`sandbox: none` /
+> `--sandbox none` — a node-level `sandbox:` is not honoured at run
+> time), or route the node to `claude_code`.
 
 > **A sandboxed `claw` node also refuses a tool the container cannot
 > execute.** Tools the runner does not run locally are proxied back and
@@ -1181,7 +1472,8 @@ like `OPENAI_BASE_URL`:
   auth alone.
 
 The endpoint is the operator's choice, but the dial is guarded: a public
-address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
+address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`, exported by
+the operator (a value a project `.env` plants does not count), for a
 self-hosted gateway on private infrastructure. When the sandbox's egress
 runs through the run's [network proxy](sandbox.md#network-policy), the call
 crosses it too, and the guard holds there: the runner checks the gateway's
@@ -1200,7 +1492,14 @@ that alias on its own host's loopback. A gateway route runs on the
 **`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
 vendor `provider:` hint beside a gateway model, is refused when the node is
 dispatched, and warning **C186** says the same at `iterion validate` time
-([diagnostics](references/diagnostics.md)).
+([diagnostics](references/diagnostics.md)). A node that names NO backend gets
+claw from auto-detection when its chain carries a gateway route in any
+position — its own `model:`, a later `provider:` step or a `fallbacks:` route
+inheriting the node's backend — since the credentials-first answer
+(claude_code on a machine with the CLI) could never serve that route, and a
+gateway fallback under it would be refused at its own build without ever
+firing; the redirect is logged once per node, and an explicit `backend:
+claw` makes the same choice silently.
 
 Until the catalog slice prices the gateway's ids, a gateway route is an
 unpriced route: spend is still metered in tokens and bounded by
@@ -1216,19 +1515,333 @@ when a call's usage never arrives — as for any unpriced route.
 > env), so on a multi-tenant runner, bind it with the egress allowlist
 > ([pkg/sandbox/netproxy](../pkg/sandbox/netproxy/proxy.go)) and rotate it;
 > the host-side relay — the key never entering the container — is the known
-> follow-up.
+> follow-up. (The allowlist CAN name the gateway since #2099: `network.rules`
+> expand `${VAR}` against the runner's env, so a static bot scopes egress to
+> the deployment's gateway host — and the session board's curation, the
+> remaining surface that auto-resolved a vendor default for a
+> gateway-served session's content, now refuses unpinned with
+> `sessionboard.ErrGatewayBoardNeedsPin`, the twin of the supervisors'
+> gate.)
+
+**A team's own gateway key** ([ADR-131](adr/131-tenant-gateway-credential.md))
+proves `openai_compatible/…` specs in the cloud model catalog
+(`GET /api/models`, credential source `OPENAI_COMPATIBLE_API_KEY`) through
+**claw only** — pi and claude_code never light up on it — and recommends no
+model: the id is the gateway's own naming. A key restricted to bots or
+repositories proves nothing there ([models.md](models.md)).
+
+In the cloud, that key funds the team's gateway routes (ADR-131 §5). When a
+credential tier the launch consults — the team's own, then the org's, an
+attached pool's gateway entry and the platform's unless the team is sovereign
+or pool-mapped — holds a gateway key serving the launch's bot and repository, the credential walk seals it with its
+base URL and endpoint-aware fingerprint, and the run's literal
+`openai_compatible/…` routes spend it, never the runner's environment; a capped
+key still decides it, the run then parks on it. A key the run's frozen pair order
+holds out, or whose sealed secret does not open, decides nothing: the routes ride
+the runner's gateway, and the launch names the key and why. With no such key, a run whose
+every route rides the gateway is env-funded as before. An env-templated route
+(`${DIAL:-…}`) is never attributed to the key — what the runner expands it to
+is not the publisher's word. Under a dedicated runner pool, whose pod carries
+the operator's gateway dials, the key is sealed for such a route all the same
+and claw's dispatch prefers it to the pod's gateway; on the default runner it
+is not, nor for a route the walk cannot decide. A run whose every route is a
+decided vendor route never carries the key either (it would pin the gateway
+host on the run's proxy for nothing), and a gateway key is never the run's default credential:
+the legacy pool and the fallback door still serve the vendor routes of a team
+that holds only its gateway key. Under `llm_fallback=none` a gateway
+route nothing of the team's own funds is refused by name, a pool-stamped run
+excepted. The routing pair `claw+openai_compatible_key` is a seal-whitelist
+entry of the pair order, never a fallback rung; a run frozen before the entry
+existed replays its order as stored and says once what it held out. The
+legacy pool and the fallback door never lend a gateway key.
+
+A run whose gateway routes that key funds is stamped `team_gateway` at launch
+(`content_boundary` on the run document, frozen and replayed by every resume
+and fork; ADR-131 §4): a gateway route the walk attributes to the key, and the
+key sealed — a mixed run, vendor keys beside it, included. Every other launch
+the walk resolves is stamped `own_keys`. Under `team_gateway` the run's sealed
+bundle refuses every fallback to the pod's environment (`AmbientLLMRefused`,
+auxiliaries included), the server-side helpers and the supervisors refuse the
+run's auxiliary specs, and the routing ladder lands no crossing on a node routed
+to the gateway — `claw+openai_key` or codex would carry that node's content to
+a vendor credential — nor asks a donor for one; the run's vendor-routed nodes
+keep theirs. Since no environment fallback serves it, a `team_gateway` run
+whose route nothing in its bundle funds is refused by name at launch (and at
+resume), with or without `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`.
+
+The team's default gateway model is a routing decision, not a field of the
+key: an override cell on selector `*` pinning
+`openai_compatible/<provider>/<model>`, the gateway's id verbatim (ADR-122):
+
+```json
+{"selector": "*", "model": "openai_compatible/scaleway/glm-5.3"}
+```
+
+It belongs in the routing record whose launches the key funds, and no wider
+one:
+
+- a key with no `bots` or `repos` audience: the team's routing policy
+  (`GET`/`PUT /api/teams/{id}/routing-policy`), which every launch of every
+  bot of the team folds;
+- a key restricted to repositories: the `routing` block of each repository
+  integration it serves (`GET /api/teams/{id}/forge/repo-bots`,
+  `PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`; a block the
+  PATCH carries parks for the org's approval where the org requires one);
+  a key restricted to bots: an integration that enables only those bots.
+
+On the team's policy, a restricted key's cell would also route launches the
+key cannot fund onto the gateway — the team's other repositories or bots,
+and for a repository restriction the pipeline lane, which names no
+repository (ADR-131 §3) — and under `llm_fallback=none` such a launch is
+refused (§5). The scheduled lane names its integration's repository (or its
+`repo_url`'s), so an integration's own schedules spend a key restricted to
+that repository; when two gateway keys of the team serve the same bot and
+repository, a schedule's `key_overrides` picks the one it spends
+([byok.md](byok.md#per-webhook-key-override)).
+
+The cell re-targets the `model:` of every LLM node the record reaches — not
+its `backend:` or `provider:`. A node whose backend resolves to claw (named,
+or picked by auto-detection) and that carries no vendor `provider:` hint
+runs the gateway on claw. Any other — pinned to a CLI backend by its own
+`backend:` or the workflow's `default_backend:`, or carrying a vendor hint —
+is refused the gateway model (the parity rule above) and walks to its own
+fallbacks: the gateway never serves it. A cell pinning `backend: claw` as
+well moves a node whose only obstacle is its CLI backend, and claw keeps
+only the tools the node declares. A node with both a CLI backend and a
+vendor hint — review-pr's claude slots and revi-converse's agent run
+`claude_code` with `provider: anthropic` by default — moves only under a
+cell that also pins the provider: a model cell never clears a hint, but a
+`provider` cell REPLACES the node's whole `provider:` chain, dial included,
+and beside `backend: claw` it may be `anthropic` or `openai_compatible`.
+Claw acts on those two values and on no other — `anthropic` at its
+force-Anthropic-direct switch, `openai_compatible` at the gateway crossing
+check, which serves the gateway model the hint names and refuses any other
+model loudly — so any other value beside claw is refused (at write when one
+cell holds both, at launch when two do), and `openai_compatible` beside a
+model that is not `openai_compatible/…` is refused at write when the cell
+writes that model — its `model`, or a node chain step's own
+`openai_compatible:<model>`. A stored record that holds one is still read at
+launch (`llmroute.ValidateStored`), and so is the platform record's stored
+block by a platform-credentials PUT that does not replace it, so the record's
+other fields stay editable: the launch judges the element per node,
+below, so it refuses only a launch whose dispatch builds it (a claw chain's
+tail is built only when the run's provider allowlist drops the steps ahead
+of it).
+A `claude_code` route is still refused a gateway model at dispatch, whatever
+the cells say. The launch rebuilds every element dispatch builds from the
+folded cells — each node's provider steps dispatch sends (the run's provider
+allowlist drops a step first, then a backend that does not walk a hint-only
+chain sends the head left: claw, and an unnamed one, which the runner
+resolves to claw for a chain that needs the gateway) and each `fallbacks:`
+route the allowlist keeps, the model from a step, a cell or the bot — and
+judges it with dispatch's own gateway rule (`GatewayCrossingRefusal`): a
+gateway route on a literal non-claw backend (the node's own `backend: claude_code` included), a vendor
+hint beside a gateway model, the gateway hint beside a model that is not a
+gateway route. When a cell or a launch row wrote one of the fields that
+refusal reads, the launch refuses it, naming each field and where it came from — a
+launch row by its selector, a cell by the selector its level wrote (bot part
+included) and that level (`written at level "team"`; an integration's cell
+reads `written at level "webhook" (the integration's routing block)`, the
+label its provenance carries) — and, where the field
+to change is one the bot wrote, what the cell can pin instead: `"backend":
+"claw"` beside a backend that cannot serve the gateway, `"provider":
+"openai_compatible"` (with `"backend": "claw"` where the backend cannot serve
+it) beside a vendor hint the bot wrote next to the cell's gateway model — in
+a cell on the route (`<bot>/<node>#<route>`) when the hint is a route's own
+and the model came from a node cell; the integration's write screen warns
+instead. A field a slot dial decides is
+the runner's: the launch reads the dial's default and warns — unless
+dispatch refuses the element whatever a model dial expands to, a gateway
+route and any other model alike (the gateway hint a cell pins on a literal
+`claude_code` node), which the launch refuses. A crossing the
+bot writes alone stays C186's and dispatch's, unless the launch is what
+builds the step: a cell's backend that walks the provider chain the bot's own
+backend collapses to its head, or the allowlist dropping the steps ahead of
+it — the launch refuses it then, naming what built it. The cell that moves such a node onto the gateway is
+therefore `{"backend": "claw", "provider": "openai_compatible", "model":
+"openai_compatible/<provider>/<model>"}` on that node: it fixes every field
+the launch walk reads, so the walk DECIDES the route from the cell — the
+node's own `${…}` dials are read nowhere, the route counts among the run's
+decided primaries, and the credential walk attributes it to the team's key
+(sealed, `team_gateway` stamped). A cell that leaves the provider to a
+node's dial leaves the route to the environment that expands it. The fold
+decides per selector and field
+([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): among the
+cells that reach one site, the node target's specificity decides first, then
+the bot part (below), then the level — an integration's cell wins over the
+team's on the same selector, and on two node selectors as specific (`*iew`
+and `rev*` on `review`) too — then, at one level, a cell over its every-bot
+spelling (`x` over `*/x`, below), then the selector first in byte order. A
+bot's manifest writes no cell: its `routing:` block carries no `overrides`
+(`bundle.RoutingSpec`; a manifest naming the key fails to decode), and its
+`locks: [overrides]` vetoes every cell an integration, a schedule, a trigger
+or the launch's own `llm_routing` writes, leaving each site to the team's,
+org's and platform's cells. A launch's own row
+wins a cell on the same selector, and a launch `*` row overrides its fields
+in every node cell; a cell on a more specific node selector than a launch
+row other than `*` still wins the fields both pin (a `reviewer_alternate` cell
+beats a `reviewer_*` launch row).
+
+A cell reaches more than a node's own route
+([ADR-132](adr/132-a-run-reads-no-environment.md) §2, D21):
+
+```
+selector := [ <bot> "/" ] <target>
+<target> := "*" | agent | judge | router | <node id> | <node glob>
+          | <node id> "#" <route>       one `fallbacks:` route of that node
+          | "supervisor:" <name>        one declared supervisor
+```
+
+- `<bot>` is the bot the cell is for — its bot id (a catalogue bot's name,
+  `review-pr`; a team or platform bot's slug, `review-pr-pool`), the
+  manifest name of the bundle the launch serves (`review-pr`, which a team
+  fork keeps), or a glob over either. The match is exact: case and `-`/`_`
+  count. A node cell may omit it (it then reaches the same-named node of
+  every bot the record reaches); a route-scoped or supervisor cell MUST carry
+  it, since node ids and supervisor names collide across bots — `*/…` spells
+  "every bot" on purpose: `*/x` and `x` are one selector, and both reach a
+  launch that names no bot — a block written with both on one field is
+  refused at write as one that pins it twice, a launch's own `llm_routing`
+  included (it meets the write gate at the request). The launch resolves it: a cell
+  for another bot drops, a cell for this bot folds as its bare target. On
+  one target the
+  more specific bot part wins — no bot part and `*/` < a glob < the manifest
+  name < the bot id — and at the same bot part the nearer level's cell
+  (platform < org < team < integration, schedule or trigger < run; a bot's
+  manifest writes none, above); two globs of one level reaching the bot tie,
+  and the one first in byte order wins (`*-pool/x` over `review-*/x`),
+  whatever another level writes on either. A stored team, org, platform or
+  integration record holding `x` and `*/x` on one field — written when `*/x`
+  was a node glob no id matched — is read at launch
+  (`llmroute.ValidateStored`), and `x`, the cell that routed the site then,
+  keeps the field at that level in either listing order. A subbot child is a run of its own bot, the bot a
+  top-level launch of its bundle would be: its slug — the bundle's
+  directory, the name a catalogue or a snapshot collection files it under — and its manifest name, on every lane. It folds
+  the snapshot its root run froze at launch again for that bot, so a cell for
+  the parent's bot does not reach it and a cell for the child's does; the
+  root run's own launch rows fold on top, bot-free, for every child of the
+  tree as at the root (an `act` row reaches the child's `act`). The parent's
+  folded rows never reach a child. The snapshot's bot level is the root (the
+  launched) bot's manifest `routing:` block — a child's own manifest block is
+  not read. A child's document records the root's snapshot and launch rows,
+  so a child resumed on its own replays the root's providers allowlist and
+  its own children fold what the root froze. A root document that predates
+  the raw launch rows hands its children its folded rows when its snapshot
+  froze no override cell; when it froze cells the run log warns the rows no
+  cell explains, and no child folds them. The launch's credential walk
+  reads no subbot child's site: a cell that moves a child's node onto the
+  gateway is honoured at the child's dispatch, but seals the team's gateway
+  key only when a route the walk reads uses it too, or on a runner pool —
+  elsewhere the child's gateway call rides the runner's environment gateway,
+  and the cloud runner warns on the parent's run log, naming the pinned
+  sites. Teaching the walk a child's sites is a follow-up.
+- `<node id>#<route>` names an authored `fallbacks:` route by the key the
+  walk records it under: its name (`reviewer_alternate#glm`), or its index when
+  the author named none (`converge#0`). It pins `backend`, `model` and
+  `provider`, which replace the route's own; `effort` is refused (a route
+  runs at its node's). Its `provider` is one literal hint: dispatch sends a
+  route's provider whole, so a `,` chain (the node's `fallbacks:` list is the
+  route chain), a stray `,` (`zai,` reaches dispatch as `zai,`, a hint no
+  harness knows) or a `hint:model` step (write the model in `model`) is
+  refused, at write and in a launch's own row, and so is a template in a
+  launch's own row (the runner would send its expansion whole). A pinned `backend` meets the compiler's route
+  refusals — C176's permission gate, claw⇄CLI tools inversion and session
+  continuity, and C135's unresolvable tools — against the node's backend as
+  dispatch reads it, the node cell's first: refused at launch, warned at the
+  integration's write screen. A node backend a slot dial decides is the
+  runner's: the launch reads the arms that read the node's backend (tools
+  inversion, session continuity) on the dial's default and warns, and the
+  executor build refuses on the dispatching process's own reading; the gate
+  and C135 read the route's backend alone and refuse at launch whatever the
+  dial says. A tools-inversion or session refusal names the remedy a cell
+  can write: move the node with the route, a cell on the node pinning the
+  same backend. A launch's `--fallback` stage and a policy
+  rung are not authored routes and are never reached.
+- `supervisor:<name>` pins a supervisor's `model` — nothing else, a
+  supervisor declares nothing else — on every lane, an in-process resume
+  included (its supervisors read the rows the resumed executor dispatches
+  with). Note that a `team_gateway` run starts no supervisor at all
+  (`runview.FundedSupervisorSpecs`), pinned or not.
+- A launch's `*` row shadows node cells only, never a route or supervisor
+  cell. A launch's own rows carry no bot part: a `<bot>/` prefix is refused,
+  and so is a field the row's class does not carry (`effort` on a route,
+  anything but `model` on a supervisor).
+- A cell naming its bot by id or manifest name whose target matches nothing
+  in that bot — no LLM node, no tool's rung-4 recovery agent
+  `<tool>__recover`, no route, no supervisor — is warned, at the
+  integration's write screen and once per name at launch. The integration's
+  write screen also warns for a cell whose bot part reaches none of its
+  enabled bots by id or manifest name, naming them: no enabled bot's own
+  launch folds it — a typo, or a bot not enabled on the integration —
+  unless a subbot child of an enabled bot runs as that bot, a reach the
+  warning names only for the enabled bots whose workflow declares a subbot
+  node or that the screen could not resolve or compile.
+
+Moving every site of the shipped Revi pair onto a team's gateway is then,
+on the forge integration (or the team's policy):
+
+```json
+{"overrides": [
+  {"selector": "review-pr/converge",              "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_glance",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer",       "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer_gpt",   "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
+]}
+```
+
+— witnessed on the shipped bots by
+`TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway` (the walk
+names the gateway alone, every primary decided) and
+`TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary` (the key
+sealed, `team_gateway` stamped) and
+`TestReviShippedBots_TheActivationBlockPassesTheLaunchScreens` (every launch
+screen admits it, the write screen warns nothing), `pkg/server/cloudpublisher`.
+
+Both writes REPLACE the record's whole routing policy (`null` clears it), so
+operator tooling reads, edits and writes back: GET the record; pin the model
+on a `*` cell of `overrides` — replacing the `*` model pin when there is one
+(a second is refused), appending the cell otherwise — and keep every other
+field and cell; then write the whole policy back. The team route takes
+`expected_updated_at`, the `updated_at` the GET returned (the zero time
+`0001-01-01T00:00:00Z` when it returned no policy), and answers a write that
+raced another with a 409: re-read and retry. The integration route carries
+no such stamp.
 
 ### What a gateway model costs and how big it is (ADR-122)
 
 The catalog resolves a gateway id with whole-entry precedence — fields are
-never merged across sources, and an answer carries its provenance:
+never merged across sources (a feed entry that prices an id without its
+window or output cap answers without them, over the operator table's),
+and an answer carries its provenance:
 
-1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
+1. The run's **price feed** (ADR-163, ADR-166), when the server folded
+   one: an answering feed entry (a fetched feed's while fresh, a
+   declaration's always) answers for the ids it carries, provenance
+   `"source":"feed:<name>"` with the feed's `refreshed_at` beside it.
+   Freshness is judged at the FOLD — the table that travels answers for
+   the run's whole invocation. See
+   [the price feed](#the-gateway-price-feed-auto-synced-operator-pricing-adr-163)
+   below for what feeds are and how they sync.
+2. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
    `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
-   "input_usd_per_mtok": F, "output_usd_per_mtok": F}}`. Strict decoding
+   "input_usd_per_mtok": F, "output_usd_per_mtok": F,
+   "cache_read_usd_per_mtok": F,
+   "reasoning": B, "tool_call": B, "temperature": B}}`. Strict decoding
    (unknown fields refused); prices arrive as a pair or not at all; a
-   declared 0/0 means unpriced, not free.
-2. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
+   declared 0/0 means unpriced, not free. The cache-read rate is optional:
+   a metered run's cached prompt tokens price at it (Scaleway bills
+   deepseek-v4.1-flash cached input at a fifth of uncached), and a table
+   without one prices them at the input rate — the arithmetic from before
+   the cache split, so an unextended table changes no number. The three
+   capability flags are
+   each optional: a flag the table leaves out — or that no table answers —
+   is UNKNOWN to every reader (`iterion models`, the studio picker, the
+   REST catalog), never `false`; a vendor id keeps its curated verdict.
+3. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
    models.dev table (the live table when loaded, else the embedded
    snapshot). `<q>` is the upstream provider key the gateway's ids live
    under in models.dev (`scaleway`, in the measured deployment). The
@@ -1239,17 +1852,486 @@ never merged across sources, and an answer carries its provenance:
    exact after lower-casing — no other prefix, suffix, vendor or
    cross-provider-consensus fallback exists. The operator table above stays
    exact too: key it by the id the gateway serves (`scaleway/glm-5.2`), or
-   its entry is passed over for the catalog's.
-3. Otherwise unknown, said out loud: the node's `_gateway_spec` records
+   its entry is passed over for the catalog's. This name is a runner-side
+   fallback: its database seat is a platform feed of type `scaleway`
+   (ADR-166), which keys each entry both `scaleway/<id>` and `<id>` and
+   answers at rung 1.
+4. Otherwise unknown, said out loud: the node's `_gateway_spec` records
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
 
+#### The gateway price feed: auto-synced operator pricing (ADR-163)
+
+The operator table above is a MANUAL mirror of the operator's tariffs:
+nothing resynchronized it, so a price change drifted silently until a
+human edited a values file and rolled the deployment. The price feed
+closes that: **auto-synced operator pricing in the database, riding the
+run to the runner** — the operator table stays the floor.
+
+- **Where it lives.** A feed is server-side, database-backed state at
+  the platform, org and team levels (`price_feeds`, one document per
+  scope — `platform`, `org:<id>`, `team:<id>`; the sync state in
+  `price_feed_state`, one per fetched feed). Runners never fetch prices:
+  at every launch and resume the server folds the effective table —
+  the platform's, the org's and the team's answering entries, the more
+  specific level answering per id, first feed of a level's list winning
+  within it — and seals it in the run bundle
+  (`RunBundle.GatewayPriceFeed`, bytes: an older runner decodes the
+  bundle unchanged). The runner plants it
+  on the run's environment (`ITERION_GATEWAY_PRICE_FEED`, a
+  host-written name a project `.env` cannot plant), where the catalog
+  reads it between the host IPC record and the operator table; the
+  sandbox crossing forwards it beside the record. No runner egress, no
+  per-runner freshness drift, multi-replica safe by construction.
+- **Freshness is the fold's judgment.** The server judges each fetched
+  entry at fold time (inside its window: `2 × interval`; a declaration
+  has no window); the table that travels
+  answers for the run's whole invocation — the stamp at dispatch and
+  every later meter read one answer, whatever the wall clock does
+  mid-run. A resumed run is folded anew.
+- **Refresh.** One elected replica refreshes each enabled fetched feed
+  on its own `interval` (bounded `timeout`, short backoff on failure). A feed
+  that has not refreshed successfully inside its window is **stale** —
+  a first-class state, warned once on the transition (and again after
+  every recovery), stepping down to the operator floor. Never a
+  refusal: a launch whose feed has no state yet, or a stale one,
+  proceeds on the floor. A level the fold cannot READ is another
+  matter (ADR-166 §4): its config document, or an enabled fetched
+  feed's state, that the database does not answer within the level's
+  own 2 s deadline leaves an answer the server does not know, and the
+  launch or resume folding it is refused, retryably — `503`,
+  `error_code: PRICE_FEED_UNREAD`, `retryable: true`, the refusal
+  naming the level and the server log the cause. A declaration and a
+  disabled feed read no state.
+  A state records the source type it was written for: a feed retyped
+  under its name reads its predecessor's state as no state — not its
+  answer, not the entries a failing refresh keeps, not its status — and
+  is due at once.
+- **Precedence.** An answering feed over the operator table (for the
+  ids it carries), team over org over platform. A price entry answers
+  whole from one feed — prices, window, output cap, cache price and
+  flags, never merged across feeds or levels: a feed that prices an id
+  another feed declares restates the window, output cap and cache price,
+  or the run loses them, and the fold warns, naming both feeds, the ids
+  and the fields. The publisher folds at every launch and resume, so
+  its log says each fold warning once per fold input on a replica — a
+  configuration write or a feed's refresh says it again — and the
+  effective view shows every warning at every read. A fetched entry without the price pair does not
+  travel as a price entry — it can never shadow a priced operator or
+  catalog entry with an unpriced one; a declared one answers unpriced
+  only where nothing prices the id (below). When a fresh
+  feed and the operator table disagree on price, the sync says so: one
+  line per drifting id per refresh, naming both values. A fetched
+  price that is not a finite number — a `litellm` per-token cost
+  scaled past what a number holds — fails its refresh, naming the id
+  and the field; one a state already holds is left out of the fold,
+  named, the rest of the table answering.
+- **Sources** are adapters behind one seam — a new operator tariff
+  shape is configuration or a small script, never an engine `if`:
+  `modelsdev` (the aggregator's shape, `provider` qualifier, optional
+  `url`), `scaleway` (that adapter with its qualifier pinned; every
+  entry keyed both `scaleway/<id>` and `<id>`), `litellm` (a proxy's
+  `model_info` listing, per-token costs scaled to per-mtok), `exec` — a
+  command printing the feed-entry JSON on stdout (the operator-table
+  shape plus `reasoning_efforts`; no shell; `args` splits on spaces;
+  stdout bounded; a descendant holding the pipe cannot stall the
+  sweep; an entry keyed by an id empty once trimmed fails the refresh) — and `declared`, below. The HTTP fetches dial
+  through the same public-unicast guard as the gateway's own client —
+  `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`, the operator's export, is the
+  one hatch. An `exec` feed is the PLATFORM operator's capability:
+  super-admin configures it, and it executes only on a deployment that
+  exports `ITERION_PRICE_FEED_EXEC=1` — a tenant admin cannot buy
+  server-side command execution with a feed list.
+- **Declarations (ADR-166).** A feed of type `declared` is the
+  operator's own table, stored in its config: `params.entries` holds
+  the feed-entry JSON per gateway id — the operator-table fields plus
+  `reasoning_efforts`. It is never fetched and never stale: the fold
+  reads it from the config at every launch and resume, its entries
+  carry the config's `updated_at`, and the view reports it `declared`
+  with `declared_at` and its entry count (`interval`/`timeout` are
+  validated as for any feed and otherwise unused). A manual sync of a
+  declaration judges it, reports it `declared` with its drift, and
+  writes no state. A declared entry answers whole, as the
+  operator-table row it copies did: priced, or stating a window, an
+  output cap, a cache price or a flag without the price pair — which it
+  answers unpriced, the answer a pool's `OPENAI_COMPATIBLE_MODELS` row
+  gave. A declared row without the price pair never hides a price: a
+  priced entry beside it (a later feed of its level) or below it (a
+  less specific level) — on the runner, a priced operator-table or
+  catalog-provider row — answers whole instead, the row's fields step
+  aside with a warning naming both feeds, and its efforts still answer.
+  An entry stating only `reasoning_efforts` answers its efforts
+  alone; an entry stating nothing and an empty document are refused on
+  write. A stored declaration that breaks a write rule steps
+  down with a warning naming the feed, and its view reads `failing`.
+  A tenant admin declares at their own level; only `exec` is the
+  platform operator's.
+- **The platform level.** The deployment's own list is the
+  `platform` document, read and written by super-admins only
+  (`GET`/`PUT /api/admin/price-feeds`, `POST /api/admin/price-feeds/sync`,
+  CAS on `expected_updated_at`, audited `platform.price_feeds.updated`).
+  It folds below every org and team, so one list serves every product
+  that shares a gateway; an org purge leaves it in place.
+- **Manual sync.** `iterion remote price-feeds sync [feed] --team … |
+  --org … | --platform` forces one feed or every enabled one,
+  answering what changed per id (old → new). `list`, `set --file`,
+  `delete` and `declare` manage the list; `interval`/`timeout` are
+  seconds. The view redacts token-shaped source params (the list is
+  member-readable; a litellm bearer is not) and names them in
+  `redacted_params`: a list read and written back restates them. Every
+  scope's write refuses a list holding the marker `(redacted)` as a
+  param's value — a 400 naming the feed and the params — and `declare`
+  refuses a read answered by a release older than declared feeds, whose
+  view renders the redaction without naming it, and writes nothing.
+- **The effective view.** `GET /api/teams/{id}/price-feeds/effective`
+  (`iterion remote price-feeds effective [--model ID …]`), readable by
+  any team member, answers the table a run launched now for the team
+  seals — the publisher's own fold, at one instant; with `--model`, the
+  table a run naming those gateway ids seals — and, per id, the
+  answering entry and efforts with their feed and level (the ones the
+  fold took: two feeds of one name at two levels are told apart), every
+  feed that states the id, and the fold's warnings. A listing (no `--model`)
+  whose folded table exceeds the run channel's byte budget is sealed
+  whole by no run: the view answers `over_budget` (its size and the
+  budget) and no table, each id answering as a run naming it reads it,
+  because each run seals its own narrowing: the prices of the gateway
+  ids it names, then of the ids with accepted efforts and of the declared
+  ids as the budget allows, and every id's efforts while they fit.
+  `entry_named_only` / `efforts_named_only` mark an id's entry or efforts
+  that a run naming no gateway id (its model an env dial) does not seal. A
+  level the view cannot read reads `unread` — a run launched now is
+  refused until it reads — without the database's error, which the
+  server log carries. A member reads what every run of
+  the team carries — the folded table is sealed into the run's bundle
+  and crosses into its sandbox — plus each feed of each level that
+  states an id, the shadowed ones a team feed restates; never a feed's
+  params. The runner's env tables are not in it: `runner_env_fallback`
+  says they are not visible from the server.
+- **Provenance.** A feed-priced node's `_gateway_spec` carries
+  `"source":"feed:<name>"` and `refreshed_at` — the record that answers
+  which table priced the run also answers how fresh its word was. The
+  meter prices through the same environment the dispatch resolved from
+  — the node's bill, the usage-progress samples a supervisor's
+  `cost_gt` monitor reads, the org's monthly cap and the credential
+  ledger read one table.
+- **Local runs** (`iterion run`, the local studio) have no feed: the
+  operator table is the floor, exactly as before.
+
+**Accepted reasoning efforts (ADR-166).** A gateway model accepts only
+some `reasoning_effort` values — `scaleway/deepseek-v4.1-flash` answers
+`medium` with HTTP 400 — so the runner maps the requested effort onto
+the model's accepted list before the request leaves. The list answers
+from the first of:
+
+1. **the run's feed table** — the `efforts` map the server folded beside
+   the price entries, keyed by the normalized id, provenance
+   `feed:<name>`. Efforts fold field by field: within a level the first
+   answering feed (a fetched one while fresh, a declaration always) that
+   lists an id's efforts wins them, priced or not; across levels, team over org over platform, per id. A feed that
+   prices an id never erases another feed's effort list, and an
+   efforts-only declaration never hides a price;
+2. **`OPENAI_COMPATIBLE_REASONING_EFFORTS`** — the runner's env table,
+   by exact wire id, provenance `env:OPENAI_COMPATIBLE_REASONING_EFFORTS`;
+3. nothing — the requested effort passes unchanged.
+
+The database seat is a feed entry's `reasoning_efforts` — a
+declaration's, or an `exec` feed's stdout. No `modelsdev`, `scaleway`,
+`litellm` or snapshot source lists efforts. A declaration states them
+alone or beside the price pair:
+
+```sh
+cat > pliage.json <<'EOF'
+{"scaleway/deepseek-v4.1-flash": {"reasoning_efforts": ["low", "high", "xhigh", "max"]},
+ "glm-5.3": {"context_window": 256000, "max_output_tokens": 16384,
+             "input_usd_per_mtok": 2.01, "output_usd_per_mtok": 6.15}}
+EOF
+iterion remote price-feeds declare pliage --platform --file pliage.json --dry-run
+iterion remote price-feeds declare pliage --platform --file pliage.json
+iterion remote price-feeds effective --team <team> --model scaleway/deepseek-v4.1-flash
+```
+
+`declare --models-file M --efforts-file E` takes a runner pool's two env
+tables as written. Each id's efforts land beside its prices (the two
+tables' spellings of an id match case-insensitively), and an id that
+only `E` names is declared by its efforts alone. A feed's list is
+strict: an empty list, a repeated level or a level outside the
+vocabulary refuses the write, naming the id. A feed's id is too: one
+that is empty once trimmed refuses a declaration's write and an `exec`
+feed's refresh. A run-table entry that the
+runner's vocabulary refuses (a newer server's level, a damaged value)
+warns `REASONING_EFFORTS_INVALID` and steps down to the env table.
+
+The env table stays the runner-side fallback:
+
+```sh
+export OPENAI_COMPATIBLE_REASONING_EFFORTS='{"scaleway/deepseek-v4.1-flash":["low","high","xhigh","max"],"scaleway/glm-5.3":["low","high","max"]}'
+```
+
+Keys are the exact gateway wire IDs. Values are trimmed and lowercased; accepted
+names are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Integers
+1–100 are accepted as JSON numbers or strings — one vocabulary for the env
+table and the feed. In the env table, an invalid entry is ignored with
+`REASONING_EFFORTS_INVALID`, leaving the other entries and the pricing table
+usable; malformed JSON ignores only the effort mapping. An absent or empty list
+preserves existing behavior. This variable is independent of the strictly
+decoded `OPENAI_COMPATIBLE_MODELS`: old runners ignore it, so **no deployment
+order is required**. Do not add `reasoning_efforts` to the env pricing table,
+whose decoder refuses it; the feed-entry format is the one that carries it.
+
+The mapping applies to delegation, the human/interaction LLM stand-in and the
+cut-turn effort reduction, using the invocation's environment. A sandboxed
+node's crossing writes the host's merged answer under
+`OPENAI_COMPATIBLE_REASONING_EFFORTS`: the env table's valid entries,
+overlaid by the run table's efforts under the normalized id, every env
+spelling of it and the node's own wire spelling — so a sandbox image older
+than the run table maps by the list the host maps by — or the explicit empty
+when neither table states anything. Named levels select the nearest accepted
+named level (ties prefer higher: `medium` → `high` above); integers compare with
+integers. When only the other representation is listed, its first value wins
+without guessing a numeric equivalent for a name. Executor adjustments emit
+`reasoning_effort_adjusted` — `requested`, `applied`, `source` (the table
+that listed the efforts) and `reason` — and a warning. The requested effort
+itself is the node's `reasoning_effort:`, an edge mapping, the launch
+override or a routing cell's `effort`; accepted efforts are a fact of the
+gateway, seated at the platform, org and team levels only. The node's output
+records what the call sent: `_reasoning_effort_applied` is the level the first
+model request carried — the claw backend reports it from its requests, after
+the model's accepted set and the client's own rule (an Anthropic Messages
+client sends no effort for a model outside its matrix; bedrock and vertex
+send none), claude_code reports the level its CLI sends for the model,
+read from the id the spawn hands the CLI — slot prefixes stripped, alias
+and snapshot date resolved (`claude-opus-5-5-20260101` is opus 5.5): none
+for the measured no-effort ids (the haiku line, sonnet-4-5,
+claude-3-5-sonnet), a clamp onto the model's accepted set otherwise
+(sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards every level), a
+Claude id with neither an accepted set nor a measurement as handed (what
+the CLI would send is not known), and "" when the call never reached the
+model — one that fails mid-stream may already have carried a request the
+record cannot name — and for the other backends it is the level the
+executor handed them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
+cell), `launch` (the launch's own row), `override` (either, when the executor
+was not told which rows the launch carried), `node`, `dial:<VAR>` (an operator
+set the node's `${VAR:-default}`), `edge`, the list's source when the mapping
+replaced the level, or `backend` when the backend sent another level, none or
+its default. `_reasoning_effort_requested` is the level asked for, written only
+when the mapping or the backend replaced it, and `_reasoning_effort_lowered`
+the lower level of a later request — a claw re-ask after a cut turn or its
+recovery pass — whose answer the output is. A report prints the effort the run
+used rather than a dial (`bots/review-pr`'s run table). Gateway routes
+run on `claw` alone (C186 above): a CLI backend refuses a gateway route at
+dispatch, so it never reaches this mapping.
+
+`PROVIDER_REQUEST_INVALID` requires a typed provider HTTP 400 whose **message**
+names an operator request parameter: `reasoning_effort must be …`, `max_tokens`
+or `max_completion_tokens is too large`, or `unsupported parameter` / `unsupported
+value` naming `reasoning_effort`, `temperature`, `top_p`, `top_k`, `max_tokens`,
+`max_completion_tokens`, `presence_penalty`, `frequency_penalty`, `seed`, `stop`,
+`logprobs`, `top_logprobs`, `n`, `stream` or `response_format`. Automatic resume
+parks these refusals; the remedy quotes that provider cause. An exhausted chain
+gets this verdict only when every cause does. Bare 400s, sampled tool arguments,
+images, moderation and vLLM's catch-all keep their previous treatment. The shared
+context markers remain `context_length_exceeded` and `context length`; other
+context wordings such as `prompt is too long` retain the parent's fresh-sample
+`EXECUTION_FAILED` retry. Tool stderr and model prose never establish this new
+terminal verdict. HTTP 408/5xx, 429 and model-access refusals keep their handling.
+
+Claw preserves typed provider errors through sandbox IPC; pi uses its structured
+provider diagnostics. Claude Code's current result protocol exposes no typed
+HTTP status, so its rendered 400 remains unclassified as a parameter refusal.
+
+> **Set these in the environment the deployment EXPORTS — a project `.env`
+> does not configure them.** iterion auto-loads the nearest `.env` walking up
+> from the working directory, so these names can be *filled* from a file
+> inside a repository, including the one a run is reviewing. A value that
+> arrived that way is read as nothing said, wherever the read happens
+> (`internal/envtrust`): each of these names decides the window a node
+> compacts at, the `max_tokens` it asks for, the price it is billed at and
+> the provenance all of that is recorded under, and the host's answer is
+> what crosses into a sandboxed node as its own. So a table in a project
+> `.env` prices nothing and refuses nothing — the launch seam says so once
+> per process, with the parse refusal when that table is also malformed, so
+> a typo there is not silence. The same holds for the live tier's own knobs
+> (`ITERION_MODEL_SPECS_CACHE`, `_URL`, `_TTL`, `ITERION_MODEL_SPECS`,
+> `ITERION_MODEL_SPECS_REFRESH`, and `ITERION_HOME`, which roots the cache
+> file): `_CACHE` names the FILE the live table is read back from, which is
+> the table every model — vendor ids included — is then resolved from. And
+> for the gateway: a planted half of the `OPENAI_COMPATIBLE_*` pair refuses
+> the gateway by name instead of configuring it, since the endpoint and the
+> key presented there are one credential presentation.
+>
+> One class is refused outright rather than read as nothing said: the
+> ROUTES. Every lane that plants a dotenv file asks the same question at its
+> plant (`internal/envtrust` `DotenvPlantRefused`) — the CLI's `applyDotEnv`,
+> the studio/desktop server's project snapshot (`pkg/projectenv.Snapshot`,
+> which feeds every host-spawned command of a run) and the desktop's own env
+> file — and refuses by default any name whose SHAPE decides where a
+> connection is dialled, what is presented or sent there, or which hosts are
+> trusted: a `*_URL` or `*_URI` (provider hosts, the OAuth forfait wires the
+> refresh token is POSTed to, the AWS endpoint overrides `AWS_ENDPOINT_URL*`
+> per service, `SEARXNG_URL` — read before its `*_ENDPOINT` sibling — and
+> the deployment's own `ITERION_*_URL` wires), an `*_API_BASE` (OpenAI's
+> legacy name), an `*_ENDPOINT`, a `*_HOST` (the Azure `*_AUTHORITY_HOST`
+> pair among them), a `*_HOSTS` list, an `*_ADDRS` list, a `*_DSN`, a
+> `*_PROXY` (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, either
+> case) — whether or not a credential is presented there: a planted route
+> would point every wire, the operator's credentials included, at a host
+> the file chose, and the reads are not all iterion's — the vendored
+> provider packages and SDKs read these names themselves, and every child
+> inherits what lands here. The refusal is one line on stderr, where no log
+> level the file itself planted reaches it, naming the file, the variable
+> and the way past it. A `.env` that legitimately configures its own
+> gateway — the portable laptop case, the key and the host in one file —
+> asks the operator's opt-in: export `ITERION_DOTENV_ENDPOINTS=allow` in
+> the environment iterion runs with (or export the endpoint itself, which
+> the file cannot overwrite); with the opt-in the routes plant and read as
+> planted, so nothing downstream takes them for the operator's answer — and
+> on the studio lane the opt-in never crosses into the run environment,
+> whatever the file or the operator said: the runs answer their own where
+> they launch. The per-name credential table (`internal/envtrust`) stays as
+> the belt at the reads: a planted half of the `OPENAI_COMPATIBLE_*` pair
+> still refuses the gateway by name, and the routing names the host's own
+> `.env` planted still cross into a sandbox as explicit empties.
+>
+> Two more classes close at the same plant. The OPERATOR GRADE — the
+> inventory the bot-var gate denies a stored record (`internal/envtrust`
+> `operator.go`, one list serving both gates), widened to every
+> credential-shaped `ITERION_` name (`CredentialShapedName`, the very list
+> the bot gate's name half asks, so the two gates cannot drift) — is
+> refused outright: `ITERION_SANDBOX_OVERRIDE=none` (the reviewed
+> repository disarming the engine reviewing it), `ITERION_DISABLE_AUTH`,
+> `ITERION_REQUIRE_ORIGIN=0`, `ITERION_JWT_SECRET`,
+> `ITERION_BOOTSTRAP_ADMIN_PASSWORD`, `ITERION_SERVER_TOKEN`,
+> `ITERION_GH_PAT`, the whole infra namespace list. The reads carry the
+> belt: `pkg/config`'s `lookup` and `pkg/server`'s `envOperator` answer a
+> planted grade value with nothing, so a stale marker in a child lifts no
+> guard. The EXECUTION GRADE is the generic host-env families whose plant
+> makes a child of iterion execute, load or trust what the file chose —
+> `BASH_ENV` (a tool-node's bash sources it), `LD_PRELOAD` (every engine
+> child preloads it), `PATH`, `IFS`, `SHELLOPTS`/`PS4`, `NODE_OPTIONS`,
+> `EDITOR`, `SSH_ASKPASS`, git's editor chain and pager
+> (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`/`GIT_PAGER` — an agent's own
+> `git commit` without `-m` runs the editor, measured), the interpreter
+> knobs (`PYTHONPATH` — its `sitecustomize` executes at interpreter
+> startup — with `PYTHONHOME`/`PYTHONSTARTUP`, `RUBYOPT`, `PERL5OPT`/
+> `PERL5LIB`, `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`/`CLASSPATH`,
+> `CLOUDSDK_PYTHON`), the agent config homes including opencode's
+> (`OPENCODE_CONFIG*`, `OPENCODE_PERMISSION`), `ANTHROPIC_UNIX_SOCKET`
+> (the claude CLI's own client dials it — a reader no grep sees), the
+> `XDG_*`/`NIX_*`/`LD_*`/`NPM_CONFIG_*` families, `HOME`, the config-dir
+> names and the TLS trust roots (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
+> `AWS_CA_BUNDLE` — the vendored AWS SDK reads it into the S3 blob
+> store's client; `internal/envtrust`
+> `execution.go`, the execution portion of the devcontainer deny table,
+> one inventory both gates read). The same opt-in answers it — these names
+> have legitimate lives in an operator's own file, and the operator
+> decides. And a VALUE spelling shell execution — `$(...)`,
+> `<(...)`/`>(...)`, backticks, or
+> a `${name@op}` expansion operator — is refused on every lane: the studio
+> snapshot used to source the file in bash, which RAN
+> `FOO=$(touch /tmp/x)` on the host before any question was asked, and the
+> bash it kept for the `$VAR` expansion later RAN the substitutions the
+> base environment's own variables carried (`KEY=${BAR@P}` is prompt
+> expansion). The plant set is the parse now (`internal/dotenv`, one
+> reader, three lanes) and the expansion is Go's (`pkg/projectenv`
+> `expandReferences`: `$VAR`/`${VAR}` and an escaped dollar, everything
+> else literal — no shell exists on the lane), the git transport family
+> (`GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`) rides the
+> routing refusal — its reader is the git binary itself — and `pkg/git`
+> drops a planted transport name again at its own env assembly. The CLI
+> and desktop lanes plant NO expansion: a `$VAR`/`${VAR}` reference there
+> is applied as the bytes the file spelled, where the studio lane expands
+> the same file — the loader says so on stderr when it plants one, and a
+> single-quoted value keeps its bytes on every lane. The
+> engine's own liveness knobs (`ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT`
+> and kin) stay bot-writable by their classification and the operator's
+> export answers, while a planted one reads as nothing said at the
+> duration readers (`envtrust.Inherited`): the tier they bound keeps its
+> default.
+
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer
-older than 180 days logs a warning). A sandboxed gateway node receives the
-host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`), which answers
-before the container's local sources — the image's snapshot can be older
-than the host's, and the two never disagree across the IPC.
+older than 180 days logs a warning). Its **schema 2 holds the numerics and
+the three capability flags models.dev publishes**, each optional: an id the
+aggregator states as `"tool_call": false` reads a stated false on an offline
+or cold-start replica — the refusal a reader owes, not the warning an
+unknown earns — and a flag the aggregator does not state is absent from the
+line and reads unknown, never false. A flag you need honoured AGAINST
+models.dev still goes in `OPENAI_COMPATIBLE_MODELS`, whose entry wins over
+both models.dev tiers. Schema 1 (the numerics alone) is not loadable: the
+file is embedded, so it and its reader ship in the same binary, and a
+mismatch names `task models:snapshot` instead of guessing. An id can LEAVE
+models.dev between two regenerations — it then resolves to unknown, and the
+operator table is the road for a deployment that still serves it. A sandboxed gateway node
+receives the host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`),
+which answers before the container's local sources, flags included — the
+image's snapshot can be older than the host's, and the numbers never
+disagree across the IPC. The record's reader is lenient, so skew costs
+nothing in either direction: an image predating the flags reads the same
+numbers and the same provenance and takes the flags as unknown, which is
+what it did before they existed (the kubernetes driver runs the image's
+baked binary, so a lagging image is the normal case there, not an
+accident). The flags cross intact on an image at this version or later.
+
+**The resolution is the host's, all three names of it.** A gateway node's
+crossing carries the record *and* the two local sources above it —
+`OPENAI_COMPATIBLE_MODELS` and `OPENAI_COMPATIBLE_CATALOG_PROVIDER`, as
+explicit empties — for every gateway node, always. Each of the three
+decides the same four things: the window the node compacts at, the
+`max_tokens` it asks for, the price it is billed at and the provenance all
+of that is recorded under; and an ABSENT name is the one a workspace `.env`
+fills inside the container, the runner auto-loading the nearest one over
+every name the crossing left unset. The explicit empties leave no gap to
+fill, and they outrank the environment the container was STARTED with, so a
+repository's own `devcontainer.json` does not reach a gateway node's runner
+either.
+
+Provenance is asked once for the three (`internal/envtrust`), and in the
+same words for the live tier the second of them resolves against — the
+`ITERION_MODEL_SPECS_*` knobs and the `ITERION_HOME` their cache file lives
+under: a value this process's own project `.env` planted is read as nothing
+said, wherever the read happens. That is what the container needs for a name
+no host wrote, and what the HOST needs for itself — an `iterion run` launched
+inside the repository loads that repository's `.env`, and a table taken for
+the operator's there would be laundered into the record the host then crosses
+as its own answer, carrying no mark the container could refuse. A repository
+naming the live tier's cache FILE is that same laundering one step out: every
+exact lookup is then answered from a file in the tree under review, under the
+provenance `catalog-live`.
+
+The gateway's pair is asked the same question, and answered by a REFUSAL
+rather than by a degraded config: a planted `OPENAI_COMPATIBLE_API_KEY` or
+`OPENAI_COMPATIBLE_BASE_URL` refuses the gateway, naming the variable and
+the file. A planted key would select which virtual key — hence which budget
+and tenant — its reviewer's calls are billed to; a planted endpoint would
+send the operator's own key to a host that repository chose, since `.env`
+loading stops at the first file found walking up and an operator may well
+export the key while no endpoint is set yet. Refused rather than
+half-applied because the degradation does not exist: claw's OpenAI provider,
+the one client the gateway factory builds, refuses an empty key outright, so
+dropping the key bought a dead node whose message named `OPENAI_API_KEY` and
+Codex's `auth.json` — neither of which serves a gateway. For the same
+reason a gateway the environment names but authenticates with nothing is
+refused on the launch seam, by its own variable's name, rather than at
+dispatch. A deployment therefore keeps BOTH names in the environment it
+exports; a laptop whose own `.env` carries both is configuring its own
+gateway, which is what that file is for.
+
+> **The host environment is the channel for these names.** The crossing
+> writes all three unconditionally, and `docker exec --env` / `env NAME=`
+> outrank the container's own environment, so a value an operator pins for
+> a gateway node through a workflow `sandbox:` block, the environment
+> overlay or a devcontainer no longer reaches the runner — silently, as for
+> the endpoint and routing names. Set them where the host reads them, and
+> the host's own resolution crosses in the record.
+
+> **Version skew.** The three flag keys are decoded strictly — this is the
+> operator table, not the forwarded record: an iterion older than their
+> introduction refuses the WHOLE table, naming the first of the new keys
+> the table uses (`unknown field "reasoning"` for a table that lists
+> `reasoning` first), and that refusal fails every gateway route on that
+> binary (`checkGatewayEnv`). Put the keys in `OPENAI_COMPATIBLE_MODELS`
+> only once every replica, runner image and operator CLI reading that env
+> is on a version that knows them.
 
 The record's `max_output_tokens` is also the route's per-call output budget
 when the node sets no `max_tokens:` and the record knows the window too —
@@ -1329,6 +2411,48 @@ retryable:
   (the inflated default only applies when neither is set). Each retry logs
   `network connectivity issue — delegate retry k/n … (backoff …)`.
 
+On `claw`, `tool_max_steps` bounds one node execution — from its first
+attempt until the node completes or the run pauses on it — and every tool
+loop is charged the completed tool turns its conversation already holds. A
+resume after an operator pause (an `ask_user` question, a permission
+decision) gets the whole bound again, charged only the turns after the
+pause; a node a recovery pause parks (a failure the recovery recipes hand to
+the operator) re-executes, once acknowledged, from what it started from — no
+conversation, or the slot its session persists in — with the whole bound,
+whichever process resumes it. The backend's own stream retries, the tool-use
+nudge, the executor's in-place retries and the engine's recovery re-runs each
+replay the conversation the dead attempt left: the session store holds it,
+for a node whose session persists in a slot too — the engine restores the
+slot before every dispatch, but never over the conversation of an execution
+still running — and a sandboxed runner captures each tool turn as it
+completes, so one that dies mid-loop has already left its turns on the host.
+Each of those captures is the whole conversation so far, so the bytes a node
+sends over the runner's channel grow with the square of its tool turns.
+Each loop is handed the bound minus the completed tool turns its replay
+holds after the last one of the conversation the node execution started
+from; the summary a compaction leaves names the turns it folded, so those
+count too, even where a provider reuses a call id from one response to the
+next, and a session persisted for a later node execution drops those names.
+A stream cut before a turn completes spends nothing. A retry that replays
+none of the dead attempt's turns gets the whole bound back, so it answers
+from turns it can see. A task that carries its own history — a resumed or a
+re-asked conversation — replays that history alone: a retry of it replays
+none of the dead attempt's turns and gets the whole bound again. Inside a
+fan-out branch the executor keeps no session for the node (a branch runs
+without the run's identity), so a retry there replays nothing and gets the
+whole bound again. A retry whose replay already holds the whole bound makes
+no loop request: a node with an output schema goes straight to the
+schema-forced recovery pass, those turns in view, and one without ends as
+its loop ends at the bound, with the text of the last turn. A loop whose
+replay holds a turn of this execution answered with a tool's result is not
+forced to call a tool first; a turn answered with an error lifts nothing. A
+route change in the fallback chain restarts from the last-good conversation,
+with the whole bound. A sandbox runner older than its launcher reads no
+anchor, so each of its crossings runs under the whole bound; the launcher
+logs the skew. `claude_code` maps the bound to `--max-turns`, which the CLI
+counts per query: a retry that resumes the session, and the formatting pass,
+each run under the whole bound again.
+
 Only after a provider exhausts this budget does the run fall through to the
 next entry in the `provider:` chain (above).
 
@@ -1372,8 +2496,9 @@ ask_user/board servers. The operator's personal user-scope servers
 undeclared tools reaching the agent, an `npx`/server boot per node visit
 (a CPU spike per iteration on loop-heavy bots), and personal API keys on the
 subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
-restores host-config inheritance. Settings remain inherited independently
-(`--setting-sources`, above).
+restores host-config inheritance; it does not reach a node whose `mcp:` block
+says `inherit: false`, which keeps `--strict-mcp-config`. Settings remain
+inherited independently (`--setting-sources`, above).
 
 **Unnamed servers degrade per-server, on every backend.** A server whose
 tools the node does not name that fails to boot costs its OWN tools, never
@@ -1859,15 +2984,40 @@ restores the previous behaviour — first result, the orchestration-stall
 guard's historical rule, no state events nor replays asked of the CLI — and
 keeps the reporting and the session ledger; the
 per-agent tool-error breaker applies either way. claw has no equivalent:
-its `agent` tool is registered and **typed-refused** — claw spawns a child
-conversation only where the host wires a subagent runner into its registry,
-and iterion wires none, so the call returns
-`backend "claw" cannot serve the agent tool (subagents)` naming this
-backend's native `Agent` tool (legacy name `Task`) as the way out
-(compile-time warning where a `.bot` names the tool: C159). The real
-wiring is tracked as
-[#1940](https://github.com/SocialGouv/iterion/issues/1940); the refusal is
-the typed-refused half of the parity rule, not the capability.
+its `agent` tool spawns a SYNCHRONOUS child conversation that returns a real
+result, where claude_code's is asynchronous. claw spawns one where the host
+wires a subagent runner into its registry, and iterion wires one at both of
+its hosts — in process and in the sandbox container, where the placement of
+`agent` puts it — so a delegation returns the child's answer rather than
+claw's own `{"status": "running"}` stub
+([#1940](https://github.com/SocialGouv/iterion/issues/1940)). The child is
+bounded by the NODE: its effective `tools:` (never the process registry),
+its permission policy, its step budget, and its spend, debited to the node
+so the run's budget counts it. `agent` itself and the node-scoped MCP tools
+stay out of a child's set — no grandchildren, and no server reached on the
+model's word. An embedding that wires no runner still earns the typed
+refusal `backend "claw" cannot serve the agent tool (subagents)`, naming
+this backend's native `Agent` tool (legacy name `Task`) as the way out;
+that is the typed-refused half of the parity rule, and no compile-time
+diagnostic predicts it, since the compiler cannot know which host will
+build the registry.
+
+**Named subagents resolve from the workspace.** A `subagent_type` that names
+`<workspace>/.claude/agents/<name>.md` — the file a plugin's `contributes:
+agents` mirrors there, which claude_code discovers natively — resolves that
+file through iterion's own resolver (`pkg/backend/model/workspace_agents.go`,
+contained by `os.Root` at the workspace, like the workspace commands above):
+the body becomes the child's system prompt, `tools:` intersects the node's
+effective set (never widens it), and `model:` refuses the delegation
+(#1717 — a contributed file does not re-route the node's spend). The
+resolver is iterion-side by arbitration (ARB-83): iterion's `SubagentRunner`
+executes every spawn a workflow drives, on this backend and claude_code
+alike. The live e2e exists — `task test:live:claw-workspace-agents`
+(TestLive_Feat_ClawWorkspaceAgents, #1714): a delegation to a declared agent
+must come back with the file's body as the child's prompt, its `tools:`
+narrowing the child, and the resolution reported in the tool result, while a
+`tools: []` agent reads nothing. Last verdict: see the ledger
+(`e2e/testdata/live/ledger.json`).
 
 ### `codex`
 
@@ -1925,6 +3075,14 @@ list uses `read-only` only when all declared tools are known readers, and
 `workspace-write` when it contains a writer/shell tool (both Iterion snake_case
 names and Claude-style names are recognised). Unknown/custom names conservatively
 select `workspace-write`; use `readonly: true` for an explicit lock-down.
+The compiler says so at authoring time: a node routed to codex — as its
+primary backend, through a `fallbacks:` route, or by a `${VAR:-codex}`
+default — whose declared list buys `workspace-write` gets the C316 warning,
+naming the effect (the list bounds nothing) and the two remedies
+(`readonly: true`, or a list codex reads as read-only, such as
+`tools: [read_file]`). The question is asked of the one table the delegate
+runs, `toolcatalog.CodexDeclaredListIsReadOnly`, so the warning and the
+sandbox the node gets cannot disagree.
 
 With Codex's default configuration neither `read-only` nor `workspace-write`
 allows **shell network egress** — so a codex shell cannot reach an external
@@ -1983,12 +3141,25 @@ forwarding is claw-only.
 
 | Provider | Detection |
 |---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` |
+| `anthropic` | `ANTHROPIC_API_KEY`, while `ANTHROPIC_BASE_URL` does not name z.ai (a bearer does **not** count — see below) |
+| `zai` | `ZAI_API_KEY`, **or** `ANTHROPIC_AUTH_TOKEN` against an `ANTHROPIC_BASE_URL` that names z.ai |
+| `moonshot` | `MOONSHOT_API_KEY` |
 | `openai` | `OPENAI_API_KEY`, **or** Codex CLI signed in via "Sign in with ChatGPT" (see `OpenAI via ChatGPT forfait` below) |
 | `xai` | `XAI_API_KEY` (xAI Grok — OpenAI-compatible chat completions at `api.x.ai`) |
 | `foundry` (Azure) | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` |
 | `bedrock` | `AWS_REGION` or `AWS_DEFAULT_REGION` (full chain handled by AWS SDK) |
 | `vertex` | `GOOGLE_CLOUD_PROJECT` |
+
+**A bearer does not make the `anthropic` row available.**
+`ANTHROPIC_AUTH_TOKEN` counts for the `zai` row, and only against a z.ai base
+URL: `anthropicAvailable` is `ANTHROPIC_API_KEY != "" && !hasZAIBaseURL`
+([detect.go](../pkg/backend/detect/detect.go)). So a host whose only Anthropic
+credential is a subscription reports `anthropic` **unavailable** — and, when no
+OTHER row is available either (no ChatGPT sign-in, no AWS region, no GCP
+project, no z.ai façade), `claw` with it, since claw's availability is the OR
+of its provider rows. Claw's own registry walk would nonetheless spend that
+login, unless `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` refuses it. A node PINNED
+to `claw` still runs on it; what the probe withholds is auto-selection.
 
 When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider (the detector's
@@ -2014,6 +3185,33 @@ parent node/run cancellation is not retried.
 Tune the tiers with `ITERION_CLAW_STREAM_COLD_TIMEOUT` and
 `ITERION_CLAW_STREAM_IDLE_TIMEOUT` (Go durations such as `2m` or `20m`). Set
 either to `0` only when that tier must be deliberately disabled.
+
+Claw's own SSE readers add an inner watchdog on the OpenAI chat, foundry
+(Azure) and Responses wires, `CLAW_STREAM_IDLE_TIMEOUT` (**5 minutes** by
+default), measured on the gap between SSE lines. On those wires it therefore fires
+before the hot tier above and reports the stall as a stream error event,
+which iterion reads as the same silence verdict its own watchdog raises: a
+stall from either watchdog takes the identical transient retry budget
+**in-process** — the node's retry loop, and the delegate loop around it.
+Across the sandboxed crossing the runner's error reaches the host as text,
+so a stall loses that verdict there — both watchdogs' alike, iterion's own
+included. What iterion keys on is the watchdog's own report, which both
+names the window it measured and points at `CLAW_STREAM_IDLE_TIMEOUT`;
+a provider refusal that merely quotes a stall carries neither marker; on
+the generic wire the frame's type is dropped before iterion reads the
+message, so such a refusal keeps the retryable transport verdict it had
+before this change, not the verdict its own frame earns. A refusal
+relaying a whole watchdog report is decided by its frame's own type
+instead — on the wires that preserve one, which the anthropic-shaped
+client does not.
+
+That parity also makes a stall the same `fallbacks:` category as iterion's
+own — `transient_exhausted`, where it used to be the catch-all
+`unclassified` that bypasses a route's `on:` filter entirely. A chain whose
+`on:` does not name `transient_exhausted`, the default
+`[usage_window, unavailable]` included, therefore no longer routes around a
+stall once the retry budget is spent: it stops there. Name
+`transient_exhausted` on the rescue route that should take it.
 
 #### The `tools:` list is load-bearing here (`C135`)
 
@@ -2478,10 +3676,40 @@ backend. That is **distinct** from calling the xAI HTTP API via
 mode is a **subcommand**, and iterion drives it as:
 
 ```
-opencode --format json [-m <provider/model>] [--variant <effort>] [--session <id> [--fork=true]] run
+opencode run --format json [-m <provider/model>[#<variant>]] [--session <id> [--fork=true]]
 ```
 
 with the composed prompt on **stdin**.
+
+The subcommand **opens** argv: the 2.x parser resolves it before it knows any
+flag and refuses one that precedes it (`Unrecognized flag: --format in
+command opencode`, with its usage text on stdout, measured on 2.2.5).
+`ITERION_OPENCODE_ARGV=1` re-emits the 1.x argv — every flag first,
+`--variant <effort>`, `run` last — for a host still on that line.
+
+What else the 2.x line changed, each re-measured on **2.2.5** against the
+real CLI (#2915):
+
+- `--variant` exists nowhere, at the root or under `run`: the variant rides
+  the model reference, and an unknown one is now refused explicitly instead
+  of dropped in silence.
+- A failure the CLI encodes in its stream travels on **stdout**, with an
+  empty stderr (`{"type":"error",…,"error":{"type":"provider.no-route",
+  "message":"Model unavailable: …"}}`) — which is why the shared CLI-agent
+  path parses the stream on a non-zero exit too, instead of reporting
+  `exit status 1`.
+- It resolves its **project from `PWD`**, not from the process's working
+  directory, so the spawn now sets both: a node whose PWD still named the
+  engine's cwd read the engine's own checkout.
+- `run` talks to a **background service** on a port derived from the release
+  channel (49374 on `latest`), started on demand and reused. A run carrying
+  a BLANK `OPENCODE_*` variable fails to start it, and two homes fight over
+  the port — which is why the real-CLI tests unset those variables and
+  either pin a free port and stop what they started, or pass `run
+  --standalone`, which starts a private server for that one run.
+- One `text` event carries a whole streamed reply (so the parser's
+  concatenation cannot double-count), and an empty stdin is
+  `You must provide a message` rather than a default prompt.
 
 ```iter fragment
 prompt task:
@@ -2491,7 +3719,7 @@ agent implement:
   backend: "opencode"
   model: "anthropic/claude-sonnet-4-6"   # opencode's own -m format IS provider/model
   system: task                           # folded into the prompt: opencode has no system flag
-  reasoning_effort: high                 # optional; mapped to --variant
+  reasoning_effort: high                 # optional; rides the model as `-m provider/model#variant`
 ```
 
 #### What it brings
@@ -2503,42 +3731,65 @@ agent implement:
   `step-finish` parts (emitted as `step_finish`) rather than estimated. opencode reports `output`
   excluding reasoning and `input` excluding the cache halves; iterion adds
   both back so the figures mean what the rest of the engine means by them.
-- **A reasoning-effort dial** (`--variant`). The accepted variant names are
-  **per-model** — opencode derives them from each model's own reasoning
-  options — so iterion passes its level through verbatim and lets opencode
-  refuse an unknown one explicitly. `xhigh` and `ultracode` collapse onto
-  `high` before argv.
+- **A reasoning-effort dial**, carried INSIDE the model reference
+  (`-m provider/model#variant`; `--variant` exists nowhere on 2.x, at the
+  root or under `run`). The accepted variant names are **per-model** —
+  opencode derives them from each model's own reasoning options — so iterion
+  passes its level through verbatim and lets opencode refuse an unknown one
+  explicitly (`Variant unavailable for scripted/m1: nonexistentvariant`,
+  exit 1, measured on 2.2.5). `xhigh` and `ultracode` collapse onto `high`
+  before argv. A variant with no model is a hard refusal (`Invalid model
+  reference: #high`), so an effort on a node that names no model is dropped
+  with a warning naming it, never spelled into argv. A reference that already
+  spells its variant (`provider/model#low`) is emitted as written — a second
+  `#` is `Invalid model reference` — and a `reasoning_effort` set beside it is
+  dropped with the same kind of warning.
 - **Session resume and fork** for `session: inherit`, `inherit_if_available`
   and `fork`. Every event of the stream carries the session id; iterion hands
   it back as `--session <id>` (plus `--fork=true` for a fork, which opencode
-  branches into a new id — spelled with its value because a bare boolean
-  right before `run` makes the parser take `run` as that value and print its
-  help), and a schema re-ask continues the session it failed in rather than
-  restarting the turn. Proven against the real opencode 1.19.0 CLI by
-  `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the model is a
-  scripted server on `127.0.0.1`, and the authority is what the CLI sends it
-  — a resumed turn's request carries the earlier turn. An id opencode no
-  longer holds is version-dependent: 1.19 exits 1 with `Session not found`
-  (measured), so the call fails (and `inherit_if_available` degrades to a
-  fresh session, loudly); 2.x creates a session under that id instead (read
-  from its source), so there it resumes as an empty conversation.
+  branches into a new id — spelled with its value because under the 1.x
+  hatch a bare boolean right before `run` makes the parser take `run` as
+  that value and print its help), and a schema re-ask continues the session
+  it failed in rather than restarting the turn. Proven against the real
+  opencode **2.2.5** CLI by `TestCLILiveOpenCodeSessionResume`
+  (`task test:clilive`): the model is a scripted server on `127.0.0.1`, and
+  the authority is what the CLI sends it — a resumed turn's request carries
+  the earlier turn. An id opencode no longer holds is version-dependent, and
+  the test asserts the version it probes: 1.19 exits 1 with `Session not
+  found`, so the call fails (and `inherit_if_available` degrades to a fresh
+  session, loudly); 2.2.5 CREATES a session under that id, so there a resume
+  whose transcript is gone succeeds as an empty conversation and only the id
+  the stream reports says so (both measured).
 
 #### What it does NOT bring
 
-The observations below were measured against **opencode 1.1.19**; opencode
-moves fast, so re-measure before trusting a claim against another build.
+The observations below were measured against **opencode 1.1.19** unless a
+bullet names a newer build — the 2.x re-measurements this page carries
+(2.2.5) say so where they stand, and the fail-open section below names its
+own build per table. opencode moves fast, so re-measure before trusting a
+claim against another build.
 
 - **No permission gate, in any mode.** opencode exposes no `PreToolUse`
   hook, so a node with an armed gate is refused at compile time (**C176**)
-  and again at dispatch — never run ungated. opencode *does* carry a
-  declarative in-process policy (`OPENCODE_PERMISSION`, a JSON map of
-  tool → `ask|allow|deny`, verified to reach its resolved configuration),
-  which is a plausible route to native `deny` enforcement. It is deliberately
-  **not** wired: membership in the compiler's gate table is earned by a live
-  denial, never declared, and no credential was available to witness one.
-  Note also that in a headless run an `ask` verdict is auto-*rejected* (and
-  later builds add a `--auto` flag that auto-*allows* it instead) — neither
-  is "pause and ask the operator".
+  and again at dispatch (the typed capability refusal,
+  `CAPABILITY_UNSUPPORTED`) — never run ungated, never retried. opencode
+  *does* carry a declarative in-process policy, but the 1.x delivery
+  (`OPENCODE_PERMISSION`, verified to reach its resolved configuration) is
+  **removed from the 2.x line**: the 2.2.5 binary carries no occurrence of
+  the variable, and the 2.x env-delivered config is `OPENCODE_CONFIG_CONTENT`
+  (highest user precedence since upstream
+  [#11628](https://github.com/anomalyco/opencode/issues/11628)). The 2.x
+  mechanism is re-measured by `TestCLILiveOpenCodeConfigContentDeny` — it
+  holds alone and against a key-positioned file allow, and still fails open
+  beside an agent-level permission, a `default_agent`, or an invalid policy
+  string. It is deliberately **not** wired: membership in the compiler's
+  gate table is earned by a live denial, never declared, and no credential
+  has witnessed one. Note also that in a headless run an `ask` verdict is
+  auto-*rejected* (and later builds add a `--auto` flag that auto-*allows*
+  it instead) — neither is "pause and ask the operator". The policy's own
+  measured limit is the reason the cell is refused rather than merely
+  unwired: it
+  [fails OPEN beside an operator config](#opencode-permission-not-a-gate-alone).
 - **No async questions.** `interaction: async` is refused by **C267**;
   `interaction:` in its synchronous form is inert, as on every CLI-agent
   backend, and **C271** now says so at compile time.
@@ -2562,11 +3813,85 @@ moves fast, so re-measure before trusting a claim against another build.
   auth store, so iterion's credential-routing hint has nowhere to land
   (**C088**).
 
+#### ⚠️ `OPENCODE_PERMISSION` is not a gate on its own
+
+<a id="opencode-permission-not-a-gate-alone"></a>
+Measured on **1.19.0** (the bullets above are 1.1.19): the real CLI, driven by
+a scripted local model whose one tool call is `bash` with
+`touch permission-sentinel`. The authority is the sentinel on disk, never
+model prose. A scripted model costs nothing and exercises opencode's real
+policy engine — it is NOT the live denial gate membership asks for, which is a
+real model's real tool call.
+
+| operator config (global `opencode.json`) | `OPENCODE_PERMISSION` | sentinel | reading |
+|---|---|---|---|
+| none | none | created | control: the bench does execute, so the rows below are not vacuous |
+| none | `{"bash":"deny"}` | absent | the tool is withheld from the model altogether |
+| none | `{"bash":{"*":"allow","touch *":"deny"}}` | absent | denied at the call |
+| none | `{"bash":"deny",}` (invalid JSON) | **created** | **fail-OPEN, silent**: nothing on stderr |
+| `agent.build.permission.bash=allow` | deny at the call | **created** | **fail-OPEN**: an agent-level permission merges after the top-level one |
+| `permission:{"*":"ask","bash":"allow"}` | `{"*":"deny"}` | **created** | **fail-OPEN**: the merge keeps key POSITION, and the last match wins |
+| `permission:{"bash":"allow","*":"ask"}` | `{"*":"deny"}` | absent | the same content with the two keys swapped — the verdict depends on the operator's key order |
+| `default_agent: "wide"`, `wide.permission.bash=allow` | deny at the call | **created** | **fail-OPEN** |
+| the three fail-OPEN configs together, plus an agent iterion defines and selects with `--agent` | — | absent | the dedicated agent merges last, so it wins |
+| the same, with an agent name the config does not define | — | **created** | **fail-OPEN**: stderr says it falls back to the default agent and the exit code is 0, and the JSON stream never names the agent it used |
+
+Four configurations therefore turn a deny into an allow, and each one is
+silent where it counts: three are the OPERATOR's (an agent-level `permission`,
+a `permission` key placed after `*`, a `default_agent`) and the fourth is a
+policy string iterion itself could emit invalid. So the env variable alone is
+not a gate, and wiring it is a doctrine question before it is a patch
+(iterion#1640). The doctrine iterion already holds answers it: the config it
+constrains has to be its own, which is the refusal shape of the section below
+— one question per directory level, a greppable env opt-in, never an
+enumeration of spellings.
+
+Beyond that refusal and the live denial, a flip owes: a policy marshalled so
+it cannot be invalid; a dedicated agent plus POSITIVE confirmation that the
+agent loaded, since the fallback to the default one is silent in the stream;
+`ask` still refused; and the `list` → `ls` row of
+`pkg/backend/toolcatalog/canonical.go`, which lands **with** the flip and
+never before — today it would grant a rule reach for a policy that never
+runs. A translation also inherits opencode's own pattern semantics, read from
+the 1.19.0 source: `*` becomes `.*` and **`?` becomes `.`** where iterion
+treats `?` as a literal, a trailing `" *"` becomes `( .*)?`, `\` becomes `/`,
+nothing escapes, integer-looking JSON keys are reordered to the front (which
+moves precedence under a last-match lookup),
+`write`/`edit`/`apply_patch` share the single
+`edit` key, sub-agents (`task`) run under THEIR agent's permission, and a bash
+command is split into sub-commands (tree-sitter) and judged one by one where
+iterion judges the whole line as one candidate.
+
+**Re-measured on 2.2.5** (`TestCLILiveOpenCodeConfigContentDeny`, scripted
+model, 0 USD — the delivery host now runs the 2.x line, where
+`OPENCODE_PERMISSION` no longer exists; the policy travels in
+`OPENCODE_CONFIG_CONTENT`, and the probe drives the CLI directly: it measures
+opencode's policy engine, which iterion does not wire, not iterion's argv):
+
+| probe (2.2.5) | sentinel | reading |
+|---|---|---|
+| no policy anywhere | created | control: the bench executes, the rows below are not vacuous |
+| `OPENCODE_CONFIG_CONTENT={"permission":{"bash":{"*":"allow","touch *":"deny"}}}` | absent | denied AT THE CALL (`Permission denied: shell` — `shell` is the 2.x internal name; the `bash` key holds through a compatibility mapping), the denial is fed back to the model, the turn finishes, exit 0 |
+| the same with the 2.x-native `shell` key | absent | the native key holds too — a translation may target either spelling |
+| `{"permission":{"bash":"deny"}}` (whole tool) | absent | the tool is WITHHELD from the model, as on 1.19 (a forced call errors `No tool named "shell" is currently available` — `bash` is translated to the 2.x-internal `shell` before evaluation), exit 0 |
+| invalid `OPENCODE_CONFIG_CONTENT` (`{"permission":{"bash":"deny",}`) | **created** | **fail-OPEN, silent, still**: dropped without a word, exit 0 — a policy iterion emits must be marshalled, never string-built |
+| file `permission:{"*":"ask","bash":{…allow}}` + env deny | absent | the v1 key-position fail-open is CLOSED by the env delivery: `OPENCODE_CONFIG_CONTENT` wins over the file (the #11628 precedence fix, observed) |
+| file `agent.build.permission.bash=allow` + env deny | **created** | **fail-OPEN persists**: an agent-level permission merges after the env content |
+| file `default_agent:"wide"` with `wide.permission.bash=allow` + env deny | **created** | **fail-OPEN persists** |
+
+So on the 2.x line the env delivery closes exactly one of the four v1 holes
+(key position) and the other three stand. The flip's owed list is unchanged
+in shape — a dedicated iterion-defined agent selected with `--agent` (the
+last row of the 1.19 table held on 1.x) plus positive confirmation the agent
+loaded, a marshalled policy, `ask` refused, the `list` → `ls` canonical row
+— and now carries one 2.x addition: re-measure the dedicated-agent row on
+2.x.
+
 #### ⚠️ The target repository runs as code
 
-opencode loads project resources from **every `.opencode/` directory between
-the working directory and the repository root, and from an `opencode.json`
-(or `.jsonc`) at any of those levels** — and it EXECUTES what it finds,
+opencode loads project resources from **every `.opencode/` directory at or
+above the working directory, and from an `opencode.json` (or `.jsonc`) at any
+of those levels** — and it EXECUTES what it finds,
 inside the process holding the run's credentials: `plugin/*.ts` and
 `tool/*.ts` are imported as modules, and a `package.json` there is installed
 with its lifecycle scripts. No config entry and no flag are needed. Against
@@ -2585,9 +3910,14 @@ executes inside the agent process; refusing to run against an untrusted
 checkout (set ITERION_OPENCODE_TRUST_PROJECT=1 for a repository you own)
 ```
 
-The walk stops at the **git worktree root**, which is opencode's own stop
-(measured: a plugin one level above a git root is not loaded); above that is
-the operator's own tree, not the untrusted checkout.
+The walk stops at the **operator's HOME** or the filesystem root — never at
+a git worktree root. 1.1.19 stopped at a `.git` and iterion mirrored it;
+2.2.5 climbs straight past one and loads the ancestor's plugin (measured by
+the live screen bench). A host carries one line or the other, so the walk
+takes the union of their two reaches: a stop predicate stronger than the
+CLI's is a hole. A resource the operator keeps ABOVE a checkout is therefore
+refused too — lift it with `ITERION_OPENCODE_TRUST_PROJECT=1`, which is the
+cheaper side of the trade.
 
 This is a refusal rather than a flag because opencode offers no way to turn
 the discovery off: `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_PURE` and
@@ -2606,7 +3936,10 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
 #### Behaviour worth knowing
 
 - **Not in the stock sandbox image.** The published image bakes claude-code,
-  pi and codex only; a sandboxed `opencode` node dies at `exec: not found`.
+  pi and codex only (and codex outside the sandbox's PATH); a sandboxed
+  `opencode` node on a published image is refused at start rather than dying
+  at `exec: not found`, and an operator image that ships the binary passes —
+  the refusal is on the image's measured contents, not on the name.
 - **Its stderr is a JavaScript stack trace.** The shared CLI-agent retry
   classifier reads only the CLI's OWN transport-level error lines out of
   that dump — short, unindented error headers and Node's `[cause]:`
@@ -2829,7 +4162,7 @@ vars below are forwarded into the container):
 
 1. `ITERION_LLM_USER_AGENT` — iterion surface, injected into every claw
    provider factory ([pkg/backend/model/registry.go](../pkg/backend/model/registry.go)
-   `withClientIdentity`).
+   `withClientIdentity`, which reads the chain here by name).
 2. `CLAW_USER_AGENT` — claw's own env override (works for any
    claw-code-go embedder).
 3. The per-path default (`claw-code-go/<version>`, or
@@ -2838,12 +4171,14 @@ vars below are forwarded into the container):
 For arbitrary headers, claw honours **`ANTHROPIC_CUSTOM_HEADERS`** with
 Claude Code's exact semantics: newline-separated `Name: Value` pairs,
 applied **last** on every request so they can override any default
-header — including the User-Agent:
+header — including the User-Agent. The channel serves a **sandboxed**
+node (the runner reads the forwarded block); an in-process node on the
+host ignores it — the engine resolves its identity itself (below):
 
 ```bash
 # ~/.iterion/env — identify as a specific tool against a gated endpoint
 ITERION_LLM_USER_AGENT="my-tool/1.0"
-# or arbitrary headers, Claude Code style (overrides UA too):
+# arbitrary headers for a sandboxed node, Claude Code style (overrides UA too):
 ANTHROPIC_CUSTOM_HEADERS="User-Agent: my-tool/1.0
 X-My-Header: value"
 ```
@@ -2851,12 +4186,62 @@ X-My-Header: value"
 A malformed `ANTHROPIC_CUSTOM_HEADERS` line (no `Name:` part) fails the
 request with an explicit parse error rather than being silently dropped.
 
+**A credential is not a client identity.** The block is applied *last*, so a
+line named `Authorization`, `x-api-key` or `api-key` replaces the credential
+the engine resolved for the node — at whichever vendor's gateway that node was
+routed to. On the claude_code delegate a funded facade route therefore clears
+the variable outright ([#1476](https://github.com/SocialGouv/iterion/issues/1476)),
+and the claw **sandbox crossing** refuses those lines by name
+([#2244](https://github.com/SocialGouv/iterion/issues/2244)): the in-container
+runner receives the block without them, with every other line intact, and the
+launcher logs which line it would not carry (never its value). Put such a
+credential in the route's own variable — `ANTHROPIC_AUTH_TOKEN` for a bearer,
+`ANTHROPIC_API_KEY` for a key — which crosses as the node's real credential and
+is accounted for as one.
+
+The variable also crosses **explicitly, empty included**: the in-container
+runner auto-loads the reviewed workspace's `.env`, which fills only names the
+process environment leaves unset, so an absent name would let the repository
+under review write the headers of every request the node sends. The host
+environment is the supported channel for it; a value set through the sandbox
+spec or a repository's `devcontainer.json` does not reach the runner.
+
+An in-process (non-sandboxed) claw node no longer reads the variable at all:
+the engine resolves the identity itself and builds every client with claw's
+`NoAmbientHeaders`, so an ambient block — the operator's shell, or a planted
+`.env` — cannot authenticate or re-identify a request the engine routed
+([#2244](https://github.com/SocialGouv/iterion/issues/2244)). The sandboxed
+`__claw-runner` is the channel's one reader: its environment is the crossing's
+own forwarded env, already filtered. That crossing is also the only channel an
+engine-routed node has for an arbitrary identity header (`x-tenant` and
+friends): an in-process node carries no ambient block, the route's credential
+carries the one credential the provider's contract defines (bearer or key —
+never an arbitrary header name), and `ITERION_LLM_USER_AGENT` carries only the
+user-agent leg. A node that must present additional identity headers runs
+sandboxed; an in-process one has no channel for them today.
+
 **ToS caveat.** Presenting as another tool is a decision between you
 and the endpoint you target (e.g. your z.ai subscription's supported-
 tools policy) — iterion/claw default to the honest identity and never
 spoof on their own. It changes nothing about the Anthropic subscription
 path above: that works on its own merits (billed to extra usage), and no
 User-Agent you configure affects how it is billed.
+
+## Key pools — named credential pools, attached per scope (ADR-164)
+
+Named pools of provider credentials (subscription forfaits + gateway
+keys) that a scope attaches over a default, with a fallback strategy
+that spends the free forfait capacity first and lands on the paid
+gateway entry last — a run never fails while any entry can serve. The
+decision and the four laws (an explicit credential always wins; zero
+pool without an opt-in; sovereignty intact; a finely switchable policy)
+are [ADR-164](adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md);
+the operator and debugging map is
+[key pools](agents/backends/key-pools.md). The surfaces:
+`iterion remote pools …`, the pool CRUD/entries/attachment routes, and
+the org and team "Key pool" studio tab. The legacy donation tier this
+generalises is [credential-pool.md](credential-pool.md), byte-identical
+without an attachment.
 
 ## Troubleshooting
 

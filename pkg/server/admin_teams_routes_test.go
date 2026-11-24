@@ -11,6 +11,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // The F2 core at the route layer: the delegated caps route is a PATCH —
@@ -21,7 +23,7 @@ import (
 // TestUpdateTeamHasNoProductionCallers, which makes the whole-doc revert
 // uncommittable.
 func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 
 	pool := "honorabilite"
@@ -52,7 +54,7 @@ func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
 // The only writer of the mapping: the super-admin route. Set, clear, and
 // grammar-refuse — audited, and refused for a team that does not exist.
 func TestAdminSetTeamRunnerPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 
 	call := func(body string) *httptest.ResponseRecorder {
@@ -119,7 +121,7 @@ func TestAdminSetTeamRunnerPool(t *testing.T) {
 // posture, reset to the default, grammar-refuse the rest — audited in both
 // scopes, and refused for a team that does not exist.
 func TestAdminSetTeamLLMFallback(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 
 	call := func(body string) *httptest.ResponseRecorder {
@@ -187,7 +189,7 @@ func TestAdminSetTeamLLMFallback(t *testing.T) {
 // the test server proves both arms. Red when the existence check is
 // dropped.
 func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 	s.runnerPoolsStore = platformcfg.NewMemoryStore[platformcfg.RunnerPools]()
 	if err := s.runnerPoolsStore.Put(context.Background(), platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{
@@ -217,7 +219,7 @@ func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
 // the holder unmapping frees the pool; a team re-mapping itself is
 // fine. Red when the holder check is dropped.
 func TestAdminSetTeamRunnerPool_OneTeamPerPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 	s.auditStore = audit.NewMemoryStore()
 	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
@@ -271,4 +273,76 @@ func TestAdminSetTeamLLMFallback_SuperAdminOnly(t *testing.T) {
 	if code, _ := llmDo(t, hs, http.MethodPut, "/api/admin/teams/t1/llm-fallback", adminTok, `{"llm_fallback":"none"}`); code == http.StatusForbidden {
 		t.Fatal("super-admin PUT = 403 — the gate ate the super-admin")
 	}
+}
+
+// The mapping route refuses a pool another team's fork lane runs on (ADR-162
+// Q3 beside D13): mapping a team there would put that lane's in-flight
+// untrusted runs on the team's sovereign pods, and the runner admits a
+// stamped run on its pool alone. Disabled configs count (they re-enable, and
+// their pool is immutable); the team's own lane and an ordinary config do not.
+//
+// Mutations, each seen red on its own row and restored byte-identical:
+//   - the route no longer refusing on forkLanesNamingPool → the two refused
+//     rows map (200);
+//   - forkLanesNamingPool counting enabled configs alone → "a disabled fork
+//     lane" maps;
+//   - forkLanesNamingPool no longer skipping the team being mapped → "the
+//     team's own fork lane" is refused;
+//   - forkLanesNamingPool ignoring the lane's pool → "another pool" is
+//     refused.
+func TestAdminSetTeamRunnerPool_RefusesAnotherTeamsForkLanePool(t *testing.T) {
+	ctx := context.Background()
+	for _, row := range []struct {
+		name    string
+		cfg     webhooks.Config
+		refused bool
+	}{
+		{"another team's fork lane", webhooks.Config{ID: "wh-lane", TenantID: "t2", TokenHash: "h-lane", Provider: webhooks.ProviderGitHub, Enabled: true, ForkLane: true, ForkLanePool: "forks"}, true},
+		{"a disabled fork lane of another team", webhooks.Config{ID: "wh-off", TenantID: "t2", TokenHash: "h-off", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"}, true},
+		{"the team's own fork lane", webhooks.Config{ID: "wh-own", TenantID: "t1", TokenHash: "h-own", Provider: webhooks.ProviderGitHub, Enabled: true, ForkLane: true, ForkLanePool: "forks"}, false},
+		{"another team's fork lane on another pool", webhooks.Config{ID: "wh-else", TenantID: "t2", TokenHash: "h-else", Provider: webhooks.ProviderGitHub, Enabled: true, ForkLane: true, ForkLanePool: "elsewhere"}, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s, _, done := newPoolMappingTestServer(t)
+			defer done()
+			if _, err := s.authStore().CreateTeam(ctx, identity.Team{ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1", CreatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.webhookConfigs.Create(ctx, row.cfg); err != nil {
+				t.Fatalf("seed webhook config: %v", err)
+			}
+			req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/runner-pool", `{"runner_pool":"forks"}`, "t1")
+			w := httptest.NewRecorder()
+			s.handleAdminSetTeamRunnerPool(w, req)
+			tm, err := s.authStore().GetTeam(ctx, "t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !row.refused {
+				if w.Code != http.StatusOK || tm.RunnerPool != "forks" {
+					t.Fatalf("map: code=%d body=%s pool=%q, want the mapping", w.Code, w.Body.String(), tm.RunnerPool)
+				}
+				return
+			}
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "webhook config "+row.cfg.ID+" (team t2)") {
+				t.Fatalf("map: code=%d body=%s, want 409 naming the lane's config", w.Code, w.Body.String())
+			}
+			if tm.RunnerPool != "" {
+				t.Fatalf("a refused mapping stuck: pool=%q", tm.RunnerPool)
+			}
+		})
+	}
+}
+
+// Mapping tests wire a real empty store: no store is unknown, not drained.
+func newPoolMappingTestServer(t *testing.T) (*Server, *mockGitLab, func()) {
+	t.Helper()
+	s, gl, done := newApprovalTestServer(t)
+	runs, err := store.New(t.TempDir())
+	if err != nil {
+		done()
+		t.Fatal(err)
+	}
+	s.cfg.Store = runs
+	return s, gl, done
 }

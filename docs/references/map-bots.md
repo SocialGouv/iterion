@@ -9,44 +9,45 @@ The bundles under `bots/`, then the skills they carry.
 
 | Bot | Persona | What it does | Version |
 |---|---|---|---|
-| `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.2 |
-| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.3 |
-| `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 0.4.4 |
+| `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.3 |
+| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.4 |
+| `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 0.5.0 |
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
-| `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.3 |
-| `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.4 |
-| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.9.8 |
-| `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.3 |
-| `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.13 |
-| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.11.0 |
+| `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.4 |
+| `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.5 |
+| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.10.0 |
+| `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.4 |
+| `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
+| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.12.3 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
-| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.7.2 |
-| `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.5.3 |
-| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.1.5 |
-| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.7.5 |
-| `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 2.4.3 |
-| `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.6.4 |
-| `gitops-warden` | 🛡 Warden | GitOps merge gate. | 0.2.0 |
-| `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 0.1.6 |
-| `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.2.3 |
+| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.0 |
+| `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.6.0 |
+| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.2.0 |
+| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.8.0 |
+| `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 2.5.0 |
+| `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.8.0 |
+| `gitops-warden` | 🛡 Warden | GitOps merge gate. | 0.3.0 |
+| `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 0.2.0 |
+| `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.3.0 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
-| `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.7.0 |
-| `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.3.0 |
-| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.2 |
-| `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.6 |
+| `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.8.0 |
+| `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (scheduled ticks, zero LLM in this slice — the compiled workflow contains no agent or… | 0.4.0 |
+| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.6.0 |
+| `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.2.0 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
-| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.17 |
-| `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.0.3 |
+| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.11.0 |
+| `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.2.0 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.11 |
-| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.5 |
+| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.6 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 0.1.6 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.6 |
-| `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.4.3 |
-| `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 0.1.1 |
-| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.7 |
-| `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 2.5.4 |
+| `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.5.0 |
+| `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 0.1.2 |
+| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.12 |
+| `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 2.6.0 |
 | `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1.0.7 |
+| `workflow-kick` | ⏱️ Kicky | Dispatches one GitHub Actions workflow of the target repository on a schedule — the external trigger for a workflow whose own `schedule:`… | 0.1.0 |
 
 ## Skills
 
@@ -163,7 +164,6 @@ The pair a model sees before it decides to open the file.
 | `product-docs` | `product-docs` | Operating playbook for Prody — writing functional, business-audience product documentation in a dedicated docs repository from… |
 | `product-docs` | `publish-static-site` | Build the product documentation into a static site (GitBook blocks → MkDocs Material) and package it as a non-root nginx… |
 | `product-docs` | `ton-et-style` | Default tone and style rules for published functional pages — person, tense, sentence shape, the sourced-or-[à confirmer]… |
-| `revi-converse` | `forge-reply` | How to POST a reply note in an EXISTING pull-request (merge-request on GitLab) discussion thread on GitHub, GitLab, or… |
 | `review-pr` | `ticket-context` | How to obtain the ticket(s) a PR claims to deliver — from an external tracker (Jira Cloud/DC) or, with no configuration, from… |
 | `rgaa-audit` | `adjudication-protocol` | How to rule on one batch of criteria the engine could not decide: reading a brief and an evidence file, the four verdicts and… |
 | `rgaa-audit` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |
@@ -241,7 +241,7 @@ The pair a model sees before it decides to open the file.
 | `whats-next` | `operator-arbitrage` | How Nexie unlocks operator decisions — grouped decision blocks with sharp options and a named recommendation in the turn-end… |
 | `whats-next` | `repo-survey` | Read-only survey method for Nexie — a tight single-pass survey for scoped questions, and a 3-audit parallel fan-out (docs/ADRs,… |
 | `whats-next` | `roadmap-synthesis` | Compose a roadmap study's synthesis — 6-9 named chantiers tiered now/next/later, quick-wins, an argued top-3, explicit blind… |
-| `whats-next` | `session-continuity` | How to use the iterion workspace memory tools (memory_read, memory_write, memory_list) to keep a compact, frontmatter-tagged… |
+| `whats-next` | `session-continuity` | Why this bundle keeps nothing of its own across sessions, where its durable record lives instead, and how to read the cross-bot… |
 | `whats-next` | `whats-next` | Operating playbook for Nexie, the conversational co-CTO — recommendation-first board intelligence, ticket curation against code… |
 | `whole-improve-loop` | `forge-mr-create` | How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or… |
 | `whole-improve-loop` | `lang-js-fallow` | Static analysis for JavaScript/TypeScript repos using fallow (dead code, duplication, complexity). |

@@ -41,6 +41,15 @@ func Write(f *ast.File) ([]byte, error) {
 // keepComments). A comment whose node the written document does not hold at
 // that path is not carried; Comments of the two texts says which, and a
 // caller that must not lose one compares them.
+//
+// The explicit document markers src wrote come back with them: a `---`
+// opening the document, and the trailing region below its last content line
+// — the `...` markers, and the comments and blank lines written around them,
+// which hang on no node — are re-emitted off the source, where Comments
+// reads them, and the comments yaml.v3 attached from that region are taken
+// off the tree first so none is written twice (markerRegions). A `%YAML` or
+// `%TAG` directive is the one thing src wrote that does not come back:
+// Directives lists them for a caller that must not drop one in silence.
 func WriteKeepingComments(f *ast.File, src []byte) ([]byte, error) {
 	doc, _, err := readFirst(src)
 	if err != nil {
@@ -49,7 +58,14 @@ func WriteKeepingComments(f *ast.File, src []byte) ([]byte, error) {
 	if doc == nil {
 		doc = &yaml.Node{}
 	}
-	return write(f, doc)
+	lines := sourceLines(src)
+	markers := readMarkerRegions(lines, doc)
+	stripTrailingRegion(doc, lines)
+	out, err := write(f, doc)
+	if err != nil {
+		return nil, err
+	}
+	return markers.emit(out), nil
 }
 
 // write renders f, with the comments of the document from when it is not nil.
@@ -210,11 +226,13 @@ func strList(vals []string) *yaml.Node {
 	return flowSeq(items)
 }
 
-// declaredList is strList for the one list whose EMPTY form is a declared
-// value — an agent's or judge's `tools:` (toolcatalog.ToolsDeclared): nil is
-// absent and writes nothing, an empty slice is the author saying "this node
-// has no tools" and writes `[]`, as the .bot writes it back. Dropping the
-// line would turn a closed node into an open one.
+// declaredList is strList for the lists whose EMPTY form is a declared
+// value — an agent's or judge's `tools:` (toolcatalog.ToolsDeclared), and
+// the `capabilities:` of an agent, judge, tool node (ADR-151) or workflow
+// (#1801): nil is absent and writes nothing, an empty slice is the author
+// saying "none" and writes `[]`, as the .bot writes it back. Dropping the
+// line would turn a closed node into an open one — or a declared no-grant
+// back into an inheritance.
 func declaredList(vals []string) *yaml.Node {
 	if vals == nil {
 		return nil
@@ -334,6 +352,15 @@ func isOneOf(v string, words []string) bool {
 func (p *props) int(name string, v int) {
 	if v != 0 {
 		p.set(name, intNode(int64(v)))
+	}
+}
+
+// int64 is int for a value whose range needs the wider type: a codemode
+// memory bound is a byte count, and the platform ceiling (2 GiB) is already
+// one past what an int32 holds.
+func (p *props) int64(name string, v int64) {
+	if v != 0 {
+		p.set(name, intNode(v))
 	}
 }
 
@@ -557,7 +584,7 @@ func (w *writer) attachments(ab *ast.AttachmentsBlock) *yaml.Node {
 func (w *writer) secrets(sb *ast.SecretsBlock) *yaml.Node {
 	m := w.named("secrets")
 	for _, s := range sb.Fields {
-		bare := s.As == "" && s.MountPath == "" && s.Env == "" && !s.Optional && len(s.Hosts) == 0 && s.Description == ""
+		bare := s.As == "" && s.MountPath == "" && s.Env == "" && !s.Optional && len(s.Hosts) == 0 && len(s.Sinks) == 0 && s.Description == ""
 		switch {
 		case bare && s.Value == "":
 			m.set(s.Name, nullNode())
@@ -571,6 +598,7 @@ func (w *writer) secrets(sb *ast.SecretsBlock) *yaml.Node {
 			p.str("env", s.Env)
 			p.bool("optional", s.Optional)
 			p.set("hosts", strList(s.Hosts))
+			p.set("sinks", strList(s.Sinks))
 			p.str("description", s.Description)
 			m.set(s.Name, p.node())
 		}
@@ -1003,6 +1031,9 @@ func (w *writer) node(n nodeAt) *yaml.Node {
 		p.str("output", d.Output)
 		p.set("needs", identOrList(d.Needs))
 		p.bool("isolated", d.Isolated)
+		p.bool("auto_merge", d.AutoMerge)
+		p.str("merge_into", d.MergeInto)
+		p.str("merge_strategy", d.MergeStrategy)
 		return p.node()
 	}
 	w.fail(fmt.Errorf("author: no writer for a %s node", n.kind))
@@ -1021,6 +1052,7 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	p.str("output", d.Output)
 	p.str("publish", d.Publish)
 	p.set("artifact_labels", strList(d.ArtifactLabels))
+	p.set("deliverables", strList(d.Deliverables))
 	p.set("system", w.promptRef(d.System))
 	p.set("user", w.promptRef(d.User))
 	if d.Session != ast.SessionFresh {
@@ -1029,7 +1061,7 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	p.str("session_slot", d.SessionSlot)
 	p.set("tools", declaredList(d.Tools))
 	p.set("tool_policy", strList(d.ToolPolicy))
-	p.set("capabilities", strList(d.Capabilities))
+	p.set("capabilities", declaredList(d.Capabilities))
 	p.set("skills", strList(d.Skills))
 	p.int("tool_max_steps", d.ToolMaxSteps)
 	p.int("max_tokens", d.MaxTokens)
@@ -1049,6 +1081,9 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	p.str("compress", d.Compress)
 	p.str("auto_memory", d.AutoMemory)
 	p.str("ambient_context", d.AmbientContext)
+	if d.Codemode != nil {
+		p.set("codemode", w.codemode(d.Codemode))
+	}
 	p.str("permission", d.Permission)
 	p.set("allow", strList(d.Allow))
 	p.set("ask", strList(d.Ask))
@@ -1146,6 +1181,39 @@ func (w *writer) memory(m *ast.MemoryBlock) *yaml.Node {
 // sandbox writes the short form (`auto`, `none`) when the block holds a
 // mode and nothing else, the block form otherwise (mode `inline` is what
 // a block form reads as, and is not written).
+// codemode writes a `codemode:` declaration as a bare MODE STRING while
+// there is nothing but a mode to say, and as a mapping once a bound is
+// declared — the author document's spelling of the DSL's `ident | block`
+// duality, and `sandbox` below does the same thing for the same reason. It is
+// also what keeps every document written before the bounds existed
+// byte-identical: `codemode: on` reads and writes as it did.
+func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
+	if !cb.Bounded() && cb.Defer == "" {
+		return str(cb.Mode)
+	}
+	p := w.props("codemode")
+	// The implied `on` is not written back: the block form implies the
+	// capability it bounds, so the line would be one the author never wrote.
+	// An explicit `off` IS, because it is what makes the bounds inert (C348).
+	if cb.Mode != "" && cb.Mode != "on" {
+		p.str("mode", cb.Mode)
+	}
+	// defer: is written as declared, empty meaning unset — there is no
+	// implied value to omit, so what the author wrote comes back.
+	p.str("defer", cb.Defer)
+	p.int64("tool_calls", cb.ToolCalls)
+	p.int64("concurrent_tool_calls", cb.ConcurrentToolCalls)
+	p.str("wall", cb.Wall)
+	p.str("cpu", cb.CPU)
+	p.int64("memory", cb.Memory)
+	p.int64("script_bytes", cb.ScriptBytes)
+	p.int64("result_bytes", cb.ResultBytes)
+	p.int64("tool_result_bytes", cb.ToolResultBytes)
+	p.int64("store_entries", cb.StoreEntries)
+	p.int64("store_bytes", cb.StoreBytes)
+	return p.node()
+}
+
 func (w *writer) sandbox(sb *ast.SandboxBlock) *yaml.Node {
 	bodyEmpty := sb.Image == "" && sb.Build == nil && sb.User == "" && sb.WorkspaceFolder == "" && sb.HostState == "" && sb.PostCreate == "" && sb.Env == nil && len(sb.Mounts) == 0 && sb.Network == nil
 	if bodyEmpty && sb.Mode != "" && sb.Mode != "inline" {
@@ -1279,6 +1347,7 @@ func (w *writer) tool(d *ast.ToolNodeDecl) *yaml.Node {
 	p.str("output", d.Output)
 	p.str("publish", d.Publish)
 	p.set("artifact_labels", strList(d.ArtifactLabels))
+	p.set("deliverables", strList(d.Deliverables))
 	if d.Await != ast.AwaitNone {
 		p.set("await", str(d.Await.String()))
 	}
@@ -1288,6 +1357,11 @@ func (w *writer) tool(d *ast.ToolNodeDecl) *yaml.Node {
 	p.str("compress", d.Compress)
 	p.str("permission", d.Permission)
 	p.set("needs", identOrList(d.Needs))
+	// Same declared-list semantics as an agent/judge (ADR-151): nil writes
+	// nothing (inherit the workflow's), a declared `capabilities: []` writes
+	// `[]` back — dropping the line would turn a declared no-grant into an
+	// inheritance (#1801).
+	p.set("capabilities", declaredList(d.Capabilities))
 	p.bool("parallel_safe", d.ParallelSafe)
 	p.str("goal", d.Goal)
 	p.str("postcondition", d.Postcondition)
@@ -1374,6 +1448,20 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	if wf.Attachments != nil {
 		p.set("attachments", w.attachments(wf.Attachments))
 	}
+	if wf.BusinessStores != nil {
+		items := make([]*yaml.Node, 0, len(wf.BusinessStores))
+		for _, declaration := range wf.BusinessStores {
+			entry := w.props("business_store")
+			entry.lead.set("id", str(declaration.ID))
+			entry.str("kind", declaration.Kind)
+			entry.str("namespace", declaration.Namespace)
+			if declaration.Required != nil {
+				entry.set("required", boolNode(*declaration.Required))
+			}
+			items = append(items, entry.node())
+		}
+		p.set("business_stores", blockSeq(items))
+	}
 	if wf.Budget != nil {
 		b := w.props("budget")
 		b.int("max_parallel_branches", wf.Budget.MaxParallelBranches)
@@ -1404,6 +1492,9 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	p.str("compress", wf.Compress)
 	p.str("auto_memory", wf.AutoMemory)
 	p.str("ambient_context", wf.AmbientContext)
+	if wf.Codemode != nil {
+		p.set("codemode", w.codemode(wf.Codemode))
+	}
 	p.str("loop_budget_guard", wf.LoopBudgetGuard)
 	p.str("repo_devbox", wf.RepoDevbox)
 	p.str("workspace_checkpoint", wf.WorkspaceCheckpoint)
@@ -1412,7 +1503,7 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	p.set("ask", strList(wf.Ask))
 	p.set("deny", strList(wf.Deny))
 	p.set("tool_policy", strList(wf.ToolPolicy))
-	p.set("capabilities", strList(wf.Capabilities))
+	p.set("capabilities", declaredList(wf.Capabilities))
 	p.set("skills", strList(wf.Skills))
 	if wf.Interaction != nil {
 		p.set("interaction", str(wf.Interaction.String()))
@@ -1499,6 +1590,12 @@ func edgeText(e *ast.Edge) string {
 			fmt.Fprintf(&b, " as %s(%s)", e.Loop.Name, unparse.QuoteStrict(e.Loop.MaxIterationsExpr))
 		default:
 			fmt.Fprintf(&b, " as %s(%d)", e.Loop.Name, e.Loop.MaxIterations)
+		}
+		if e.Loop.Guard != "" {
+			fmt.Fprintf(&b, " guard: %s", e.Loop.Guard)
+		}
+		if e.Loop.SizedBy != "" {
+			fmt.Fprintf(&b, " sized_by %s", unparse.QuoteStrict(e.Loop.SizedBy))
 		}
 	}
 	if e.Foreach != nil {

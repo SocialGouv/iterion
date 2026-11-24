@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,8 +31,8 @@ const stderrTailBytes = 4096
 // runBuildx is the indirection unit tests overwrite to mock
 // `docker buildx build`. The runtime always uses the default (real
 // exec). Tests assert argv shape and surface controlled errors.
-var runBuildx = func(ctx context.Context, rt Runtime, args []string, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, string(rt), args...)
+var runBuildx = func(ctx context.Context, cli CLI, args []string, stderr io.Writer) error {
+	cmd := cli.command(ctx, args...)
 	cmd.Stderr = stderr
 	cmd.Stdout = io.Discard
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
@@ -121,7 +120,7 @@ func (d *Driver) Build(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	args = append(args, absCtx)
 
 	var stderr bytes.Buffer
-	if err := runBuildx(ctx, d.rt, args, &stderr); err != nil {
+	if err := runBuildx(ctx, d.cli, args, &stderr); err != nil {
 		return nil, fmt.Errorf("docker buildx: %w\nstderr (last %d bytes):\n%s", err, stderrTailBytes, tailString(stderr.Bytes(), stderrTailBytes))
 	}
 
@@ -131,7 +130,7 @@ func (d *Driver) Build(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	return &Prepared{
 		spec:      newSpec,
 		workspace: p.workspace,
-		runtime:   p.runtime,
+		cli:       p.cli,
 	}, nil
 }
 

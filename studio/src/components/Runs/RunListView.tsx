@@ -16,6 +16,7 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { useRuns } from "@/hooks/useRuns";
 import { useRunRepos } from "@/hooks/useRunRepos";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { navigationBirthState } from "@/lib/lostRuns";
 import { useUIStore } from "@/store/ui";
 import QueueDepthBar from "./QueueDepthBar";
 import {
@@ -161,9 +162,14 @@ export default function RunListView() {
     return [{ key: repo, label: repo, title: repo, count: 0 }, ...base];
   }, [mode, cloudRepos, runs, repo]);
 
+  // The clicked row's birth travels with the navigation: the view it opens
+  // expects that run, whatever a later poll lists under the ID.
   const openRun = useCallback(
-    (id: string) => setLocation(`/runs/${encodeURIComponent(id)}`),
-    [setLocation],
+    (id: string) =>
+      setLocation(`/runs/${encodeURIComponent(id)}`, {
+        state: navigationBirthState(id, runs.find((r) => r.id === id)?.birth_id),
+      }),
+    [setLocation, runs],
   );
 
   // Click a row's bot avatar to filter to that bot — or toggle it off
@@ -387,7 +393,10 @@ export default function RunListView() {
             so the user can tell at a glance how each run was
             triggered without expanding the row. */}
         <table className="w-full text-xs hidden sm:table">
-          <caption className="sr-only">Runs</caption>
+          <caption className="sr-only">
+            Runs by state group — columns: selection, run, workflow, source,
+            status, started, duration, run ID.
+          </caption>
           <thead className="text-fg-subtle">
             <tr className="border-b border-border-default">
               <th scope="col" className="pl-4 pr-1 py-2 w-8">
@@ -409,7 +418,6 @@ export default function RunListView() {
               <th scope="col" className="text-left px-4 py-2 font-medium">Run ID</th>
             </tr>
           </thead>
-          <tbody>
             {groups.map((g) => (
               <RunRowGroup
                 key={g.id}
@@ -432,7 +440,6 @@ export default function RunListView() {
                 ))}
               </RunRowGroup>
             ))}
-          </tbody>
         </table>
         <div className="sm:hidden">
           {groups.map((g) => (

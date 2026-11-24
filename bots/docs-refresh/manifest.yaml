@@ -1,7 +1,71 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.7.2
+version: 3.8.0
+## 3.8.0 — THE DELIVERY IS BOUNDED, not just the loop. `scope_check` is a
+## loop condition: a pass that never reverted its out-of-scope write and then
+## spent `max_passes` reached the PR tail anyway, and the push carried the
+## path — a `.github/workflows/**` file died at the forge as a raw 403 whose
+## stderr names no grant, and anything else (Go code, a script) was delivered
+## under the bot's identity. A new deterministic node, `delivery_gate`, sits
+## on the ONLY in-edge of `finalize_mr`, declares the paths the delivery owns
+## (`.md` anywhere, never under `.github/workflows/`, never a path the run
+## committed under `.claude/`) and ends the run typed —
+## `DELIVERY_PATHS_REFUSED`, every offending path named — rather than
+## pushing. Nothing is reverted and nothing is pushed: the alignment commits
+## stay on the run's branch. It fails CLOSED: a tree it cannot diff is a
+## delivery it does not certify. The functional restriction is deliberate (a
+## run that legitimately had to touch a workflow file is now refused by name
+## instead of refused by the forge) and the bound is the GRAPH's: an agent
+## that chooses to push from inside its own node is not bounded by a node.
+## The window it measures is recorded by a new entry node,
+## `record_run_base`, before any pass can write: a base re-derived from the
+## campaign's own commit messages let one commit missing the trailer (what
+## `git revert` writes) choose the window it is audited on. The engine's
+## `.claude/` mirror and the tree noise it declares are skipped only while
+## they stay UNCOMMITTED — a state no pass can revert; anything the run
+## committed is judged whatever its name, a `.claude/settings.json` hooks
+## file included. The refusal's path list is capped like the scope gate's,
+## the count stays honest, and its message says the commits stay on the run's
+## own branch — a repo-targeted cloud run also banking them to
+## `iterion/run-<id>` — rather than claiming nothing was pushed.
+## The two gates now carry the SAME rule, because the delivery gate is the
+## strict TAIL of the loop and `scope_check` is the only remediation route
+## there is: a path only one of them refuses has no cure at all. `.claude/`
+## is refused by both once the run COMMITTED it — it is the one directory
+## where a `.md` file is executable instruction (`CLAUDE.md`,
+## `skills/**/SKILL.md`, `agents/*.md`, `commands/*.md` are auto-loaded by
+## every agent harness that opens the branch), which the `.md` suffix rule
+## owned. The refused forge tree narrows to `.github/workflows/` — the only
+## subtree the credential 403s — so a contributing guide an operator points
+## `doc_globs` at is delivered instead of ending every run on
+## DELIVERY_PATHS_REFUSED with nothing to override. `scope_check` reads the
+## committed series and `-uall` like the gate, so a page area the campaign
+## has not committed yet is no longer a violation. And an UNBORN HEAD — the
+## engine's in-place degradation for a freshly created repository — records
+## git's empty tree as the window instead of no base at all, which refused
+## every delivery.
+## The same rule in the SAME WINDOW: `scope_check` now reads the base
+## `record_run_base` recorded, handed on its in-edge, instead of a base
+## walked back from the reflog to the newest commit without the
+## `Bot: docs-refresh` trailer — a window that differed from the tail's
+## whenever a commit lacked the trailer (a `git revert`, the engine's wip
+## bank before a resume, an unborn HEAD with no reflog at all), so a pass
+## certified what the tail then refused after the whole budget, with no
+## revert ever asked for. Both nodes read `--no-renames` on every diff (a
+## protected file moved onto a doc path reports its deletion, not only its
+## destination), `core.quotePath=false` (an accented doc name compares
+## equal) and the symlink term product-docs already carried — in both
+## windows, keyed on the destination mode, so a link committed then removed
+## from the worktree stays refused and a stale link the run removes is a
+## cleanup. `scope_check` fails closed like the gate: no recorded base or a
+## tree it cannot diff is a pass it does not certify. `scan_hints` sets
+## aside a `doc_globs` match under either refused tree and says so, rather
+## than pointing the campaign at an edit every pass reverts. The gate's
+## scrub covers git STATE the campaign can plant, not the toolchain: under
+## `repo_devbox` the workspace's own profile sits first on the run's PATH —
+## the same actor and the same limit as the direct push, named in the
+## README beside it.
 ## 3.7.2 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)

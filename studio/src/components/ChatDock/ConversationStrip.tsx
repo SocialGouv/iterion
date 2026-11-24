@@ -45,11 +45,31 @@ export function ConversationStrip({
   // the run"; the panel's minus correctly means minimise and must stay safe.
   return (
     <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
-      {conversations.map((c) => {
+      {conversations.map((c, index) => {
         const isActive = c.id === activeId;
         const isClosing = closingIds.has(c.id);
         const isWaiting = waitingIds.has(c.id);
         const hasUnreadWatch = unreadWatchIds.has(c.id);
+        // A state, not a name: the tab is "Vigie" whether or not a watch
+        // result landed, so the state is the control's DESCRIPTION. Folding
+        // it into the name (a glyph with a text alternative inside the
+        // button) renamed the tab on an unrelated event and left the
+        // tooltip disagreeing with it.
+        const state = hasUnreadWatch
+          ? "New automatic watch result"
+          : isWaiting
+            ? "Ready for your next message"
+            : null;
+        const stateId = `conversation-state-${c.id}`;
+        // Nothing stops two conversations with the SAME bot (addConversation
+        // caps the count, it does not dedupe), and then the label names both
+        // tabs and both close buttons identically. The position is what
+        // separates them — and only then, so the ordinary single-conversation
+        // name stays what the reader sees.
+        const label = labelFor(c);
+        const ambiguous =
+          conversations.filter((other) => labelFor(other) === label).length > 1;
+        const qualified = ambiguous ? `${label} ${index + 1}` : label;
         return (
           <span
             key={c.id}
@@ -63,42 +83,51 @@ export function ConversationStrip({
               type="button"
               className="max-w-[9rem] truncate"
               aria-current={isActive ? "true" : undefined}
+              aria-describedby={state ? stateId : undefined}
+              // Only when the label repeats: the name then carries the
+              // position, and it still starts with the visible text.
+              aria-label={ambiguous ? qualified : undefined}
               disabled={isClosing}
               onClick={() => onSelect(c.id)}
               title={
-                c.originLabel
-                  ? `${labelFor(c)} — about ${c.originLabel}`
-                  : labelFor(c)
+                [
+                  c.originLabel
+                    ? `${qualified} — about ${c.originLabel}`
+                    : qualified,
+                  state,
+                ]
+                  .filter(Boolean)
+                  .join(" — ")
               }
             >
               {labelFor(c)}
               {c.originLabel ? (
                 <span className="text-fg-subtle"> · {c.originLabel}</span>
               ) : null}
-              {hasUnreadWatch || isWaiting ? (
+              {state ? (
+                // Decorative: the dot repeats what the description says, and
+                // a name on a roleless span is prohibited ARIA anyway.
                 <span
+                  aria-hidden="true"
                   className={`ml-1 inline-block h-1.5 w-1.5 rounded-full align-middle ${
                     hasUnreadWatch ? "bg-accent" : "bg-warning"
                   }`}
-                  aria-label={
-                    hasUnreadWatch
-                      ? "New automatic watch result"
-                      : "Ready for your next message"
-                  }
-                  title={
-                    hasUnreadWatch
-                      ? "New automatic watch result"
-                      : "Ready for your next message"
-                  }
                 />
               ) : null}
             </button>
+            {state ? (
+              // Outside the button on purpose: inside, even an sr-only text
+              // node joins the name computed from content.
+              <span id={stateId} className="sr-only">
+                {state}
+              </span>
+            ) : null}
             <button
               type="button"
               aria-label={
                 isClosing
-                  ? `Closing ${labelFor(c)} conversation`
-                  : `Close ${labelFor(c)} conversation and stop its run`
+                  ? `Closing ${qualified} conversation`
+                  : `Close ${qualified} conversation and stop its run`
               }
               title="Close conversation and stop its run"
               disabled={isClosing}

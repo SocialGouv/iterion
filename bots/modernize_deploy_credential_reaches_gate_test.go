@@ -18,6 +18,7 @@ import (
 // placeholder, and a gate handed that as a path fails on a file that never
 // existed instead of reporting a missing credential.
 func TestLotVerifyPutsTheDeployCredentialWithinTheGatesReach(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1

@@ -154,7 +154,7 @@ func IterionSpec() Spec {
 				"teamScopedCollections and orgScopedCollections, plus secrets.OAuthCollectionName, " +
 				"platformcfg.ColRoutingPolicies, \"api_keys\" and \"org_usage\" directly.",
 			Names: []string{
-				"runs", "run_seq", "events", "interactions", "user_messages",
+				"runs", "run_seq", "events", "interactions", "user_messages", "run_data_v1_user_messages",
 				"memory_docs", "memory_spaces", "memory_tenant_usage",
 				"forge_connections", "forge_oauth_apps", "repo_integrations",
 				"api_keys", "generic_secrets", "run_secrets", "bot_secret_bindings",
@@ -175,6 +175,12 @@ func IterionSpec() Spec {
 			Evidence: "the index builder loops over a slice of {col, model} specs and calls db.Collection(s.col); " +
 				"the four cols are the package's own colPools/colPledges/colLeases/colLedger constants.",
 			Names: []string{"cred_pools", "cred_pledges", "cred_leases", "cred_pool_usage"},
+		}, {
+			Site: "pkg/connection/mongo_store.go:NewMongoStoreIn",
+			Evidence: "the collection is a parameter. NewMongoStore in the same file opens ConnectionsCollectionName " +
+				"at its own .Collection site, which resolves the name for the swept lists; NewMongoStoreIn's other " +
+				"caller is store_conformance_test.go, which passes a fresh per-build name no page draws.",
+			Names: []string{"connections"},
 		}},
 		Gates: []GateRef{
 			{"canViewTeam", "pkg/server/auth_authz.go"},
@@ -217,6 +223,8 @@ func IterionSpec() Spec {
 			{"boardWriteDenial", "pkg/server/board_cloud_routes.go"},
 			{"triggerWriteAuth", "pkg/server/triggers_routes.go"},
 			{"triggerWriteDenial", "pkg/server/triggers_routes.go"},
+			{"memoryWriteAuth", "pkg/server/memory_routes.go"},
+			{"memoryWriteDenial", "pkg/server/memory_routes.go"},
 			{"runWSMutatingTypes", "pkg/server/runs_ws.go"},
 			{"HasRole", "pkg/auth/identity.go"},
 		},

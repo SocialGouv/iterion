@@ -1,6 +1,10 @@
 package bundle
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,8 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 )
@@ -77,6 +82,16 @@ type Manifest struct {
 	// Compat is a forward-compatible bag for additive fields. Unknown
 	// keys here are ignored without breaking loads from newer bundles.
 	Compat map[string]any `yaml:"compat,omitempty"`
+
+	// DeclaredKeys is the set of keys this manifest's own bytes declare,
+	// dotted for a nested one ("category", "exports.skills"): what the one
+	// floors table reads when a release floor is asked for by a KEY
+	// (FloorSubject). It is filled by the decoder, at the one door every
+	// manifest load goes through, because a key declared with an empty
+	// value is still declared and no decoded zero value tells that apart.
+	// It is not part of the document: a Manifest built in code declares no
+	// key, and owes no floor for one it does not spell.
+	DeclaredKeys ManifestKeys `yaml:"-" json:"-"`
 
 	// Attachments declares default values for the workflow's
 	// `attachments:` block: keys are attachment names, values are
@@ -229,12 +244,15 @@ type Manifest struct {
 	Produces []ProducedArtifact `yaml:"produces,omitempty"`
 	Consumes []ConsumedArtifact `yaml:"consumes,omitempty"`
 
-	// Exports names workflows that another bundle may reference through a
-	// bot:// URI. Dependencies is the consumer-side allow-list: a workflow
-	// can only resolve a shared bundle that its own manifest declares. Both
-	// fields are additive schema-v1 extensions; older binaries reject them
-	// explicitly through strict YAML decoding instead of silently ignoring
-	// the dependency contract.
+	// Exports names workflows and skills that another bundle may reference
+	// — a workflow through a bot:// URI, a skill by the name a `skills:`
+	// list spells. Dependencies is the consumer-side allow-list: a bundle
+	// can only resolve what its own manifest declares. Both fields are
+	// additive schema-v1 extensions; older binaries reject them explicitly
+	// through strict YAML decoding instead of silently ignoring the
+	// dependency contract — which is why each key owes a release floor
+	// (profile.go's one floors table) to say "this bundle needs iterion
+	// >= X" at authoring time.
 	Exports      BundleExports      `yaml:"exports,omitempty" json:"exports,omitempty"`
 	Dependencies BundleDependencies `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
 
@@ -501,9 +519,27 @@ type ConsumedArtifact struct {
 	From string `yaml:"from,omitempty" json:"from,omitempty"`
 }
 
-// BundleExports is the public workflow surface of a bundle.
+// BundleExports is the public surface of a bundle: what another bundle may
+// depend on rather than copy.
 type BundleExports struct {
 	Workflows []WorkflowExport `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	// Fragments are the `.bot` fragments under lib/ this bundle publishes
+	// for another bundle to import as its own — the third artefact kind of
+	// the same two-sided key (ADR-145). Shape and per-index refusals live
+	// in fragment_sharing.go.
+	Fragments []FragmentExport `yaml:"fragments,omitempty" json:"fragments,omitempty"`
+	// Skills names the skill documents this bundle shares (ADR-144). The
+	// floor the key owes is bundle.SkillSharingSince.
+	Skills []SkillExport `yaml:"skills,omitempty" json:"skills,omitempty"`
+}
+
+// SkillExport binds a stable skill id to a bundle-relative skill document,
+// the way WorkflowExport binds a workflow id to its source: the id is what
+// a consumer's `dependencies.skills` entry names, the path is where this
+// bundle keeps the bytes.
+type SkillExport struct {
+	ID   string `yaml:"id" json:"id"`
+	Path string `yaml:"path" json:"path"`
 }
 
 // WorkflowExport binds a stable bot:// workflow id to a bundle-relative
@@ -513,10 +549,33 @@ type WorkflowExport struct {
 	Path string `yaml:"path" json:"path"`
 }
 
-// BundleDependencies declares the shared bundles a consumer is allowed to
-// resolve. The exact version and content hash live in the project lockfile.
+// BundleDependencies declares what a consumer is allowed to resolve from a
+// shared bundle. The exact version and content hash live in the project
+// lockfile.
 type BundleDependencies struct {
 	Workflows []WorkflowDependency `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	// Fragments are the shared `.bot` fragments this bundle is allowed to
+	// resolve, and the names its own `import "lib/<name>.bot"` lines reach
+	// them under. The install materializes them; nothing else learns of
+	// them (ADR-145).
+	Fragments []FragmentDependency `yaml:"fragments,omitempty" json:"fragments,omitempty"`
+	// Skills is the consumer side of ADR-144: the skills this bundle may
+	// resolve from another, each under the name its own `skills:` lists
+	// reference. Declaring one is an ALLOW-LIST entry, not a
+	// materialization — the install-time resolution that writes the
+	// resolved document into this bundle's skills directory is ADR-144
+	// clause 2, and the typed error on a miss is its clause 4.
+	Skills []SkillDependency `yaml:"skills,omitempty" json:"skills,omitempty"`
+}
+
+// SkillDependency names one shared skill a consumer is allowed to resolve.
+// Matching is exact on both sides: From is the exporting bundle, ID the
+// export it names there (defaulting to Name), and Name is how this bundle's
+// own `skills:` lists spell it.
+type SkillDependency struct {
+	Name string `yaml:"name" json:"name"`
+	From string `yaml:"from" json:"from"`
+	ID   string `yaml:"id,omitempty" json:"id,omitempty"`
 }
 
 // WorkflowDependency names one shared workflow bundle. Matching is exact.
@@ -643,6 +702,24 @@ const (
 	ForgeScopeReviewers = "reviewers" // add reviewers (PullReviewerSetter)
 )
 
+// ForgeScopeActions is the scope a bot declares to dispatch one of the
+// repository's own CI workflows (forge.WorkflowDispatcher) — the external
+// trigger a forge cron that does not fire reliably needs. Write-or-nothing,
+// like the merge-gate scopes: declaring it at write mints the dispatch
+// capability into the run's publish grant, and the dispatch itself crosses
+// the deterministic publish surface with a token minted server-side for that
+// one call. It never widens the run's own forge token: a bot that does not
+// declare it never holds the capability, and no run token carries the
+// forge's Actions permission.
+const ForgeScopeActions = "actions"
+
+// DispatchWorkflowVar is the launch var naming the workflow file a bot
+// declaring ForgeScopeActions dispatches. The server binds the dispatch grant
+// to its value on the schedule row, which only an operator writes (the
+// schedule create and PATCH routes, team admin): a manifest that declares the
+// scope never supplies it (validateDispatchWorkflowDefault).
+const DispatchWorkflowVar = "workflow"
+
 var (
 	knownForgeScopeKeys = map[string]bool{
 		"pull_requests":     true,
@@ -653,6 +730,7 @@ var (
 		ForgeScopeApprovals: true, // MR approvals (the merge gate's approve)
 		ForgeScopeMerge:     true, // auto-merge arming (the merge gate's arm)
 		ForgeScopeReviewers: true, // reviewer requests (escalation)
+		ForgeScopeActions:   true, // dispatch a repository workflow
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,
@@ -660,6 +738,18 @@ var (
 		"admin": true,
 	}
 )
+
+// knownForgeScopeNames lists the accepted scope keys, sorted for a stable
+// message — derived from knownForgeScopeKeys like knownForgeEventNames, so the
+// refusal names every scope validation accepts.
+func knownForgeScopeNames() []string {
+	names := make([]string, 0, len(knownForgeScopeKeys))
+	for name := range knownForgeScopeKeys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // ForgeRequirements is the `forge:` block of a bundle manifest. All
 // fields are optional; a bundle with no forge: block has Forge == nil.
@@ -670,12 +760,12 @@ type ForgeRequirements struct {
 
 	// TokenScopes is a normalized permission map (key -> "read" |
 	// "write" | "admin"); keys ∈ {pull_requests, repository, issues,
-	// webhooks, statuses, approvals, merge, reviewers}. The provisioner
-	// always needs webhook-admin regardless of this map — declaring it is
-	// informational, except the merge-gate scopes (statuses, approvals,
-	// merge, reviewers), which mint the matching capabilities into the
-	// bots' publish grants. Unioned across co-enabled bots to size the
-	// requested OAuth scope.
+	// webhooks, statuses, approvals, merge, reviewers, actions}. The
+	// provisioner always needs webhook-admin regardless of this map —
+	// declaring it is informational, except the merge-gate scopes
+	// (statuses, approvals, merge, reviewers) and actions, which mint the
+	// matching capabilities into the bots' publish grants. Unioned across
+	// co-enabled bots to size the requested OAuth scope.
 	TokenScopes map[string]string `yaml:"token_scopes,omitempty"`
 
 	// Secret is the workflow-secret name the bundle's main.bot
@@ -774,6 +864,10 @@ const (
 	// requires the resident in-process scheduler (host crontab floors at 1m).
 	// The bot's own supervisor: block, if any, attaches per launched run.
 	InvocationKindKeepalive InvocationKind = "keepalive"
+	// InvocationKindConnector fires on an event a connector package declares
+	// (ADR-168 §6): the manifest suggests the trigger, an operator binds it
+	// to a connection.
+	InvocationKindConnector InvocationKind = "connector"
 )
 
 var knownInvocationKinds = map[InvocationKind]bool{
@@ -782,6 +876,7 @@ var knownInvocationKinds = map[InvocationKind]bool{
 	InvocationKindSchedule:  true,
 	InvocationKindBoard:     true,
 	InvocationKindKeepalive: true,
+	InvocationKindConnector: true,
 }
 
 // KeepaliveMinInterval is the floor on a keepalive invocation's interval: a
@@ -801,12 +896,89 @@ type ExecutionMode string
 const (
 	ExecutionDirect ExecutionMode = "direct"
 	ExecutionBoard  ExecutionMode = "board"
+	// ExecutionDeliver hands the event to the bot's parked run (ADR-168 §6,
+	// #3136). Accepted by the parser so every builder can refuse it typed;
+	// nothing honours it until #3136 ships.
+	ExecutionDeliver ExecutionMode = "deliver"
 )
 
 var knownExecutionModes = map[ExecutionMode]bool{
-	"":              true,
-	ExecutionDirect: true,
-	ExecutionBoard:  true,
+	"":               true,
+	ExecutionDirect:  true,
+	ExecutionBoard:   true,
+	ExecutionDeliver: true,
+}
+
+// ErrUnsupported is the class of a kind and mode no builder or dispatcher can
+// honour: refused, typed, before any subscription is built or run launched —
+// never defaulted to a launch.
+var ErrUnsupported = errors.New("unsupported")
+
+// UnsupportedError names the refused kind and mode and the site that refused.
+type UnsupportedError struct {
+	Kind   InvocationKind
+	Mode   ExecutionMode
+	Site   string
+	Reason string
+}
+
+func (e *UnsupportedError) Error() string {
+	return fmt.Sprintf("unsupported: %s refuses kind %q in mode %q — %s", e.Site, e.Kind, e.Mode, e.Reason)
+}
+
+func (e *UnsupportedError) Is(target error) bool { return target == ErrUnsupported }
+
+// ResolveMode is the one reading of a declared mode every builder and
+// dispatcher shares: "" and direct launch, board materialises a card, and
+// deliver — or anything else — is refused typed, never defaulted to a launch.
+func ResolveMode(kind InvocationKind, mode ExecutionMode, site string) (ExecutionMode, error) {
+	switch mode {
+	case "", ExecutionDirect:
+		return ExecutionDirect, nil
+	case ExecutionBoard:
+		if kind == InvocationKindConnector {
+			return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "the board effect promotes an existing native card; turning an external event into a card is a contract of its own (ADR-168 §6)"}
+		}
+		return ExecutionBoard, nil
+	case ExecutionDeliver:
+		return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "delivering to a parked run ships with #3136"}
+	}
+	return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "not a known execution mode"}
+}
+
+// InvocationKey is the identity of invocations[index] within its bot's
+// manifest, intrinsic to what the invocation says: the package trigger id
+// for a connector invocation, the normalized cron for a schedule, the
+// canonical interval for a keepalive, a digest of the board block. ""
+// derives no subscription (the builders refuse it).
+func InvocationKey(invs []Invocation, index int) string {
+	inv := invs[index]
+	switch inv.Kind {
+	case InvocationKindConnector:
+		if inv.Connector != nil {
+			return inv.Connector.Trigger
+		}
+	case InvocationKindSchedule:
+		if inv.Schedule != nil {
+			if cron := strings.Join(strings.Fields(inv.Schedule.SuggestedCron), " "); cron != "" {
+				return cron
+			}
+		}
+	case InvocationKindKeepalive:
+		if inv.Keepalive != nil {
+			if d, err := time.ParseDuration(strings.TrimSpace(inv.Keepalive.Interval)); err == nil {
+				return d.String()
+			}
+		}
+	case InvocationKindBoard:
+		if inv.Board != nil {
+			if raw, err := json.Marshal(canonicalBoard(inv.Board)); err == nil {
+				sum := sha256.Sum256(raw)
+				return hex.EncodeToString(sum[:])[:16]
+			}
+		}
+	}
+	return ""
 }
 
 // Invocation declares one way this bot can be triggered, plus the execution
@@ -836,15 +1008,14 @@ type Invocation struct {
 	Schedule  *InvocationSchedule  `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	Board     *InvocationBoard     `yaml:"board,omitempty" json:"board,omitempty"`
 	Keepalive *InvocationKeepalive `yaml:"keepalive,omitempty" json:"keepalive,omitempty"`
+	Connector *InvocationConnector `yaml:"connector,omitempty" json:"connector,omitempty"`
 }
 
-// EffectiveMode returns the execution mode, defaulting an empty value to
-// ExecutionDirect (the safe, PR-bound behaviour).
-func (i Invocation) EffectiveMode() ExecutionMode {
-	if i.Mode == ExecutionBoard {
-		return ExecutionBoard
-	}
-	return ExecutionDirect
+// EffectiveMode returns the execution mode, an empty value being
+// ExecutionDirect; a mode no path honours is a typed ErrUnsupported
+// (ResolveMode), never a launch.
+func (i Invocation) EffectiveMode() (ExecutionMode, error) {
+	return ResolveMode(i.Kind, i.Mode, "invocation")
 }
 
 // InvocationForge is the payload of a kind=forge invocation.
@@ -900,6 +1071,25 @@ type InvocationSchedule struct {
 }
 
 // InvocationKeepalive is the payload of a kind=keepalive invocation.
+// InvocationConnector is the payload of a kind=connector invocation
+// (ADR-168 §6): the trigger a connector package declares, the filter values
+// the bot suggests, and its var map — a bot var to an expression over
+// `event`. The manifest suggests; an operator binds it to a connection.
+type InvocationConnector struct {
+	// Trigger is the package trigger id, `<connector>.<resource>.<verb>`.
+	Trigger string `yaml:"trigger" json:"trigger"`
+	// Filters are suggested values per filter id the trigger declares.
+	Filters map[string][]string `yaml:"filters,omitempty" json:"filters,omitempty"`
+	// Vars maps a bot var to an expression over the event.
+	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+}
+
+var (
+	connectorTriggerRe = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9_-]*)+$`)
+	connectorFilterRe  = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	connectorVarRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
 type InvocationKeepalive struct {
 	// Interval is how often to relaunch the bot (Go duration, e.g. "30s",
 	// "5m"). Required, must be >= KeepaliveMinInterval. Sub-minute values
@@ -969,12 +1159,16 @@ var (
 // are a provisioning-time concern (pkg/forge), not a manifest one.
 func validateInvocations(invs []Invocation) error {
 	seenCmd := map[string]bool{}
+	seenKey := map[string]bool{}
 	for idx, inv := range invs {
 		if !knownInvocationKinds[inv.Kind] {
-			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive)", idx, inv.Kind)
+			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive, connector)", idx, inv.Kind)
 		}
 		if !knownExecutionModes[inv.Mode] {
-			return fmt.Errorf("invocations[%d]: invalid mode %q (want direct or board)", idx, inv.Mode)
+			return fmt.Errorf("invocations[%d]: invalid mode %q (want direct, board or deliver)", idx, inv.Mode)
+		}
+		if inv.Connector != nil && inv.Kind != InvocationKindConnector {
+			return fmt.Errorf("invocations[%d]: only kind=connector takes a connector: block", idx)
 		}
 		switch inv.Kind {
 		case InvocationKindForge:
@@ -1063,6 +1257,89 @@ func validateInvocations(invs []Invocation) error {
 			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Board != nil {
 				return fmt.Errorf("invocations[%d]: kind=keepalive must not set a forge:/command:/schedule:/board: block", idx)
 			}
+		case InvocationKindConnector:
+			if err := validateConnectorInvocation(inv); err != nil {
+				return fmt.Errorf("invocations[%d]: %w", idx, err)
+			}
+		}
+		// Two invocations of one kind sharing an identity derive the same
+		// subscription: one row cannot answer for both.
+		if key := InvocationKey(invs, idx); key != "" {
+			if seenKey[string(inv.Kind)+"\x00"+key] {
+				return fmt.Errorf("invocations[%d]: a second %s invocation derives the same subscription (%s %q) — two of one kind must differ", idx, inv.Kind, keyField(inv.Kind), key)
+			}
+			seenKey[string(inv.Kind)+"\x00"+key] = true
+		}
+	}
+	return nil
+}
+
+// canonicalBoard copies b with its lists sorted: the matcher reads them
+// insensible to order (any-of on kinds and states, all-of on labels), so a
+// cosmetic reorder of the manifest must not change the invocation's
+// identity.
+func canonicalBoard(b *InvocationBoard) *InvocationBoard {
+	c := *b
+	c.On = sortedCopy(b.On)
+	c.ToStates = sortedCopy(b.ToStates)
+	c.AllLabels = sortedCopy(b.AllLabels)
+	return &c
+}
+
+func sortedCopy(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
+
+// keyField names what an invocation key is made of, for the duplicate
+// refusal.
+func keyField(kind InvocationKind) string {
+	switch kind {
+	case InvocationKindConnector:
+		return "trigger"
+	case InvocationKindSchedule:
+		return "cron"
+	case InvocationKindKeepalive:
+		return "interval"
+	}
+	return "board block"
+}
+
+// validateConnectorInvocation checks a kind=connector invocation's shape. What
+// its trigger, filters and expressions mean is the package's to say, checked
+// when an operator binds it to a connection.
+func validateConnectorInvocation(inv Invocation) error {
+	c := inv.Connector
+	if c == nil {
+		return fmt.Errorf("kind=connector requires a connector: block")
+	}
+	if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Board != nil || inv.Keepalive != nil {
+		return fmt.Errorf("kind=connector must not set a forge:/command:/schedule:/board:/keepalive: block")
+	}
+	if inv.ArgsVar != "" {
+		return fmt.Errorf("kind=connector takes no args_var: its vars map names what each var reads")
+	}
+	if !connectorTriggerRe.MatchString(c.Trigger) {
+		return fmt.Errorf("connector.trigger %q is not a <connector>.<resource>.<verb> trigger id", c.Trigger)
+	}
+	for id, values := range c.Filters {
+		if !connectorFilterRe.MatchString(id) {
+			return fmt.Errorf("connector.filters: %q is not a filter id", id)
+		}
+		if len(values) == 0 {
+			return fmt.Errorf("connector.filters.%s: no value", id)
+		}
+	}
+	for name, from := range c.Vars {
+		if !connectorVarRe.MatchString(name) {
+			return fmt.Errorf("connector.vars: %q is not a var name", name)
+		}
+		if strings.TrimSpace(from) == "" {
+			return fmt.Errorf("connector.vars.%s: empty expression", name)
 		}
 	}
 	return nil
@@ -1093,6 +1370,20 @@ func LoadManifest(path string) (*Manifest, error) {
 	return decodeManifest(body, path)
 }
 
+// LoadManifestForDir loads dir's manifest whichever spelling carries it —
+// the same both-spellings read OpenDir does. ADR-140: a bundle is a bundle
+// on every surface, so a reader of the literal manifest.yaml would hand
+// the .yml twin of one bundle two verdicts. A manifest.yaml that EXISTS
+// and fails keeps its own failure as the verdict; the .yml spelling is
+// only consulted when manifest.yaml is absent.
+func LoadManifestForDir(dir string) (*Manifest, error) {
+	m, err := LoadManifest(filepath.Join(dir, ManifestFile))
+	if _, statErr := os.Stat(filepath.Join(dir, ManifestFile)); statErr == nil {
+		return m, err
+	}
+	return LoadManifest(filepath.Join(dir, ManifestFileAlt))
+}
+
 // DecodeManifest parses + validates manifest bytes without touching the
 // filesystem — the seam generators (pkg/botscaffold) use to hold their
 // rendered manifest to the same bar as a loaded one before writing it.
@@ -1107,7 +1398,7 @@ func DecodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 // a loaded one.
 func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	var m Manifest
-	if err := yaml.UnmarshalStrict(body, &m); err != nil {
+	if err := yamlx.UnmarshalStrict(body, &m); err != nil {
 		return nil, fmt.Errorf("bundle: parse manifest %s: %w", srcLabel, err)
 	}
 	if m.SchemaVersion == 0 {
@@ -1119,6 +1410,15 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 			m.SchemaVersion, CurrentManifestSchema,
 		)
 	}
+	// The keys the document DECLARES, read from the bytes here so every
+	// load carries them: the floors table is asked for a release by a
+	// key's PRESENCE (CatalogTaxonomySince), which a decoded zero value
+	// cannot tell from an absent key.
+	keys, err := DeclaredManifestKeys(body)
+	if err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	m.DeclaredKeys = keys
 	m.Icon = strings.TrimSpace(m.Icon)
 	if len(m.Icon) > maxIconLen {
 		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)
@@ -1157,6 +1457,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateInvocations(m.Invocations); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateDispatchWorkflowDefault(&m); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	if err := validateChatSurface(m.Chat); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
@@ -1170,6 +1473,12 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	if err := validateWorkflowSharing(m.Exports, m.Dependencies); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	if err := validateFragmentSharing(m.Exports, m.Dependencies); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	if err := validateSkillSharing(&m.Exports, &m.Dependencies); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	// A typo in retry: must fail at parse time, next to its source. Left
@@ -1231,6 +1540,75 @@ func validateWorkflowSharing(exports BundleExports, dependencies BundleDependenc
 	return nil
 }
 
+// validateSkillSharing holds both sides of `exports.skills` /
+// `dependencies.skills` to the shape ADR-144 decided, one refusal per index
+// so an author is told WHICH entry is wrong — the bar
+// validateWorkflowSharing sets for the other artefact kind. It normalizes
+// in place: trimmed names, a cleaned bundle-relative path, and an id that
+// defaults to the name it is referenced under (the default the record
+// spells out, never a guess at load time).
+func validateSkillSharing(exports *BundleExports, dependencies *BundleDependencies) error {
+	exportIDs := make(map[string]struct{}, len(exports.Skills))
+	for i := range exports.Skills {
+		exp := &exports.Skills[i]
+		exp.ID = strings.TrimSpace(exp.ID)
+		exp.Path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp.Path)))
+		if exp.ID == "" {
+			return fmt.Errorf("exports.skills[%d].id is required", i)
+		}
+		if strings.ContainsAny(exp.ID, `/\`) || exp.ID == "." || exp.ID == ".." {
+			return fmt.Errorf("exports.skills[%d].id %q must not contain path separators", i, exp.ID)
+		}
+		if _, duplicate := exportIDs[exp.ID]; duplicate {
+			return fmt.Errorf("exports.skills[%d].id %q is duplicated", i, exp.ID)
+		}
+		exportIDs[exp.ID] = struct{}{}
+		if exp.Path == "" || exp.Path == "." {
+			return fmt.Errorf("exports.skills[%d].path is required", i)
+		}
+		if filepath.IsAbs(exp.Path) || strings.HasPrefix(exp.Path, "../") || exp.Path == ".." {
+			return fmt.Errorf("exports.skills[%d].path %q must stay inside the bundle", i, exp.Path)
+		}
+		if !strings.HasSuffix(strings.ToLower(exp.Path), skillExtension) {
+			return fmt.Errorf("exports.skills[%d].path %q must name a %s skill document", i, exp.Path, skillExtension)
+		}
+	}
+
+	dependencyNames := make(map[string]struct{}, len(dependencies.Skills))
+	for i := range dependencies.Skills {
+		dep := &dependencies.Skills[i]
+		dep.Name = strings.TrimSpace(dep.Name)
+		dep.From = strings.TrimSpace(dep.From)
+		dep.ID = strings.TrimSpace(dep.ID)
+		if dep.Name == "" {
+			return fmt.Errorf("dependencies.skills[%d].name is required", i)
+		}
+		if strings.ContainsAny(dep.Name, `/\`) || dep.Name == "." || dep.Name == ".." {
+			return fmt.Errorf("dependencies.skills[%d].name %q must not contain path separators", i, dep.Name)
+		}
+		if err := refuseUnmaterializableSkillName(i, *dep); err != nil {
+			return err
+		}
+		if _, duplicate := dependencyNames[dep.Name]; duplicate {
+			return fmt.Errorf("dependencies.skills[%d].name %q is duplicated", i, dep.Name)
+		}
+		dependencyNames[dep.Name] = struct{}{}
+		if dep.From == "" {
+			return fmt.Errorf("dependencies.skills[%d].from is required: name the bundle that exports %q, since a name alone would resolve from any installed bundle that happens to export it", i, dep.Name)
+		}
+		if strings.ContainsAny(dep.From, `/\`) || dep.From == "." || dep.From == ".." {
+			return fmt.Errorf("dependencies.skills[%d].from %q must not contain path separators", i, dep.From)
+		}
+		if dep.ID == "" {
+			dep.ID = dep.Name
+		}
+		if strings.ContainsAny(dep.ID, `/\`) || dep.ID == "." || dep.ID == ".." {
+			return fmt.Errorf("dependencies.skills[%d].id %q must not contain path separators", i, dep.ID)
+		}
+	}
+	return nil
+}
+
 func validateAuthoring(a *AuthoringSpec) error {
 	if a == nil {
 		return nil
@@ -1282,6 +1660,15 @@ func authoringSensitivePath(path string) bool {
 		return true
 	}
 	if base == ".netrc" || base == ".git-credentials" || base == "secrets.json" || base == "secrets.key" || base == "auth.json" {
+		return true
+	}
+	// The clone's own credential store holds the run's LIVE forge token in
+	// plaintext, and for a repo-targeted run the workspace scope IS the clone
+	// root — so a `{scope: workspace, path: .git/iterion-credentials}`
+	// declaration would hand the token to the authoring surface. The name
+	// comes from gitlib, where its writer reads it too; the prefix also covers
+	// the sibling the atomic replace writes first (`.tmp`, `.tmp.$$`).
+	if strings.HasPrefix(base, gitlib.CredentialStoreFile) {
 		return true
 	}
 	if strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") {
@@ -1361,7 +1748,7 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 	}
 	for key, level := range f.TokenScopes {
 		if !knownForgeScopeKeys[key] {
-			return fmt.Errorf("forge.token_scopes: unknown scope %q (known: pull_requests, repository, issues, webhooks, statuses)", key)
+			return fmt.Errorf("forge.token_scopes: unknown scope %q (known: %s)", key, strings.Join(knownForgeScopeNames(), ", "))
 		}
 		if !knownForgeScopeLevels[level] {
 			return fmt.Errorf("forge.token_scopes[%s]: invalid level %q (want read, write, or admin)", key, level)
@@ -1372,6 +1759,36 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 		case "", AuthorScopeShared, AuthorScopeExclusive:
 		default:
 			return fmt.Errorf("forge.webhook.author_scope: unknown value %q (known: %s, %s)", scope, AuthorScopeShared, AuthorScopeExclusive)
+		}
+	}
+	return nil
+}
+
+// validateDispatchWorkflowDefault refuses an invocation default_vars naming
+// DispatchWorkflowVar in a manifest that declares the actions scope.
+// Provisioning stamps a schedule invocation's default_vars onto the schedule
+// row, and a bot row is written by roles below the team admin who owns the
+// schedule — so a default there would let the bot's author, not the
+// operator, choose the workflow every tick dispatches. A keepalive's
+// default_vars are refused alike: the same author, the same row.
+func validateDispatchWorkflowDefault(m *Manifest) error {
+	if m.Forge == nil {
+		return nil
+	}
+	if _, declared := m.Forge.TokenScopes[ForgeScopeActions]; !declared {
+		return nil
+	}
+	for idx, inv := range m.Invocations {
+		var defaults map[string]string
+		switch {
+		case inv.Schedule != nil:
+			defaults = inv.Schedule.DefaultVars
+		case inv.Keepalive != nil:
+			defaults = inv.Keepalive.DefaultVars
+		}
+		if _, ok := defaults[DispatchWorkflowVar]; ok {
+			return fmt.Errorf("invocations[%d]: default_vars names %q, the workflow the %s scope dispatches — an operator names it on the schedule row; a manifest never supplies it",
+				idx, DispatchWorkflowVar, ForgeScopeActions)
 		}
 	}
 	return nil

@@ -58,3 +58,106 @@ workflow w:
 		t.Fatalf("workflow Capabilities after round-trip = %q", got)
 	}
 }
+
+// `capabilities: []` is a DECLARED empty grant (#1801): the author saying
+// "this node holds no capability" — overriding the workflow's list. Dropping
+// the line on unparse would turn the declared empty grant back into an
+// inheritance. Only an absent (nil) list writes nothing.
+func TestUnparseCapabilities_DeclaredEmptyRoundTrip(t *testing.T) {
+	src := `agent po:
+  model: "gpt-4"
+  capabilities: []
+
+agent dev:
+  model: "gpt-4"
+
+workflow w:
+  entry: po
+  capabilities: []
+
+  po -> dev
+  dev -> done
+`
+	res := parsertest.Parse("test.bot", src)
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
+	}
+	if res.File.Agents[0].Capabilities == nil || res.File.Agents[1].Capabilities != nil {
+		t.Fatalf("precondition: declared = %#v, absent = %#v", res.File.Agents[0].Capabilities, res.File.Agents[1].Capabilities)
+	}
+
+	out := unparse.Unparse(res.File)
+
+	if n := strings.Count(out, "capabilities: []"); n != 2 {
+		t.Fatalf("unparse must write the two declared empty lists back, found %d:\n%s", n, out)
+	}
+	if strings.Contains(out, "capabilities: [") && !strings.Contains(out, "capabilities: []") {
+		t.Fatalf("unparse invented a list:\n%s", out)
+	}
+
+	// Reparse: the declared empty lists survive, the absent one stays nil.
+	res2 := parsertest.Parse("test.bot", out)
+	if len(res2.Diagnostics) != 0 {
+		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
+	}
+	if got := res2.File.Agents[0].Capabilities; got == nil || len(got) != 0 {
+		t.Fatalf("declared empty agent Capabilities after round-trip = %#v", got)
+	}
+	if got := res2.File.Agents[1].Capabilities; got != nil {
+		t.Fatalf("absent agent Capabilities after round-trip = %#v, want nil", got)
+	}
+	if got := res2.File.Workflows[0].Capabilities; got == nil || len(got) != 0 {
+		t.Fatalf("declared empty workflow Capabilities after round-trip = %#v", got)
+	}
+}
+
+// The tool node carries the same declared-vs-absent distinction (#78=A,
+// ADR-151): a declared `capabilities: []` on a tool node overrides a
+// granting workflow, so an unparse that dropped it — the studio's save, `fmt`
+// — would silently widen the node's board grant to the workflow's.
+func TestUnparseCapabilities_ToolNodeDeclaredEmptyRoundTrip(t *testing.T) {
+	src := `tool reads_nothing:
+  action: board.issue.list
+  capabilities: []
+
+tool inherits:
+  action: board.issue.list
+
+tool reads:
+  action: board.issue.list
+  capabilities: [board.read]
+
+workflow w:
+  entry: reads_nothing
+  capabilities: [board.read]
+
+  reads_nothing -> inherits
+  inherits -> reads
+  reads -> done
+`
+	res := parsertest.Parse("test.bot", src)
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
+	}
+	out := unparse.Unparse(res.File)
+
+	res2 := parsertest.Parse("test.bot", out)
+	if len(res2.Diagnostics) != 0 {
+		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
+	}
+	byID := map[string][]string{}
+	declared := map[string]bool{}
+	for _, tn := range res2.File.Tools {
+		byID[tn.Name] = tn.Capabilities
+		declared[tn.Name] = tn.Capabilities != nil
+	}
+	if got := byID["reads_nothing"]; got == nil || len(got) != 0 {
+		t.Fatalf("declared empty tool Capabilities after round-trip = %#v, want a non-nil empty list:\n%s", got, out)
+	}
+	if declared["inherits"] {
+		t.Fatalf("absent tool Capabilities after round-trip = %#v, want nil:\n%s", byID["inherits"], out)
+	}
+	if got := strings.Join(byID["reads"], ","); got != "board.read" {
+		t.Fatalf("declared tool Capabilities after round-trip = %q:\n%s", got, out)
+	}
+}

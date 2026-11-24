@@ -77,6 +77,7 @@ func fallbackAgentNodeModel(id, backend, provider, model string) *ir.AgentNode {
 // beyond its retry budget, and the run transparently completes against
 // anthropic with a single fall-through note.
 func TestProviderFallback_FallsThroughThenSucceeds(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{fail: map[string]error{
@@ -108,6 +109,7 @@ func TestProviderFallback_FallsThroughThenSucceeds(t *testing.T) {
 }
 
 func TestRunFallbackEventsCarryStageIndexes(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	fake := &providerScriptedBackend{fail: map[string]error{
 		"primary": &delegate.ErrTransient{Reason: "primary unavailable"},
@@ -144,6 +146,7 @@ func TestRunFallbackEventsCarryStageIndexes(t *testing.T) {
 // against anthropic running claude-opus-4-8. Both the provider hint AND
 // the wire model swap on fall-through.
 func TestProviderFallback_PerElementModelSwap(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{fail: map[string]error{
@@ -185,6 +188,7 @@ func TestProviderFallback_PerElementModelSwap(t *testing.T) {
 // baseline — and that an inheriting element following a model-bearing one
 // restores the baseline rather than carrying the previous override.
 func TestProviderFallback_ModelElementInheritsBaseline(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{fail: map[string]error{
@@ -216,6 +220,7 @@ func TestProviderFallback_ModelElementInheritsBaseline(t *testing.T) {
 // in the chain fails, the run fails (it is not silently swallowed) and the
 // surfaced error names the chain that was attempted.
 func TestProviderFallback_WholeChainFails(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{fail: map[string]error{
@@ -249,6 +254,7 @@ func TestProviderFallback_WholeChainFails(t *testing.T) {
 // single-value provider (the historical form) runs exactly once and never
 // fires the fall-through machinery.
 func TestProviderFallback_SingleValueNeverFallsThrough(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{}
@@ -276,6 +282,7 @@ func TestProviderFallback_SingleValueNeverFallsThrough(t *testing.T) {
 // (non-retryable) error — e.g. an auth failure on the first provider —
 // also triggers a fall-through, without burning the retry budget first.
 func TestProviderFallback_NonRetryableStillFallsThrough(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{fail: map[string]error{
@@ -307,6 +314,7 @@ func TestProviderFallback_NonRetryableStillFallsThrough(t *testing.T) {
 // a cancelled/timed-out context aborts the chain immediately rather than
 // thrashing through every remaining provider.
 func TestDispatchProviderFallback_ContextCancelledNoFallthrough(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	e := newFallbackExecutor(nil, rec.hook())
 	fake := &providerScriptedBackend{fail: map[string]error{
@@ -337,6 +345,7 @@ func TestDispatchProviderFallback_ContextCancelledNoFallthrough(t *testing.T) {
 // multi-element chain must collapse to the head provider (a single
 // attempt) rather than wastefully re-running the identical call.
 func TestDispatchProviderFallback_CollapsesChainForHintIgnoringBackend(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	e := newFallbackExecutor(nil, rec.hook())
 	fake := &providerScriptedBackend{} // no failures
@@ -358,6 +367,7 @@ func TestDispatchProviderFallback_CollapsesChainForHintIgnoringBackend(t *testin
 }
 
 func TestChainHooks_ComposesProviderFallback(t *testing.T) {
+	t.Parallel()
 	var calls []string
 	chained := ChainHooks(
 		EventHooks{OnProviderFallback: func(nodeID string, info ProviderFallbackInfo) {
@@ -380,6 +390,7 @@ func TestChainHooks_ComposesProviderFallback(t *testing.T) {
 }
 
 func TestProviderFallback_NonRetryableWithNilLoggerStillFallsThrough(t *testing.T) {
+	t.Parallel()
 	rec := &fallbackRecorder{}
 	reg := delegate.NewRegistry()
 	fake := &providerScriptedBackend{fail: map[string]error{

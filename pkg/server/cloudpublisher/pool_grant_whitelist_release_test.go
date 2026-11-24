@@ -28,7 +28,7 @@ func TestRVA_WhitelistRefusedPoolGrantIsReleased(t *testing.T) {
 	_ = pools.Upsert(ctx, credpool.Pool{ID: "pool-1", OrgID: poolOrg, Enabled: true})
 	pledges := credpool.NewMemoryPledgeStore()
 	_ = pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai", keyID), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "xai", KeyID: keyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	})
@@ -46,7 +46,7 @@ func TestRVA_WhitelistRefusedPoolGrantIsReleased(t *testing.T) {
 		PairOrder: []string{llmroute.Pair(llmroute.HarnessClaudeCode, llmroute.CredClaudeForfait)},
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 	}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-pw", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-pw", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	if err != nil {
 		t.Fatal(err)
 	}

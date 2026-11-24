@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -112,6 +114,7 @@ func lastUserText(t *testing.T, msgs []api.Message) string {
 // the mode to a restart puts the prompt back in the last turn (twice in the
 // conversation), which is what the two occurrence assertions refuse.
 func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		toolUseEvents("tu_1", "structured_output", `{"verdict":true}`, 50, 20),
 		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
@@ -170,6 +173,73 @@ func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
 	}
 }
 
+// The re-ask of a CAPABILITY-GRANTING node takes the same continuation, and
+// its tool-less retry task must not trip the claw inert-grant refusal
+// (#3283): planSchemaReask nils ToolDefs and AllowedTools while KEEPING the
+// node's capabilities, and the refusal — non-retryable, unmatched by
+// fallback classification — would turn every granted node's standard
+// in-place recovery into a node failure after its first turns had already
+// spent. The shipped re-ask tests judge nodes without grants, which is why
+// the hole reached CI: the shape needs a granted node whose captured
+// conversation drives the ContinueConversation arm, exactly this one.
+func TestSchemaReask_AGrantedNodeStillContinuesTheCompletedConversation(t *testing.T) {
+	t.Parallel()
+	// The node declares a surface, so its first answer ends the loop on
+	// TEXT (a tool-loop turn with tools on the wire), and the re-ask — the
+	// tool-less continuation — answers through the schema-forced call, as
+	// the listless twin above does.
+	mock := newMockClient(
+		textEvents(`{"verdict":true}`, 50, 20),
+		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
+	)
+	reg := NewRegistry()
+	reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+	tools := tool.NewRegistry()
+	if err := tools.RegisterBuiltin("read_file", "read_file", nil, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.RegisterClawTodo(tools); err != nil {
+		t.Fatal(err)
+	}
+	// The grant's append names the host board tools; the run's registry
+	// serves them from the native store, as a run's does.
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = board.Close() })
+	if err := tool.RegisterClawBoardTools(tools, &tool.BoardConfig{Store: board, Capabilities: boardops.AllCapabilities()}); err != nil {
+		t.Fatal(err)
+	}
+	exec := newTestClawExecutor(reg, verdictWorkflow(), WithToolRegistry(tools))
+	judge := verdictJudge("")
+	// The grant the gate weighs: a declared tool surface (the merge-twins'
+	// shape) beside a board capability, so the FIRST dispatch serves whole
+	// and the retry task's nilled surface is the only thing the gate sees.
+	judge.Tools = []string{"read_file"}
+	judge.Capabilities = []string{"board.read", "board.create"}
+	output, err := exec.Execute(WithRunID(context.Background(), "run-reask-granted"), judge, map[string]any{})
+	if err != nil {
+		t.Fatalf("the granted node's re-ask was refused instead of served: %v", err)
+	}
+	if output["reason"] != "because" {
+		t.Fatalf("output = %v, want the re-asked answer", output)
+	}
+	calls := mock.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected the answer and one re-ask, got %d provider calls", len(calls))
+	}
+	last := lastUserText(t, calls[1].Messages)
+	if !strings.Contains(last, schemaRetryFeedbackMarker) || !strings.Contains(last, "reason") {
+		t.Errorf("the re-ask's user turn does not carry the validation error: %q", last)
+	}
+	if len(calls[1].Tools) != 1 || calls[1].Tools[0].Name != "structured_output" {
+		t.Errorf("the re-ask offers tools beyond the schema's: %+v", calls[1].Tools)
+	}
+}
+
 // A `session_slot:` is ONE conversation several nodes share, and the schema
 // re-ask is the path that reads it back. The node's own request carries the
 // slot's earlier turns, and the re-ask continues from them: the slot once,
@@ -178,6 +248,7 @@ func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
 // transcript found there is residue and never the answer being re-asked
 // about.
 func TestSchemaReask_ClawContinuesASharedSlotsConversation(t *testing.T) {
+	t.Parallel()
 	const (
 		siblingTurn = "DRAFT-TURN: the outline the other node wrote"
 		residueTurn = "RESIDUE-TURN: a transcript under the bare node id"
@@ -252,6 +323,7 @@ func pauseConversation(t *testing.T) json.RawMessage {
 // second time behind the stored history (measured: 91 + 11 messages) and
 // never drop the feedback (the resume form discards the prompt).
 func TestSchemaReask_ResumedClawNodeGetsTheFeedbackWithoutReplayingThePause(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		// The post-pause turn: the model answers on the spot, JSON lacking `reason`.
 		textEvents(`{"verdict":true}`, 50, 20),
@@ -323,6 +395,7 @@ func TestSchemaReask_ResumedClawNodeGetsTheFeedbackWithoutReplayingThePause(t *t
 // resumed claw node (measured 11 → 22 → 33 messages on the primary route of
 // the same run). A retry re-sends the resumed conversation, once.
 func TestClawResumedNodeTransientRetryDoesNotReplayTheHistoryTwice(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		// The first attempt dies mid-stream after the request went out, so
 		// the partial result carries the request's messages — what the
@@ -369,6 +442,7 @@ func TestClawResumedNodeTransientRetryDoesNotReplayTheHistoryTwice(t *testing.T)
 // in — resumed, never forked, never optional — with nothing of the original
 // prompt repeated.
 func TestSchemaReask_ResumesTheSessionOnBackendsThatResumeById(t *testing.T) {
+	t.Parallel()
 	for _, backendName := range []string{delegate.BackendClaudeCode, delegate.BackendCodex, delegate.BackendOpenCode} {
 		t.Run(backendName, func(t *testing.T) {
 			backend := &capturingBackend{results: []delegate.Result{
@@ -420,6 +494,7 @@ func TestSchemaReask_ResumesTheSessionOnBackendsThatResumeById(t *testing.T) {
 // or one that reported no session id — the re-ask restarts the turn with the
 // error appended to the prompt, and says so.
 func TestSchemaReask_RestartsWhereNothingCanBeContinued(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, backend, sessionID string
 	}{
@@ -464,6 +539,7 @@ func TestSchemaReask_RestartsWhereNothingCanBeContinued(t *testing.T) {
 // A claw node with no captured conversation (no run wired the session
 // store) restarts too — the floor, never a refusal.
 func TestSchemaReask_ClawWithoutACapturedConversationRestarts(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		toolUseEvents("tu_1", "structured_output", `{"verdict":true}`, 50, 20),
 		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
@@ -494,6 +570,7 @@ func TestSchemaReask_ClawWithoutACapturedConversationRestarts(t *testing.T) {
 // during the re-ask is still what the run-level retry keys on — and its
 // delegate_error names the attempt.
 func TestSchemaReask_SurfacesTheReaskFailureBesideTheValidationError(t *testing.T) {
+	t.Parallel()
 	window := &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Kind: delegate.RateLimitKindUsageWindow, Detail: "weekly cap"}
 	backend := &stubBackend{
 		results: []delegate.Result{{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode}},
@@ -528,9 +605,10 @@ func TestSchemaReask_SurfacesTheReaskFailureBesideTheValidationError(t *testing.
 	}
 }
 
-// A second identical answer is the model's verdict: the node fails on it,
-// naming the field still missing, after exactly one re-ask.
-func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
+// Exhaustion reports the latest validation failure after the configured
+// allowance, without buying a fresh business turn.
+func TestSchemaReask_ExhaustsDefaultAllowance(t *testing.T) {
+	t.Parallel()
 	backend := &capturingBackend{results: []delegate.Result{
 		{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
 		{Output: map[string]any{"verdict": false}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
@@ -542,11 +620,12 @@ func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
 	)
 	_, err := exec.executeBackend(context.Background(), verdictJudge(delegate.BackendClaudeCode), map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "structured output invalid after retry") || !strings.Contains(err.Error(), `"reason"`) {
-		t.Fatalf("want the typed failure naming the missing field after one re-ask, got %v", err)
+	var schemaErr *OutputSchemaError
+	if !errors.As(err, &schemaErr) || !strings.Contains(err.Error(), `"reason"`) {
+		t.Fatalf("want the typed failure naming the missing field after the correction allowance, got %v", err)
 	}
-	if len(backend.tasks) != 2 {
-		t.Fatalf("the re-ask budget is one: got %d delegations", len(backend.tasks))
+	if len(backend.tasks) != 3 {
+		t.Fatalf("the default re-ask budget is two: got %d delegations", len(backend.tasks))
 	}
 }
 
@@ -554,6 +633,7 @@ func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
 // decided on an incomplete verdict is a run lost to the same missing field,
 // so it gets the same single re-ask.
 func TestLLMRouter_ReasksOnceOnAnIncompleteVerdict(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{results: []delegate.Result{
 		{Output: map[string]any{"selected_route": "agent_a"}, Tokens: 100},
 		{Output: map[string]any{"selected_route": "agent_a", "reasoning": "it fits"}, Tokens: 40},
@@ -586,6 +666,7 @@ func TestLLMRouter_ReasksOnceOnAnIncompleteVerdict(t *testing.T) {
 // The re-ask's own delegate_finished carries what the re-ask ADDED: on a
 // backend whose cost is a session total, the difference; elsewhere its own.
 func TestReaskMarginalCost(t *testing.T) {
+	t.Parallel()
 	first := delegate.Result{
 		CostUSD: 1.50, Output: map[string]any{"_cost_usd": 1.50}, CostIsSessionTotal: true}
 	reask := delegate.Result{
@@ -610,6 +691,7 @@ func TestReaskMarginalCost(t *testing.T) {
 // Delay — only the loop sets one. Mutating the marker away reddens the
 // mid-re-ask assertion while the announce stays marked.
 func TestSchemaReask_TransportRetryInsideTheReaskCarriesTheMarker(t *testing.T) {
+	t.Parallel()
 	transient := errors.New("fetch failed")
 	backend := &stubBackend{
 		results: []delegate.Result{
@@ -651,5 +733,147 @@ func TestSchemaReask_TransportRetryInsideTheReaskCarriesTheMarker(t *testing.T) 
 	}
 	if mid == 0 {
 		t.Fatalf("fixture produced no mid-re-ask transport retry: %+v", obs.retries)
+	}
+}
+
+// The re-ask runs on the element that served the first answer, and its own
+// delegate_finished / delegate_error name that element's provider the way
+// the first answer's event does — the word the runner's credential-plan join
+// reads first (#2288). A codex route under `provider: openai` serves a bare
+// `gpt-*` id, which a join re-deriving from the model names nothing for: a
+// wordless re-ask counts a plan miss and voids the run's fine table on every
+// schema re-ask. Red when emitReaskOutcome stops stamping the word, on
+// either outcome.
+func TestSchemaReask_namesTheServingProviderOnItsOwnEvents(t *testing.T) {
+	t.Parallel()
+	judge := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Backend: delegate.BackendCodex, Provider: "openai", Model: "gpt-5.5", UserPrompt: "ask"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
+	}
+	run := func(t *testing.T, backend delegate.Backend) *reaskObserver {
+		t.Helper()
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendCodex, backend)
+		obs := &reaskObserver{}
+		exec := NewClawExecutor(NewRegistry(), verdictWorkflow(),
+			WithBackendRegistry(reg),
+			WithEventHooks(obs.hooks()),
+			WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
+		)
+		_, _ = exec.executeBackend(context.Background(), judge, map[string]any{})
+		return obs
+	}
+	// The first answer's own event names the serving element's word — the
+	// premise, and the value the re-ask must repeat.
+	servingWord := func(t *testing.T, obs *reaskObserver) string {
+		t.Helper()
+		first := withAttempt(obs.finished, 0)
+		if len(first) != 1 || first[0].Provider != "openai" {
+			t.Fatalf("the first answer's delegate_finished = %+v, want one naming provider openai — the premise broke", first)
+		}
+		return first[0].Provider
+	}
+
+	t.Run("the re-ask answers", func(t *testing.T) {
+		obs := run(t, &capturingBackend{results: []delegate.Result{
+			{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendCodex, Tokens: 10},
+			{Output: map[string]any{"verdict": true, "reason": "because"}, SessionID: "sess-1", BackendName: delegate.BackendCodex, Tokens: 5},
+		}})
+		want := servingWord(t, obs)
+		if f := withAttempt(obs.finished, 2); len(f) != 1 || f[0].Provider != want {
+			t.Fatalf("the re-ask's delegate_finished = %+v, want one naming the serving provider %q", f, want)
+		}
+	})
+	t.Run("the re-ask fails", func(t *testing.T) {
+		obs := run(t, &stubBackend{
+			results: []delegate.Result{{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendCodex, Tokens: 10}},
+			errors:  []error{nil, &delegate.ErrTransient{Reason: "boom"}},
+		})
+		want := servingWord(t, obs)
+		if f := withAttempt(obs.failed, 2); len(f) != 1 || f[0].Provider != want {
+			t.Fatalf("the re-ask's delegate_error = %+v, want one naming the serving provider %q", f, want)
+		}
+	})
+}
+
+// Every schema violation is actionable feedback, not a reason to repeat the
+// business prompt through generic execution recovery.
+func TestSchemaReask_AllViolationsCarryFeedback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, invalid, detail string }{
+		{"enum", `{"verdict":"wrong","reason":"because"}`, "not in enum"},
+		{"type", `{"verdict":42,"reason":"because"}`, "expected string"},
+		{"null", `{"verdict":null,"reason":"because"}`, "is null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := verdictWorkflow()
+			wf.Schemas["verdict_schema"].Fields[0] = &ir.SchemaField{Name: "verdict", Type: ir.FieldTypeString, EnumValues: []string{"pass"}}
+			mock := newMockClient(toolUseEvents("bad", "structured_output", tc.invalid, 50, 20), toolUseEvents("fixed", "structured_output", `{"verdict":"pass","reason":"because"}`, 30, 10))
+			reg := NewRegistry()
+			reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+			exec := newTestClawExecutor(reg, wf)
+			out, err := exec.Execute(WithRunID(context.Background(), "schema-feedback"), verdictJudge(""), map[string]any{})
+			if err != nil {
+				t.Fatalf("schema violation should be corrected: %v", err)
+			}
+			calls := mock.getCalls()
+			if len(calls) != 2 || out["verdict"] != "pass" {
+				t.Fatalf("calls=%d output=%v", len(calls), out)
+			}
+			feedback := lastUserText(t, calls[1].Messages)
+			if !strings.Contains(feedback, tc.detail) || strings.Contains(feedback, reaskPrompt) {
+				t.Fatalf("validation feedback missing or business prompt repeated: %q", feedback)
+			}
+		})
+	}
+}
+
+func TestSchemaReaskCostsAcrossSessionChanges(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		ids, fingerprints []string
+		backend           string
+		fork              bool
+		want              float64
+	}{
+		{"two sessions", []string{"s1", "s2", "s2"}, []string{"", "", ""}, delegate.BackendClaudeCode, false, 4},
+		{"return to first session", []string{"s1", "s2", "s1"}, []string{"", "", ""}, delegate.BackendClaudeCode, false, 5},
+		{"changed fingerprint", []string{"s", "s", "s"}, []string{"a", "b", "b"}, delegate.BackendClaudeCode, false, 4},
+		{"omitted fingerprint", []string{"s", "s", "s"}, []string{"a", "", "a"}, delegate.BackendClaudeCode, false, 3},
+		{"unreported fork child", []string{"", "", ""}, []string{"a", "a", "a"}, "test_backend", true, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &capturingBackend{}
+			for i, id := range tc.ids {
+				out := map[string]any{"verdict": i%2 == 0}
+				if i == 2 {
+					out["reason"] = "fixed"
+				}
+				backend.results = append(backend.results, delegate.Result{Output: out, SessionID: id, SessionFingerprint: tc.fingerprints[i], CostUSD: float64(i + 1), CostIsSessionTotal: true, Tokens: 10, BackendName: tc.backend})
+			}
+			reg := delegate.NewRegistry()
+			reg.Register(tc.backend, backend)
+			observed := 0.0
+			exec := NewClawExecutor(NewRegistry(), verdictWorkflow(), WithBackendRegistry(reg), WithRetryPolicy(RetryPolicy{MaxAttempts: 1}), WithEventHooks(EventHooks{OnDelegateFinished: func(_ string, info DelegateInfo) { observed += info.CostUSD }}))
+			node := verdictJudge(tc.backend)
+			input := map[string]any{}
+			if tc.fork {
+				node.Session = ir.SessionFork
+				input[delegate.SessionIDKey] = "parent"
+				input[delegate.SessionFingerprintKey] = "a"
+			}
+			out, err := exec.executeBackend(context.Background(), node, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out["_cost_usd"] != tc.want || observed != tc.want || out["_tokens"] != 30 {
+				t.Fatalf("spend=%v, events=%v want cost=%v, tokens=30", out, observed, tc.want)
+			}
+			if tc.want != 3 && out["_cost_is_session_total"] == true {
+				t.Fatalf("mixed-session spend advertised as one total: %v", out)
+			}
+		})
 	}
 }

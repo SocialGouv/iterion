@@ -254,6 +254,87 @@ export function classedIn(path: string, src: string): JsxClassed[] {
   return out;
 }
 
+export interface JsxAncestral {
+  path: string;
+  line: number;
+  tag: string;
+  /** The element's own variant list. */
+  variants: string[];
+  /** Every ancestor variant string, outermost first. The DOM chain extends
+   *  through intrinsic elements only — a component boundary cuts it, what a
+   *  component renders being its own business. */
+  ancestors: string[];
+}
+
+/** Every intrinsic JSX element carrying a className, WITH the className
+ *  variants of its intrinsic ancestors — the inherited-composition view the
+ *  flat classedIn cannot express (an inherited contrast failure never holds
+ *  both classes on one element). */
+export function classedWithAncestry(path: string, src: string): JsxAncestral[] {
+  const out: JsxAncestral[] = [];
+  const sf = ts.createSourceFile(path, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const lookup = resolver(sf);
+  const variantsOfOpening = (open: ts.JsxOpeningElement | ts.JsxSelfClosingElement): string[] | undefined => {
+    let variants: string[] | undefined;
+    for (const a of open.attributes.properties) {
+      if (!ts.isJsxAttribute(a) || !a.initializer) continue;
+      if (a.name.getText() !== "className") continue;
+      const init = a.initializer;
+      if (ts.isStringLiteral(init)) variants = [init.text];
+      else if (ts.isJsxExpression(init)) variants = new Variants(lookup).of(init.expression, new Set());
+      else variants = [""];
+    }
+    return variants;
+  };
+  const visit = (n: ts.Node, ancestors: string[]): void => {
+    if (ts.isJsxElement(n)) {
+      const tag = n.openingElement.tagName.getText();
+      const own = variantsOfOpening(n.openingElement);
+      const intrinsic = /^[a-z]/.test(tag);
+      if (own !== undefined) {
+        out.push({
+          path,
+          line: sf.getLineAndCharacterOfPosition(n.getStart()).line + 1,
+          tag,
+          variants: own,
+          ancestors: [...ancestors],
+        });
+      }
+      // Intrinsic children inherit this element's classes as ancestors; a
+      // component's children do not (what it renders is its own business).
+      const forChildren = intrinsic && own ? [...ancestors, ...own] : ancestors;
+      for (const child of n.children) visit(child, forChildren);
+      return;
+    }
+    if (ts.isJsxSelfClosingElement(n)) {
+      const own = variantsOfOpening(n);
+      if (own !== undefined) {
+        out.push({
+          path,
+          line: sf.getLineAndCharacterOfPosition(n.getStart()).line + 1,
+          tag: n.tagName.getText(),
+          variants: own,
+          ancestors: [...ancestors],
+        });
+      }
+      return;
+    }
+    ts.forEachChild(n, (c) => visit(c, ancestors));
+  };
+  visit(sf, []);
+  return out;
+}
+
+/** classedWithAncestry over the scanner's file set. */
+export function jsxAncestral(): JsxAncestral[] {
+  const out: JsxAncestral[] = [];
+  for (const [path, src] of files) {
+    if (!path.endsWith(".tsx")) continue;
+    out.push(...classedWithAncestry(path, src));
+  }
+  return out;
+}
+
 /** Every JSX element carrying a className (or an inline opacity), over the scanner's file set. */
 export function jsxClassed(): JsxClassed[] {
   if (cache) return cache;

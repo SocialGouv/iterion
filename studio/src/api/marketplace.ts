@@ -70,6 +70,9 @@ export interface MarketplaceEntry {
   org_id?: string;
   status?: MarketplaceStatus;
   source?: "git" | "upload" | "builtin";
+  // On the browse routes only the submitter and super-admins get them (the
+  // server projects them away for everyone else); the moderation queue
+  // returns them to every moderator.
   submitted_by?: string;
   reviewed_by?: string;
   reviewed_at?: string;

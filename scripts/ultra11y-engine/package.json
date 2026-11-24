@@ -4,6 +4,6 @@
   "description": "The pinned ultra11y engine for the rgaa-audit bot: scripts/ultra11y-engine.sh runs `npm ci` from this lockfile so the whole dependency closure is the one recorded here (version in bots/rgaa-audit/ultra11y.pin).",
   "license": "MIT",
   "dependencies": {
-    "ultra11y": "5.42.1"
+    "ultra11y": "5.49.0"
   }
 }

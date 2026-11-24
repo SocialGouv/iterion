@@ -48,6 +48,7 @@ func emitRunner(t *testing.T, ws string) string {
 // uncommitted work of whoever ran this one — a pre-#795 wrapper defaults it
 // to a dotfile INSIDE the net.
 func TestGoldenMasterWrapperRemovesItsReportOnARedGate(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	ws := t.TempDir()
 	gm := filepath.Join(ws, ".golden-master")

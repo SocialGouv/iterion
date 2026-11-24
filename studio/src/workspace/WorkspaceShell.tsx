@@ -434,11 +434,12 @@ export default function WorkspaceShell() {
               <span className={`w-1.5 h-1.5 rounded-full ${p && isCloudConnection(p) ? "bg-accent" : "bg-fg-subtle"}`} />
               <span className="max-w-40 truncate font-medium">{name}</span>
               {(unreadCounts[id] ?? 0) > 0 && (
-                <span
-                  className="min-w-4 rounded-full bg-accent px-1 text-center text-micro text-white"
-                  aria-label={`${unreadCounts[id]} unread assistant updates`}
-                >
+                // No aria-label on this roleless span (ARIA in HTML prohibits
+                // it, #2767): the count is text, and the sr-only tail gives
+                // it its meaning.
+                <span className="min-w-4 rounded-full bg-accent px-1 text-center text-micro text-white">
                   {unreadCounts[id]}
+                  <span className="sr-only">{" unread assistant updates"}</span>
                 </span>
               )}
               {p && isCloudConnection(p) && (

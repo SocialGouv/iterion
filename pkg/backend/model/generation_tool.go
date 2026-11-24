@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
@@ -24,15 +25,53 @@ type GenerationTool struct {
 
 	// Execute runs the tool with the given JSON input and returns the result text.
 	Execute func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// concurrentSafe follows the actual native Execute closure.
+	concurrentSafe bool
+
+	// authorDeclared follows the ToolDef that resolved this tool: the entry
+	// came from the node's own `tools:` list, not from a runtime append.
+	// Set once at the conversion from ToolDefs, read once at the deferral
+	// marking; it has no reader after that.
+	authorDeclared bool
+
+	// catalogueOnly demotes the tool from the wire: buildRequest's tool loop
+	// skips it, so no request declares it to the model. Everything else —
+	// the tool map a direct call resolves against, the door a program
+	// reaches, the catalogue the description's index and call.search read —
+	// is built from the SAME slice, so the tool stays callable, searchable
+	// and describable; the flag's only reader is that one loop. Set when a
+	// deferring node installs codemode, by markCatalogueOnly — author-declared,
+	// kept whole by the catalogue bound (which also excludes the withheld
+	// classes), and never Ask-able under the node's policy; every other tool
+	// stays declared, and where the node does not defer no tool carries it,
+	// which is what keeps a deferred-off request byte-identical to today's.
+	catalogueOnly bool
 }
 
 // GenerationOptions configures a direct generation call.
 type GenerationOptions struct {
+	codemodeState CodemodeState
 	// Model is the routing spec the client was resolved from
 	// ("anthropic/claude-sonnet-4-6"). buildRequest strips its routing prefix
 	// exactly once: pass the spec, never an id already stripped — a model id
 	// holding slashes of its own ("meta-llama/…") would lose a segment.
 	Model string
+
+	// Provider names the slot the client was resolved from — the
+	// servingProvider word the delegate events carry (a `provider/` prefix's
+	// pin, a hint that names the slot). The step hooks copy it onto every
+	// llm_step_finished so a per-step observation joins the credential plan
+	// on the loop's own answer instead of re-deriving one from the spec.
+	// Empty when the loop builder stamped none.
+	Provider string
+
+	// Credential is what the client was resolved to spend — the claw arm's
+	// Spend for the leg (ADR-161 decision 8). The step hooks copy it onto
+	// every llm_step_finished as its credential keys, so the spend ledger
+	// and the fine table book the step where the call spent. Zero where the
+	// loop builder resolved none: the step carries no keys.
+	Credential credroute.Spend
 
 	// System is the system prompt (plain string form).
 	System string
@@ -117,6 +156,25 @@ type GenerationOptions struct {
 	// conversation — claude_code's PostToolUse twin.
 	UnmaterializeSecrets func(string) string
 
+	// ScreenModelText, when non-nil, is the model boundary's pass
+	// (delegate.Task.ScreenModelText), applied by buildRequest to every
+	// system text the request carries. The prompts arrive already passed;
+	// the blocks the backend composed for ITSELF do not — the ambient
+	// instruction files it read under the task's work dir, the
+	// workspace-memory index and autoload — because no Task field holds
+	// them. nil is the identity: placeholders off, or the in-container
+	// runner, which carries no guard.
+	ScreenModelText func(string) string
+
+	// RedactApprovalText checks whether exact tool arguments can be displayed.
+	RedactApprovalText func(string) string
+
+	// NamesSecret, when non-nil, reports whether a tool call's input carries
+	// the placeholder of a secret that resolves at some sink — the proxy's
+	// on the wire included — so a workspace reader's output is turned back
+	// to placeholders when its call carried one, whatever materialised it.
+	NamesSecret func(string) bool
+
 	// CompactThresholdRatio overrides the default compaction trigger as a
 	// fraction of the model's context window. 0 falls back to the built-in
 	// default (0.85). Values outside (0, 1] fall back to the default.
@@ -154,13 +212,25 @@ type GenerationOptions struct {
 	OnToolStarted func(ToolCallInfo)
 
 	// OnToolCall is called after each tool execution.
-	OnToolCall func(ToolCallInfo)
+	OnToolCall           func(ToolCallInfo)
+	toolObserversAudited bool
 
 	// OnBeforeCompact fires only when in-loop compaction is about to
 	// shrink the history. The callback may return a modified slice
 	// (e.g. with an injected session-memory user turn) that feeds the
-	// summariser; the live history keeps the originals. Returning nil
-	// is a no-op.
+	// summariser. Returning nil is a no-op. A turn the callback ADDS
+	// carries IsInjected (the vendored compactor keeps it out of the
+	// real-user-turn count). messages is a deep copy of the history, so
+	// the live history keeps the originals whatever the callback writes,
+	// in place or not, and whatever it returns. The loop passes every
+	// turn of the returned slice that is not one of the history's own,
+	// unchanged — the hook's additions, marked or not, a turn it rewrote
+	// in place, and an earlier compaction's continuation turn alike —
+	// through ScreenModelText before the summariser reads it
+	// (screenedInjector): each text, tool name and tool input, nested
+	// tool_result blocks included, so the text a hook composes for the
+	// model crosses the boundary like every other. The history the
+	// callback hands back as it was is handed to the summariser as it is.
 	OnBeforeCompact func(messages []api.Message) []api.Message
 
 	// OnCompact is called once after each in-loop compaction round
@@ -199,4 +269,14 @@ type GenerationOptions struct {
 	// the human approves (claw's half of cross-backend parity with
 	// claude_code's PreToolUse permission hook). Nil/disabled = no gate.
 	Permission *permission.Policy
+}
+
+// screenModelText returns the model-boundary pass these options carry, the
+// identity when they carry none. Stated once so every text the request
+// builder hands a model reads the same nil contract.
+func (o GenerationOptions) screenModelText() func(string) string {
+	if o.ScreenModelText == nil {
+		return func(s string) string { return s }
+	}
+	return o.ScreenModelText
 }

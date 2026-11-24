@@ -151,6 +151,15 @@ func Evaluate(r *store.Run) Verdict {
 			return v
 		}
 		if allows(p, "merge") {
+			if r.MergeStatus == store.MergeStatusSkipped {
+				// The worktree finalize REFUSED to merge (a wip-banked
+				// HEAD, or no merge target at all): the contract cannot
+				// land what finalize refused — that verdict escalates so
+				// the operator hears the refusal and decides.
+				v.Decision = DecisionEscalate
+				v.Reason = "success_when held but the finalize refused to merge (merge_status=skipped: wip-banked HEAD or no merge target)"
+				return v
+			}
 			v.Decision = DecisionMerge
 			v.Reason = "success_when held: " + p.SuccessWhen
 			return v
@@ -175,6 +184,38 @@ func Evaluate(r *store.Run) Verdict {
 	v.Decision = DecisionEscalate
 	v.Reason = "success_when did not hold and relaunch is not an allowed action"
 	return v
+}
+
+// EvaluateAutoMerge is the ONE reading of a run's launch intent. A run
+// launched with auto_merge was launched to land: when its workflow COMPLETED,
+// the intent alone decides a landing — no contract needed. The second return
+// is false when the intent grants nothing here, and the caller must then
+// decline SILENTLY: unlike a contract, the intent carries no escalation
+// powers — a failed or opted-out run keeps whatever continuation (retry,
+// redelivery, operator) already owns it. The preconditions mirror the
+// engine's own worktree finalization: the merge fires on a completed
+// workflow only (finalizeOnExit short-circuits on error), an explicit
+// merge_into "none" is the operator's opt-out the intent must not
+// override, and a finalize that REFUSED to merge (merge_status=skipped:
+// a wip-banked HEAD, or no merge target at all — a detached HEAD) is
+// the finalize's own verdict the intent does not second-guess.
+func EvaluateAutoMerge(r *store.Run) (Verdict, bool) {
+	if r == nil || !r.AutoMerge {
+		return Verdict{}, false
+	}
+	if store.MergeIntoOptOut(r.MergeInto) {
+		return Verdict{}, false
+	}
+	if !r.Status.IsFinalSuccess() {
+		return Verdict{}, false
+	}
+	if r.MergeStatus == store.MergeStatusSkipped {
+		return Verdict{}, false
+	}
+	return Verdict{
+		Decision: DecisionMerge,
+		Reason:   "launch intent auto_merge: the run was launched to land its completed workflow",
+	}, true
 }
 
 // Validate parses every expression and normalises the policy; called at

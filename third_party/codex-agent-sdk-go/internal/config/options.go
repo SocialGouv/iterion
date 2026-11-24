@@ -226,7 +226,7 @@ type Options struct {
 	IncludePartialMessages bool
 
 	// CodexHome overrides the Codex home directory (default ~/.codex).
-	// Used by StatSession to locate the session database.
+	// Inert in this fork: the session APIs are removed (see FORK.md); kept for
 	CodexHome string
 
 	// ===== Observability =====

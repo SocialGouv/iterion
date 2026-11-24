@@ -3,6 +3,7 @@ package liveledger
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +34,52 @@ func TestLedger_UpsertSortsAndRoundTrips(t *testing.T) {
 	// The pass row must carry its metrics faithfully.
 	if got.Rows[0].DurationSec != 42 || got.Rows[0].CostUSD != 1.23 || got.Rows[0].Ref != "deadbeef" {
 		t.Fatalf("row a lost its fields on round-trip: %+v", got.Rows[0])
+	}
+}
+
+// A row that was never skipped writes no skip at all. The committed
+// ledger is a file whose VALUE is being diffable: `omitempty` cannot drop
+// a zero time.Time (a struct is never "empty"), so it would stamp
+// "0001-01-01T00:00:00Z" into every one of the 64 rows and into the two
+// twins compared cell-for-cell beside it.
+func TestLedger_ARowThatWasNeverSkippedWritesNoSkipFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	l := &Ledger{Schema: SchemaVersion}
+	l.Upsert(Row{Target: "test:live:a", Verdict: VerdictPass, LastRun: time.Unix(1_700_000_000, 0).UTC()})
+	if err := l.Write(path); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"skipped_at", "skip_reason", "served_model", "funded_by"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("an unskipped, unattributed row wrote %q:\n%s", key, raw)
+		}
+	}
+	// And a row that WAS skipped writes both, so the omission above is
+	// not the field quietly failing to serialise at all.
+	l.Upsert(Row{Target: "test:live:b", Verdict: VerdictSkipped, SkippedAt: time.Unix(1_700_000_200, 0).UTC(), SkipReason: "no docker image"})
+	if err := l.Write(path); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"skipped_at", "skip_reason"} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("a skipped row did not write %q — the field never reaches the file:\n%s", key, raw)
+		}
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := back.Get("test:live:b")
+	if row.SkipReason != "no docker image" || row.SkippedAt.IsZero() {
+		t.Fatalf("the skip did not survive the round-trip: %+v", row)
 	}
 }
 

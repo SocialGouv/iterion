@@ -4,7 +4,8 @@ set -euo pipefail
 base=${1:-HEAD}
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-work=$(mktemp -d "$root/.chart-render-diff.XXXXXX")
+# Repository-wide test sweeps must never walk a scratch tree we remove on exit.
+work=$(mktemp -d "${TMPDIR:-/tmp}/chart-render-diff.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/before" "$work/after"
 git archive "$base" charts/iterion | tar -x -C "$work/before"
@@ -15,6 +16,14 @@ if [ -d charts/iterion/charts ]; then
   cp -R charts/iterion/charts "$work/before/charts/iterion/"
 fi
 for side in before after; do
+  # A base that declares a sub-chart whose archive is gone (the dependency
+  # was dropped since, and `task chart:check` pruned it) cannot render:
+  # say which, instead of helm's "missing in charts/ directory".
+  missing=$("$root/scripts/chart-check-deps.sh" --missing "$work/$side/charts/iterion" | tr '\n' ' ') || exit 2
+  if [ -n "${missing// /}" ]; then
+    echo "chart-render-diff: the $side side declares sub-charts whose archives are not in place (${missing}): run \`helm dependency update\` on it, or diff from a base that declares the same dependencies" >&2
+    exit 2
+  fi
   helm template iterion "$work/$side/charts/iterion" \
     --namespace iterion -f "$work/$side/charts/iterion/values-dev.yaml" > "$work/$side.yaml"
 done

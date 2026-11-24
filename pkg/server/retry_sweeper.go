@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -57,6 +58,10 @@ type retryDueLister interface {
 	// ListRunsForRetryProbe is the other half of the same capability: the
 	// not-yet-due rows the due scan structurally cannot see (retry_probe.go).
 	ListRunsForRetryProbe(ctx context.Context, now time.Time, floor time.Duration, maxProbes, limit int) ([]mongostore.RetryDueRef, error)
+	// ListRunsForCredentialProbe is what the credential probe groups: every
+	// armed usage-window wait, and every run a pull marked at or after
+	// since (retry_probe_credential.go).
+	ListRunsForCredentialProbe(ctx context.Context, since time.Time, limit int) ([]mongostore.RetryDueRef, error)
 }
 
 // runRetrySweeper ticks sweepDueRetries until ctx is cancelled. Started by
@@ -78,12 +83,22 @@ func (s *Server) runRetrySweeper(ctx context.Context, lister retryDueLister) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sweepDueRetries(ctx, lister, s.runs, time.Now().UTC())
+			s.sweepDueRetries(ctx, lister, s.runs, s.retryNow())
 			// Second pass, after the due one: what it pulls forward is
 			// resumed by the due pass on the next tick, never here.
-			s.sweepRetryProbes(ctx, lister, time.Now().UTC())
+			s.sweepRetryProbes(ctx, lister, s.retryNow())
 		}
 	}
+}
+
+// retryNow is the instant the retry sweeper decides by: the wall clock, read
+// at each decision rather than once per pass (a pass that resumes five runs
+// spends real time publishing them), or the clock a test set (retryClock).
+func (s *Server) retryNow() time.Time {
+	if s != nil && s.retryClock != nil {
+		return s.retryClock().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // sweepDueRetries performs one pass. Extracted (with an injectable clock)
@@ -137,11 +152,13 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// sharing the reconciler's gate context. Disarm it and say so. The
 	// park's own outcome event already reached every consumer, so this
 	// path must NOT replay it (the DLQ notice has no dedup of its own).
-	// The read is a guard, not a gate: a store that cannot answer leaves
-	// the retry row as the authority, loudly.
+	// The same read names the admission subject below, and a store that
+	// cannot answer it leaves the run's trust unknown: the gate refuses an
+	// unknown trust as transient, so the retry re-arms instead of resuming
+	// on the retry row alone.
 	run, lerr := s.cfg.Store.LoadRun(runCtx, ref.ID)
 	if lerr != nil {
-		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
+		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — its trust is unknown, so admission defers it to a later pass", ref.ID, lerr)
 	} else if run != nil && run.FailureCode == store.FailureDLQParked {
 		s.disarmRetry(runCtx, retryStore, ref,
 			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
@@ -156,6 +173,25 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
+	// The window the run is parked on is read before anything is metered:
+	// a row due before it — pulled forward by a probe whose pull has aged
+	// out — would relaunch into a wall the provider dated, at the price of a
+	// pod and the run's own minutes (#3127). It waits, free of charge, until
+	// the window or the run's own max_wait horizon, whichever comes first;
+	// a row due at the instant its own arming chose is never held
+	// (retrypolicy.UsageWindowNotBefore). A pull still in flight is let
+	// through: it is the one relaunch the window allows before its date — its
+	// credential window's probe, or a wait probed on its own under the
+	// operator's per-run escape hatch (EnvRetryProbeBeforeWindow). A run
+	// released on that probe's answer (retry_probe_credential.go) is let
+	// through however old its pull: the window no longer holds it at all.
+	if run != nil && !ref.RetryState.ProbeInFlight(s.retryNow()) {
+		if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, s.retryNow()); waits {
+			s.deferToUsageWindow(runCtx, retryStore, ref, run, notBefore)
+			return
+		}
+	}
+
 	// An automatic resume spends real money, so it passes the same
 	// admission gate as the operator-initiated one. Whether a denial ends
 	// the retry depends on the denial: a monthly quota refills on the 1st
@@ -165,17 +201,21 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// The run doc read above already carries what the gate needs to know
 	// about this launch, so pass it: a retry judged as ordinary work would
 	// face the ceiling its OWN reservation lowered, and the reservation would
-	// refuse the run it exists to protect. Nil (the store could not answer)
-	// loses the budget subject, but the durable retry row still proves this
-	// is an existing run: maintenance must not abandon its continuation.
-	subj := launchSubject{ExistingRun: true}
-	if run != nil {
-		subj = launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}
-	}
+	// refuse the run it exists to protect.
+	// The run's TRUST and — on a fork run — the author subject the launch
+	// metered ride the same document (ADR-162 decision 5), carried by the
+	// resumeLaunchSubject seam every resume surface shares: an untrusted
+	// resume is metered on both counters again, and every arm of the gate
+	// that would admit it unmetered (an unreadable team among them) refuses
+	// instead, which this sweeper re-arms rather than abandons — a store
+	// blip is not the end of a paid run's retry. Nil (the store could not
+	// answer) is an unknown trust, refused as transient the same way: the
+	// run behind the retry row may be a fork run.
+	subj := s.resumeLaunchSubject(run)
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {
-			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("admission deferred: %s", deny.reason))
+			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("%w: %s", errRetryAdmissionDeferred, deny.reason))
 			return
 		}
 		s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %s", deny.reason))
@@ -186,12 +226,12 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// must be abandoned now, and a retry re-armed for another transient reason
 	// must not be held behind an unrelated provider window.
 	if key := retrycoord.Key(run); key != "" {
-		decisionNow := time.Now().UTC()
+		decisionNow := s.retryNow()
 		circuit, circuitErr := retrycoord.Open(runCtx, s.cfg.Store, key, decisionNow)
 		if circuitErr != nil {
 			s.warnf("retry sweeper: run %s: cannot read retry circuit (%v) — proceeding with the per-run retry", ref.ID, circuitErr)
 		} else if delayedUntil, shouldDelay := circuitRetryDelayAt(ref, run, circuit, decisionNow); shouldDelay {
-			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil)
+			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil, "", "")
 			if delayErr != nil {
 				adm.rollback(s.logger)
 				s.warnf("retry sweeper: run %s: cannot delay retry behind open circuit: %v", ref.ID, delayErr)
@@ -232,9 +272,12 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// flip cancelled → queued (clearing run.Error) and the runner would
 		// receive a message with no PR-closed marker left on the doc.
 		Automatic: true,
+		// What the gate above judged and metered: the run service refuses
+		// the resume when the document it re-enters names another trust.
+		Admitted: gateAdmitted(subj, adm),
 	}
 	if lb != nil {
-		retrySpec.BundleDir, retrySpec.BotBundle = lb.BundleDir, lb.Ref
+		lb.stampResumeBundle(&retrySpec)
 	}
 	// Narrow the race window: read the run right before the resume and refuse
 	// if it is no longer auto-resumable (cancelled by stop-on-close, moved
@@ -272,6 +315,22 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 				"auto-retry abandoned: the team's runner-pool mapping moved past the run's frozen pool — relaunch the run on the new pool")
 			return
 		}
+		// The fork lane's pool rule is permanent on the same terms: an
+		// untrusted run that names no pool, or a pool its team's mapping or
+		// another team's sovereignty now forbids, is refused identically on
+		// every cycle. It leaves before any publish too (one refund, above).
+		if errors.Is(err, cloudpublisher.ErrForkLanePool) {
+			s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
+			return
+		}
+		// A slot wait is not an attempt: the key the run sealed is full of
+		// OTHER runs, the resume refused before any publish, and the only
+		// thing that ends the wait is one of those runs ending. Asked again
+		// on the slot cadence, free of charge, until the run's max_wait.
+		if errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+			s.deferCredSlotRetry(runCtx, retryStore, ref, run, err)
+			return
+		}
 		s.reArmRetry(runCtx, retryStore, ref, err)
 		return
 	}
@@ -293,8 +352,10 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// are metered again. A marker left over from a pull whose own resume is
 	// long gone names no probe in flight (store.ProbeInFlight bounds it by the
 	// age of the pull): that row is due on its own account and its resume is
-	// an ordinary billable launch.
-	if ref.RetryState.ProbeInFlight(time.Now().UTC()) {
+	// an ordinary billable launch. So is a RELEASE's: it follows an answer
+	// that the wall fell and is expected to do real work
+	// (RunRetryState.SpeculativeProbeInFlight).
+	if ref.RetryState.SpeculativeProbeInFlight(s.retryNow()) {
 		adm.rollback(s.logger)
 	}
 
@@ -350,18 +411,7 @@ func circuitRetryDelayAt(ref mongostore.RetryDueRef, run *store.Run, circuit *st
 	return delayedUntil, delayedUntil.After(now)
 }
 
-func retryPolicyForSweeper(run *store.Run) retrypolicy.Policy {
-	var pol retrypolicy.Policy
-	if run != nil && run.RetryPolicy != nil {
-		pol = retrypolicy.Policy{
-			UsageWindow: run.RetryPolicy.UsageWindow,
-			MaxAttempts: run.RetryPolicy.MaxAttempts,
-			MaxWait:     run.RetryPolicy.MaxWait,
-			Jitter:      run.RetryPolicy.Jitter,
-		}
-	}
-	return retrypolicy.Clamp(retrypolicy.Normalize(pol), retrypolicy.CeilingFromEnv(), nil)
-}
+func retryPolicyForSweeper(run *store.Run) retrypolicy.Policy { return retrypolicy.ForRun(run) }
 
 // retryDenialIsTransient reports whether an admission denial is expected to
 // clear on its own, so the retry should be deferred rather than dropped.
@@ -374,6 +424,21 @@ func retryDenialIsTransient(reason string) bool {
 	// away for a condition that resolves itself on a calendar.
 	case denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota:
 		return true
+	// The fork lane's fail-closed arms (ADR-162 decision 5) are all 503
+	// conditions — an unreadable team or org, a counter that cannot be
+	// reached — and its ceilings refill monthly like the org's. None of
+	// them is the end of a paid run's retry; re-arming costs an attempt
+	// and the blip resolves.
+	case denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError, denyForkAuthorRuns, denyForkAuthorCost, denyForkFundingUnreadable:
+		return true
+	// A run document the sweeper could not read is a store blip too: the
+	// next pass reads it again and judges the trust it names.
+	case denyResumeRunUnreadable:
+		return true
+	// denyForkRunUnfunded is NOT here: a fork run its team's own keys no
+	// longer fund is refused identically on every cycle until someone
+	// provisions a key, so the retry is abandoned with the reason and the
+	// operator's resume wakes the run once the key exists.
 	default:
 		return false
 	}
@@ -404,6 +469,29 @@ func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStor
 			s.warnf("retry sweeper: republish outcome for abandoned run %s: %v", runID, err)
 		}
 	}
+
+	// The outcome republish does NOT reach one consumer: the run-completion
+	// callback (pkg/notify) is fired by the lanes that EXECUTE the run, and
+	// this run's every park was skipped there — an armed usage park is a
+	// wait, not a completion (shouldNotify keys on the persisted wall, which
+	// the disarm above just removed). Settlement is the delivery the skipped
+	// run is owed; without this call a callback the launch asked for would
+	// never fire at all.
+	if s.cfg.Store != nil {
+		s.completionWebhook().FireForRun(ctx, s.cfg.Store, runID)
+	}
+}
+
+// completionWebhook resolves the notifier the settlement path delivers
+// through — the deployment's env-configured construction (the one the
+// executing lanes share) on first use, or the field a test injected.
+func (s *Server) completionWebhook() *notify.Notifier {
+	s.completionNotifierOnce.Do(func() {
+		if s.completionNotifier == nil {
+			s.completionNotifier = notify.NewFromEnv(s.logger, 0)
+		}
+	})
+	return s.completionNotifier
 }
 
 // disarmRetry is the abandon WITHOUT the outcome replay: the store write,
@@ -439,11 +527,14 @@ func (s *Server) disarmRetry(ctx context.Context, retryStore store.RunRetryStore
 // reArmRetry gives a failed resume another chance inside the attempt
 // budget. ScheduleRunRetry's own budget check is what stops this looping.
 func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) {
+	if s.backOffReleasedRetry(ctx, retryStore, ref, cause) {
+		return
+	}
 	if s.standDownProbedRetry(ctx, retryStore, ref.TenantID, ref.ID, cause.Error()) {
 		return
 	}
 	maxAttempts := s.retryMaxAttempts(ctx, ref.ID)
-	at := time.Now().UTC().Add(retryReenqueueBackoff)
+	at := s.retryNow().Add(retryReenqueueBackoff)
 	// The re-arm brings no news about the provider's window: the resume
 	// FAILED, so the row keeps the wall it is on (and its probe ledger).
 	scheduled, _, err := retryStore.ScheduleRunRetry(ctx, ref.ID, at, time.Time{}, retryReason(ref), retryCode(ref), maxAttempts)
@@ -458,6 +549,83 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 	s.countRetry("failed")
 	s.auditRetry(ref, "run.retry.failed", map[string]any{"error": cause.Error()})
 	s.warnf("retry sweeper: run %s: resume failed (%v) — retrying at %s", ref.ID, cause, at.Format(time.RFC3339))
+}
+
+// errRetryAdmissionDeferred marks a resume the admission gate refused for a
+// reason expected to clear on its own (retryDenialIsTransient): a concurrency
+// cap, a launch rate, a monthly ceiling, a counter or a run document that did
+// not answer.
+var errRetryAdmissionDeferred = errors.New("admission deferred")
+
+// releasedRetryRefusalIsTransient reports a refusal of a released run's resume
+// that clears on its own and was decided before anything was published: the
+// admission gate's deferral (errRetryAdmissionDeferred) and a stored bot that
+// did not resolve for a store blip (errResumeResolveTransient). Those are the
+// transient causes reArmRetry is handed; the shared circuit and a credential's
+// slot cap defer the row before it gets there (DelayRunRetry, which keeps the
+// release). A Resume error is not one: the bot redeployed under the run and
+// its workflow hash moved, which fails identically on every cycle, or a
+// publish that may have landed (runview.RunMayHaveStarted), whose admission
+// the resume kept.
+func releasedRetryRefusalIsTransient(cause error) bool {
+	return errors.Is(cause, errRetryAdmissionDeferred) || errors.Is(cause, errResumeResolveTransient)
+}
+
+// backOffReleasedRetry re-arms a RELEASED row (RunRetryState.Released) whose
+// resume was refused for a transient reason (releasedRetryRefusalIsTransient)
+// on the ordinary backoff, free of charge, and reports true — which tells
+// reArmRetry its own paths must not run.
+//
+// The stand-down built for a probe is the wrong settlement for such a refusal:
+// it puts the provider's announced instant back, days away, on a run whose
+// window's probe has just proved the wall fell — and the answer that released
+// it cannot release it again (releaseCredentialWindow skips a wait pulled
+// since). A mass release is the likeliest thing to trip the tenant's
+// concurrency cap or its launch rate, so the runs it moves would sit out the
+// whole wall behind a cap that frees in minutes. The charged re-arm is wrong
+// too: every refusal would spend an attempt, and a cap held for an hour
+// retires the run. So the row keeps its release — the marker and the answer
+// that wrote it — and comes back one backoff later, as often as the refusal
+// lasts; the announced instant bounds that, past it the row is an ordinary due
+// retry.
+//
+// Any other failure is no refusal that clears in minutes, and the row takes the
+// probe's stand-down after that ONE failure: the announced instant comes back,
+// free, and the window's probes and the date decide from there. A resume
+// against a workflow whose hash moved fails identically every quarter hour,
+// and one whose publish may have landed keeps the admission it metered: on the
+// backoff, a released run would repeat either until its date — four days of
+// them under a weekly wall.
+//
+// The decision reads the row the scan listed, and the CAS is the armed instant
+// that scan read: every write that consumes the marker moves retry_after, so a
+// row whose CAS still holds still carries the release. A lost CAS is a row
+// someone else moved, left to them.
+func (s *Server) backOffReleasedRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) bool {
+	now := s.retryNow()
+	if !ref.RetryState.Released(now) || !releasedRetryRefusalIsTransient(cause) {
+		return false
+	}
+	at := now.Add(retryReenqueueBackoff)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), at, "", "")
+	if err != nil {
+		s.warnf("retry sweeper: run %s: cannot re-arm the released retry after a failed resume (%v): %v — deferring the decision to the next pass", ref.ID, cause, err)
+		return true
+	}
+	if !delayed {
+		s.warnf("retry sweeper: run %s: the released retry was not re-armed — the row moved since the scan listed it armed for %s",
+			ref.ID, ref.RetryAfter().Format(time.RFC3339))
+		return true
+	}
+	s.countRetry("release_deferred")
+	s.auditRetry(ref, "run.retry.release_deferred", map[string]any{
+		"retry_after": at,
+		"error":       cause.Error(),
+		"released_by": ref.RetryState.ReleasedBy,
+	})
+	s.warnf("retry sweeper: run %s, released by its credential window's probe (run %s), did not resume (%v) — retrying at %s, no attempt spent",
+		ref.ID, ref.RetryState.ReleasedBy, cause, at.Format(time.RFC3339))
+	return true
 }
 
 // retryMaxAttempts reads the run's launch-time attempt budget. Falls back
@@ -529,8 +697,94 @@ func (s *Server) warnf(format string, args ...any) {
 	}
 }
 
+func (s *Server) debugf(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Debug(format, args...)
+	}
+}
+
 func (s *Server) infof(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Info(format, args...)
 	}
+}
+
+// deferToUsageWindow moves a due retry to the instant its usage window lets
+// it resume (retrypolicy.UsageWindowNotBefore), spending no attempt: nothing
+// reached the provider, and the attempt budget prices work that does. It
+// comes back the way the arming would have: the come-back pad past the
+// window and the run's jitter (retrypolicy.UsageWindowWake), so the rows of
+// one wall do not all resume on the instant it falls. The CAS is the armed
+// instant the scan read, so a row an operator resumed or another pass moved
+// in between is left to whoever moved it.
+func (s *Server) deferToUsageWindow(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, run *store.Run, notBefore time.Time) {
+	wake := retrypolicy.UsageWindowWake(run, notBefore)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), wake, "", "")
+	if err != nil {
+		s.warnf("retry sweeper: run %s: cannot hold the retry until its usage window at %s: %v", ref.ID, notBefore.Format(time.RFC3339), err)
+		return
+	}
+	if !delayed {
+		s.warnf("retry sweeper: run %s: the retry was not held until its usage window — the row moved since the scan listed it armed for %s",
+			ref.ID, ref.RetryAfter().Format(time.RFC3339))
+		return
+	}
+	s.countRetry("window_wait")
+	s.auditRetry(ref, "run.retry.window_wait", map[string]any{"retry_after": wake, "window_reopens_at": notBefore})
+	s.infof("retry sweeper: run %s waits for its provider usage window, which reopens at %s — resuming at %s", ref.ID, notBefore.Format(time.RFC3339), wake.Format(time.RFC3339))
+}
+
+// deferCredSlotRetry moves a run parked on a credential's concurrency cap
+// (cloudpublisher.ErrCredentialAtCapacity) to its next ask, one slot probe
+// interval out, without spending an attempt: the attempt budget prices work
+// that reaches the provider, and a refused reservation reached nothing. The
+// wait is bounded by the run's own max_wait, measured from the park's PAID
+// arming (RunRetryState.ScheduledAt): max_wait bounds the whole park, so a
+// usage-window row whose resume found its key full keeps the wall's anchor
+// and the slot wait spends what is left of the same horizon — the rule the
+// circuit deferral already follows, and the one ScheduledAt exists for. Past
+// it the run is abandoned naming the bound and its anchor, so a key busy for
+// days does not hold a parked run forever. A row armed before the anchor
+// existed has none until its first deferral pins it to the retry_after the
+// scan read (DelayRunRetry), which is the anchor computed here for that
+// deferral, so the horizon never moves with the row.
+//
+// The deferral re-tags the row as a slot wait (RetryReasonCredSlot): a run
+// armed for a usage window whose resume found its key full waits for a slot
+// now, and a row still tagged usage_window would be read as the provider
+// wall it no longer waits on — by UsageParkWall's notices, by the audit
+// trail, and by the probe pass whenever the operator's floor is under the
+// slot cadence.
+//
+// The CAS is the armed instant the scan read: the claim left it in place and
+// the resume's rollback put the run back around it, so a row an operator
+// resumed or another pass settled in between is left to whoever moved it.
+func (s *Server) deferCredSlotRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, run *store.Run, cause error) {
+	now := s.retryNow()
+	pol := retryPolicyForSweeper(run)
+	anchor := ref.RetryAfter()
+	if ref.RetryState != nil && ref.RetryState.ScheduledAt != nil {
+		anchor = ref.RetryState.ScheduledAt.UTC()
+	}
+	if run != nil && run.RetryState != nil && run.RetryState.ScheduledAt != nil {
+		anchor = run.RetryState.ScheduledAt.UTC()
+	}
+	if !anchor.IsZero() && !now.Before(anchor.Add(pol.MaxWaitDuration())) {
+		s.abandonRetry(ctx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: the run's max_wait (%s, measured from its park at %s) passed while it still waited for a credential slot — %v", pol.MaxWaitDuration(), anchor.Format(time.RFC3339), cause))
+		return
+	}
+	at := now.Add(cloudpublisher.CredSlotProbeInterval)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), at, store.RetryReasonCredSlot, string(store.FailureCredSlotWait))
+	if err != nil {
+		s.warnf("retry sweeper: run %s: cannot defer the credential-slot wait: %v", ref.ID, err)
+		return
+	}
+	if !delayed {
+		s.warnf("retry sweeper: run %s: the credential-slot wait was not deferred — the row moved since the scan listed it armed for %s (an operator resumed it, or another pass settled it)",
+			ref.ID, ref.RetryAfter().Format(time.RFC3339))
+		return
+	}
+	s.countRetry("slot_wait")
+	s.auditRetry(ref, "run.retry.slot_wait", map[string]any{"retry_after": at, "error": cause.Error()})
+	s.infof("retry sweeper: run %s still waits for a credential slot (%v) — asking again at %s", ref.ID, cause, at.Format(time.RFC3339))
 }

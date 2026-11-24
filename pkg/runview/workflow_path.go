@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -141,6 +142,33 @@ func ResolveBotID(explicitID, bundleName, filePath string) string {
 		return bundleName
 	}
 	return BotIDForPath(filePath)
+}
+
+// SubbotChildBotIdentity is the bot a subbot child runs as, read the same
+// way on every lane (cloud runner, in-process, CLI, dispatcher) from the
+// child's path and the bundle its compile promoted (a nested workflow or a
+// workflows/ export opens its owning bundle, a bot:// source hands one).
+//
+// memoryID keys the child's bot-scoped memory: ResolveBotID over the
+// manifest name of that bundle, else of the bundle its path names.
+//
+// fold is the identity the child's routing fold reads (FoldForSubbotChild),
+// the one a top-level launch of the same bundle carries: the bundle's slug
+// — its directory, the name a catalogue or a snapshot collection files it
+// under, which a launch takes as its bot id — and its manifest name. A
+// cell spelled with either reaches the child as it reaches that launch.
+func SubbotChildBotIdentity(childPath string, compiled *bundle.Bundle) (memoryID string, fold llmroute.BotIdentity) {
+	manifestName := BundleNameForPath(childPath)
+	slug := BotIDForPath(childPath)
+	if compiled != nil {
+		if compiled.Manifest != nil {
+			manifestName = compiled.Manifest.Name
+		}
+		if compiled.Dir != "" {
+			slug = filepath.Base(compiled.Dir)
+		}
+	}
+	return ResolveBotID("", manifestName, childPath), llmroute.BotIdentity{ID: slug, Name: manifestName}
 }
 
 // BotIDForPath derives a bot identity from a workflow path, or "" when the

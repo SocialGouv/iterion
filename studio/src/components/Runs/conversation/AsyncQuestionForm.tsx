@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { answerInteraction } from "@/api/runs";
 import { Button } from "@/components/ui/Button";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import {
   askUserAllowsFreeText,
   askUserOptions,
@@ -25,6 +26,17 @@ export default function AsyncQuestionForm({ runId, interactionId, questions }: P
   const [error, setError] = useState<string | null>(null);
   const options = askUserOptions(questions);
   const allowFreeText = askUserAllowsFreeText(questions);
+  const canAct = useRunCanAct();
+
+  // A reader, or a view whose run was lost (scope_lost), has no answer to
+  // give: the read-only note replaces the form.
+  if (!canAct) {
+    return (
+      <p className="text-body text-fg-muted" role="note">
+        This question waits on a member of the run&apos;s team — you cannot answer it from this view.
+      </p>
+    );
+  }
 
   const submit = async (answer: string) => {
     if (!answer.trim() || submitting) return;
@@ -66,6 +78,7 @@ export default function AsyncQuestionForm({ runId, interactionId, questions }: P
           }}
         >
           <textarea
+            aria-label="Your answer"
             className="min-h-[38px] flex-1 resize-y rounded-md border border-border-control bg-surface-1 px-2 py-1.5 text-body text-fg-default placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent"
             rows={1}
             placeholder="Answer whenever you're ready — the agent keeps working…"

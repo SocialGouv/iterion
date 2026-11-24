@@ -28,6 +28,8 @@ import { BrandMark } from "@/components/ui/BrandMark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { BrandWordmark, Button, InlineBanner } from "@/components/ui";
 
+import { LegalLinks } from "@/views/Legal/LegalLinks";
+
 import type { Branding } from "./configEditorShell/fieldModel";
 import { Workspace } from "./configEditorShell/Workspace";
 
@@ -75,6 +77,11 @@ export default function ConfigEditorShell() {
           )}
         </main>
       </div>
+      {/* No sidebar here, so the legal links (RGAA 12: every signed-in
+          page reaches them; ADR-160) ride the shell's own foot. */}
+      <footer className="shrink-0 border-t border-border-subtle px-4 py-2">
+        <LegalLinks />
+      </footer>
     </div>
   );
 }

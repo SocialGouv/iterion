@@ -14,6 +14,7 @@ import (
 // that died with the turn's process must reach the turn checkpoint the Fork
 // API reads, through the delegate hook, the capture info and the store hook.
 func TestATurnCheckpointCarriesTheWorkThatDiedWithItsProcess(t *testing.T) {
+	t.Parallel()
 	dead := []string{"auditor (local_agent, t1)"}
 	const runID = "run-turn-dead-work"
 	st, err := store.New(t.TempDir())

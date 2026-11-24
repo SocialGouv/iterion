@@ -8,9 +8,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// review-pr's dual path (SocialGouv/iterion#741): `fan` fans out to
-// `reviewer_claude` / `reviewer_gpt`, both of which the `topology` router
-// ALSO reaches directly on the mono path. The branches reconverge at
+// review-pr's paired path (SocialGouv/iterion#741): `fan` fans out to
+// `reviewer` / `reviewer_alternate`, the first of which the `topology`
+// router ALSO reaches directly on the single path. The branches reconverge at
 // `merge_reviews` (`await: best_effort`), and the chain
 // merge_reviews -> converge -> pr_gate must execute exactly once per run.
 // The event log is the judge, so compute nodes (never seen by the
@@ -24,7 +24,7 @@ func TestReviewPRDual_CollectorChainFiresOnce(t *testing.T) {
 	s := tmpStore(t)
 	runID := "e2e-dual-converges-once"
 	if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, map[string]any{
-		"review_tier": "audit", "mono_family": "claude",
+		"review_tier": "audit", "review_mode": "single",
 	}); err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestReviewPRDual_CollectorChainFiresOnce(t *testing.T) {
 			joins = append(joins, evt)
 		}
 	}
-	for _, id := range []string{"reviewer_claude", "reviewer_gpt", "merge_reviews", "converge", "pr_gate"} {
+	for _, id := range []string{"reviewer", "reviewer_alternate", "merge_reviews", "converge", "pr_gate"} {
 		if started[id] != 1 {
 			t.Errorf("node_started(%s) = %d, want exactly 1", id, started[id])
 		}
@@ -59,8 +59,8 @@ func TestReviewPRDual_CollectorChainFiresOnce(t *testing.T) {
 	}
 }
 
-// The two shipped mono/dual topologies elect their declared collector, not
-// the reviewer both routers reach.
+// The two shipped review topologies elect their declared collector, not the
+// reviewer both routers reach.
 func TestShippedDualTopologies_ElectTheDeclaredCollector(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ bot, router, want string }{

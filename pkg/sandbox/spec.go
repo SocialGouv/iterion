@@ -3,6 +3,8 @@ package sandbox
 import (
 	"fmt"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -136,6 +138,109 @@ type Spec struct {
 	// Value. Docker writes Value to a host temp file and bind-mounts it;
 	// Kubernetes creates a per-run Secret and projects each key.
 	SecretFiles []SecretFileMount
+
+	// BindSourceChecks names every bind source the plan verified because it
+	// lives under a directory the sandbox itself writes — the project
+	// scratch, the sandbox's own cache store and the read-only config
+	// overlays under the read-write iterion home, the worktree `.git`
+	// tree's shadows, and the run's own workspace when the engine laid it
+	// under that home. A source under no such root — an operator checkout
+	// the launch named, a driver-written temp file — is not a source a
+	// sandbox could have chosen and is named by no entry.
+	//
+	// A bind's source is resolved by the host kernel at container CREATION,
+	// but the engine verifies these sources when the PLAN is built — before
+	// the driver pulls the image, which is minutes. A sandboxed run alive
+	// through that window can swap a verified leaf for a symlink and choose
+	// where the next creation's mount lands. So every entry here is
+	// re-verified at the driver border, immediately before the container is
+	// created, with the same question ([safepath.RealBindSource]); a source
+	// that no longer verifies refuses the creation instead of mounting what
+	// the swap chose. The border answer ([sandbox.AnswerBindSourceCheck],
+	// shared with the witnesses that replay it over a plan's own entries)
+	// parts ways on the source's shape there: a directory keeps the store
+	// ask ([safepath.EnsureRealBindSourceDir]), a file — a copy seed, a
+	// host-bound state file — is asked for identity alone, never creation
+	// (creating on a file's path refused honest containers and would stand
+	// a directory where the operator keeps a file), and a source gone since
+	// the plan refuses whatever its shape — the engine-laid workspace
+	// because nothing may stand in for the tree the engine actually laid,
+	// every other source because the border recreates nothing the
+	// plan-to-create window removed; the cold recreate is the plan's move,
+	// and the retry replans.
+	//
+	// The ask judges the engine's own filesystem: with the daemon on another
+	// host (DOCKER_HOST against a remote engine), the daemon resolves the
+	// source on a tree these checks never saw — the same blindness the
+	// plan-time ask already had, and a limit of the whole field.
+	//
+	// Drivers without host bind mounts never receive entries: the runtime
+	// writes this field only where it also lays host binds. They may ignore
+	// the field.
+	BindSourceChecks []BindSourceCheck
+
+	// ReadBackPaths names the container paths whose content the run must
+	// recover after the container is gone (ADR-143). It is a DECLARATION,
+	// never inferred from the mounts: the runtime names a path here when it
+	// also arranges the storage that serves it — a host bind where the
+	// driver has a filesystem, driver-owned storage (an emptyDir) where it
+	// has none — and a spec whose declaration no mount serves is refused at
+	// admission (Validate) rather than served silently half-way. The run
+	// reads the content back at teardown through the driver's drain
+	// (WorkspaceExporter.ExportRunFiles), keyed on RunInfo.ReadBackDirs.
+	ReadBackPaths []string
+}
+
+// ReadBackDir is one entry of the drain manifest: a declared read-back
+// container path, the host directory that receives its content at
+// teardown, and the figure its set is metered against. The driver drains
+// the path; the run file store owns the directory (its write target), and
+// the two meet only here.
+type ReadBackDir struct {
+	// RootOpener supplies an independently owned retained import directory.
+	// Nil preserves historical HostDir resolution. It is never serialized.
+	RootOpener RootOpener `json:"-"`
+	// ContainerPath is the declared path inside the container (absolute,
+	// clean — the same text Spec.ReadBackPaths carries).
+	ContainerPath string
+	// HostDir is the host directory the drained content lands in: the run
+	// file store's own write target, so no consumer of the drained set
+	// needs to know it (ADR-143 — no consumer reads the set by host path).
+	HostDir string
+	// CapBytes is the figure THIS dir's set is metered against at the
+	// drain, resolved by [ReadBackCapFor] from the mount that serves the
+	// path — the mount's own size, the [ReadBackCapEnv] override, or
+	// [ReadBackCapBytes]. Zero reads as the default (Cap), so a manifest
+	// entry built without it meters on the named figure.
+	CapBytes int64
+}
+
+// Cap is the figure the drain meters this dir's set against: CapBytes, or
+// [ReadBackCapBytes] where the entry named none.
+func (d ReadBackDir) Cap() int64 {
+	if d.CapBytes > 0 {
+		return d.CapBytes
+	}
+	return ReadBackCapBytes
+}
+
+// BindSourceCheck is one bind source the driver must re-verify immediately
+// before creating the container. Root is the sandbox-writable store the
+// source must stay under (what [safepath.RealBindSource] compares against);
+// Path is the source the mount string names.
+type BindSourceCheck struct {
+	// Identity validates the originally selected source at container creation.
+	Identity BindPathIdentity `json:"-"`
+	Root     string
+	Path     string
+
+	// MustExist marks a source the ENGINE laid for this run and binds at
+	// that path — the workspace worktree. Nothing at the border recreates
+	// any verified source gone since the plan (the border recreates nothing
+	// the window removed); for the workspace the refusal also guards the
+	// meaning: an empty stand-in directory would start the run on a tree
+	// the engine never laid.
+	MustExist bool
 }
 
 type SecretFileMount struct {
@@ -304,7 +409,108 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("sandbox.secretFiles[%s]: env %q is not a valid environment variable name", sf.Name, sf.Env)
 		}
 	}
+	for _, p := range s.ReadBackPaths {
+		if !strings.HasPrefix(p, "/") || path.Clean(p) != p || p == "/" {
+			return fmt.Errorf("sandbox: read-back path %q must be a clean absolute container path", p)
+		}
+		// ADR-143: named ⇒ served. The declaration is checked against the
+		// mounts as they stand, whatever their type — a host bind on a
+		// driver that has a filesystem, driver-owned storage where it has
+		// none — so a read-back path no mount serves refuses here instead
+		// of becoming the promise-about-a-directory-nobody-has defect the
+		// bind-dropping rule (#815) exists for.
+		if MountServing(s.Mounts, p) == "" {
+			return fmt.Errorf("sandbox: read-back path %q is served by no mount — declare it only alongside the storage that serves it (ADR-143)", p)
+		}
+	}
 	return nil
+}
+
+// MountServing returns the mount whose target is containerPath or a
+// parent of it, or "" when none does — the NEAREST such mount when they
+// nest (the deepest target, the first of equals), because a mount shadows
+// its parent's volume under its own target: the files at containerPath
+// live in its storage, and its `size=` is the figure that bounds them
+// (ReadBackCapFor). The one reading of "does a mount serve this path":
+// the admission half of the read-back contract (the declaration is asked
+// of the mounts as they stand, not of the driver's intentions), the
+// runtime's decision to add or skip its own storage at a declared path
+// (it asks whether the nearest kept mount sits AT the path — a parent
+// holds the path in its tree, never as a directory it promises), the
+// bind-dropping rule's judgment of what a dropped bind took with it, and
+// the drain's figure all ask it here — a serving predicate kept in two
+// places answers differently the day one copy stops matching the other.
+func MountServing(mounts []string, containerPath string) string {
+	want := path.Clean(containerPath)
+	serving, depth := "", -1
+	for _, m := range mounts {
+		tgt := MountTargetOf(m)
+		if tgt == "" {
+			continue
+		}
+		if c := path.Clean(tgt); (want == c || strings.HasPrefix(want, c+"/")) && len(c) > depth {
+			serving, depth = m, len(c)
+		}
+	}
+	return serving
+}
+
+// MountField reads one key of a mount string — comma-separated fields, each
+// `key=value` or a bare `key`, the grammar of `sandbox.mounts:` entries and
+// of docker's `--mount` — the way the drivers read it: the LAST field
+// naming any of keys wins. Docker's `--mount` parser and the kubernetes
+// driver's both assign a key each time they meet it, so
+// `target=/a,dst=/b` mounts at /b and `size=1Gi,size=100Gi` sizes the
+// volume at 100Gi; a reader that kept the first would reason about a mount
+// the container never had. A key matches whatever its case, as docker
+// folds it (the kubernetes parser refuses any spelling but the lowercase
+// one keys are given in, so no mount it accepts reads differently). Keys
+// and values are trimmed; bare reports a field written with no `=`
+// (`readonly`), found whether any field named the key at all. The one
+// reader of a mount's fields outside the drivers' own parsers: admission,
+// the runtime's mount readers and the drain's figure all read through it,
+// so they never disagree with each other on a duplicated key or an alias.
+func MountField(m string, keys ...string) (value string, bare, found bool) {
+	for _, part := range strings.Split(m, ",") {
+		k, v, hasValue := strings.Cut(strings.TrimSpace(part), "=")
+		if k = strings.ToLower(strings.TrimSpace(k)); k == "" || !slices.Contains(keys, k) {
+			continue
+		}
+		value, bare, found = strings.TrimSpace(v), !hasValue, true
+	}
+	return value, bare, found
+}
+
+// MountTargetOf extracts a mount string's `target=` field ("dst" and
+// "destination" are the same key's aliases), "" when it names none — the
+// last such field, as the drivers mount it ([MountField]). Admission and
+// every runtime mount reader ask it, so an alias added here is visible to
+// all of them — a second parser reads the language the day it was written
+// and never hears about the next alias.
+func MountTargetOf(m string) string {
+	if v, bare, ok := MountField(m, "target", "dst", "destination"); ok && !bare {
+		return v
+	}
+	return ""
+}
+
+// MountReadOnlyOf reports whether a mount string sets its readonly flag, as
+// the drivers read it ([MountField]): the last `readonly`/`ro` field, bare
+// or a value strconv.ParseBool reads true — `readonly,readonly=false` is
+// writable. A value ParseBool refuses reads false: both drivers refuse
+// that mount outright. A type that is read-only whatever its flags (a
+// configmap or a secret volume) is the caller's to add: this reads the
+// flag the author wrote.
+func MountReadOnlyOf(m string) bool {
+	v, bare, ok := MountField(m, "readonly", "ro")
+	if !ok {
+		return false
+	}
+	if bare {
+		return true
+	}
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
 }
 
 func validEnvName(name string) bool {

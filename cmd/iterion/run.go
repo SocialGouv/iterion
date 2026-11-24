@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -36,6 +38,7 @@ var runOpts struct {
 	compress            string
 	autoMemory          string
 	ambientContext      string
+	codemodeFlags       codemodeFlagSet
 	loopBudgetGuard     string
 	supervisors         string
 	repoDevbox          string
@@ -58,6 +61,9 @@ var runCmd = &cobra.Command{
 	Short: "Execute a workflow",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if name := runOpts.codemodeFlags.negativeField(); name != "" {
+			return fmt.Errorf("%s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name)
+		}
 		opts := cli.RunOptions{
 			File:                args[0],
 			Recipe:              runOpts.recipe,
@@ -82,6 +88,8 @@ var runCmd = &cobra.Command{
 			AllowUnknownInputs:  runOpts.allowUnknownInputs,
 			AutoMemory:          runOpts.autoMemory,
 			AmbientContext:      runOpts.ambientContext,
+			Codemode:            runOpts.codemodeFlags.codemode,
+			CodemodeBounds:      runOpts.codemodeFlags.bounds(),
 			LoopBudgetGuard:     runOpts.loopBudgetGuard,
 			Supervisors:         runOpts.supervisors,
 			RepoDevbox:          runOpts.repoDevbox,
@@ -110,6 +118,20 @@ var runCmd = &cobra.Command{
 				return err
 			}
 			opts.Vars = vars
+		}
+		// The server-minted secrets a spawning iterion handed over through
+		// the environment instead of this process's command line (the
+		// detached runner, store.ServerMintedSecretEnv). Taken once, here:
+		// the call removes them from the environment, so no tool process the
+		// run spawns inherits the grant. The environment wins over a flag of
+		// the same name — the server minted the value, the flag cannot.
+		if minted := store.TakeServerMintedSecretVarsFromEnv(); len(minted) > 0 {
+			if opts.Vars == nil {
+				opts.Vars = make(map[string]string, len(minted))
+			}
+			for k, v := range minted {
+				opts.Vars[k] = v
+			}
 		}
 		return cli.RunRun(cmd.Context(), opts, newPrinter())
 	},
@@ -142,6 +164,7 @@ func init() {
 	f.StringVar(&runOpts.compress, "compress", "", "command-output compression via the active rewriter plugin chain (rtk by default): \"on\" rewrites agent shell commands to their compact form (e.g. \"rtk <cmd>\"), \"ultra\" requests the densest output, \"off\" disables. Empty inherits the workflow/node compress: DSL then ITERION_COMPRESS. Needs an enabled rewriter plugin whose binary is on PATH. See docs/plugins.md.")
 	f.StringVar(&runOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md): \"on\" lets agent/judge nodes read and maintain a persistent MEMORY.md across runs of this bot on this project, \"off\" disables. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY; the default is off, so a run is hermetic unless it opts in. Honoured by claude_code, claw and pi. See docs/memory-and-knowledge.md.")
 	f.StringVar(&runOpts.ambientContext, "ambient-context", "", "ambient context: what agent/judge nodes inherit besides their prompt (ADR-119). \"workspace\" (the default) gives the repository's instruction files (CLAUDE.md, .claude/rules, AGENTS.md) and not the operator's personal setup; \"operator\" gives the operator's setup only; \"all\" both; \"none\" nothing. Empty inherits the workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT. Enforced on claude_code, claw, codex and pi; kimi applies workspace and all, opencode all — a node whose backend cannot apply the value is refused. See docs/adr/119-ambient-context-policy.md")
+	runOpts.codemodeFlags.register(f)
 	f.StringVar(&runOpts.repoDevbox, "repo-devbox", "", "install the TARGET repository's devbox.json for this run: \"on\" (default) | \"off\" to skip it when the run does not build that repo (a review, an audit) and would otherwise pay its whole Nix toolchain. The BOT's own devbox.json is unaffected. Empty inherits the workflow repo_devbox: DSL then ITERION_REPO_DEVBOX. See docs/dsl.md.")
 	f.StringVar(&runOpts.loopBudgetGuard, "loop-budget-guard", "", "refuse a loop iteration the budget cannot fund, so the run leaves through its own exit path (a PR tail, a report) with the work it banked instead of dying mid-iteration: \"on\" (default) | \"off\" to run at the cap head-on. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.")
 	f.StringVar(&runOpts.supervisors, "supervisors", "", "spawn the workflow's DSL-declared supervisor watchers: \"on\" (default) | \"off\" to run unsupervised (cost control / isolating a suspect steering policy). Empty inherits ITERION_SUPERVISORS. See docs/supervisors.md.")
@@ -149,8 +172,8 @@ func init() {
 	f.StringArrayVar(&runOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), Claude-Code syntax e.g. 'Bash(go test:*)', 'Read(**)', 'Edit(pkg/**)'. Auto-approved without prompting. Additive to the workflow allow: list.")
 	f.StringArrayVar(&runOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls always pause for approval. Additive to the workflow ask: list.")
 	f.StringArrayVar(&runOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked, even in ask mode. Additive to the workflow deny: list.")
-	f.StringVar(&runOpts.reviewMode, "review-mode", "", "For bots that opt into the mono/dual review-loop topology by declaring a review_mode var (ADR-052): \"mono\" (one model family, ~half the calls), \"dual\" (alternate two families), or \"auto\" (default: dual when two provider families are detected, else mono). The shipped catalog no longer declares it (ADR-058 v2 campaigns); the surface stays for third-party or future reviewer-loop bots. No-op otherwise.")
-	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer_claude), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
+	f.StringVar(&runOpts.reviewMode, "review-mode", "", "For bots that opt into the review-loop topology by declaring a review_mode var (ADR-052, ADR-169): \"single\" (one reviewer, the frugal default), \"paired\" (two reviewers from different model families, cross-confirmed), or \"auto\" (the default: single, on every host — a second reviewer is a deliberate spend). Which backend and model serves each role is the bot's own route plus the llmroute cells over it, never a var. Declared today by review-pr and evolve; the surface also serves third-party reviewer-loop bots. No-op otherwise.")
+	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
 	f.StringVar(&runOpts.fallback, "fallback", "", "Run-level fallback route \"<backend>:<model>\" taken when an agent node's primary fails (e.g. --fallback 'claw:openai/gpt-5.5'). Applies only to agent nodes that declare no fallbacks: of their own, and never to judges. Uses the default trigger set (usage_window, unavailable); author a fallbacks: block for anything finer. See ADR-087.")
 	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code|codex|pi|kimi|grok|opencode). Same selector syntax as --model; wins over the node's DSL backend:.")
 	f.StringArrayVar(&runOpts.effortFor, "effort-for", nil, "Per-node/-group reasoning_effort override (repeatable): \"selector=effort\" or a bare \"effort\" for every LLM node (none|low|medium|high|xhigh|max|ultracode). Same selector syntax as --model; wins over the node's DSL reasoning_effort: AND over a dynamic _reasoning_effort edge mapping.")

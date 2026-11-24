@@ -58,6 +58,7 @@ func sessionDegradeBuilder(optional bool) func(context.Context, string) (*delega
 // (lived on branch-improve-loop's plan_revise: error_during_execution
 // in ~2.6s on every resume, run wedged).
 func TestOptionalSessionDegradesToFresh(t *testing.T) {
+	t.Parallel()
 	e, be, chain := sessionDegradeExecutor(errors.New("delegate: claude-code error: subtype=error_during_execution"))
 	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
@@ -82,6 +83,7 @@ func TestOptionalSessionDegradesToFresh(t *testing.T) {
 // TestRequiredSessionDoesNotDegrade: plain `inherit`/`fork` asked for
 // continuity unconditionally — a failure keeps failing loudly.
 func TestRequiredSessionDoesNotDegrade(t *testing.T) {
+	t.Parallel()
 	e, be, chain := sessionDegradeExecutor(errors.New("delegate: claude-code error: subtype=error_during_execution"))
 	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(false))
 
@@ -99,6 +101,7 @@ func TestRequiredSessionDoesNotDegrade(t *testing.T) {
 // failure is credential-level — a fresh session hits the same wall, so
 // the typed error must surface promptly instead of paying a blind retry.
 func TestOptionalSessionAuthFailureDoesNotDegrade(t *testing.T) {
+	t.Parallel()
 	e, be, chain := sessionDegradeExecutor(&delegate.ErrAuthFailed{Provider: delegate.BackendClaudeCode, Detail: "401"})
 	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
@@ -124,6 +127,7 @@ func TestOptionalSessionAuthFailureDoesNotDegrade(t *testing.T) {
 // messages — so the degrade must evict it, exactly as the route-change
 // path does, or the "FRESH session" it logs is not fresh at all.
 func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
+	t.Parallel()
 	const runID, nodeID = "run-1", "plan_revise"
 	sessions := newNodeSessionStore()
 	if err := sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`)); err != nil {
@@ -152,6 +156,7 @@ func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
 // provider outage AND discard the node's continuity for nothing
 // (R1486ff), so the failure must surface with the session intact.
 func TestOptionalSessionTransientFailureDoesNotDegrade(t *testing.T) {
+	t.Parallel()
 	e, be, chain := sessionDegradeExecutor(&delegate.ErrTransient{Reason: "upstream 503"})
 	e.retry.MaxAttempts = 1 // exhaust the budget on the first call
 	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
@@ -173,6 +178,7 @@ func TestOptionalSessionTransientFailureDoesNotDegrade(t *testing.T) {
 // without an event nothing in the timeline says the node started blank
 // (R051957).
 func TestOptionalSessionDegradeIsRunVisible(t *testing.T) {
+	t.Parallel()
 	var seen []SessionDegradedInfo
 	be := &sessionPickyBackend{
 		name: delegate.BackendClaudeCode,
@@ -215,6 +221,7 @@ func TestOptionalSessionDegradeIsRunVisible(t *testing.T) {
 // A clean pass must carry neither key: an output that stamps
 // _session_degraded always means something actually happened.
 func TestCleanPassStampsNoSessionDegrade(t *testing.T) {
+	t.Parallel()
 	e, be, chain := sessionDegradeExecutor(errors.New("unused"))
 	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil,
 		func(_ context.Context, _ string) (*delegate.Task, error) {
@@ -264,6 +271,7 @@ func (b *cancellingDegradeBackend) Execute(ctx context.Context, task delegate.Ta
 // tokens and cost from max_cost_usd, the org monthly cap and a lending
 // donor's ledger.
 func TestOptionalSessionDegradeKeepsSpendOnCancel(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	be := &cancellingDegradeBackend{
@@ -298,6 +306,7 @@ func TestOptionalSessionDegradeKeepsSpendOnCancel(t *testing.T) {
 // sandboxed claw failure flattens to a string at the IPC boundary and
 // classifies UNCLASSIFIED, so every one of them would qualify.
 func TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID(t *testing.T) {
+	t.Parallel()
 	for _, backendName := range []string{delegate.BackendClaw, delegate.BackendKimi, delegate.BackendGrok} {
 		t.Run(backendName, func(t *testing.T) {
 			const runID, nodeID = "run-1", "plan_revise"
@@ -331,6 +340,7 @@ func TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID(t *testing.T) {
 
 // The eligible backends are exactly the four that call resume with it.
 func TestSessionResumeEligible(t *testing.T) {
+	t.Parallel()
 	want := map[string]bool{
 		delegate.BackendClaudeCode: true, // claudesdk.WithResume(task.SessionID)
 		delegate.BackendCodex:      true, // codexsdk.WithResume(task.SessionID)

@@ -78,6 +78,12 @@ func TestLeasedNets_EveryCampaigningNetIsRegistered(t *testing.T) {
 		}
 	}
 	// Pass 2 — every lease.Spec the package builds.
+	//
+	// Whether each of them ARMS THE HANDOVER (lease.Spec.Health) is not asked
+	// here: this sweep globs one directory, and a net wired anywhere else was
+	// judged by nothing. pkg/lease owns that question for the whole module
+	// now (TestEveryLeaseSpecInTheModuleArmsTheHandover, walked from the
+	// module root), which is also where its exception ledger lives.
 	var found, offenders []string
 	for _, f := range parsed {
 		ast.Inspect(f, func(n ast.Node) bool {

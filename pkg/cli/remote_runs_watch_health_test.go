@@ -94,3 +94,75 @@ func TestWatchHealthReprint_RefreshesAPassedExpiryAndNothingElse(t *testing.T) {
 		}
 	}
 }
+
+// The handover line is the sick-but-alive leader made readable (#2685): what
+// the mechanism is set to, where this replica stands in it, and the last pass
+// it classified. A server older than the field sends none, and the line is
+// omitted rather than printed as a healthy zero.
+func TestPrintRemoteWatchHealth_ReportsTheHandover(t *testing.T) {
+	at := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		h    *remoteWatchHandover
+		want []string
+	}{
+		{
+			name: "a healthy armed replica",
+			h:    &remoteWatchHandover{Armed: true, Passes: 3, LastPassVerdict: "idle", LastPassAt: &at},
+			want: []string{"failing passes=0/3", "handovers=0", "last pass=idle"},
+		},
+		{
+			name: "a replica mid-run of failures",
+			h:    &remoteWatchHandover{Armed: true, Passes: 3, FailingPasses: 2, Handovers: 1, SickTerms: 1, LastPassVerdict: "unreachable", LastPassAt: &at},
+			want: []string{"failing passes=2/3", "handovers=1", "sick terms=1", "last pass=unreachable"},
+		},
+		{
+			name: "a replica that stopped handing over",
+			h:    &remoteWatchHandover{Armed: true, Passes: 3, FailingPasses: 3, Handovers: 3, SickTerms: 3, CircuitOpen: true, LastPassVerdict: "unreachable"},
+			want: []string{"HANDING OVER STOPPED", "every peer gave the lease back just as sick"},
+		},
+		{
+			name: "the operator disarmed it",
+			h:    &remoteWatchHandover{Armed: false},
+			want: []string{"disarmed by the operator"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			p := &Printer{W: &buf, Format: OutputHuman}
+			printRemoteWatchHealth(p, remoteWatchHealth{RunID: "run-1", Coordinator: remoteWatchHealthCoordinator{Present: true, Elected: true, HolderState: "held", Handover: tc.h}}, false)
+			got := buf.String()
+			if !strings.Contains(got, "Handover") {
+				t.Fatalf("no handover line:\n%s", got)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("handover line lacks %q:\n%s", want, got)
+				}
+			}
+		})
+	}
+
+	// A server that predates the field: no line at all, rather than a zero
+	// state an operator would read as "armed and healthy".
+	var buf bytes.Buffer
+	p := &Printer{W: &buf, Format: OutputHuman}
+	printRemoteWatchHealth(p, remoteWatchHealth{RunID: "run-1", Coordinator: remoteWatchHealthCoordinator{Present: true, HolderState: "held"}}, false)
+	if got := buf.String(); strings.Contains(got, "Handover") {
+		t.Fatalf("an older server's answer printed a handover line:\n%s", got)
+	}
+
+	// And it decodes from what the server actually sends.
+	var decoded remoteWatchHealth
+	if err := json.Unmarshal([]byte(`{"coordinator":{"present":true,"elected":true,"holder_state":"held","stale":false,`+
+		`"handover":{"armed":true,"passes":3,"failing_passes":2,"handovers":1,"sick_terms":1,"circuit_open":true,`+
+		`"last_pass_at":"2026-10-29T09:00:00Z","last_pass_verdict":"unreachable"}}}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	h := decoded.Coordinator.Handover
+	if h == nil || !h.Armed || h.Passes != 3 || h.FailingPasses != 2 || h.Handovers != 1 || h.SickTerms != 1 || !h.CircuitOpen ||
+		h.LastPassVerdict != "unreachable" || h.LastPassAt == nil || !h.LastPassAt.Equal(at) {
+		t.Fatalf("the server's handover fields did not decode: %+v", h)
+	}
+}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -21,6 +21,7 @@ import (
 // back — reaches the model in placeholder form, as claude_code's PostToolUse
 // hook does for WebFetch.
 func TestAClawToolEchoingItsInputReturnsThePlaceholder(t *testing.T) {
+	t.Parallel()
 	const key = "AIzaSyD-echo-9f8e7d6c5b4a3210fake"
 	var gotKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

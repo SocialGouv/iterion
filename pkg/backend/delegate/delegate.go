@@ -17,10 +17,12 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -74,10 +76,11 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // that keeps the tool, ultracode or not).
 //
 // A system prompt outranks a tool description, so the grant also has to say
-// what a REFUSED `agent` tool means: on claw the tool registers and every call
-// earns the typed capability refusal (toolcatalog.ClawRefusesBuiltin), and a
-// grant that orders the dispatch anyway buys one hard error per subagent per
-// stage. The clause is conditional on what the TOOL answers, never a claim
+// what a REFUSED `agent` tool means. iterion's own hosts serve subagents on
+// claw (#1940), but a host that wires no runner still registers the tool and
+// refuses every call (toolcatalog.ClawUnwiredSubagentRefusal), and a grant
+// that orders the dispatch anyway buys one hard error per subagent per stage.
+// The clause is conditional on what the TOOL answers, never a claim
 // about the serving backend — this one constant also reaches claude_code,
 // where the delegation works — and it quotes the refusal's own headline so
 // neither side can be reworded alone.
@@ -297,6 +300,21 @@ type ToolDef struct {
 	// sanitization (`mcp.<server>.<tool>` for an MCP tool). In-process only:
 	// it never crosses the sandbox IPC.
 	QualifiedName string
+
+	// ConcurrentSafe attests the native implementation, not the tool name.
+	// Zero is exclusive. This field does not cross the sandbox IPC.
+	ConcurrentSafe bool
+
+	// AuthorDeclared reports that this definition resolved from an entry the
+	// node's own `tools:` list contributed — not from a runtime append
+	// (interaction, board, runs, agent, todo_write, memory), not from an
+	// ambient wildcard. It is the first condition a deferring node reads to
+	// decide which tools join the codemode catalogue instead of the wire
+	// (the full rule is model.markCatalogueOnly's); everything else stays
+	// declared.
+	// In-process only: it does not cross the sandbox IPC, where the runner
+	// serves every tool declared.
+	AuthorDeclared bool
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
@@ -493,6 +511,16 @@ type Task struct {
 	// It shares the same ephemeral capability token and host listener.
 	RunsHTTPEndpoint string
 
+	// ConnectorHTTPEndpoint is the URL of the iterion-host connector MCP
+	// facade (#2758), served on the same gateway listener as the board
+	// endpoint and gated by the SAME run token — whose grant must then carry
+	// the `connectors` capability for the facade to answer. Sandboxed nodes
+	// declaring `capabilities: [connectors]` register an HTTP MCP server
+	// pointing here; the credential a call spends is resolved server-side and
+	// never enters the sandbox. Empty (no server, no sandbox, no connection
+	// plane) disables the facade for the node — loudly, at the delegate.
+	ConnectorHTTPEndpoint string
+
 	// AskUserHTTPEndpoint is the URL of the per-run ask-user MCP HTTP
 	// endpoint the engine binds next to the sandbox (ADR-082 Phase 3).
 	// Sandboxed claude_code registers an HTTP MCP server pointing here
@@ -537,6 +565,14 @@ type Task struct {
 	// are wired separately by each backend and are absent here.
 	MCPServers []TaskMCPServer
 
+	// MCPInheritDisabled says the node opts out of the ambient MCP set
+	// (`mcp: inherit: false`): MCPServers is its whole set. A CLI that loads
+	// MCP servers of its own configuration is held to it — claude_code runs
+	// with --strict-mcp-config whatever ITERION_CLAUDE_CODE_STRICT_MCP says;
+	// codex, which cannot be told to disable them, refuses the node, typed,
+	// when its configuration lists one.
+	MCPInheritDisabled bool
+
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.
 	OutputSchema json.RawMessage
@@ -559,13 +595,57 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
+	// ToolTurnsAnchor anchors this node execution's tool-step budget at the
+	// last completed tool turn of the conversation its first attempt
+	// started from — its key and that key's occurrence, "<n>:<key>", as a
+	// provider may reuse a call id — "" when that conversation held none.
+	// The claw backend charges a loop the completed tool turns its
+	// conversation holds after the anchor — those a compaction folded
+	// included, as its summary names them; every one when the anchor is not
+	// among them — and hands the loop what is left of ToolMaxSteps.
+	// Nil on a first attempt: the backend fixes it from the conversation its
+	// first loop starts from and reports it in Result.ToolTurnsAnchor, which
+	// a retry of the same node execution carries back here.
+	ToolTurnsAnchor *string
+
 	// MaxTokens caps the LLM response length per call. Honored by API-based
 	// backends (claw); CLI-based backends (claude_code, codex) ignore it.
 	// Zero means "use the backend default" (typically 8192).
 	MaxTokens int
 
+	// ContextWindow is the catalog context window (tokens) of the model the
+	// task resolves to, when a table the runtime trusts knows it; zero when
+	// unknown. The claude_code CLI-harness backend stamps it into
+	// CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn so the harness compacts BEFORE
+	// the provider ceiling instead of dying on it; an explicit env setting
+	// always wins. (The claw backend name is registered in production to the
+	// model package's direct-API ClawBackend — runview's executor — which
+	// resolves the window per call and never reads this field.)
+	ContextWindow int
+
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
+
+	// WorkspaceTrust says who wrote the code in WorkDir — the run's
+	// store.RunTrust, resolved once per run by the engine and stamped here by
+	// the executor beside WorkDir (model's stampWorkspace), never re-derived
+	// from the workspace. It crosses the sandbox wire with WorkDir (IOTask),
+	// and an untrusted task's processes carry it in their environment
+	// (envtrust.EnvRunTrust). The zero value is trusted: a floor reads it
+	// with Trusted(), so a value this binary does not recognise loses as an
+	// untrusted one does.
+	WorkspaceTrust store.RunTrust
+
+	// InjectedHooks are the plugin-contributed hook groups ITERION resolved
+	// for this run, handed down in memory by the engine (they are what
+	// runtime's mergePluginHooks computes). On a trusted workspace they ride
+	// the workspace's settings.json, where the runtime merged them, and this
+	// field is not consulted. On a workspace the tenant did not write they
+	// are the ONLY hooks that run — the file is the checkout's, so it is
+	// neither their authority nor allowed to veto them: claude_code gets them
+	// through the inline --settings layer, claw registers them from this
+	// record, and nothing the checkout writes reaches either path.
+	InjectedHooks map[string][]any
 
 	// HomeScope is the engine-owned identity of the runner's HOME: run-scoped
 	// on the trunk, branch-scoped inside fan-out. It deliberately stays
@@ -601,11 +681,35 @@ type Task struct {
 	// worktree they execute in.
 	RepoRoot string
 
+	// ScratchReadRoots are the run's scratch read roots as the RUNNER must
+	// see them (#2869): the run family's own subtree first, then the
+	// shared project scratch while the workflow still references it. The
+	// claw backend reads them at the sandbox crossing to narrow the
+	// in-container runner's read scope; every other backend and every
+	// unsandboxed execution ignores the field (their read scope lives in
+	// the registry's ReadScope). Empty means no narrowing was pushed —
+	// the crossing keeps its legacy project-scratch root.
+	ScratchReadRoots []string
+
+	// ScratchAnchor is the project scratch the ScratchReadRoots lie
+	// beneath, as the RUNNER sees it (#2869). The runner attaches a root
+	// below it without following any link between the two — the shared
+	// scratch is written by other runs, so a link planted at runs/<id>
+	// must not become a root. Empty when no push happened.
+	ScratchAnchor string
+
 	// ReasoningEffort is the reasoning effort level sent on the wire.
 	// Valid values: "none", "low", "medium", "high", "xhigh", "max". The DSL also
 	// accepts "ultracode", but the runtime remaps that to "xhigh" before
 	// populating this field (see model.wireEffort) and sets Ultracode below.
 	ReasoningEffort string
+
+	// ReasoningEffortSource names who asked for ReasoningEffort: the run's
+	// model overrides, an upstream edge's mapping or the node's own
+	// `reasoning_effort:` (model.EffortSource*). The executor's bookkeeping,
+	// read back at the model boundary to record it on the Result; no backend
+	// reads it, and it does not cross the claw-runner wire.
+	ReasoningEffortSource string
 
 	// Ultracode enables the "Ultracode" mode: xhigh reasoning paired with a
 	// standing-consent prerogative to orchestrate multi-agent workflows.
@@ -670,6 +774,57 @@ type Task struct {
 	// policy and applies the default as far as it can (ambient.Declared).
 	AmbientContextSource string
 
+	// Codemode says this node is handed the codemode tool (ADR-165): one
+	// extra tool whose input is a PROGRAM, run in a child process that holds
+	// no credential and whose only capability is to call this node's own
+	// tools, back through this node's own dispatcher.
+	//
+	// It is the RESOLVED decision, not an authored value: the executor walks
+	// the node/workflow precedence (ir.ResolveCodemode) and refuses, before
+	// building this task, a declared `on` the backend cannot serve
+	// (ir.CodemodeServedBy). A backend reading this field therefore never
+	// has to ask whether it may — only the one that registers the tool reads
+	// it, and the zero value is off, so a task built outside the executor
+	// gets no script host rather than an accidental one.
+	Codemode bool
+
+	// CodemodeDefer says the node's AUTHOR-DECLARED tools are demoted to
+	// catalogue-only: they stay callable through the node's door — the
+	// codemode tool's catalogue, call.search and call.describe read them,
+	// and a program calls one by name — but they are not declared to the
+	// model on the wire. The runtime's own appends (interaction, board,
+	// runs, agent, todo_write, memory) and the withheld classes (the ask
+	// channel, the iterion control surface, sub-agents, the script host
+	// itself) stay declared whatever this says.
+	//
+	// It is the RESOLVED decision, like Codemode, and it only means anything
+	// where Codemode is on: deferral is an optimization over the codemode
+	// catalogue, not a capability of its own. It does NOT cross the sandbox
+	// envelope (ToIOTask): a runner built before the field — and a runner
+	// after it, deliberately — serves the node's tools declared, which is
+	// today's behaviour and the safe fallback for an optimization.
+	CodemodeDefer bool
+
+	// CodemodeBounds are the bounds ONE program of this node runs under, as
+	// the author declared them and the executor resolved them (node over
+	// workflow, field by field — ir.ResolveCodemodeBounds). nil means nobody
+	// chose, which is the zero value Limits.Clamp fills from
+	// scripthost.DefaultLimits.
+	//
+	// It is a REQUEST, not the enforced value. The parent clamps it to
+	// scripthost.Ceiling at spawn and reports any reduction through OnClamp,
+	// so a tenant cannot raise a platform bound by declaring a bigger number
+	// — philosophy 1 forbids a bound with no override, cloud multi-tenancy
+	// forbids an override with no ceiling, and this field is the override
+	// half only.
+	//
+	// Nil here and nil at the node are the same thing on purpose: a backend
+	// that drops the field runs the DEFAULTS, which are tighter than anything
+	// an author would raise them to. That direction is what makes the field
+	// safe to transport and is why the refusal it produces — "the script has
+	// spent its budget of 64 tool calls" — is loud rather than silent.
+	CodemodeBounds *scripthost.Limits
+
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
 	// (possibly sandboxed, IPC) claw runner can rebuild the rewrite.Chain. Each
@@ -714,6 +869,14 @@ type Task struct {
 	// a value straddling the cut is recognised whole. 0 when unknown.
 	RedactSecretsSpan int
 
+	// NamesSecret reports whether a text carries the placeholder of a secret
+	// that resolves at SOME sink, whatever the grants: the question a backend
+	// asks of a tool call before deciding that its output may quote a value
+	// — a call that carried a placeholder the proxy resolved on the wire
+	// carried a secret as much as one the agent materialised. Nil when the
+	// run holds no materialisable secret.
+	NamesSecret func(string) bool
+
 	// UnmaterializeSecrets is MaterializeSecrets' mirror: a known secret
 	// value, in any registered encoding, back to its placeholder — nothing
 	// else. Backends apply it
@@ -722,6 +885,20 @@ type Task struct {
 	// the command AFTER materialisation. The sink kill switch leaves it on:
 	// the agent only ever sees placeholders. Nil disables it.
 	UnmaterializeSecrets func(string) string
+
+	// ScreenModelText is the model boundary's own pass (ADR-146 axis 1a),
+	// carried on the task for the text a backend composes for ITSELF instead
+	// of from a Task field: the ambient instruction files it reads under
+	// WorkDir (pi's `project_context` block, claw's project-instructions
+	// block), the workspace-memory blocks a store hands it. The executor's
+	// field pass cannot reach those — they are not fields — so the backend
+	// applies the pass where it composes them, and the text an agent of an
+	// earlier node wrote into a CLAUDE.md reaches the next model as the
+	// placeholder. Set by the executor at the seam; nil is the identity, the
+	// same contract MaterializeSecrets carries — placeholders off by the
+	// operator's choice, or the in-container claw runner, whose IOTask cannot
+	// carry a closure (see io.go).
+	ScreenModelText func(string) string
 
 	// CursorFragments are resolved prompt-engineering cursor fragments
 	// to append to the system prompt under a "## Calibration" section.
@@ -750,6 +927,20 @@ type Task struct {
 	// agent must tell the two apart, and no amount of reading the workspace
 	// back can do it. The engine populates this; nothing in the repo can.
 	MirroredSkills []string
+
+	// SkillAllowlist, when non-nil, is the pinned name → path set the `skill`
+	// tool serves (iterion#1719): the run's workspace is untrusted, so the
+	// walked roots would answer with text the checkout planted. Paths are
+	// absolute HOST paths into the engine-owned skill channel root; the
+	// sandbox crossing re-roots them workspace-relative for the runner
+	// (delegate.IOTask.SkillAllowlist). Nil = the workspace walk, unchanged.
+	SkillAllowlist map[string]string
+
+	// SkillChannelRoot is the engine-owned directory that re-carries the
+	// run's owned skills in the .claude/skills layout, for the backends that
+	// discover skills by directory (claude_code's --add-dir). Empty = no
+	// channel (a trusted run discovers the workspace's skills natively).
+	SkillChannelRoot string
 
 	// PresetFragment is the resolved launch-time preset bias appended to the
 	// system prompt under a "## Focus" section. It carries the selected
@@ -845,6 +1036,21 @@ type Task struct {
 	// ResumeAnswer is the human-supplied answer to the captured
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
+
+	// ResumeCommandNarrowing is the workspace-command `allowed-tools:`
+	// narrowing the paused generation held (#1717), checkpointed beside
+	// ResumeConversation: the resumed generation re-pins it before the
+	// loop restarts, so the bound survives the pause.
+	ResumeCommandNarrowing *CommandNarrowingState
+
+	// SessionStranded marks ResumeConversation as the turns of a crossing
+	// that held none of its session's history (a relayed mirror gap, or a
+	// seed the channel refused): the pause carried the fact, and the
+	// crossing resumed from it must keep its own captures out of the
+	// session store — saving them would REPLACE the conversation the
+	// session's other nodes built. Launcher-side only: the verdict is the
+	// host's, so it never crosses the wire (ToIOTask drops it).
+	SessionStranded bool
 
 	// ContinueConversation, when non-nil, is a COMPLETED conversation the
 	// backend replays as it ended, with UserPrompt as its next user turn —
@@ -994,6 +1200,22 @@ type MCPLauncherRefusal struct {
 func (t Task) Hostless() bool {
 	return t.Sandbox == nil || t.Sandbox.Driver() == "noop"
 }
+
+// NeedsToolLoop reports whether this node runs a tool loop — because it
+// declared tools, or because codemode gave it one.
+//
+// It is a PREDICATE and not a mutation of HasTools, and that distinction is
+// the whole of it: an adversarial round found the mutation crossing the
+// sandbox boundary, where a runner image older than codemode keeps the
+// `has_tools: true` it cannot explain and drops the `codemode` that justified
+// it — a node with zero tools, told to finish "after completing all tool
+// operations". Reading the question instead of rewriting the answer leaves
+// the wire exactly as it was.
+//
+// HasTools keeps its own meaning (the node DECLARED tools), which readers
+// that care about the declaration — the IPC mirror, the re-ask's reset — go
+// on reading.
+func (t Task) NeedsToolLoop() bool { return t.HasTools || t.Codemode }
 
 // StateLocation says WHO could have put something at the state root, which is
 // the only question the guards actually ask.
@@ -1445,6 +1667,19 @@ func (t Task) BuildSystemPrompt() string {
 	return b.String()
 }
 
+// ScreenedModelText applies the boundary pass the task carries
+// (ScreenModelText), nil-safe: a task built without one reads its own text
+// back. A composer that applies the pass inline routes through here rather
+// than the field, so the nil contract is stated once; a backend that carries
+// the pass further (claw, into the options its request builder reads) passes
+// the field itself, nil and all.
+func (t Task) ScreenedModelText(s string) string {
+	if t.ScreenModelText == nil {
+		return s
+	}
+	return t.ScreenModelText(s)
+}
+
 func secretFilesInstruction(files []SecretFileHint) string {
 	var b strings.Builder
 	b.WriteString("\n\nMounted secret files are available for commands that need credential-file paths. Use the path or env var as a reference; do not open, read, cat, print, encode, or summarize the file contents.\n")
@@ -1505,12 +1740,36 @@ type ErrAskUser struct {
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
 
+	// PermissionInput preserves the validated argument object before the
+	// conversation or display marker decodes numbers into interface values.
+	PermissionInput json.RawMessage
+
 	// AwaitPending is set (non-empty) when this suspension is an
 	// await_answers escalation (ADR-081): the agent asked to sync while
 	// async questions were still unanswered. It carries the pending
 	// question refs so the pause interaction can list them and the
 	// resume path can fan the operator's answers back out.
 	AwaitPending []PendingAsync
+
+	// CommandNarrowing is the workspace-command `allowed-tools:` narrowing
+	// the paused generation held (#1717, review MED-1). It rides the pause
+	// beside Conversation so the resumed generation keeps the bound: the
+	// operator approved ONE call, not the restriction's lifting. Nil when
+	// no narrowing was active.
+	CommandNarrowing *CommandNarrowingState
+}
+
+// CommandNarrowingState is the checkpointed form of a generation's
+// workspace-command tool narrowing — the folded allowance, not the declared
+// spellings: Names are iterion tool names, Families the `mcp_<srv>_`
+// prefixes an `mcp__<srv>__*` entry resolved to, Wildcard the bare `*`.
+// It lives here (not in pkg/backend/tool, which imports this package) so
+// ErrAskUser, Result and the wire forms can all carry it.
+type CommandNarrowingState struct {
+	Command  string   `json:"command"`
+	Names    []string `json:"names,omitempty"`
+	Families []string `json:"families,omitempty"`
+	Wildcard bool     `json:"wildcard,omitempty"`
 }
 
 // AwaitPendingToQuestions serializes an AwaitPending slice into the
@@ -1591,7 +1850,17 @@ type ErrRateLimited struct {
 	// the call would spend precisely the quota the cap exists to protect,
 	// and the provider would answer it perfectly happily.
 	SelfImposed bool
+	// Cause is the error the refusal was read from when a boundary typed it
+	// after the fact — claw's HTTP 429 or stream error event, whose words
+	// name a usage window (model.clawUsageWindow). Nil for a refusal raised
+	// as this type. Unwrapped, so the status a retry event reports stays
+	// readable under the typed refusal.
+	Cause error
 }
+
+// Unwrap exposes the error the refusal was typed from, nil when it was
+// raised as this type.
+func (e *ErrRateLimited) Unwrap() error { return e.Cause }
 
 // ErrRateLimited.Kind values.
 const (
@@ -1686,6 +1955,18 @@ func (e *ErrTransient) Error() string {
 // handling beyond the auto-prepended context block.
 const AskUserQuestionKey = "ask_user_response"
 
+// CheckApprovalAnswer binds an approval reply to the current exact pause.
+// An untagged denial can close the pause but cannot authorize an action.
+func CheckApprovalAnswer(answers map[string]any, exactPause bool, interactionID string) error {
+	answer, _ := answers[AskUserQuestionKey].(string)
+	id, _ := answers[permission.ApprovalInteractionKey].(string)
+	allow, _ := permission.ParseExactApprovalAnswer(answer)
+	if (id != "" && (!exactPause || id != interactionID)) || (exactPause && allow && id == "") {
+		return fmt.Errorf("approval does not match the pending interaction; refresh the question before answering")
+	}
+	return nil
+}
+
 // Presentation keys stamped alongside AskUserQuestionKey when the LLM
 // called ask_user with structured options. Reserved (underscore) keys:
 // the studio detects AskUserOptionsKey to render clickable choices
@@ -1775,6 +2056,16 @@ const (
 	ResumeConversationKey        = "_resume_conversation"
 	ResumePendingToolUseIDKey    = "_resume_pending_tool_use_id"
 	ResumeAnswerKey              = "_resume_answer"
+	// ResumeCommandNarrowingKey carries the checkpointed command
+	// narrowing (#1717) beside ResumeConversationKey: the resumed
+	// generation re-pins the bound the paused one held. The value is a
+	// JSON-marshalled CommandNarrowingState.
+	ResumeCommandNarrowingKey = "_resume_command_narrowing"
+	// ResumeSessionStrandedKey carries the stranding fact beside
+	// ResumeConversationKey: the conversation being resumed is one
+	// stranded crossing's own turns, so the resumed crossing's captures
+	// must stay out of the session store. Set to true when present.
+	ResumeSessionStrandedKey = "_resume_session_stranded"
 	// SessionIDKey carries the CLI session id consumed by SessionInherit
 	// (and SessionFork) nodes through the input map. Set by the executor's
 	// session-continuity wiring and by the engine's fork rehydration path
@@ -1874,6 +2165,10 @@ type Result struct {
 	// but JSON parsing fell back to wrapping plain text as {"text": "..."}.
 	ParseFallback bool
 
+	// ParseError describes a failed structured parse. It is diagnostic
+	// metadata, never model-authored answer text.
+	ParseError string
+
 	// FormattingPassUsed is true when a two-pass execution was performed:
 	// Pass 1 with tools (no output format), Pass 2 with WithOutputFormat
 	// (no tools) to guarantee structured output conforming to the schema.
@@ -1887,6 +2182,13 @@ type Result struct {
 	// downstream forks can detect a cross-provider switch and fall back
 	// to a fresh session instead of failing on signed thinking blocks.
 	SessionFingerprint string
+
+	// Credential is what this call spent, as the process that built it
+	// resolved it (credroute.Spend, ADR-161 decision 8): the usage events
+	// carry it as their credential keys, and the spend ledger and the fine
+	// table book on it. Zero for a backend whose arm has not landed — its
+	// events carry no keys, and the readers keep their derivation.
+	Credential credroute.Spend
 
 	// TerminatedBackgroundTasks labels the background work (claude_code:
 	// async subagents, background commands) this call's processes — the
@@ -1905,10 +2207,28 @@ type Result struct {
 	// this nil and rely on the [PRIOR INTERACTION] prompt-side fallback.
 	PendingConversation json.RawMessage
 
+	// PendingPermissionInput is captured by the in-process permission gate.
+	// Sandbox results do not carry this trusted field.
+	PendingPermissionInput json.RawMessage `json:"-"`
+
 	// PendingToolUseID is the ID of the tool_use block awaiting an
 	// answer in PendingConversation. Required when PendingConversation
 	// is non-nil.
 	PendingToolUseID string
+
+	// PendingCommandNarrowing is the workspace-command `allowed-tools:`
+	// narrowing the suspended generation held (#1717). It travels with
+	// PendingConversation through the checkpoint so the resumed generation
+	// keeps the bound the interrupted one held.
+	PendingCommandNarrowing *CommandNarrowingState
+
+	// SessionStranded travels with PendingConversation on a pause: the
+	// crossing that captured this conversation held none of its session's
+	// history (a relayed mirror gap, or a seed the channel refused), so a
+	// resume of this pause must keep the resumed crossing's captures out
+	// of the session store. Set by the launcher when it builds the pause
+	// result; never crosses the wire — the verdict is the host's.
+	SessionStranded bool
 
 	// EffectiveModel is the model the backend actually used, as reported
 	// by the provider — distinct from the workflow-declared `model:`.
@@ -1947,4 +2267,65 @@ type Result struct {
 	// before a thinking-bearing assistant message arrived). Zero when no
 	// thinking was produced.
 	ThinkingMs int
+
+	// ToolTurns is how many tool turns this invocation completed, every
+	// internal attempt included. Attempts are disjoint, so a fold sums it.
+	// Zero for a backend that does not count them. It reports; it charges
+	// nothing (Task.ToolTurnsAnchor).
+	ToolTurns int
+
+	// ToolTurnsAnchor is the anchor the invocation's tool-step budget
+	// charged against — the task's, or the one it fixed — and nil when it
+	// fixed none: what a retry of the same node execution hands its next
+	// attempt.
+	ToolTurnsAnchor *string
+
+	// GatewaySpec is the invocation's catalog provenance on an
+	// OpenAI-compatible gateway route (ADR-122 §resolution): which table
+	// answered and what it said, as compact JSON. Harness-recorded — the
+	// claw backend resolves the catalog once, before anything runs — never
+	// model JSON, so it survives the reserved-namespace wipe the node
+	// output goes through the way the usage counters do, and is re-stamped
+	// there as `_gateway_spec`. Empty on a non-gateway route.
+	GatewaySpec json.RawMessage
+
+	// WireReasoningEffort is the reasoning effort the backend's FIRST model
+	// request of this call carried, after the backend's own rule below the
+	// model boundary — claw: the model's accepted set (coerceEffortForModel),
+	// then the client's (an Anthropic Messages client sends no effort for a
+	// model outside its matrix, "" then); claude_code: the level its CLI sends
+	// for the model — the level handed it after the CLI's per-model rule
+	// (claudeCodeWireEffort), "" when the model takes no effort and when the
+	// call never reached the model — a call that fails mid-stream may already
+	// have carried a request the record cannot name. WireReasoningEffortLast is the
+	// effort of the call's LAST request, whose answer the output is: lower
+	// than the first when claw re-asked a cut turn, or ran its recovery pass,
+	// at a reduced effort. WireReasoningEffortReported says the backend filled
+	// both; a backend that does not leaves the record at the level it was
+	// handed (model.recordReasoningEffort). They cross the claw-runner wire.
+	WireReasoningEffort         string
+	WireReasoningEffortLast     string
+	WireReasoningEffortReported bool
+
+	// ReasoningEffort is the reasoning effort the call's model request
+	// carried — what the backend reported (WireReasoningEffort), else the
+	// level the executor handed it after the route's accepted-effort mapping
+	// (ADR-166 §7); "" when the request carried none. ReasoningEffortSource
+	// says who decided it: the request's provenance (Task.
+	// ReasoningEffortSource) when it was sent as asked, the accepted-efforts
+	// list's source (`feed:<name>`, `env:…`) when the route replaced it,
+	// `backend` when the backend sent another level, none, or its own
+	// default. ReasoningEffortRequested is the level asked for, set only
+	// when the route or the backend replaced it; ReasoningEffortLowered is
+	// the lower level the call's last request carried, set only when it
+	// differs (WireReasoningEffortLast). Recorded by the executor at the
+	// model boundary (model.executeDelegate), never by a backend. Stamped on
+	// the node's output as `_reasoning_effort_applied`,
+	// `_reasoning_effort_source`, `_reasoning_effort_requested` and
+	// `_reasoning_effort_lowered` — never `_reasoning_effort`, the input key
+	// an edge raises a node's effort with.
+	ReasoningEffort          string
+	ReasoningEffortSource    string
+	ReasoningEffortRequested string
+	ReasoningEffortLowered   string
 }

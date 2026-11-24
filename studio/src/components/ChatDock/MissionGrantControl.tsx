@@ -82,7 +82,7 @@ export default function MissionGrantControl({
       <button
         type="button"
         onClick={revoke}
-        className="text-caption text-muted-fg underline underline-offset-2 hover:text-fg-default"
+        className="text-caption text-fg-muted underline underline-offset-2 hover:text-fg-default"
       >
         {assistantLabel} is seeing this run through — stop delegating
       </button>

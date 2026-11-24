@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -350,7 +351,7 @@ func seedSyncIntegration(t *testing.T, ghURL string, board native.BoardStore, ma
 		ID: "c-sync", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
 		Status: forge.StatusActive, ForgeBaseURL: ghURL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
 	}
-	sealed, err := forge.SealPAT(s.sealer, conn.ID, "ghp-token")
+	sealed, err := connection.SealForgePAT(s.sealer, conn.ID, "ghp-token")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
@@ -908,7 +909,7 @@ func TestBoardSyncPasses_ATermOpensWithAPass(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.boardSyncPasses(ctx, time.Hour)
+		s.boardSyncPasses(ctx, time.Hour, nil)
 	}()
 	waitForCond(t, 5*time.Second, "the term's opening pass", func() bool { return ints.n.Load() >= 1 })
 	cancel()

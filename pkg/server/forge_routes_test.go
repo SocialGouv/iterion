@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -113,6 +115,15 @@ func (m *mockGitLab) server() *httptest.Server {
 func newForgeTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := newOrgTestServer(t)
+	wireForgeTestStores(t, s)
+	return s
+}
+
+// wireForgeTestStores gives s the forge layer newForgeTestServer carries —
+// webhook configs, generic secrets, a sealer, connections, integrations and
+// an orchestrator over them — on a server the caller built.
+func wireForgeTestStores(t *testing.T, s *Server) {
+	t.Helper()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
 	s.genericSecrets = secrets.NewMemoryGenericSecretStore()
 	key := make([]byte, 32)
@@ -122,20 +133,26 @@ func newForgeTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	s.sealer = sealer
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.forgeStates = newForgeStateStore(time.Minute)
 	s.forgeOrchestrator = &forge.Orchestrator{
 		Connections:  s.forgeConnections,
 		Integrations: s.forgeIntegrations,
 		Webhooks:     s.webhookConfigs,
-		Secrets:      s.genericSecrets,
+		Secrets:      s.pinSweepingSecrets(), // the store hook of the delete sweep, as New wires it
+		ApiKeys:      s.apiKeys,
 		Sealer:       sealer,
 		Bots:         testForgeBotLookup,
 		AdminFor:     s.forgeAdminFor, // the REAL gitlab client, pointed at the mock
-		PublicURL:    "https://iterion.example.com",
+		// The tests run no credential, so the mint's approval is stamped
+		// here — the same verdict, through the same constructor, the
+		// derivation gate stamps after its ask (an unwired seam refuses).
+		ApproveTeamTokenMint: func(ctx context.Context) (context.Context, error) {
+			return auth.ContextWithMintVerdict(ctx, auth.NewMintVerdict(auth.MintTeamToken, "forge-test")), nil
+		},
+		PublicURL: "https://iterion.example.com",
 	}
-	return s
 }
 
 func testForgeBotLookup(_ context.Context, _, botID string) (*bundle.ForgeRequirements, error) {
@@ -224,7 +241,7 @@ func TestForgeIntegration_PATConnectEnableDisable(t *testing.T) {
 	}
 	// ManagedSecretID is an internal store ref (json:"-"), so read it from the
 	// connection rather than the API response.
-	provConn, err := s.forgeConnections.Get(ctx, connID)
+	provConn, err := s.forgeConnections.Get(ctx, "t1", connID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,8 +279,8 @@ func TestForgeIntegration_PATConnectEnableDisable(t *testing.T) {
 	if deleted != 1 {
 		t.Errorf("forge hook not deleted on disable: %d", deleted)
 	}
-	if _, err := s.webhookConfigs.Get(context.Background(), res.WebhookID); err == nil {
-		t.Error("webhook config should be gone after disable")
+	if cfg, err := s.webhookConfigs.Get(context.Background(), res.WebhookID); err != nil || cfg.Enabled {
+		t.Error("disabled webhook must retain its verification tombstone")
 	}
 }
 
@@ -280,7 +297,7 @@ func TestForgePreview_FlagsBotsWithoutForgeBlock(t *testing.T) {
 	s := newForgeTestServer(t)
 	ctx := superAdminCtx()
 	// seed a connection directly.
-	sealed, _ := forge.SealPAT(s.sealer, "c1", "tok")
+	sealed, _ := connection.SealForgePAT(s.sealer, "c1", "tok")
 	_ = s.forgeConnections.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "u", SealedPayload: sealed})
 
 	w := httptest.NewRecorder()
@@ -302,7 +319,7 @@ func TestForgePreview_FlagsBotsWithoutForgeBlock(t *testing.T) {
 
 func TestForgePreview_KeepsAndSortsComplementaryCommandRoutes(t *testing.T) {
 	s := newForgeTestServer(t)
-	sealed, _ := forge.SealPAT(s.sealer, "c1", "tok")
+	sealed, _ := connection.SealForgePAT(s.sealer, "c1", "tok")
 	_ = s.forgeConnections.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "u", SealedPayload: sealed})
 	s.forgeOrchestrator.Invocations = func(_ context.Context, _, botID string) ([]bundle.Invocation, error) {
 		switch botID {

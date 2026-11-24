@@ -48,7 +48,7 @@ point at an untrusted tree; the bot points it at the engine's own package.
 The dependency closure is pinned at install time by the lockfile, not at
 load time.
 
-## Contract facts the tests pin (ultra11y 5.42.1)
+## Contract facts the tests pin (ultra11y 5.49.0)
 
 - `verify --apply` folds **partially by default**: exit 0 as soon as one
   verdict lands, refusals named in `issues` / `rejectedCriteria`, exit 1
@@ -62,7 +62,8 @@ load time.
   (validated ÷ validated + NC + à évaluer, NA excluded) is in no JSON — it
   is computed from `criteria[]` and asserted against the report's « Taux de
   conformité » line, as the « Décidés » line is asserted against the
-  document.
+  document. The rate lives in the business summary; the counts and automatic
+  rate live in the linked technical annex. Both `check` and `verify` load it.
 - The C gate grounds citations on the **source** (file exists, snippet
   matches when given), not on the evidence the item was shown: a stray
   citation is accepted, so the bot carries its own `citations ⊆ evidence`
@@ -73,27 +74,50 @@ load time.
 - `tickets` writes `issues-<date>.json` (`schemaVersion 1`, one issue per
   criterion) even without a token and makes exactly one provider request
   (`list()`), which degrades on failure.
+- `status --browser --browser-path=<file>` and `scan --browser-path=<file>`
+  (or `ULTRA11Y_BROWSER_PATH`) launch **that** executable: an explicit
+  choice the engine never replaces by a fallback, and the probe answers
+  about that file (`browser.ok` + `browser.executable`, or a reason naming
+  the path). The bot resolves `browser_path` → `$ULTRA11Y_BROWSER_PATH` →
+  the engine's own Playwright once in `prepare`, and the sandbox browser
+  image names its Debian `/usr/bin/chromium` that way.
+- The conformity trial (`verify --report`) puts every clearing claim an
+  agent landed on the bench — the conformities **and** the
+  non-applicabilities, which a pack adjudication keeps as `NA` — except the
+  NA the engine's own absence fold proves. A claim without a citation
+  stands trial at the scope level: `kind: "c"`, `uncited: true`, `file: ""`,
+  `line: 0`. The bot carries `uncited` into each refutation batch; the
+  refuters are told to look for a subject the criterion applies to instead
+  of opening a file.
 
-## Known upstream defects, pinned as subtests that fail when fixed
+## Regressions fixed upstream and retained as positive contracts
 
-A subtest named `known_upstream_defect_…` asserts the defect; the day
-upstream fixes it, the subtest reddens and the bot's workaround can be
-lifted. On 5.42.1:
+The 5.45.0 migration verifies that partial/manual folds keep undecided
+criteria out of the NA count, re-folding a decided criterion returns JSON
+instead of crashing, bare NA verdicts on harvested evidence are refused,
+and trial grounding accepts the evidence-anchor fallback used by the fold.
+The 5.49.0 migration moved one contract: the trial's scope grew from the
+agents' conformities to their clearing claims (above), and the bot's
+dispatch and refuter prompts followed it.
+The workflow retains its count/rate comparison, relevance gate, literal
+citation restoration and once-only mutation records. They provide independent
+checks and preserve replay behavior; historical defect tests are not treated
+as expected failures on the new pin.
 
-1. A criterion the engine marks "no subject" that stays open after a fold
-   (coverage gap or agent `manual` verdict) is written back `inapplicable`
-   while `manual`; the report counts it both as « conforme faute de sujet »
-   and « à évaluer », and `check --report` notices only when NA exceeds C.
-   The bot decides every engine-flagged criterion before the final report
-   and compares the « Décidés » line with the document.
-2. Re-folding a criterion the previous fold decided crashes with a
-   TypeError and no JSON. The bot folds the real audit once, probes on
-   copies, and reads JSON — never exit codes alone.
+Split-report tests also exercise the annex link, the two draft readers,
+missing or invalid companions, optional HTML and portable file export.
 
 ## Bumping the pin
 
-A bump is a migration: update the pin file, regenerate the lockfile
-(`npm install --package-lock-only` in `scripts/ultra11y-engine/`), run
-`task test:contract:rgaa`, and read every red subtest as a contract change
-to carry into the bot — including a `known_upstream_defect_…` subtest
-going red, which is good news to act on.
+A bump is a migration: update the pin file (version, the tarball's
+`scripts/ultra11y.mjs` size and sha256, the tarball integrity — all read
+from the registry), regenerate the lockfile (`npm install
+--package-lock-only --ignore-scripts` **in** `scripts/ultra11y-engine/` —
+under devbox, `devbox run -- bash -c 'cd scripts/ultra11y-engine && npm …'`:
+`devbox run` otherwise executes at the project root, where npm reads the
+pnpm workspace links and arborist crashes), move the runner image's
+`ARG ULTRA11Y_VERSION` and the bot's `engine_*` defaults (asserted equal by
+`bots/rgaa_audit_engine_pin_test.go`), run `task test:contract:rgaa`, and
+read every red subtest as a contract change to carry into the bot —
+including a `known_upstream_defect_…` subtest going red, which is good news
+to act on.

@@ -10,6 +10,13 @@ read-only: `read_file`, `glob`, `grep`. Bash is runtime-denied so the action
 policy cannot be bypassed with curl or a direct store edit. Never
 write, commit, push, or mutate the board from a survey.
 
+This is the audit's task constraint, not an OS read-only sandbox. The native
+Agent/Task tool is available for the fan-out below; Claude Code can create
+and remove temporary Git worktrees when an Agent call requests
+`isolation: "worktree"`, despite the gate denying direct writing tools.
+Keep the audit's content read-only; this CLI bookkeeping is an accepted
+limit of the surface, not permission to edit the repository.
+
 **Anchor every read/glob/grep path on the workspace, never on your cwd.** The
 run may start in a different tree. A relative-path read in the wrong tree
 produces verdicts that are right for the wrong tree, which is worse than no
@@ -91,7 +98,7 @@ You are a read-only audit sub-agent for a roadmap study.
 
 Area: <docs-adr | code-gaps | operational-state | …>
 Workspace: <absolute path>
-Baseline (read if present): <CONTEXT_BRIEF.md path> · <findings/ dir path>
+Baseline (read if present): <findings/ dir path>
 
 Tools: read_file, glob, grep. Bash is unavailable by design.
 NEVER write, commit, push, or mutate anything.
@@ -123,9 +130,11 @@ don't recommend; the synthesis is not your job.
   inline (`file:line`, sha) and keep the rest in your context.
 - Honour `## Gaps in scope` — they feed the blind-spots list, and your
   reply must be honest about what was NOT surveyed.
-- Cross-reference workspace memory (see `session-continuity`): open
-  threads in `CONTEXT_BRIEF.md` that a finding resolves get surfaced
-  ("le fil X est clos par <sha>"); findings that reopen a thread too.
+- Cross-reference the durable state you can actually read: a board
+  thread (epic, ticket, comment) or a `findings/` file that a finding
+  resolves gets surfaced ("le fil X est clos par <sha>"); findings that
+  reopen a thread too. This bundle keeps no brief of its own (see
+  `session-continuity`).
 
 ### Blind-spots checklist
 

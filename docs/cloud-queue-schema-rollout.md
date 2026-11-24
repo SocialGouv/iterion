@@ -28,8 +28,19 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v27 consumer accepts only v27: older donor messages can
-  omit their absolute ceiling and cannot be migrated safely.
+  directions. The current v32 consumer accepts v27 through v32: a v27
+  message predates the wire-carried `bot_source_tier`, and the run document
+  its publisher persisted already carries the stamp — the runner re-reads the
+  tier from there, so the #1959 floor never silently drops; a v28 message
+  predates `fork_author_subject`, and an UNTRUSTED one — a v28 server
+  replica republishing a fork run a v29 replica created — is parked as a
+  version mismatch rather than run with the author's bound unenforced (see
+  the v29 section); a v27, v28 or v29 publisher never derives a
+  `content_boundary`, and one that REPLAYS a frozen `team_gateway` stamp on a
+  resume — an old server replica resuming a run a v30 replica stamped — is
+  parked as a version mismatch (see the v30 section; a v27 publisher, or a
+  v28 one built before PR-B'2, replays none); every other v27–v29 message
+  carries `own_keys` or no stamp, the readings the v30 runner applies.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -103,6 +114,104 @@ Use **server-first**, with Path A (drain before cutover) or Path B (park and
 resume). Runner-first without a drain is unsafe because the minimum moves.
 The historical versions below remain in their original chronological order;
 their compatibility windows describe those releases, not the v27 consumer.
+
+## v28 bot-source tier (isolation floor)
+
+`bot_source_tier` mirrors the run document's stamp of which bot-resolution
+tier served the launch (team / platform / baked) so the runner applies the
+#1959 operator isolation floor — neutralizing a non-operator source's
+`sandbox: none` — before any document read, and a subbot's child message (a
+struct copy) inherits it. Breaking by the additive-field rule: a stale v27
+runner must reject the message rather than honour a team-authored opt-out
+the floor exists to neutralize.
+
+`MinSchemaVersion` stays **27**: every v27 publisher already stamps
+`BotSourceTier` on the run document, so a v28 runner consuming a v27 message
+re-reads the tier from the document (the floor's second carrier) instead of
+dropping the decision — the one direction in which ignoring the field cannot
+fail open. A run whose document predates the stamp carries an empty tier and
+reads as the operator's own launch: unfloored, as it was.
+
+Use **server-first**; old runners park the v28 message replayably and a
+resume recovers once the fleet is upgraded.
+
+## v29 fork-author metering subject
+
+`fork_author_subject` carries the fork review lane's per-contributor
+metering subject (ADR-162 U6, decision 5 — `orgusage.ForkAuthorSubject`'s
+exact spelling, composed at the launch gate on the same id the org budget
+metered on), so the runner's `recordOrgSpend` charges the pull request
+author's dollars beside the org's, where spend is measured — not from a
+document a failed run may never have loaded. Breaking by the
+additive-field rule: a stale runner that drops it leaves the
+per-contributor DOLLAR bound unenforced for the run's lifetime — a
+perimeter failing open, in silence, on the pod.
+
+`MinSchemaVersion` stays **27**. No v28 server LAUNCHES untrusted work —
+nothing set `RunTrustFork` before this field shipped — but mid-rollout a
+v28 server replica can REPUBLISH a fork run a v29 replica created: its
+resume (or the retry sweeper's, or a launch naming it as a parent) replays
+the run's `trust: fork` with no subject, because v28 has no field to carry
+it. A v29 runner parks any untrusted message below v29 as a version mismatch
+(`queue.ForkAuthorSubjectSchemaVersion`, delayed Nak then
+`failed_resumable`), and a resume from an upgraded server — whose gate meters
+the author — recovers it. A v28 runner knows neither the field nor that
+rule and would run it, org-metered only.
+
+Use **server-first**; old runners park the v29 message replayably and a
+resume recovers once the fleet is upgraded. **Enable the fork review lane
+(create the first fork-lane webhook config) only once every server AND
+runner replica runs v29**: with no fork run in existence until then, no old
+replica can republish one.
+
+## v30 content boundary producer (ADR-131 §4)
+
+`content_boundary` has been on the message since PR-B'2, consumed and never
+written. From v30 the publisher writes it for every launch its credential
+walk resolves — `team_gateway` (with the key row's id and the gateway host)
+when the walk attributes a gateway route to the team's own key and seals it,
+`own_keys` otherwise — and replays the run document's frozen stamp on every
+resume; the sealed bundle's `ambient_llm_refused` is armed on the same
+decision. Breaking by the additive-field rule: a stale v29 runner would drop
+the stamp and land vendor crossings on the run's gateway nodes, run its
+supervisors on the pod's environment and serve auxiliary spend off the
+team's boundary — failing open on the pod — so it must reject the message,
+and does: its window is [27, 29].
+
+`MinSchemaVersion` stays **27**: the fence is the maximum that rises, so
+raising the minimum would force a drain for no added safety. A v29 publisher
+— and a v28 one since PR-B'2 (#2721), which added the carriage — never
+derives a stamp, but its resume replays the run document's frozen one: an old
+server replica still serving mid-rollout, or a server rolled back to v29, that
+resumes a run a v30 replica stamped `team_gateway` publishes a pre-v30 message
+carrying the stamp over a bundle walked by the old rules — no gateway key
+sealed, no `ambient_llm_refused` — whose gateway routes would spend the pod's
+environment. The v30 runner parks such a message as a version mismatch
+(`ContentBoundaryProducerSchemaVersion`); the run document tells the operator
+to resume it from a server replica that publishes v30, which recovers it. As a
+second layer, the runner reads the message's `team_gateway` stamp as the
+ambient refusal whatever the bundle says, an empty bundle included. Every
+other v27–v29 message carries `own_keys` or no stamp, the readings the v30
+runner applies. A v27 publisher, or a v28 one built before PR-B'2, replays
+nothing: its resume of a stamped run publishes no stamp, which the runner —
+reading the message alone — cannot tell from an unstamped run. Do not roll
+the server back below PR-B'2 while `team_gateway` runs are resumable.
+
+Roll **runners and pools first**, the server after. With the minimum
+unchanged a v30 runner admits every trusted message an old server still
+publishes but that stale `team_gateway` replay, so nothing else a trusted run
+publishes parks (*Deploy ordering* below: the runner-first condition holds by
+construction); a server rolled first would make old runners park every v30
+message until they are upgraded. Until every server replica runs v30 — and for
+as long as a server rollback to v29 lasts — a `team_gateway` run resumed by an
+old replica parks; resume it from an upgraded replica.
+
+The v29 and v30 orders compose: when both reach a fleet in one rollout,
+roll the runners and pools first — the v30 condition — and keep the fork
+review lane disabled until every server and runner replica runs v30. An
+untrusted message an old server republishes in between is the v29 case
+above: parked replayably, recovered by a resume once the server rolls.
+
 
 ## v12 runner-epoch bootstrap
 
@@ -270,6 +379,114 @@ as a schema bump.
 > Runner-first left the DLQ byte-identical — depth 30, `last_seq` 220, newest
 > message hours older than the rollout — with no
 > `iterion_runner_admission_rejected_total` sample anywhere in the fleet.
+
+## v31: codemode in the compiled IR
+
+**What rose.** `codemode:` (ADR-165) reaches the runner inside `ir_compiled`.
+No RunMessage field was added — the value rides a field that already travels —
+and the bump is the ADDITIVE-field rule's case rather than a formality: the IR
+decoder is a plain `json.Unmarshal` with no `DisallowUnknownFields`, so a
+pre-codemode runner DROPS the key and runs the node without the tool its
+author declared. A run that still succeeds while doing the thing its launch
+was configured not to do is v=5's shape.
+
+**Order: server first.** `MinSchemaVersion` stays 27, so a new runner accepts
+every message the old server still publishes, and an old runner parks a v31
+message transiently until the fleet is upgraded.
+
+**What this bump does NOT cover, and what answers it instead.** A v30 message
+published by a v5.32.x server can itself carry `codemode: on`: that release
+compiled the attribute on every backend and only warned (C338). Such a message
+is INSIDE the accept window, so the fence never sees it — an upgraded runner
+recompiles it, C339 refuses it, and the run parks on the DLQ as
+`ErrIRUnloadable`. The answer is the migration on ADR-165, not a version
+number: re-route the node to a backend that serves codemode, or declare
+`codemode: off`.
+
+## v32: the codemode bounds, in the same carrier
+
+**What rose.** The `codemode:` block's seven bounds (ADR-165) reach the runner
+inside `ir_compiled`. That field is the compiled **AST**, so they travel as the
+`codemode` object's own keys (`tool_calls`, `wall`, `cpu`, `memory`,
+`script_bytes`, `result_bytes`, `tool_result_bytes`) beside its `mode` — not
+under a key of their own. An earlier draft named a `codemode_bounds` key here:
+that name is real but belongs to ANOTHER wire — `delegate.IOTask`, the sandbox
+relay — and on this one it existed only as three json tags on `ir.Workflow`,
+`AgentNode` and `JudgeNode`, a struct family nothing marshals; they are gone.
+No RunMessage field was added — the value rides a field that already
+travels — and no `MinSchemaVersion` move: it stays **27**.
+
+**Why a bump, when the fallback is TIGHTER.** This is the opposite direction
+from v31 and it still needs one. A pre-bounds runner drops the key and runs
+every program under `scripthost.DefaultLimits`, so it cannot fail OPEN and the
+refusal an author meets is loud — *"the script has spent its budget of 64 tool
+calls"*. But "cannot fail open" is only the first of the exemption's two
+conditions. The second is that the field **carries no operator choice**, which
+is what let `BudgetOverrides.cap_imposed` in without a bump: the publisher
+DERIVES that one. Declared bounds are an operator's choice, and the
+additive-field rule names their class itself — *budget caps*. A stale runner
+silently re-making that choice is the correctness bug the rule exists for,
+whichever direction the silence goes in.
+
+**What this bump does NOT cover.** A v31 message carrying the bounds is
+impossible: v31 is the release that compiled the attribute without the block
+form, so no v31 publisher can put a bound inside its `codemode` object. There is no window here of the
+kind v31 had to name.
+
+**Order: server first,** as the default. An old runner parks a v32 message
+transiently until the fleet is upgraded; a new runner accepts every message the
+old server still publishes.
+
+## v33: the launch-time codemode override
+
+**What rose.** Two RunMessage fields: `codemode` (on|off, empty = inherit the
+DSL) and `codemode_bounds` (the seven limits, field by field, zero = the
+launch did not choose). They are the wire half of the launch override the CLI
+flags (`--codemode`, `--codemode-tool-calls`, …) and the launch API carry —
+the strongest rung of the same ladders the compiled IR already serves
+(v31/v32). There is deliberately no environment half of this knob (ADR-132
+§1): the launch request is the only operator surface above the DSL. No
+`MinSchemaVersion` move: it stays **27**.
+
+**Why a bump.** The direction is v21's ambient_context one, not v32's: a
+stale runner dropping an explicit `off` would run the capability the operator
+asked AWAY — the knob failing open, the exact direction the additive-field
+rule exists to reject. A dropped bounds raise only lands tighter (the runner's
+own defaults), but the mode's off direction alone decides the bump.
+
+**Order: runner-first,** and its precondition holds by construction: the bump
+leaves `MinSchemaVersion` alone, so nothing below the new runner's minimum can
+still be queued — a new runner accepts every message the old server still
+publishes (those never carry the override), and an old runner never sees a v33
+message.
+
+## v34: codemode tool-call concurrency
+
+**What rose.** `concurrent_tool_calls` travels in compiled codemode bounds
+(workflow and node) and in the launch-time `codemode_bounds` override. When
+the field is absent or zero, it inherits; the platform default is 1.
+
+**Why a bump.** A v33 runner would drop the field and silently run serially
+under the default instead of honoring the configured concurrency.
+`MinSchemaVersion` stays **27**: older messages do not need the field.
+
+**Order: runner-first.** An upgraded runner accepts all versions the previous
+server could publish; upgrade the runners before publishing v34 messages.
+
+## v35: codemode run bank quotas
+
+**What rose.** `store_entries` and `store_bytes` travel in compiled workflow
+bounds and in the launch-time `codemode_bounds` override. A resume carries
+its explicit quota restatement separately in `resume.codemode_quota`, so
+omitted or zero dimensions keep the values held when the attempt claims.
+
+**Why a bump.** A v34 runner cannot honor the run bank's quotas.
+`MinSchemaVersion` stays **27**: older messages without the new fields
+remain readable. A pre-v35 envelope that explicitly carries a bank quota
+in its launch override is refused rather than run with an ambiguous contract.
+
+**Order: runner-first.** Upgrade the runners before publishing v35 messages.
+The separate delegated runner handshake is not negotiated by this queue version.
 
 ## Rollout procedure for a schema bump vN → vN+1
 

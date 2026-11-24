@@ -31,7 +31,7 @@ var remoteSchedulesCreateData string
 
 var remoteSchedulesCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a schedule (--data JSON: {bot_id, cron, vars?, repo_url?, repo_ref?, disabled?})",
+	Short: "Create a schedule (--data JSON: {bot_id, cron, vars?, repo_url?, repo_ref?, disabled?, key_overrides?})",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := teamBase(cmd, c, "/schedules")
@@ -39,6 +39,21 @@ var remoteSchedulesCreateCmd = &cobra.Command{
 			return err
 		}
 		return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteSchedulesCreateData, "schedule JSON")
+	}),
+}
+
+var remoteSchedulesUpdateData string
+
+var remoteSchedulesUpdateCmd = &cobra.Command{
+	Use:   "update <schedule-id>",
+	Short: "Update a schedule (--data JSON patch: a field left out is kept; key_overrides null or {} clears the pins)",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/schedules")
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base+"/"+args[0], remoteSchedulesUpdateData, "schedule patch JSON")
 	}),
 }
 
@@ -57,9 +72,10 @@ var remoteSchedulesDeleteCmd = &cobra.Command{
 
 func init() {
 	remoteSchedulesCreateCmd.Flags().StringVar(&remoteSchedulesCreateData, "data", "", "Schedule JSON (literal, @file, or @- for stdin)")
-	for _, c := range []*cobra.Command{remoteSchedulesListCmd, remoteSchedulesCreateCmd, remoteSchedulesDeleteCmd} {
+	remoteSchedulesUpdateCmd.Flags().StringVar(&remoteSchedulesUpdateData, "data", "", "Schedule patch JSON (literal, @file, or @- for stdin)")
+	for _, c := range []*cobra.Command{remoteSchedulesListCmd, remoteSchedulesCreateCmd, remoteSchedulesUpdateCmd, remoteSchedulesDeleteCmd} {
 		c.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 	}
-	remoteSchedulesCmd.AddCommand(remoteSchedulesListCmd, remoteSchedulesCreateCmd, remoteSchedulesDeleteCmd)
+	remoteSchedulesCmd.AddCommand(remoteSchedulesListCmd, remoteSchedulesCreateCmd, remoteSchedulesUpdateCmd, remoteSchedulesDeleteCmd)
 	remoteCmd.AddCommand(remoteSchedulesCmd)
 }

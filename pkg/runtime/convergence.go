@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -76,12 +79,18 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 				// re-provisioning a sandbox to re-hit the same spent budget.
 				// It is also what tells the operator to raise the cap and
 				// resume rather than hunt a branch bug.
+				hint := RemedyOf(firstBudgetErr).Hint
+				if hint == "" {
+					hint = "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace"
+				}
 				return "", &RuntimeError{
 					Code:    ErrCodeBudgetExceeded,
 					Message: fmt.Sprintf("convergence at %s (wait_all): %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, len(failedBranches), firstBudgetErr),
 					NodeID:  convergenceNodeID,
-					Hint:    "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace",
-					Cause:   ErrBudgetExceeded,
+					Hint:    hint,
+					// The sentinel, not firstBudgetErr: Message already quotes
+					// the branch's error, and Error() appends the cause.
+					Cause: ErrBudgetExceeded,
 				}
 			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
@@ -108,6 +117,27 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					// WRAPPED, because the classification asks the CHAIN
 					// (IsAmbiguousEffect) and not only the code.
 					Cause: amb,
+				}
+			}
+			// A tool-contract refusal needs no agreement either: ONE branch
+			// refused for what its recipe printed or for what its body reads
+			// (model.ToolContractViolation) is refused the same way on every
+			// replay, so a wait_all join can never pass — and the catch-all
+			// below is on the auto-resume allow-list, whose resume re-enters
+			// the router and re-runs every branch's side effects to learn
+			// that again. commonBranchFailureCode cannot answer for it: the
+			// refusal is the executor's typed failure, not a RuntimeError.
+			// The aggregate quotes THAT branch — not the first that failed
+			// by id, which may be a sibling's unrelated exit status — and
+			// wraps it, so the refusal and its remedy are what the run's
+			// error says and what errors.As finds.
+			if refused := firstContractViolationBranchErr(ordered); refused != nil {
+				return "", &RuntimeError{
+					Code: ErrCodeToolFailedPermanent,
+					Message: fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed, and the tool-node contract refused one: %v",
+						convergenceNodeID, len(failedBranches), refused),
+					NodeID: convergenceNodeID,
+					Cause:  refused,
 				}
 			}
 			// When every failed branch carries the SAME typed code, the
@@ -164,8 +194,11 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	// failed/skipped branch leaves a previous pass's output looking current,
 	// both in the join's mappings and in direct outputs.* references later.
 	e.clearConvergedOutputs(rs, convergenceNodeID, seeds)
-	// Merge successful branch outputs into the run state.
-	for _, r := range results {
+	// Merge successful branch outputs into the run state, in branch order.
+	// Every branch of a fan_out_each writes the same template node ids, so
+	// each id keeps the value of the last successful branch that wrote it —
+	// the highest item index — whatever order the branches finished in.
+	for _, r := range ordered {
 		if r.err != nil {
 			continue
 		}
@@ -173,12 +206,12 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			rs.outputs[nodeID] = output
 		}
 		for name, output := range r.artifacts {
-			// Last-write-wins, but make a silent clobber observable: two
-			// parallel branches publishing the same artifact name would
-			// otherwise overwrite each other with no trace.
+			// The last branch in branch order wins, but make the overwrite
+			// observable: two parallel branches publishing the same artifact
+			// name would otherwise replace each other with no trace.
 			if prev, ok := rs.artifacts[name]; ok && !reflect.DeepEqual(prev, output) {
-				e.logger.Warn("convergence at %s: artifact %q published by multiple branches with differing values — last write wins",
-					convergenceNodeID, name)
+				e.logger.Warn("convergence at %s: artifact %q differs across branches — branch %s replaces the earlier value; the last in branch order is kept",
+					convergenceNodeID, name, r.branchID)
 			}
 			rs.artifacts[name] = output
 			if owner := r.artifactOwners[name]; owner != "" {
@@ -263,10 +296,12 @@ func (e *Engine) clearConvergedOutputs(rs *runState, joinNodeID string, seeds []
 // processConvergenceTerminal handles an all-done topology (every branch ran
 // to its own *ir.DoneNode and no branch failed), including an implicit
 // wait_all fan whose bounded local cycle leaves no structural collector.
-// Merges branch outputs/artifacts into the run state and hands back one
-// of the terminal node IDs so the engine's main loop emits run_finished.
+// Merges branch outputs/artifacts into the run state, in branch order as
+// processConvergence does, and hands back the first branch's terminal node
+// ID so the engine's main loop emits run_finished.
 func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult, strategy ir.AwaitMode) (string, error) {
-	for _, r := range results {
+	ordered := byBranchID(results)
+	for _, r := range ordered {
 		for nodeID, output := range r.outputs {
 			rs.outputs[nodeID] = output
 		}
@@ -297,8 +332,9 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 		}
 	}
 	// Use the first branch's terminal node — the engine treats any Done
-	// node as run_finished, so picking one is unambiguous.
-	terminal := results[0].terminalNodeID
+	// node as run_finished, so picking one is unambiguous, and the first in
+	// branch order is the same node whichever branch delivered first.
+	terminal := ordered[0].terminalNodeID
 	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]any{
 		"strategy":       strategy.String(),
 		"terminal_join":  true,
@@ -400,7 +436,27 @@ func firstAmbiguousBranchErr(results []*branchResult) error {
 	return nil
 }
 
-// byBranchID is results in branch-id order.
+// firstContractViolationBranchErr returns the error of the first branch a
+// tool-contract refusal ended, nil when none was. Which branch is not the
+// fact read from it — that one exists is.
+func firstContractViolationBranchErr(results []*branchResult) error {
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		var violation model.ToolContractViolation
+		if errors.As(r.err, &violation) {
+			return r.err
+		}
+	}
+	return nil
+}
+
+// byBranchID is results in branch order (branchIDLess), nil results dropped:
+// the order every reader of a fan-out's results takes — the merge, the
+// collector elected, the terminal handed back, and what the aggregate names,
+// quotes and carries — so none of them depends on the order the branches'
+// goroutines finished in.
 func byBranchID(results []*branchResult) []*branchResult {
 	ordered := make([]*branchResult, 0, len(results))
 	for _, r := range results {
@@ -408,8 +464,49 @@ func byBranchID(results []*branchResult) []*branchResult {
 			ordered = append(ordered, r)
 		}
 	}
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].branchID < ordered[j].branchID })
+	sort.SliceStable(ordered, func(i, j int) bool { return branchIDLess(ordered[i].branchID, ordered[j].branchID) })
 	return ordered
+}
+
+// branchIDLess orders branch ids by stem, an id without an index before the
+// indexed ids of its stem, indexed ids by their parsed index, and the id's
+// bytes last, which makes the order total. A fan_out_each's items therefore
+// come in item order — branch_<router>_2 before branch_<router>_10 — where a
+// byte-wise comparison put item 10 first. The id is persisted
+// (store.BranchCheckpoint.BranchID) and public (`_failed_branches[].branch_id`),
+// so it is parsed as written, never re-padded. A fan_out_all id names its
+// target (branch_<router>_<target>): targets of one stem numbered past ten
+// (`review_2`, `review_10`) come in number order too, every other target in
+// byte order.
+func branchIDLess(a, b string) bool {
+	stemA, indexA, indexedA := branchIndex(a)
+	stemB, indexB, indexedB := branchIndex(b)
+	switch {
+	case stemA != stemB:
+		return stemA < stemB
+	case indexedA != indexedB:
+		return !indexedA
+	case indexA != indexB:
+		return indexA < indexB
+	}
+	return a < b
+}
+
+// branchIndex splits a branch id into its stem — everything up to its last
+// underscore — and the decimal index after it. An id whose last segment is
+// not all digits, or does not fit an int, has no index: its stem is the
+// whole id.
+func branchIndex(id string) (stem string, index int, indexed bool) {
+	cut := strings.LastIndexByte(id, '_')
+	digits := id[cut+1:]
+	if cut < 0 || digits == "" || strings.TrimLeft(digits, "0123456789") != "" {
+		return id, 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil {
+		return id, 0, false
+	}
+	return id[:cut+1], n, true
 }
 
 // quotedBranchError is the branch error a wait_all failure quotes: the first
@@ -509,15 +606,11 @@ func stoppedBranch(err error) bool {
 // same whatever finished first. Nothing else of a branch's chain is
 // exposed: the aggregate stays its own classification.
 func branchEndCause(results []*branchResult) error {
-	var failed []*branchResult
-	for _, r := range results {
-		if r != nil && r.err != nil && !stoppedBranch(r.err) {
-			failed = append(failed, r)
-		}
-	}
-	sort.Slice(failed, func(i, j int) bool { return failed[i].branchID < failed[j].branchID })
 	var cause error
-	for _, r := range failed {
+	for _, r := range byBranchID(results) {
+		if r.err == nil || stoppedBranch(r.err) {
+			continue
+		}
 		var this error
 		var d *LoopDeclined
 		switch {

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -51,7 +52,7 @@ func TestLaunch_TheTakenIDLookupIsTeamBlind(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	probe := &teamBlindAssertStore{RunStore: fs}
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithStore(probe))
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithStore(probe), WithWorkDir(gittest.SourceRepo(t)))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestLaunch_RefusesARunIDAnotherRunAlreadyUses(t *testing.T) {
 	if err := os.WriteFile(botPath, []byte("workflow demo:\n  entry: done\n"), 0o600); err != nil {
 		t.Fatalf("write bot: %v", err)
 	}
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(gittest.SourceRepo(t)))
 
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

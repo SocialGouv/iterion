@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import {
+import { MixerHorizontalIcon,
   DoubleArrowLeftIcon,
   GearIcon,
 } from "@radix-ui/react-icons";
@@ -8,30 +8,22 @@ import NavLinks from "./NavLinks";
 import OrgSwitcher from "./OrgSwitcher";
 import RepoSwitcher from "./RepoSwitcher";
 import SidebarContext from "./SidebarContext";
+import { SIDEBAR_W_COLLAPSED, SIDEBAR_W_EXPANDED } from "./sidebarWidth";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { useUIStore } from "@/store/ui";
+import { LegalSidebarLinks } from "@/views/Legal/LegalSidebarLinks";
 
 function openSettings() {
   window.dispatchEvent(new CustomEvent("iterion:open-settings"));
 }
-
-const SIDEBAR_W_EXPANDED = "w-[220px]";
-const SIDEBAR_W_COLLAPSED = "w-[56px]";
-
-// Numeric mirrors of the two widths above, for FIXED surfaces that must
-// clear the sidebar (the floating assistant's resize clamp, which grows
-// leftward). Tailwind only sees the string literals, so the numbers live
-// beside them — change them together.
-export const SIDEBAR_EXPANDED_PX = 220;
-export const SIDEBAR_COLLAPSED_PX = 56;
 
 // Sidebar is the persistent vertical chrome on the left of the studio.
 // It hosts the iterion logo, the project + ⌘K context block, primary
 // nav, and the footer with backend status / theme / user team chip.
 //
 // Collapse state is persisted in localStorage via the UI store. When
-// collapsed (56px) every row degrades to an icon-only square button
+// collapsed (3.5rem) every row degrades to an icon-only square button
 // with native tooltips that preserve the labels.
 export default function Sidebar() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
@@ -116,6 +108,18 @@ export default function Sidebar() {
       <div
         className={`shrink-0 border-t border-border-default ${collapsed ? "px-1.5 py-2 flex flex-col items-center gap-1.5" : "px-2 py-2 flex flex-col gap-1.5"}`}
       >
+        <a
+          href="/sitemap"
+          className={`inline-flex items-center gap-2 text-xs text-fg-muted hover:text-fg-default hover:bg-surface-2 rounded ${collapsed ? "justify-center h-7 w-7" : "w-full px-2 py-1"}`}
+          title="Plan du site — Sitemap"
+          aria-label="Sitemap"
+        >
+          <MixerHorizontalIcon className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Sitemap</span>}
+        </a>
+        {/* The operator's legal pages, reachable from every signed-in page
+            (RGAA 12; ADR-160) — nothing when none is configured. */}
+        <LegalSidebarLinks collapsed={collapsed} />
         {collapsed ? (
           <button
             type="button"

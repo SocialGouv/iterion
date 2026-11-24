@@ -33,6 +33,14 @@ func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
 	if !caps.SupportsMounts {
 		t.Error("V2-7 must advertise SupportsMounts (PVC/ConfigMap/Secret are wired)")
 	}
+	// ADR-143: a pod has no host filesystem to bind the run-files path
+	// with; the driver keeps an emptyDir there and drains it at teardown.
+	// The runtime lays that storage only on a driver that says so — false
+	// here, and every cloud run's artifact-files panel reads empty again.
+	if !caps.SupportsReadBackDrain {
+		t.Error("kubernetes driver must advertise SupportsReadBackDrain (Run.ExportRunFiles drains RunInfo.ReadBackDirs)")
+	}
+	var _ sandbox.WorkspaceExporter = (*Run)(nil)
 }
 
 func TestPrepareRejectsBuild(t *testing.T) {
@@ -336,6 +344,68 @@ func TestPodManifestReplacesTheSpecsNoProxyEntries(t *testing.T) {
 		if gotEnv[k] != sandbox.LoopbackNoProxy {
 			t.Errorf("%s = %q, want the sandbox's own loopback alone (%q): a spec entry would bypass the pod's NetworkPolicy", k, gotEnv[k], sandbox.LoopbackNoProxy)
 		}
+	}
+}
+
+// The per-run host MCP listeners (board/runs — C082/#2632; ask-user —
+// ADR-082) advertise the RUNNER POD IP: a proxy-honouring MCP client must
+// dial it direct, or the egress proxy's allowlist would judge the pod's
+// bare IP an egress destination and refuse the board call. The runner pod
+// IP therefore joins NO_PROXY when the runtime signals the listeners
+// (HostGatewayAlias) — the docker twin exempts host.docker.internal the
+// same way. The NetworkPolicy already scopes the pod's egress to that /32,
+// so the carve-out opens no new destination.
+func TestPodManifestNoProxyCoversTheRunnerPodIP(t *testing.T) {
+	manifest, err := BuildPodManifest(PodManifestInput{
+		Namespace: "iterion", Name: "iterion-run-test", RunID: "test-1",
+		Spec:             sandbox.Spec{Mode: sandbox.ModeInline, Image: "alpine:3"},
+		ProxyEndpoint:    "http://t:tok@host:8080",
+		HostGatewayAlias: true,
+		RunnerPodIP:      "10.42.0.17",
+	})
+	if err != nil {
+		t.Fatalf("BuildPodManifest: %v", err)
+	}
+	var pod map[string]any
+	if err := json.Unmarshal(manifest, &pod); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	gotEnv := map[string]string{}
+	spec := pod["spec"].(map[string]any)
+	container := spec["containers"].([]any)[0].(map[string]any)
+	for _, e := range container["env"].([]any) {
+		m := e.(map[string]any)
+		gotEnv[m["name"].(string)], _ = m["value"].(string)
+	}
+	for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		want := sandbox.LoopbackNoProxy + ",10.42.0.17"
+		if gotEnv[k] != want {
+			t.Errorf("%s = %q, want %q — the runner pod's listeners must be dialled direct", k, gotEnv[k], want)
+		}
+	}
+
+	// Without the alias signalled, the IP alone adds nothing.
+	plain, err := BuildPodManifest(PodManifestInput{
+		Namespace: "iterion", Name: "iterion-run-plain", RunID: "test-2",
+		Spec:          sandbox.Spec{Mode: sandbox.ModeInline, Image: "alpine:3"},
+		ProxyEndpoint: "http://t:tok@host:8080",
+		RunnerPodIP:   "10.42.0.17",
+	})
+	if err != nil {
+		t.Fatalf("BuildPodManifest (no alias): %v", err)
+	}
+	var plainPod map[string]any
+	if err := json.Unmarshal(plain, &plainPod); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	plainEnv := map[string]string{}
+	plainContainer := plainPod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+	for _, e := range plainContainer["env"].([]any) {
+		m := e.(map[string]any)
+		plainEnv[m["name"].(string)], _ = m["value"].(string)
+	}
+	if plainEnv["NO_PROXY"] != sandbox.LoopbackNoProxy {
+		t.Errorf("NO_PROXY without HostGatewayAlias = %q, want loopback alone — the IP must not leak in unused", plainEnv["NO_PROXY"])
 	}
 }
 

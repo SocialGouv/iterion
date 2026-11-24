@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -13,7 +14,7 @@ import (
 )
 
 // localConnectorsForRun builds the connector resolver a CLI run uses, or
-// (nil, nil, nil) when the workflow declares no connector action.
+// (nil, nil, nil) when the workflow declares no action the catalog serves.
 //
 // The CLI's own half is the two things that differ from every other surface:
 // its workspace is the cwd (a `.bot` is run from the project it acts on), and
@@ -24,9 +25,20 @@ import (
 // Gated on the WORKFLOW rather than built always, exactly like
 // localSecretsForRun and for the same reason: opening the local sealer touches
 // the OS keychain, and a run with no `action:` node must not prompt for an
-// unlock it has no use for.
-func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (model.ConnectorResolver, *http.Client, error) {
-	if !runview.WorkflowHasAction(wf) {
+// unlock it has no use for. A native action (board.*) is no such node: its
+// transport is registered by the executor's build, with no catalog and no
+// credential, so a workflow whose only actions are native opens no sealer.
+//
+// The TRUST is the run's, stated by the caller that holds it: the launch
+// trust of a root `iterion run` (cliLaunchTrust, lowered by a carried
+// ITERION_RUN_TRUST), a sub-bot child's parent document, a resumed run's own
+// document. A CLI run is not the operator's by virtue of the surface — a node
+// process of an untrusted run re-enters the CLI in the outsider's checkout —
+// so the resolver refuses every action and skips the workspace tier on exactly
+// the runs the compile and the engine already treat as untrusted (#1802,
+// tightened by ADR-162 decision 6).
+func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
+	if !runview.WorkflowHasCatalogAction(wf) {
 		return nil, nil, nil
 	}
 	var warn func(string, ...any)
@@ -38,5 +50,5 @@ func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Log
 		return nil, nil, err
 	}
 	wd, _ := os.Getwd()
-	return runview.LocalConnectors(wf, wd, storeDir, sealer)
+	return runview.LocalConnectors(wf, wd, storeDir, sealer, trust)
 }

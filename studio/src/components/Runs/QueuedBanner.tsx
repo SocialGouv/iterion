@@ -1,6 +1,7 @@
 import { cancelRun, type RunHeader as RunHeaderType } from "@/api/runs";
 import { Button } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 
 // QueuedBanner replaces the RunMetrics + Scrubber strip in RunView
 // while a run is sitting on the NATS queue waiting for a runner pod.
@@ -26,6 +27,7 @@ function ordinal(n: number): string {
 
 export default function QueuedBanner({ run }: Props) {
   const { busy, error, run: runAction } = useAsyncAction();
+  const canAct = useRunCanAct();
 
   const onCancel = () => runAction(() => cancelRun(run.id));
 
@@ -51,17 +53,19 @@ export default function QueuedBanner({ run }: Props) {
           {error}
         </span>
       )}
-      <div className="ml-auto">
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={() => void onCancel()}
-          disabled={busy}
-          title="Drop from queue before any runner picks it up."
-        >
-          Cancel
-        </Button>
-      </div>
+      {canAct && (
+        <div className="ml-auto">
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => void onCancel()}
+            disabled={busy}
+            title="Drop from queue before any runner picks it up."
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

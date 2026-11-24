@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -24,7 +23,7 @@ import (
 const defaultSchedulerTickInterval = 15 * time.Second
 
 func schedulerTickInterval() time.Duration {
-	if v := os.Getenv("ITERION_SCHEDULER_INTERVAL"); v != "" {
+	if v := envOperator("ITERION_SCHEDULER_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}

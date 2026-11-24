@@ -11,6 +11,7 @@ import (
 // l'appel jusqu'a son echec, qu'il est borne, redige, et consomme une seule
 // fois.
 func TestRememberAndTakeInput(t *testing.T) {
+	t.Parallel()
 	h := &storeHooks{}
 
 	h.rememberInput("tool-1", []byte(`{"a":1}`))
@@ -34,6 +35,7 @@ func TestRememberAndTakeInput(t *testing.T) {
 }
 
 func TestInputPreviewIsBoundedAndRedacted(t *testing.T) {
+	t.Parallel()
 	h := &storeHooks{red: func(s string) string { return strings.ReplaceAll(s, "hunter2", "<REDACTED>") }}
 
 	h.rememberInput("long", []byte(strings.Repeat("x", toolInputPreviewMax*3)))
@@ -54,6 +56,7 @@ func TestInputPreviewIsBoundedAndRedacted(t *testing.T) {
 }
 
 func TestRecentInputsStaysBounded(t *testing.T) {
+	t.Parallel()
 	h := &storeHooks{}
 	// Des appels qui ne se terminent jamais ne doivent pas faire enfler la map.
 	for i := 0; i < maxRecentInputs*4; i++ {

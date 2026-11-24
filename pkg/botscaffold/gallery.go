@@ -332,6 +332,29 @@ func Templates() []Template {
 			},
 		},
 		{
+			ID:          "goal-loop",
+			Icon:        "🎯",
+			Name:        "Goal with a cap",
+			Description: "group goal(condition, cap): a command decides the goal is reached, the agent gets at most `cap` attempts.",
+			Spec: Spec{
+				Shape:        "goal-loop",
+				Description:  "A goal carried to a DETERMINISTIC check — the stop condition is a command's exit code, bounded by a cap.",
+				WhenToUse:    "Use when \"done\" is something a command can decide (a test suite, a probe, a diff being empty): the judge cannot be talked into a verdict, and the cap keeps the run finite. Reuse the group for a second goal instead of copying the cluster.",
+				Category:     "verify",
+				Instructions: "Describe the mission: what to change to make `goal_condition` pass.\nThe check's exit code is the only verdict — changing the report\ninstead of the workspace cannot reach the goal.",
+				Vars: []VarSpec{
+					// No default: a goal whose check is empty would be met
+					// on the first pass, and the shape refuses that by name
+					// rather than shipping a gate that passes.
+					{Name: "goal_condition", Type: "string", Description: "The command that decides the goal is reached: exit 0 = reached. Deterministic, run in the workspace."},
+					{Name: "goal_cap", Type: "int", Default: "3", Description: "How many times the agent may advance before the run fails GOAL_NOT_REACHED."},
+				},
+				// The agent changes the workspace to make the check pass,
+				// so the dial defaults ON like every shape that commits.
+				Worktree: true,
+			},
+		},
+		{
 			ID:          "library",
 			Icon:        "📚",
 			Name:        "Bot in several files",

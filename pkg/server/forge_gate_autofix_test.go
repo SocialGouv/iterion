@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -52,7 +53,7 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 		s.cfg.Store = rs
 
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		conn := forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}
 		if err := conns.Create(context.Background(), conn); err != nil {
 			t.Fatal(err)
@@ -146,6 +147,26 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 			inputs:  map[string]any{"pr_url": prURL, "gate_context": gateNm, "head_sha": head},
 			botID:   "reviewer-bot",
 			because: "the grant is what bounds this to a repo the team actually connected",
+		},
+		{
+			// Mutation witnessed: the pullRequestGrant call in autofixForRunID
+			// replaced by the raw lookup → the fixer launches → red.
+			name: "the run's grant is bound to no pull request",
+			inputs: map[string]any{
+				"pr_url": prURL, "gate_context": gateNm, "head_sha": head,
+				forgePublishVarToken: "schedule-token",
+			},
+			botID: "reviewer-bot",
+			tune: func(s *Server, _ *forge.RepoIntegration, _ *webhooks.Config) {
+				// The record scheduledDispatchGrant mints (#3130).
+				if err := s.forgePublishTokens.Register("schedule-token", ForgePublishGrant{
+					TeamID: team, ConnectionID: "c1", Repo: repo,
+					Capabilities: []string{publishCapDispatchWorkflow}, NoPullRequest: true,
+				}); err != nil {
+					panic(err)
+				}
+			},
+			because: "a scheduled run's grant bounds no launch onto a pull request, whatever pr_url its vars carry",
 		},
 		{
 			name: "the pr_url points outside the grant's repo",
@@ -511,7 +532,7 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.cfg.Store = rs
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
@@ -651,12 +672,12 @@ func TestAutofixOnGitLabResolvesTheHeadRepo(t *testing.T) {
 				ID: "c-gl", TenantID: team, Provider: forge.ProviderGitLab, Kind: forge.KindPAT,
 				Status: forge.StatusActive, ForgeBaseURL: gl.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
 			}
-			sealed, err := forge.SealPAT(s.sealer, conn.ID, "glpat-connection")
+			sealed, err := connection.SealForgePAT(s.sealer, conn.ID, "glpat-connection")
 			if err != nil {
 				t.Fatal(err)
 			}
 			conn.SealedPayload = sealed
-			conns := forge.NewMemoryConnectionStore()
+			conns := connection.NewMemoryForgeStore()
 			if err := conns.Create(context.Background(), conn); err != nil {
 				t.Fatal(err)
 			}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -74,7 +75,7 @@ func TestForgeEnable_AppTokenMintFailureKeepsTheWorkingRepo(t *testing.T) {
 	s.forgeOrchestrator.Bots = gateBotLookup
 	logs := &lockedBuffer{}
 	s.logger = iterlog.New(iterlog.LevelWarn, logs)
-	sealed, err := forge.SealPAT(s.sealer, "c-app", "ghs_install")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-app", "ghs_install")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,9 +87,9 @@ func TestForgeEnable_AppTokenMintFailureKeepsTheWorkingRepo(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	enable := func(bots ...string) *httptest.ResponseRecorder {
+	enable := func(bots ...string) *errorRecorder {
 		body, _ := json.Marshal(map[string]any{"connection_id": "c-app", "repo": "o/r", "bot_ids": bots})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleEnableForgeRepoBots(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", string(body), "t1"))
 		return w
 	}
@@ -188,7 +189,7 @@ func TestForgeEnable_AppliedHookWriteWithALostAnswerKeepsTheFreshConfig(t *testi
 	s := newForgeTestServer(t)
 	s.forgeGitHubApp = ForgeGitHubAppConfig{AppID: 42, PrivateKey: testAppKeyPEM(t), AppSlug: "iterion-forge-x"}
 	s.forgeOrchestrator.Bots = gateBotLookup
-	sealed, err := forge.SealPAT(s.sealer, "c-app", "ghs_install")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-app", "ghs_install")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,15 +201,15 @@ func TestForgeEnable_AppliedHookWriteWithALostAnswerKeepsTheFreshConfig(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	enable := func(bots ...string) *httptest.ResponseRecorder {
+	enable := func(bots ...string) *errorRecorder {
 		body, _ := json.Marshal(map[string]any{"connection_id": "c-app", "repo": "o/r", "bot_ids": bots})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleEnableForgeRepoBots(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", string(body), "t1"))
 		return w
 	}
 	first := enable("plain-bot")
 	if first.Code != http.StatusOK {
-		t.Fatalf("premise: %d %s", first.Code, first.Body.String())
+		t.Fatalf("premise: %d %s", first.Code, first.Diagnostic(t))
 	}
 	var res struct {
 		WebhookID string `json:"webhook_id"`
@@ -224,12 +225,12 @@ func TestForgeEnable_AppliedHookWriteWithALostAnswerKeepsTheFreshConfig(t *testi
 	gh.mu.Unlock()
 	cfg, _ := s.webhookConfigs.Get(context.Background(), res.WebhookID)
 	if w.Code == http.StatusOK {
-		t.Fatalf("the re-provision reported success although the hook answer was lost: %s", w.Body.String())
+		t.Fatalf("the re-provision reported success although the hook answer was lost: %s", w.Diagnostic(t))
 	}
-	if !strings.Contains(w.Body.String(), "re-run the same request") {
-		t.Errorf("the answer does not tell the operator to re-run an unsettled hook write: %s", w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "re-run the same request") {
+		t.Errorf("the answer does not tell the operator to re-run an unsettled hook write: %s", w.Diagnostic(t))
 	}
 	if !webhooks.VerifyToken(forgeSecret, cfg.TokenHash) {
-		t.Errorf("the forge signs with the applied secret but the stored config was restored to the old one — every delivery to this repo fails verification: %s", w.Body.String())
+		t.Errorf("the forge signs with the applied secret but the stored config was restored to the old one — every delivery to this repo fails verification: %s", w.Diagnostic(t))
 	}
 }

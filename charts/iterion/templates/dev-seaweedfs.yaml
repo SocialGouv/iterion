@@ -1,0 +1,179 @@
+{{- if ((.Values.devStack).seaweedfs).enabled -}}
+{{- $sw := .Values.devStack.seaweedfs -}}
+{{- $name := include "iterion.devStoreName" (dict "root" . "suffix" "seaweedfs") -}}
+{{- $identitySecret := include "iterion.devStoreName" (dict "root" . "suffix" "seaweedfs-s3") -}}
+{{- if or (not .Values.secrets.storage.create) .Values.secrets.storage.existingSecret -}}
+{{- fail "devStack.seaweedfs.enabled needs secrets.storage.create=true and no secrets.storage.existingSecret: the gateway's S3 identity is rendered from secrets.storage.s3AccessKeyId / s3SecretAccessKey so the server, the runner, the bucket hook and the store agree on ONE key pair (dev only — never for production)" -}}
+{{- end -}}
+{{- if not (regexMatch "^[^@]+@sha256:[0-9a-f]{64}$" ($sw.image | default "")) -}}
+{{- fail (printf "devStack.seaweedfs.image must be pinned by digest (<repository>:<tag>@sha256:<64 hex>), got %q" ($sw.image | default "")) -}}
+{{- end -}}
+# The dev object store (#2084): SeaweedFS in one process — master + volume +
+# filer + S3 gateway — the release and digest docker-compose.cloud.yml runs,
+# for `task chart:kind`, the cloud-e2e CI job and ad-hoc experiments. Single
+# replica, no replication, a fixed identity: never for production, whose
+# store is deployed by its own chart (ADR-107). The S3 identity is the chart's
+# own dev key pair (secrets.storage.*): no anonymous identity, every request
+# to the S3 port is signed. -s3.autoCreateBucket=false: a PUT into a missing
+# bucket fails instead of creating it, so a wrong ITERION_S3_BUCKET shows.
+# -master.telemetry=false: no anonymous statistics sent to seaweedfs.com.
+# Signed requests are the S3 port's (8333); the master, volume and filer
+# ports of the one process answer unsigned on the pod IP — dev only, they
+# are published by no Service.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $identitySecret }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-seaweedfs
+type: Opaque
+stringData:
+  s3.json: {{ toJson (dict "identities" (list (dict "name" "iterion" "credentials" (list (dict "accessKey" .Values.secrets.storage.s3AccessKeyId "secretKey" .Values.secrets.storage.s3SecretAccessKey)) "actions" (list "Admin" "Read" "List" "Tagging" "Write")))) | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-seaweedfs
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "iterion.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-seaweedfs
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: s3
+      protocol: TCP
+{{- if ($sw.persistence).enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-seaweedfs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ $sw.persistence.size | default "8Gi" }}
+  {{- with $sw.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-seaweedfs
+spec:
+  replicas: 1
+  # One data directory, one writer: never two pods on it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dev-seaweedfs
+  template:
+    metadata:
+      labels:
+        {{- include "iterion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dev-seaweedfs
+      annotations:
+        checksum/s3-identity: {{ printf "%s:%s" .Values.secrets.storage.s3AccessKeyId .Values.secrets.storage.s3SecretAccessKey | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: seaweedfs
+          image: {{ $sw.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - server
+            - -dir=/data
+            - -s3
+            - -s3.config=/etc/seaweedfs/s3.json
+            - -s3.autoCreateBucket=false
+            - -master.volumeSizeLimitMB=1024
+            - -master.telemetry=false
+            - -volume.max=0
+          env:
+            - name: BUCKET
+              value: {{ .Values.config.s3.bucket | quote }}
+          # The bucket, created by the pod ITSELF once its filer answers:
+          # nothing in iterion creates its bucket, the gateway refuses to
+          # (-s3.autoCreateBucket=false), and a Helm hook would leave a pod
+          # restarted on an emptyDir — a rollout, an eviction, a rollback —
+          # without one, so every run would fail at its first S3 write. The
+          # probes wait for the hook; `s3.bucket.create` refuses an existing
+          # bucket, so the loop keys on the listing.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    for i in $(seq 1 90); do
+                      printf 's3.bucket.create -name %s\n' "$BUCKET" | weed shell -master=localhost:9333 -filer=localhost:8888 >/dev/null 2>&1 || true
+                      if printf 's3.bucket.list\n' | weed shell -master=localhost:9333 -filer=localhost:8888 2>/dev/null | grep -qE "(^|[[:space:]])${BUCKET}([[:space:]]|$)"; then
+                        exit 0
+                      fi
+                      sleep 2
+                    done
+                    echo "dev-seaweedfs: bucket $BUCKET still absent after 90 attempts (each waits for the master with no bound of its own)" >&2
+                    exit 1
+          ports:
+            - name: s3
+              containerPort: 8333
+              protocol: TCP
+          # The S3 gateway's own status endpoint, unauthenticated.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: s3
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: s3
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            {{- toYaml ($sw.resources | default dict) | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: s3-identity
+              mountPath: /etc/seaweedfs
+              readOnly: true
+      volumes:
+        - name: data
+          {{- if ($sw.persistence).enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: s3-identity
+          secret:
+            secretName: {{ $identitySecret }}
+{{- end -}}

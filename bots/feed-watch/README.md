@@ -96,6 +96,10 @@ per category; the full recipe (incl. `--tz`) is in
   URLs never enter the repo.
 - **`worktree: none`** — the state IS the product and must persist in the
   workspace; a run worktree would discard it at finalization.
+- **Delivery** — the push carries `DELIVERY_OWNED_PATHS`, the state dir and
+  nothing else: the staging and the refusal both read that tuple, so a
+  `.github/workflows/**` path can never be in the diff and the bot owes no
+  delivery-permission preflight ([why](../../docs/auto-maintenance.md#every-pusher-answers-for-its-delivery)).
 - **`permission: deny` + `allow: ["WebFetch(*)", "TodoWrite"]`** — `synthesize`
   takes the category's `editorial` verbatim, so the anti-injection gate hard-
   blocks every non-fetch tool for that one LLM node. Tool nodes are inert under

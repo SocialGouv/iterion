@@ -2,6 +2,8 @@ package noop
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -198,5 +200,59 @@ func TestNoopExecEmptyAmbientExportIsNotAClaim(t *testing.T) {
 	}
 	if got, want := string(res.Stdout), "seeded"; got != want {
 		t.Errorf("stdout = %q, want %q — an empty ambient export must not swallow the seed", got, want)
+	}
+}
+
+// noopWorkDirHelperEnv turns the test binary into the child of the witness
+// below. A compiled child is the point: a POSIX shell recomputes PWD from its
+// real cwd at startup, so a shell command reports the right directory with or
+// without the gesture and cannot redden.
+const noopWorkDirHelperEnv = "ITERION_NOOP_WORKDIR_HELPER"
+
+const noopWorkDirHelperPrefix = "childPWD="
+
+// TestNoopWorkDirHelperChild prints the PWD its parent handed it. It is not a
+// test of its own: without the marker it does nothing.
+func TestNoopWorkDirHelperChild(t *testing.T) {
+	if os.Getenv(noopWorkDirHelperEnv) == "" {
+		return
+	}
+	fmt.Fprintf(os.Stdout, "\n%s%s\n", noopWorkDirHelperPrefix, os.Getenv("PWD"))
+}
+
+// TestNoopExecHandsTheChildItsWorkingDirectoryAsPWD: the noop driver is a HOST
+// spawn with no image, so the gesture every host spawn of an agent CLI crosses
+// (proc.SetWorkDir) is the driver's own — a CLI that resolves its project from
+// PWD must read the run's workspace, not the engine's checkout.
+func TestNoopExecHandsTheChildItsWorkingDirectoryAsPWD(t *testing.T) {
+	dir := t.TempDir()
+	d, _ := New()
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{Mode: sandbox.ModeNone})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(context.Background())
+
+	res, err := run.Exec(context.Background(),
+		[]string{os.Args[0], "-test.run=^TestNoopWorkDirHelperChild$"},
+		sandbox.ExecOpts{WorkDir: dir, Env: map[string]string{noopWorkDirHelperEnv: "1"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("helper child exited %d: %s%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	got := ""
+	for _, line := range strings.Split(string(res.Stdout), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), noopWorkDirHelperPrefix); ok {
+			got = rest
+		}
+	}
+	if got != dir {
+		t.Fatalf("the child read PWD=%q, want the run's working directory %q — a CLI that resolves its project from PWD would work on the engine's checkout", got, dir)
 	}
 }

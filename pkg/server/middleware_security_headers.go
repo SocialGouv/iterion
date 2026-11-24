@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"os"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -128,7 +127,7 @@ func BrowserGuard(port int, publicURL string, logger *iterlog.Logger, next http.
 // redeploy.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if os.Getenv("ITERION_SECURITY_HEADERS") == "0" {
+		if envOperator("ITERION_SECURITY_HEADERS") == "0" {
 			next.ServeHTTP(w, r)
 			return
 		}

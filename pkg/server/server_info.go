@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,9 +21,8 @@ type serverInfoResponse struct {
 	// autonomously act on runs or watches. It is deliberately separate from
 	// Mode: the deployment remains local, only its operational behaviour is
 	// constrained for a supervised recovery.
-	RecoveryPassive bool   `json:"recovery_passive"`
-	Version         string `json:"version"`
-	Commit          string `json:"commit,omitempty"`
+	RecoveryPassive bool `json:"recovery_passive"`
+	ServerBuild
 	// AuthRequired is false in local / desktop mode (single-user TTY,
 	// no JWT) and true in cloud mode (multitenant). The SPA short-
 	// circuits its bootstrap when false and renders the studio as a
@@ -138,6 +136,22 @@ type serverInfoResponse struct {
 	// (max/active/waiting) so the pipeline board can render the cap + how
 	// many pipelines wait for a slot. Enabled=false when no cap is set.
 	PipelineConcurrency runview.PipelineConcurrencyStatus `json:"pipeline_concurrency"`
+	// Legal is the operator's published legal surface (ADR-160): the
+	// configured documents (slug + title — the SPA links those and only
+	// those), the contact address and the accessibility declaration. Public
+	// by design: it is what every visitor is owed before signing in.
+	Legal legalInfoBlock `json:"legal"`
+}
+
+// ServerBuild is what an instance runs, as GET /api/server/info answers it:
+// the release version and the VCS revision it was built from (absent when
+// the build carries none). Exported so a client decodes these two fields by
+// the server's own tags, and only them: a probe of a server of another
+// release still reads its version when other fields of the answer changed
+// shape.
+type ServerBuild struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"`
 }
 
 type serverLimitsBlock struct {
@@ -161,8 +175,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	resp := serverInfoResponse{
 		Mode:            mode,
 		RecoveryPassive: s.cfg.RecoveryPassive,
-		Version:         appinfo.Version,
-		Commit:          appinfo.Commit,
+		ServerBuild:     ServerBuild{Version: appinfo.Version, Commit: appinfo.Commit},
 		AuthRequired:    s.authSvc != nil && !s.cfg.DisableAuth,
 		Limits: serverLimitsBlock{
 			Upload: uploadLimitsBlock{
@@ -203,6 +216,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	resp.SkillsEnabled = s.cfg.Mode != "cloud"
 	resp.RunShellEnabled = s.cfg.Mode != "cloud"
 	resp.AssistantEditorMaxSource = assistantEditorMaxSource()
+	resp.Legal = s.legalInfo()
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {
@@ -240,7 +254,7 @@ func deriveProjectName(dir string) string {
 // rather than silently sending nothing or everything. A cap this cheap to
 // mis-type must not be able to break the assistant.
 func assistantEditorMaxSource() int {
-	raw := strings.TrimSpace(os.Getenv("ITERION_ASSISTANT_EDITOR_MAX_SOURCE"))
+	raw := strings.TrimSpace(envOperator("ITERION_ASSISTANT_EDITOR_MAX_SOURCE"))
 	if raw == "" {
 		return 0
 	}

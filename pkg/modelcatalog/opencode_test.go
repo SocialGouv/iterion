@@ -24,7 +24,7 @@ func TestOpenCodeIsOfferedOnlyForCredentialsItCanRead(t *testing.T) {
 	t.Run("a credential opencode cannot read is not offered", func(t *testing.T) {
 		// iterion probes ZAI_API_KEY; opencode reads ZHIPU_API_KEY.
 		t.Setenv("ZAI_API_KEY", "set")
-		backends, _, _ := availability(report("zai", "ZAI_API_KEY"), "anthropic", "glm-4.6", "zai")
+		backends, _, _ := availability(report("zai", "ZAI_API_KEY"), ReachabilityLocal, "anthropic", "glm-4.6", "zai")
 		if slices.Contains(backends, detect.BackendOpenCode) {
 			t.Fatalf("opencode offered on ZAI_API_KEY, which it cannot read: %v", backends)
 		}
@@ -32,7 +32,7 @@ func TestOpenCodeIsOfferedOnlyForCredentialsItCanRead(t *testing.T) {
 
 	t.Run("a credential opencode does read is offered", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-		backends, _, _ := availability(report("anthropic", "ANTHROPIC_API_KEY"), "anthropic", "claude-sonnet-4-6", "anthropic")
+		backends, _, _ := availability(report("anthropic", "ANTHROPIC_API_KEY"), ReachabilityLocal, "anthropic", "claude-sonnet-4-6", "anthropic")
 		if !slices.Contains(backends, detect.BackendOpenCode) {
 			t.Fatalf("opencode not offered on a credential it reads: %v", backends)
 		}
@@ -43,7 +43,7 @@ func TestOpenCodeIsOfferedOnlyForCredentialsItCanRead(t *testing.T) {
 		if _, ok := os.LookupEnv("ANTHROPIC_API_KEY"); !ok {
 			t.Skip("cannot unset the variable here")
 		}
-		backends, _, _ := availability(report("anthropic", "ANTHROPIC_API_KEY"), "anthropic", "claude-sonnet-4-6", "anthropic")
+		backends, _, _ := availability(report("anthropic", "ANTHROPIC_API_KEY"), ReachabilityLocal, "anthropic", "claude-sonnet-4-6", "anthropic")
 		if slices.Contains(backends, detect.BackendOpenCode) {
 			t.Fatalf("opencode offered on an unset variable: %v", backends)
 		}

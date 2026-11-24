@@ -7,14 +7,20 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
-// queuedCreatingStore mimics the cloud store's CreateRun/CreateChildRun,
+// queuedCreatingStore mimics the cloud store's legacy and explicit birth ports,
 // which insert a fresh row as `queued` (the publisher's shape) — the
 // filesystem store inserts `running`, which is why the direct path never
 // showed the gap locally.
 type queuedCreatingStore struct {
 	*store.FilesystemRunStore
+}
+
+func (q *queuedCreatingStore) CreateRunWithValueFormat(ctx context.Context, spec store.RunCreateSpec) (*store.Run, error) {
+	spec.Status = store.RunStatusQueued
+	return q.FilesystemRunStore.CreateRunWithValueFormat(ctx, spec)
 }
 
 func (q *queuedCreatingStore) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*store.Run, error) {
@@ -50,6 +56,7 @@ func TestRunDirectCreateQueuedBecomesRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := &queuedCreatingStore{FilesystemRunStore: fs}
+	storetest.SeedParentRun(t, fs, "parent-1")
 	src := `schema out:
   ok: bool
 
@@ -99,5 +106,33 @@ workflow w:
 		if final.Status != store.RunStatusFinished {
 			t.Fatalf("child=%v: final status = %s", child, final.Status)
 		}
+	}
+}
+
+func TestDirectQueuedFixtureActuallyStartsQueued(t *testing.T) {
+	for _, parent := range []string{"", "parent"} {
+		t.Run(map[string]string{"": "top-level", "parent": "child"}[parent], func(t *testing.T) {
+			fs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parent != "" {
+				if _, err := fs.CreateRun(t.Context(), parent, "fixture", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			st := &queuedCreatingStore{FilesystemRunStore: fs}
+			run, err := store.CreateRunWithValueFormat(t.Context(), st, store.RunCreateSpec{ID: "run", ParentRunID: parent, Format: store.LegacyValueFormat})
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := fs.LoadRun(t.Context(), "run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != store.RunStatusQueued || persisted.Status != store.RunStatusQueued || run.ParentRunID != parent || persisted.ParentRunID != parent {
+				t.Fatalf("QUEUED_BIRTH_BYPASSED returned=%s/%q persisted=%s/%q want queued/%q", run.Status, run.ParentRunID, persisted.Status, persisted.ParentRunID, parent)
+			}
+		})
 	}
 }

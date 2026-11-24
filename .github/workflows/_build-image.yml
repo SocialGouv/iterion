@@ -75,6 +75,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build (amd64, load, no push)
+        if: ${{ inputs.context != 'sandbox/finalize' || inputs.file != 'sandbox/finalize/Dockerfile' }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ inputs.context }}
@@ -86,9 +87,34 @@ jobs:
           cache-from: type=gha,scope=${{ inputs.image-name }}-pr
           cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}-pr
 
+      # A PR cannot consume the published app: its finalizer may require files
+      # introduced by this checkout. Link the app stage in one Bake graph;
+      # docker-container builders cannot read a local daemon tag implicitly.
+      - name: Qualify finalizer with candidate app (no push)
+        if: ${{ inputs.context == 'sandbox/finalize' && inputs.file == 'sandbox/finalize/Dockerfile' }}
+        env:
+          FINALIZER_BUILD_ARGS: ${{ inputs.build-args }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          args = dict(line.split("=", 1) for line in os.environ["FINALIZER_BUILD_ARGS"].splitlines() if line.strip())
+          graph = {"target": {
+              "app": {"context": ".", "dockerfile": "Dockerfile", "platforms": ["linux/amd64"]},
+              "final": {"context": "sandbox/finalize", "dockerfile": "Dockerfile",
+                        "platforms": ["linux/amd64"], "args": args,
+                        "contexts": {"iterion-bin": "target:app"}, "output": ["type=docker"]}
+          }}
+          Path(os.environ["RUNNER_TEMP"], "finalizer-candidate.json").write_text(json.dumps(graph))
+          PYCODE
+          docker buildx bake -f "$RUNNER_TEMP/finalizer-candidate.json" final
+
   # --------------------------------------------------------------------------
   # amd64 — built on the in-house buildkit-operator warm daemon, pushed to a
-  # per-arch staging tag the merge job stitches into the published index.
+  # per-run, per-arch staging tag the merge job stitches into the published index.
+  # Main and release builds can share a SHA but carry different labels/inputs.
+  # run_id separates them; do not add run_attempt, because retrying only failed
+  # jobs must still find an architecture that succeeded in the previous attempt.
   # --------------------------------------------------------------------------
   amd64:
     if: ${{ !inputs.is-pr }}
@@ -127,7 +153,7 @@ jobs:
         # the client only adds --cache-to when buildd granted the export (s3CachePolicy
         # cadence/never) — the per-build S3 export cost disappears once the server side
         # runs >= v0.15 too.
-        uses: socialgouv/buildkit-operator@42071022f7c68070aeba92e8c30e95d8564eeb53 # v1
+        uses: SocialGouv/buildkit-operator@42071022f7c68070aeba92e8c30e95d8564eeb53 # v1
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
           gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}
@@ -141,7 +167,7 @@ jobs:
           file: ${{ inputs.file }}
           build-args: ${{ inputs.build-args }}
           labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-amd64
+          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-${{ github.run_id }}-amd64
           push: true
           # Provenance + SBOM only on release (multiarch) builds, matching the
           # sign policy: `:edge` is ephemeral and unsigned, and generating them
@@ -173,12 +199,13 @@ jobs:
         env:
           TAGS: ${{ steps.fasttags.outputs.tags }}
           SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
         run: |
           set -eux
           tflags=""
           for t in $TAGS; do tflags="$tflags -t $t"; done
           # shellcheck disable=SC2086
-          docker buildx imagetools create $tflags "${IMAGE_REF}:${SHA}-amd64"
+          docker buildx imagetools create $tflags "${IMAGE_REF}:${SHA}-${BUILD_RUN_ID}-amd64"
 
   # --------------------------------------------------------------------------
   # arm64 — native build on a GitHub arm runner (no QEMU), pushed to a per-arch
@@ -220,7 +247,7 @@ jobs:
           file: ${{ inputs.file }}
           platforms: linux/arm64
           push: true
-          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-arm64
+          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-${{ github.run_id }}-arm64
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ inputs.build-args }}
           provenance: mode=max
@@ -282,14 +309,15 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
           MULTIARCH: ${{ inputs.multiarch }}
         run: |
           set -eux
           tflags=""
           for t in $TAGS; do tflags="$tflags -t $t"; done
           # amd64 always; arm64 only when this is a multiarch (main/tag) build.
-          sources="${IMAGE_REF}:${SHA}-amd64"
-          [ "$MULTIARCH" = "true" ] && sources="$sources ${IMAGE_REF}:${SHA}-arm64"
+          sources="${IMAGE_REF}:${SHA}-${BUILD_RUN_ID}-amd64"
+          [ "$MULTIARCH" = "true" ] && sources="$sources ${IMAGE_REF}:${SHA}-${BUILD_RUN_ID}-arm64"
           # shellcheck disable=SC2086
           docker buildx imagetools create $tflags $sources
           # The index digest is the authoritative address we sign + attest (the

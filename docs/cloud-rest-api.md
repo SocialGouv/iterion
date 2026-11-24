@@ -26,12 +26,19 @@ curl .../api/openapi.json       # the same, from a live instance
 curl .../api/routes             # just the method+pattern inventory
 ```
 
+The exhaustive, generated-by-`task restapi:gen` inventory of every route
+this binary registers — with each registration's outer auth rung, and
+whether the published spec carries it — is
+[cloud-rest-api-generated.md](cloud-rest-api-generated.md), held to the
+tree both ways by `pkg/server/docs_rest_inventory_test.go`.
+
 (The `/api/v1/native`, `/api/v1/dispatcher`, `/api/v1/mcp/board` and
 `/api/v1/mcp/runs` sub-trees register on the *same* mux but bypass the
 route recorder — they are handed the bare `ServeMux` rather than the recording
-wrapper — so they are deliberately absent from that spec, and so are the three
+wrapper — so they are deliberately absent from that spec, and so are the four
 run-token forge routes (`POST /api/v1/forge/publish-review`,
-`GET /api/v1/forge/pull-request`, `POST /api/v1/forge/delivery-preflight`).
+`GET /api/v1/forge/pull-request`, `POST /api/v1/forge/delivery-preflight`,
+`POST /api/v1/forge/dispatch-workflow`).
 The exception worth knowing:
 the forge-facing `/api/v1/native/issues/*` routes and the dependency
 graph go through the recorded path and therefore **do** appear.)
@@ -84,10 +91,12 @@ the launch gate's own rung
 ([pkg/server/launch_gate.go](../pkg/server/launch_gate.go), `gateLaunch`),
 which refuses a `viewer` and the orthogonal `config_editor` capability with
 `member_role_required` (403); the run-addressed mutations additionally pass
-the ADR-103 ladder. The same rung guards every state-changing board and
-trigger route at its mount (`boardWriteAuth`, `triggerWriteAuth`), because
-a card written ready or a subscription installed enabled is a launch the
-platform performs later.
+the ADR-103 ladder. The same rung guards every state-changing board,
+trigger and memory route at its mount (`boardWriteAuth`,
+`triggerWriteAuth`, `memoryWriteAuth`), because a card written ready or a
+subscription installed enabled is a launch the platform performs later, and
+a document written into a team space is instruction it reads back into every
+run that opens the space.
 Webhook delivery URLs (`POST /api/webhooks/<provider>/<id>`) use their
 own auth (token bearer or HMAC body signature) and are public to the
 JWT layer.
@@ -117,6 +126,21 @@ JWT layer.
 Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 [pkg/server/password_routes.go](../pkg/server/password_routes.go).
 
+The active team rides the access credential, and the credential lives in a
+browser-wide cookie — every tab of a browser shares it. A caller that needs
+its requests to act on another team of its own standing — a second studio
+tab that kept its team while the cookie moved, a CLI whose base URL is
+assembled for it — sends `X-Iterion-Team: <team_id>` on any tenant-scoped
+route (where a route also reads `?team_id=`, the query keeps precedence).
+The header re-scopes the request to that team at the auth choke point: the
+standing it costs is the one a team switch would demand (the role is
+recomputed in the named team, so the header never carries the active team's
+role across), a team the caller has no standing in answers `403` naming the
+header, routes that scope by the team in their path ignore it (the path is
+the more local scope), run-addressed routes ignore it (ADR-103: a run by id
+is served from the run's team), and a credential without an active team is
+not rescued by one. Absent, it changes nothing.
+
 Every route that mints a credential — login, register, refresh, the
 password change and reset confirm, the desktop exchange, the team and org
 switches — answers the session alone (`AuthSessionResponse`: `user`, the
@@ -142,10 +166,14 @@ list's `403 not a member`, the team creation's `403 org admin or owner
 required` — and a row the store could not read answers the 500 above. The
 SSO routes refuse on a failed read too, and say so in their flow
 ([flow-auth-login.md](diagrams/flow-auth-login.md)): `GET
-/api/auth/oidc/{provider}/start` answers `404 unknown provider` whatever
-stopped the provider's resolution, and its callback redirects with
-`unknown_provider` likewise, or with `state_expired` when the sign-in state
-cannot be taken. Any
+/api/auth/oidc/{provider}/start` answers `404 unknown provider` only for a
+provider its store says is absent, and the 500 above when the provider row
+could not be READ or its client secret could not be unsealed; its callback
+redirects with `unknown_provider` and `provider_unavailable` on the same
+split, or with `state_expired` when the sign-in state cannot be taken. `GET
+/api/orgs/{id}/members` and `GET /api/me/github-orgs` answer the 500 above
+when the accounts they render cannot be read — a member with no name and an
+empty org list are facts, and only an answered read states them. Any
 authenticated route reached with an `iap_` PAT answers that same 500 when
 one of the rows the middleware resolves for it — the token, its owner, the
 owner's membership of the token's team, and that team — cannot be read. The team-management routes below keep 500 bodies that name the row a
@@ -225,7 +253,9 @@ the one the account was created or first signed in with through SSO stays;
 a password change and the resets keep both. An administrator's disable
 (`PATCH /api/admin/users/{id}`) ends the sessions, revokes the personal
 access tokens and removes those SSO identities once the status landed, and
-answers `500` with the account disabled when that revocation fails. The
+answers `500` with the account disabled when that revocation fails. An
+administrator's erasure (`POST /api/admin/users/{id}/erase`) goes further:
+it deletes the session rows and anonymizes the account for good. The
 refresh cookie's `Expires` is the session's expiry rounded up to the hour.
 
 The team and org switches (`POST /api/auth/me/team/{team_id}`, `POST
@@ -236,7 +266,9 @@ and names the same session (its `sid` and `sgen` claims). They answer
 (any of the revocations above), disabled (`auth: account disabled`) or
 pending a password change, and `403 {"error":"a personal access token
 cannot mint another credential: sign in to mint one"}` to a personal
-access token: a token is pinned to its team and its own expiry. An access
+access token: a token is pinned to its team and its own expiry, and the
+pin bounds every team- and org-addressed route it reaches (PATs, below).
+An access
 token minted before access tokens named their session switches too,
 bounded by its own expiry alone. `POST /api/me/tokens` and `GET
 /api/me/sso/{provider}/link/start` refuse the same credentials the same
@@ -275,8 +307,10 @@ expiry. A personal access token passes the platform-admin routes, but
 `POST /api/admin/users/{id}/reset-password` answers it `403` for its own
 account.
 `POST /api/auth/desktop/exchange` answers `401` (`auth: session revoked`,
-`auth: account disabled`) to a ticket whose session was revoked, or whose
-account was disabled or set pending, since the IdP callback minted it.
+`auth: account disabled`) to a ticket whose login no longer stands — a
+revocation, a disable or a pending-password status landing since the IdP
+callback deferred it — and mints the session only then: no token exists
+while the ticket waits (#2635).
 
 ## Teams + members + invitations
 
@@ -286,13 +320,15 @@ account was disabled or set pending, since the IdP callback minted it.
 | `POST` | `/api/teams` | org admin | Create a team in the `org_id` the body names, else in the caller's active org (`canManageOrg`) |
 | `GET` | `/api/teams/{id}/members` | team member | List members. `403 not a member` means the authorization reads answered; one that could not be completed answers the identity `500` above, logged — unless another row already grants access (an org admin of the team's org), which no failed read takes away |
 | `PUT` | `/api/teams/{id}/members/{user_id}` | team admin | Place an account that ALREADY exists, idempotently (`{"role":…}`). Refuses **422** when the user is not yet a member of the team's ORG — that membership is the identity boundary a team grant sits inside, so the order is `PUT /api/orgs/…` first. The membership is re-read AFTER the grant is written — on a context detached from the request, and on both outcomes of that write, since a store that reports an error may have applied it anyway: **409** when a concurrent `DELETE /api/orgs/{id}/members/{user_id}` took it away in between and the grant was revoked — with the pending invitations the holder addressed to their own address in this team, which that grant was the premise of (`invitation.deleted`, reason `creator_team_grant_unwound`), a sweep that fails being named in the same body for a revoke by hand; **500** when the revoke itself failed (the body names the grant that may still stand), or when an ACKNOWLEDGED write's membership cannot be re-confirmed (the grant is revoked too — a boundary nothing can certify does not hold one up). A write that FAILED with the membership unreadable answers that write error and keeps the grant: one store fails both calls, and the grant left standing is the one the member already held |
+| `PUT` | `/api/teams/{id}/run-visibility` | org admin / owner (super-admin passes) | Set the run sharing axis (ADR-148): `{"run_visibility":"org"}` admits every org member of the team's parent org as a READ-only viewer of the team's runs by id; `""` (the explicit reset) revokes. An absent field is **400** (only `""` resets — a missing key must not be read as one), an unknown value **400**. Audited to both scopes (`team.run_visibility_changed`). Removing a TEAM membership never revokes the sharing — the audience is the org roster |
 | `PATCH` | `/api/teams/{id}/members/{user_id}` | team admin | Change role. A role change WRITES the grant row back, so for a role that HAS a boundary it owes the same guards as the `PUT`: **422** when the user is not (or is no longer) a member of the team's org — an existing grant is refused, never revoked, since that drift is what `orphan_grant` reports — and **409**/**500** at the re-read that follows the write, under the `PUT`'s rule. A role OUTSIDE the ladder (`config_editor`) is mirrored up to no org membership (ADR-078), so writing it reads no boundary when the grant is ALREADY off the ladder too — the state a `config_editor` invitation creates, answered **200** for an account that holds no org membership. Taking a LADDER grant off the ladder still reads the boundary: otherwise the holder of an orphan `admin` grant, who passes the team-admin check on that grant alone, would re-role themselves and keep the grant in one request. The same holder still reaches that grant state in two, by minting an invitation to their own address and accepting it, but only for a role mirrored up to NO org membership: a mint is capped at its minter's own org standing (`POST /api/teams/{id}/invitations`), so that pair of requests no longer re-admits them to the ORG — which is why `orphan_grant` reports a missing org membership for ANY role and `off_ladder` names the sanctioned cause beside it rather than inside it |
 | `DELETE` | `/api/teams/{id}/members/{user_id}` | team admin | Remove a member. A concurrent `PATCH …/members/{user_id}` that read the grant before this removal writes that row back and re-creates the grant at the role it asked for: the store has no conditional write, so the role change cannot tell its own update from a resurrection. Both calls answer success; the removal is idempotent, so re-issue it. This delete also WITHDRAWS a premise: the mint's own confirmation keeps a self-addressed invitation on its creator's grant in the team when they hold no org membership row in its org (`POST /api/teams/{id}/invitations`), so once the grant is taken those rows are swept, one audit line each (`invitation.deleted`, reason `creator_team_grant_removed`) — a row left standing would be a re-entry ticket into the team the grant was just taken from. It takes only what that grant was the premise of: a row addressed to SOMEBODY ELSE stands, and so does everything a holder who still HAS an org membership row minted, those resting on that row — read ONCE, before the invitations are selected, so a row written back in between (a placement, an accept, a role change) is read as absent and what rests on it is swept too: that window costs an invitation that stops working, with nothing granted and no org rank written, each row taken named in the team's audit trail and re-mintable. **500** when the team's org, that row or the team's invitations cannot be read — a selection that could not be made is not one that found nothing — naming the row that may stand and asking for the removal again |
 | `GET` | `/api/teams/{id}/invitations` | team admin | List pending invitations |
 | `POST` | `/api/teams/{id}/invitations` | team admin | Mint a token (shown once). The role it carries is capped at the minter's OWN org standing, since accepting an invitation on the org ladder mirrors the grant up to an org membership (`pkg/auth` `grantOrgMembershipForTeam`; `admin`/`owner` → org **admin**, the others → org **member**): a role whose mirror the minter does not reach answers **403** naming the role, that mirror and their own org role. That is what keeps a team admin who is a plain org member — or the off-boarded holder of an orphan `admin` grant, who passes the team-admin check on that grant alone — from minting one for their own address and coming back an org admin. A role mirrored up to NOTHING (`config_editor`, ADR-078) carries no standing to exceed, so no RANK measures it: no cap at the mint, and no sweep of the MINTED half when its creator's own standing drops — a removal included, which hands such an invitation over rather than withdrawing it. A removal still takes one addressed to its own creator: the cascade's addressed-to half takes it whatever its role (`DELETE /api/orgs/{id}/members/{user_id}`), so the confirmation after the mint takes it too once that creator can no longer REACH the team it joins — no org membership row and no grant in that team — **403** naming the address rather than a rank. A creator who still HOLDS that grant keeps the invitation, since accepting it gains them nothing the team-admin check did not already admit the mint on — the orphan-grant state above, reported rather than revoked. That precondition is the confirmation's OWN: the removal's cascade takes such a row whatever grant its creator holds, because it revokes that grant in the same pass, so the two sides answer differently on exactly that one state, by design and with no race, and re-issuing the removal takes a row a mint kept. What answers the grant going away WITHOUT the row is the removal's order: its LAST write is the invitation sweep (`DELETE /api/orgs/{id}/members/{user_id}`), so no row the mint kept on a grant that cascade revoked outlives it. A grant revoked with NO removal in progress, in a team that stays, carries that row with it too, by the same rule read from the other end — whoever withdraws the premise sweeps the rows kept on it: `DELETE /api/teams/{id}/members/{user_id}`, the grant compensation of the team-member `PUT`/`PATCH` and the GitHub SSO reconciliation of a login the allow-list no longer grants that team revoke them with the grant (reasons `creator_team_grant_removed`, `creator_team_grant_unwound`, `creator_team_grant_sso_revoked`; the SSO one runs on the login path, and a sweep that fails there fails the login, since the row it could not take is a re-entry ticket into the team the grant just left). The compensation sweeps on the exit where that org membership row is definitively GONE: on the one where the row could not be READ the rule has nothing to decide on, so the grant is taken back with no sweep and the **500** names the row that may stand (listed by `GET /api/teams/{team}/invitations`, revoked by hand). So a grant written BACK after a removal's last sweep — by a straddling accept, a team admin's `PATCH`, a placement — re-opens the window, and the row goes with that grant when it goes. That is what such a mint owes reads for: its creator's standing, then — only where that membership row is gone — their grant in the team and the address their own account answers at. A team with no parent org has no boundary to read; a super-admin passes. The standing is read from the store rather than from the token, so a membership removed mid-request refuses the mint and one that cannot be read answers **500**. The team names the org that standing is read in, so for a caller the team-admin check admitted on their OWN grant — or a platform admin — a team that does not exist answers **404** `auth: team not found` and one that cannot be READ answers **500**: a cap that cannot be applied does not mint. An ORG admin meets that check's own **403** on both instead, since it resolves the team to find the parent org they manage. It is read at the MINT and CONFIRMED once the row has landed, since those writes revoke only the rows their own listing reaches: a mint whose cap was read before such a write and whose row lands after its sweep is refused by that confirmation — **403** in the cap's words, or in the address's for the role with no mirror addressed to its own creator, with the invitation it minted revoked (one audit line, `invitation.deleted`, reason `creator_standing_dropped`), or **500** when one of those three states cannot be read, which takes the invitation back too, under the reason of THAT read (`creator_standing_unconfirmed`, `creator_team_grant_unconfirmed`, `creator_address_unconfirmed`) and with the body naming it — a standing that could not be READ is not one that dropped, one cause for three reads answers neither question, and the trail is where they are asked (a revoke that fails leaves the row and the refusal names it, to be revoked by hand). The rank is otherwise kept in step at the ROW rather than re-read at acceptance (the accept reads nothing about an invitation's creator): a pending invitation carries the role it was minted with until it is revoked — by hand (`DELETE …/invitations/{invite_id}`), or by the writes that lower its creator's own standing, which revoke what they minted above what they are left with (`PATCH /api/orgs/{id}/members/{user_id}`, `PUT /api/orgs/{id}/members/{user_id}`, and the org-member `DELETE` cascade, where what they are left with is no standing at all) |
 | `DELETE` | `/api/teams/{id}/invitations/{invite_id}` | team admin | Revoke |
 | `GET` | `/api/orgs/{id}/usage` | org member | Org-member mirror of the admin usage view (see below) |
-| `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log |
+| `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log (control-plane mutations keyed on the team) |
+| `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log (control-plane mutations and the team's run launches, `run.launched`) |
 
 ## Organisations — self-serve (org members, teams, SSO)
 
@@ -322,7 +358,8 @@ emails/IPs — and `PUT …/members/{user_id}` takes the platform super-admin fl
 | `DELETE` | `/api/orgs/{id}/invitations/{invite_id}` | org admin | Revoke |
 | `GET` | `/api/orgs/{id}/teams` | org member | List the org's teams |
 | `POST` | `/api/orgs/{id}/teams` | org admin | Create a team in the org |
-| `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log |
+| `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log — org mutations and the members' accepted sign-ins (`auth.login.succeeded`) |
+| `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log (org-scoped mutations) |
 | `GET` | `/api/orgs/{id}/sso/providers` | org member | List SSO providers |
 | `POST` | `/api/orgs/{id}/sso/providers` | org admin | Add an SSO provider (OIDC) |
 | `PATCH` | `/api/orgs/{id}/sso/providers/{provider_id}` | org admin | Update a provider |
@@ -343,7 +380,11 @@ Revoking takes the same right as creating (`canManageTeam` on both for a
 team-scoped record, `canManageOrg` for an org-tier one), so an
 org admin cannot be left holding a credential they installed in a team of
 their org and cannot pull back. A **user-scoped** record is exempt: it is
-personal, and only its owner or a super-admin may touch it.
+personal, and only its owner or a super-admin may touch it. On all four
+families a `DELETE` that finds nothing — the row gone, or hidden by the
+tenant filter (an orphaned credential read under another team's tenant) —
+answers `404`: a success receipt for a revoke that removed nothing would
+say the credential is gone when it is not.
 
 ⚠️ **`PATCH`/`DELETE` on `/api/me/...` is the same handler as the team
 route, with no `{id}` to re-scope from** — so the store tenant stays the
@@ -354,22 +395,22 @@ asymmetry: not listable there, still mutable there.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
+| `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys (a user-scoped personal key is not listed — see `/api/me/api-keys`) |
 | `POST` | `/api/teams/{id}/api-keys` | team admin | Create — `base_url` required for `openai_compatible` (https, canonical; literal non-public addresses and reserved names refused) and refused elsewhere; `repos` restricts the key to repositories (full forge paths, no URL or glob); unknown fields and a second JSON value are refused (strict) |
 | `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped), replace the `bots` or `repos` audience, move a gateway key's `base_url` — a rotation: `secret` is required in the same request and is sealed under the new URL, a move without it is `400` (the stored secret is never re-sealed for a host its holder did not prove it for), re-sending the stored URL is a no-op — and every rotation of a gateway key answers `409` when another writer rotated or moved the key between the read and the write; `base_url` on a vendor key is `400`, blank included (a create ignores an empty one as absent); unknown fields and a second JSON value are refused (strict) — an absent field is left alone, `"bots": []` clears it. The write is a `$set` of the named fields only, never a replace of the row. A row whose `provider` this server build does not know (written by a newer server during a rolling update, or left by a rollback) is refused with `409`, audited as `refused`: update it from a current server, or delete it |
-| `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
+| `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete — `404` on a row that is absent or tenant-hidden, never a success receipt for a no-op revoke |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
 | `POST` | `/api/me/api-keys` | member | Create personal key (same fields and rules as the team route) |
 | `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update — same write semantics and `409` on a row from a newer build as the team route |
-| `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete |
+| `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete — `404` on a row that is absent or tenant-hidden (see the note above) |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |
 | `POST` | `/api/teams/{id}/secrets` | team admin | Create |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Update |
-| `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Delete |
+| `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Delete — `404` on a row that is absent or tenant-hidden |
 | `GET` | `/api/me/secrets` | member | Personal secrets |
 | `POST` | `/api/me/secrets` | member | Create |
 | `PATCH` | `/api/me/secrets/{secret_id}` | per record scope | Update |
-| `DELETE` | `/api/me/secrets/{secret_id}` | per record scope | Delete |
+| `DELETE` | `/api/me/secrets/{secret_id}` | per record scope | Delete — `404` on a row that is absent or tenant-hidden (see the note above) |
 | `GET` | `/api/teams/{id}/bots/{bot_id}/bindings` | team member | List bot bindings |
 | `POST` | `/api/teams/{id}/bots/{bot_id}/bindings` | team admin | Create binding |
 | `PATCH` | `/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}` | team admin | Update |
@@ -396,8 +437,8 @@ not enabled on this server`.
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/bot-sources` | bot editor | List the team's bots (metadata only — file bodies omitted) |
 | `GET` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | One bot with its full file map |
-| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?, id?, stored_sha256?}`) |
-| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?, id?, stored_sha256?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?, id?, stored_sha256?, allow_fold?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?, id?, stored_sha256?, allow_fold?}`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Delete one file (never `main.bot`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
 | `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
@@ -412,7 +453,14 @@ holds such a key from before this rule is written again by deleting that file
 Every write **compiles the bundle before it persists** — a bot that fails to
 parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
 left to fail at launch. A non-zero `version` is an optimistic if-match token
-(`409` if a concurrent editor advanced it); slug collisions are `409`.
+(`409` if a concurrent editor advanced it); slug collisions are `409`. A
+write that would fold a value the stored file writes over several lines onto
+one is `422` naming the file and the line (#1612) — on THESE two routes only,
+whose bytes are the author's own, the refusal keeps an explicit hatch:
+`allow_fold` on the request body (#1679), off by default; the write then
+lands, and each value it collapsed is named in the response's `warnings`. A
+fold the server's reader cannot tell (a stored file past the read budget) is
+refused either way.
 
 ### The digest rule — what a read decided, a write carries
 
@@ -511,7 +559,7 @@ card's own team beyond that. Sources:
 | `POST` | `/api/teams/{id}/forge/oauth-apps/github-manifest` | team admin | Start the GitHub App-manifest auto-create flow |
 | `GET` | `/api/teams/{id}/forge/repo-bots` | team member | List repo→bot provisionings (integrations) |
 | `GET` | `/api/teams/{id}/forge/repo-bots/preview` | team admin | Preview what enabling a bot set subscribes to (no forge writes) |
-| `POST` | `/api/teams/{id}/forge/repo-bots` | team admin | Enable bots on a repo (provision webhook + hook + secret + bindings) |
+| `POST` | `/api/teams/{id}/forge/repo-bots` | team admin; a repo's FIRST enable mints its hook token, so a personal access token is refused 403 (a reconcile of a provisioned repo mints nothing and passes) | Enable bots on a repo (provision webhook + hook + secret + bindings) |
 | `PATCH` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Set the bot set and the repo's operator settings. A PRESENT `bot_ids` replaces the stored set; an ABSENT one keeps it, so a settings-only patch need not echo it; an explicitly empty one is a `400` — `DELETE` removes the integration. In an org that requires provision approval, a patch that widens the repo's automation — adding a bot, turning auto-fix on or sending `schedule_crons`, for example — answers `202 pending_approval` (`409` while another request for the repo is pending) and changes nothing until approved; a caller who manages the org is not parked, nor, under the `shared_credentials` scope, a team that funds its own runs |
 | `DELETE` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Disable / deprovision (tears down webhook + hook) |
 | `PATCH` | `/api/teams/{id}/forge/integrations/{iid}` | team admin | Update an integration (incl. `sync_issues_enabled`) |
@@ -577,6 +625,7 @@ CRUD (operator-side) plus per-provider delivery URLs.
 | `POST` | `/api/webhooks/github/{id}` | webhook HMAC | Inbound PR delivery |
 | `POST` | `/api/webhooks/forgejo/{id}` | webhook HMAC | Inbound PR delivery (also Gitea headers) |
 | `POST` | `/api/webhooks/generic/{id}` | webhook token (or HMAC opt-in) | Bot-agnostic JSON delivery |
+| `POST` | `/api/webhooks/c/{id}` | as the connector package's `ingress:` declares | Connector ingress delivery, stored to the intake ([connector ingress](webhooks.md#connector-ingress)) |
 
 Source: [pkg/server/webhooks_routes.go](../pkg/server/webhooks_routes.go).
 Full reference: [webhooks.md](webhooks.md).
@@ -623,9 +672,10 @@ pool — full model in [credential-pool.md](credential-pool.md).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/me/pool` | member | Your pledges and what they have served |
-| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
-| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
+| `GET` | `/api/me/pool` | member | Your pledges and what they have served. Each entry carries its `id` (and `key_id` for an api_key pledge) |
+| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list). The body's `key_id` completes an api_key pledge's identity |
+| `DELETE` | `/api/me/pool/entries/{pledge}` | member | Withdraw one pledge by its own id — the only address that names one of two keys of one provider. A pledge of somebody else answers 404 |
+| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw, kept one release as a shim for the id route. Exact for an `oauth` pair; an api_key pair takes `?key_id=`, and without it a single match is withdrawn while several answer 400 |
 | `GET` | `/api/me/pool/history` | member | The runs your quota served |
 | `GET` | `/api/teams/{id}/pool` | team member | The pool's policy. The donor roster rides along only for an org admin/owner (`canManageOrg`) — who lends, and how much they have given, is the contributors' own business |
 | `PUT` | `/api/teams/{id}/pool` | org admin | Set the audience policy deciding who may draw. The pool document is keyed by ORG, so a team admin/owner who is not also an org admin/owner is refused `403` |
@@ -643,6 +693,13 @@ Recurring bots, the cloud counterpart of `iterion schedule` —
 | `POST` | `/api/teams/{id}/schedules` | team admin | Create a schedule |
 | `PATCH` | `/api/teams/{id}/schedules/{sid}` | team admin | Update one |
 | `DELETE` | `/api/teams/{id}/schedules/{sid}` | team admin | Remove one |
+
+`key_overrides` (provider → api key id) on the create and the `PATCH` pins
+the key a provider spends for the schedule's runs, over its integration's
+own pins; it is validated like a webhook's pin, against `scheduler:<bot_id>`
+— a personal key, another team's key or another provider's is a `400`. On
+the `PATCH`, an absent field keeps the stored pins and `null` or `{}`
+clears them ([byok.md](byok.md#per-webhook-key-override)).
 
 A `config_editor` reaches the same schedule store by another door:
 `PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule` edits the cron of
@@ -679,6 +736,46 @@ delete or generate one; `emit` additionally passes the launch gate, which
 enforces the rung a second time. The reads carry `requireAuth`; the
 subscription reads also scope by the request's tenant.
 
+**Credential pins take a team admin.** `key_overrides` / `secret_overrides`
+choose which stored api key or secret the platform spends on every fire —
+the decision a webhook's pins and the team's own keys and secrets already
+reserve to `canManageTeam` (team admin/owner, an admin of its org,
+super-admin). So a create that pins anything, and on a subscription that
+holds a pin any edit but `enabled` — the pins themselves (an add, a replace,
+a clear) or what the pinned credential is spent on (bot, repo, vars, match,
+cadence) — answers `403` to a member. A member still pauses, resumes and
+deletes a pinned subscription, and keeps every write on an unpinned one. An
+identity store that cannot judge the right answers `5xx`, never a `403`.
+Local mode, with no identity store, has no roles to read.
+
+**What a subscription reports.** The two reads are typed in the spec
+(`Subscription`, the list under `{"subscriptions": […]}`), so a generated
+client sees two different facts and not one: `last_error` / `last_error_at`
+are the LAUNCH verdict (empty = the launch went through; a message = an org
+launch-gate denial, a run service that refused), while `last_run_id`,
+`last_run_status`, `last_run_error`, `last_run_error_code` and `last_run_at`
+are the OUTCOME of the run that was launched — written by the run-outcome
+spine from the run's terminal status, with the error fields cleared by a
+successful run. A subscription that fired and whose run died otherwise reads
+exactly like one that fired and worked. The same tuple is on a cloud schedule
+and on a board card ([native tracker](native-tracker.md)); `iterion remote
+triggers list` prints it with the record, and the studio's Automations table
+renders it in its `Last run` column.
+
+**And on an inbound delivery.** The delivery rows under
+`GET /api/teams/{id}/webhooks/{webhook_id}/deliveries` carry the same tuple,
+with one difference: `run_id` is its id half (a delivery launches ONE run, and
+a retry of a failed row replaces it), so the row adds `last_run_status`,
+`last_run_error`, `last_run_error_code` and `last_run_at` and no second id.
+Read it against the row's OWN `status`/`error`, which are the delivery's
+verdict — `launched` means the run started, nothing more. The stamp lands only
+while `run_id` still names the run being described, so a retried delivery is
+never labelled with its predecessor's outcome. The run carries the
+back-reference the writer follows (`source.kind` = `webhook`,
+`source.delivery_id` — [persisted formats](persisted-formats.md)); the
+delivery audit keeps its own TTL, so a row that aged out simply stops being
+stamped.
+
 Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
 ## Personal access tokens (PATs)
@@ -688,6 +785,23 @@ Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 | `GET` | `/api/me/tokens` | member | List own PATs (no plaintext) |
 | `POST` | `/api/me/tokens` | member | Mint a PAT (`iap_…` shown once) |
 | `DELETE` | `/api/me/tokens/{token_id}` | member (owner) or super-admin | Revoke |
+
+A token carrying a `team_id` is **bound** to that team, not merely served
+with it active: every team-addressed route answers `403` for another team,
+every org-addressed route answers `403` for another organization than that
+team's (a pin on a team with no parent org reaches none), and a run or a
+board issue of another team answers the `404` an invisible run answers —
+the owner's own membership there changes nothing. `POST /api/me/tokens`
+fills the minter's active team in when the caller names none, so **every**
+token of an ordinary account carries a pin and reaches exactly one team: a
+client that needs several teams mints one token per team, which is also how
+it revokes one team's access alone. Only a super-admin mints an unpinned
+token (the `/api/admin/…` surfaces are tenant-free by design), and a
+super-admin's token keeps the platform reach its account has, pinned or
+not. The pin is read wherever authorization is decided
+([pkg/auth](../pkg/auth/identity.go) `Identity.PinRefusesTeam` /
+`PinRefusesOrg`), so it holds through a WebSocket ticket the token mints and
+through the run-by-id re-scope.
 
 Source: [pkg/server/pat_routes.go](../pkg/server/pat_routes.go).
 
@@ -699,14 +813,37 @@ Spaces are addressed by query params (`?name=`, `?visibility=`, plus
 refused `403` before any `visibility` arm is evaluated — super-admins
 included.
 
+Every route of the family mounts through the write rung (`memoryWriteAuth`):
+a state-changing call needs the member role in the caller's ACTIVE team and
+is otherwise refused `403 member_role_required`, a read checks no role. A
+document in a memory space is read back into every agent run that opens the
+space, and the engine reads it under a machine principal the rung exempts —
+so writing one is authorized here, like a board card or a trigger
+subscription. A `config_editor` therefore reads the team's spaces and writes
+none (ADR-078).
+
+The rung applies on EVERY visibility, the caller's own `user` space included:
+that axis keys on the authenticated caller (never `?user=`), so the document
+a refused caller would write is instruction for a run of *theirs* — and
+launching such a run takes this same rung.
+
+The READS check no role, and that is the decision, not an omission: a
+`viewer` and a rank-0 `config_editor` keep all four — the whole space as one
+tarball, `GET /api/memory/export`, included. Raising a read to `member` would
+take a standing check the family does not have today (the rung is inert on a
+safe method by construction); until one exists, the `Auth` column below is
+what each METHOD requires, while the generated
+[annex](cloud-rest-api-generated.md) prints the shared MOUNT (`session +
+write rung`) for all seven rows.
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/memory/usage` | member | `{used_bytes, quota_bytes}` for one space |
-| `GET` | `/api/memory/docs` | member | List documents in a space (optional `?dir=`) |
-| `GET` | `/api/memory/doc` | member | Read a document (`?path=`) |
+| `GET` | `/api/memory/usage` | authenticated (no role) | `{used_bytes, quota_bytes}` for one space |
+| `GET` | `/api/memory/docs` | authenticated (no role) | List documents in a space (optional `?dir=`) |
+| `GET` | `/api/memory/doc` | authenticated (no role) | Read a document (`?path=`) |
 | `PUT` | `/api/memory/doc` | member (super-admin for `visibility=global`) | Write |
 | `DELETE` | `/api/memory/doc` | member (super-admin for global) | Delete |
-| `GET` | `/api/memory/export` | member | Tarball export of the space |
+| `GET` | `/api/memory/export` | authenticated (no role) | Tarball export of the space |
 | `POST` | `/api/memory/import` | member (super-admin for global) | Import a tarball |
 
 Source: [pkg/server/memory_routes.go](../pkg/server/memory_routes.go).
@@ -722,21 +859,50 @@ team (ADR-103), not in their active one: reads take a viewer, actions a member
 caller the run's browser and terminal — and an admin/owner of the team's org
 who is not a member of that team enters as a viewer.
 
+The board issues join the class too (ADR-141): `/api/v1/native/issues/{id}…`
+and `/api/v1/pipeline-board/tasks/{id}…` are served from the issue's team
+through the issue-tenant resolver — reads for a viewer, mutations for a
+member — with the handlers' store resolution reading the re-scoped stamp.
+### The id-addressed routes outside the by-id class
+
+Every route the mux serves under an id wildcard is either in the class above
+or governed by another stated rule — the enumeration is pinned by
+`TestEveryIDWildcardRouteIsClassifiedOrReasoned` in
+[pkg/server/id_route_enumeration_test.go](../pkg/server/id_route_enumeration_test.go),
+so a new id-addressed route cannot land unclassified:
+
+| Family | Rule |
+|---|---|
+| `/api/teams/{id}/…` | the path team IS the scope (`canViewTeam` / `canManageTeam`) |
+| `/api/admin/…` | super-admin over the platform sentinel tenant |
+| `/api/auth/…`, `/api/me/…`, `/api/orgs/…` | identity surfaces, user-scoped, org-scoped by path |
+| `/api/v1/native/issues/{id}…`, `/api/v1/pipeline-board/tasks/{id}…` | IN the by-id class since ADR-141: served from the issue's team (the resolver reads the id across teams; reads take a viewer, mutations a member) — self-hosted's single store stays out of the class |
+| `/api/v1/native/labels/{label}`, `/api/v1/native/board/…` | board vocabulary and config of the active team's store |
+| `/api/v1/bots/{name}…` | the dispatch catalog: a tiered namespace by design (team > platform > baked), not an authored-resource id |
+| `/api/assistant-watches/{watchID}` | fixed compatibility sibling of the run-addressed `DELETE /api/runs/{id}/assistant-watches/{watchID}`: the stop resolves the watch's target run under the caller's active team |
+| `/api/v1/marketplace/…` | public marketplace family (anonymous reads, repo-coordinate installs); the browse routes serve a public view — the submitter and reviewer account ids, the review timestamp and the reject reason are only returned to the submitter and to super-admins (`marketplace.ForViewer`); the moderation queue stays whole |
+| `/api/v1/mcp/…` | per-run token over single-tenant store surfaces |
+| `/api/webhooks/…` | signature-authenticated deliveries |
+| `/api/examples/{name…}`, `/api/local/…`, `/api/projects/{id}`, `/api/v1/pipeline-board/workspace-images/{path…}`, `/api/v1/plugins/{name}…`, `/brand/{file}` | deployment-local or static surfaces with no tenant dimension (local registries, workdir files, the plugin tree, brand assets) |
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/runs` | authenticated (no role) — another team than the active one, through `?team_id=` or `X-Iterion-Team`, needs `canViewTeam` | List runs |
 | `GET` | `/api/runs/global-active` | authenticated (no role) | Active runs — running, queued, paused or `failed_resumable`; a `running` run quiet past 15 minutes reads as an orphan and is dropped — across the **local** stores on this machine — a desktop-daemon affordance walking the local iterion home. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
-| `POST` | `/api/runs` | member | Launch a workflow |
+| `POST` | `/api/runs` | member | Launch a workflow — by inline `source`, by `file_path`, or by `bot_id`, which the server resolves through its tiers (team > platform > baked) and which alone gives the run a bot identity: beside an inline `source` a `bot_id` is ignored. `expect_source_sha256` pins a cloud launch that resolves a bot to the program its caller read (`GET /api/v1/bots/{name}/launch-source`): the server runs that program or refuses `409` with `error_code: bot_source_changed`, and outside cloud refuses the pin itself (`400`, `error_code: launch_pin_unsupported`). The field, what it covers, its error codes and its refusals: [The pinned launch](#the-pinned-launch). Absent, nothing is compared. A stored bot tier that does not answer while the launch resolves its bot is a masked `503` (no `error_code`: rely on the status) |
+| `GET` | `/api/v1/bots/{name}/launch-source` | authenticated; every bundle the answer draws on must be readable by the caller | The program a launch naming this bot runs, as the caller's active team resolves it now: `bot_id` (canonical), `tier` (`team` / `platform` / `baked`), the entry `source`, `sha256` — the identity of the program a launch compiles, and in cloud the token of [the pinned launch](#the-pinned-launch), which says what that identity covers — the parsed `document` (with `diagnostics`, `unit`, `bindable`, `read_refusal`, as `/api/files/open` answers a file) and `presets`, the preset set the launch applies: the program's `presets:` block overlaid by the bundle's `presets/<name>.md`, a file winning on a name. It resolves and materializes the bot the way the launch does, so a form built on it and the launch it posts agree. Its access rule is one, for the bot named and for what it builds on. A platform override and the baked catalog are readable by any authenticated caller with an active team: they are what the platform serves every tenant (a credential scoped to no team is refused before the route). Nothing confidential belongs in a platform override. The exception is a platform or baked bot built on a team's own row: it is refused to a member who edits no bot of that team, as that row is. A team's own row takes the right to edit the team's bots, the gate of `GET /api/teams/{id}/bot-sources/{slug}`, and the same is asked of every team row a launch freezes with the bot in cloud — the producer of a fragment or of a skill, a child bot — including the ones whose text the answer does not carry (a child, a skill's producer): a member who edits no bot of the team is refused the read of a bot built on one. `403` names the team row the caller may not read, and is answered before anything of the row is weighed or read. What the refusal keeps from that caller is the `.bot` text — not its digest, which is the `workflow_hash` on the header of every run of the bot, nor what a run shows: they can still launch the bot by `bot_id` with no pin where the launch gate admits them, and the prompts a run renders reach its launcher and every viewer of that run. Of the baked catalog, `/api/examples/{name}` already serves every authenticated caller the recipes embedded in the binary and the first root of `ITERION_BOTS_PATH`, and this route serves the same callers a bot of every further root — mount under a further root only bots every user of the deployment may read. `404` when the name resolves on no tier; `422` when the bot resolves but not to a launchable program, with the refusal a launch of it would draw; `503` when a tier did not answer, or when the server's concurrent DSL readings are at their bound (`error_code: dsl_read_admission`, with `Retry-After`); `500` when the resolution or the reading itself fails |
 | `POST` | `/api/v1/pipeline-board/tasks/{id}/launch` | member | Launch the bot a pipeline-board task names, bypassing the ready-state ranking — the same `gateLaunch` admission as `POST /api/runs` |
-| `POST` | `/api/runs/preview-cost` | authenticated (no role) | Estimate cost before launch |
-| `POST` | `/api/runs/uploads` | authenticated (no role) | Upload an attachment |
+| `POST` | `/api/runs/preview-cost` | authenticated (no role) | Estimate cost before launch — of the whole program a launch of the same `file_path`/`source` compiles, so a bot in several files is priced across its unit, fragments included, with the bundle's `prompts/*.md` merged the way the launch merges them. A main handed over inline with no directory behind it carries `import` lines whose fragments did not travel: no price is answered and `notes` says `unit_not_loaded`. A program the launch would refuse — a load error (a fragment the import cannot read) or a compile error (C003 and friends) — is not priced either: `notes` says `workflow_errors`. |
+| `POST` | `/api/runs/uploads` | authenticated (no role) | Upload an attachment — staged through the run store's `StagingStore` seam (the `staged_uploads` collection + `uploads/<upload-id>/` in the bucket, under the caller's tenant; swept after an hour), then promoted by the launch that names the id |
 | `GET` | `/api/runs/{id}` | viewer (run tenant) | Run state |
 | `GET` | `/api/runs/{id}/events` | viewer | Event log |
 | `GET` | `/api/runs/{id}/workflow` | viewer | Workflow source attached to the run |
 | `GET` | `/api/runs/{id}/artifacts/{node}` | viewer | Artifact versions for a node |
 | `GET` | `/api/runs/{id}/artifacts/{node}/{version}` | viewer | One artifact |
 | `GET` | `/api/runs/{id}/files` / `…/files/content` / `…/files/diff` | viewer | Working-tree views |
-| `GET` | `/api/runs/{id}/commits` etc. | viewer | Worktree commit history |
+| `GET` | `/api/runs/{id}/commits` | viewer | Worktree commit history |
+| `GET` | `/api/runs/{id}/commits/{sha}` | viewer | One commit |
+| `GET` | `/api/runs/{id}/commits/{sha}/diff` | viewer | That commit's diff |
 | `GET` | `/api/runs/{id}/attachments/{name}` | viewer | Download an attachment |
 | `GET` | `/api/runs/{id}/attachments/{name}/url` | viewer | Pre-signed S3 URL |
 | `POST` | `/api/runs/{id}/cancel` | member | Cancel a running run |
@@ -755,7 +921,9 @@ who is not a member of that team enters as a viewer.
 | `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | viewer | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
 | `GET` | `/api/runs/{id}/session-board` | viewer | Session-board widgets ([session-board.md](session-board.md)) |
 | `GET` | `/api/runs/{id}/interactions/pending` | viewer | Unanswered `ask_user_async` questions |
-| `GET`/`POST`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message`, `…/queue-message/{msgID}` | viewer (GET) · member (POST, DELETE) | Pending steering messages for the run |
+| `GET` | `/api/runs/{id}/queue-messages` | viewer | Pending steering messages for the run |
+| `POST` | `/api/runs/{id}/queue-message` | member | Queue one steering message |
+| `DELETE` | `/api/runs/{id}/queue-message/{msgID}` | member | Drop a message still pending |
 | `GET` | `/api/runs/{id}/log` | viewer | Streamed run log |
 | `GET` | `/api/runs/{id}/preview` | viewer | Preview proxy (SSRF-guarded) |
 | `GET` | `/api/ws/runs/{id}/shell` | member | Post-mortem PTY in a preserved worktree — a local-mode operation: cloud answers `403` before the upgrade ([post-mortem-shell.md](post-mortem-shell.md)); while open, it asks again every 30 s whether its credential still stands |
@@ -783,7 +951,10 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET` | `/api/admin/users/{id}` | super-admin | One account's file: status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was **granted** — not what it could reach. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
 | `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset; disabled accounts return 422 and must be explicitly re-enabled first; a personal access token answers `403` for its own account |
-| `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
+| `POST` | `/api/admin/users/{id}/erase` | super-admin | Erase the account by anonymization (GDPR art. 17, [ADR-159](adr/159-identity-data-lifecycle-erasure-by-anonymization.md)): the row keeps its id as a pseudonym under `erased-<id>@erased.invalid` with status `erased`; name, password, SSO links, memberships, pending invitations, sessions (deleted), personal access tokens (revoked), push subscriptions, the person's own subscription credentials and pool pledges, personal API keys and secrets go; run notes it wrote name its id; its config-share edits lose IP and user agent; the audit rows it acted in lose IP, user agent and address, the rows naming it otherwise the address; the personal org is scheduled for purge. Idempotent (`already_erased`); the `user.erased` audit line is written for an interrupted erasure too, with `incomplete: true`. `422 self_erasure` on the caller's own account, `409 last_org_owner` for the last owner of a shared org; an erased account then answers `409 user_erased` to `PATCH` and `422` to `reset-password` |
+| `GET` | `/api/admin/audit` | super-admin | Platform audit log — super-admin actions and every refused sign-in (`auth.login.failed`, attempted address as a peppered digest) (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
+| `GET` | `/api/admin/audit` | super-admin | Platform audit log (platform-scoped actions; filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
+| `GET` | `/api/admin/runs` | super-admin | Cross-org runs view (#2148): every org's runs in one list — the filters combine (`?org_id=`, `?team_id=`, `?status=`, `?since=`), pagination is server-side across orgs (`?limit=` 1..500, default 50; pass the answered `next_cursor` back as `?cursor=` — a malformed token is a 400), and each row names its team and org and carries the run's sovereign runner-pool stamp. Read-only: opening ONE run rides the ADR-103 choke point; every super-admin cross-team grant — this list included — is audited at platform scope through one named predicate |
 | `GET` | `/api/admin/dlq` | super-admin | List parked messages |
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |
 | `POST` | `/api/admin/dlq/{seq}/replay` | super-admin | Re-publish onto the live subject |
@@ -799,6 +970,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 [pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
+[pkg/server/admin_runs_routes.go](../pkg/server/admin_runs_routes.go),
 [pkg/server/platform_settings.go](../pkg/server/platform_settings.go),
 [pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go); the four user
 rows are registered in [pkg/server/auth_routes.go](../pkg/server/auth_routes.go)
@@ -810,7 +982,8 @@ audit row in [pkg/server/audit_helper.go](../pkg/server/audit_helper.go).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
+| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits, the `legal` block (configured legal documents, contact, accessibility status — [ADR-160](adr/160-legal-content-is-deployment-configuration.md)) |
+| `GET` | `/api/legal/{slug}` | public, rate-limited per IP | One of the operator's legal documents (`mentions-legales`, `confidentialite`, `cgu`, `accessibilite`) as markdown with the contact and the accessibility declaration; `ETag` revalidation; 404 for a slug that names no document or one this deployment did not configure |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
 | `GET` | `/readyz` | public | Readiness — every dependency the deployment wired (`Config.ReadinessChecks`), pinged concurrently under a per-check deadline (1s by default). A failing CRITICAL check is `503`; a non-critical one is reported `degraded` and still answers `200`. Draining or superseded is `503` without touching a dependency; no checks wired (local mode) is `200` |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |
@@ -869,6 +1042,66 @@ envelope with `"error": "member_role_required"` and no `reset_at` —
 nothing resets, the caller's role does; a refused board or trigger write
 answers the same envelope without counting as a denied launch. Token list
 and HTTP semantics in [quotas-and-limits.md](quotas-and-limits.md).
+
+### The pinned launch
+
+`POST /api/runs` takes `expect_source_sha256` beside `bot_id`: the `sha256`
+that `GET /api/v1/bots/{name}/launch-source` answered for the bot. It is the
+identity of the program the launch compiles — the `workflow_hash` the run
+records — and the server refuses the launch (`409`,
+`error_code: bot_source_changed`) when the program it compiled for this launch
+has another identity. Absent, nothing is compared and the launch runs what the
+name resolves to.
+
+The pin is no secret, and nothing rests on it being one: it is the
+`workflow_hash` on the header of every run of the bot, read by whoever may view
+a run. The read's access rule protects the program's text, not its digest.
+
+**It is the cloud lane's guarantee.** In cloud a launch is published with the
+frozen collection its compile read, and the runner executes that collection:
+nothing is read again, so the program that was compared is the program that
+runs. Every other lane reads the bot's files again after it accepts the
+launch — the in-process engine merges the bundle's presets from disk, a
+detached runner (`ITERION_RUNS_DETACHED=1`) compiles its own copy, a launch
+parked behind the pipeline cap compiles when its slot frees — so a pin there
+would be compared and then outrun. Outside cloud a pin is refused by name
+(`400`, `error_code: launch_pin_unsupported`), whatever it says; the read
+still answers `sha256` there, as the identity a launch of the bot compiles.
+
+**What the identity covers, and what it does not.** A change to a part of the
+first column between the read and the launch is refused. A change to a part
+of the second is not: the launch runs, with that part as it is when the
+launch freezes it.
+
+| Covered — a change is a `409` | Not covered — the launch runs |
+|---|---|
+| the entry source | a child bot's program — a child is its own run, with its own `workflow_hash` |
+| the bundle's fragments (the files its `import`s read) | the bundle's own skills (`skills/`) |
+| the bundle's prompts (`prompts/*.md`) | a skill shared by another bundle |
+| the files its `{{include}}` markers read | the manifest (`manifest.yaml`) |
+| the bundle's preset files (`presets/*.md`) | every other file of the bundle (scripts, assets) |
+| a fragment shared by another bundle | |
+| another tier serving the name with another program | another tier serving the name with the same program — a team fork that changes only skills or scripts runs, as the team's row |
+
+| Answer | When |
+|---|---|
+| `409`, `error_code: bot_source_changed` | The program the server compiled is not the pinned one. Nothing is published and the admission is handed back; read the program again and launch what it answers |
+| `400`, `error_code: launch_pin_unsupported` | No lane of this server can hold a pin: it is not in cloud mode, or its run service publishes no frozen program. Nothing is compared, published or metered; launch without the pin |
+| `400` | The value is not a pin: a pin is 64 lowercase hex digits, as the read wrote it |
+| `400` | A pin beside an inline `source`: an inline source is its own program and names no bot — send one or the other |
+| `400` | A pin on a launch that resolves no bot (a `file_path` that names none): a pin nobody checks would be a false guarantee |
+| `403` | The caller may not make the read that issues a pin — a team's own row that serves the bot, or one it is frozen with, is not readable by them (only a team row is ever refused; a platform override and the baked catalog are every authenticated caller's). The answer names that row. The same launch with no pin is unaffected |
+| `503` | A stored tier did not answer while the launch resolved its bot — the bot's own, or that of a bundle it is frozen with. This is so with or without a pin. The body is masked and carries no `error_code`: rely on the status, and retry. The admission is handed back |
+
+The refusals the request alone decides — not a pin, beside a source, outside
+cloud — are judged with the payload, before the launch gate: they take no
+admission and count no denied launch. The others are answered after it, and
+hand the admission back.
+
+The studio's launch of a bot in cloud is this exchange: its form is rendered
+from the read — fields, presets and all — and posts `bot_id` with the read's
+`sha256`, never a source. Outside cloud the studio launches a bot by its
+workflow file, with no pin.
 
 ### `GET /api/orgs/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
 

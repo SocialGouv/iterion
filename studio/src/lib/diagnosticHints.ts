@@ -208,6 +208,11 @@ const HINTS: Record<string, DiagnosticHint> = {
     hint: "`threshold` must be in (0, 1]; `preserve_recent` must be ≥ 1. Omit either field to inherit defaults.",
     docsAnchor: "c043",
   },
+  C169: {
+    title: "Bang prefix in a prompt body",
+    hint: "A prompt has no shell: `{{!input.x}}` renders the value exactly like `{{input.x}}`. The raw form is a tool `command:`/`script:`/`postcondition:` spelling — drop the `!`.",
+    docsAnchor: "c169",
+  },
 };
 
 export function getHint(code: string): DiagnosticHint {

@@ -21,7 +21,7 @@ func TestResolveCapabilities_CuratedSourceWhenAggregatorEmpty(t *testing.T) {
 	if rc.ContextWindow != 1_000_000 {
 		t.Errorf("ContextWindow = %d, want 1000000 (curated glm-5.2)", rc.ContextWindow)
 	}
-	if !rc.Reasoning || !rc.ToolCall || !rc.Temperature {
+	if !yes(rc.Reasoning) || !yes(rc.ToolCall) || !yes(rc.Temperature) {
 		t.Errorf("flags = %+v, want all true", rc)
 	}
 	if rc.Spec != "anthropic/glm-5.2" {

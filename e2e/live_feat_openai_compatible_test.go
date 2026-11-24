@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/liveledger"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -45,10 +44,10 @@ func requireGateway(t *testing.T) {
 	t.Helper()
 	loadDotEnv(t)
 	if os.Getenv("OPENAI_COMPATIBLE_BASE_URL") == "" {
-		t.Skip("OPENAI_COMPATIBLE_BASE_URL is not set — no gateway to prove against")
+		skipLive(t, "OPENAI_COMPATIBLE_BASE_URL is not set — no gateway to prove against")
 	}
 	if os.Getenv("OPENAI_COMPATIBLE_API_KEY") == "" {
-		t.Skip("OPENAI_COMPATIBLE_API_KEY is not set — the gateway may be network-authenticated only, and this test does not guess")
+		skipLive(t, "OPENAI_COMPATIBLE_API_KEY is not set — the gateway may be network-authenticated only, and this test does not guess")
 	}
 	// The deployment may serve several ids; the operator's env picks one
 	// that exists (the fixture's default is the gateway's general model).
@@ -173,8 +172,7 @@ func TestLive_Feat_OpenAICompatible_InProcess(t *testing.T) {
 	}
 	requireGateway(t)
 	isolateFromVendors(t)
-	liveledger.Track(t)
-	res := runGatewayBot(t, "feat_gateway_inprocess.bot")
+	res := runBotLive(t, gatewaySpec(t, "feat_gateway_inprocess.bot"))
 	assertNodesFinished(t, res.events, "gw")
 	assertGatewayIdentity(t, res.events)
 	assertGatewayCatalog(t, res.events)
@@ -187,27 +185,28 @@ func TestLive_Feat_OpenAICompatible_Sandboxed(t *testing.T) {
 	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-full:edge")
 	requireGateway(t)
 	isolateFromVendors(t)
-	liveledger.Track(t)
-	res := runGatewayBot(t, "feat_gateway_sandbox.bot")
+	res := runBotLive(t, gatewaySpec(t, "feat_gateway_sandbox.bot"))
 	assertNodesFinished(t, res.events, "gw")
 	assertGatewayIdentity(t, res.events)
 	assertGatewayCatalog(t, res.events)
 }
 
-// runGatewayBot runs one gateway fixture end to end. The liveledger hook
-// lives in runBotLive.
-func runGatewayBot(t *testing.T, botFile string) liveResult {
+// gatewaySpec seeds one gateway fixture's workspace and returns the spec
+// the test hands to runBotLive itself — the liveledger hook, and the
+// provenance the row records, live there; a second Track in the test body
+// would merge a tracker that knows nothing into the harness's row.
+func gatewaySpec(t *testing.T, botFile string) liveSpec {
 	t.Helper()
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-gateway-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(workspaceDir) })
-	return runBotLive(t, liveSpec{
+	return liveSpec{
 		runIDBase:    "live-feat-gateway",
 		botFile:      botFile,
 		workspaceDir: workspaceDir,
 		timeout:      10 * time.Minute,
 		withWorkDir:  true, // sandbox-backed: mount the seeded workspace, not the CWD
-	})
+	}
 }

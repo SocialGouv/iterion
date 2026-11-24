@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -148,4 +149,34 @@ func TestMongoStore_BulkGets(t *testing.T) {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
 	runBulkGetSuite(t, st)
+	t.Run("corrupt users", func(t *testing.T) { runCorruptMongoBulk(t, st.users, st.GetUsersByIDs) })
+	t.Run("corrupt teams", func(t *testing.T) { runCorruptMongoBulk(t, st.teams, st.GetTeamsByIDs) })
+	t.Run("corrupt orgs", func(t *testing.T) { runCorruptMongoBulk(t, st.orgs, st.GetOrgsByIDs) })
+}
+
+func runCorruptMongoBulk[T any](t *testing.T, coll *mongo.Collection, read func(context.Context, []string) (map[string]T, error)) {
+	t.Helper()
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	ids := []string{"readable-before", "corrupt-document", "readable-after"}
+	for _, id := range ids {
+		var name any = "Readable"
+		if id == "corrupt-document" {
+			name = int32(42)
+		}
+		if _, err := coll.InsertOne(ctx, bson.M{"_id": id, "name": name, "slug": id, "email": id + "@example.test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := read(ctx, ids)
+	partial, ok := err.(*BulkDecodeError)
+	if len(rows) != 2 || !ok || len(partial.Failures) != 1 || partial.Failures["corrupt-document"] == nil {
+		t.Fatalf("real Mongo bulk read does not isolate corruption: rows=%v err=%v", rows, err)
+	}
+	if _, ok := rows["readable-before"]; !ok {
+		t.Fatal("readable predecessor lost")
+	}
+	if _, ok := rows["readable-after"]; !ok {
+		t.Fatal("readable successor lost")
+	}
 }

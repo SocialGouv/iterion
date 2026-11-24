@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,23 +34,29 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/hostmcp"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
@@ -58,6 +65,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
@@ -208,6 +216,14 @@ const sandboxSetupTimeoutNakDelay = 2 * time.Minute
 // the image pull on that cold node. Re-offering sooner just re-hits the
 // same ceiling and spends a delivery for it.
 const sandboxCapacityNakDelay = 3 * time.Minute
+
+// attachmentsFetchNakDelay spaces the redeliveries of a run whose
+// attachments the store did not hand over before the sandbox
+// (ATTACHMENTS_UNFETCHABLE). A storage blip clears on the store's side; a
+// bare Nak re-offers within seconds, spends every permitted delivery on the
+// same blip, and the DLQ park then writes DLQ_PARKED over the code. The
+// setup-timeout spacing is the same kind of wait.
+const attachmentsFetchNakDelay = 2 * time.Minute
 
 // resolveDeliveryPreconditions runs the pre-lock store gauntlet:
 // LoadRun (with its own short detached timeout context so a runner
@@ -454,8 +470,8 @@ func supersededOutcome(msg *queue.RunMessage, run *store.Run) preconditionOutcom
 		op:          "ack-stale-attempt",
 		action:      actionAck,
 		level:       logWarn,
-		logFmt:      "runner: run %s was queued again at %s, after this %s message was published (%s) — dropping the stale delivery (the newer attempt carries its own)",
-		logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), kind, msg.PublishedAtRFC},
+		logFmt:      "runner: run %s carries a different queue marker (%s) than this %s delivery (%s) — dropping the stale delivery (the newer attempt carries its own)",
+		logArgs:     []any{msg.RunID, fmtQueuedMarker(run), kind, deliveryAttemptLabel(msg)},
 	}
 	if !run.Status.IsQueued() {
 		return drop
@@ -466,8 +482,8 @@ func supersededOutcome(msg *queue.RunMessage, run *store.Run) preconditionOutcom
 		action:         actionNakDelayed,
 		delay:          supersededQueuedNakDelay,
 		level:          logWarn,
-		logFmt:         "runner: run %s was queued again at %s, after this %s message was published (%s), and nobody has claimed that attempt yet — re-offering this delivery in %s rather than dropping it: a resume refused before its publication puts this attempt back",
-		logArgs:        []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), kind, msg.PublishedAtRFC, supersededQueuedNakDelay},
+		logFmt:         "runner: run %s carries a different queue marker (%s) than this %s delivery (%s), and nobody has claimed that attempt yet — re-offering this delivery in %s rather than dropping it: a resume refused before its publication puts this attempt back",
+		logArgs:        []any{msg.RunID, fmtQueuedMarker(run), kind, deliveryAttemptLabel(msg), supersededQueuedNakDelay},
 		onLastDelivery: &drop,
 	}
 }
@@ -527,6 +543,8 @@ func (r *Runner) supersededAfterEngine(msg *queue.RunMessage, engineErr error) p
 	switch {
 	case err != nil || run == nil:
 		return reoffer("the run cannot be read to tell whether that attempt is settled (%v)", err)
+	case !queue.Superseded(msg, run) && msg.Resume != nil && msg.Resume.CodemodeQuota != nil && !run.Status.IsQueued():
+		return drop
 	case !queue.Superseded(msg, run):
 		return reoffer("the newer attempt's flip was reverted since: this attempt is the run's current one")
 	case run.Status.IsQueued():
@@ -551,36 +569,63 @@ func (r *Runner) supersededUnderLock(msg *queue.RunMessage, logger *iterlog.Logg
 	return supersededAttempt(msg, run)
 }
 
-// spendScratchConsent drops the consent to the scratch's loss a resume
-// message carries unless the run is still queued for that message: the
-// consent is spent by the claim of the publication it came with. A
-// redelivery after that claim, an adoption, a stale attempt meets losses the
-// operator was never shown. Called under the run's lock.
-func (r *Runner) spendScratchConsent(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) {
-	if msg.Resume == nil || !msg.Resume.AcceptScratchLoss || r.queuedForThisResume(ctx, msg) {
-		return
+// spendResumeIntent drops one-shot intent unless the run is still queued for
+// this message. After its claim, a redelivery or adoption replays the bank's
+// quotas from the run doc and may not accept a new loss or overwrite a quota.
+// Called under the run's lock.
+func (r *Runner) spendResumeIntent(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) error {
+	if msg.Resume == nil || (!msg.Resume.AcceptScratchLoss && msg.Resume.CodemodeQuota == nil) {
+		return nil
 	}
-	logger.Warn("runner: run %s: the consent to its scratch's loss came with a resume already claimed once — not carried over", msg.RunID)
-	msg.Resume.AcceptScratchLoss = false
-}
-
-// queuedForThisResume reports, under the run's lock, that the run is still
-// queued for msg — the publisher's flip for this publication, not yet
-// claimed: its QueuedAt is not newer than msg's publication. Anything it
-// cannot prove — an unreadable doc, an unparsable publication time — is
-// not.
-func (r *Runner) queuedForThisResume(ctx context.Context, msg *queue.RunMessage) bool {
 	loadCtx, cancel := context.WithTimeout(store.WithIdentity(context.WithoutCancel(ctx), msg.TenantID, msg.OwnerID), 5*time.Second)
 	defer cancel()
 	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
-	if err != nil || run == nil || run.Status != store.RunStatusQueued {
-		return false
+	queued := false
+	if patch := msg.Resume.CodemodeQuota; patch != nil {
+		if err != nil || run == nil {
+			if err == nil {
+				err = store.ErrRunNotFound
+			}
+			return fmt.Errorf("runner: run %s: read quota resume attempt: %w", msg.RunID, err)
+		}
+		if queue.Superseded(msg, run) {
+			return fmt.Errorf("%w: run %s: codemode quota queue marker changed", runtime.ErrResumeSuperseded, msg.RunID)
+		}
+		queued = run.Status.IsQueued()
+		if !queued && !store.MatchesExactQueuedAt(run.CodemodeQuotaClaimedAt, patch.QueuedAt) {
+			return fmt.Errorf("%w: run %s: codemode quota resume is no longer queued and never claimed its quota", runtime.ErrResumeSuperseded, msg.RunID)
+		}
+		msg.Resume.CodemodeQuotaSpent = !queued
+	} else if err == nil && run != nil && run.Status.IsQueued() {
+		publishedAt, parseErr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+		queued = parseErr == nil && (run.QueuedAt == nil || !run.QueuedAt.After(publishedAt))
 	}
-	publishedAt, err := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
-	if err != nil {
-		return false
+	if !queued && msg.Resume.AcceptScratchLoss {
+		logger.Warn("runner: run %s: the consent to its scratch's loss came with a resume already claimed once — not carried over", msg.RunID)
+		msg.Resume.AcceptScratchLoss = false
 	}
-	return run.QueuedAt == nil || !run.QueuedAt.After(publishedAt)
+	return nil
+}
+
+func codemodeQuotaQueuedAt(msg *queue.RunMessage) time.Time {
+	if msg.Resume != nil && msg.Resume.CodemodeQuota != nil {
+		return msg.Resume.CodemodeQuota.QueuedAt
+	}
+	return time.Time{}
+}
+
+func deliveryAttemptLabel(msg *queue.RunMessage) string {
+	if !codemodeQuotaQueuedAt(msg).IsZero() {
+		return "queued_at=" + codemodeQuotaQueuedAt(msg).Format(time.RFC3339Nano)
+	}
+	return "published_at=" + msg.PublishedAtRFC
+}
+
+func fmtQueuedMarker(run *store.Run) string {
+	if run.QueuedAt == nil {
+		return "(missing)"
+	}
+	return run.QueuedAt.UTC().Format(time.RFC3339Nano)
 }
 
 // runningAdoptionFloor is how old a `running` doc's last write must be
@@ -650,10 +695,14 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 			logArgs: []any{msg.RunID},
 		}
 	}
+	originalCtx, formatErr := store.BindRunValueFormat(store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID), preRun)
+	if formatErr != nil {
+		return preconditionOutcome{finalStatus: "value_format_refused", op: "term-value-format", action: actionTerm, level: logWarn, logFmt: "runner: run %s original format refused: %v", logArgs: []any{msg.RunID, formatErr}}
+	}
 	loadCtx, loadCancel := context.WithTimeout(
-		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		originalCtx,
 		5*time.Second)
-	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	_, run, err := store.LoadRunWithValueFormat(loadCtx, r.cfg.Store, msg.RunID)
 	loadCancel()
 	if err != nil || run == nil {
 		// The lock is released on the way out; a redelivery re-reads.
@@ -714,13 +763,13 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 		}
 	}
 	casCtx, casCancel := context.WithTimeout(
-		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		originalCtx,
 		5*time.Second)
 	defer casCancel()
 	changed, cerr := r.cfg.Store.UpdateRunOutcome(casCtx, msg.RunID,
 		store.RunStatusFailedResumable,
 		fmt.Sprintf("promoted from running under the delivery's lock: no lease holder, last doc write %s ago (admission-time orphan)", age.Round(time.Second)),
-		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending},
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
 		[]store.RunStatus{store.RunStatusRunning})
 	if cerr != nil {
 		// The CAS itself failed (store outage). Fall through unchanged:
@@ -738,9 +787,9 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 		// Moved between the re-read and the CAS: read once more and take
 		// what the doc says now.
 		reCtx, reCancel := context.WithTimeout(
-			store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+			originalCtx,
 			5*time.Second)
-		moved, merr := r.cfg.Store.LoadRun(reCtx, msg.RunID)
+		_, moved, merr := store.LoadRunWithValueFormat(reCtx, r.cfg.Store, msg.RunID)
 		reCancel()
 		if merr != nil || moved == nil {
 			return preconditionOutcome{
@@ -860,6 +909,16 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	// runner could hold would recognise it. Ack; the run stays exactly as
 	// the engine left it (failed_resumable or failed, with its own code)
 	// and waits for a HUMAN who changed something.
+	if isTrustFloorRefusal(execErr) {
+		return execOutcome{
+			finalStatus: "untrusted_workspace_refused",
+			op:          "ack-untrusted-workspace-refused",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s refused by the workspace-trust floor — NOT redelivering (the same run under the same trust meets the same refusal): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	if errors.Is(execErr, runtime.ErrDeliberateFailure) {
 		return execOutcome{
 			finalStatus: "deliberate_failure",
@@ -922,6 +981,22 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, sandboxCapacityNakDelay, execErr},
 		}
 	}
+	// The store did not hand the run's attachments over before the sandbox
+	// (ATTACHMENTS_UNFETCHABLE): the engine wrote failed_resumable. Same
+	// treatment as the two above — a delayed Nak, the DLQ park on the last
+	// permitted delivery still applying — keyed on the code, which the
+	// engine's typed error carries.
+	if runtimeCodeOf(execErr) == runtime.ErrCodeAttachmentsUnfetchable {
+		return execOutcome{
+			finalStatus: "attachments_unfetchable",
+			op:          "nak-attachments-unfetchable",
+			action:      actionNakDelayed,
+			delay:       attachmentsFetchNakDelay,
+			level:       logWarn,
+			logFmt:      "runner: run %s: the run's attachments could not be fetched (resumable) — re-offered in %s (%v)",
+			logArgs:     []any{runID, attachmentsFetchNakDelay, execErr},
+		}
+	}
 	// The IR does not load on this runner (a server ahead of the fleet):
 	// deterministic here, so Ack — a redelivery reaches the same runner
 	// image and the same verdict, eight times, then the DLQ park overwrites
@@ -952,17 +1027,15 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, appinfo.Version, execErr},
 		}
 	}
-	// A resume the engine found superseded — its run queued again after
-	// this delivery was published: the newer attempt's own delivery runs it.
-	// Nothing of this one happened, and nothing is retried, released,
-	// banked or announced.
-	if errors.Is(execErr, runtime.ErrResumeSuperseded) {
+	// An attempt stopped at admission produces no execution outcome. A queued
+	// supersession's reoffer window is handled separately by processOne.
+	if stoppedAttempt(execErr) {
 		return execOutcome{
 			finalStatus: "superseded",
 			op:          "ack-superseded",
 			action:      actionAck,
 			level:       logWarn,
-			logFmt:      "runner: run %s: this resume was superseded by a newer one — dropping it (%v)",
+			logFmt:      "runner: run %s: this delivery no longer applies — dropping it (%v)",
 			logArgs:     []any{runID, execErr},
 		}
 	}
@@ -1276,7 +1349,32 @@ type Config struct {
 	WorkDir           string        // base directory for per-run workspaces
 	HeartbeatInterval time.Duration // how often to refresh the NATS KV lease
 	PendingPoll       time.Duration // how often to refresh nats_pending_messages (0 = 15s)
-	FetchWait         time.Duration // long-poll wait per fetch
+	// StalledAfter is how long the consumer may hold pending messages
+	// with no claim before the stall gauge fires and the runner logs
+	// the wedge (0 = 10m). A healthy fleet claims runs in seconds, so
+	// the window only trips on a wedged broker or consumer.
+	StalledAfter time.Duration
+	// DisableStallSelfHeal turns off the stall onset's consumer
+	// recreate. The self-heal deletes and re-creates the durable runs
+	// consumer once per frozen-stall episode — the Oct 30 wedge never
+	// self-resolved and only a deletion cleared it (#2890) — and held
+	// deliveries a still-executing run owns redeliver onto the run
+	// lock (parking on the DLQ, never double-executing). The same
+	// switch gates the fast path: the post-election verification the
+	// fetch loop runs when the broker reports a leadership change.
+	// Operators who would rather gate that deletion by hand set this
+	// and run \`admin dlq replay\` / \`consumer rm\` themselves.
+	DisableStallSelfHeal bool
+	// LeadershipVerifyWindow bounds the post-election verification the
+	// fetch loop runs when the broker reports a leadership change
+	// (#2890): held work frozen while the stream advances across the
+	// whole window is the wedge shape and pays a consumer recreate;
+	// anything else (nothing held, deliveries moving, a quiet stream —
+	// the healthy busy fleet reads exactly like that) heals or defers
+	// to the stall detector without touching the consumer. 0 →
+	// natsq.DefaultLeadershipVerifyWindow.
+	LeadershipVerifyWindow time.Duration
+	FetchWait              time.Duration // long-poll wait per fetch
 	// SchemaMismatchDelay is the redelivery delay applied when this runner
 	// rejects a delivery whose schema version it does not recognise (mixed
 	// fleet during a rolling schema bump). Must be long enough that the
@@ -1437,6 +1535,17 @@ type Config struct {
 	// driver answer, which is otherwise whatever this machine happens to
 	// have installed.
 	SandboxDrivers map[string]sandbox.DriverConstructor
+
+	// BoardFor, when non-nil, resolves the tenant-scoped board store a
+	// sandboxed node's board MCP calls dispatch to (C082 on the cloud path,
+	// #2632): the runner mints a per-node token against an in-process
+	// registry, and the engine's per-run gateway listener serves the
+	// grant-scoped routes (/api/v1/mcp/board + /api/v1/mcp/runs) to the
+	// sibling sandbox pod, which reaches them at the runner pod IP — the
+	// same path the egress proxy advertises. The tenant a token may touch
+	// is pinned at mint time from the run MESSAGE, never from the request.
+	// nil → sandboxed board-emit stays disabled, the pre-#2632 behaviour.
+	BoardFor func(tenantID string) native.BoardStore
 }
 
 // Runner is the long-running consumer loop.
@@ -1448,6 +1557,13 @@ type Runner struct {
 	// carrying a callback URL reaches a terminal state. Built in New;
 	// no-op unless the run requested a callback.
 	completionNotifier *notify.Notifier
+
+	// boardMCP serves the token-gated host MCP routes (/api/v1/mcp/board +
+	// /api/v1/mcp/runs) to sandboxed runs over the engine's per-run gateway
+	// listener; boardTokens holds the grants the per-node minter registers.
+	// Both nil unless Config.BoardFor is wired (#2632).
+	boardMCP    http.Handler
+	boardTokens *hostmcp.Registry
 
 	mu      sync.Mutex
 	current *inFlight          // non-nil while a run is being processed; guarded by mu
@@ -1607,19 +1723,30 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 			return nil, err
 		}
 	}
-	// Run-completion webhook notifier. ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1
-	// relaxes the SSRF guard for self-hosted deployments whose callback
-	// receiver lives on a private network alongside the runner; off by
-	// default (cloud runners must not gateway into a private network).
-	allowPrivate := os.Getenv("ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE") == "1"
-	// ITERION_COMPLETION_WEBHOOK_SECRET, when set, HMAC-signs every
-	// outbound payload (X-Iterion-Signature) so receivers can
-	// authenticate the delivery. Empty = unsigned.
-	secret := os.Getenv("ITERION_COMPLETION_WEBHOOK_SECRET")
-	notifier := notify.New(cfg.Logger, 0,
-		notify.WithAllowPrivate(allowPrivate),
-		notify.WithSigningSecret(secret))
-	return &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}, nil
+	// Run-completion webhook notifier (the env-configured construction
+	// every settling lane shares — see notify.NewFromEnv).
+	notifier := notify.NewFromEnv(cfg.Logger, 0)
+	r := &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}
+	r.boardMCP, r.boardTokens = boardMCPWiring(cfg)
+	return r, nil
+}
+
+// boardMCPWiring builds the sandboxed host-MCP transport (C082 on the cloud
+// path, #2632): one mux + one in-process registry for the pod's lifetime.
+// The listener is per run (the engine binds it beside the sandbox); tokens
+// are per node, minted scoped to the node's capabilities and pinned to the
+// run's tenant. The registry never leaves the pod: the only listener that
+// checks these tokens is the one this process serves. nil BoardFor → the
+// transport stays off, the pre-#2632 behaviour.
+func boardMCPWiring(cfg Config) (http.Handler, *hostmcp.Registry) {
+	if cfg.BoardFor == nil {
+		return nil, nil
+	}
+	mux := http.NewServeMux()
+	tokens := hostmcp.NewRegistry()
+	hostmcp.RegisterBoardRoutes(mux, "/api/v1/mcp/board", hostmcp.BoardResolver(cfg.BoardFor), tokens)
+	hostmcp.RegisterRunsRoutes(mux, "/api/v1/mcp/runs", cfg.Store, tokens)
+	return mux, tokens
 }
 
 // SetRolloutState publishes the final epoch claim into runner health just
@@ -1699,6 +1826,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			if errors.Is(err, context.Canceled) {
 				return err
+			}
+			if r.consumer.RecoverIfGone(loopCtx, err) {
+				// A sibling's stall self-heal deleted the consumer under
+				// us and this pod rebuilt its handle; CreateOrUpdate is
+				// idempotent, racing pods converge on one consumer.
+				r.cfg.Logger.Warn("runner: the runs consumer was deleted (a pod's stall self-heal) — recreated, fetching resumes")
+				continue
+			}
+			if natsq.IsLeadershipChange(err) {
+				// The Oct 30 wedge (#2890) opened with exactly this
+				// signal: the election costs seconds, but it can freeze
+				// the durable consumer's raft state, after which every
+				// fetch long-polls an empty answer forever — silent,
+				// since ErrNoMessage logs nothing. Verify the posture
+				// right away instead of waiting for the (minutes-long)
+				// stall detector: a healthy election costs ~a second,
+				// and only the frozen shape pays a recreate.
+				r.logLeadershipRecovery(r.consumer.RecoverFromLeadershipChange(loopCtx, r.cfg.LeadershipVerifyWindow, r.cfg.DisableStallSelfHeal))
+				continue
 			}
 			r.cfg.Logger.Warn("runner: fetch error: %v (backing off)", err)
 			select {
@@ -1923,6 +2069,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
+	boundCtx, formatErr := store.BindRunValueFormat(runCtx, pre.preRun)
+	if formatErr != nil {
+		finalStatus = "value_format_refused"
+		logDeliveryErr(logger, "term-value-format", msg.RunID, delivery.Term())
+		return
+	}
+	runCtx = boundCtx
+
 	lock, lockOK, lockStatus := r.acquireRunLock(runCtx, msg, delivery, logger)
 	if !lockOK {
 		finalStatus = lockStatus
@@ -1967,8 +2121,6 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 
-	r.spendScratchConsent(runCtx, msg, logger)
-
 	// The lease is held by the heartbeat through the engine's teardown and
 	// the runner's post-engine steps, within LeaseUnwindCeiling once the run
 	// can be resumed, and let go before the terminal Ack/Nak below: the
@@ -1977,14 +2129,35 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	var usage *metricsEmitter
 	err := r.executeHoldingLease(runCtx, runCancel, msg, pre.preRun, lock, delivery, &usage)
 
-	// A resume the engine found superseded: nothing of this delivery
-	// happened, and nothing of it is reported, released, parked, promoted or
-	// announced — only its disposition, on the run as it reads now.
-	if errors.Is(err, runtime.ErrResumeSuperseded) {
-		out := r.lastDeliveryDisposition(r.supersededAfterEngine(msg, err), delivery.NumDelivered())
+	if err != nil && !codemodeQuotaQueuedAt(msg).IsZero() {
+		// A newer flip can land during pre-engine work. Even a preflight
+		// failure must then follow the superseded path rather than publish
+		// an outcome, release the pause, or park the newer attempt.
+		if _, stale := r.supersededUnderLock(msg, logger); stale {
+			err = fmt.Errorf("%w: run %s: codemode quota queue marker changed during preflight", runtime.ErrResumeSuperseded, msg.RunID)
+		}
+	}
+	// An attempt stopped before execution does not report, release, park,
+	// promote or announce an outcome. Only a queued supersession retains the
+	// existing rollback/reoffer window; a status-only stop acknowledges.
+	if stoppedAttempt(err) {
+		out := preconditionOutcome{finalStatus: "admission_stopped", op: "ack-admission-stopped", action: actionAck, level: logWarn, logFmt: "runner: run %s admission stopped (%v)", logArgs: []any{msg.RunID, err}}
+		if errors.Is(err, runtime.ErrResumeSuperseded) {
+			out = r.lastDeliveryDisposition(r.supersededAfterEngine(msg, err), delivery.NumDelivered())
+		}
 		logAt(logger, out.level, out.logFmt, out.logArgs...)
 		finalStatus = out.finalStatus
 		dispatchPrecondition(logger, delivery, out, msg.RunID)
+		return
+	}
+
+	var unapplied *unappliedQuotaUsageRefusal
+	if errors.As(err, &unapplied) {
+		var interim bool
+		finalStatus, interim = r.finishUnappliedQuotaUsageRefusal(runCtx, msg, unapplied, delivery, logger)
+		if finalStatus == "quota_not_applied" || finalStatus == "quota_refusal_release_failed" {
+			r.recordPoolSpend(msg, usage, err, interim)
+		}
 		return
 	}
 
@@ -2068,7 +2241,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		bg, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
 		sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
 		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
-			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending},
+			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
 			[]store.RunStatus{store.RunStatusFailedResumable}); serr != nil {
 			logger.Warn("runner: continuation promote for %s: %v", msg.RunID, serr)
 		}
@@ -2163,6 +2336,39 @@ func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, l
 // (runtime.RemedyOf, runtime.CodeRemedy); "fix the cause, then --force" is
 // left to a failure that names none: --force never cures a scratch that did
 // not travel, and an operator sent there comes back to the same refusal.
+// announceWithdrawnMCP says what the workspace-trust floor took from the run's
+// MCP catalog: a warning naming each server with its plugin, and one
+// workspace_trust_withdrawal event on the run's timeline, before any node runs.
+// A trusted run withdraws nothing and says nothing.
+func (r *Runner) announceWithdrawnMCP(ctx context.Context, msg *queue.RunMessage, withdrawn []ir.WithdrawnMCPServer) {
+	if len(withdrawn) == 0 {
+		return
+	}
+	items := make([]string, 0, len(withdrawn))
+	for _, w := range withdrawn {
+		if w.Name == "" {
+			items = append(items, w.Source)
+			continue
+		}
+		items = append(items, w.Name+" ("+w.Source+")")
+	}
+	const reason = "this run's workspace was not written by its tenant, and an ambient MCP server runs where the agent runs — " +
+		"its launcher reads its own configuration from the checkout, with the server's secret in its environment"
+	r.cfg.Logger.Warn("runner: run %s: MCP servers withdrawn (%s): %s", msg.RunID, strings.Join(items, ", "), reason)
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventWorkspaceTrustWithdrawal,
+		Data: map[string]any{"withdrawn": "mcp_servers", "items": items, "reason": reason},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit workspace_trust_withdrawal: %v", msg.RunID, err)
+	}
+}
+
 func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string, refusal error, released store.RunStatus) {
 	if r.cfg.Store == nil {
 		return
@@ -2255,11 +2461,11 @@ func (r *Runner) releaseRefusedResume(msg *queue.RunMessage, execErr error, logg
 	if !to.CanOperatorResume() {
 		to = store.RunStatusFailedResumable
 	}
-	meta := store.RunOutcomeMeta{Code: refusalCode(execErr)}
+	meta := store.RunOutcomeMeta{Code: refusalCode(execErr), ExactQueuedAt: codemodeQuotaQueuedAt(msg)}
 	switch {
 	case to == store.RunStatusCancelled:
 		// Nobody cancelled anything anew: the run keeps the cancel's code.
-		meta = store.RunOutcomeMeta{Code: store.FailureCancelled, Continuation: store.ContinuationFinal}
+		meta.Code, meta.Continuation = store.FailureCancelled, store.ContinuationFinal
 	case !to.IsPaused():
 		meta.Continuation = store.ContinuationFinal
 	}
@@ -2301,27 +2507,6 @@ func (r *Runner) releasesRefusedResumes(msg *queue.RunMessage) bool {
 	return err == nil
 }
 
-// verdictFromStatuses is the statuses the runner's own verdict on msg moves
-// the run from. A resume the run is still queued for is left to the release
-// (releaseRefusedResume), which puts it back where it came from — a paused
-// run keeps its pending question: leftToRelease, and queued is not among
-// them. A resume whose run the queue no longer holds queued — a redelivery
-// after a nak, an orphan adopted and promoted, a launch redelivered as a
-// resume — takes the verdict, as a launch does.
-func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunStatus, leftToRelease bool) {
-	from = store.RunnerVerdictFromStatuses()
-	if !r.releasesRefusedResumes(msg) {
-		return from, false
-	}
-	kept := make([]store.RunStatus, 0, len(from))
-	for _, s := range from {
-		if s != store.RunStatusQueued {
-			kept = append(kept, s)
-		}
-	}
-	return kept, true
-}
-
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
 // dispatch path (no park) is a FINAL disposition that must fire the
 // run-outcome side effects (completion webhook + run.<outcome> event). A
@@ -2331,7 +2516,7 @@ func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunSta
 // so the err → fires mapping is pinned by a table test next to
 // TestClassifyExecResult.
 func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
-	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !errors.Is(execErr, runtime.ErrResumeSuperseded) && !isNakAction(action)
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !stoppedAttempt(execErr) && !isNakAction(action)
 }
 
 // releasedOutcomeFires is outcomeSideEffectsFire once the release of a
@@ -2377,9 +2562,12 @@ func (r *Runner) startProcessSpan(parent context.Context, delivery *natsq.Delive
 // fireCompletionNotifier fires the run-completion webhook (no-op unless
 // the run carries a callback URL). FireForRun re-reads the persisted run
 // and gates on the terminal status via shouldNotify — paused runs (the
-// run is not done, just waiting) are filtered there, so no error-type
-// guard is needed here. The resume that actually terminates fires it
-// then. Mirrors runview.spawnRun's in-process fire (same shouldNotify
+// run is not done, just waiting) and usage parks (failed_resumable with a
+// retry armed on a provider wall — the same wait, keyed on the persisted
+// wall) are filtered there, so no error-type guard is needed here. The
+// resume that actually terminates fires it then; a run whose retry is
+// abandoned never resumes, and the sweeper's settlement fires it instead.
+// Mirrors runview.spawnRun's in-process fire (same shouldNotify
 // authority) so cloud and local behave identically.
 func (r *Runner) fireCompletionNotifier(msg *queue.RunMessage) {
 	if r.completionNotifier == nil {
@@ -2426,6 +2614,11 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // the runner's post-engine work, which the lease covers within
 // postEngineCeiling when one can (leaseHold).
 func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func(awaited bool)) (execErr error) {
+	invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if err != nil {
+		return r.refuseUnpreparedInvocation(ctx, msg, err)
+	}
+	ctx = invocation.Context
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -2442,8 +2635,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if err != nil {
 		if errors.Is(err, ErrIRUnloadable) {
 			r.failUnloadableIR(ctx, msg, err)
+			return err
 		}
-		return err
+		return r.refuseBeforeEngine(ctx, msg, "workflow", err)
 	}
 
 	// Launch-time budget overrides (studio Launch modal / API `budget`
@@ -2451,7 +2645,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// override can only lower the effective caps, never pierce the
 	// platform ceiling.
 	if err := applyBudgetOverrides(wf, msg.Budget, r.cfg.Logger); err != nil {
-		return err
+		return r.refuseBeforeEngine(ctx, msg, "budget", err)
 	}
 
 	// Multitenant safeguard: clamp the workflow budget to the platform's hard
@@ -2479,7 +2673,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// non-terminal outcomes precisely so a redelivery can re-fetch it.
 		// A run with no bundle at all (SecretsRef == "") still proceeds:
 		// injectCredentials returns nil for that legitimate case.
-		return fmt.Errorf("runner: credentials inject %s: %w", msg.RunID, credErr)
+		return r.refuseBeforeEngine(ctx, msg, "credentials", fmt.Errorf("runner: credentials inject %s: %w", msg.RunID, credErr))
 	}
 
 	// Usage cap, pre-flight. Placed after the credentials (which name the
@@ -2510,12 +2704,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// admitted commit. Refused here, at the branch that decides there is no
 	// repo workspace, because that is the only place the shape is visible.
 	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoURL) == "" {
-		return fmt.Errorf("runner: run %s: admitted for commit %s but carries no repository to clone — refusing rather than running with the pin unenforced", msg.RunID, msg.RepoSHAExpected)
+		return r.refuseBeforeEngine(ctx, msg, "repository_pin", fmt.Errorf("runner: run %s: admitted for commit %s but carries no repository to clone — refusing rather than running with the pin unenforced", msg.RunID, msg.RepoSHAExpected))
 	}
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()
-		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, msg)
+		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, wf, msg)
 		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
 		// auth failure is exactly what the histogram exists to show), with
 		// the same nil guard every other Metrics site carries.
@@ -2523,7 +2717,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
 		}
 		if derr != nil {
-			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
+			return r.refuseBeforeEngine(ctx, msg, "workspace", fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr))
 		}
 		workDir = repoDir
 		if baseline != "" {
@@ -2544,10 +2738,19 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// must call it explicitly here, else wf.ResolvedMCPServers stays empty,
 	// buildMCPManager returns a nil manager, and every `mcp.<server>.*`
 	// wildcard resolves to zero tools (the firecrawl/repo-falcon plugins were
-	// silently inert in cloud runs). Fail loudly on a malformed catalog rather
-	// than run a bot missing the tools it declared.
-	if err := mcp.PrepareWorkflow(wf, workDir, r.cfg.Logger); err != nil {
-		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
+	// silently inert in cloud runs). The clone IS the project, so workDir is
+	// both the project dir (.mcp.json) and the run workspace ({{workspace}})
+	// — stated, never derived (#1800). Fail loudly on a malformed catalog
+	// rather than run a bot missing the tools it declared. Resolved for the
+	// run's own trust, the one its engine is launched with.
+	if err := mcp.PrepareWorkflow(wf, workDir, workDir, msg.Trust, r.cfg.Logger); err != nil {
+		if errors.Is(err, mcp.ErrWithdrawnMCPServer) {
+			r.recordTrustRefusal(ctx, msg, "mcp_servers", err)
+		}
+		return r.refuseBeforeEngine(ctx, msg, "mcp", fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err))
+	}
+	if wf.MCPPrepared != nil {
+		r.announceWithdrawnMCP(ctx, msg, wf.MCPPrepared.Withdrawn)
 	}
 
 	// No-sandbox file secrets: a workflow with `as: file` secrets whose run
@@ -2556,7 +2759,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// — needs them materialized as 0600 files at their mount paths in the
 	// runner pod so the in-pod agent can read them — e.g. review-pr's
 	// forge_token for glab. Removed on return.
-	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf, runtime.EngineRepoRoot(workDir))
+	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf, runtime.EngineRepoRoot(workDir), msg.BotSourceTier)
 	if rm != nil {
 		// Always schedule cleanup, even on error: materialize returns a
 		// non-nil remover covering the files it wrote BEFORE failing, so
@@ -2571,12 +2774,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// a long (or redelivered) run would push/comment with a dead credential.
 	// The server-side refresh worker keeps the STORE record fresh; re-read
 	// it and rewrite the file so `cat` at use time gets a live token.
+	//
+	// secretGuard is the late-bound handle the rotation loops register each
+	// rotated value on (#2756): BuildExecutor builds the run's guard AFTER
+	// these loops arm, so they read it through the holder per tick.
+	secretGuard := &runSecretGuard{}
 	if len(fileSecrets) > 0 && r.cfg.GenericSecrets != nil {
 		if creds, ok := secrets.CredentialsFromContext(ctx); ok && len(creds.GenericRefs) > 0 {
 			refreshCtx, stopRefresh := context.WithCancel(ctx)
 			defer stopRefresh()
 			errtrack.Go("runner.refreshFileSecrets", func() {
-				r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+				r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets, secretGuard)
 			})
 		}
 	}
@@ -2589,7 +2797,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			gitCredCtx, stopGitCred := context.WithCancel(ctx)
 			defer stopGitCred()
 			errtrack.Go("runner.refreshGitCredentials", func() {
-				r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+				r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL, secretGuard)
 			})
 		}
 	}
@@ -2637,9 +2845,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// BEFORE the executor so the executor's agent-stream lines (the
 	// `[node#iter/backend]` tool/LLM tags the studio's per-node Logs tab
 	// filters on) persist too — not only the engine's node-level lines.
-	runLogger := r.cfg.Logger
+	// A FORK even without a RunLogStore: this handle is what buildExecutor
+	// sets the run's secret matcher on (iterion#2822), and the pod runs
+	// many runs through one r.cfg.Logger — setting it there would let the
+	// next run replace this one's matcher mid-flight.
+	runLogger := r.cfg.Logger.WithOwnRedactor()
 	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
-		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+		idCtx := store.WithIdentity(context.WithoutCancel(ctx), msg.TenantID, msg.OwnerID)
 		seed, serr := ls.RunLogSize(idCtx, msg.RunID)
 		if serr != nil {
 			r.cfg.Logger.Warn("runner: run %s: seed log offset: %v — starting at 0", msg.RunID, serr)
@@ -2648,7 +2860,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer func() { _ = w.Close() }()
 		r.registerLogWriter(msg.RunID, w)
 		defer r.unregisterLogWriter(msg.RunID)
-		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
+		runLogger = runLogger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
 	// DSL-declared supervisors run on the pod alongside the engine —
@@ -2666,10 +2878,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers)
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers, secretGuard)
 	if err != nil {
-		return err
+		return r.refuseBeforeEngine(ctx, msg, "executor", err)
 	}
+	defer closeExecutor(executor)
+
 	if usageOut != nil {
 		*usageOut = usage
 	}
@@ -2700,6 +2914,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		r.cfg.Logger.Warn("runner: load run for finalization replay %s: %v — falling back to engine defaults", msg.RunID, ferr)
 	}
 	finalCancel()
+	// The attempt that follows a pull answers its credential window's probe
+	// (probe_answer.go), from the record read before the engine runs.
+	r.armProbeAnswer(msg, usage, finalizationRun, runLogger)
+	defer usage.waitProbeAnswer()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
@@ -2710,6 +2928,36 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// the admission compares document ≡ message, and a doc the engine
 		// rebuilt without the stamp would contradict its own message.
 		runtime.WithRunnerPool(msg.RunnerPool),
+		// The launch fact the isolation floor (#1959) judges: which
+		// bot-resolution tier served this run. From the MESSAGE (queue v28),
+		// not a document read — the same doctrine as Trust above it — and
+		// the engine stamps it onto the document for the floors that read
+		// there (a local resume, a subbot's child row).
+		runtime.WithBotSourceTier(msg.BotSourceTier),
+		// The same stamping for the workspace's trust (#1768): the wire
+		// message carries Trust and RepoSHAExpected (the clone gate reads
+		// them), and the subbot child already stamps its document — without
+		// the twin here a TOP-LEVEL untrusted run's document read as
+		// trusted, and the fork-lane admissions (the sandbox credential
+		// refusal) never judged it. Empty-safe: a trusted launch stamps
+		// nothing, so this is inert until the lane marks a run untrusted.
+		runtime.WithTrust(msg.Trust, msg.RepoSHAExpected),
+		// The frozen content boundary rides beside the pool stamp: the
+		// same doc ≡ message rule, and a doc the engine rebuilt without it
+		// would read unstamped to every server-side guard.
+		runtime.WithContentBoundary(msg.ContentBoundary),
+		// The launch-time overrides an attempt carries are durable run
+		// intent: feeding them to the engine lets its run-doc stamp persist
+		// a resume re-statement, so the next silent resume (the retry
+		// sweeper, a studio answer) replays THE OPERATOR'S latest choice,
+		// not the launch's original one. Without this the re-state lived
+		// for one attempt (found by tour 2, executed).
+		// The launch-time overrides an attempt carries are durable run
+		// intent: feeding them to the engine lets its run-doc stamp persist
+		// a resume re-statement, so the next silent resume (the retry
+		// sweeper, a studio answer) replays THE OPERATOR'S latest choice,
+		// not the launch's original one. Without this the re-state lived
+		// for one attempt (found by tour 2, executed).
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and
@@ -2744,6 +2992,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// `iterion run` of the same bot.
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
+	// The launch-time overrides an attempt carries are durable run intent:
+	// feeding them to the engine lets its run-doc stamp persist a resume
+	// re-statement, so the next silent resume (the retry sweeper, a studio
+	// answer) replays THE OPERATOR'S latest choice, not the launch's
+	// original one. Without this the re-state lived for one attempt (found
+	// by tour 2, executed).
+	engineOpts = append(engineOpts, withEngineOverride(msg.Permission, msg.Codemode, msg.CodemodeBounds)...)
 	if msg.ExecutionContext != nil {
 		engineOpts = append(engineOpts, runtime.WithExecutionContext(msg.ExecutionContext))
 	}
@@ -2795,6 +3050,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			runID: msg.RunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
 			secretRefs: r.sandboxFileSecretRefs(ctx, wf),
 			checkpoint: checkpointOn,
+			// The sandboxed file-secret refresher registers each rotated
+			// value on the run's live guard too (#2756) — same handle the
+			// pod-side loops carry, filled by buildExecutor above.
+			secretGuard: secretGuard,
 		})))
 	// Bundle resources: a bot-qualified run attaches its bundle so the
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
@@ -2821,7 +3080,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if msg.BotBundle != nil {
 		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
 		if berr != nil {
-			return fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr)
+			return r.refuseBeforeEngine(ctx, msg, "bundle", fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr))
 		}
 		defer cleanupBundle()
 		parentBundleDir = b.Dir
@@ -2869,6 +3128,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		engineOpts = append(engineOpts, runtime.WithAcceptScratchLoss(true))
 	}
 	if msg.Resume != nil {
+		if quota := msg.Resume.CodemodeQuota; quota != nil {
+			engineOpts = append(engineOpts, runtime.WithOnResumeClaimed(func() { r.recordRunnerBuild(ctx, msg, nil) }))
+			engineOpts = append(engineOpts, runtime.WithResumeCodemodeQueuedAt(quota.QueuedAt))
+			if !msg.Resume.CodemodeQuotaSpent {
+				engineOpts = append(engineOpts, runtime.WithResumeCodemodeQuota(store.CodemodeScratchLimits{Entries: quota.Entries, Bytes: quota.Bytes}))
+			}
+		}
 		// The claim of a queued run is this delivery's attempt's, never one
 		// queued since it was published: that resume's own delivery claims
 		// it, with its own consent, --force and answers.
@@ -2898,8 +3164,8 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
-	// Credential-slot occupancy: release the run's per-key concurrency
-	// slot while no model-calling node executes (cred_slot.go).
+	// Model-idle marker: the run reads as executing no model-calling node on
+	// its views while none does (cred_slot.go); the cap counts it still.
 	if slots := r.credSlotObserver(ctx, msg, wf, runLogger); slots != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(slots.observe))
 	}
@@ -2912,6 +3178,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// deterministic node failure under the usage-window retry is a
 	// resume loop that recreates the sandbox pod on every attempt.
 	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
+	// The sandboxed host-MCP transport's serving half (C082, #2632): with
+	// the handler wired, the engine binds a per-run gateway-reachable
+	// listener beside the sandbox (the sandbox pod reaches it at this pod's
+	// IP, the same path the egress proxy advertises) and stamps the
+	// endpoint onto the executor; the per-node token is minted by
+	// executorSpec's BoardRegister above. SCOPED without the connector
+	// facade: the pod's mux serves board + runs only (the connection plane
+	// lives on the server), so a `connectors`-capability node must keep the
+	// documented degradation — endpoint empty, the delegate's warning —
+	// rather than an endpoint that 404s at every call. Nil handler (no
+	// Config.BoardFor) leaves sandboxed board-emit disabled, as before.
+	if r.boardMCP != nil {
+		engineOpts = append(engineOpts, runtime.WithBoardMCPScoped(r.boardMCP, false))
+	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	if superviseHub != nil {
 		// The spawn resolves the run's OWN inputs: on a resume the message
@@ -2924,7 +3204,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 				spawnVars = run.Inputs
 			}
 		}
-		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
+		// The supervisors the resolver funds (ADR-161 decision 4): the
+		// content boundary's refusal, then the claw arm on each evaluator's
+		// model under the run's credentials — a stamped run's own sealed key
+		// serves its supervisor, the pod's money does not, and a spec no
+		// credential funds is dropped by name rather than refused at every
+		// evaluation. The pre-flight meters this same list.
+		specs := runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), modelOverridesFromMsg(msg.ModelOverrides), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)
+		// F12: a supervisor's evaluations are the run's money — each one
+		// books its tokens on its own route (source supervisor:<name>), the
+		// same route totals recordCredentialSpend meters per credential at
+		// the run's end.
+		meterSupervisorSpecs(ctx, specs, usage)
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
 			msg.RunID, specs, runLogger)
 		defer stopSup()
@@ -2944,16 +3235,26 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// effective: the run fails naming the key, never runs on defaults
 		// as if parameterised. msg.AllowUnknownInputs is the operator's
 		// opt-out riding the wire (CLI --allow-unknown-inputs, the
-		// dispatcher's warn-and-proceed contract).
-		if unknown := ir.UnknownInputNames(wf, msg.Vars); len(unknown) > 0 && !msg.AllowUnknownInputs {
-			runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
-				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
-			runLogger.Error("%s", runErr.Error())
-		} else {
-			if len(unknown) > 0 {
+		// dispatcher's warn-and-proceed contract). The engine-injected
+		// names are carved out exactly as the admission did (#2416): a
+		// provision's stamped dials must not kill the run at pickup after
+		// the launch was admitted with them.
+		if unknown := ir.UnknownInputNames(wf, msg.Vars); len(unknown) > 0 {
+			_, refused := platformcfg.SplitEngineInjectedInputs(unknown)
+			switch {
+			case len(refused) == 0:
+				runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+			case !msg.AllowUnknownInputs:
+				runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+				runErr = r.refuseBeforeEngine(ctx, msg, "launch_inputs", runErr)
+				runLogger.Error("%s", runErr.Error())
+			default:
 				runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
-					strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+				runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 			}
+		} else {
 			runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 		}
 	}
@@ -2969,9 +3270,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// The server pod has no worktree, so this snapshot is the only source
 	// the Commits/Files panels have for a finished cloud run. Best-effort:
 	// a recording failure must never change the run's outcome.
-	if errors.Is(runErr, runtime.ErrResumeSuperseded) {
-		// The run belongs to a newer attempt: this delivery produced nothing,
-		// and records nothing on it.
+	if stoppedAttempt(runErr) {
+		// Admission stopped this delivery before execution. It records no git
+		// outcome on the document that replaced its initial snapshot.
 		return runErr
 	}
 	if workDir != r.cfg.WorkDir {
@@ -3006,7 +3307,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// the server pod's Artifacts panel can serve them for this finished
 	// run. Best-effort: a recording failure must never change the run's
 	// outcome. No-op for stores that don't need the bridge.
-	r.uploadRunFiles(ctx, msg)
+	if provider, ok := executor.(interface{ RunFilesGrant() store.RunFilesGrant }); ok {
+		r.uploadRunFilesWithGrant(ctx, msg, provider.RunFilesGrant())
+	} else {
+		r.uploadRunFiles(ctx, msg)
+	}
 
 	// Delete the sealed credentials bundle only on a terminal-clean
 	// outcome (success, or paused-for-resume). On every Nak-for-
@@ -3151,42 +3456,11 @@ func summariseDiagnostics(diags []ir.Diagnostic) string {
 // run_failed event carries the runner's version beside the workflow hash,
 // so the skew is readable from the run alone.
 func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, cause error) {
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
-	defer cancel()
-	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
-	// UpdateRunOutcome, not FailRunResumable: the latter assigns the
-	// checkpoint it is handed, and a resume delivery that lands on a stale
-	// image carries a checkpoint worth every node already paid for — a nil
-	// there would erase the anchor the aligned fleet resumes from. The
-	// expected set keeps the cancelled-wins guard: a run the operator
-	// cancelled meanwhile is not flipped back. A resume still queued goes
-	// back where it came from instead (verdictFromStatuses).
-	from, leftToRelease := r.verdictFromStatuses(msg)
-	changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
-		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
-		from)
-	switch {
-	case err != nil:
-		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
-	case !changed && !leftToRelease:
-		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
-	}
-	if leftToRelease && !changed {
-		// The run goes back where it came from: no failure to announce, and
-		// processOne records the refusal there (run_retry_skipped).
-		return
-	}
-	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
-		Type: store.EventRunFailed,
-		Data: map[string]any{
-			"code": string(store.FailureIRUnloadable), "error": cause.Error(),
-			"runner_version": appinfo.Version, "runner_commit": appinfo.Commit,
-			"workflow_hash": msg.WorkflowHash,
-			"hint":          "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
-		},
-	}); err != nil {
-		r.cfg.Logger.Warn("runner: run %s: could not emit run_failed for the unloadable IR: %v", msg.RunID, err)
-	}
+	r.recordPreEngineRefusal(ctx, msg, cause, preEngineVerdict{
+		Phase: "workflow_ir", Code: store.FailureIRUnloadable, Disposition: store.PreEngineFinalVerdict, FinalStatus: store.RunStatusFailedResumable,
+		Hint:    "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
+		Details: map[string]any{"workflow_hash": msg.WorkflowHash},
+	})
 }
 
 // applyBudgetOverrides folds launch-time budget overrides from the queue
@@ -3287,7 +3561,13 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runtime.NodeExecutor, *metricsEmitter, error) {
+	if err := store.RequireRunValueFormat(ctx, msg.RunID); err != nil {
+		return nil, nil, err
+	}
+	if _, _, err := store.LoadRunWithValueFormat(ctx, r.cfg.Store, msg.RunID); err != nil {
+		return nil, nil, err
+	}
 	// runview.BuildExecutor stats this directory to root Claw's file tools,
 	// while the engine only creates a missing workspace lazily on its first
 	// write — a run with no repository to clone keeps the pod's base
@@ -3297,7 +3577,7 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 			return nil, nil, fmt.Errorf("runner: create run workspace %s: %w", workDir, err)
 		}
 	}
-	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers)
+	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers, guard)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3308,13 +3588,55 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	return exec, usage, nil
 }
 
+// launchOverridesFor is the launch's own rows among the overrides msg's run
+// executes with (runview.LaunchOverridesOfRun), read off the run's document.
+// A subbot child's executor is built before its engine creates the child's
+// document: its parent's document records the tree's root rows the child's
+// fold read. nil when neither document answers — the executor then names the
+// folded overrides as the source of an effort they set.
+func (r *Runner) launchOverridesFor(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) *model.ModelOverrides {
+	run, err := r.cfg.Store.LoadRun(ctx, msg.RunID)
+	if err != nil && msg.ParentRunID != "" {
+		run, err = r.cfg.Store.LoadRun(ctx, msg.ParentRunID)
+	}
+	if err != nil {
+		logger.Warn("runner: run %s: its document does not say which override rows the launch carried (%v) — a node effort they set is reported as the run's overrides", msg.RunID, err)
+		return nil
+	}
+	o := runview.LaunchOverridesOfRun(run)
+	return &o
+}
+
 // executorSpec assembles the pod's ExecutorSpec. Split from
 // buildExecutor so the wiring is assertable: a binder missing here is a
 // capability that silently dies on every cloud run (the supervisor-steer
 // and operator-chat inbox was exactly that).
-func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+// withEngineOverride carries the run-level override choices to the engine's
+// run-doc stamp: the permission gate and the codemode choice (mode + bounds
+// raise). A message carrying neither feeds no option — an absence must stay
+// an absence, never a stamped zero.
+func withEngineOverride(permission, codemode string, bounds *scripthost.Limits) []runtime.EngineOption {
+	var opts []runtime.EngineOption
+	if permission != "" {
+		opts = append(opts, runtime.WithPermissionOverride(permission))
+	}
+	if codemode != "" || bounds != nil {
+		opts = append(opts, runtime.WithCodemodeOverride(codemode, bounds))
+	}
+	return opts
+}
+
+func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runview.ExecutorSpec, *metricsEmitter, error) {
 	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec
+	// The launch's codemode override must be a codemode value. Every current
+	// producer validates before publishing; this is the pod's half of the
+	// same decision — a hand-published message that skipped it would decide
+	// a typo as an off and kill a declared capability in silence, the one
+	// direction a refusal cannot fix after the fact.
+	if !ir.ValidCodemode(msg.Codemode) {
+		return zero, nil, fmt.Errorf("run %s: codemode %q is not a codemode value (on|off, empty inherits the DSL)", msg.RunID, msg.Codemode)
+	}
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return zero, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
@@ -3324,7 +3646,7 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 	// (and the per-run totals) as they are written to Mongo. Wrapping
 	// at the runner boundary keeps pkg/backend/model free of any
 	// metrics dependency.
-	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
+	usage := newMetricsEmitter(emitter, r.cfg.Metrics, msg.CredPlan, ctx)
 	vars, err := stringifyVars(msg.Vars)
 	if err != nil {
 		return zero, nil, err
@@ -3342,6 +3664,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
 		// this seam — the declared-supervisor hub rides it.
 		EventObservers: hookObservers,
+		// The rotation loops armed before this build register each rotated
+		// credential on the run's LIVE guard through the holder (#2756):
+		// the sink is the late binding, and a binder missing here is the
+		// rotated token landing verbatim in the run's log on every cloud run.
+		SecretGuardSink: secretGuardSinkOf(guard),
 		// The run-scoped logger (teed into the RunLogStore) — the executor
 		// emits the `[node#iter/backend]` agent-stream lines the studio's
 		// per-node Logs tab filters on; on the raw pod logger they would
@@ -3355,6 +3682,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		WorkDir:             workDir,
 		SandboxProbeWorkDir: workDir,
 		BotID:               msg.BotID,
+		// The wire-carried tier (queue v28): the fallback screen's sandbox
+		// probe and the MCP start policy judge the floored workflow with
+		// it (#1959) — a team source's `sandbox: none` must not start
+		// workflow MCP servers on this pod for a run the floor sandboxes.
+		BotSourceTier: msg.BotSourceTier,
 		// The launch-time decision, carried on the wire. Without it the pod
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose
@@ -3363,6 +3695,13 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// Same failure direction for the ambient context: dropping it would hand
 		// the run the workflow's policy instead of the operator's explicit one.
 		AmbientContext: msg.AmbientContext,
+		// The launch-time codemode override (queue v33). Dropping an explicit
+		// off would run the capability the operator asked away — the knob
+		// failing open, the direction the v33 bump exists to reject. The
+		// bounds raise is field by field; a zero field keeps the authored
+		// value and everything passes Clamp at spawn.
+		Codemode:       msg.Codemode,
+		CodemodeBounds: msg.CodemodeBounds,
 		// Keep this as the ExecutorSpec's run-level override: folding it into
 		// wf.Permission would let a node-level `off` beat an operator `deny`.
 		Permission: msg.Permission,
@@ -3371,7 +3710,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// advertises the model the operator picked — see
 		// queue.RunMessage.ModelOverrides.
 		ModelOverrides: runview.ModelOverridesFromRun(modelOverridesFromWire(msg.ModelOverrides)),
-		MemoryStore:    r.cfg.MemoryStore,
+		// Which of those rows the launch itself carried, read off the run's
+		// document: what lets the executor tell a routing cell's effort from
+		// the launch's own.
+		LaunchModelOverrides: r.launchOverridesFor(ctx, msg, logger),
+		MemoryStore:          r.cfg.MemoryStore,
 		// The operator's subscription ceiling, published to the shared
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
@@ -3388,6 +3731,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		LLMRouteTriggers:     llmRouteTriggers(msg),
 		LLMRouteClasses:      llmRouteClasses(msg),
 		LLMRouteCrossHarness: llmRouteCrossHarness(msg),
+		// The frozen content boundary rides into the ladder's screen: under
+		// team_gateway no stage lands on a node routed to the team's
+		// gateway (ADR-131 §4) — the publisher's screen is advisory, this one
+		// decides.
+		ContentBoundary: msg.ContentBoundary,
 		// The run's frozen provider allowlist (ADR-129 §5): the dispatch
 		// drops every chain element resolving outside it, so a rescue route
 		// the tenant forbids burns no retry budget. Nil = no allowlist.
@@ -3409,6 +3757,71 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// on cloud: the Mongo change-stream surfaces the transitions.
 		Inbox:    &model.StoreInboxBinder{Store: r.cfg.Store},
 		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
+	}
+	// The board's NATIVE action transport (ADR-151, #2834): on the runner
+	// the instance's board is the TENANT's Mongo store (#2465), resolved
+	// through the same Config.BoardFor the sandboxed host-MCP transport
+	// uses — never the pod-local fs store BuildExecutor would default to
+	// (it yields to this explicit registration). The run's tenant comes
+	// from the MESSAGE, the authoritative launch fact — same doctrine as
+	// the token pin below. And a runner that CANNOT resolve that store
+	// refuses the run here, at admission: letting the fs default serve a
+	// pod-local board that is not the instance's would answer reads with
+	// an empty board and nobody would learn why (#2465's whole point).
+	if runview.WorkflowHasNativeBoardAction(wf) {
+		if r.cfg.BoardFor == nil || msg.TenantID == "" {
+			return zero, nil, fmt.Errorf("runner: workflow declares a native board action (board.*) but this runner resolves no tenant board (Config.BoardFor wired: %t, run tenant %q) — refusing rather than reading a pod-local board that is not the instance's",
+				r.cfg.BoardFor != nil, msg.TenantID)
+		}
+		// BoardFor's contract INCLUDES answering nil (the grant names a board
+		// this process does not serve — hostmcp's 404 is the same answer one
+		// transport over). A wired resolver that answers nil for this tenant
+		// is the refusal's case exactly: resolve ONCE, here, and refuse
+		// rather than let the fs default in BuildExecutor read a pod-local
+		// board that is not the instance's.
+		board := r.cfg.BoardFor(msg.TenantID)
+		if board == nil {
+			return zero, nil, fmt.Errorf("runner: workflow declares a native board action (board.*) but the board resolver answered nil for tenant %q — the grant names a board this process does not serve; refusing rather than reading a pod-local board that is not the instance's",
+				msg.TenantID)
+		}
+		// The owning ticket rides this transport as it rides every board
+		// transport BuildExecutor wires (planner provenance on a create):
+		// resolved once here through the spec's run loader and carried on
+		// the spec, so BuildExecutor's own reading answers the same id
+		// without a second record load.
+		spec.SourceIssueID = runview.SourceIssueIDOf(spec)
+		spec.ActionTransports = append(spec.ActionTransports, runview.NativeBoardTransport(board, spec.SourceIssueID))
+	}
+	// The sandboxed host-MCP transport (C082, #2632): mint a per-node token
+	// scoped to the node's capabilities and pinned to the run's tenant — the
+	// pin comes from the MESSAGE (the authoritative launch fact, same
+	// doctrine as WithTrust above), never from a caller-supplied value — and
+	// revoke it as the node returns. The engine-side half (the listener the
+	// sandbox dials) is wired where the engine is built, beside the same
+	// nil check. A run message without a tenant refuses to mint: an
+	// unpinned token would resolve no board, so the node degrades to
+	// capability-disabled with the delegate's loud warning instead of
+	// handing out a grant that 404s per call.
+	if r.boardTokens != nil {
+		tenantID := msg.TenantID
+		trust := msg.Trust
+		spec.BoardRegister = func(caps []string, sourceIssueID, runID string) string {
+			if tenantID == "" {
+				logger.Warn("runner: host MCP: run %s has no tenant; sandboxed board-emit disabled for a node", runID)
+				return ""
+			}
+			token := hostmcp.MintToken()
+			if token == "" {
+				logger.Warn("runner: host MCP: token generation failed; sandboxed board-emit disabled for a node")
+				return ""
+			}
+			if err := r.boardTokens.Register(token, caps, sourceIssueID, tenantID, trust, true, workDir); err != nil {
+				logger.Error("runner: host MCP: %v; sandboxed board-emit disabled for a node", err)
+				return ""
+			}
+			return token
+		}
+		spec.BoardRevoke = r.boardTokens.Revoke
 	}
 	return spec, usage, nil
 }
@@ -3543,6 +3956,25 @@ func splitMsgFallback(entries queue.RunFallback) (operator []ir.Fallback, ladder
 	return operator, ladder
 }
 
+// wireModelOverrides is modelOverridesFromWire's inverse for a folded entry
+// list: the rows a subbot child's message carries.
+func wireModelOverrides(entries []runview.ModelOverrideEntry) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{
+			Selector: e.Selector,
+			Backend:  e.Backend,
+			Model:    e.Model,
+			Provider: e.Provider,
+			Effort:   e.Effort,
+		})
+	}
+	return out
+}
+
 // modelOverridesFromMsg adapts the wire pins onto model.OverridesFrom —
 // the one fold runview's launch entries and the publisher's launch/resume
 // entries also go through, so a cloud run resolves per-node models
@@ -3553,4 +3985,50 @@ func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
 	return model.OverridesFrom(out)
+}
+
+// isTrustFloorRefusal reports whether execErr is one of the workspace-trust
+// floor's typed refusals. Each is decided by the run's own trust and program,
+// so a redelivery meets the same answer: acked, never retried — a retry costs
+// a pod and a clone of an outsider's tree per attempt, for nothing.
+//
+// The connector chokepoint's two sentinels are here by name (ADR-162 decision
+// 6): a fork run refused at ResolveAction/ResolveAgent is the floor refusing
+// reads and mutations alike, and a resolver nobody stated is the same floor
+// seen from a wiring defect — both are trust, neither is a transient.
+//
+// A host tool refused for a capability the node never declared is not one:
+// that is the program's own fault, on any trust, and it classifies (by its
+// code, TOOL_FAILED_PERMANENT) as the deterministic failure it is — acked,
+// and banked like one.
+func isTrustFloorRefusal(execErr error) bool {
+	return errors.Is(execErr, mcp.ErrWithdrawnMCPServer) ||
+		errors.Is(execErr, delegate.ErrUntrustedWorkspaceRefused) ||
+		errors.Is(execErr, connection.ErrUntrustedAction) ||
+		errors.Is(execErr, connection.ErrTrustUnstated) ||
+		errors.Is(execErr, tool.ErrHostCapabilityWithdrawn)
+}
+
+// recordTrustRefusal puts on the run's timeline a withdrawal the run could not
+// run without — an MCP server its workflow activates by name — before the
+// refusal is returned: the engine that would otherwise say it never starts.
+func (r *Runner) recordTrustRefusal(ctx context.Context, msg *queue.RunMessage, what string, cause error) {
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventWorkspaceTrustWithdrawal,
+		Data: map[string]any{"withdrawn": what, "reason": cause.Error(), "refused": true},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit workspace_trust_withdrawal: %v", msg.RunID, err)
+	}
+}
+
+// stoppedAttempt is the common no-outcome class. Queue disposition still
+// distinguishes supersession from a status-only admission stop.
+func stoppedAttempt(err error) bool {
+	return store.IsValueFormatRefusal(err) || errors.Is(err, runtime.ErrResumeSuperseded) || errors.Is(err, runtime.ErrAdmissionStopped)
 }

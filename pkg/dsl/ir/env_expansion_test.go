@@ -252,12 +252,14 @@ tool gate:
   output: verdict
   publish: test_output
   artifact_labels: [tests]
+  deliverables: ["report.md"]
   await: wait_all
   sandbox: auto
   compress: ultra
   permission: off
   needs: gpu
   parallel_safe: true
+  capabilities: [board.read]
   goal: "the tag exists"
   postcondition: "git rev-parse --verify v1"
   policy: recover

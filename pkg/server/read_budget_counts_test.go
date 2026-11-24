@@ -19,7 +19,7 @@ import (
 func TestUnitAnswerCountsEveryError(t *testing.T) {
 	t.Setenv("ITERION_DSL_READ_BUDGET", "")
 	src := "agent a:\n" + strings.Repeat("  bogus: 1\n", 1500) + "\nworkflow w:\n  entry: a\n  a -> done\n"
-	info := unitInfoOf(unit.Salvage(unit.LoadMap(map[string]string{"main.bot": src}, "main.bot")), "main.bot")
+	info := unitInfoOf(unit.Salvage(unit.LoadMap(map[string]string{"main.bot": src}, "main.bot")), "main.bot", fragmentDependencies{})
 	if len(info.Files) != 1 || info.Files[0].ParseErrors != 1500 {
 		t.Fatalf("parse_errors = %+v, want 1500 for main.bot", info.Files)
 	}

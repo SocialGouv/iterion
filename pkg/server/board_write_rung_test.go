@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -58,7 +59,7 @@ func boardRungFixture(t *testing.T) (*Server, *httptest.Server, *native.Store) {
 	srv.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
 	srv.registerCloudBoardRoutes()
 	srv.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
-	srv.forgeConnections = forge.NewMemoryConnectionStore()
+	srv.forgeConnections = connection.NewMemoryForgeStore()
 	srv.registerBoardForgeRoutes()
 	return srv, fullStack(t, srv), board
 }

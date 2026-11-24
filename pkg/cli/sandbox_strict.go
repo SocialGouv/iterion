@@ -104,7 +104,10 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 
 	spec, source, err := runtime.ResolveSandboxSpecForDoctor(
 		wf, doctorRepoRoot(opts.File), opts.Sandbox,
-		runtime.ResolveGlobalSandboxDefault(),
+		// nil logger: the doctor REPORTS rather than logs, and
+		// runSandboxDoctorBasic prints the planted-and-ignored fact on the
+		// ITERION_SANDBOX_DEFAULT line itself.
+		runtime.ResolveGlobalSandboxDefault(nil),
 		opts.SandboxDefaultImage, opts.SandboxHostState,
 		strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE")),
 	)
@@ -334,7 +337,7 @@ func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *
 
 	pingCtx, cancel := context.WithTimeout(ctx, doctorProbeTimeout())
 	defer cancel()
-	kctx, ns, err := kubernetes.PingContext(pingCtx)
+	kubectl, kctx, ns, err := kubernetes.PingContext(pingCtx)
 	if err != nil {
 		status, remediation := CheckWarn, "k8s context is only needed where the cloud runner executes; this host is not a runner"
 		if driverName == "kubernetes" {
@@ -357,38 +360,31 @@ func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *
 	// and a key no node carries leaves every run Pending. Only a reachable
 	// cluster can answer, hence after the ping.
 	if kd, ok := driver.(*kubernetes.Driver); ok {
-		runSpreadCoverageStrictCheck(ctx, report, kd.SpreadTopologyKey())
+		runSpreadCoverageStrictCheck(ctx, report, kubectl, kd.SpreadTopologyKey())
 	}
 }
 
 // runSpreadCoverageStrictCheck compares the nodes carrying the spread key to
-// the cluster's nodes. kubernetes.io/hostname needs no check: every node
+// the cluster's nodes. kubectl is the binary the ping above resolved, so the
+// node listing runs the one the probe accepted. kubernetes.io/hostname needs no check: every node
 // carries it by construction. Listing nodes is cluster-scoped and the
 // chart's runner Role is namespace-scoped on purpose, so in-cluster the
 // check cannot answer: it warns with kubectl's reason and hands the
 // operator the command to run from a context that can.
-func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictReport, key string) {
+func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictReport, kubectl kubernetes.Kubectl, key string) {
 	if key == "" || key == "kubernetes.io/hostname" {
 		return
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, doctorProbeTimeout())
 	defer cancel()
-	labelled, total, err := kubernetes.NodeLabelCoverage(probeCtx, key)
+	labelled, total, err := kubectl.NodeLabelCoverage(probeCtx, key)
 	switch {
 	case err != nil:
 		// The cause is asserted only when the cluster (or the probe) said it:
 		// a Forbidden is the chart's namespaced Role — the cluster's own word,
 		// checked first even when the probe also ran out of time — a deadline
 		// is the probe budget; anything else stays what kubectl said.
-		var cause string
-		switch {
-		case strings.Contains(err.Error(), "Forbidden"):
-			cause = "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
-		case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
-			cause = "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
-		default:
-			cause = "could not list nodes; "
-		}
+		cause := spreadCoverageFailureCause(err, probeCtx.Err())
 		report.add("k8s spread key coverage", CheckWarn, err.Error(),
 			cause+"from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
 	case total == 0:
@@ -405,6 +401,19 @@ func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictRepo
 	}
 }
 
+// spreadCoverageFailureCause gives the cluster's explicit refusal precedence
+// over an expired probe: both facts can be present in the same result.
+func spreadCoverageFailureCause(err, probeErr error) string {
+	switch {
+	case strings.Contains(err.Error(), "Forbidden"):
+		return "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
+	case errors.Is(probeErr, context.DeadlineExceeded):
+		return "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
+	default:
+		return "could not list nodes; "
+	}
+}
+
 func runNetworkStrictChecks(report *SandboxStrictReport, spec *sandbox.Spec) {
 	if spec.Network != nil && spec.Network.Preset != "" {
 		if _, ok := netproxy.PresetRules(spec.Network.Preset); !ok {
@@ -416,8 +425,11 @@ func runNetworkStrictChecks(report *SandboxStrictReport, spec *sandbox.Spec) {
 		}
 	}
 
-	mode, rules := runtime.ResolveNetworkPolicy(spec)
-	if _, err := netproxy.Compile(mode, rules); err != nil {
+	mode, rules, polErr := runtime.ResolveNetworkPolicy(spec)
+	if polErr != nil {
+		report.add("network allowlist syntax", CheckFail, polErr.Error(),
+			"set the referenced environment variable, or give the rule a ${VAR:-default}")
+	} else if _, err := netproxy.Compile(mode, rules); err != nil {
 		report.add("network allowlist syntax", CheckFail, err.Error(),
 			"fix the offending rule: wildcards must lead a label (**.example.com), CIDRs must parse, one wildcard segment per rule")
 	} else {
@@ -570,11 +582,13 @@ func loadWorkflowForDoctor(path string) (*ir.Workflow, error) {
 		}
 	}
 	if b != nil {
-		wf, _, cErr := runview.CompileBundleWorkflow(iterPath, b)
+		// The screen inspects, it runs nothing: no workspace.
+		wf, _, cErr := runview.CompileBundleWorkflow(iterPath, b, "", runview.AnalysisTrust)
 		return wf, cErr
 	}
 	// openBundleOrFile promoted nothing, so this is a loose file; the
-	// shared helper keeps the two compiles one.
-	wf, _, _, cErr := runview.CompileWorkflowPath(path)
+	// shared helper keeps the two compiles one. The screen inspects, it
+	// runs nothing: no workspace.
+	wf, _, _, cErr := runview.CompileWorkflowPath(path, "", runview.AnalysisTrust)
 	return wf, cErr
 }

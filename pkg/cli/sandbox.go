@@ -4,10 +4,10 @@ import (
 	"context"
 	"debug/elf"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -92,8 +92,14 @@ func runSandboxDoctorBasic(p *Printer) error {
 		containerRuntime = "<none>"
 	}
 
-	defaultMode := iterruntime.ResolveGlobalSandboxDefault()
-	if strings.TrimSpace(os.Getenv("ITERION_SANDBOX_DEFAULT")) == "" {
+	// The EFFECTIVE default, read where the engine reads it (isolationenv):
+	// a doctor that printed the live env value would report "none" for a run
+	// the engine sandboxes, because a project `.env` cannot choose this tier.
+	defaultMode := iterruntime.ResolveGlobalSandboxDefault(nil)
+	switch value, planted := isolationenv.Value(isolationenv.SandboxDefault); {
+	case planted:
+		defaultMode += " (a project .env set " + isolationenv.SandboxDefault + "; IGNORED — export it in your own environment)"
+	case strings.TrimSpace(value) == "":
 		defaultMode += " (built-in sandbox-by-default)"
 	}
 

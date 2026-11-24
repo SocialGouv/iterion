@@ -55,7 +55,7 @@ var probeRootDecidedElsewhere = map[string]string{
 	"pkg/cli/run.go:RunRun": `""`,
 	// The forwarding frames answer with the directory their caller names,
 	// and every caller is bound: subbotRunnerForCLI, executeRun and the
-	// runner's subbotRunnerFor by the agreement rule, RunRun by the entry
+	// runner's subbotRunnerUnder by the agreement rule, RunRun by the entry
 	// above. The runner's chain is read link by link — executeRun names the
 	// directory, buildExecutor forwards it, executorSpec sets the field — so
 	// a swapped argument reddens at whichever frame swapped it.
@@ -203,8 +203,8 @@ func TestEveryEngineWorkDirReachesItsOwnScreen(t *testing.T) {
 		"pkg/dispatcher/engine_runner.go:Dispatch",
 		"pkg/dispatcher/subbot.go:subbotRunnerForDispatch",
 		"pkg/runner/loop.go:executeRun",
-		"pkg/runner/subbot.go:subbotRunnerFor",
-		"pkg/runview/subbot.go:subbotRunnerFor",
+		"pkg/runner/subbot.go:subbotRunnerUnder",
+		"pkg/runview/subbot.go:subbotRunnerUnder",
 	}
 	got := make([]string, 0, len(judged))
 	for site := range judged {

@@ -189,3 +189,128 @@ func TestLivePostCreateFailureSurfacesError(t *testing.T) {
 		t.Errorf("error %q does not mention exit code 99", err.Error())
 	}
 }
+
+// TestLiveExecEnvReachesTheInnerProcessOffTheArgv proves the GUARANTEE the
+// unit witnesses pin the site of (#2845 item 2): against a real daemon, a
+// per-exec value the argv never carries still arrives in the environment of
+// the process inside the container — including the shapes the pair form
+// could not carry at all (a multi-line value) and the one it carried as a
+// deliberate override (the empty value, which overrides the image's `ENV`).
+func TestLiveExecEnvReachesTheInnerProcessOffTheArgv(t *testing.T) {
+	d := newDriver(t)
+	ws := tempWorkspace(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	prepared, err := d.Prepare(ctx, sandbox.Spec{
+		Mode:  sandbox.ModeInline,
+		Image: integrationImage,
+		Env:   map[string]string{"ITERION_LIVE_OVERRIDDEN": "from-the-container"},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(ctx, prepared, sandbox.RunInfo{
+		RunID:         "live-exec-env-" + time.Now().Format("150405"),
+		WorkspacePath: ws,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(ctx)
+
+	for _, tc := range []struct {
+		name    string
+		envName string
+		value   string
+	}{
+		{"a provider token", "ITERION_LIVE_TOKEN", "sk-live-2845-0123456789abcdef"},
+		{"a multi-line value", "ITERION_LIVE_PEM", "-----BEGIN PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END PRIVATE KEY-----"},
+		{"the empty value overriding the container's own", "ITERION_LIVE_OVERRIDDEN", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := sandbox.ExecOpts{Env: map[string]string{tc.envName: tc.value}}
+			// The same cmd answers both halves: its argv is what `ps`
+			// would show on the host, and its output is what the process
+			// inside the container read.
+			cmd := run.Command(ctx, []string{"sh", "-c", `printf %s "${` + tc.envName + `?unset}"`}, opts)
+			for _, arg := range cmd.Args {
+				if strings.HasPrefix(arg, tc.envName+"=") {
+					t.Errorf("the host argv carries the pair %q", arg)
+				}
+				if tc.value != "" && strings.Contains(arg, tc.value) {
+					t.Errorf("the host argv carries the value inside %q", arg)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("exec: %v (stderr=%q)", err, stderr.String())
+			}
+			if got := stdout.String(); got != tc.value {
+				t.Errorf("the process inside the container read %q, want %q", got, tc.value)
+			}
+		})
+	}
+}
+
+// TestLiveExecEnvDoesNotReconfigureTheRuntimeClient proves the other half
+// of the channel against a real client: the pair of a name-only `--env`
+// travels in the CLIENT's environment, so an exec whose env names HOME —
+// every claw node's does (`runnerEnv["HOME"]`, pkg/backend/model/claw_
+// backend.go) — must not hand that HOME to the client.
+//
+// The exec's HOME here holds a `.docker/config.json` naming a context that
+// does not exist: a client reading it fails to resolve its endpoint and
+// never reaches a daemon, so the exec SUCCEEDING is the proof that the
+// engine's own configuration is still the one in force — while the process
+// inside the container reads the HOME the exec asked for.
+func TestLiveExecEnvDoesNotReconfigureTheRuntimeClient(t *testing.T) {
+	d := newDriver(t)
+	ws := tempWorkspace(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// A HOME whose client configuration is a dead end. The engine's own
+	// HOME is untouched: only this exec's env names it.
+	containerHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(containerHome, ".docker"), 0o755); err != nil {
+		t.Fatalf("seeding the exec's HOME: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(containerHome, ".docker", "config.json"),
+		[]byte(`{"currentContext":"iterion-live-2845-absent-context"}`), 0o600); err != nil {
+		t.Fatalf("seeding the exec's HOME: %v", err)
+	}
+
+	prepared, err := d.Prepare(ctx, sandbox.Spec{Mode: sandbox.ModeInline, Image: integrationImage})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(ctx, prepared, sandbox.RunInfo{
+		RunID:         "live-client-env-" + time.Now().Format("150405"),
+		WorkspacePath: ws,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(ctx)
+
+	const credential = "sk-live-2845-beside-the-home"
+	cmd := run.Command(ctx, []string{"sh", "-c", `printf %s "$HOME"`}, sandbox.ExecOpts{
+		Env: map[string]string{"HOME": containerHome, "ITERION_LIVE_TOKEN": credential},
+	})
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("exec: %v — the client resolved its own configuration from the exec's HOME (stderr=%q)", err, stderr.String())
+	}
+	if got := stdout.String(); got != containerHome {
+		t.Errorf("the process inside the container read HOME=%q, want the exec's own %q", got, containerHome)
+	}
+	// The credential beside it still travels off the argv.
+	for _, arg := range cmd.Args {
+		if strings.Contains(arg, credential) {
+			t.Errorf("the host argv carries the credential inside %q", arg)
+		}
+	}
+}

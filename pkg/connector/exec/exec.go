@@ -26,6 +26,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -84,6 +85,12 @@ type Executor struct {
 	UserAgent string
 	// Now is injectable so a test can pin a Retry-After deadline.
 	Now func() time.Time
+	// PreciseNumbers decodes a JSON answer's numbers as json.Number, so an
+	// id past 2^53 reaches the caller as its literal instead of the float64
+	// nearest to it. A poller sets it: two ids that round to one float are
+	// one item to its seen set. Off for the paths whose consumers read
+	// float64.
+	PreciseNumbers bool
 }
 
 // Result is one call's outcome.
@@ -412,15 +419,24 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 	}
 	res := e.readResponse(pkg, op, resp, body)
 	res.Requests = 1
-	// The VENDOR's own words are redacted too, not only iterion's.
+	// EVERYTHING this call hands back is scrubbed here, the failure and the
+	// success alike — the error's text and the vendor's decoded body — because
+	// this is the last point where the secret bytes are still identifiable.
 	//
-	// Redaction covered the transport path — the URL Go prints in a *url.Error
-	// — and stopped there. But an error body is vendor text copied verbatim
-	// into the message, and a gateway answering 403 routinely echoes the
-	// credential it rejected. That message becomes the node's error and
-	// travels to the run's events, the tool hooks and error tracking. This is
-	// the last point where the secret bytes are still identifiable.
+	// The VENDOR's own words are redacted too, not only iterion's. An error
+	// body is vendor text copied verbatim into the message, and a gateway
+	// answering 403 routinely echoes the credential it rejected. That message
+	// becomes the node's error and travels to the run's events, the tool hooks
+	// and error tracking.
+	//
+	// A 2xx body carries it exactly as far: Result.Data is what a `tool …
+	// action:` node writes to its output and what the MCP facade serialises
+	// into an agent's tool answer, and a vendor's `self`/`next` link, debug
+	// envelope or audit field echoes the request URI — where an `in: query`
+	// scheme put the credential. Redacting the error and not the body left the
+	// quiet half of one leak open on the only path that succeeds.
 	redactErrorText(res.Err, op, params, cred)
+	res.Data = redactData(res.Data, op, params, cred)
 	return res, nil
 }
 
@@ -435,16 +451,120 @@ func redactErrorText(e *Error, op spec.Operation, params map[string]any, cred Cr
 	if e == nil {
 		return
 	}
-	for _, secret := range secretValues(op, params, cred) {
+	secrets := secretValues(op, params, cred)
+	e.Message = scrubSecrets(e.Message, secrets)
+	e.Code = scrubSecrets(e.Code, secrets)
+}
+
+// redactData strips credential material out of the vendor's DECODED body.
+//
+// The walk is the shape of decoded JSON — object, array, string — and it
+// covers a map KEY as well as a value: a vendor that echoes a rejected
+// parameter as a key is as much a leak as one that echoes it as a value, and a
+// reader downstream (a node's output written to the run store, the facade's
+// tool answer read by a model) cannot redact what it cannot recognise.
+//
+// Mutated IN PLACE: the maps and slices were allocated by this call's own
+// decode and are owned by the Result, so a copy would double the cost of the
+// largest bodies for nothing. Cost is one pass over a body that was just
+// decoded, and only when there is a secret to look for.
+//
+// A DEGENERATE secret — one or two characters — occurs inside ordinary field
+// names, so scrubbing rewrites the document's own structure. That is the
+// honest consequence of "redact wherever the bytes appear", not a case to
+// special-case with a minimum length: a length floor would silently stop
+// redacting the very short credential it was written for. A credential of one
+// character is not a credential.
+func redactData(data any, op spec.Operation, params map[string]any, cred Credential) any {
+	secrets := secretValues(op, params, cred)
+	if !anySecret(secrets) {
+		// An operation this call authenticated with nothing — no credential,
+		// no secret parameter — has nothing to look for, and the walk over a
+		// 32 MiB body is not free.
+		return data
+	}
+	return scrubValue(data, secrets)
+}
+
+// anySecret reports whether the set holds anything to look for. secretValues
+// always yields the credential's slots, empty ones included.
+func anySecret(secrets []string) bool {
+	for _, s := range secrets {
+		if s != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubValue rewrites one decoded JSON value. Numbers, booleans and null carry
+// no text, so they are returned as they are.
+func scrubValue(v any, secrets []string) any {
+	switch t := v.(type) {
+	case string:
+		return scrubSecrets(t, secrets)
+	case map[string]any:
+		// A renamed KEY is collected and applied after the walk: adding to a
+		// map while ranging over it leaves whether the new key is visited up
+		// to the runtime, and a second visit would be a different answer run
+		// to run.
+		var renamed map[string]any
+		for k, child := range t {
+			child = scrubValue(child, secrets)
+			clean := scrubSecrets(k, secrets)
+			if clean == k {
+				t[k] = child
+				continue
+			}
+			delete(t, k)
+			if renamed == nil {
+				renamed = map[string]any{}
+			}
+			renamed[clean] = child
+		}
+		for k, child := range renamed {
+			// Two keys differing only in the secret they carry collapse onto
+			// one redacted name. One entry then wins and which one is not
+			// defined; telling them apart would mean putting the secret back
+			// into the name, which is the one answer this function refuses.
+			if _, clash := t[k]; !clash {
+				t[k] = child
+			}
+		}
+		return t
+	case []any:
+		for i, child := range t {
+			t[i] = scrubValue(child, secrets)
+		}
+		return t
+	default:
+		return v
+	}
+}
+
+// scrubSecrets replaces every secret in s, in the shapes it travels in: the
+// raw bytes, the QueryEscape form an `in: query` scheme produces, and the
+// PathEscape form an `in: path` scheme produces — the two escapes differ
+// (`+`, space), so matching one leaves the other printing the credential. ONE
+// function for the error text and the body, or the two would redact different
+// shapes of the same credential.
+func scrubSecrets(s string, secrets []string) string {
+	if s == "" {
+		return s
+	}
+	for _, secret := range secrets {
 		if secret == "" {
 			continue
 		}
-		e.Message = strings.ReplaceAll(e.Message, secret, redactedMarker)
-		e.Code = strings.ReplaceAll(e.Code, secret, redactedMarker)
+		s = strings.ReplaceAll(s, secret, redactedMarker)
 		if esc := url.QueryEscape(secret); esc != secret {
-			e.Message = strings.ReplaceAll(e.Message, esc, redactedMarker)
+			s = strings.ReplaceAll(s, esc, redactedMarker)
+		}
+		if esc := url.PathEscape(secret); esc != secret {
+			s = strings.ReplaceAll(s, esc, redactedMarker)
 		}
 	}
+	return s
 }
 
 // transportError classifies a call that got no usable answer.
@@ -545,6 +665,16 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 	}
 
 	p := op.Pagination
+	// The body the walk reads is the REDACTED one — Call redacts before
+	// returning — and the redaction renames every key carrying the
+	// credential, the protocol's own keys included when the credential is a
+	// substring of one. Reading them by their original name would miss the
+	// cursor and report the collection COMPLETE: the silent truncation the
+	// Complete flag exists to prevent. The walk resolves its field names
+	// through the same scrub the body went through, so writer and reader
+	// agree whatever the credential.
+	secrets := secretValues(op, params, cred)
+	redactedKey := func(field string) string { return scrubSecrets(field, secrets) }
 	maxPages := p.MaxPages
 	if maxPages <= 0 {
 		maxPages = defaultMaxPages
@@ -572,7 +702,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		if callErr != nil || !res.OK() {
 			return nil, false, res, callErr
 		}
-		batch, found := pageItems(res.Data, p.ItemsField)
+		batch, found := pageItems(res.Data, redactedKey(p.ItemsField))
 		if !found {
 			return nil, false, res, errNoCollection(op, p.ItemsField, res.Data)
 		}
@@ -651,7 +781,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 			return items, false, res, nil
 		}
 		last = res
-		batch, found := pageItems(res.Data, p.ItemsField)
+		batch, found := pageItems(res.Data, redactedKey(p.ItemsField))
 		if !found {
 			// Refused rather than treated as the end of the collection: the
 			// items gathered so far are returned with the error, so a caller
@@ -684,7 +814,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		// moved out of the cursor branch once; it had to be moved out of the
 		// shared pre-check too.
 		if p.Style == spec.PageCursor {
-			next := stringField(res.Data, p.CursorField)
+			next := stringField(res.Data, redactedKey(p.CursorField))
 			if next == "" {
 				return items, true, last, nil
 			}
@@ -764,15 +894,18 @@ func redactSecrets(err error, op spec.Operation, params map[string]any, cred Cre
 	}
 	msg := err.Error()
 	out := msg
-	// The credential itself, and its URL-escaped form: it reaches the query
-	// string encoded, so matching only the raw bytes would miss exactly the
-	// case that leaks.
+	// The credential itself, and the escaped forms it travels in: it reaches
+	// the query string QueryEscaped and the path PathEscaped, so matching
+	// only the raw bytes would miss exactly the cases that leak.
 	for _, secret := range secretValues(op, params, cred) {
 		if secret == "" {
 			continue
 		}
 		out = strings.ReplaceAll(out, secret, redactedMarker)
 		if esc := url.QueryEscape(secret); esc != secret {
+			out = strings.ReplaceAll(out, esc, redactedMarker)
+		}
+		if esc := url.PathEscape(secret); esc != secret {
 			out = strings.ReplaceAll(out, esc, redactedMarker)
 		}
 	}
@@ -872,12 +1005,7 @@ func authorPaged(op spec.Operation, p *spec.Pagination, params map[string]any) b
 // a caller writes, since an overlay may have renamed it. Falls back to the
 // wire name, which is the key whenever nothing was renamed.
 func keyForWireName(op spec.Operation, wire string) string {
-	for _, p := range op.Params {
-		if p.Name == wire {
-			return p.Key
-		}
-	}
-	return wire
+	return spec.ParamKeyForWire(op, wire)
 }
 
 // pageItems extracts a page's collection: the named field, or the body itself
@@ -940,7 +1068,7 @@ func jsonShape(data any) string {
 		return "a string"
 	case bool:
 		return "a boolean"
-	case float64:
+	case float64, json.Number:
 		return "a number"
 	default:
 		return fmt.Sprintf("%T", data)
@@ -951,8 +1079,16 @@ func stringField(data any, field string) string {
 	if field == "" {
 		return ""
 	}
-	s, _ := descend(data, field).(string)
-	return s
+	switch v := descend(data, field).(type) {
+	case string:
+		return v
+	case json.Number:
+		// A vendor whose next-page cursor is a number: read as decoded with
+		// PreciseNumbers, its literal — a walk that read nothing here would
+		// stop after one page and call itself complete.
+		return v.String()
+	}
+	return ""
 }
 
 // descend walks a dotted path into a decoded JSON value.
@@ -975,6 +1111,48 @@ func asError(err error, out **Error) bool {
 		*out = e
 	}
 	return ok
+}
+
+// decodeAnswer decodes a body the way its operation declares: a feed
+// operation's SUCCESSFUL answer through decodeFeed, under the charset its
+// Content-Type names; anything else — an error body included, which feeds
+// serve as HTML or JSON and which a feed decode would only spend memory on —
+// as JSON, whose failure on a non-2xx is not read.
+func decodeAnswer(op spec.Operation, resp *http.Response, body []byte, precise bool) (any, error) {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed && resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		len(strings.TrimSpace(string(body))) > 0 {
+		return decodeFeed(body, resp.Header.Get("Content-Type"))
+	}
+	if precise {
+		return decodePreciseJSON(body)
+	}
+	return decodeJSON(body)
+}
+
+// decodePreciseJSON is decodeJSON keeping every number as its literal
+// (json.Number), with the same refusal of anything after the value.
+func decodePreciseJSON(body []byte) (any, error) {
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var out any
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid character after top-level value")
+	}
+	return out, nil
+}
+
+// answerFormat names what an operation's body was expected to be.
+func answerFormat(op spec.Operation) string {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed {
+		return "an RSS 2.0 or Atom 1.0 feed"
+	}
+	return "JSON"
 }
 
 // decodeJSON decodes a body, tolerating an empty one.

@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // branchCancelGracePeriod bounds how long the fan-out collector waits,
@@ -23,7 +24,10 @@ import (
 var branchCancelGracePeriod = defaultBranchCancelGracePeriod()
 
 func defaultBranchCancelGracePeriod() time.Duration {
-	if v := os.Getenv("ITERION_BRANCH_CANCEL_GRACE"); v != "" {
+	// The liveness family reads planted-as-unset (delegate.envDurationOr's
+	// rule): the operator's export answers, a project `.env`'s plant does
+	// not.
+	if v := envtrust.Inherited("ITERION_BRANCH_CANCEL_GRACE"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
@@ -286,7 +290,7 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			// failed for any reason under wait_all (their results would be
 			// discarded anyway, so paying for them is pure waste).
 			if result != nil && result.err != nil {
-				if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(plan.cancelOnFirstFailure) {
+				if errors.Is(result.err, errCorrectionOwnershipLost) || errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(plan.cancelOnFirstFailure) {
 					cancelBranches()
 				}
 			}
@@ -382,6 +386,17 @@ func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context,
 			collected = total
 		}
 	}
+	for _, result := range results {
+		if result != nil && errors.Is(result.err, errCorrectionOwnershipLost) {
+			var causes []error
+			for _, r := range results {
+				if r != nil {
+					causes = append(causes, r.err)
+				}
+			}
+			return results, errors.Join(causes...)
+		}
+	}
 	if amb := firstAmbiguousBranchErr(byBranchID(results)); amb != nil {
 		return results, &RuntimeError{
 			Code: ErrCodeAmbiguousEffect, NodeID: routerNodeID,
@@ -439,33 +454,18 @@ func (e *Engine) recordAbandonedBranches(rs *runState, routerNodeID, mode string
 // all branches failed it falls back to the pre-computed topology point.
 //
 // Under best_effort, branches may legitimately end at different nodes (one
-// fails, one is cancelled, one completes) — keep the first non-empty
-// joinNodeID and log the divergence rather than aborting (which would discard
-// the successful branches, exactly the failure mode best_effort exists to
-// avoid). When no branch reported a convergence point and every branch ran
-// cleanly to its own Done node (all-done topology under best_effort), hand a
-// terminal node back so the engine routes to run_finished.
+// fails, one is cancelled, one completes) — keep the first reported
+// joinNodeID in branch order and log the divergence rather than aborting
+// (which would discard the successful branches, exactly the failure mode
+// best_effort exists to avoid). When no branch reported a convergence point
+// and every branch ran cleanly to its own Done node (all-done topology under
+// best_effort), hand a terminal node back so the engine routes to
+// run_finished.
 func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results []*branchResult, plan fanOutPlan) (string, error) {
-	convergenceNodeID := ""
 	isBestEffort := !plan.cancelOnFirstFailure
-	for _, r := range results {
-		if r.joinNodeID == "" {
-			continue
-		}
-		if convergenceNodeID == "" {
-			convergenceNodeID = r.joinNodeID
-			continue
-		}
-		if convergenceNodeID != r.joinNodeID {
-			if isBestEffort {
-				if e.logger != nil {
-					e.logger.Warn("fan_out from %s: branches converge to different nodes (%s vs %s in branch %s) — best_effort, keeping first",
-						routerNodeID, convergenceNodeID, r.joinNodeID, r.branchID)
-				}
-				continue
-			}
-			return "", fmt.Errorf("branches converge to different nodes: %s vs %s", convergenceNodeID, r.joinNodeID)
-		}
+	convergenceNodeID, err := e.reportedJoin("fan_out", routerNodeID, results, isBestEffort)
+	if err != nil {
+		return "", err
 	}
 	if convergenceNodeID == "" {
 		if allTerminatedAtDone(results) && (isBestEffort || plan.preComputedConvergence == "") {
@@ -484,6 +484,36 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 	seeds := settledSeedsPerEdge(routerNodeID, plan.edges, results)
 	floor := settledEdgesInto(e.workflow, seeds, convergenceNodeID, evidenceFromBranches(results))
 	return e.processConvergence(rs, convergenceNodeID, results, seeds, floor)
+}
+
+// reportedJoin is the convergence node the branches stopped at, read in
+// branch order (byBranchID), or "" when none reported one. Branches that
+// disagree fail a wait_all fan-out; under best_effort the first reporting
+// branch's node is kept — the lowest item index of a fan_out_each — so the
+// node the trunk continues from does not depend on which branch delivered
+// first.
+func (e *Engine) reportedJoin(mode, routerNodeID string, results []*branchResult, bestEffort bool) (string, error) {
+	join := ""
+	for _, r := range byBranchID(results) {
+		if r.joinNodeID == "" {
+			continue
+		}
+		if join == "" {
+			join = r.joinNodeID
+			continue
+		}
+		if join != r.joinNodeID {
+			if bestEffort {
+				if e.logger != nil {
+					e.logger.Warn("%s from %s: branches converge to different nodes (%s vs %s in branch %s) — best_effort, keeping the first in branch order",
+						mode, routerNodeID, join, r.joinNodeID, r.branchID)
+				}
+				continue
+			}
+			return "", fmt.Errorf("branches converge to different nodes: %s vs %s", join, r.joinNodeID)
+		}
+	}
+	return join, nil
 }
 
 // allTerminatedAtDone reports whether every branch finished cleanly at

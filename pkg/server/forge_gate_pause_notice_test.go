@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -46,7 +47,7 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.cfg.Store = rs
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		if err := conns.Create(context.Background(), forge.Connection{
 			ID: "c1", TenantID: team, Provider: forge.ProviderGitHub,
 		}); err != nil {
@@ -522,6 +523,10 @@ func TestGateNotices_ShareOneAuthorizationWalk(t *testing.T) {
 		}, 0},
 		{"a run whose launch pinned the gate off posts nothing", func(_ *testing.T, _ *Server, run *store.Run) {
 			run.Inputs["gate_enabled"] = "false"
+		}, 0},
+		// Evaluation mode: the run was launched not to touch the pull request.
+		{"a run launched in evaluation mode posts nothing", func(_ *testing.T, _ *Server, run *store.Run) {
+			run.Inputs["publish_mode"] = "off"
 		}, 0},
 		{"a provider with no comment client posts nothing", func(_ *testing.T, s *Server, _ *store.Run) {
 			s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) {

@@ -44,10 +44,6 @@ func TestHostNetworkArgs(t *testing.T) {
 			name: "proxy only",
 			info: sandbox.RunInfo{ProxyEndpoint: "http://host.docker.internal:9000"},
 			want: []string{
-				"--env", "HTTPS_PROXY=http://host.docker.internal:9000",
-				"--env", "HTTP_PROXY=http://host.docker.internal:9000",
-				"--env", "https_proxy=http://host.docker.internal:9000",
-				"--env", "http_proxy=http://host.docker.internal:9000",
 				"--env", noProxyEnv,
 				"--env", noProxyLower,
 				"--add-host", aliasArg,
@@ -57,10 +53,6 @@ func TestHostNetworkArgs(t *testing.T) {
 			name: "proxy and MCP listener (no duplicate alias)",
 			info: sandbox.RunInfo{ProxyEndpoint: "http://host.docker.internal:9000", HostGatewayAlias: true},
 			want: []string{
-				"--env", "HTTPS_PROXY=http://host.docker.internal:9000",
-				"--env", "HTTP_PROXY=http://host.docker.internal:9000",
-				"--env", "https_proxy=http://host.docker.internal:9000",
-				"--env", "http_proxy=http://host.docker.internal:9000",
 				"--env", noProxyEnv,
 				"--env", noProxyLower,
 				"--add-host", aliasArg,

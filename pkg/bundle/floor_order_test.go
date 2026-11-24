@@ -82,19 +82,19 @@ func TestEveryFloorRefusesAReleaseBelowItWhateverTheOtherPinsName(t *testing.T) 
 	asked := map[string]string{}
 	floortest.EachPinOrder(t, collapseTarget(t), func(t *testing.T) {
 		var needs []string
-		for _, req := range floorProbes() {
-			need, reason := RequiredRelease(req)
+		for _, probe := range floorProbes() {
+			need, reason := RequiredReleaseOf(probe)
 			if need == "" {
-				t.Errorf("%s asks for no release", req.Describe())
+				t.Errorf("%s asks for no release", probe.Describe())
 				continue
 			}
-			needs = append(needs, req.Describe()+" "+need)
+			needs = append(needs, probe.Describe()+" "+need)
 			low := floortest.Below(t, need)
-			if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + low}}, req); pf.OK {
-				t.Errorf("%s: a floor of %s passed for %s, the release %s needs", req.Describe(), low, need, reason)
+			if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + low}, DeclaredKeys: probe.Keys}, probe.Syntax); pf.OK {
+				t.Errorf("%s: a floor of %s passed for %s, the release %s needs", probe.Describe(), low, need, reason)
 			}
-			if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + need}}, req); !pf.OK {
-				t.Errorf("%s: the floor %s itself was refused: %+v", req.Describe(), need, pf)
+			if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + need}, DeclaredKeys: probe.Keys}, probe.Syntax); !pf.OK {
+				t.Errorf("%s: the floor %s itself was refused: %+v", probe.Describe(), need, pf)
 			}
 		}
 		asked[t.Name()] = strings.Join(needs, ", ")

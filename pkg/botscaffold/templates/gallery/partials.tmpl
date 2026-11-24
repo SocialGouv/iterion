@@ -17,6 +17,17 @@ called right after the `agent x:` header. */ -%>
   model: <%quote .Model%><%end%><%if .Skills%>
   skills: [<%range $i, $s := .Skills%><%if $i%>, <%end%><%quote $s%><%end%>]<%end%><%if .Capabilities%>
   capabilities: [<%range $i, $c := .Capabilities%><%if $i%>, <%end%><%$c%><%end%>]<%end%><%end%>
+<%- /* llm_fields_nested: the same fields for an llm node declared INSIDE a
+`group`, whose body sits one indentation level deeper. Same fields in the
+same order as llm_fields — kept as a second define rather than a computed
+indent because the template language has none, and because a wrong
+indentation here is a parse error the gallery gate reads, never a
+silently dropped field. */ -%>
+<%define "llm_fields_nested"%><%if .Backend%>
+    backend: <%quote .Backend%><%end%><%if .Model%>
+    model: <%quote .Model%><%end%><%if .Skills%>
+    skills: [<%range $i, $s := .Skills%><%if $i%>, <%end%><%quote $s%><%end%>]<%end%><%if .Capabilities%>
+    capabilities: [<%range $i, $c := .Capabilities%><%if $i%>, <%end%><%$c%><%end%>]<%end%><%end%>
 <%- /* dials: the optional workflow-level switches a spec may set. */ -%>
 <%define "dials"%><%if .Sandbox%>
   ## Container isolation (devcontainer.json when present, else the

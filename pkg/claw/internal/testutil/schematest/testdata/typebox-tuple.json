@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "point": {
+      "type": "array",
+      "items": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "additionalItems": false,
+      "minItems": 2,
+      "maxItems": 2
+    }
+  },
+  "required": [
+    "point"
+  ]
+}

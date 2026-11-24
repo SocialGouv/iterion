@@ -16,7 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -177,11 +179,145 @@ import (
 // and live raises. Both schema bounds move to 27: older donor payloads may
 // omit even CapImposed when the ask fits below the allowance, so no safe
 // migration can recover their ceiling. Drain or park/resume; server first.
-const SchemaVersion = 27
+// v=28: BotSourceTier (the #1959 isolation floor) — which bot-resolution
+// tier served the launch, mirrored from the run document so the runner
+// applies the operator isolation floor BEFORE any document read, exactly
+// like Trust. Breaking by the additive-field rule: a stale runner dropping
+// it would honour a team-authored `sandbox: none` the floor exists to
+// neutralize — failing open, on the pod. MinSchemaVersion stays 27: every
+// v27 publisher already stamps BotSourceTier on the run document, so a new
+// runner consuming a v27 message re-reads the tier from the document (the
+// floor's second carrier) instead of dropping the decision — the one
+// direction in which ignoring the field cannot fail open.
+// v=29 (2026-11-09): ForkAuthorSubject (ADR-162 U6, decision 5) — the fork
+// review lane's per-contributor metering subject, so the runner's
+// recordOrgSpend charges the author's dollars beside the org's. Breaking by
+// the additive-field rule: a stale runner dropping it would leave the
+// per-contributor DOLLAR bound unenforced for the run's lifetime — a
+// perimeter failing open, in silence, on the pod. Server-first rollout;
+// MinSchemaVersion stays 27, because a v27 or v28 message can only carry a
+// fork run's trust in one case, and that case parks: no v28 server LAUNCHES
+// untrusted work, but a v28 replica still serving mid-rollout can REPUBLISH
+// a fork run a v29 replica created (its resume, a launch naming it as a
+// parent), replaying the trust with no subject. Validate parks any untrusted
+// message older than ForkAuthorSubjectSchemaVersion as a version mismatch,
+// so an upgraded runner never runs it unmetered; a v28 runner, which knows
+// neither the field nor the rule, still would — so the fork lane is enabled
+// only once every server and runner replica runs v29
+// (docs/cloud-queue-schema-rollout.md). A v29 message on a stale runner is
+// rejected at the schema check and parks replayably.
+// v=30 (2026-11-10): ContentBoundary gets its producer (ADR-131 §4, #2005
+// PR-C'). The publisher stamps every launch its credential walk resolves —
+// team_gateway when the walk attributes a gateway route to the team's key and
+// seals it, own_keys otherwise — and replays the frozen stamp on resume; the
+// run's bundle carries AmbientLLMRefused on the same decision. Breaking by
+// the additive-field rule: a stale runner dropping the stamp would land
+// vendor crossings on the run's gateway nodes, run its supervisors on the
+// pod's environment and admit the server-side helpers the boundary refuses —
+// serving auxiliary gateway spend off the team's boundary, failing open on
+// the pod. It rejects: its window is [27, 29]. MinSchemaVersion stays 27 —
+// the fence is the maximum that rises; raising the minimum would force a
+// drain of v27–v29 messages for no added safety. A v29 publisher — and a v28
+// one since PR-B'2 (#2721) added the carriage — never DERIVES a stamp, but
+// its resume replays the run document's frozen one: a v29 replica still
+// serving mid-rollout (or a server rolled back) resuming a run a v30 replica
+// stamped team_gateway publishes a pre-v30 message carrying the stamp over a
+// bundle walked by the old rules — no gateway key sealed, no
+// AmbientLLMRefused — whose gateway routes would fall to the pod's
+// environment. Validate parks a message older than
+// ContentBoundaryProducerSchemaVersion carrying team_gateway as a version
+// mismatch, so a resume from an upgraded server recovers it; every other
+// v27–v29 message carries own_keys or no stamp, the readings the new runner
+// applies. A v27 publisher, or a v28 one built before PR-B'2, replays
+// nothing: its resume of a stamped run carries no stamp, which no rule can
+// tell from an unstamped run — the runner reads the message alone — so a
+// server rolled back below PR-B'2 drops a team_gateway run's boundary on
+// resume. Runners and pools roll FIRST, the server after: with the minimum
+// unchanged a new runner admits every trusted message the old server still
+// publishes (the v29 rule above still parks an untrusted message older than
+// v29), and an old runner never sees a v30 message.
+// v=31 (2026-11-13): the compiled IR carries `codemode:` (ADR-165), the
+// attribute that hands a node the script host's tool. NO new RunMessage
+// field — the value rides IRCompiled, which already travels — and the bump is
+// owed for the reason the ADDITIVE-field bullet above gives: a pre-codemode
+// runner's IR decoder is a plain json.Unmarshal with no DisallowUnknownFields,
+// so it DROPS the key and runs the node without the tool. The author asked
+// for the composition and gets none; the model keeps its whole loop in
+// context, the bill is the one codemode exists to avoid, and nothing in the
+// run says so. That is v=5's shape (Contributions): a run that still
+// "succeeds" while doing the thing the launch was configured not to do.
+//
+// Server-first; MinSchemaVersion stays 27, because the maximum is what rises.
+// What the fence does NOT cover, written rather than implied — an adversarial
+// round refuted an earlier clause here claiming "every message below v31 is a
+// run that asked for nothing": a v30 message published by a v5.32.x server
+// CAN carry `codemode: on`, because that release COMPILED the attribute (it
+// only warned, C338, and its hint invited authors to keep the line). Such a
+// message sits inside the accept window, so an upgraded runner recompiles it,
+// C339 refuses it, and the run parks on the DLQ as ErrIRUnloadable. The
+// version fence cannot catch that and is not what answers it: the migration
+// sentence on ADR-165 is — re-route the node to claw, or declare
+// `codemode: off`.
+// v32 adds the codemode BOUNDS to the same carrier. They ride `ir_compiled`
+// inside the `codemode` object — `ir_compiled` is the compiled AST, so the
+// bounds travel as the block's own fields (`tool_calls`, `wall`, …) beside
+// its mode, and NOT under a key of their own. An earlier draft named a
+// `codemode_bounds` key here: that name is real but belongs to ANOTHER wire,
+// `delegate.IOTask`'s sandbox relay, and on this one it existed only as three
+// json tags on a struct family nothing marshals; they are gone. No RunMessage field was added, and the bump
+// is the additive-field rule's case rather than a formality.
+//
+// The direction is the opposite of v31's and the rule still asks for a bump.
+// A pre-bounds runner drops the key and runs the program under
+// scripthost.DefaultLimits — TIGHTER than anything an author raises them to,
+// so it cannot fail OPEN and the refusal it produces is loud ("the script has
+// spent its budget of 64 tool calls"). That is only the EXEMPTION's first
+// condition though, not the whole of it: the exemption also asks that the
+// field "carries no operator choice", which is what let `cap_imposed` in
+// without a bump. Declared bounds are an operator's choice, named by the rule
+// itself ("budget caps"), so a stale runner silently re-making it is the
+// correctness bug the rule exists for. Hence 31 → 32, and
+// MinSchemaVersion stays 27.
+// v=33 (2026-11-17): the launch-time codemode OVERRIDE (CM-5e, #3345) —
+// RunMessage.Codemode (on|off) and RunMessage.CodemodeBounds (field by
+// field, zero = the launch did not choose). Breaking by the additive-field
+// rule, and the direction is v21's ambient_context one, not v32's: a stale
+// runner dropping an explicit `off` would run the capability the operator
+// asked AWAY — the knob failing open, the exact direction the additive rule
+// exists to reject. A dropped bounds raise only lands tighter (defaults),
+// but the mode's off direction alone decides the bump. Runner-first
+// rollout — its precondition holds by construction, the minimum does not
+// move — and MinSchemaVersion stays 27.
+// v=34: compiled codemode bounds and the launch override can carry
+// concurrent_tool_calls (CM-9/10). A v33 runner dropping the field would
+// silently replace the configured concurrency with serial execution. Roll
+// runners first; v27–v33 messages remain readable and inherit the default
+// when the field is absent.
+// v=35: compiled workflow and launch bounds can carry store_entries and
+// store_bytes and the explicit resume quota patch (CM-11/12). Old runners
+// cannot enforce the run bank's quotas.
+// Roll runners first; v27–v34 messages without these fields remain readable.
+const SchemaVersion = 35
+
+const codemodeStoreSchemaVersion = 35
+
+// ContentBoundaryProducerSchemaVersion is the first wire version whose
+// publisher seals a team_gateway run's gateway key and arms its
+// AmbientLLMRefused on the stamp's decision: a message older than it that
+// carries team_gateway is a stale replica's replay of a frozen stamp over an
+// old-rules bundle, and Validate parks it.
+const ContentBoundaryProducerSchemaVersion = 30
+
+// ForkAuthorSubjectSchemaVersion is the first wire version that carries
+// RunMessage.ForkAuthorSubject: an untrusted message older than it cannot
+// name the author whose bound it spends, and Validate parks it.
+const ForkAuthorSubjectSchemaVersion = 29
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
 // them with a fresh grant and its explicit amount; replaying old bytes cannot.
+// v27, v28 and v29 stay acceptable beside v30 (see the v28, v29 and v30
+// notes above SchemaVersion).
 const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
@@ -216,9 +352,25 @@ type RunMessage struct {
 	// runner can withhold workspace-level capabilities without a document
 	// read. Empty is the trusted default.
 	Trust store.RunTrust `json:"trust,omitempty"`
+	// ForkAuthorSubject is the fork review lane's per-contributor metering
+	// subject (orgusage.ForkAuthorSubject's exact spelling, composed on the
+	// metering id the org budget used), mirrored from the run document so
+	// the runner's recordOrgSpend charges the author's dollars beside the
+	// org's — where spend is measured, not from a document a failed run may
+	// never have loaded. Empty on every trusted run (and every run that
+	// predates the fork lane).
+	ForkAuthorSubject string `json:"fork_author_subject,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`
+	// BotSourceTier names which bot-resolution tier served the launch
+	// (store.BotSourceTierTeam/Platform/Baked), mirrored from the run
+	// document so the runner applies the #1959 operator isolation floor —
+	// a non-operator source's `sandbox: none` is neutralized — before it
+	// has any reason to read the document, and so a subbot's child message
+	// (a struct copy of this one) inherits it. Empty is the operator's own
+	// launch (local run, or a doc that predates the stamp): no floor.
+	BotSourceTier string `json:"bot_source_tier,omitempty"`
 	// Contributions carries the plugin markdown contributions and
 	// skill-library skills the LAUNCHING instance resolved for this run (the
 	// wire mirror of runtime.Contributions). A runner pod's iterion home is
@@ -257,6 +409,13 @@ type RunMessage struct {
 	// publications older than the field read as pool-served, which is what
 	// they were.
 	PoolGrantless bool `json:"pool_grantless,omitempty"`
+	// PoolAttemptID is the attempt identity the publication's credential
+	// resolution stamped on every pool lease it opened
+	// (credpool.Lease.AttemptID): the attempt's spend report settles
+	// exactly those leases. Empty when the attempt holds no pool lease, and
+	// on a publication older than the field — its report then pins its
+	// lease by PublishedAtRFC.
+	PoolAttemptID string `json:"pool_attempt_id,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
@@ -301,6 +460,17 @@ type RunMessage struct {
 	// AmbientContext is the launch-time ambient-context override (ADR-119).
 	// Empty means the caller expressed nothing and the workflow/env decide.
 	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the launch-time codemode override (ADR-165): on|off, the
+	// wire half of the capability's strongest precedence rung. Empty means
+	// the caller expressed nothing and the authored DSL decides. There is
+	// deliberately no environment half of this knob (ADR-132 §1): the launch
+	// request is the only operator surface above the DSL.
+	// CodemodeBounds is the launch's field-by-field bounds raise; a zero
+	// field means the launch did not choose, and the child still runs under
+	// scripthost.Clamp (ceiling, floor, OnClamp report) — the wire never
+	// carries a bound that bypasses the clamp.
+	Codemode       string             `json:"codemode,omitempty"`
+	CodemodeBounds *scripthost.Limits `json:"codemode_bounds,omitempty"`
 	// LoopBudgetGuard is the launch-time back-edge affordability override —
 	// the wire half of that knob's strongest precedence level. Empty means
 	// the caller expressed nothing and the workflow/env decide.
@@ -327,6 +497,12 @@ type RunMessage struct {
 	Resume         *ResumeSpec   `json:"resume,omitempty"`
 	Trace          TraceContext  `json:"trace"`
 	PublishedAtRFC string        `json:"published_at"`
+	// LaunchAttempt names a launch message that is a NEW attempt of a run
+	// already queued once — an idempotent submission's completion, which
+	// re-stamps the run's queued_at. It salts the message's Nats-Msg-Id, so
+	// the broker's dedup window never swallows the new attempt for the old
+	// one's. Publisher-side only: it does not travel on the wire.
+	LaunchAttempt string `json:"-"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted
@@ -353,6 +529,35 @@ type RunMessage struct {
 	// execute the run outside the team's pool, which is the leak the pool
 	// exists to make impossible.
 	RunnerPool string `json:"runner_pool,omitempty"`
+	// ContentBoundary mirrors the run document's frozen content boundary
+	// (ADR-131 §4) so the claiming runner knows which credential class
+	// funds the run without a second store read: the publisher stamps it at
+	// launch (ContentBoundaryProducerSchemaVersion) and replays the
+	// document's stamp on resume (since PR-B'2, at v28, before any producer
+	// existed — Validate parks a pre-producer replay of team_gateway). Nil on a
+	// message whose run predates the producer, or whose resolution never
+	// walked; a nil pointer serialises as absent.
+	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`
+	// CredPlan is the launch-frozen node-and-provider → credential-
+	// fingerprint plan the PUBLISHER resolves (the walk that sealed the
+	// bundle, joined with the bundle's own fingerprint stamps) and stamps
+	// so the claiming runner can attribute each delegation's spend to the
+	// credential that served it — the producer half of the pool's fine
+	// door-lease booking (#2288, ADR-121 § Delivery 2). Keys are
+	// `<node>|<provider>` (the provider the serving chain element resolved,
+	// which is what the delegate events carry); values are the same
+	// fingerprint strings the runner reads from its own credentials, so
+	// the fine table it reports keys in the lease's space. The publisher
+	// stamps it only when the routing walk is narrow-safe and a pool lease
+	// serves the run — a walk it cannot read may spend anything, so no
+	// plan it could write is total. The runner holds the same line at run
+	// time: an observation the attempt paid for that joins none of the
+	// keys voids its table. Nil (an older publisher, or a walk that
+	// widened) keeps the runner's coarse whole-attempt booking: the
+	// conservative-on-ignore direction, which is why the field needs no
+	// RunMessage version bump (the same doctrine as FallbackModelClasses
+	// above).
+	CredPlan map[string]string `json:"cred_plan,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When
 	// non-empty, the runner copies it into the persisted Run document
@@ -561,6 +766,15 @@ type BackendConfig struct {
 	DelegateModel string  `json:"delegate_model,omitempty"`
 }
 
+// CodemodeQuotaPatch carries only the explicitly restated run-bank quota
+// dimensions. Zero leaves that dimension unchanged at the resume claim.
+type CodemodeQuotaPatch struct {
+	// QueuedAt identifies the exact store flip; PublishedAt serves a separate lease contract.
+	QueuedAt time.Time `json:"queued_at"`
+	Entries  int64     `json:"store_entries,omitempty"`
+	Bytes    int64     `json:"store_bytes,omitempty"`
+}
+
 // ResumeSpec is non-nil for resume publishes; the runner threads its
 // fields into `runtime.Engine.Resume`.
 type ResumeSpec struct {
@@ -569,6 +783,12 @@ type ResumeSpec struct {
 	Force          bool            `json:"force"`
 	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
 	ReceiptID      string          `json:"receipt_id,omitempty"`
+	// CodemodeQuota is spent when this publication is claimed, not on retries.
+	// RunMessage.CodemodeBounds is an execution snapshot, not a quota write.
+	CodemodeQuota *CodemodeQuotaPatch `json:"codemode_quota,omitempty"`
+	// CodemodeQuotaSpent is runner-local. A redelivery keeps its attempt
+	// identity but no longer proposes a quota change.
+	CodemodeQuotaSpent bool `json:"-"`
 	// PriorStatus is the status the publisher's claim moved the run from
 	// to queued. When the engine refuses the resume before claiming it —
 	// nothing ran, and the refusal is acked, never redelivered — the runner
@@ -606,6 +826,44 @@ type TraceContext struct {
 // in one pod's logs. Observed in production during exactly such a rollout.
 var ErrSchemaVersion = errors.New("queue: schema version")
 
+// StaleProducerError is the version mismatch of a message whose version this
+// consumer accepts but whose publisher predates a decision the message needs
+// (ForkAuthorSubjectSchemaVersion, ContentBoundaryProducerSchemaVersion): a
+// server replica older than Want republished a run a newer one created. The
+// runner fleet is not what lags — only a resume from a server replica that
+// publishes Want or later recovers the run. ErrSchemaVersion is in its chain,
+// so it parks like every version mismatch.
+type StaleProducerError struct {
+	V    int // the message's wire version
+	Want int // the first wire version whose publisher makes every decision the message needs
+	msg  string
+}
+
+func (e *StaleProducerError) Error() string { return e.msg }
+
+func (e *StaleProducerError) Unwrap() error { return ErrSchemaVersion }
+
+// staleRule is one stale-producer rule that fired: the version whose
+// publisher makes the decision, and the sentence naming it.
+type staleRule struct {
+	want int
+	text string
+}
+
+// staleProducer is the mismatch of every rule that fired: Want is the
+// highest of their versions — a replica publishing a lower one is still
+// stale for another rule — and the sentence names each decision the message
+// predates, in rule order.
+func staleProducer(v int, rules []staleRule) error {
+	want := 0
+	texts := make([]string, 0, len(rules))
+	for _, r := range rules {
+		want = max(want, r.want)
+		texts = append(texts, r.text)
+	}
+	return &StaleProducerError{V: v, Want: want, msg: ErrSchemaVersion.Error() + ": " + strings.Join(texts, "; and ")}
+}
+
 // Validate enforces the invariants a runner must rely on before
 // touching the workflow:
 //   - schema version matches (rolling-upgrade safety)
@@ -620,6 +878,47 @@ func (m *RunMessage) Validate() error {
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
+	}
+	// The stale-producer rules, every one judged: a message breaking two
+	// is parked under both, and its remedy names the later producer.
+	var stale []staleRule
+	// A message older than the fork author subject cannot carry it, so an
+	// UNTRUSTED one would run with the author's per-contributor dollar bound
+	// unenforced: a server replica still on v28 mid-rollout republishing the
+	// resume of a fork run an upgraded replica created. Parked as a version
+	// mismatch — transient, never Termed — so a resume from an upgraded
+	// server, whose gate meters the author, recovers it.
+	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
+		stale = append(stale, staleRule{ForkAuthorSubjectSchemaVersion, fmt.Sprintf("a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)})
+	}
+	// A message older than the stamp's producer replays a team_gateway stamp
+	// it did not derive (a stale replica resuming a run an upgraded one
+	// stamped) over a bundle sealed by the old rules: no gateway key, no
+	// ambient refusal, so the run's gateway routes would spend the pod's
+	// environment. Parked as a version mismatch, like the rule above.
+	if m.V < ContentBoundaryProducerSchemaVersion && m.ContentBoundary.TeamGateway() {
+		stale = append(stale, staleRule{ContentBoundaryProducerSchemaVersion, fmt.Sprintf("a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", m.V, ContentBoundaryProducerSchemaVersion)})
+	}
+	hasStoreBounds := m.CodemodeBounds != nil && (m.CodemodeBounds.StoreEntries != 0 || m.CodemodeBounds.StoreBytes != 0)
+	var quota *CodemodeQuotaPatch
+	if m.Resume != nil {
+		quota = m.Resume.CodemodeQuota
+	}
+	if m.V < codemodeStoreSchemaVersion && (hasStoreBounds || quota != nil) {
+		stale = append(stale, staleRule{codemodeStoreSchemaVersion, fmt.Sprintf("a v%d message carries codemode store quotas but predates their producer (v%d)", m.V, codemodeStoreSchemaVersion)})
+	}
+	if len(stale) > 0 {
+		return staleProducer(m.V, stale)
+	}
+	if quota != nil {
+		claim := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusQueued, QueuedAt: quota.QueuedAt}
+		if err := claim.Validate(store.CodemodeScratchLimits{Entries: quota.Entries, Bytes: quota.Bytes}); err != nil {
+			return fmt.Errorf("queue: %w", err)
+		}
+		published, err := time.Parse(time.RFC3339Nano, m.PublishedAtRFC)
+		if err != nil || published.IsZero() {
+			return fmt.Errorf("queue: codemode resume quota requires a valid publication time")
+		}
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),
@@ -688,6 +987,12 @@ type Envelope struct {
 	// run claims, park it on the right DLQ, and flip the right attempt.
 	RunnerPool     string `json:"runner_pool,omitempty"`
 	PublishedAtRFC string `json:"published_at"`
+	// Resume carries only the attempt identity needed by a rejecting consumer.
+	Resume *struct {
+		CodemodeQuota *struct {
+			QueuedAt time.Time `json:"queued_at"`
+		} `json:"codemode_quota,omitempty"`
+	} `json:"resume,omitempty"`
 }
 
 // ValidPoolName reports whether s is a well-formed runner-pool name:

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { defaultPrompt } from "@/lib/defaults";
 import { TextField, CommittedTextField } from "./forms/FormField";
@@ -55,11 +55,12 @@ export default function PromptEditor({ filterName, compact = true }: PromptEdito
           {filterName ? `Prompt "${filterName}" not found.` : "No prompts defined."}
         </p>
       )}
-      {visible.map((prompt) => (
+      {visible.map((prompt, i) => (
         <PromptCard
           key={prompt.name}
           name={prompt.name}
           body={prompt.body}
+          index={i}
           allPromptNames={prompts.map((p) => p.name)}
           compact={compact}
           onRename={(v) => renamePrompt(prompt.name, v)}
@@ -74,6 +75,7 @@ export default function PromptEditor({ filterName, compact = true }: PromptEdito
 function PromptCard({
   name,
   body,
+  index,
   allPromptNames,
   compact,
   onRename,
@@ -82,6 +84,8 @@ function PromptCard({
 }: {
   name: string;
   body: string;
+  /** 1-based fallback in the delete button's name while the name is empty. */
+  index: number;
   allPromptNames: string[];
   compact: boolean;
   onRename: (v: string) => void;
@@ -89,6 +93,8 @@ function PromptCard({
   onRemove: () => void;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // One card renders one body editor; the visible caption labels it.
+  const bodyId = useId();
 
   return (
     <div className="mb-4 p-2 bg-surface-1 rounded border border-border-default">
@@ -105,10 +111,13 @@ function PromptCard({
             return null;
           }}
         />
+        {/* Sibling cards repeat the visible "Delete"; the prompt name is
+            what a screen reader needs to tell them apart. */}
         <Button
           variant="ghost"
           size="sm"
           className="text-danger hover:text-danger-fg ml-2"
+          aria-label={`Delete prompt ${name || index + 1}`}
           onClick={() => setConfirmDelete(true)}
         >
           Delete
@@ -126,13 +135,16 @@ function PromptCard({
         />
       ) : (
         <div className="mb-2">
-          <label className="block text-xs text-fg-subtle mb-1">Prompt body</label>
+          <label htmlFor={bodyId} className="block text-xs text-fg-subtle mb-1">
+            Prompt body
+          </label>
           <PromptBodyEditor
             value={body}
             onChange={onUpdateBody}
             rows={20}
             placeholder="Prompt template... use {{vars.x}} or {{outputs.node.field}}"
             refContext={{ kind: "prompt-body" }}
+            id={bodyId}
           />
         </div>
       )}

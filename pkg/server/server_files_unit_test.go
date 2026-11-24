@@ -14,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 const unitFixtureMain = "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
@@ -103,7 +105,7 @@ func savePathClaimed(t *testing.T, s *Server, path string, document json.RawMess
 	body, _ := json.Marshal(req)
 	r := httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	s.handleSaveFile(rec, r)
+	s.handleSaveFile(errtrack.HTTPErrorWriter(rec, r, s.logger), r)
 	var out saveFileResponse
 	if rec.Code == http.StatusOK {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -367,9 +369,10 @@ func TestSaveAUnitRollsBackWhenAWriteFails(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { authoringStepHook = nil })
+	logs := captureFailureLogs(s)
 	rec, _ := savePath(t, s, "demo/main.bot", edited, opened.Unit.Revision)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "rolled back") {
-		t.Fatalf("failed write: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(correlatedFailureLog(t, rec.Body.Bytes(), rec.Header().Get("X-Request-ID"), logs.String()), "rolled back") {
+		t.Fatalf("failed write: %d %s", rec.Code, correlatedFailureLog(t, rec.Body.Bytes(), rec.Header().Get("X-Request-ID"), logs.String()))
 	}
 	if publishes != 2 {
 		t.Fatalf("the fault did not fire on the second publish (%d publishes): the test proves nothing", publishes)
@@ -584,7 +587,7 @@ func TestApplyingOneFileAnswersTheStoredFilesParseVerdict(t *testing.T) {
 		t.Fatalf("the verdict discloses the server's directory layout: %s", first)
 	}
 	// Why it may not lift: the launch reads those files, and refuses them.
-	if _, err := runview.CompileWorkflow(filepath.Join(workdir, "demo", "main.bot")); err == nil {
+	if _, err := runview.CompileWorkflow(filepath.Join(workdir, "demo", "main.bot"), "", store.RunTrustDefault); err == nil {
 		t.Fatal("the fixture is not the case under test: the launch compiles the stored files")
 	}
 	// And the only way out — the save — is refused while they are broken,
@@ -632,7 +635,7 @@ func TestApplyingOneFileAnswersTheStoredFilesLoadVerdict(t *testing.T) {
 			t.Fatalf("the fixture is not the case under test: %s does not parse (%s)", f.Rel, f.ParseError)
 		}
 	}
-	if _, err := runview.CompileWorkflow(filepath.Join(workdir, "demo", "main.bot")); err == nil {
+	if _, err := runview.CompileWorkflow(filepath.Join(workdir, "demo", "main.bot"), "", store.RunTrustDefault); err == nil {
 		t.Fatal("the fixture is not the case under test: the launch compiles the stored files")
 	}
 
@@ -840,7 +843,7 @@ func TestOpenAUnitReportsWhatItsLoadRefuses(t *testing.T) {
 			valid, vdiags := validateDocument(t, s, opened.Document, "demo/main.bot")
 			// The launch's own verdict on the same files, which is what the
 			// gate has to agree with.
-			_, launchErr := runview.CompileWorkflow(filepath.Join(workdir, "demo", "main.bot"))
+			_, launchErr := runview.CompileWorkflow(filepath.Join(workdir, "demo", "main.bot"), "", store.RunTrustDefault)
 			if tc.loads {
 				if launchErr != nil {
 					t.Fatalf("the fixture is not the case under test: the launch refuses a bot that loads: %v", launchErr)

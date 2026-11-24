@@ -70,7 +70,7 @@ func DoJSONFull(ctx context.Context, client *http.Client, method, url, errPrefix
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := DoHTTP(client, req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -168,7 +168,7 @@ func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errP
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := DoHTTP(client, req)
 	if err != nil {
 		return 0, nil, err
 	}

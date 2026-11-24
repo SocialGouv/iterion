@@ -65,6 +65,9 @@ type sandboxObserverOpts struct {
 	ownerID  string
 	// secretRefs are the run's refreshable file secrets (empty = none).
 	secretRefs map[string]string
+	// secretGuard is the run's late-bound guard handle (#2756): the
+	// sandboxed file-secret refresher registers each rotated value on it.
+	secretGuard *runSecretGuard
 	// checkpoint preserves the sandbox workspace mid-run. True only for
 	// the run that OWNS the pod AND whose workflow did not decline the net
 	// (`workspace_checkpoint: off` — a run that writes no commit for the
@@ -116,7 +119,7 @@ func (r *Runner) sandboxRunObserver(ctx context.Context, o sandboxObserverOpts) 
 			return
 		}
 		errtrack.Go("runner.refreshSandboxFileSecrets", func() {
-			r.refreshSandboxFileSecretsLoop(ctx, o.tenantID, o.secretRefs, refresher)
+			r.refreshSandboxFileSecretsLoop(ctx, o.tenantID, o.secretRefs, refresher, o.secretGuard)
 		})
 	}
 }

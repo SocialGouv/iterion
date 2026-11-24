@@ -134,10 +134,10 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 	if token == "" {
 		return nil // the run held no grant
 	}
-	if !runIsOver(run) {
+	if !runIsOver(run, true) {
 		// Paused, resumed since the outcome event that brought us here (an
-		// event can arrive late), or parked on an armed retry: the run will
-		// publish again.
+		// event can arrive late), or parked on an armed retry or a usage
+		// window its runner stated: the run will publish again.
 		return nil
 	}
 	if runAwaitsGateRepair(run) {
@@ -194,8 +194,70 @@ func runAwaitsArmedRetry(run *store.Run) bool {
 		run.RetryState != nil && run.RetryState.RetryAfter != nil
 }
 
+// runWillResume reports a resumable failure something will still resume: an
+// armed retry (runAwaitsArmedRetry), or a usage park whose arming has not
+// settled (runParkedOnUsageWindow). The ONE reading every "is this run dead"
+// question takes — the gate reconciler, the relaunch escalation, the autofix
+// guard, the stop on a closed pull request, the assistant's watch and the
+// grant's expiry — so a run one of them holds parked is never dead to
+// another.
+//
+// onItsOwnEvent says the run's own outcome event offered it (see
+// runParkedOnUsageWindow for what that changes).
+func runWillResume(run *store.Run, onItsOwnEvent bool, now time.Time) bool {
+	return runAwaitsArmedRetry(run) || runParkedOnUsageWindow(run, onItsOwnEvent, now)
+}
+
+// runParkedOnUsageWindow reports a run parked on a provider usage window whose
+// retry is not armed (yet): the record says USAGE_LIMIT_BLOCKED and no
+// continuation has been settled final (store.Run.UsageWindowPark). Such a run
+// is not dead, and counting it dead relaunches a second review into the same
+// wall and spends the head's one relaunch on a quota (#3127, the #49/#68
+// relaunches of 2026-11-10).
+//
+// An UNKNOWN continuation depends on who reads it. The runner states the
+// continuation (retry_armed, redelivery_pending) before it fires the outcome
+// event, so an unknown one on the run's OWN event is a lane that never states
+// it, and the run is dead as it always was. Read aside — the sweep, or a
+// reader asking about another run — an unknown continuation is the gap
+// between the engine's failed_resumable write and the runner's arming, which
+// lands after the post-engine steps: a gap of seconds to minutes, so it holds
+// only while the record is that young (usageParkSettleWindow). Past it,
+// nothing is going to arm the run — a lane with no runner, a runner lost
+// before arming, an abandon write that failed — and the sweep, the only net
+// under a missed event, repairs it as dead.
+func runParkedOnUsageWindow(run *store.Run, onItsOwnEvent bool, now time.Time) bool {
+	if !run.UsageWindowPark().Parked {
+		return false
+	}
+	if run.ContinuationState != "" {
+		return true
+	}
+	return !onItsOwnEvent && now.Sub(run.UpdatedAt) < usageParkSettleWindow()
+}
+
+// EnvUsageParkSettleWindow overrides how long a usage park whose continuation
+// no lane has stated yet still counts as settling (runParkedOnUsageWindow).
+const EnvUsageParkSettleWindow = "ITERION_USAGE_PARK_SETTLE_WINDOW"
+
+// defaultUsageParkSettleWindow covers the post-engine steps between the
+// engine's failed_resumable write and the runner's arming, the runner's
+// detached store writes (usageRetryStoreTimeout) and a slow pod, with room.
+const defaultUsageParkSettleWindow = 15 * time.Minute
+
+func usageParkSettleWindow() time.Duration {
+	if raw := strings.TrimSpace(envOperator(EnvUsageParkSettleWindow)); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return defaultUsageParkSettleWindow
+}
+
 // runIsOver reports a run that will not publish again: ended, and not parked
-// on a retry that resumes it.
-func runIsOver(run *store.Run) bool {
-	return run != nil && run.Status.IsTerminal() && !runAwaitsArmedRetry(run)
+// on a retry that resumes it (runWillResume). onItsOwnEvent says the run's own
+// outcome event asks — the grant's expiry — where an unknown continuation is a
+// lane that never states one; every other asker reads it aside.
+func runIsOver(run *store.Run, onItsOwnEvent bool) bool {
+	return run != nil && run.Status.IsTerminal() && !runWillResume(run, onItsOwnEvent, time.Now().UTC())
 }

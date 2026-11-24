@@ -8,6 +8,10 @@ disposition; confirmed/partial rows map to a board card (labels
 The in-session work is the *Silent-failure pack* card; refuted rows are kept so the
 claim is not re-raised without new evidence.
 
+> Note (2026-11-03): where a row says `preprod`, read the ovh-dev development
+> deployment — Iterion runs no preproduction (operator ruling). The rows keep
+> their original wording.
+
 | ID | Verdict | Sev | What is actually true today | Evidence | Card |
 |---|---|---|---|---|---|
 | A1 | confirmed | low | Run-console/shell/browser WS get a TCP reset at exit, not a close frame; only the /api/ws hub watches shutdown. Documented as a known limitation, cosmetic (clients reconnect). | docs/probes-and-graceful-shutdown.md:141-147; pkg/server/runs_ws.go (no shutdown/drain hook; only hub.go has one) | native:de18a16c |

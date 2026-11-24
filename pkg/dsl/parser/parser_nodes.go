@@ -29,6 +29,7 @@ func (p *parser) parseAgentDecl() *ast.AgentDecl {
 			break
 		}
 		p.parseLLMProp(&ad.LLMDecl, t, "agent")
+		p.recordProperty(&ad.Properties, t)
 	}
 	return ad
 }
@@ -55,6 +56,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenArtifactLabels:
 		p.expect(TokenColon)
 		d.ArtifactLabels = p.parseToolList()
+	case TokenDeliverables:
+		p.expect(TokenColon)
+		d.Deliverables = p.parseStringList()
 	case TokenSystem:
 		p.expect(TokenColon)
 		d.System = p.promptRef()
@@ -72,7 +76,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.ToolPolicy = p.parseToolList()
 	case TokenCapabilities:
 		p.expect(TokenColon)
-		d.Capabilities = p.parseToolList()
+		d.Capabilities = p.parseDeclaredCapabilityList()
 	case TokenSkills:
 		p.expect(TokenColon)
 		d.Skills = p.parseSkillList()
@@ -132,6 +136,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenAmbientContext:
 		p.expect(TokenColon)
 		d.AmbientContext = p.expectIdent()
+	case TokenCodemode:
+		p.backup()
+		d.Codemode = p.parseCodemodeBlock(kind)
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()
@@ -207,6 +214,7 @@ func (p *parser) parseJudgeDecl() *ast.JudgeDecl {
 			break
 		}
 		p.parseLLMProp(&jd.LLMDecl, t, "judge")
+		p.recordProperty(&jd.Properties, t)
 	}
 	return jd
 }
@@ -305,6 +313,7 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&rd.Properties, t)
 		p.skipNewlines()
 	}
 	return rd
@@ -367,6 +376,7 @@ func (p *parser) parseHumanDecl() *ast.HumanDecl {
 			break
 		}
 		p.parseHumanProp(hd, t)
+		p.recordProperty(&hd.Properties, t)
 	}
 	return hd
 }
@@ -487,6 +497,7 @@ func (p *parser) parseToolNodeDecl() *ast.ToolNodeDecl {
 			break
 		}
 		p.parseToolNodeProp(td, t)
+		p.recordProperty(&td.Properties, t)
 	}
 	return td
 }
@@ -515,6 +526,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenArtifactLabels:
 		p.expect(TokenColon)
 		td.ArtifactLabels = p.parseToolList()
+	case TokenDeliverables:
+		p.expect(TokenColon)
+		td.Deliverables = p.parseStringList()
 	case TokenAwait:
 		p.expect(TokenColon)
 		td.Await = p.parseAwaitMode()
@@ -530,6 +544,15 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenNeeds:
 		p.expect(TokenColon)
 		td.Needs = p.parseNeedsList()
+	case TokenCapabilities:
+		// A tool node declares its host capabilities like an agent or judge
+		// (ADR-151, #78=A): one authorization surface, never a second regime.
+		// The grant is read by the `action:` recipe's native transport (a
+		// board.* action gates on it exactly like the board MCP tools do)
+		// and by a registry recipe naming an iterion host tool; on a
+		// command:/script: node nothing consumes it and C332 says so.
+		p.expect(TokenColon)
+		td.Capabilities = p.parseDeclaredCapabilityList()
 	case TokenIdent:
 		// Verified Action quad (ADR-044). These property names are not
 		// reserved keywords, so they arrive as plain identifiers (the
@@ -790,6 +813,7 @@ func (p *parser) parseComputeDecl() *ast.ComputeDecl {
 			break
 		}
 		p.parseComputeProp(cd, t)
+		p.recordProperty(&cd.Properties, t)
 	}
 	return cd
 }
@@ -1060,6 +1084,20 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			if v := p.parseBool(); v != nil {
 				sd.Isolated = *v
 			}
+		case t.Type == TokenIdent && t.Value == "auto_merge":
+			p.next()
+			p.expect(TokenColon)
+			if v := p.parseBool(); v != nil {
+				sd.AutoMerge = *v
+			}
+		case t.Type == TokenIdent && t.Value == "merge_into":
+			p.next()
+			p.expect(TokenColon)
+			sd.MergeInto = p.expectStringOrIdentLine()
+		case t.Type == TokenIdent && t.Value == "merge_strategy":
+			p.next()
+			p.expect(TokenColon)
+			sd.MergeStrategy = p.expectStringOrIdentLine()
 		case t.Type == TokenNeeds:
 			p.next()
 			p.expect(TokenColon)
@@ -1069,6 +1107,7 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&sd.Properties, t)
 	}
 	return sd
 }
@@ -1112,6 +1151,7 @@ func (p *parser) parseEmitDecl() *ast.EmitDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&ed.Properties, t)
 	}
 	return ed
 }
@@ -1159,6 +1199,7 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&wd.Properties, t)
 	}
 	return wd
 }
@@ -1218,6 +1259,7 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&fd.Properties, t)
 	}
 	return fd
 }
@@ -1263,6 +1305,7 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&ad.Properties, t)
 	}
 	return ad
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -26,6 +26,7 @@ import (
 // half, and without it the run-level booking is inert on the default
 // in-process backend.
 func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{Name: "verdict", Fields: []*ir.SchemaField{{Name: "approved", Type: ir.FieldTypeBool}}}
 	schemaJSON, err := SchemaToJSON(schema)
 	if err != nil {
@@ -117,8 +118,8 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 		res, err := backend.Execute(context.Background(), delegate.Task{
 			NodeID: "judge", Model: "test/test-model", UserPrompt: "Judge.", OutputSchema: schemaJSON,
 		})
-		if err == nil {
-			t.Fatal("precondition: text instead of the synthetic tool_use must fail")
+		if err != nil || !res.ParseFallback {
+			t.Fatalf("structured failure must enter correction as a metered parse fallback: result=%+v err=%v", res, err)
 		}
 		if res.Tokens != 190 || res.Output["_tokens"] != 190 {
 			t.Errorf("the billed structured turns were reported as free: Tokens=%d Output=%v, want 190", res.Tokens, res.Output)
@@ -157,6 +158,7 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 // used to return a bare nil beside its error, so there was nothing to fold.
 // Adding the partial connected one end of that pipe and left this one open.
 func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{Name: "verdict", Fields: []*ir.SchemaField{{Name: "approved", Type: ir.FieldTypeBool}}}
 	schemaJSON, err := SchemaToJSON(schema)
 	if err != nil {
@@ -222,6 +224,7 @@ func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
 // The attempts SUM: claw opens a fresh conversation each time (it never reads
 // SessionID), so no attempt's figure contains another's.
 func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
+	t.Parallel()
 	backend := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond})
 	task := delegate.Task{NodeID: "reviewer", Model: "test/test-model"}
 
@@ -231,7 +234,7 @@ func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
 		if attempt == 1 {
 			// A whole agentic turn, billed, then rate-limited: retryable, so
 			// the loop buys a second one.
-			return meteredFailure(task, Usage{InputTokens: 1_000, OutputTokens: 200}),
+			return meteredFailure(context.Background(), task, Usage{InputTokens: 1_000, OutputTokens: 200}),
 				&APIError{Message: "rate limited", StatusCode: 429, IsRetryable: true}
 		}
 		// The retry dies before the provider bills anything.
@@ -259,6 +262,7 @@ func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
 // bare nil, so the figure — final, since a human answers next and a human
 // reports no tokens — was lost at the last frame that could see it.
 func TestHumanLLMHalfKeepsWhatItBurnedOnFailure(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry()
 	// A billed turn that answers with text instead of the synthetic tool_use
 	// the schema forces: the provider charged, the node has nothing usable.

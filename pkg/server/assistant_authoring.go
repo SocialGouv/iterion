@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
@@ -157,6 +158,13 @@ type authoringGitPublishResponse struct {
 }
 
 type authoringTarget struct {
+	// s is the server a CLOUD target's gate resolves through: the
+	// assistant's own authoring plane is a write gate like the bot-source
+	// routes, so a bundle that declares `dependencies.fragments` is held to
+	// the same rule there (validateBundleCompileFor). It is nil for a local
+	// target, which resolves nothing — a working tree's own `iterion bots
+	// sync` materializes the dependency.
+	s          *Server
 	editorPath string
 	// activeBundlePath is the normalized bundle-relative location of the
 	// editor file. It is empty for a workspace file or an authoring bootstrap.
@@ -207,7 +215,7 @@ func currentAuthoringLimits() authoringLimits {
 }
 
 func envPositiveInt(name string, fallback int) int {
-	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	v, err := strconv.Atoi(strings.TrimSpace(envOperator(name)))
 	if err != nil || v <= 0 {
 		return fallback
 	}
@@ -279,12 +287,23 @@ func (s *Server) handleAuthoringGitCommit(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
+	// The repository's index lock is held through the commit: the index is
+	// the commit's until it publishes. The bot tree's lock, on the
+	// repository's whole working tree, covers everything that reads or
+	// writes that tree — the perimeter, the attested bytes, the staging, the
+	// hooks and the publication — and is let go only around the signature,
+	// which reads the tree object the commit built and may wait on a person.
+	tree, release, ok := s.lockRepositoryForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath, true)
+	if !ok {
+		return
+	}
+	defer release()
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
 	}
-	commit, files, err := authoringGitCommit(r, target, req)
+	commit, files, err := authoringGitCommit(r, target, req, tree)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -306,12 +325,28 @@ func (s *Server) handleAuthoringGitPublish(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
+	// The perimeter the publication checks and the HEAD it pins are read
+	// under the bot tree's lock on the repository's working tree; the remote
+	// is reached with it let go, the commit pinned — a commit landing
+	// meanwhile moves HEAD, never what this publication pushes — and the
+	// pre-push hook, which reads the tree, runs under it again.
+	tree, release, ok := s.lockRepositoryForEditor(w, r, botTreeWriterAuthoringGitPush, req.EditorPath, false)
+	if !ok {
+		return
+	}
+	defer release()
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
 	}
-	commit, err := authoringGitPublish(r, target, req)
+	publication, err := prepareAuthoringGitPublish(r, target, req)
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	tree.leave()
+	commit, err := publication.push(r.Context(), tree)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -373,6 +408,18 @@ func (s *Server) handleAuthoringChange(w http.ResponseWriter, r *http.Request, c
 	if err := validateAuthoringChangesShape(req.Changes, currentAuthoringLimits()); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
+	}
+	// A commit resolves its bundle, reads the files it replaces and
+	// validates the bundle under the bot tree's write lock, held through its
+	// write: another writer's publication is never half-seen, and a loser
+	// decides on what the winner wrote. A preview writes nothing and takes
+	// nothing.
+	if commit {
+		release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringCommit, req.EditorPath)
+		if !ok {
+			return
+		}
+		defer release()
 	}
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
@@ -508,7 +555,7 @@ func (s *Server) resolveAuthoringTarget(r *http.Request, editorPath string) (*au
 		if _, ok := bs.Files[activePath]; !ok {
 			return nil, errors.New("active editor file is absent from the bot source")
 		}
-		return &authoringTarget{editorPath: editorPath, activeBundlePath: activePath, manifest: m, teamID: teamID, slug: slug, version: bs.Version, id: bs.ID, files: bs.Files, userID: id.UserID}, nil
+		return &authoringTarget{s: s, editorPath: editorPath, activeBundlePath: activePath, manifest: m, teamID: teamID, slug: slug, version: bs.Version, id: bs.ID, files: bs.Files, userID: id.UserID}, nil
 	}
 	absEditor, err := s.safePath(editorPath)
 	if err != nil {
@@ -827,7 +874,15 @@ func (t *authoringTarget) validateCreateDestination(spec bundle.AuthoringEditabl
 	return nil
 }
 
-func (t *authoringTarget) validateChangedBots(previews []authoringPreviewFile) error {
+// validateChangedBots is the assistant's own compile gate. A CLOUD target
+// resolves its bundle's declared `dependencies.fragments` first, through the
+// same chokepoint the bot-source routes and the launch use: without it the
+// assistant could change no file of any bot whose bundle declares a shared
+// fragment — every preview refused with the E046 the declaration exists for —
+// while a human PUT of the same bytes is accepted and the launch runs it. A
+// LOCAL target resolves nothing: that plane has a working tree, and
+// validateBundleCompileSelected is the gate with no tier to resolve through.
+func (t *authoringTarget) validateChangedBots(ctx context.Context, previews []authoringPreviewFile) error {
 	var modified []string
 	if t.files != nil {
 		files := cloneAuthoringStringMap(t.files)
@@ -845,7 +900,11 @@ func (t *authoringTarget) validateChangedBots(previews []authoringPreviewFile) e
 		if len(modified) == 0 {
 			return nil
 		}
-		if diags := validateBundleCompileSelected(files, modified); len(diags) > 0 {
+		diags, err := t.s.validateBundleCompileFor(ctx, t.s.authoringFragmentsForWrite(t.teamID), files, modified)
+		if err != nil {
+			return err
+		}
+		if len(diags) > 0 {
 			return errors.New(strings.Join(diags, "; "))
 		}
 		return nil
@@ -883,7 +942,12 @@ func (t *authoringTarget) validateChangedBots(previews []authoringPreviewFile) e
 
 const (
 	authoringPythonSyntaxTimeout = 3 * time.Second
-	authoringPythonOutputLimit   = 8 << 10
+	// authoringPythonDrainBound is the default bound on the wait for the
+	// parser's output once the interpreter has gone — the invariant that it
+	// spawns nothing is the interpreter's, not ours, and
+	// [proc.WaitDelayEnv] overrides the bound on either platform.
+	authoringPythonDrainBound  = 500 * time.Millisecond
+	authoringPythonOutputLimit = 8 << 10
 )
 
 // authoringPythonProgram is deliberately constant. Candidate source is sent
@@ -929,7 +993,7 @@ func (t *authoringTarget) validateChanges(ctx context.Context, previews []author
 		Checks:          make([]authoringValidationCheck, 0, len(previews)),
 		BehavioralTests: "not_run",
 	}
-	if err := t.validateChangedBots(previews); err != nil {
+	if err := t.validateChangedBots(ctx, previews); err != nil {
 		return result, authoringValidationFailure{Code: "bot_compile_failed", Message: fmt.Sprintf("bot does not compile: %v", err)}
 	}
 	for _, preview := range previews {
@@ -958,11 +1022,17 @@ func (t *authoringTarget) validateChanges(ctx context.Context, previews []author
 }
 
 func validateAuthoringPythonSyntax(parent context.Context, path, source string) error {
-	interpreter := strings.TrimSpace(os.Getenv("ITERION_ASSISTANT_PYTHON"))
+	interpreter := strings.TrimSpace(envOperator("ITERION_ASSISTANT_PYTHON"))
 	if interpreter == "" {
 		interpreter = "python3"
 	}
-	resolved, err := exec.LookPath(interpreter)
+	// envtrust.LookPath, not exec.LookPath: the interpreter then parses a
+	// bot source the operator is authoring, and which python3 that is is an
+	// authority question a PATH a project .env planted must not answer —
+	// the refusal reads as the parser being unavailable (#2876, the class
+	// #2809 closed site by site). An explicit ITERION_ASSISTANT_PYTHON path
+	// consults no PATH and resolves exactly as before.
+	resolved, err := envtrust.LookPath(interpreter)
 	if err != nil {
 		return authoringValidationFailure{Code: "python_parser_unavailable", Message: "Python syntax parser is unavailable"}
 	}
@@ -1157,7 +1227,10 @@ func (s *Server) rollbackAuthoring(transactions []*authoringLocalTransaction) []
 // than a shell: the model cannot inject options, choose a repository, or run
 // a second command. A dirty worktree is normal; a non-selected staged path is
 // not, because it could otherwise ride into this commit.
-func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringGitCommitRequest) (string, []string, error) {
+//
+// tree is the caller's hold of the bot tree's lock, which the commit lets go
+// around its signature alone (commitAttestedAuthoring).
+func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringGitCommitRequest, tree *treeHold) (string, []string, error) {
 	if target.files != nil {
 		return "", nil, errors.New("git commits are unavailable for cloud bot sources without a connected repository")
 	}
@@ -1199,45 +1272,57 @@ func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringG
 		expectedHashes[path] = requested.ExpectedSHA256
 	}
 
-	head, err := commitAttestedAuthoringFiles(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message))
+	head, err := commitAttestedAuthoring(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message), nil, tree)
 	return head, paths, err
 }
 
-// authoringGitPublish exposes one deliberately narrow network mutation: push
-// the current immutable HEAD of the active local authoring repository to a
-// fresh origin branch. It neither chooses a remote nor accepts a refspec.
-func authoringGitPublish(r *http.Request, target *authoringTarget, req authoringGitPublishRequest) (string, error) {
+// authoringGitPublication is one deliberately narrow network mutation: push
+// the immutable commit that was the active local authoring repository's HEAD
+// to a fresh origin branch. It neither chooses a remote nor accepts a
+// refspec. prepareAuthoringGitPublish pins it from local state only; push
+// reaches the remote.
+type authoringGitPublication struct {
+	root, head, dest string
+}
+
+func prepareAuthoringGitPublish(r *http.Request, target *authoringTarget, req authoringGitPublishRequest) (authoringGitPublication, error) {
 	if target.files != nil {
-		return "", errors.New("git publication is unavailable for cloud bot sources without a connected repository")
+		return authoringGitPublication{}, errors.New("git publication is unavailable for cloud bot sources without a connected repository")
 	}
 	if target.bootstrapManifest != "" {
-		return "", errors.New("git publication requires a declared authoring perimeter")
+		return authoringGitPublication{}, errors.New("git publication requires a declared authoring perimeter")
 	}
 	rootOut, err := runAuthoringGit(r.Context(), target.workDir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", err
+		return authoringGitPublication{}, err
 	}
 	root, err := filepath.EvalSymlinks(strings.TrimSpace(rootOut))
 	if err != nil {
-		return "", fmt.Errorf("resolve Git root: %w", err)
+		return authoringGitPublication{}, fmt.Errorf("resolve Git root: %w", err)
 	}
 	headOut, err := runAuthoringGit(r.Context(), root, "rev-parse", "HEAD")
 	if err != nil {
-		return "", err
+		return authoringGitPublication{}, err
 	}
 	head := strings.TrimSpace(headOut)
 	resolvedOut, err := runAuthoringGit(r.Context(), root, "rev-parse", "--verify", req.Commit+"^{commit}")
 	if err != nil || strings.TrimSpace(resolvedOut) != head {
-		return "", authoringConflictError{"requested commit is not the current repository HEAD"}
+		return authoringGitPublication{}, authoringConflictError{"requested commit is not the current repository HEAD"}
 	}
 	if _, err := runAuthoringGit(r.Context(), root, "check-ref-format", "--branch", req.Branch); err != nil {
-		return "", fmt.Errorf("invalid branch: %w", err)
+		return authoringGitPublication{}, fmt.Errorf("invalid branch: %w", err)
 	}
 	if _, err := runAuthoringGit(r.Context(), root, "remote", "get-url", "origin"); err != nil {
-		return "", errors.New("origin remote is required for authoring publication")
+		return authoringGitPublication{}, errors.New("origin remote is required for authoring publication")
 	}
-	dest := "refs/heads/" + req.Branch
-	remoteBefore, err := runAuthoringGit(r.Context(), root, "ls-remote", "origin", dest)
+	return authoringGitPublication{root: root, head: head, dest: "refs/heads/" + req.Branch}, nil
+}
+
+// push publishes the pinned commit and answers it. The remote is reached
+// with the bot tree let go; a pre-push hook runs under tree, held again —
+// how depends on the git (pushRunningPrePushUnderTree).
+func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (string, error) {
+	remoteBefore, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
 		return "", err
 	}
@@ -1246,18 +1331,132 @@ func authoringGitPublish(r *http.Request, target *authoringTarget, req authoring
 	}
 	// A branch created between ls-remote and push is safe: non-force push
 	// rejects it rather than overwriting it.
-	if _, err := runAuthoringGit(r.Context(), root, "push", "--porcelain", "origin", head+":"+dest); err != nil {
+	if err := p.pushRunningPrePushUnderTree(ctx, tree); err != nil {
 		return "", err
 	}
-	remoteAfter, err := runAuthoringGit(r.Context(), root, "ls-remote", "origin", dest)
+	remoteAfter, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
-		return head, fmt.Errorf("published %s but could not verify remote branch; no rollback was attempted: %w", head, err)
+		return p.head, fmt.Errorf("published %s but could not verify remote branch; no rollback was attempted: %w", p.head, err)
 	}
 	fields := strings.Fields(remoteAfter)
-	if len(fields) < 2 || fields[0] != head || fields[1] != dest {
-		return head, fmt.Errorf("published %s but remote branch verification diverged; no rollback was attempted", head)
+	if len(fields) < 2 || fields[0] != p.head || fields[1] != p.dest {
+		return p.head, fmt.Errorf("published %s but remote branch verification diverged; no rollback was attempted", p.head)
 	}
-	return head, nil
+	return p.head, nil
+}
+
+// gitHookRunToStdinMinor is the first git 2.x whose `git hook run` takes
+// --to-stdin, which hands the pre-push hook the update a push hands it.
+const gitHookRunToStdinMinor = 40
+
+// pushRunningPrePushUnderTree pushes the pinned commit with its pre-push
+// hook run under the bot tree's lock, never skipped. A git from 2.40 runs
+// the hook itself under the lock (prePush: `git hook run`, which finds a
+// hook file and a hook set in the config alike) and pushes --no-verify with
+// the lock let go. An older git has neither that command nor hooks set in
+// the config, and its push runs the hook found at the effective hooks path:
+// with none there, it pushes with a plain `git push`, the lock let go; with
+// one, the push holds the lock throughout, the network included — the
+// writers of the tree wait the push out, the hook reads the tree they write.
+// A version that does not parse takes the older git's way, which every git
+// runs.
+func (p authoringGitPublication) pushRunningPrePushUnderTree(ctx context.Context, tree *treeHold) error {
+	refspec := p.head + ":" + p.dest
+	version, err := runAuthoringGit(ctx, p.root, "version")
+	if err != nil {
+		return err
+	}
+	if gitVersionAtLeast(version, 2, gitHookRunToStdinMinor) {
+		if err := p.prePush(ctx, tree); err != nil {
+			return err
+		}
+		_, err := runAuthoringGit(ctx, p.root, "push", "--no-verify", "--porcelain", "origin", refspec)
+		return err
+	}
+	hooked, err := p.hasPrePushHookFile(ctx)
+	if err != nil {
+		return err
+	}
+	if hooked {
+		if err := tree.take(ctx); err != nil {
+			return err
+		}
+		defer tree.leave()
+	}
+	_, err = runAuthoringGit(ctx, p.root, "push", "--porcelain", "origin", refspec)
+	return err
+}
+
+// hasPrePushHookFile reports whether the repository's effective hooks path
+// holds a pre-push hook: a file at `git rev-parse --git-path
+// hooks/pre-push`, which honours core.hooksPath and answers relative to the
+// top of the working tree unless absolute. A file git skips (not executable)
+// counts too: it costs the push's wait, never a hook run outside the lock.
+func (p authoringGitPublication) hasPrePushHookFile(ctx context.Context) (bool, error) {
+	out, err := runAuthoringGit(ctx, p.root, "rev-parse", "--git-path", "hooks/pre-push")
+	if err != nil {
+		return false, err
+	}
+	path := strings.TrimSuffix(out, "\n")
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(p.root, path)
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect the pre-push hook %s: %w", path, err)
+	}
+	return !info.IsDir(), nil
+}
+
+// gitVersionAtLeast reports whether `git version`'s answer names a git at
+// least major.minor; an answer that does not parse names none.
+func gitVersionAtLeast(version string, major, minor int) bool {
+	var gotMajor, gotMinor int
+	if _, err := fmt.Sscanf(version, "git version %d.%d", &gotMajor, &gotMinor); err != nil {
+		return false
+	}
+	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
+}
+
+// prePush runs the repository's pre-push hook under the bot tree's lock, as
+// git's own push would run it: the remote's name and each push URL as its
+// arguments, on its stdin the one update this publication makes — the
+// pinned commit, spelled as the refspec spells it, onto a branch the remote
+// does not have. A hook reads the worktree (a linter, a test run), so it
+// cannot run inside the push, which reaches the network: the push runs with
+// --no-verify once the hook has passed. A hook that reaches the network
+// itself (git-lfs uploads its objects from it) does so under the lock. It
+// needs git 2.40 (`git hook run --to-stdin`).
+func (p authoringGitPublication) prePush(ctx context.Context, tree *treeHold) error {
+	urlsOut, err := runAuthoringGit(ctx, p.root, "remote", "get-url", "--push", "--all", "origin")
+	if err != nil {
+		return err
+	}
+	input, err := os.CreateTemp("", "iterion-pre-push-")
+	if err != nil {
+		return fmt.Errorf("stage the pre-push hook's input: %w", err)
+	}
+	defer func() { _ = os.Remove(input.Name()) }()
+	_, err = fmt.Fprintf(input, "%s %s %s %s\n", p.head, p.head, p.dest, strings.Repeat("0", len(p.head)))
+	if closeErr := input.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("stage the pre-push hook's input: %w", err)
+	}
+	if err := tree.take(ctx); err != nil {
+		return err
+	}
+	defer tree.leave()
+	for _, url := range strings.Split(strings.TrimRight(urlsOut, "\n"), "\n") {
+		if _, err := runAuthoringGit(ctx, p.root, "hook", "run", "--ignore-missing", "--to-stdin="+input.Name(), "pre-push", "--", "origin", url); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func runAuthoringGit(ctx context.Context, workDir string, args ...string) (string, error) {
@@ -1266,9 +1465,21 @@ func runAuthoringGit(ctx context.Context, workDir string, args ...string) (strin
 	// git's own diagnostics ("not a git repository"), which a localized
 	// build translates.
 	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
-	out, err := cmd.CombinedOutput()
+	// The answer is stdout: these callers read a SHA, a path they then create
+	// a lock file at, a NUL-separated list, `git version` under Sscanf. git
+	// writes warnings, hints and advice on stderr whenever the environment
+	// gives it a reason to, and spliced into the answer such a line IS the
+	// value — a path that resolves nowhere, a version that parses as older
+	// than the one installed. git's reason stays in the error, the only place
+	// these callers read it (one matches "not a git repository" there).
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		if gitlib.IsNotRepositoryDiagnostic(stderr.String()) {
+			err = errors.Join(err, gitlib.ErrNotGitRepo)
+		}
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
 }
@@ -1334,7 +1545,7 @@ type authoringForbiddenError struct{ message string }
 func (e authoringForbiddenError) Error() string { return e.message }
 
 func (s *Server) authoringError(w http.ResponseWriter, r *http.Request, err error) {
-	if s.writeStoredFileRefusal(w, r, err) {
+	if s.writeStoredFileRefusal(w, r, err) || s.writeBotTreeWait(w, r, err) {
 		return
 	}
 	var conflict authoringConflictError
@@ -1350,6 +1561,8 @@ func (s *Server) authoringError(w http.ResponseWriter, r *http.Request, err erro
 		s.httpErrorFor(w, r, http.StatusForbidden, "%v", err)
 	case errors.Is(err, botsource.ErrNotFound), errors.Is(err, os.ErrNotExist):
 		s.httpErrorFor(w, r, http.StatusNotFound, "%v", err)
+	case errors.Is(err, errAuthoringReadLimit):
+		s.httpErrorFor(w, r, http.StatusRequestEntityTooLarge, "%v — the authoring journal reads at most %d bytes (ITERION_ASSISTANT_AUTHORING_MAX_TOTAL_BYTES)", err, currentAuthoringLimits().maxTotalBytes)
 	default:
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 	}

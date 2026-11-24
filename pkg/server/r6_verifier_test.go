@@ -39,11 +39,11 @@ func r6OrgList(t *testing.T, s *Server) []map[string]any {
 	return lr.Approvals
 }
 
-func r6Approve(t *testing.T, s *Server, id string) *httptest.ResponseRecorder {
+func r6Approve(t *testing.T, s *Server, id string) *errorRecorder {
 	t.Helper()
 	req := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+id+"/approve", "", "o1")
 	req.SetPathValue("approval_id", id)
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleApproveProvision(w, req)
 	return w
 }
@@ -146,18 +146,18 @@ func TestRV_R6VF_TransientProvisionFailure_KeepsTheRecordPending(t *testing.T) {
 
 	aw := r6Approve(t, s, id)
 	if aw.Code == http.StatusConflict {
-		t.Fatalf("a transient forge failure must not consume the approval: %s", aw.Body.String())
+		t.Fatalf("a transient forge failure must not consume the approval: %s", aw.Diagnostic(t))
 	}
 	if aw.Code != http.StatusBadGateway {
-		t.Fatalf("approve of a forge-down record answers the forge's story, got code=%d body=%s", aw.Code, aw.Body.String())
+		t.Fatalf("approve of a forge-down record answers the forge's story, got code=%d body=%s", aw.Code, aw.Diagnostic(t))
 	}
 	// The 502 is the HOOK WRITE's story — the scenario is self-identifying:
 	// the refusal the arm consumes would name the bot instead.
-	if strings.Contains(aw.Body.String(), "cannot auto-provision") {
-		t.Fatalf("the scenario must reach the forge hook write, not the bot refusal: %s", aw.Body.String())
+	if strings.Contains(aw.Diagnostic(t), "cannot auto-provision") {
+		t.Fatalf("the scenario must reach the forge hook write, not the bot refusal: %s", aw.Diagnostic(t))
 	}
-	if !strings.Contains(aw.Body.String(), "hook") || !strings.Contains(aw.Body.String(), "HTTP 500") {
-		t.Fatalf("the 502 must name the forge call that failed: %s", aw.Body.String())
+	if !strings.Contains(aw.Diagnostic(t), "hook") || !strings.Contains(aw.Diagnostic(t), "HTTP 500") {
+		t.Fatalf("the 502 must name the forge call that failed: %s", aw.Diagnostic(t))
 	}
 	if got := r6OrgList(t, s); len(got) != 1 {
 		t.Fatalf("the transiently-failed record must stay pending for a retry: %v", got)

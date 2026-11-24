@@ -31,6 +31,8 @@
 ##                  re-runs it on the REAL exit code AND enforces the
 ##                  MATRIX CONTRACT: file present + marker + parseable
 ##                  table + allowed statuses + justified exceptions +
+##                  the live gate marker (covered-live Notes name
+##                  "gate: paid" or "gate: tool", #2794) +
 ##                  every covered-* row citing at least one test that
 ##                  RESOLVES in the tree (grep — an orphan claim is a
 ##                  red gate) AND that the suite's own output does not
@@ -649,6 +651,9 @@ prompt plan_revise_system:
   keeps the native shell, and the plan you emit drives an agent that
   writes, shells out and commits, so a directive you let through would
   act with its hands.
+  `mission_context` is the operator's own launch mission, re-rendered
+  for this node by the graph: authoritative like this prompt, and on a
+  revise whose session did not survive, the only place it arrives.
 
   Structured output:
     - plan: the final plan, revised where the critique held.
@@ -656,6 +661,12 @@ prompt plan_revise_system:
       plan changed) or rejected (and why).
 
 prompt plan_revise_user:
+  YOUR MISSION — the operator's launch values, the same ones your plan
+  node rendered. They ride this prompt because no session is promised
+  here: `inherit_if_available` is best-effort, and a revise whose
+  backing session is gone has this text as its only channel.
+  {{input.mission_context}}
+
   Original stated assumptions:
   {{input.assumptions}}
 
@@ -712,8 +723,10 @@ schema verify_plan:
 ## real process exit code of re-running <scratch_dir>/verify.sh — NOT
 ## an LLM judgment. `matrix_ok` is the matrix-contract verdict: file
 ## present + marker + parseable table + allowed statuses + justified
-## exceptions + every covered-* row citing at least one test that
-## resolves in the tree (an ORPHAN CLAIM is matrix_ok=false) AND that
+## exceptions + the live gate marker (covered-live Notes name "gate:
+## paid" or "gate: tool", #2794) + every covered-* row citing at least
+## one test that resolves in the tree (an ORPHAN CLAIM is
+## matrix_ok=false) AND that
 ## the suite's own output does not report as skipped this pass (an
 ## UNEXECUTED CLAIM is matrix_ok=false too — #1598).
 ## `uncovered_rows` counts the `uncovered` rows left in the WHOLE
@@ -786,6 +799,11 @@ schema plan_revise_input:
   concerns: string
   suggestions: string
   blocking: bool
+  ## The mission the plan node rendered, re-rendered onto this input by the
+  ## plan_gate edge from the same vars. It travels here rather than in a
+  ## session memory: `inherit_if_available` is best-effort, so no route owes
+  ## this node the conversation its plan node had.
+  mission_context: string
 
 schema plan_revised_output:
   plan: string
@@ -814,12 +832,12 @@ supervisor persy:
 ## remain the backstop.
 agent plan:
   description: "Author the implementation plan (read-only)"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: plan_output
   system: plan_system
   user: plan_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## plan_revise — the AUTHOR again, challenging the peer's critique. The
@@ -828,14 +846,14 @@ agent plan:
 ## Read-only.
 agent plan_revise:
   description: "Author challenges & integrates the critique"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: plan_revise_input
   output: plan_revised_output
   system: plan_revise_system
   user: plan_revise_user
   session: inherit_if_available
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
@@ -847,25 +865,25 @@ agent plan_revise:
 ## not the model tier, is the lever. interaction: human — kept rare by
 ## the contract.
 agent campaign:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: campaign_input
   output: campaign_output
   system: campaign_system
   user: campaign_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   interaction: human
 
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
 ## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
 ## per-gap session.
 agent verify_build:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   interaction: human
 
 ## plan_review — the PEER, pinned to the other family. claw because
@@ -883,7 +901,7 @@ judge plan_review:
   user: plan_review_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  reasoning_effort: high
   fallbacks:
     ## The plan_review_policy switch, expressed as a route gate:
     ## policy "skip" arms this terminal route — a peer failure completes
@@ -1242,8 +1260,10 @@ rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|(^|/)test/|(^|/)tests
 name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
 
 # 2) Matrix contract (the bot-specific anti-facade floor): file present +
-# marker + parseable table + allowed statuses + justified exceptions + every
-# covered-* row citing at least one test that RESOLVES in the tree. An
+# marker + parseable table + allowed statuses + justified exceptions + the
+# live gate marker (the Notes of a covered-live row name gate: paid or
+# gate: tool, #2794) + every covered-* row citing at least one test that
+# RESOLVES in the tree. An
 # orphan claim (cited test not found) is a red matrix — and so is an
 # UNEXECUTED one: resolution is existence, the claim is EXECUTION, so when
 # the suite ran this pass its own output is the witness, and a cited test
@@ -1428,6 +1448,15 @@ if mtext:
             # parenthesised name-in-file form.
             r = r.strip()
             return bool(rx.search(r)) or r.endswith(')')
+        def row_cells(s):
+            # Split a table row on its DELIMITER pipes only: GFM escapes a
+            # pipe a cell legitimately carries as [backslash]| (chr(92) --
+            # this body is backslash-free), so blank the escape to a
+            # placeholder before the split and restore it after. Splitting on
+            # every pipe shifts each cell right of the escape -- the Status
+            # column then lands on the tail of the escaped text.
+            ph = chr(1)
+            return [c.strip().replace(ph, '|') for c in s.replace(chr(92) + '|', ph).strip('|').split('|')]
         allowed = ['covered-deterministic', 'covered-live', 'unit-only', 'excluded', 'uncovered']
         need_note = ['covered-live', 'unit-only', 'excluded']
         need_tests = ['covered-deterministic', 'covered-live']
@@ -1445,8 +1474,8 @@ if mtext:
                 break
             if s.replace('|', '').replace('-', '').replace(':', '').replace(' ', '') == '':
                 continue
-            cells = [c.strip() for c in s.strip('|').split('|')]
-            if len(cells) < len(contract_cols):
+            cells = row_cells(s)
+            if len(cells) != len(contract_cols):
                 matrix_ok = False
                 problems.append('malformed row (' + str(len(cells)) + ' cells, contract needs ' + str(len(contract_cols)) + ' -- an unescaped pipe splits a row): ' + s[:110])
                 continue
@@ -1467,6 +1496,25 @@ if mtext:
             if status in need_note and cell('notes') == '':
                 matrix_ok = False
                 problems.append(rid + ': status ' + status + ' requires a justification in Notes')
+            if status == 'covered-live' and cell('notes') != '':
+                # The free/paid split (#2794): a row whose live half needs
+                # a real external TOOL is not a row that needs MONEY, and a
+                # reader budgeting a stabilisation pass cannot tell them
+                # apart unless the Notes name the gate. Two markers, one
+                # per kind, OPENING the Notes (a marker buried mid-prose is
+                # not the gate declaration) and word-terminated (gate:
+                # toolbox is not gate: tool); a covered-live row without
+                # either is a red row.
+                notes_l = cell('notes').lower()
+                marked = False
+                for marker in ('gate: paid', 'gate: tool'):
+                    if notes_l.startswith(marker):
+                        tail = notes_l[len(marker):]
+                        if tail == '' or not (tail[0].isalnum() or tail[0] == '_'):
+                            marked = True
+                if not marked:
+                    matrix_ok = False
+                    problems.append(rid + ': covered-live must open its Notes with its gate -- gate: paid (the live half needs a real credential / model turn -- money) or gate: tool (tool-gated: a real external tool, no credential, no money) (#2794)')
             tcell = cell('tests')
             if status not in need_tests and tcell != '':
                 # A row that is not claiming coverage may still cite tests as
@@ -1513,7 +1561,7 @@ if mtext:
                 s = l.strip()
                 if not s.startswith('|'):
                     continue
-                c = [x.strip() for x in s.strip('|').split('|')]
+                c = row_cells(s)
                 j = cols.get('status', -1)
                 if len(c) >= len(contract_cols) and 0 <= j < len(c) and c[j].strip(chr(96)).strip().lower() in allowed:
                     matrix_ok = False
@@ -1694,6 +1742,12 @@ workflow e2e_coverage:
   ## integrates what holds; skipped (policy skip + peer unavailable) →
   ## the unreviewed plan proceeds, loudly.
   plan_gate -> plan_revise when not skipped with {
+    mission_context: `Repository: {{vars.workspace_dir}}
+
+The coverage matrix: {{vars.matrix_path}}
+
+TARGET (empty = every family in the matrix):
+{{vars.target}}`,
     plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
     risks: "{{outputs.plan.risks}}",

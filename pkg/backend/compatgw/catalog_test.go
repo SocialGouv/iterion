@@ -1,9 +1,11 @@
 package compatgw
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
@@ -208,15 +210,110 @@ func TestResolveCatalog_AnIdAlreadyCarryingTheQualifierResolves(t *testing.T) {
 	// Across tables the live table keeps its precedence (ADR-122 §1.2): a
 	// live table holding only the stripped key answers before a snapshot
 	// holding `q/<id>`. nvidia self-namespaces its ids in models.dev, so the
-	// snapshot holds `nvidia/nvidia/<id>` and not `nvidia/<id>`.
+	// snapshot holds `nvidia/nvidia/<id>` and not `nvidia/<id>`. The id is an
+	// example of that SHAPE, not a contract: a regeneration can retire it
+	// (nemotron-3-super-120b-a12b left on 2026-10-29), and the fix is to name
+	// another `nvidia/nvidia/<id>` the snapshot carries.
 	nv := mapGet(map[string]string{CatalogProviderEnv: "nvidia"})
-	if res := ResolveCatalog("nvidia/nemotron-3-super-120b-a12b", nil, nv); res.Source != SourceCatalogSnapshot {
-		t.Fatalf("the snapshot's self-namespaced nvidia key did not answer: %+v", res)
+	const selfNamespaced = "nvidia/llama-3.1-nemotron-70b-instruct"
+	if res := ResolveCatalog(selfNamespaced, nil, nv); res.Source != SourceCatalogSnapshot {
+		t.Fatalf("the snapshot's self-namespaced nvidia key did not answer for %q: %+v — did the id leave models.dev?", selfNamespaced, res)
 	}
 	stripped := modelspecs.NewSeeded(map[string]modelspecs.Spec{
-		"nvidia/nemotron-3-super-120b-a12b": {ContextWindow: 7, InputCostPerM: 1, OutputCostPerM: 2},
+		selfNamespaced: {ContextWindow: 7, InputCostPerM: 1, OutputCostPerM: 2},
 	})
-	if res := ResolveCatalog("nvidia/nemotron-3-super-120b-a12b", stripped, nv); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 7 {
+	if res := ResolveCatalog(selfNamespaced, stripped, nv); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 7 {
 		t.Fatalf("the live table's stripped key must answer before the snapshot's q/<id>: %+v", res)
+	}
+}
+
+// TestOperatorModels_DeclaresTheFlagsItKnows: the operator's table may state
+// reasoning, tool_call and temperature; a flag it leaves out is nil — unknown
+// downstream, never false — and an unknown key is still refused.
+func TestOperatorModels_DeclaresTheFlagsItKnows(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	get := func(k string) string {
+		if k == CatalogModelsEnv {
+			return `{"glm-5.2": {"context_window": 200000, "reasoning": true, "temperature": false}}`
+		}
+		return ""
+	}
+	r := ResolveCatalog("glm-5.2", nil, get)
+	if r.Source != SourceOperator || r.Spec.ContextWindow != 200000 {
+		t.Fatalf("resolved = %+v, want the operator's record", r)
+	}
+	if r.Spec.Reasoning == nil || !*r.Spec.Reasoning || r.Spec.Temperature == nil || *r.Spec.Temperature {
+		t.Fatalf("flags = %v/%v, want reasoning true and temperature false as declared", r.Spec.Reasoning, r.Spec.Temperature)
+	}
+	if r.Spec.ToolCall != nil {
+		t.Fatalf("tool_call = %v, want nil: the operator left it out", *r.Spec.ToolCall)
+	}
+	ResetCatalogCaches()
+	bad := func(k string) string {
+		if k == CatalogModelsEnv {
+			return `{"glm-5.2": {"reasonning": true}}`
+		}
+		return ""
+	}
+	if err := CheckOperatorTable(bad); err == nil {
+		t.Fatal("a misspelt flag key was accepted")
+	}
+}
+
+// The forwarded record answers first, but only when a HOST wrote it. The
+// in-container runner auto-loads the workspace .env — the repository under
+// review — which fills every name the crossing left absent, and this
+// record decides the window a node compacts at, the max_tokens it asks
+// for, the price it is billed at and the provenance all of it is recorded
+// under. The same bytes are the host's answer or no answer at all,
+// depending on provenance alone.
+func TestResolveCatalog_APlantedRecordIsRefused(t *testing.T) {
+	const record = `{"model":"gw/m","source":"operator","context_window":4096,"max_output_tokens":1,"input_usd_per_mtok":0.000001,"output_usd_per_mtok":0.000001}`
+	get := mapGet(map[string]string{ResolvedEnvName: record})
+	t.Cleanup(envtrust.ResetForTest)
+
+	// Crossed by the host: the record IS the answer, as it must be — the
+	// image's snapshot can be older than the host's.
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	envtrust.ResetForTest()
+	ResetCatalogCaches()
+	if res := ResolveCatalog("gw/m", nil, get); res.Source != SourceOperator || res.Spec.ContextWindow != 4096 {
+		t.Fatalf("a host-written record resolved %+v, want the forwarded operator record", res)
+	}
+
+	// The same bytes, planted by a workspace .env: no host behind them.
+	t.Setenv(envtrust.EnvPlantedNames, ResolvedEnvName)
+	envtrust.ResetForTest()
+	ResetCatalogCaches()
+	res := ResolveCatalog("gw/m", nil, get)
+	if res.Source != SourceUnknown {
+		t.Fatalf("a planted record resolved source %q, want %q", res.Source, SourceUnknown)
+	}
+	// The EFFECT, not the label: none of the forged numbers reached the
+	// node — not the window it compacts at, not the budget it asks for,
+	// not the price it is billed at.
+	if res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Priced() {
+		t.Fatalf("a planted record resolved %+v, want nothing: the repository under review chose the window, the max output and the price of the node reviewing it", res)
+	}
+}
+
+func TestR3EffortsDoNotChangeTheStrictCatalog(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	source := mapGet(map[string]string{CatalogModelsEnv: `{"deepseek":{"context_window":100000}}`, ReasoningEffortsEnv: `{"deepseek":[50],"broken":["hihg"]}`})
+	if err := CheckOperatorTable(source); err != nil {
+		t.Fatal(err)
+	}
+	if res := ResolveCatalogQuiet("deepseek", nil, source); res.Source != SourceOperator || res.Spec.ContextWindow != 100000 {
+		t.Fatalf("catalog changed: %+v", res)
+	}
+	warnings := 0
+	got := ReasoningEfforts("deepseek", source, func(string, ...any) { warnings++ })
+	if !reflect.DeepEqual(got, []string{"50"}) || warnings != 1 {
+		t.Fatalf("efforts=%v warnings=%d", got, warnings)
+	}
+	if _, err := parseOperatorTable(`{"deepseek":{"reasoning_efforts":["high"]}}`); err == nil {
+		t.Fatal("reasoning_efforts re-entered the strict table")
 	}
 }

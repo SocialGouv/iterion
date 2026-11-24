@@ -53,7 +53,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle.OpenDir: %v", err)
 	}
-	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	}
 	runID := "live-secured-renovacy"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
@@ -104,7 +104,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	// iterion repo root — so the container mounts the wrong tree and
 	// the bot inspects iterion source instead of the seeded fixture.
 	// Also affects worktree:auto's repo-root resolution.
-	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir))
+	eng := newLiveEngine(t, wf, s, executor, runtime.WithWorkDir(workspaceDir))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 	defer cancel()
 	inputs := map[string]any{
@@ -170,7 +170,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle.OpenDir: %v", err)
 	}
-	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	}
 	runID := uniqueRunID("live-secured-renovacy-real")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	// Tee logger to <storeDir>/runs/<runID>/run.log so the desktop
@@ -208,7 +208,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 		"user_prompt":          "Multi-stack fixture with deliberately vulnerable pins. Pay extra attention to node-ipc — version 10.1.1 is the documented protestware/sabotage release; upgrade it past the compromised range.",
 	})
 
-	eng := runtime.New(wf, s, executor,
+	eng := newLiveEngine(t, wf, s, executor,
 		runtime.WithWorkDir(workspaceDir),
 		runtime.WithLogger(teeLogger),
 		// Attach the bundle so the runtime mirrors `<bundle>/skills/*.md`
@@ -291,7 +291,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle.OpenDir: %v", err)
 	}
-	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	}
 	runID := uniqueRunID("live-secured-renovacy-protestware")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	teeLogger := prepareLiveRunLog(t, storeDir, runID)
@@ -327,7 +327,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 		"user_prompt":          userPrompt,
 	})
 
-	eng := runtime.New(wf, s, executor,
+	eng := newLiveEngine(t, wf, s, executor,
 		runtime.WithWorkDir(workspaceDir),
 		runtime.WithLogger(teeLogger),
 		runtime.WithBundle(b),

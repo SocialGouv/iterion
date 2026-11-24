@@ -107,6 +107,7 @@ var SnakeCaseKeys = map[string][]string{
 	"web_fetch":     {"url"},
 	"web_search":    {"query"},
 	"skill":         {"skill", "name"},
+	"command":       {"name"},
 	"agent":         {sentinelAgent},
 	"ask_user":      {"question"},
 	"task_create":   {"description"},

@@ -13,11 +13,13 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -215,7 +217,7 @@ func (s *Server) allowedOrigins() []string {
 // is identical to an absent one (the origin gets refused either way), which is
 // the shape of a guard that looks configured and matches nothing.
 func loadExtraAllowedOrigins(logger *iterlog.Logger) []string {
-	valid, malformed := splitAllowedOrigins(os.Getenv("ITERION_ALLOWED_ORIGINS"))
+	valid, malformed := splitAllowedOrigins(envOperator("ITERION_ALLOWED_ORIGINS"))
 	for _, entry := range malformed {
 		logger.Warn("ITERION_ALLOWED_ORIGINS: ignoring %q — expected an origin of the form scheme://host with no path; requests from it will be refused", logSafe(entry))
 	}
@@ -300,20 +302,31 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // writeJSONFor is the request-aware variant of writeJSON: it also reflects an
 // allowlisted Origin header so legitimate browser callers receive ACAO.
+//
+// A board card is masked on the way out (native.IssueForRead): its bot args
+// can still carry a publish grant written before the store dropped those vars,
+// and this is the studio's read surface for a card. A response that EMBEDS a
+// card masks it itself.
 func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v any) {
 	s.reflectAllowedOrigin(w, r)
+	switch t := v.(type) {
+	case *native.Issue:
+		v = native.IssueForRead(t)
+	case []*native.Issue:
+		v = native.IssuesForRead(t)
+	}
 	httpx.EncodeJSON(w, v)
 }
 
 func httpError(w http.ResponseWriter, code int, format string, args ...any) {
-	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
+	httpx.WriteError(w, code, "", fmt.Sprintf(format, args...))
 }
 
 // httpErrorFor is the request-aware variant: reflects allowlisted Origin so
 // browser code can read the error body when same-origin or loopback.
 func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...any) {
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
+	httpx.WriteError(errtrack.HTTPErrorWriter(w, r, s.logger), code, "", fmt.Sprintf(format, args...))
 }
 
 // httpErrorCode is httpErrorFor with a stable machine-readable `error_code`
@@ -323,7 +336,7 @@ func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, 
 // `author_document`).
 func (s *Server) httpErrorCode(w http.ResponseWriter, r *http.Request, status int, code, format string, args ...any) {
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, status, map[string]string{"error": fmt.Sprintf(format, args...), "error_code": code})
+	httpx.WriteError(errtrack.HTTPErrorWriter(w, r, s.logger), status, code, fmt.Sprintf(format, args...))
 }
 
 // requireSafeOrigin gates state-changing endpoints. Any request whose Origin
@@ -347,7 +360,7 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	//
 	// Checked after the allowlist so the normal path is untouched: this costs
 	// a getenv only on a request already being refused.
-	if os.Getenv("ITERION_REQUIRE_ORIGIN") == "0" {
+	if envOperator("ITERION_REQUIRE_ORIGIN") == "0" {
 		return true
 	}
 	// A refusal is logged because the 403 goes to the caller and nowhere
@@ -637,6 +650,53 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "file not found: %s", req.Path)
 		return
 	}
+	opened, err := openWorkflow(req.Path, confirmedDiskPath, data)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	if opened.Unit != nil {
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: opened.Document, Diagnostics: opened.Diagnostics, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: opened.Unit, Bindable: opened.Bindable, ReadRefusal: opened.ReadRefusal})
+		return
+	}
+	writeJSON(w, openFileResponse{
+		Source:            string(data),
+		Document:          opened.Document,
+		Diagnostics:       opened.Diagnostics,
+		Path:              req.Path,
+		ConfirmedDiskPath: confirmedDiskPath,
+		Bindable:          opened.Bindable,
+		ReadRefusal:       opened.ReadRefusal,
+		Digest:            opened.Digest,
+	})
+}
+
+// openedWorkflow is what the open of one workflow file says of its program:
+// the document, its diagnostics, the verdict on writing it back, and — for
+// the main of a bot in several files read from disk — the unit it is the
+// merged document of.
+type openedWorkflow struct {
+	Document    json.RawMessage
+	Diagnostics []string
+	// Unit is set when the file is the main of a bot in several files.
+	Unit        *unitInfo
+	Bindable    bool
+	ReadRefusal *readRefusalInfo
+	// Digest is the sha256 of the file's bytes, issued only when the open
+	// read ONE file whole (the digest rule): a refused open issues none, and
+	// a unit's files carry their own.
+	Digest string
+}
+
+// openWorkflow reads data — the bytes of the workflow file the caller names
+// name — the way the editor opens a file. diskPath is the absolute path those
+// bytes were read from, "" when they were read from no directory (an embedded
+// recipe): only a file on disk has fragments beside it for its imports to
+// reach. It is the one reading behind /api/files/open and the read of a bot's
+// launch program (handleBotLaunchSource), so the two cannot disagree on a
+// document, a refusal or a unit's verdict. The error is the document's
+// marshalling, the server's own failure.
+func openWorkflow(name, diskPath string, data []byte) (openedWorkflow, error) {
 	// A file the reader refuses whole — past the read budget or the size
 	// cap, or no text it reads (not UTF-8) — opens as its refusal: the
 	// file's bytes to look at, no document of it (the empty one), bindable
@@ -644,21 +704,19 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 	// and why, and its remedy. No write takes such an open: the studio
 	// refuses a salvage, and every save reads the file as stored under its
 	// lock before it writes (checkStoredFile).
-	pr, err := parser.Parse(req.Path, string(data))
+	pr, err := parser.Parse(name, string(data))
 	var refused *parser.ReadRefusal
 	if errors.As(err, &refused) {
-		writeRefusedOpen(w, openFileResponse{Source: string(data), Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, ReadRefusal: readRefusalOf(refused)}, refused.Diagnostic)
-		return
+		return refusedOpen(refused.Diagnostic, readRefusalOf(refused))
 	}
 	if pr.File == nil {
-		writeRefusedOpen(w, openFileResponse{Source: string(data), Path: req.Path, ConfirmedDiskPath: confirmedDiskPath}, firstErrorOf(pr.Diagnostics))
-		return
+		return refusedOpen(firstErrorOf(pr.Diagnostics), nil)
 	}
 	var diags []string
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
 	}
-	if confirmedDiskPath != "" && len(pr.File.Imports) > 0 {
+	if diskPath != "" && len(pr.File.Imports) > 0 {
 		// A bot in several files opens as its unit: the fragments read
 		// beside the main, merged into one document whose every declaration
 		// names its file, with the unit's revision for the save to present.
@@ -667,7 +725,7 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// (ast.ErrSalvage at any decode of it): non-bindable, its refusal
 		// said, its revision another than any whole load's, so no save
 		// presenting it lands.
-		view := unit.Salvage(unit.LoadDirWithMain(absPath, absPath, data))
+		view := unit.Salvage(unit.LoadDirWithMain(diskPath, diskPath, data))
 		// The unit was read from disk and its diagnostics are answered to
 		// the client: they name the files by their unit-relative
 		// paths (#1934).
@@ -678,8 +736,7 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		}
 		docJSON, err := view.MarshalDocument(view.Root())
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
-			return
+			return openedWorkflow{}, err
 		}
 		// A unit that does not LOAD stays writable, deliberately: saveUnit
 		// refuses the write server-side, naming the fragment at fault, and
@@ -698,51 +755,56 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// it did not read, and since the budget that cut it short is the
 		// reader's, no revision of the files tells a later save that a
 		// larger budget reads them all — binding it would write them away.
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(view, req.Path), Bindable: !parseHasErrors(pr.Diagnostics) && view.Whole(), ReadRefusal: unitReadRefusal(view)})
-		return
+		return openedWorkflow{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: unitInfoOf(view, name, declaredFragments(nil, view.Root()).asDiskLoadOf(view.Main())), Bindable: !parseHasErrors(pr.Diagnostics) && view.Whole(), ReadRefusal: unitReadRefusal(view)}, nil
 	}
 	docJSON, err := ast.MarshalFile(pr.File)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
-		return
+		return openedWorkflow{}, err
 	}
-	writeJSON(w, openFileResponse{
-		Source:            string(data),
-		Document:          json.RawMessage(docJSON),
-		Diagnostics:       diags,
-		Path:              req.Path,
-		ConfirmedDiskPath: confirmedDiskPath,
+	return openedWorkflow{
+		Document:    json.RawMessage(docJSON),
+		Diagnostics: diags,
 		// The document is what the parser SALVAGED when the parse left
 		// errors — the file minus the region it could not read.
 		Bindable: !parseHasErrors(pr.Diagnostics),
 		// The digest rule: this open read the file whole, so it issues the
-		// digest a save of it presents. A refused open (writeRefusedOpen)
-		// issues none.
+		// digest a save of it presents. A refused open (refusedOpen) issues
+		// none.
 		Digest: contentSHA256(string(data)),
-	})
+	}, nil
 }
 
-// writeRefusedOpen answers the open of a file the reader refuses whole —
-// resp carrying the file's bytes and names — with no document of it (the
-// empty one, MARKED as the display of a refusal: every decode of it answers
-// ast.ErrSalvage, so no door can take it back as a program once the
-// refusal's remedy is applied), the refusal d as its one diagnostic and,
-// when the caller has not said otherwise, as its read refusal with d's
-// remedy: a file that is no text the reader reads (E006) is refused before
-// any bound, and its remedy is d's hint too. It issues no digest: no whole
-// read happened to issue one from.
-func writeRefusedOpen(w http.ResponseWriter, resp openFileResponse, d parser.Diagnostic) {
+// refusedOpen is the open of a file the reader refuses whole: no document of
+// it (the empty one, MARKED as the display of a refusal: every decode of it
+// answers ast.ErrSalvage, so no door can take it back as a program once the
+// refusal's remedy is applied), the refusal d as its one diagnostic and, when
+// the caller has not said otherwise, as its read refusal with d's remedy: a
+// file that is no text the reader reads (E006) is refused before any bound,
+// and its remedy is d's hint too. It issues no digest: no whole read happened
+// to issue one from.
+func refusedOpen(d parser.Diagnostic, said *readRefusalInfo) (openedWorkflow, error) {
 	empty, err := ast.MarshalSalvageWithProvenance(&ast.File{}, "", "not read whole: "+string(d.Code))
+	if err != nil {
+		return openedWorkflow{}, err
+	}
+	if said == nil {
+		said = &readRefusalInfo{Message: d.Error(), Hint: d.Hint}
+	}
+	return openedWorkflow{Document: json.RawMessage(empty), Diagnostics: []string{d.Error()}, ReadRefusal: said}, nil
+}
+
+// writeRefusedOpen answers the open of a file the reader refuses whole
+// (refusedOpen) — resp carrying the file's bytes and names.
+func writeRefusedOpen(w http.ResponseWriter, resp openFileResponse, d parser.Diagnostic) {
+	refused, err := refusedOpen(d, resp.ReadRefusal)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	resp.Document = json.RawMessage(empty)
-	resp.Diagnostics = []string{d.Error()}
+	resp.Document = refused.Document
+	resp.Diagnostics = refused.Diagnostics
 	resp.Bindable = false
-	if resp.ReadRefusal == nil {
-		resp.ReadRefusal = &readRefusalInfo{Message: d.Error(), Hint: d.Hint}
-	}
+	resp.ReadRefusal = refused.ReadRefusal
 	writeJSON(w, resp)
 }
 
@@ -842,6 +904,15 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "filename must end in .bot")
 		return
 	}
+	// The path, the unit's files, its revision and the siblings its check
+	// reads are resolved under the lock the save holds through its write:
+	// another writer's publication is never half-seen, and a sibling the
+	// check passed is still that sibling when the fragment is written.
+	release, ok := s.lockBotTree(w, r, botTreeWriterEditorSave)
+	if !ok {
+		return
+	}
+	defer release()
 	absPath, err := s.safePath(req.Path)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid path: %v", err)

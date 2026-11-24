@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
@@ -185,7 +186,13 @@ func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage
 // parked on the forge (restoreBankedChain). The second return value is the
 // baseline the run's work is measured against: the restored chain's own base
 // when a chain was restored, "" when the clone's HEAD is the baseline.
-func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage) (string, string, error) {
+// wf is the run's compiled workflow, never nil: the clone credential's own
+// declaration is read from it (refuseUngrantedCloneCredential) before the
+// clone, so a run whose forge secret withholds the `file` sink the
+// credential store needs is refused without spending a clone — and a run
+// that holds a credential with no workflow to read is refused too, never
+// served on grants nobody read.
+func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) (string, string, error) {
 	// A pin with no ref to fetch would never be compared: verifyFetchedCommit
 	// is reached only from inside the `RepoSHA != ""` block below, so such a
 	// message would run the clone's DEFAULT BRANCH while the run document
@@ -208,6 +215,31 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoSHA) == "" {
 		return "", "", fmt.Errorf("runner: run %s: admitted for commit %s but carries no ref to fetch — refusing rather than running the clone's default branch with the pin unenforced",
 			msg.RunID, msg.RepoSHAExpected)
+	}
+	// The run's clone dir holds the forge token from the clone on (in the
+	// clone URL git persists in .git/config, then in the credential store),
+	// and only an accepted workspace keeps it: executeRun removes that one
+	// when the run returns. Every other return from here on removes the
+	// dir — a refusal, which then leaves no tree an earlier attempt left on
+	// this pod (a process killed mid-preparation), and a preparation that
+	// fails after the clone, which leaves no clone behind.
+	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
+	accepted := false
+	defer func() {
+		if accepted {
+			return
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			r.cfg.Logger.Warn("runner: run %s: the failed workspace preparation could not remove its clone %s, which keeps the credential it was cloned with: %v", msg.RunID, dir, err)
+		}
+	}()
+	// The clone credential's grants are judged before anything is spent on
+	// it: a run whose forge secret withholds the `file` sink the credential
+	// store needs is refused here, ahead of the DNS check, the workspace
+	// directory and the clone, so its token reaches neither the clone URL
+	// git persists nor the store (ADR-146's clone-credential follow-up).
+	if err := refuseUngrantedCloneCredential(ctx, wf, msg.RunID); err != nil {
+		return "", "", err
 	}
 	// RepoURL/RepoSHA arrive from a webhook payload (the generic webhook
 	// body is fully attacker-controlled) and flow into git below
@@ -262,7 +294,6 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		defer stopProxy()
 		gitEnv = cloneGuardEnv(endpoint)
 	}
-	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
 	if err := os.RemoveAll(dir); err != nil {
 		return "", "", fmt.Errorf("clean repo dir: %w", err)
 	}
@@ -280,13 +311,13 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		return "", "", fmt.Errorf("mkdir repo parent: %w", err)
 	}
 
-	cloneURL, tok, appBotLogin := msg.RepoURL, "", ""
+	cloneURL, appBotLogin := msg.RepoURL, ""
+	_, tok := cloneCredentialToken(ctx)
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 		appBotLogin = creds.ForgeAppBotLogin
-		if tok != "" {
-			cloneURL = injectGitToken(msg.RepoURL, tok)
-		}
+	}
+	if tok != "" {
+		cloneURL = injectGitToken(msg.RepoURL, tok)
 	}
 
 	// -c http.followRedirects=false closes SSRF vector (b): a 302 from the
@@ -373,6 +404,7 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	}
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
+	accepted = true
 	return dir, baseline, nil
 }
 
@@ -528,8 +560,10 @@ func (r *Runner) verifyFetchedCommit(ctx context.Context, dir string, msg *queue
 // After the transport/ref shape passes, the URL's host is run through the
 // shared SSRF guard (httpdial.ResolvePublicHost) so a holder of a per-org
 // `iwh_` webhook token cannot point the runner at an internal address
-// (loopback, RFC1918/ULA, link-local, cloud metadata, cluster aliases) to
-// probe the cloud network. Mirrors the completion-webhook guard in pkg/notify.
+// (loopback, RFC1918/ULA, CGNAT, link-local, cloud metadata, a non-public
+// IPv6 transition address, a name no public host carries) to probe the
+// cloud network.
+// Mirrors the completion-webhook guard in pkg/notify.
 // On-prem deployments with internal forges set
 // ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to relax the strict mode.
 func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, error) {
@@ -554,9 +588,15 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 	// which re-validates and pins the resolved IP at the moment of the dial.
 	// ssh remotes are not proxied — for them this pre-check, the hosts pin and
 	// the pod egress policy remain the guard.
+	// The hatch is named on the refusal it lifts (httpdial.ErrNotPublic)
+	// alone: a malformed name or a failed lookup stays refused whatever the
+	// hatch says, and naming it there is advice about the wrong problem.
 	ip, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate)
-	if err != nil {
+	if errors.Is(err, httpdial.ErrNotPublic) {
 		return nil, fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("runner: repo host %q refused: %w", host, err)
 	}
 	return ip, nil
 }
@@ -611,6 +651,12 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 	return err
 }
 
+// gitDrainBound is this site's default bound on the wait for a git helper
+// that still holds the output pipes (git-remote-https inherits them), once
+// git itself has gone. Overridable through [proc.WaitDelayEnv]; it is the
+// widest default in the tree because a clone's helper drains the slowest.
+const gitDrainBound = 10 * time.Second
+
 // runGitOutEnv is runGitEnv returning the command's combined output —
 // for the callers that need to READ git (ls-remote, rev-list), with the
 // same timeout, cancellation hardening and token redaction.
@@ -643,7 +689,7 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
 	// final unblock if a helper still holds them after the group kill.
 	proc.TerminateGroupOnCancel(cmd)
-	cmd.WaitDelay = 10 * time.Second
+	drainBound := proc.SetWaitDelay(cmd, gitDrainBound)
 	// Never prompt for credentials (fail fast instead of hanging), and ignore
 	// any host-level git config in the runner image.
 	// SanitizeEnv drops the variables that would override which repository,
@@ -666,6 +712,16 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
 			return "", fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, errors.Join(ctx.Err(), err), detail)
 		}
+		if proc.DrainCutShort(err) {
+			// git exited 0 and only the drain was cut, but THIS caller's
+			// answer is the output itself (a sha, a ref, a status), and what
+			// is in hand may be truncated: a short read passed off as
+			// success would hand a caller half a sha. So it stays an error
+			// — naming the bound and the knob that widens it, because the
+			// fix is an operator's, not a retry's.
+			return "", fmt.Errorf("git %s: exited 0 but a process it left kept its output open, so the read was cut %s: %w: %s",
+				shown, proc.WaitDelayHint(drainBound), err, detail)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", shown, err, detail)
 	}
 	return string(out), nil
@@ -673,8 +729,10 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 
 // gitCredentialFile is where the clone's live forge token lives, in git's
 // credential-store format. It sits under .git/ (not the worktree) so a bot's
-// `git add -A` can never stage it.
-const gitCredentialFile = "iterion-credentials"
+// `git add -A` can never stage it. The name comes from gitlib because the
+// readers that must refuse the file match on it (the claw workspace tools);
+// a rename has to move both ends or the refusal stops covering it.
+const gitCredentialFile = gitlib.CredentialStoreFile
 
 // installGitCredentialStore detaches the clone from the token it was cloned
 // with and points git at a credential FILE instead.
@@ -850,10 +908,7 @@ func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, work
 		return "" // nothing in the tree is LFS-tracked: the push carries no pointer
 	}
 	branch := "iterion/run-" + msg.RunID
-	tok := ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
-	}
+	_, tok := cloneCredentialToken(ctx)
 	// A bare sha: git-lfs cannot resolve a `<sha>:<refspec>` argument, and a
 	// push of that shape exits 0 having uploaded nothing.
 	// lfs.allowincompletepush is a config VALUE the run can write in its own
@@ -1115,10 +1170,7 @@ func (r *Runner) hostHasCommit(ctx context.Context, workDir, sha string) bool {
 // recovery banks the pod-side commit directly.
 func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head, finalStatus string) {
 	branch := "iterion/run-" + msg.RunID
-	tok := ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
-	}
+	_, tok := cloneCredentialToken(ctx)
 	attempts, allowed, pushErr := r.pushBankWithRetry(ctx, msg, workDir, tok, branch, head, finalStatus)
 	if !allowed {
 		return // the richer-chain guard recorded its own refusal

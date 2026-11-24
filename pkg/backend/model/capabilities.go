@@ -1,11 +1,14 @@
 package model
 
 import (
-	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"context"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
@@ -18,13 +21,27 @@ import (
 // aggregator lacks the model or is unreachable, the curated value wins.
 // Resolution never performs blocking network I/O on this path.
 func capabilitiesForModel(provider, modelID string) ModelCapabilities {
-	// A gateway id resolves to NOTHING here — deliberately, until #2103
-	// gives the flags an unknown state. Plain Lookup's bare-index fallback
+	// A gateway id resolves through the gateway's own catalog
+	// (compatgw.ResolveCatalog: the host's forwarded record, the operator's
+	// table, then the models.dev provider the operator named — live, then
+	// snapshot) and never through plain Lookup's bare-index fallback, which
 	// would answer a FOREIGN provider's entry for the same bare id (a
 	// single-publisher bare name passes consensus trivially), reporting a
-	// vendor's window and prices as the gateway id's own.
+	// vendor's window and prices as the gateway id's own. What the catalog
+	// does not say stays unknown: nil flags, zero numbers, SourceUnknown.
+	//
+	// Quietly: this is the READ path (`iterion models`, GET /api/models, GET
+	// /api/model-capabilities), where an unknown id is the normal case — the
+	// studio's free-text model fields query it per keystroke — and the
+	// unknown is already the answer those readers print. The launch seams
+	// resolve loudly.
 	if provider == modelroute.OpenAICompatible {
-		return ModelCapabilities{}
+		// The closure idiom (#2808): the seam's reader bound to a context,
+		// handed as a value — capabilitiesForModel has no ctx of its own (the
+		// public ResolveCapabilities surface takes none), so the process
+		// default answers here.
+		getenv := func(name string) string { return envGetenv(context.Background(), name) }
+		return gatewayCapabilities(compatgw.ResolveCatalogQuiet(modelID, modelspecs.Default(), getenv))
 	}
 	curated := curatedCapabilities(provider, modelID)
 	spec, ok := modelspecs.Default().Lookup(provider, modelID)
@@ -34,32 +51,90 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 	return mergeSpec(spec, curated)
 }
 
+// taskContextWindow resolves the catalog context window for a delegate
+// task's resolved model, for stamping into CLI harness envs at spawn
+// (delegate's claudeContextWindowEnv). It answers from every table the
+// dispatch seam itself trusts — the host's forwarded resolution, the
+// operator table, then the models.dev provider table
+// (compatgw.ResolveCatalogQuiet, the quiet read path), and finally the
+// aggregator's bare consensus index (ResolveBareModel) — and 0 when no
+// table knows, which callers must treat as "stamp nothing", never as a
+// guess.
+func taskContextWindow(get func(string) string, model string) int {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return 0
+	}
+	// Mirror the dispatch seam: it resolves the WIRE id (the host's
+	// forwarded record is keyed by it and the operator table names it), so
+	// a prefixed spec must not miss every table its bare id would hit.
+	wire := modelroute.Parse(model).Wire
+	if resolved := compatgw.ResolveCatalogQuiet(wire, modelspecs.Default(), get); resolved.Known() && resolved.Spec.ContextWindow > 0 {
+		return resolved.Spec.ContextWindow
+	}
+	if bare := ResolveBareModel(wire); bare.Found && bare.ContextWindow > 0 {
+		return bare.ContextWindow
+	}
+	return 0
+}
+
+// refreshContextWindow recomputes the delegate stamp after a chain element
+// replaced the task's model: the stamped window belongs to the model that
+// will actually serve the call — an override to a smaller-window model must
+// not keep the baseline's larger ceiling, and a model-less element
+// restoring the baseline must not keep an override's.
+func refreshContextWindow(ctx context.Context, task *delegate.Task) {
+	task.ContextWindow = taskContextWindow(func(name string) string { return envGetenv(ctx, name) }, task.Model)
+}
+
+// gatewayCapabilities is a gateway id's catalog record read as capabilities:
+// the flags as the table stated them — nil where it did not — the numbers,
+// and the table as the source.
+func gatewayCapabilities(r compatgw.Resolved) ModelCapabilities {
+	return ModelCapabilities{
+		Reasoning:       r.Spec.Reasoning,
+		ToolCall:        r.Spec.ToolCall,
+		Temperature:     r.Spec.Temperature,
+		Source:          CapabilitySource(r.Source),
+		ContextWindow:   r.Spec.ContextWindow,
+		MaxOutputTokens: r.Spec.MaxOutputTokens,
+		InputCostPerM:   r.Spec.InputCostPerM,
+		OutputCostPerM:  r.Spec.OutputCostPerM,
+	}
+}
+
 // curatedCapabilities is the static heuristic table — the authoritative
 // fallback when the dynamic aggregator lacks a model or is unreachable. It
 // keeps the hardcoded values (GLM-5.x from 5.2 on = 1M, earlier GLM = 200K,
 // claude/openai reasoning heuristics) so brand-new models not yet in
 // aggregators resolve correctly.
 func curatedCapabilities(provider, modelID string) ModelCapabilities {
+	var out ModelCapabilities
 	switch provider {
 	case "anthropic":
-		return anthropicCapabilities(modelID)
+		out = anthropicCapabilities(modelID)
 	case "openai":
-		return openaiCapabilities(modelID)
+		out = openaiCapabilities(modelID)
 	case "xai":
-		return xaiCapabilities(modelID)
+		out = xaiCapabilities(modelID)
 	default:
 		// Conservative default: tool calling + temperature, no reasoning.
-		return ModelCapabilities{
-			ToolCall:    true,
-			Temperature: true,
+		out = ModelCapabilities{
+			Reasoning:   Known(false),
+			ToolCall:    Known(true),
+			Temperature: Known(true),
 		}
 	}
+	// The table answers every flag it knows a verdict for; a curated branch
+	// states all three.
+	out.Source = SourceCurated
+	return out
 }
 
 func anthropicCapabilities(modelID string) ModelCapabilities {
 	lower := strings.ToLower(modelID)
 	if lower == "claude-opus-5-5" {
-		return ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false, ContextWindow: 1_000_000}
+		return ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(false), ContextWindow: 1_000_000}
 	}
 
 	// z.ai's GLM models are served through the Anthropic-compatible
@@ -79,9 +154,9 @@ func anthropicCapabilities(modelID string) ModelCapabilities {
 	hasReasoning := ok && (major >= 4 || (major == 3 && minor >= 5))
 
 	return ModelCapabilities{
-		Reasoning:   hasReasoning,
-		ToolCall:    true,
-		Temperature: true,
+		Reasoning:   Known(hasReasoning),
+		ToolCall:    Known(true),
+		Temperature: Known(true),
 	}
 }
 
@@ -149,9 +224,9 @@ func glmContextWindow(modelID string) int {
 // Anthropic-compatible endpoint.
 func glmCapabilities(modelID string) ModelCapabilities {
 	return ModelCapabilities{
-		Reasoning:     true,
-		ToolCall:      true,
-		Temperature:   true,
+		Reasoning:     Known(true),
+		ToolCall:      Known(true),
+		Temperature:   Known(true),
 		ContextWindow: glmContextWindow(modelID),
 	}
 }
@@ -159,7 +234,7 @@ func glmCapabilities(modelID string) ModelCapabilities {
 func openaiCapabilities(modelID string) ModelCapabilities {
 	lower := strings.ToLower(modelID)
 	if lower == "gpt-6-astra" || lower == "gpt-6-sol" || lower == "gpt-6-luna" {
-		return ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false, ContextWindow: 1_050_000}
+		return ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(false), ContextWindow: 1_050_000}
 	}
 
 	// o1, o3, o4 series are reasoning models that don't accept temperature.
@@ -168,9 +243,9 @@ func openaiCapabilities(modelID string) ModelCapabilities {
 		strings.HasPrefix(lower, "o4")
 
 	return ModelCapabilities{
-		Reasoning:   isReasoning,
-		ToolCall:    true,
-		Temperature: !isReasoning,
+		Reasoning:   Known(isReasoning),
+		ToolCall:    Known(true),
+		Temperature: Known(!isReasoning),
 	}
 }
 
@@ -191,9 +266,9 @@ func xaiCapabilities(modelID string) ModelCapabilities {
 	// claw: grok-3-mini always uses reasoning mode (rejects temperature).
 	isReasoning := lower == "grok-3-mini"
 	return ModelCapabilities{
-		Reasoning:     isReasoning,
-		ToolCall:      true,
-		Temperature:   !isReasoning,
+		Reasoning:     Known(isReasoning),
+		ToolCall:      Known(true),
+		Temperature:   Known(!isReasoning),
 		ContextWindow: 131_072,
 	}
 }

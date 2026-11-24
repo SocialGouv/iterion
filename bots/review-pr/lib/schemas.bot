@@ -25,7 +25,7 @@ schema review_output:
 ## Normalised per-family review blocks. In MONO only one reviewer runs, and
 ## an {{outputs.<absent node>.<field>}} reference renders as a LITERAL
 ## placeholder rather than as nothing — which reads to the merging agent as a
-## broken template, not as "that family did not run" (observed live: a mono
+## broken template, not as "that family did not run" (observed live: a single
 ## review was mistaken for a reviewer failure). Routing both families through
 ## a compute makes every field exist with a real value on every path.
 schema family_reviews:
@@ -105,11 +105,11 @@ schema tier_resolution:
   severity_threshold: string
   max_findings: int
   post_to_board: bool
-  ## "mono" | "dual" — the topology this run ACTUALLY executes under, not
-  ## merely what `review_mode` resolved to: audit forces "dual" here even
-  ## when review_mode itself stayed "mono" (the credential-based default),
-  ## so the router, and publish_review's cross-confirmation wording, agree
-  ## with what really ran. See publish_review's REVIEW_MODE env var below.
+  ## "single" | "paired" — the topology this run ACTUALLY executes under,
+  ## not merely what `review_mode` resolved to: audit forces "paired" here
+  ## even when review_mode itself stayed "single" (the default), so the
+  ## router, and publish_review's cross-confirmation wording, agree with
+  ## what really ran. See publish_review's REVIEW_MODE env var below.
   effective_review_mode: string
 
 ## ─── Forge PR review (v0.3.0) schemas ───────────────────────────
@@ -135,17 +135,21 @@ schema pr_gate_input:
   ## losing every finding.
   claude_findings: json
   gpt_findings: json
-  ## The merge step's engine telemetry, injected on the edge by WHICHEVER
-  ## twin ran (`converge` or `converge_gpt`) and carried forward under one
-  ## set of names: pr_gate is the single node both twins feed, so no
-  ## downstream reader has to know which of them merged. A reader naming a
-  ## twin directly would read the empty string on every run the other
+  ## The merge step's engine telemetry, injected on the edge from `converge`
+  ## and carried forward under one set of names: pr_gate is the single node
+  ## the merge feeds, so no downstream reader has to know which node merged.
+  ## A reader naming the merge node directly would read the empty string on
+  ## every run whose edge did not carry it
   ## served, and publish's run table would print an empty merge row.
   ai_converge_model: json
   ai_converge_backend: json
   ai_converge_tokens: json
   ai_converge_fallback: json
   ai_converge_wire: json
+  ai_converge_effort: json
+  ai_converge_effort_source: json
+  ai_converge_effort_requested: json
+  ai_converge_effort_lowered: json
 
 schema pr_gate_output:
   has_pr: bool
@@ -161,6 +165,10 @@ schema pr_gate_output:
   ai_converge_tokens: json
   ai_converge_fallback: json
   ai_converge_wire: json
+  ai_converge_effort: json
+  ai_converge_effort_source: json
+  ai_converge_effort_requested: json
+  ai_converge_effort_lowered: json
 
 schema publish_input:
   review_scope: string
@@ -183,41 +191,66 @@ schema publish_input:
   ## `*_wire` is the engine's `_session_fingerprint` (the routing label of
   ## the credential a session ran on). Only the FAMILY it implies is ever
   ## published, never the label itself.
-  ai_reviewer_claude_model: json
-  ai_reviewer_claude_backend: json
-  ai_reviewer_claude_tokens: json
-  ai_reviewer_claude_fallback: json
-  ai_reviewer_claude_wire: json
-  ai_reviewer_gpt_model: json
-  ai_reviewer_gpt_backend: json
-  ai_reviewer_gpt_tokens: json
-  ai_reviewer_gpt_wire: json
-  ai_reviewer_claude_glance_model: json
-  ai_reviewer_claude_glance_backend: json
-  ai_reviewer_claude_glance_tokens: json
-  ai_reviewer_claude_glance_fallback: json
-  ai_reviewer_claude_glance_wire: json
-  ai_reviewer_gpt_glance_model: json
-  ai_reviewer_gpt_glance_backend: json
-  ai_reviewer_gpt_glance_tokens: json
-  ai_reviewer_gpt_glance_wire: json
+  ## `*_effort`, `*_effort_source`, `*_effort_requested` and
+  ## `*_effort_lowered` are the engine's record of the reasoning effort the
+  ## node that ran sent its model (`_reasoning_effort_applied`,
+  ## `_reasoning_effort_source`, `_reasoning_effort_requested`,
+  ## `_reasoning_effort_lowered`): the run table prints what the run used,
+  ## never the dial the node was written with — a routing cell outranks the
+  ## dial, a gateway's feed replaces a level its route does not take, and the
+  ## harness may send another level, none, or a lower one on a recovery.
+  ai_reviewer_alternate_model: json
+  ai_reviewer_alternate_backend: json
+  ai_reviewer_alternate_tokens: json
+  ai_reviewer_alternate_fallback: json
+  ai_reviewer_alternate_wire: json
+  ai_reviewer_alternate_effort: json
+  ai_reviewer_alternate_effort_source: json
+  ai_reviewer_alternate_effort_requested: json
+  ai_reviewer_alternate_effort_lowered: json
+  ai_reviewer_model: json
+  ai_reviewer_backend: json
+  ai_reviewer_tokens: json
+  ai_reviewer_wire: json
+  ai_reviewer_effort: json
+  ai_reviewer_effort_source: json
+  ai_reviewer_effort_requested: json
+  ai_reviewer_effort_lowered: json
+  ai_reviewer_glance_model: json
+  ai_reviewer_glance_backend: json
+  ai_reviewer_glance_tokens: json
+  ai_reviewer_glance_wire: json
+  ai_reviewer_glance_effort: json
+  ai_reviewer_glance_effort_source: json
+  ai_reviewer_glance_effort_requested: json
+  ai_reviewer_glance_effort_lowered: json
   ai_converge_model: json
   ai_converge_backend: json
   ai_converge_tokens: json
   ai_converge_fallback: json
   ai_converge_wire: json
+  ai_converge_effort: json
+  ai_converge_effort_source: json
+  ai_converge_effort_requested: json
+  ai_converge_effort_lowered: json
   pr_url: string
   ## reviewed_sha: the worktree HEAD the findings anchor to. Comes in on the
   ## EDGE so the publish tool reads it as a typed `{{input.X}}` of its own
   ## schema, with the same value on every path that reaches it.
   reviewed_sha: string
   ## Same EDGE-injection rule as reviewed_sha above, and for the same
-  ## reason: the topology REPORTING needs to say "dual" whenever audit
+  ## reason: the topology REPORTING needs to say "paired" whenever audit
   ## forced the fan-out, even on a run where `review_mode` itself never
-  ## changed from "mono" — a raw {{vars.review_mode}} would under-report
+  ## changed from "single" — a raw {{vars.review_mode}} would under-report
   ## that case. Injected from tier_expand's output on the pr_gate ->
   ## publish_review edge, exactly like reviewed_sha is from diff_precheck.
   effective_review_mode: string
+  ## The merge step's own threshold and cap, injected from tier_expand on the
+  ## same edge: publish's MERGE FLOOR restores a reviewer finding the merged
+  ## set dropped only when converge's contract could not have dropped it —
+  ## at or above this threshold, while the cap still has room.
+  severity_threshold: string
+  max_findings: int
   findings: json
   questions: string
   ticket_conformance: string
@@ -242,6 +275,31 @@ schema publish_output:
   ## body_missing: inline comments landed but the summary body did not.
   ## Orthogonal to published and fallback: no folded content reached the PR.
   body_missing: bool
+  ## fallback: the publish step's account of the inline comments that did
+  ## not land (forge.ReviewResult.Fallback): "" for a clean inline post (and
+  ## on every exit that reached no forge); "summary" when every finding is in
+  ## the review body — the forge refused the anchors and they were folded,
+  ## the server folded them in summary mode, or publish_review wrote them
+  ## there because none had a diff anchor; "partial" when fewer landed than
+  ## were sent — GitLab folds the missing ones, GitHub and Forgejo do not
+  ## (a re-fetch shortfall) — and whenever the endpoint dropped a submitted
+  ## comment as unanchorable, in any mode. STRUCTURED, so publish_health can tell a review
+  ## that carries its findings in the body from one that lost them.
+  fallback: string
+  ## findings_in_review: the PR findings this node put in the review, inline
+  ## or in its body — after the reviewer recovery, the merge floor and the
+  ## workspace-anomaly strip, so it can exceed converge's own count. Carried
+  ## on every exit once the findings are read (0 before), published or not:
+  ## publish_health judges a loss against it.
+  findings_in_review: int
+  ## comments_sent: the inline comments in the request publish_review built
+  ## for the publish endpoint, whether or not the request went through (0 on
+  ## the exits before it builds one).
+  comments_sent: int
+  ## findings_reclassified: findings anchored on an uncommitted workspace
+  ## entry, moved out of the PR's findings into the body's anomaly section
+  ## by title only.
+  findings_reclassified: int
   ## skipped_reason: non-empty when nothing was published (e.g. unknown
   ## forge, CLI not authenticated, zero anchorable findings).
   skipped_reason: string
@@ -254,22 +312,49 @@ schema publish_output:
   gate_requested: bool
   gate_posted: bool
   gate_skipped_reason: string
+  ## evaluation: the review was built and publish_mode=off withheld it --
+  ## no request reached the forge-publish endpoint, by design. False on every
+  ## other exit; gate_requested is false on every exit of such a run, since
+  ## it owes no gate.
+  evaluation: bool
 
 schema publish_health_input:
   published: bool
   body_missing: bool
+  ## fallback: publish_output.fallback. "summary" on a published review
+  ## with a body says the findings are in that body: a fold, not a lost
+  ## publish. "partial" with zero inline comments is no fold (GitHub and
+  ## Forgejo: a re-fetch shortfall, the body as submitted).
+  fallback: string
   comments_posted: int
+  ## total_findings: converge's own count. A loss is judged against the
+  ## larger of it and what the review carries (findings_in_review plus
+  ## findings_reclassified): the merge floor restores findings converge
+  ## dropped, and its count of 0 must not hide their loss.
   total_findings: int
+  ## findings_in_review: unknown (absent, or an unresolved template from an
+  ## output of another review-pr version) is never read as 0: with no inline
+  ## comment landed and no fold, it is degraded, FINDINGS COUNT UNKNOWN.
+  findings_in_review: int
+  ## comments_sent: when nonzero, the count INLINE COMMENTS MISSING names;
+  ## at 0 that banner says no inline comment was sent and names the merge
+  ## step's count against what the review carries.
+  comments_sent: int
+  findings_reclassified: int
   skipped_reason: string
   review_url: string
   gate_requested: bool
   gate_posted: bool
   gate_skipped_reason: string
+  ## publish_output.evaluation: a review withheld by publish_mode=off reads
+  ## as evaluation mode, neither a lost publish nor a healthy one.
+  evaluation: bool
 
 ## Deterministic anti-façade gate: degraded=true covers findings with no
-## inline comment, a missing review body, or a required gate that did not
-## land. A loud banner informs rather than hard-failing the run: the board
-## and report already succeeded upstream.
+## inline comment that the publish step does not report folded into the
+## review body (fallback summary), a missing review body, or a required gate that did not land. A loud
+## banner informs rather than hard-failing the run: the board and report
+## already succeeded upstream.
 schema publish_health_output:
   degraded: bool
   banner: string

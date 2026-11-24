@@ -59,6 +59,18 @@ sink, before persistence:
   scrubbed where the executor returns it (`ClawExecutor.Execute`), for
   every node kind: a failing command's stdout and stderr, an MCP error
   echoing its input,
+- the failure text the ENGINE itself builds, which never passes through the
+  executor: a `fail:` node's rendered `message:` (it reads the live output map,
+  which keeps real values for the nodes downstream), a setup-phase refusal, the
+  pre-resume budget verdict, a child-resource restore failure. It reaches the
+  run **document** (`run.json` / the Mongo run doc's `.error` — what `iterion
+  inspect --json` prints, the run views and the merge gate's synthetic status
+  display, and `pkg/alert` fingerprints) through one chokepoint, the
+  `recordFailure*` writers of
+  [`pkg/runtime/failure_record.go`](../pkg/runtime/failure_record.go), and the
+  event path (hence `run.log`) through `Engine.emitBranch`. An executor whose
+  scrubber does not return the text gets a withheld marker on the record, never
+  the raw message,
 - the engine's events that carry model- or operator-written text: the
   whole `human_input_requested` payload of a question the run pauses on (a
   human node's rendered instructions, a fan-out branch's pause, an async
@@ -67,7 +79,48 @@ sink, before persistence:
   checkpoint keep them whole: the run needs them). A placeholder in them is
   kept as is — the heuristic pass never redacts one, trailing sentence
   punctuation included,
-- run.log block bodies, tool sidecar blobs, turn-snapshot conversations.
+- run.log — every record the run's logger keeps, at the logger itself
+  (`Logger.WithRedactor`; [ADR-149](adr/149-the-run-logger-redacts-what-it-keeps.md)).
+  The pass is installed on the RUN's logger, once, by
+  `runview.BuildExecutor` — `Logger.SetRedactor`, where the guard is built —
+  so it reaches the handle the launch surface still holds and everything
+  forked from it afterwards: the executor's tree (the agent stream, the tool
+  hints, the delegate registry), the engine, the run's supervisors, and the
+  **non-event** lines of a surface's own prose (`executor close`, an MCP
+  server's quoted stderr, a launch-input refusal). `runtime.New` /
+  `runtime.NewFromRecipe` install it again on the ENGINE's fork, from the
+  scrubber its executor carries, so an engine built without BuildExecutor —
+  a dry run, a benchmark, a test — covers its **non-event** lines too: a
+  workspace-snapshot diagnostic quoting a git command's combined output, a
+  worktree or skill-mirror warning, a capture error naming what it read.
+  The slot is per HANDLE, which is why a run's logger is always a fork
+  (`iterlog.WithOwnRedactor`, a per-run tee): a surface that handed its
+  process logger would install one run's matcher where the next run replaces
+  it, and a second install on one handle says so in the log. What is NOT
+  covered by either point: a logger nobody set the matcher on, i.e. the pod's
+  own process logger — the lines `pkg/runner` logs on `r.cfg.Logger` and the
+  dispatcher runner on `r.logger`, which reach the pod's stderr, not run.log.
+  Nor a run this process does not hold: a finalize or reconcile another
+  process's run owes (`Service.runLoggerFor`) logs on a fork of the service
+  logger that carries no matcher, because the guard lives with the run's own
+  launch. Block bodies, tool sidecar blobs and turn-snapshot conversations
+  keep their own eager pass (their stores bypass the redacting wrapper), and
+  so does every producer that CUTS text before logging it — the cut runs
+  after the run's pass (`Logger.Redact` on the logger, `Task.RedactSecrets`
+  on the delegate backends: `pkg/supervise`'s steer line, the pi backend's
+  steer, UI-decline and ask_user lines, the codex terminal-error quote and
+  its tool-error content, the claw IPC decode-error quote), because a value
+  the cut split is a value no matcher recognises. The display helpers that
+  cut what they render sit in the same class, so the backends hand them
+  already-redacted text: the codex tool-use header (`toolUseDetail`, 100-byte
+  detail over leaves `secretguard.RedactLeaves` crossed first) and the claw
+  ones (the delegate bridge's 57-byte hint and 100-byte result preview, the
+  in-process header detail — `secretguard.RedactJSON` over the raw input,
+  the output redacted before `tooldisplay.ResultDisplay`); the claude_code
+  stream already did (`RedactLeaves` before `toolUseDetail`,
+  `redactForRunLog` before `ResultDisplay`). The relay payloads keep their
+  clamps unredacted on purpose: their reader is the container's loop, not
+  the operator's log.
 
 Values iterion only scrubs — the run's provider keys, the process's own
 secret-named environment, and credentials a server mints for a run (the forge
@@ -75,6 +128,83 @@ publish grant) — are **redact-only**: their placeholder resolves nowhere, so
 no agent, command or egress request can turn it back into the value, and it is
 passed through unchanged. Only the secrets a workflow declares (Layer 1)
 materialize.
+
+One narrowing of that class: the credential a server mints for a run
+(`forge_publish_token`) is **env-only**. A `{{vars.forge_publish_token}}` the
+workflow's AUTHOR wrote in a tool node's `command:` or `postcondition:`
+renders as the placeholder, and the bearer reaches the command through the
+child process's environment — only for that reference: the same placeholder
+arriving through data stays text — never inlined into the command line, which any
+co-resident process reads from `/proc/<pid>/cmdline` for the whole life of the
+command and which Kubernetes copies into the `pods/exec` audit log. The
+distinction is provenance, not sink: a command a MODEL proposed (the
+self-repair rung) resolves nothing, and neither does an agent's tool input, a
+script body or an egress request. A `script:` body is a program in
+its own language, which iterion cannot rewrite a reference into a variable
+read for: there the AUTHOR names the variable — the placeholder doubles as the
+environment-variable name — and the engine hands the value to the interpreter
+of a body whose author's own text names it (a placeholder that data renders
+into the body names no variable), instead of writing the bearer into the script file
+(`pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")`,
+as `bots/dep-update-guard` reads it). A `{{vars.forge_publish_token}}` written
+in a `script:` body anyway is REFUSED at run time — before the script's temp
+file is written, so the bearer never rests in it in clear — with an error
+naming the var and this door (#2875; no placeholder→env swap exists for a
+script body: the single-quoted form the command path swaps is shell, and each
+interpreter's env read is its own expression, python's needing an import the
+body may not have). One form keeps the value in the text, by
+the author's own choice: the raw `{{!vars.x}}` form, whose quoting is theirs.
+The compiler says it first: `C331` warns on that reference at authoring time
+(`iterion validate`, the studio's badge), where the run would only refuse it
+mid-node, after the spend upstream — a warning and not a refusal, because the
+compiler reads the NAME while the run asks its guard, and a launch holding no
+grant renders the var's empty value and runs ([diagnostics](references/diagnostics.md)).
+Both the refusal and the warning key on the reference the AUTHOR wrote: a
+bearer that reaches the body through a data mapping — an edge's
+`-> b with { tok: "{{vars.forge_publish_token}}" }`, read back as
+`{{input.tok}}` — is a plain input by then (a mapping resolves the raw var,
+`resolveRef`), so it is neither refused nor warned and renders into the temp
+file in clear. That indirection is deliberate and shared with `command:`, and
+it is the author's to avoid: a body that reads the variable from its own
+environment needs no mapping.
+A preview — the dry run, any rendering without the run's guard behind it —
+resolves nothing either: it renders the placeholder, the indirection existing
+only where the materialiser that resolves it exists.
+The grant is also scoped (Layer 2) to the endpoints the server bound it to, so
+the egress gate refuses it toward any other host. And it never rests on a
+board card: the board store drops those vars from `bot_args` at its write
+boundary on both twins, and every surface that hands a card out masks the
+bearer a card written before that boundary still holds
+([native-tracker](native-tracker.md#rest-surface)).
+
+### Where a CLI backend's redaction stops (the hook-protocol limits)
+
+`claw` in-process, sandboxed `claw`, `claude_code` and `pi` run the same agent
+through different far sides, and each quotes far-side text back to iterion: a
+session error, an assistant block, a tool result, a rate-limit signal. That
+redaction is not each backend's own — ONE executor builds every task
+(`buildTask`) and hands each the same `Task.RedactSecrets` and
+`Task.RedactSecretsSpan`, so there is no per-backend branch to forget
+(`TestBuildTaskGivesEveryBackendTheSameSecretRedactor`), and the engine's
+record chokepoint sits above the backend choice entirely. Three bounds are
+deliberate, and worth knowing:
+
+- **How far the redactor reads on a stream.** The run log shows at most 64 KiB
+  of one value and the redactor reads at least 16 KiB past it — or as far as
+  the longest known value when that is longer (`redactForRunLog`,
+  `Task.RedactSecretsSpan`) — so a known value straddling the bound is
+  recognised whole. A value LONGER than that margin, or one only the heuristic
+  would catch, can straddle it. Redacting a multi-megabyte value on every
+  stream chunk costs seconds per turn, which is why the bound exists.
+- **The crossing redacts before its readers, not after.** A sandboxed claw's
+  far-side text goes through the pass at the crossing (`redactedFarSide`),
+  because the node's own scrub runs at `Execute` — after the `delegate_error`
+  event and the error tracker have already read it.
+- **A nil redactor is the run's kill switch, not a backend gap.**
+  `ITERION_SECRETS_REDACT=off` clears both sink passes (known values and the
+  heuristic) and leaves materialization working, so declared placeholders
+  still flow; `Task.RedactSecrets` is then nil and far-side text goes through
+  unchanged.
 
 **Deliberately NOT redacted:** persisted **artifacts** and the resume
 **checkpoint**. These are load-bearing — they feed `{{outputs.X}}` /
@@ -97,12 +227,43 @@ secrets:
     hosts: ["api.github.com", "github.com"] # egress scoping (Layer 2)
 ```
 
-Reference as `{{secrets.deploy_key}}` in prompts and tool/shell commands.
+Reference as `{{secrets.deploy_key}}` in prompts and tool/shell commands —
+at the sinks the declaration grants ([sinks](#sinks--where-a-declared-secret-may-be-materialised)).
 Materialization happens immediately before exec, keeping the placeholder
 form in every hook/log:
 
-- **claw** `tool` nodes (shell + script) and the in-process tool loop
-  (`executeToolsDirect`) call `Guard.Materialize` before exec.
+- **claw** `tool` nodes (shell + script) materialise the author's own
+  references through the `command` sink's materialisers
+  (`MaterializeAuthoredShellEnv`, `MaterializeShell`): each `{{secrets.X}}`
+  the author wrote renders to a marker of that one rendering, which no data
+  can spell, and only the markers resolve — a placeholder that arrives through
+  data stays text whatever its secret grants ([ADR-146, amendment of
+  2026-11-14](adr/146-secret-boundary-v2-grants-and-sinks.md)); one the
+  author typed as text is inert too, and `C340` says so. In a `script:` the
+  value is written so that no quoting the author put around the reference
+  — a single-quoted shell word, a JSON document in single quotes, a python
+  or node string, an f-string, a template literal — can be closed or
+  interpolated by it, and it runs as no code. A shell script reads it from
+  a variable the engine names after that one rendering (the value never in
+  the script's text, its name spelled by no data), so it does not arrive
+  where the shell expands nothing — single quotes, a heredoc whose
+  delimiter is quoted: `C342` warns there, and the reference belongs
+  outside the quotes (`'{"t": "'{{secrets.X}}'"}'`), in an unquoted
+  heredoc, or in its raw form. A js or py script receives a JSON string
+  literal with its quote, backquote, `$`, brace and slash characters
+  written as `\u` escapes, the author's own double quotes read as that one
+  literal. Only the expression position is exact: inside the author's
+  quotes the language cooks the literal once, so an author who parses that
+  text again (JSON in a string) reads whatever structure the value spells. A
+  value that form cannot carry as written — a NUL byte in a shell script,
+  invalid UTF-8 in js or py — is refused at the node, naming the reference.
+  A secret name ending in `_redacted` is refused (`C341`): the engine
+  writes that spelling where another secret must resolve nowhere. An HTTP
+  action's `params:` resolves the same way, through the `params` sink
+  (a native `board.*` action keeps the placeholder: the store files the
+  card and shows it, as with the board MCP tools below), and the in-process
+  tool loop (`executeToolsDirect`) calls `Guard.Materialize` — the `agent`
+  sink — on the model's tool input before exec.
 - **claude_code** uses a `PreToolUse` hook returning `UpdatedInput` with
   the materialised tool input (the SDK-supported substitution path). The
   placeholders are swapped in the input's decoded strings, never in its JSON
@@ -143,6 +304,68 @@ form in every hook/log:
   compress — rtk typed by the agent, or run by an operator's own rtk hook —
   still gets it from its environment only, which the operator's shell rc or
   `BASH_ENV` can replace.
+- **A materialised environment never rides the container runtime's command
+  line.** `docker exec` is handed the NAME alone (`--env K`), with the value
+  in the docker client's own environment — where a name-only flag is read
+  from — so a host process list, world-readable for the whole life of the
+  exec (for an agent node, the node's), shows the names and nothing else.
+  The provider credential a sandboxed runner spends travels the same
+  channel. A value too multi-line for a command line is carried intact
+  there; only a NUL is refused, which no process environment holds.
+  The exception is a name the HOST side reads, because the client's own
+  environment is the one channel such a name may not use: a
+  container-chosen HOME decides which daemon receives the exec, and a
+  container-chosen `LD_PRELOAD` runs the container's code in the client
+  itself. Four answers, each a DERIVATION and not a roll-call of names,
+  because a roll-call is how podman's own endpoint family got out of the
+  first one: the two CLIs' exact names outside any namespace of their own (`runtimeClientEnvNames`: HOME, PATH, TMPDIR, the
+  TLS roots, REGISTRY_AUTH_FILE, the storage pair, LANG/LANGUAGE) and their
+  configuration NAMESPACES (`runtimeClientEnvPrefixes`: `DOCKER_`,
+  `CONTAINER_`, `CONTAINERS_`, `PODMAN_` — which subcommand of one binary
+  reads which name is a version detail iterion does not track); the rest of
+  the locale family, `LC_`; the `*_PROXY` family in either case, which Go's
+  own net/http consults for every request the client sends; and
+  `envtrust.ExecutionGradeName`, the repository's execution class, already
+  the subject of the dotenv plant gate, the bot-variable gate and the
+  devcontainer deny class. Measured, not reasoned: with
+  `CONTAINER_HOST=tcp://…` in its environment, podman 4.9.3 dials that
+  endpoint with no `--remote` flag and POSTs `/libpod/containers/<id>/exec`
+  there with the whole `Env` array in the body; with `HTTP_PROXY` in its
+  environment and a `tcp://` daemon, docker 29.9.2 sends the same
+  conversation in absolute form through the host named — so a
+  container-destined proxy name becomes the CLIENT's proxy, which is why
+  that family sits on this side of the channel and not, as it briefly did,
+  on the name-only one.
+  Those names keep the pair on the argv — the channel they had before
+  #2845 — and the residual is said out loud AND warned by name where it
+  happens: a name answering here can hold a credential too
+  (`NPM_CONFIG__AUTH`, `CONTAINER_PASSPHRASE`, the proxy URL's own per-run
+  token), and its value is then in every uid's reach for the exec's life.
+  Warned, never dropped — the operator asked the container to have it.
+  Deliver such a credential under a name the host side does not consume, or
+  as a file secret. Open point: the channel that would end the residual is
+  a per-exec `--env-file`, which the CLI reads and which is neither the
+  argv nor the client's environment (nothing in production parses the EXEC
+  argv's `--env`, unlike the creation argv the image env screen audits); it
+  needs a 0600 file outliving `Run.Command`, which returns a command it
+  never starts, so it is a shape decision rather than a patch.
+  A name holding a `*` takes NEITHER form — `podman exec --env NAME*` with
+  no value is a host-environment glob, and the pair form would put the
+  value on the argv with no host-side reader to serve — so it is skipped
+  with a warning naming it, and the container's creation env
+  (`sandbox.env:`) is where a literal `*` name is set.
+  The container's CREATION argv still carries values, for the length of that
+  one call, and each is driver- or operator-chosen: the spec's
+  `sandbox.env:` (paths, ids, the mount path of a file secret — no declared
+  secret value reaches it, the materialiser being a host closure, though a
+  `${localEnv:VAR}` in it resolves to the host value the operator named,
+  credential included, by `expandSandboxSpec`), the egress proxy's
+  `*_PROXY` pairs, whose endpoint URL holds the per-run proxy
+  token the container's own environment publishes anyway, and the JVM
+  truststore trio, whose password is a constant of iterion's own source
+  guarding a world-readable store that holds a public CA certificate. The
+  kubernetes driver still carries a per-exec value on the pod exec's own
+  argv, as an `env K=V` segment (#2845).
 - Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
 - Its mirror, `delegate.Task.UnmaterializeSecrets` (`Guard.Unmaterialize`),
@@ -151,6 +374,77 @@ form in every hook/log:
   a prompt or the run store — a background task's label is the CLI's command
   after materialisation. It is not a sink pass: `ITERION_SECRETS_REDACT=off`
   leaves it on.
+- **The model boundary.** What a model READS goes out in placeholder form
+  whatever produced it: the rendered system and user prompts, the user
+  content blocks, the auto-memory section, the calibration fragments, the
+  skill hints and the preset focus of every task cross into a backend
+  through one seam (`ClawExecutor.executeDelegate`, `Guard.RedactForModel`),
+  which turns every known value back into its placeholder — a value an
+  upstream node printed and a prompt reads through `{{outputs.A.x}}`, an
+  input an edge mapped from it, a `{{vars.x}}` holding one. The crossing
+  itself keeps the real values: the live output map still feeds the nodes
+  downstream and the resume checkpoint, so a tool node of B can spend what
+  A obtained while B's model only reads the placeholder (ADR-146, axis 1a).
+  The boundary follows the placeholder switch — `ITERION_SECRETS_PLACEHOLDERS=off`
+  renders values in prompts by the operator's choice, and the boundary
+  renders them too — and it matches known values only: a token shape only
+  the heuristic would catch is the workspace's, and the model reads it as
+  the workspace readers return it. A value split across two references is
+  not one value, the same bound as the egress scan's. Two more bounds are
+  deliberate: a value registered on the NAME of a host variable (the
+  `TOKEN`/`KEY`/`AUTH` heuristic, which matches `GIT_AUTHOR_EMAIL` and
+  `KEYCLOAK_URL` too) is left alone at the boundary — a placeholder there
+  breaks the commit the agent was asked for, where a marker in a log costs
+  nothing — and a declared secret whose `sinks:` keep it off prompts goes
+  out as `__ITERION_SECRET_<name>_redacted__`, a token that resolves
+  nowhere, so a model cannot have the proxy spend on the wire a secret its
+  author withheld from it. The operator's answer at a resume takes the pass
+  on every backend (the record keeps it whole), and the executor's DIRECT
+  model calls — the human stand-in, the interaction stand-in, the review
+  companion, the self-repair rung, the structured-output recovery — cross
+  it too (`generationForModel`). Three model-read texts take their pass
+  elsewhere, each for a structural reason. The mounted-secret hints are the
+  guard's OWN composition — a secret's declared name, its mount path, its
+  env-var name, never a value — so the boundary leaves them whole rather
+  than corrupting the reference the instruction exists to give. A routing
+  handoff is a FILE, which the incoming harness's prompt splices in from
+  inside the backend (`Task.HandoffSection`), downstream of the seam: its
+  grant pass therefore runs where the transcript is WRITTEN
+  (`HandoffRecorder.Seal`), which is also where the crossing's own fallback
+  data lands — the values are already placeholders there, since the
+  recorder observes post-redaction events. And a backend composes some text
+  for ITSELF rather than out of a task field — the instruction files it
+  reads under the work dir, the workspace-memory index and autoload a store
+  hands it — which no field pass can reach: those take the SAME pass
+  through `Task.ScreenModelText`, which the task carries from the seam to
+  wherever each backend composes them (claw at the request it builds and,
+  for the memory turn its compaction re-injects for the summariser, at that
+  hook — no request ever carries the turn itself; pi at its
+  `project_context` suffix), so a value an earlier node's agent wrote into
+  a `CLAUDE.md` or a memory entry reaches the next model as its
+  placeholder. `workspace` is the DEFAULT ambient policy, so that walk is on
+  unless the author turns it off. codex, claude_code and the other CLI
+  agents are out of reach by construction and need nothing: their own
+  binary loads the instruction files inside the child, and iterion never
+  composes that text — as does pi under `all`. Two sweeps keep the list
+  honest. `TestEveryModelReadTextOfATaskCrossesTheBoundary` reads what
+  `BuildSystemPrompt`, `HandoffPrompt` and the two ambient composers
+  compose and refuses a field, a new string leaf of one, or a new helper or
+  method a composer grows through, that the boundary neither turns back nor
+  records a reason for. `TestEveryWriterOfSelfComposedModelTextNamesItsChokepoint`
+  reads claw's package for the gestures that make a text no field holds — a
+  system block appended, a compaction hook installed, a turn marked
+  injected — and refuses a writer that names no chokepoint; it keys on
+  those gestures, not on every message the loop builds.
+- **Residual: the in-container claw runner screens none of what it composes
+  for itself.** A sandboxed claw node rebuilds its task from the `IOTask`
+  wire, which carries no closure by design (secret materialisation stays on
+  the parent side), and the container builds no guard of its own — so the
+  instruction-file block it composes in there is screened by nothing, while
+  the prompts it receives were screened on the host before the hop. Closing
+  it means either composing that block on the host or giving the runner a
+  guard; until then a declared secret written into a workspace instruction
+  file is readable by the next sandboxed node on that workspace.
 - A verified action's self-repair (`policy: recover`) quotes the failing
   command and its output to a model: both in placeholder form.
 - Both turn known values back into placeholders in the output of every tool
@@ -204,6 +498,138 @@ handling" system-prompt clause tells the agent not to read/exfiltrate
 credential files and to pass placeholders through verbatim. This is never the
 primary control — where supported, the structural boundary is the
 materialization above.
+
+### Sinks — where a declared secret may be materialised
+
+A secret is granted to the **sinks** it may reach, and the grant is part of
+its declaration: `sinks:` beside `hosts:` names the materialization kinds
+([ADR-146](adr/146-secret-boundary-v2-grants-and-sinks.md)). The unit of
+the boundary is the pair `(secret, sink)`, not the secret alone.
+
+| sink | what reaches it | enforced |
+|---|---|---|
+| `prompt` | a prompt body renders the reference as the placeholder: the model HOLDS the placeholder from then on | compile time, on the reference (C323) |
+| `agent` | the placeholder a model emits in its own tool input is materialised (claude_code's `PreToolUse` hook, claw's in-process tool loop, a self-repair command a model proposed) | run time, by the guard (`Materialize`) |
+| `command` | a tool node's authored `command:`, `postcondition:` or `script:` is materialised before exec — the author's own references only: a placeholder that arrives through data stays text, whatever the grant | compile time, on the reference (C323); run time, by the guard |
+| `params` | a tool action's `params:` value is materialised before the vendor call; a native action (`board.*`) makes none and keeps the placeholder | compile time, on the reference (C323); run time, by the guard |
+| `file` | the secret is written as a file the run mounts (`as: file`) | compile time, on the declaration (C322) |
+| `egress` | the placeholder is substituted on the wire toward `hosts:` by the sandbox's inspecting proxy (Layer 2) | run time, by the egress rewriter |
+
+**The default is every sink.** A secret that declares no `sinks:` reaches
+all six, exactly as before the grants existed; the restriction is opt-in,
+and a leak does not come from an authored reference site in the first place.
+The ask is short where it matters:
+
+```iter fragment
+secrets:
+  github_token:
+    hosts: ["api.github.com"]
+    sinks: [prompt, egress]     # the model holds the placeholder; only the proxy resolves it
+  db_password:
+    sinks: [command]            # the author's own tool commands; never a model
+```
+
+`sinks: [prompt, egress]` keeps a token out of every command line and every
+container: the agent's `curl` carries the placeholder, the proxy substitutes
+it toward the approved host, and nothing in the workspace ever holds the
+value — a cloud run's clone credential needs the `file` sink and refuses the
+run without it, below. `sinks: [command]` keeps a password off the model's
+path entirely: the placeholder a model would emit is left as written. One a
+model wrote into DATA — an output a prompt or an edge carries into a tool body
+through `{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is resolved by no
+body's materialiser, whatever its secret grants: only the author's own
+`{{secrets.X}}` resolves under `command` and `params`, each rendered to a
+marker of that one rendering. For a secret kept off the agent it is also
+defused in the rendered text (`DefuseUngranted`), so what the body sends on
+carries a token the inspecting proxy does not substitute; with the default
+grant the proxy substitutes it toward the secret's hosts, as it would the
+agent's own call. A "model writes, tool runs" flow goes through an agent
+node, whose own tool call is the `agent` sink. The recovery rungs of a
+verified tool node are such model calls, so a data placeholder never
+reaches them live: the self-repair model reads the failed command and its
+output with every placeholder that is no reference defused, and the recovery
+agent receives the node's input — values and keys — the same way; echoed
+back, it resolves nothing, while the author's own references, shown live,
+still do. `sinks: []` reads as no list — every
+sink — since the printers and the JSON transport drop an empty list, and a
+meaning they could not keep would change on the way.
+
+**The clone credential of a cloud run is governed, and it needs `file`.** A
+repo-targeted run clones with the first of `forge_token`, `gitlab_token`,
+`github_token` its bundle carries a value for, and the runner keeps THAT
+token in the clone's own credential store (`.git/iterion-credentials`,
+rewritten on every rotation) so the agent's late `git push` re-reads a live
+one. That store is a file the workspace holds, so the clone credential
+spends the `file` sink: a declaration that withholds it fails the run,
+typed (`CAPABILITY_UNSUPPORTED`, cause `runtime.SecretGrantUnservableError`)
+before the clone, naming the secret and both remedies — grant it `file`, or
+declare the withheld value under a name the runner never clones with. The
+verdict reads the compiled workflow and the sealed bundle, both in hand
+before any workspace exists, so a refused run spends no clone, no workspace
+and no forge connection, and its token is never written anywhere. Only an
+accepted workspace keeps its clone: every other end of the preparation — a
+refusal, or a failure after the clone — removes the run's clone directory,
+so no failed run leaves a token-bearing tree in the runner's workdir. The
+secret the rotation refreshes is the one the clone authenticated with, never
+another name of the precedence. A secret with no `sinks:` grants every sink
+and is never refused here.
+
+Two things the grants do NOT govern, said here rather than discovered:
+`ITERION_SECRETS_PLACEHOLDERS=off` renders a declared secret's VALUE
+wherever its grants let it render, prompts included, since the switch asks
+for values; and an explicit `egress` grant on a secret with no `hosts:` is
+substituted toward ANY host (C324 says so at compile time — scope it).
+
+What the compiler refuses: a `sinks:` entry outside the vocabulary, a sink
+named twice, `prompt` alone (it hands a model the placeholder and resolves
+it nowhere), an `as: file` secret whose list lacks `file`, a value secret
+granting `file` (C322); two declarations whose names derive one placeholder
+(`tok`, `_tok` — C090); a reference in a prompt body, an LLM node's
+`images:` path (the run renders it at the `prompt` sink), a tool `command:` /
+`postcondition:` / `script:` or an action `params:` whose secret does not
+grant that sink (C323, naming the sink and the grant). A file secret's
+reference renders its mounted path and is never refused per reference — the
+`file` grant on the declaration covers the mount. What the guard refuses at
+run time, from the same declaration: `Materialize` (the `agent` sink) and
+the authored-body materialisers leave a placeholder its secret does not
+grant AS WRITTEN; the prompt path renders a value secret only when it grants
+`prompt`, so a prompt-like surface the compiler never walked (a bundle
+preset's prompt, merged after compilation) keeps the reference as written —
+`iterion validate` refuses that reference on the preset file (C323,
+`pkg/bundlelint`) and every launch path says it through the merge; and the
+inspecting proxy substitutes on the wire only a secret granting `egress` —
+content DLP still refuses a real value toward an unapproved host, whatever
+the grants. A call that carried the placeholder of a secret the proxy — not
+the agent — resolves is a call that carried a secret: a raw tool's output
+goes back to placeholders on both backends. A bot-secret binding or the
+cloud transport does not narrow sinks yet (they narrow `hosts:`).
+
+**What the launch refuses (ADR-146, axis 3).** A declared secret whose
+grants resolve at no sink the run can serve fails the LAUNCH — before
+anything is mounted or started, on every launch path (a subbot child
+adopting its parent's sandbox included), above the backend choice
+(`claude_code`, in-process `claw` and sandboxed `claw` reach the same
+verdict) — with a typed error (`CAPABILITY_UNSUPPORTED`, cause
+`runtime.SecretGrantUnservableError`) naming every such secret, its grants
+and the path that could not serve each. What a run serves: `command`,
+`params` and `file` always (a file secret is mounted by a real driver and
+materialised on the host otherwise); `egress` on a sandboxed run whose proxy
+inspects TLS (a rewriter wired, a driver that injects the CA) — never
+unsandboxed, never for a child in its parent's sandbox, whose rewriter is
+the parent's; `agent` when an agent or judge node resolves to `claude_code`
+(its hook materialises on the host, sandboxed or not), or to in-process
+`claw` on an unsandboxed run — a sandboxed `claw` runs through the
+in-container runner, a router carries no materialiser, codex, pi, kimi,
+grok and opencode never read one. Never a run that carries a placeholder
+nothing resolves. A secret with no `sinks:` is never refused here, nor an
+`optional: true` one the run does not hold (a launch that must proceed
+without it is not refused for the sinks it would have reached), nor
+anything on a dry run (its sandbox is the simulation's), and the provider credential a sandboxed node spends to talk to its
+model keeps its channel — the container's environment
+([sandbox](sandbox.md), `forwardableProviderEnv`): that credential is
+`RedactOnly` in the guard, an OAuth forfait cannot be substituted at all,
+and "provider API keys crossing as placeholders the proxy substitutes" is a
+follow-up, not this record.
 
 ### File secrets
 
@@ -297,7 +723,13 @@ kubernetes secret with a custom absolute `mount_path` is projected via
 `subPath`, which kubelet does *not* auto-update, so that projection stays
 at its launch value until pod restart; put refreshable tokens under the
 default `/run/iterion/secrets` directory. Reads are tenant-scoped and the
-value is never logged.
+value is never logged. Each rotation — file secrets and the clone's git
+credential alike — is also registered on the run's live secret guard
+(`Guard.Register`, copy-on-write) the moment it is picked up, so the fresh
+value is scrubbed from the run's log and events from that tick on; without
+the registration the launch-time value was the only one the known-literal
+layer matched, and a bot printing the credential file landed the rotated
+token verbatim in the run's sinks (#2756).
 
 Cloud setup API:
 
@@ -314,6 +746,17 @@ Secret names must be DSL identifiers (`[A-Za-z_][A-Za-z0-9_]*`) so they
 can be referenced from `secrets:`.
 
 ## Layer 2 — TLS-inspection egress (default on for sandboxed runs)
+
+Layer 2 guards secrets; it is not an egress allowlist. A sandboxed run's
+egress stays **open** unless its workflow declares an `allowlist` or
+`denylist` `sandbox.network` mode ([network policy](sandbox.md#network-policy)),
+or the run is a repo-defined sandbox (auto + a found `devcontainer.json`),
+where the `iterion-default` allowlist applies. The proxy Layer 2 forces
+under `network: open` admits every public destination the workflow's own
+`!host` exclusions do not refuse; its dialer refuses loopback and
+link-local addresses, except the `host.docker.internal` alias, which it
+dials to its own host's loopback (any port, unless the policy refuses the
+alias).
 
 For secrets the agent uses in its *own* TLS calls (e.g. claude_code's
 Bash `curl`/`git push`), the sandbox egress proxy
@@ -335,8 +778,9 @@ rewrite the plaintext request (Deno-parity secret handling):
   same proxy, their conversation naming secrets by their placeholders. A
   request to a model API keeps its body as sent: a provider's host
   (`api.anthropic.com`, `api.openai.com`, `openrouter.ai`, `api.x.ai`,
-  `api.mistral.ai`, `api.z.ai`, `api.moonshot.ai`/`.cn`, the Gemini and
-  Vertex AI hosts, Azure OpenAI, Bedrock runtime), a model API's path at
+  `api.mistral.ai`, `api.z.ai`/`open.bigmodel.cn`, `api.moonshot.ai`/`.cn`,
+  the Gemini and Vertex AI hosts, Azure OpenAI, Bedrock runtime), a model
+  API's path at
   any host (`/v1/messages`, `/chat/completions`, `/v1/completions`,
   `/responses` under any base (a gateway's, Copilot's, the ChatGPT
   forfait's `chatgpt.com/backend-api/codex/responses`), `/v1/embeddings`,
@@ -433,8 +877,9 @@ For **OAuth-forfait** auth (Anthropic Claude Code OAuth, OpenAI
 ChatGPT/Codex — the recommended credential model), egress substitution is
 impractical: the CLI performs stateful token refresh, and the Consumer
 Terms scope the forfait to Claude Code only (no API key to splice). Those
-credentials are protected by **the network allowlist + Layer 0 redaction
-+ the backstop clause**, not by Layer 2 substitution. Layer 2's
+credentials are protected by **the network allowlist where the workflow
+declares one (egress is open by default) + Layer 0 redaction + the
+backstop clause**, not by Layer 2 substitution. Layer 2's
 substitution/DLP value is for **declared workflow secrets** (a
 `GITHUB_TOKEN`, a deploy key) and API-key mode.
 
@@ -586,4 +1031,6 @@ to the LLMs, not what a bot uses inside a run.
 malformed egress host (Layer 2) · `C093` `{{secrets.X}}` references an
 undeclared secret · `C094` invalid file-secret declaration · `C095`
 invalid secret subfield reference (for example `.path` on a value
-secret).
+secret) · `C322` invalid `sinks:` grant · `C323` a reference reaches a
+sink its secret does not grant · `C331` a `{{vars.x}}` naming a
+server-minted credential in a `script:` body, which the run refuses.

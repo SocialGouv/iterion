@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -361,7 +362,7 @@ func staleHookID(t *testing.T, o *Orchestrator) {
 // delivery URL of the next provision.
 func pinWebhookBase(t *testing.T, o *Orchestrator, base string) {
 	t.Helper()
-	conn, err := o.Connections.Get(context.Background(), "conn-1")
+	conn, err := o.Connections.Get(context.Background(), "t1", "conn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,8 +470,8 @@ func TestProvision_UndoGuaranteeMatrix(t *testing.T) {
 					if !saidReRun {
 						t.Errorf("the answer to an unsettled write does not name the remedy: %v", perr)
 					}
-					if cfg.TokenHash == prevCfg.TokenHash {
-						t.Errorf("the previous config came back although the forge may hold the new secret")
+					if cfg.TokenHash != prevCfg.TokenHash {
+						t.Errorf("same-epoch retry changed its immutable secret")
 					}
 				}
 			})
@@ -539,8 +540,12 @@ func TestFreshProvision_CancelledRequestLeavesNoOrphanConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, c := range cfgs {
-				t.Errorf("the failed fresh provision left an orphan webhook config %s (%v) — an inbound endpoint no hook calls",
-					c.ID, c.ProjectAllowlist)
+				if _, err := o.Integrations.Get(bg, c.ProvisionIntegrationID); !errors.Is(err, ErrIntegrationNotFound) {
+					t.Errorf("unconfirmed retry candidate is operational: %v", err)
+				}
+				if ri, err := o.Integrations.GetProvision(bg, c.ProvisionIntegrationID); err != nil || ri.CandidateWebhookID != c.ID {
+					t.Errorf("candidate lacks a durable retry reservation: %v", err)
+				}
 			}
 		})
 	}
@@ -605,8 +610,9 @@ func TestUpsertHook_ProbeFailureIsNotNoHook(t *testing.T) {
 // stops being safe reddens here, where the scrub would otherwise start
 // missing a form.
 func TestMintedWebhookSecretNeedsNoEscaping(t *testing.T) {
+	mintCtx := auth.ContextWithMintVerdict(context.Background(), auth.NewMintVerdict(auth.MintTeamToken, "test"))
 	for i := 0; i < 32; i++ {
-		plaintext, _, _, _, err := webhooks.MintToken()
+		plaintext, _, _, _, err := webhooks.MintToken(mintCtx)
 		if err != nil {
 			t.Fatal(err)
 		}

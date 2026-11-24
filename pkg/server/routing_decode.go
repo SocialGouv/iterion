@@ -15,14 +15,20 @@ import (
 type routingLockPosture int
 
 const (
-	// routingLocksAllowed — the platform record and the org/team records
-	// hold the lock primitive: their block may name fields they own.
+	// routingLocksAllowed — routingLockHolders hold the lock primitive:
+	// their block may name fields they own.
 	routingLocksAllowed routingLockPosture = iota
 	// routingLocksRefused — a BINDING surface (a schedule row, a forge
 	// integration) holds no lock primitive; accepting a lock there would
 	// launder "unset" past the author's own lock.
 	routingLocksRefused
 )
+
+// routingLockHolders names EVERY holder of the lock primitive — the set
+// routingLocksAllowed admits. The refused 422 quotes this list, so the
+// message an operator reads and the posture the decoder applies cannot
+// drift apart: one list, read once (#2688).
+const routingLockHolders = "the author's manifest, the team and org routing records, and the platform record"
 
 // decodeRoutingBlock is the ONE decoder of a request's routing field
 // (pkg/llmroute, ADR-121/129), shared by every write surface of an
@@ -55,10 +61,29 @@ func decodeRoutingBlock(raw json.RawMessage, locks routingLockPosture) (*llmrout
 	}
 	if locks == routingLocksRefused && len(block.Locks) > 0 {
 		return nil, false, &routingRequestError{http.StatusUnprocessableEntity,
-			fmt.Errorf("routing.locks: the binding level does not hold the lock primitive — the author's manifest and the platform record do (locks: %s)", strings.Join(block.Locks, ", "))}
+			fmt.Errorf("routing.locks: the binding level does not hold the lock primitive — %s do (locks: %s)", routingLockHolders, strings.Join(block.Locks, ", "))}
 	}
 	if err := llmroute.Validate(block); err != nil {
 		return nil, false, &routingRequestError{http.StatusBadRequest, err}
 	}
 	return &block, true, nil
+}
+
+// validateRequestRouting is the write gate a launch-shaped request's own
+// routing block meets (ADR-129 §3: a block the request supplies meets the
+// write gate): llmroute.Validate, the rule decodeRoutingBlock applies to
+// every block a write surface stores. The launch then reads it with the
+// other layers (resolveRunLLMRoutePolicy), whose rule is the stored one
+// (llmroute.ValidateStored) — the reading of records no request of this
+// launch wrote. The seams: POST /api/runs and the credential preview's
+// personal lane, each body's `llm_routing`; the refusal names field, and
+// each seam answers it 400. A nil block is no block.
+func validateRequestRouting(field string, block *llmroute.Policy) error {
+	if block == nil {
+		return nil
+	}
+	if err := llmroute.Validate(*block); err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	return nil
 }

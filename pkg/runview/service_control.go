@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -20,6 +21,17 @@ import (
 // run is not held by this process — cross-process cancel is not
 // supported in the current design.
 func (s *Service) Cancel(runID string) error {
+	return s.CancelCtx(context.Background(), runID)
+}
+
+// CancelCtx is Cancel under ctx. A checked caller passes a context bound to
+// the run it admitted (store.BindRunObservation), detached from its request
+// (context.WithoutCancel: the flip is the cancel's record and outlives the
+// client). In cloud mode the publisher's load and status flip then refuse a
+// successor recreated under the ID, and its NATS cancel follows only a flip
+// that landed on the admitted run. In process the manager's cancel is keyed
+// by run ID: the caller's bound load is its pre-check.
+func (s *Service) CancelCtx(ctx context.Context, runID string) error {
 	if s.publisher != nil {
 		// Cloud-mode: the runner pool owns the lifecycle. The
 		// publisher flips the Mongo doc to cancelled so the
@@ -28,7 +40,7 @@ func (s *Service) Cancel(runID string) error {
 		// is currently holding the lease, the cancel subject
 		// `iterion.cancel.<run_id>` unwinds engine.Run via
 		// handleContextDoneWithCheckpoint.
-		return s.publisher.CancelRun(context.Background(), runID)
+		return s.publisher.CancelRun(ctx, runID)
 	}
 	return s.manager.Cancel(runID)
 }
@@ -138,8 +150,12 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	// Re-load post-flip so RecoverFinalize sees the new status.
 	r, err = s.store.LoadRun(ctx, runID)
 	if err == nil {
-		if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil && s.logger != nil {
-			s.logger.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
+		// The RUN's logger, which carries its secret matcher when this
+		// process holds the run: RecoverFinalize logs git output on the
+		// handle it is given (iterion#2822).
+		rl := s.runLoggerFor(runID)
+		if recErr := runtime.RecoverFinalize(ctx, s.store, r, rl); recErr != nil && rl != nil {
+			rl.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
 		}
 	}
 	return true, nil
@@ -327,6 +343,10 @@ type MergeRequest struct {
 	// "merge" strategy. Empty falls back to a generated message that
 	// lists each squashed commit.
 	CommitMessage string
+	// ExpectBirth, when it checks, is the birth of the run its caller
+	// decided on: a successor recreated under the ID since answers
+	// ErrRunDataIdentityChanged before any claim. Zero skips the check.
+	ExpectBirth store.ExpectedBirth
 }
 
 // MergeResponse mirrors the persisted Run fields after a successful
@@ -357,7 +377,8 @@ const mergeClaimStaleAfter = 30 * time.Minute
 // mergeUpdateFromRun snapshots r's current merge bookkeeping into a
 // RunMergeUpdate, so a transition writes the fields it changes and
 // carries the rest unchanged (the same shape a full SaveRun of the
-// mutated r would have produced).
+// mutated r would have produced). The update expects r's birth: a
+// successor recreated under the same ID since r was loaded refuses it.
 func mergeUpdateFromRun(r *store.Run) store.RunMergeUpdate {
 	return store.RunMergeUpdate{
 		Status:              r.MergeStatus,
@@ -366,6 +387,7 @@ func mergeUpdateFromRun(r *store.Run) store.RunMergeUpdate {
 		MergeStrategy:       r.MergeStrategy,
 		PendingMergeMessage: r.PendingMergeMessage,
 		PendingMergeInto:    r.PendingMergeInto,
+		ExpectBirth:         store.ExpectBirthOf(r),
 	}
 }
 
@@ -391,6 +413,9 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	if err != nil {
 		return nil, err
 	}
+	if err := req.ExpectBirth.Verify(runID, r.BirthID); err != nil {
+		return nil, err
+	}
 	if r.FinalCommit == "" || r.FinalBranch == "" {
 		return nil, fmt.Errorf("run %q has no storage branch — nothing to merge (FinalCommit=%q, FinalBranch=%q)", runID, r.FinalCommit, r.FinalBranch)
 	}
@@ -402,8 +427,10 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	// "merging", so two replicas (or two operator clicks) cannot both
 	// build a squash for the same run — the loser stops HERE, before
 	// any clone or push. The claim is released on every early exit and
-	// consumed by exactly one conditional persist below.
-	claimed, prior, claimToken, err := s.store.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
+	// consumed by exactly one conditional persist below. It expects the
+	// birth loaded above: a successor recreated under the same ID since
+	// is never claimed, so no exit below can wedge it in "merging".
+	claimed, prior, claimToken, err := s.store.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter), store.ExpectBirthOf(r))
 	if err != nil {
 		return nil, err
 	}
@@ -500,14 +527,21 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 			resolveMergeTargetForPersistence(req.MergeInto, repoRoot), r.FinalCommit, runtime.RunDisplayName(r))
 	}
 
-	res, mergeErr := runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
-		RepoRoot:      repoRoot,
-		Target:        req.MergeInto,
-		BranchToMerge: r.FinalBranch,
-		FinalSHA:      r.FinalCommit,
-		Strategy:      string(strategy),
-		Message:       message,
-	}, s.logger)
+	var res runtime.DeferredMergeResult
+	var mergeErr error
+	if holdErr := s.underRepository(ctx, repoRoot, func() error {
+		res, mergeErr = runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
+			RepoRoot:      repoRoot,
+			Target:        req.MergeInto,
+			BranchToMerge: r.FinalBranch,
+			FinalSHA:      r.FinalCommit,
+			Strategy:      string(strategy),
+			Message:       message,
+		}, s.logger)
+		return nil
+	}); holdErr != nil {
+		return nil, holdErr
+	}
 	if mergeErr != nil {
 		// Content conflicts produce a typed error and leave the
 		// worktree in the conflicted state. Persist
@@ -677,14 +711,22 @@ func (s *Service) CommitAndFinalizeCtx(ctx context.Context, runID, message strin
 	if err != nil {
 		return nil, err
 	}
-	if err := runtime.CommitUncommittedAndFinalize(ctx, s.store, r, message, s.logger); err != nil {
+	acted := store.ExpectBirthOf(r)
+	// The RUN's logger: the commit + promote this helper drives logs git
+	// output on the handle it is given (iterion#2822).
+	if err := runtime.CommitUncommittedAndFinalize(ctx, s.store, r, message, s.runLoggerFor(runID)); err != nil {
 		return nil, err
 	}
 	// Re-read so we return the just-persisted state (RecoverFinalize
 	// writes via SaveRun under its own context; we want the canonical
-	// post-write snapshot to send back).
+	// post-write snapshot to send back). The re-read must still be the run
+	// just finalized: a successor recreated under the ID since answers
+	// ErrRunDataIdentityChanged and never receives the flip below.
 	r, err = s.store.LoadRun(ctx, runID)
 	if err != nil {
+		return nil, err
+	}
+	if err := acted.Verify(runID, r.BirthID); err != nil {
 		return nil, err
 	}
 	// RecoverFinalize promotes the worktree HEAD with mergeInto:"none",
@@ -727,11 +769,16 @@ func sourceIssueID(r *store.Run) string {
 
 // resolveMergeTargetForPersistence resolves the merge target into a
 // branch name so PendingMergeInto can be recorded for the finalize
-// path. "" / "current" → currently-checked-out branch; anything else
-// passes through. Returns "" if the resolution fails; callers should
-// fall back to current-branch lookup at finalize time.
+// path. "" / "current" — read FOLDED, the way every other reader of
+// merge_into reads it (the compile's validation, the engine's own
+// finalize, the opt-out) — resolves to the currently-checked-out
+// branch; anything else passes through as written. Returns "" if the
+// resolution fails; callers should fall back to current-branch lookup
+// at finalize time.
 func resolveMergeTargetForPersistence(target, repoRoot string) string {
-	if target != "" && target != "current" {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", "current":
+	default:
 		return target
 	}
 	out, err := runtime.GitSymbolicRef(repoRoot)
@@ -809,14 +856,16 @@ func (s *Service) ResolveMergeConflictFile(ctx context.Context, runID, path, con
 	if repoRoot == "" {
 		return fmt.Errorf("run %q has no resolvable repo root", runID)
 	}
-	paths, err := runtime.UnmergedPaths(repoRoot)
-	if err != nil {
-		return fmt.Errorf("list unmerged: %w", err)
-	}
-	if !slices.Contains(paths, path) {
-		return fmt.Errorf("path %q is not in the conflict set", path)
-	}
-	return runtime.StageResolvedFile(repoRoot, path, content)
+	return s.underRepository(ctx, repoRoot, func() error {
+		paths, err := runtime.UnmergedPaths(repoRoot)
+		if err != nil {
+			return fmt.Errorf("list unmerged: %w", err)
+		}
+		if !slices.Contains(paths, path) {
+			return fmt.Errorf("path %q is not in the conflict set", path)
+		}
+		return runtime.StageResolvedFile(repoRoot, path, content)
+	})
 }
 
 // storedLandingVerdict reads the verdict the run's verifier recorded — the
@@ -852,28 +901,30 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 	if err := requireConflict(r, runID); err != nil {
 		return nil, err
 	}
-	remaining, err := runtime.UnmergedPaths(repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("list unmerged: %w", err)
-	}
-	if len(remaining) > 0 {
-		return nil, fmt.Errorf("still unresolved: %v", remaining)
-	}
-	message := messageOverride
-	if message == "" {
-		message = r.PendingMergeMessage
-	}
-	if message == "" {
-		conflictTarget := r.PendingMergeInto
-		if conflictTarget == "" {
-			conflictTarget = resolveMergeTargetForPersistence("current", repoRoot)
+	var sha string
+	if err := s.underRepository(ctx, repoRoot, func() error {
+		remaining, err := runtime.UnmergedPaths(repoRoot)
+		if err != nil {
+			return fmt.Errorf("list unmerged: %w", err)
 		}
-		message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit, conflictTarget, r.FinalCommit, runtime.RunDisplayName(r))
-	}
-
-	sha, commitErr := runtime.FinalizeConflictMerge(repoRoot, message, storedLandingVerdict(r))
-	if commitErr != nil {
-		return nil, commitErr
+		if len(remaining) > 0 {
+			return fmt.Errorf("still unresolved: %v", remaining)
+		}
+		message := messageOverride
+		if message == "" {
+			message = r.PendingMergeMessage
+		}
+		if message == "" {
+			conflictTarget := r.PendingMergeInto
+			if conflictTarget == "" {
+				conflictTarget = resolveMergeTargetForPersistence("current", repoRoot)
+			}
+			message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit, conflictTarget, r.FinalCommit, runtime.RunDisplayName(r))
+		}
+		sha, err = runtime.FinalizeConflictMerge(repoRoot, message, storedLandingVerdict(r))
+		return err
+	}); err != nil {
+		return nil, err
 	}
 	target := r.PendingMergeInto
 	if target == "" {
@@ -909,7 +960,7 @@ func (s *Service) AbortMergeConflict(ctx context.Context, runID string) error {
 	if err := requireConflict(r, runID); err != nil {
 		return err
 	}
-	if err := runtime.AbortConflictMerge(repoRoot); err != nil {
+	if err := s.underRepository(ctx, repoRoot, func() error { return runtime.AbortConflictMerge(repoRoot) }); err != nil {
 		return err
 	}
 	r.MergeStatus = store.MergeStatusFailed

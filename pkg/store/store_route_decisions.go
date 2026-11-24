@@ -11,18 +11,22 @@ import (
 )
 
 // Filesystem implementation of RouteDecisionStore: one JSON file per
-// run under the run's directory, guarded by the store mutex (same
-// serialisation the run.json writers rely on). Kept deliberately
+// run under the run's directory, guarded by the store mutex and stable run lock. Kept deliberately
 // simple — the router runs on the cloud store in production; this
 // implementation exists so the decision path is testable without a
 // mongod and so a local operator can audit decisions on disk.
 
-func (s *FilesystemRunStore) routeDecisionsPath(runID string) string {
-	return filepath.Join(filepath.Dir(s.runJSONPath(runID)), "route_decisions.json")
+func (s *FilesystemRunStore) loadRouteDecisions(ctx context.Context, runID string) ([]RouteDecision, error) {
+	p, err := s.openRunPayloadFile(ctx, runID, "route_decisions.json", false)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	return readRouteDecisions(p, runID)
 }
 
-func (s *FilesystemRunStore) loadRouteDecisions(runID string) ([]RouteDecision, error) {
-	data, err := os.ReadFile(s.routeDecisionsPath(runID))
+func readRouteDecisions(p *runPayloadFile, runID string) ([]RouteDecision, error) {
+	data, err := p.ReadFile()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -36,28 +40,43 @@ func (s *FilesystemRunStore) loadRouteDecisions(runID string) ([]RouteDecision, 
 	return out, nil
 }
 
-func (s *FilesystemRunStore) writeRouteDecisions(runID string, ds []RouteDecision) error {
+func writeRouteDecisions(ctx context.Context, p *runPayloadFile, runID string, ds []RouteDecision) error {
 	data, err := json.MarshalIndent(ds, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal route decisions %s: %w", runID, err)
 	}
-	if err := os.WriteFile(s.routeDecisionsPath(runID), data, 0o644); err != nil {
+	if p.strict {
+		err = p.WriteAtomic(ctx, data, 0o644)
+	} else {
+		err = os.WriteFile(p.key, data, 0o644)
+	}
+	if err != nil {
 		return fmt.Errorf("store: write route decisions %s: %w", runID, err)
 	}
 	return nil
 }
 
 // ClaimRouteDecision — see RouteDecisionStore.
-func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecision, staleBefore time.Time) (bool, *RouteDecision, error) {
+func (s *FilesystemRunStore) ClaimRouteDecision(ctx context.Context, d RouteDecision, staleBefore time.Time) (bool, *RouteDecision, error) {
 	if d.RunID == "" {
 		return false, nil, fmt.Errorf("store: claim route decision without run_id")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.loadRunRaw(d.RunID); err != nil {
+	_, unlock, err := s.lockExistingRunMetadata(ctx, d.RunID)
+	if err != nil {
 		return false, nil, err
 	}
-	ds, err := s.loadRouteDecisions(d.RunID)
+	defer unlock()
+	// ClaimedAt is overwritten before publication. FinishedAt is only used by
+	// a new row; a duplicate claim must still ignore invalid unused input.
+	validation := d
+	validation.ClaimedAt = time.Time{}
+	_, validationErr := json.Marshal(validation)
+	p, err := s.openRunPayloadFile(ctx, d.RunID, "route_decisions.json", validationErr == nil)
+	if err != nil {
+		return false, nil, err
+	}
+	defer p.Close()
+	ds, err := readRouteDecisions(p, d.RunID)
 	if err != nil {
 		return false, nil, err
 	}
@@ -79,7 +98,7 @@ func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecisi
 		ds[i].PolicyHash = d.PolicyHash
 		ds[i].ClaimedAt = now
 		ds[i].Attempts = cur.Attempts + 1
-		if err := s.writeRouteDecisions(d.RunID, ds); err != nil {
+		if err := writeRouteDecisions(ctx, p, d.RunID, ds); err != nil {
 			return false, nil, err
 		}
 		return true, nil, nil
@@ -89,20 +108,28 @@ func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecisi
 	d.ClaimedAt = now
 	d.Attempts = 1
 	ds = append(ds, d)
-	if err := s.writeRouteDecisions(d.RunID, ds); err != nil {
+	if err := writeRouteDecisions(ctx, p, d.RunID, ds); err != nil {
 		return false, nil, err
 	}
 	return true, nil, nil
 }
 
 // FinishRouteDecision — see RouteDecisionStore.
-func (s *FilesystemRunStore) FinishRouteDecision(_ context.Context, runID string, outcomeSeq int64, state, actionErr string) error {
+func (s *FilesystemRunStore) FinishRouteDecision(ctx context.Context, runID string, outcomeSeq int64, state, actionErr string) error {
 	if state != RouteDecisionSucceeded && state != RouteDecisionFailed {
 		return fmt.Errorf("store: finish route decision: invalid state %q", state)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ds, err := s.loadRouteDecisions(runID)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	p, err := s.openRunPayloadFile(ctx, runID, "route_decisions.json", false)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	ds, err := readRouteDecisions(p, runID)
 	if err != nil {
 		return err
 	}
@@ -112,17 +139,17 @@ func (s *FilesystemRunStore) FinishRouteDecision(_ context.Context, runID string
 			ds[i].State = state
 			ds[i].Error = actionErr
 			ds[i].FinishedAt = &now
-			return s.writeRouteDecisions(runID, ds)
+			return writeRouteDecisions(ctx, p, runID, ds)
 		}
 	}
 	return fmt.Errorf("store: finish route decision %s:%d: no claimed row", runID, outcomeSeq)
 }
 
 // ListRouteDecisions — see RouteDecisionStore.
-func (s *FilesystemRunStore) ListRouteDecisions(_ context.Context, runID string) ([]RouteDecision, error) {
+func (s *FilesystemRunStore) ListRouteDecisions(ctx context.Context, runID string) ([]RouteDecision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ds, err := s.loadRouteDecisions(runID)
+	ds, err := s.loadRouteDecisions(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +160,10 @@ func (s *FilesystemRunStore) ListRouteDecisions(_ context.Context, runID string)
 // ListRoutableRuns — filesystem twin of the sweep query. Scans the run
 // directory (bounded by limit); acceptable for the local store's scale
 // and for tests.
-func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time, limit int) ([]string, error) {
+func (s *FilesystemRunStore) ListRoutableRuns(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 200
 	}
@@ -152,19 +182,50 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 	}
 	var cands []cand
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !e.IsDir() {
 			continue
 		}
-		r, err := s.loadRunRaw(e.Name())
-		if err != nil || r.RoutingPolicy == nil || r.UpdatedAt.Before(since) {
+		r, err := s.loadRunRawContext(ctx, e.Name())
+		if err != nil || r.UpdatedAt.Before(since) {
 			continue
 		}
-		switch r.Status {
-		case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable:
-		default:
+		// The net carries only runs the router can act on: every shape
+		// it declines before claiming would otherwise occupy the page
+		// for its whole lookback — its decline settles no row, so the
+		// anti-join cannot lift it out.
+		if r.MergeStatus == MergeStatusMerged {
 			continue
 		}
-		if settled, err := s.episodeSettled(r.ID, r.OutcomeSeq); err != nil || settled {
+		if r.RoutingPolicy != nil {
+			// Contract carrier: every verdict claims, so any of the
+			// three terminal statuses is actionable.
+			switch r.Status {
+			case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable:
+			default:
+				continue
+			}
+		} else if r.AutoMerge {
+			// Intent-only carrier: the decline is SILENT (no registry
+			// row), so the net itself refuses every shape the intent
+			// reading or a pre-claim gate declines — a failed,
+			// opted-out, finalize-refused or unbanked run admitted
+			// here rides the oldest-first page for its whole lookback
+			// and starves newer landable runs behind the cap. The
+			// preconditions mirror routing.EvaluateAutoMerge and the
+			// router's own gates; keep the two readings aligned.
+			if r.Status != RunStatusFinished ||
+				MergeIntoOptOut(r.MergeInto) ||
+				r.MergeStatus == MergeStatusSkipped ||
+				r.BankState() != BankStateReady {
+				continue
+			}
+		} else {
+			continue
+		}
+		if settled, err := s.episodeSettled(ctx, r.ID, r.OutcomeSeq); err != nil || settled {
 			continue
 		}
 		cands = append(cands, cand{id: r.ID, at: r.UpdatedAt})
@@ -181,14 +242,17 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 	for _, c := range cands {
 		out = append(out, c.id)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 // episodeSettled is the FS half of the sweep anti-join: the run's
 // CURRENT episode already has a decision no offer can act on again —
 // succeeded, or failed at the attempt cap. Caller holds s.mu.
-func (s *FilesystemRunStore) episodeSettled(runID string, outcomeSeq int64) (bool, error) {
-	ds, err := s.loadRouteDecisions(runID)
+func (s *FilesystemRunStore) episodeSettled(ctx context.Context, runID string, outcomeSeq int64) (bool, error) {
+	ds, err := s.loadRouteDecisions(ctx, runID)
 	if err != nil {
 		return false, err
 	}

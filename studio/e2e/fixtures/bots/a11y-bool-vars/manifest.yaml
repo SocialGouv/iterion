@@ -1,0 +1,5 @@
+name: a11y-bool-vars
+display_name: A11y Bool Vars
+description: A bool-var fixture the target-size a11y harness renders in the Launch form (#2765).
+version: 0.1.0
+enabled: true

@@ -15,6 +15,7 @@ import (
 // so a refactor that dropped or narrowed the mapping stayed green
 // (R552e44).
 func TestApplySessionContinuityMarksOptionalModes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		mode         ir.SessionMode
 		wantID       bool // does the mode inherit the upstream id at all?
@@ -65,6 +66,7 @@ func TestApplySessionContinuityMarksOptionalModes(t *testing.T) {
 // there is nothing to drop, and the stamp would make a plain fresh node
 // look degraded.
 func TestApplySessionContinuityHonoursThePauseOptionalMarker(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		mode         ir.SessionMode
 		wantOptional bool
@@ -94,6 +96,7 @@ func TestApplySessionContinuityHonoursThePauseOptionalMarker(t *testing.T) {
 // degrade is scoped to the pause, not silently widened to every node that
 // declared unconditional continuity.
 func TestApplySessionContinuityKeepsInheritStrictWithoutTheMarker(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []ir.SessionMode{ir.SessionInherit, ir.SessionFork} {
 		e := &ClawExecutor{}
 		task := &delegate.Task{}
@@ -110,6 +113,7 @@ func TestApplySessionContinuityKeepsInheritStrictWithoutTheMarker(t *testing.T) 
 // session: there is nothing to drop, and the stamp would make a plain
 // fresh node look degraded.
 func TestApplySessionContinuityNoIDLeavesOptionalClear(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []ir.SessionMode{ir.SessionInheritIfAvailable, ir.SessionPersist} {
 		e := &ClawExecutor{}
 		task := &delegate.Task{}
@@ -122,6 +126,7 @@ func TestApplySessionContinuityNoIDLeavesOptionalClear(t *testing.T) {
 }
 
 func TestApplySessionContinuityEmptyRevisitIsRunVisible(t *testing.T) {
+	t.Parallel()
 	var seen []SessionDegradedInfo
 	e := &ClawExecutor{hooks: EventHooks{OnSessionDegraded: func(_ string, info SessionDegradedInfo) {
 		seen = append(seen, info)

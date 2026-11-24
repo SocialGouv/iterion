@@ -29,6 +29,7 @@ func TestClaudeTaskEnvPrecedenceAtSpawn(t *testing.T) {
 		keys            map[secrets.Provider]string
 		pinned          map[secrets.Provider]string
 		hint            string
+		model           string
 		want            map[string]string
 		refused         bool
 		fingerprint     string
@@ -38,25 +39,29 @@ func TestClaudeTaskEnvPrecedenceAtSpawn(t *testing.T) {
 		{name: "override ambient base", ambient: map[string]string{base: "https://old.example/api"}, extra: []string{base + "=https://new.example/api?version=1"}, want: map[string]string{base: "https://new.example/api?version=1"}},
 		{name: "last explicit value wins", ambient: map[string]string{base: "https://old.example/api"}, extra: []string{base + "=https://first.example", "invalid", "=invalid", base + "="}, want: map[string]string{base: ""}},
 		{name: "clear ambient API key", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "="}, want: map[string]string{api: ""}},
-		{name: "direct hint replaces inherited API key", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key", base: "", auth: ""}, fingerprint: "anthropic-env"},
-		{name: "the pod's ambient key names no credential of the run", ambient: map[string]string{api: "ambient-key"}, want: map[string]string{api: "ambient-key"}, fingerprint: "anthropic-env"},
-		{name: "a task's own key names no credential of the run", extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key"}, fingerprint: "anthropic-env"},
+		{name: "direct hint replaces inherited API key", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key", base: "", auth: ""}, fingerprint: ambientEnvSource("task-key")},
+		{name: "the pod's ambient key names the account it spends", ambient: map[string]string{api: "ambient-key"}, want: map[string]string{api: "ambient-key"}, fingerprint: ambientEnvSource("ambient-key")},
+		{name: "a task's own key names the account it spends", extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key"}, fingerprint: ambientEnvSource("task-key")},
 		{name: "a task's own config dir names no forfait of the run", extra: []string{"CLAUDE_CONFIG_DIR=/task/claude"}, want: map[string]string{}, fingerprint: "anthropic-env"},
 		{name: "a key pinned for the route names it", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, pinned: map[secrets.Provider]string{secrets.ProviderAnthropic: "pinned-key"}, want: map[string]string{api: "pinned-key"}, fingerprint: "anthropic-direct"},
 		{name: "direct hint clears inherited API key", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "="}, want: map[string]string{api: "", base: "", auth: ""}},
 		{name: "direct hint replaces inherited OAuth token", hint: "anthropic", ambient: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth"}, extra: []string{"CLAUDE_CODE_OAUTH_TOKEN=task-oauth"}, want: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "task-oauth", base: "", auth: ""}},
 		{name: "direct hint clears inherited OAuth token", hint: "anthropic", ambient: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth"}, extra: []string{"CLAUDE_CODE_OAUTH_TOKEN="}, want: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "", base: "", auth: ""}},
-		{name: "inherited endpoint with task API key", ambient: map[string]string{base: "https://gateway.example/api"}, extra: []string{api + "=extra-key"}, want: map[string]string{base: "https://gateway.example/api", api: "extra-key"}, fingerprint: "facade:https://gateway.example/api"},
-		{name: "inherited endpoint with task bearer", ambient: map[string]string{base: "https://gateway.example/api"}, extra: []string{auth + "=extra-token"}, want: map[string]string{base: "https://gateway.example/api", auth: "extra-token"}, fingerprint: "facade:https://gateway.example/api"},
+		{name: "inherited endpoint with task API key", ambient: map[string]string{base: "https://gateway.example/api"}, extra: []string{api + "=extra-key"}, want: map[string]string{base: "https://gateway.example/api", api: "extra-key"}, fingerprint: ambientEnvSource("extra-key") + ":https://gateway.example/api"},
+		{name: "inherited endpoint with task bearer", ambient: map[string]string{base: "https://gateway.example/api"}, extra: []string{auth + "=extra-token"}, want: map[string]string{base: "https://gateway.example/api", auth: "extra-token"}, fingerprint: ambientEnvSource("extra-token") + ":https://gateway.example/api"},
 		{name: "inherited cloud mode keeps host classification", ambient: map[string]string{base: "https://inactive.example/api", api: "ambient-key", "CLAUDE_CODE_USE_BEDROCK": "1"}, want: map[string]string{base: "https://inactive.example/api", api: "ambient-key"}, hostFingerprint: "anthropic-env"},
 		{name: "task clears cloud mode before endpoint classification", ambient: map[string]string{base: "https://gateway.example/api", "CLAUDE_CODE_USE_BEDROCK": "1"}, extra: []string{"CLAUDE_CODE_USE_BEDROCK="}, want: map[string]string{base: "https://gateway.example/api", "CLAUDE_CODE_USE_BEDROCK": ""}, fingerprint: "facade:https://gateway.example/api"},
 		{name: "context key remains authoritative", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "="}, keys: map[secrets.Provider]string{secrets.ProviderAnthropic: "context-key"}, want: map[string]string{api: "context-key"}},
 		{name: "context key cannot be redirected", extra: []string{api + "=", base + "=https://unintended.example", auth + "=other-token", "CLAUDE_CODE_OAUTH_TOKEN=other-oauth", "CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1", "CLAUDE_CODE_USE_FOUNDRY=1"}, keys: map[secrets.Provider]string{secrets.ProviderAnthropic: "context-key"}, want: map[string]string{api: "context-key", base: "", auth: "", "CLAUDE_CODE_OAUTH_TOKEN": "", "CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": ""}, fingerprint: "anthropic-direct"},
 		{name: "direct hint keeps cloud switches off", hint: "anthropic", extra: []string{"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1", "CLAUDE_CODE_USE_FOUNDRY=1"}, want: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": ""}},
 		{name: "explicit direct hint clears stale base", ambient: map[string]string{base: "https://stale.example/api"}, extra: []string{base + "=https://other.example/api", auth + "=extra-auth"}, hint: "anthropic", want: map[string]string{base: "", auth: ""}},
-		{name: "context facade keeps endpoint and bearer", extra: []string{base + "=", auth + "=extra-auth", "CLAUDE_CODE_OAUTH_TOKEN=extra-oauth"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", "CLAUDE_CODE_OAUTH_TOKEN": ""}},
-		{name: "ambient facade keeps endpoint and bearer", ambient: map[string]string{"ZAI_API_KEY": "ambient-zai"}, extra: []string{base + "="}, want: map[string]string{base: secrets.ZAIDefaultBaseURL, auth: "ambient-zai"}},
-		{name: "task cannot suppress a funded facade", extra: []string{ForfaitSuppressedEnvKey + "=1", FacadeSlotEnvKey + "=zai"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", ForfaitSuppressedEnvKey: "", FacadeSlotEnvKey: "moonshot"}},
+		{name: "context facade keeps endpoint and bearer", extra: []string{base + "=", auth + "=extra-auth", "CLAUDE_CODE_OAUTH_TOKEN=extra-oauth"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", model: "kimi-k2", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", "CLAUDE_CODE_OAUTH_TOKEN": ""}},
+		// A facade row asks for an id the facade SERVES (glm on z.ai, kimi on
+		// moonshot): the unset claude default is a substitution, refused before
+		// the spawn (#2772) — the row's subject is the env composition, so its
+		// model is the one the route can honestly serve.
+		{name: "ambient facade keeps endpoint and bearer", ambient: map[string]string{"ZAI_API_KEY": "ambient-zai"}, extra: []string{base + "="}, model: "glm-5.3", want: map[string]string{base: secrets.ZAIDefaultBaseURL, auth: "ambient-zai"}},
+		{name: "task cannot suppress a funded facade", extra: []string{ForfaitSuppressedEnvKey + "=1", FacadeSlotEnvKey + "=zai"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", model: "kimi-k2", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", ForfaitSuppressedEnvKey: "", FacadeSlotEnvKey: "moonshot"}},
 		{name: "task cannot forge facade accounting", extra: []string{base + "=https://gateway.example", FacadeSlotEnvKey + "=moonshot", ForfaitSuppressedEnvKey + "=1"}, want: map[string]string{base: "https://gateway.example", FacadeSlotEnvKey: "", ForfaitSuppressedEnvKey: ""}, fingerprint: "facade:https://gateway.example"},
 		{name: "unfunded facade is refused", hint: "moonshot", extra: []string{base + "=", api + "=extra-api", "CLAUDE_CODE_OAUTH_TOKEN=extra-oauth"}, refused: true},
 	}
@@ -92,7 +97,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 					}
 					ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					task := Task{NodeID: "env-test", Command: command, WorkDir: dir, ProviderHint: tc.hint,
+					task := Task{NodeID: "env-test", Command: command, WorkDir: dir, ProviderHint: tc.hint, Model: tc.model,
 						ExtraEnv: append(append([]string{}, tc.extra...), "ITERION_TEST_CAPTURE="+capture), OutputSchema: []byte(`{"type":"object"}`)}
 					fake := &captureSandboxCmdRun{}
 					if sandboxed {

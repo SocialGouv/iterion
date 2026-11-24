@@ -58,7 +58,7 @@ vi.mock("@/components/Runs/RunsTabsView", () => ({ default: function RequestedRu
 
 import App from "@/App";
 import { cancelScheduledRefresh, SIGN_OUT_PENDING_KEY } from "@/api/client";
-import { readRecord, heldnessOf, SESSION_RENEWED_AT_KEY, type SignOutRecord } from "@/api/signOutMachine";
+import { readRecord, heldnessOf, stopLoop, SESSION_RENEWED_AT_KEY, type SignOutRecord } from "@/api/signOutMachine";
 import { useServerInfoStore } from "@/store/serverInfo";
 import type { ServerInfo } from "@/api/types";
 
@@ -214,12 +214,46 @@ afterEach(async () => {
   // survives it blocking the next one's renewals.
   for (const resolve of heldLogoutResolvers.splice(0)) resolve(new Response(null, { status: 204 }));
   await new Promise((r) => setTimeout(r, 10));
+  // React cleanup does not destroy module timers the way a document unload
+  // does, so a presentation ladder armed here would present THIS test's
+  // record into the NEXT test's wire log.
+  stopLoop();
   cancelScheduledRefresh();
   cleanup();
   localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+
+// ladderParkedFor holds the machine's own re-presentation ladder off for the
+// window an arm measures.
+//
+// The machine presents an unconfirmed sign-out again by itself, on a declared
+// cadence — LOOP_RETRY_DELAYS_MS = [2 s, 5 s, 10 s] then a minute
+// (signOutMachine.ts) — and that cadence has a witness of its own, "the
+// presentation loop" below, which requires a presentation nobody clicked.
+// So the ladder must NOT be disabled for the file: an arm that counts the
+// presentations an EXPLICIT act sends parks it only around that act.
+//
+// Parking by TIMER ORDER rather than by a margin is the point. The parker is
+// armed before the act and comes due every 50 ms, so whatever the runner
+// stalls, its tick is always due before any 2 s tick the ladder arms inside
+// the window — the ladder's timer is cleared before it can ever run. A margin
+// against the 2 s step only shrinks the odds, and an overshot count is
+// permanent: `waitFor` retries a count that is still climbing toward its
+// target and can never rescue one that has passed it.
+//
+// Measured: a single 2500 ms stall anywhere inside such a window reproduces
+// CI's `expected [ …(4) ] to have a length of 2 but got 4` on an idle box,
+// because `findByRole` with no explicit timeout is allowed 3000 ms by
+// studio/src/test/setup.ts while the ladder sends at 2000 ms. The suite is
+// configured to tolerate a gap longer than the interval in which the machine
+// is obliged to send; no load is required.
+function ladderParkedFor(fn: () => Promise<void>): Promise<void> {
+  stopLoop();
+  const parker = setInterval(stopLoop, 50);
+  return fn().finally(() => clearInterval(parker));
+}
 
 async function signOutUnconfirmed(): Promise<void> {
   render(app());
@@ -393,14 +427,16 @@ describe("SIGN-IN BY PASSWORD over an unconfirmed sign-out (r7c F3, I4)", () => 
   it("is held, sends no login, and lands only on the explicit sign-in-anyway", async () => {
     logoutMode = "500";
     await signOutUnconfirmed();
-    fireEvent.change(await screen.findByPlaceholderText("Email"), { target: { value: "r@example.test" } });
-    fireEvent.change(await screen.findByPlaceholderText("Password"), { target: { value: "pw-123456789" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
-    // The machine presents the sign-out first (a second logout goes out) and
-    // holds the sign-in: no login request is sent, the form says what holds
-    // it and names the expiry.
-    await screen.findByText(/this sign-in is on hold/, {}, { timeout: 8000 });
-    await waitFor(() => expect(logoutsSent()).toHaveLength(2), { timeout: 8000 });
+    await ladderParkedFor(async () => {
+      fireEvent.change(await screen.findByPlaceholderText("Email"), { target: { value: "r@example.test" } });
+      fireEvent.change(await screen.findByPlaceholderText("Password"), { target: { value: "pw-123456789" } });
+      fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+      // The machine presents the sign-out first (a second logout goes out) and
+      // holds the sign-in: no login request is sent, the form says what holds
+      // it and names the expiry.
+      await screen.findByText(/this sign-in is on hold/, {}, { timeout: 8000 });
+      await waitFor(() => expect(logoutsSent()).toHaveLength(2), { timeout: 8000 });
+    });
     expect(loginsSent()).toEqual([]);
     expect(screen.queryByRole("heading", { name: "Requested run review-123" })).toBeNull();
     const heldText = document.body.textContent ?? "";
@@ -446,11 +482,13 @@ describe("SSO START and the OIDC LANDING (r7c F2, I1/I2/I5)", () => {
   it("holds the start while the named session is held, and 'Continue anyway' abandons without silencing the other tabs", async () => {
     logoutMode = "500";
     await signOutUnconfirmed();
-    const before = logoutsSent().length;
-    (await screen.findByRole("button", { name: "Continue with GitHub" })).click();
-    // HELD: the presentation went out once more and failed; no redirect.
-    await screen.findByText(/signing in with GitHub is on hold/, {}, { timeout: 8000 });
-    await waitFor(() => expect(logoutsSent()).toHaveLength(before + 1), { timeout: 8000 });
+    await ladderParkedFor(async () => {
+      const before = logoutsSent().length;
+      (await screen.findByRole("button", { name: "Continue with GitHub" })).click();
+      // HELD: the presentation went out once more and failed; no redirect.
+      await screen.findByText(/signing in with GitHub is on hold/, {}, { timeout: 8000 });
+      await waitFor(() => expect(logoutsSent()).toHaveLength(before + 1), { timeout: 8000 });
+    });
     expect(navigations).toEqual([]);
 
     // The way on: ABANDONED (the record stands), and the redirect goes.

@@ -5,6 +5,7 @@ package webpush
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -47,6 +48,10 @@ type SubscriptionStore interface {
 	DeleteByEndpoint(ctx context.Context, userID, endpoint string) error
 	// Prune removes a subscription the push service reported dead (404/410).
 	Prune(ctx context.Context, endpoint string) error
+	// DeleteByUser removes every subscription of userID — an endpoint is a
+	// capability URL to one person's browser — and answers how many. An
+	// account's erasure calls it.
+	DeleteByUser(ctx context.Context, userID string) (int64, error)
 	// Touch refreshes last_used_at after a successful delivery. Best-effort.
 	Touch(ctx context.Context, endpoint string, at time.Time) error
 }
@@ -105,6 +110,22 @@ func (m *MemSubscriptionStore) DeleteByEndpoint(_ context.Context, userID, endpo
 		delete(m.rows, endpoint)
 	}
 	return nil
+}
+
+func (m *MemSubscriptionStore) DeleteByUser(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("webpush: delete subscriptions by user: no user id")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for endpoint, s := range m.rows {
+		if s.UserID == userID {
+			delete(m.rows, endpoint)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *MemSubscriptionStore) Prune(_ context.Context, endpoint string) error {
@@ -180,6 +201,17 @@ func (s *MongoSubscriptionStore) DeleteByEndpoint(ctx context.Context, userID, e
 		return fmt.Errorf("webpush: delete subscription: %w", err)
 	}
 	return nil
+}
+
+func (s *MongoSubscriptionStore) DeleteByUser(ctx context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("webpush: delete subscriptions by user: no user id")
+	}
+	res, err := s.coll.DeleteMany(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		return 0, fmt.Errorf("webpush: delete the subscriptions of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
 }
 
 func (s *MongoSubscriptionStore) Prune(ctx context.Context, endpoint string) error {

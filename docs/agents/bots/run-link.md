@@ -25,10 +25,12 @@ beside the server), rendered as `<origin>/studio/runs/<id>`. It resolves in a
 prompt, a tool `command:` / `script:`, an expression and a data mapping alike
 ([the run namespace](../../dsl.md#the-run-namespace)).
 
-- **Deterministic node** (the body is python, the server publishes it): read
-  the member into the script — `RUN_URL={{run.url}} RUN_ID={{run.id}}` — and
-  append the footer where the body is assembled. `bots/dep-update-guard` and
-  `bots/branch-improve-loop` are the worked examples.
+- **Deterministic node** (the body is python; the server publishes it, or the
+  node posts it with the mounted forge token): read the member into the
+  script — `RUN_URL={{run.url}} RUN_ID={{run.id}}` — and append the footer
+  where the body is assembled. `bots/dep-update-guard` and
+  `bots/branch-improve-loop` are the worked examples; `bots/revi-converse`'s
+  `publish_reply` posts its agent's draft that way.
 - **Agent node** (the agent posts through the forge API itself, following
   `skills/forge-*.md`): the skill states the footer rule, the node's own user
   prompt renders both values. The rule without the address is unfulfillable
@@ -70,21 +72,40 @@ footer degrades to the id alone instead of publishing a dead relative link.
 That is why this costs no `requires.iterion` bump: refusing to run a malware
 scan because a signature line cannot render would be the worse trade.
 
-## The chat lane is not wired yet
+## The chat lane — both halves carry it
 
-`bots/prod-watch` (Argus) and `bots/feed-watch` (Vigie) post to Mattermost and
-carry no run link. The retrofit is not a copy of the forge footer: their text
-goes through `clip(text, max_chars)`, so a footer appended after the clip can
-push the message past the webhook's limit, and one appended before it is the
-first thing cut. Reserve the footer's room, then clip — and the test must send
-a message long enough to prove it, which is why this lives in its own change
-([#2430](https://github.com/SocialGouv/iterion/issues/2430)).
+`bots/prod-watch` (Argus) ends every Mattermost message — an alert, a notice,
+the digest, a session message — with the footer, and `bots/feed-watch` (Vigie)
+now ends its digest with it too. Neither is a copy of the forge footer: the
+chat text goes through `clip(text, max_chars)`, so a footer appended after the
+clip can push the message past the webhook's limit, and one appended before it
+is the first thing cut. Each half reserves the footer's room FIRST, then fits
+the body into what is left:
 
+- **prod-watch** computes `body_chars = max_message_chars - len(footer) - 1`
+  (the labels' check, a note's parts and the clip all work in it), then clips —
+  `TestProdWatch_AClippedMessageStillEndsWithItsRun` (e2e) sends a message long
+  enough to be cut and reads the link at its end.
+- **feed-watch** delivers through its deterministic `notify` node and builds
+  the footer there: the run link, and beside it the Revi-style provenance
+  — `Étape | Modèle | Harness | Effort demandé | Tokens` for the synthesize
+  step. Mattermost renders no `<details>` fold
+  ([mattermost#38480](https://github.com/mattermost/mattermost/issues/38480)),
+  so the block travels unfolded at the bottom of the LAST message, and the
+  split reserves its room: the tail part is re-split — never cut — so body,
+  marker and footer all fit one budget (the `max_messages` ceiling, which
+  already drops content and fails the run, re-trims the capped tail instead).
+  A silence alert carries the signature alone: no LLM step stands behind it.
+
+The chat-lane guard (`bots/chat_run_link_test.go`) pins the class the way the
+forge one does, so a chat-facing bot that joins must carry the link and cannot
+drop out quietly. Both halves of
+[#2430](https://github.com/SocialGouv/iterion/issues/2430) are covered.
 ## The guard
 
 `bots/forge_run_link_test.go` discovers the class from the bundles — a `.bot`
-naming `forge_publish_url`, or a bundle shipping a `skills/forge-*.md` — and
-pins its membership, so a bundle that *joins* must carry the link and one that
+naming `forge_publish_url` or `secrets.forge_token`, or a bundle shipping a
+`skills/forge-*.md` — and pins its membership, so a bundle that *joins* must carry the link and one that
 *leaves* reddens instead of dropping out of every check. The channel is read
 from the **compiled** workflow (a prompt's refs, a tool body's refs): a
 `{{run.url}}` sitting in a `##` comment is not a channel, and a guard that

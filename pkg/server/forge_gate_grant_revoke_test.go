@@ -192,7 +192,7 @@ func TestTheShareAndTheCutBackAreExclusive(t *testing.T) {
 						t.Fatal(err)
 					}
 					s.forgePublishTokens = st
-					lifetime = func() time.Duration { return mr.TTL(forgePublishTokenKeyPrefix + "tok-gate") }
+					lifetime = func() time.Duration { return mr.TTL(forgePublishTokenKey("tok-gate")) }
 				}
 				return s, finishRun(t, s, runID), lifetime
 			}

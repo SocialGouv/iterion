@@ -1,17 +1,23 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"net"
+	"net/url"
 	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	httpdial "github.com/SocialGouv/iterion/pkg/secure/httpdial"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
-// refuseGatewayCrossing is the parity rule for OpenAI-compatible gateway
+// GatewayCrossingRefusal is the parity rule for OpenAI-compatible gateway
 // routes: a gateway model or a gateway provider hint is claw-only, from
 // BOTH directions. It is judged on the element as RESOLVED — the chain's
 // overrides and expansions have already spoken, so this sees the backend
@@ -25,25 +31,60 @@ import (
 //
 // Callers turn the refusal into a BUILD failure, so a refused element walks
 // the chain like any other unresolvable one instead of killing the node
-// after dispatch.
-func refuseGatewayCrossing(backend, hint, model string) error {
+// after dispatch. The launch's gateway crossing check (runview) judges the
+// elements a run's override cells compose with this same function. A
+// refusal is a *GatewayCrossingError naming the fields its arm read.
+func GatewayCrossingRefusal(backend, hint, model string) error {
 	h := strings.ToLower(strings.TrimSpace(hint))
-	hintGateway := h == modelroute.OpenAICompatible
+	hintGateway := clawPairsGatewayHint(h)
 	gateway := modelroute.Parse(model).Gateway()
 	switch {
 	case gateway && h != "" && h != "auto" && !hintGateway:
-		return fmt.Errorf("model %q is served by an OpenAI-compatible gateway, but the route's provider hint %q names another wire — drop the hint, or route the node to the claw backend, which serves gateway routes", model, hint)
+		return &GatewayCrossingError{
+			msg:  fmt.Sprintf("model %q is served by an OpenAI-compatible gateway, but the route's provider hint %q names another wire — drop the hint, or route the node to the claw backend, which serves gateway routes", model, hint),
+			Hint: true, Model: true,
+		}
 	case !gateway && hintGateway:
-		return fmt.Errorf("provider hint %q serves gateway models, but model %q is not a gateway route — use %s/<gateway model id>", hint, model, modelroute.OpenAICompatible)
+		return &GatewayCrossingError{
+			msg:  fmt.Sprintf("provider hint %q serves gateway models, but model %q is not a gateway route — use %s/<gateway model id>", hint, model, modelroute.OpenAICompatible),
+			Hint: true, Model: true,
+		}
 	}
 	if !gateway && !hintGateway {
 		return nil
 	}
-	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", delegate.BackendClaw, "auto":
+	if backendServesGatewayRoute(backend) {
 		return nil
 	}
-	return fmt.Errorf("backend %q cannot serve an OpenAI-compatible gateway route — gateway models run on the claw backend", backend)
+	return &GatewayCrossingError{
+		msg:     fmt.Sprintf("backend %q cannot serve an OpenAI-compatible gateway route — gateway models run on the claw backend", backend),
+		Backend: true, Hint: hintGateway, Model: gateway,
+	}
+}
+
+// GatewayCrossingError is GatewayCrossingRefusal's refusal. Backend, Hint
+// and Model report which fields of the element the refusing arm read: the
+// two-wire and route-to-nowhere arms read the hint and the model, the
+// backend arm reads the backend and whichever of the two named the
+// gateway. A screen judging a composed element reads them to say which of
+// those fields a launch override wrote.
+type GatewayCrossingError struct {
+	msg                  string
+	Backend, Hint, Model bool
+}
+
+func (e *GatewayCrossingError) Error() string { return e.msg }
+
+// backendServesGatewayRoute is the backend half of the parity rule above,
+// on its own so the AUTO-SELECTION can consult it too (executor_resolve.go):
+// the one answer to "can this backend speak to a gateway", shared so the
+// selection and the refusal can never disagree about one backend.
+func backendServesGatewayRoute(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "", delegate.BackendClaw, "auto":
+		return true
+	}
+	return false
 }
 
 // checkGatewayEnv validates the environment a gateway-served element needs,
@@ -51,45 +92,115 @@ func refuseGatewayCrossing(backend, hint, model string) error {
 // and the sandbox forward will make, refused here — with the variable
 // named, the value never printed — while the chain can still walk to a
 // fallback.
-func checkGatewayEnv(strict bool) error {
+// checkGatewaySource validates that A source exists for a gateway-served
+// element before it is dispatched anywhere: a run holding its own gateway
+// pair (the sealed credential the registry's uncached arm serves) is
+// validated at the same dispatch-time standard the env pair gets — syntax
+// here, and the public-address rule under strict, resolved fresh per
+// attempt — while a run holding no pair reads the pod environment exactly
+// as before. Under the ambient stamp with neither source, the refusal
+// names the stamp: the run's LLM routes are funded by its sealed
+// credentials only (#2005, ADR-131 §7).
+func checkGatewaySource(ctx context.Context, spec string, strict bool) error {
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		key, baseURL, err := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible)
+		if err != nil {
+			// A key held without its URL is the typed pairing refusal —
+			// the registry answers the same state with the same error;
+			// never the pod's env gateway.
+			return fmt.Errorf("openai_compatible: %w", err)
+		}
+		if key != "" && baseURL != "" {
+			// Syntax and what the guard refuses at every strictness (an
+			// empty label, an IPv4-compatible literal) at the seam; the
+			// address class for a LITERAL host under strict — a private
+			// literal was refused at the seal, but the ctx credentials may
+			// be hand-built. A NAME resolves at dial time (PR-C'): the
+			// resolver's answer is the dial guard's to judge.
+			if err := (compatgw.Config{BaseURL: baseURL}).Validate(false); err != nil {
+				return err
+			}
+			if strict {
+				if u, uerr := url.Parse(baseURL); uerr == nil {
+					if ip := net.ParseIP(u.Hostname()); ip != nil && !httpdial.IsPublicUnicast(ip) {
+						return compatgw.RemedyPrivate(fmt.Errorf("the run-held gateway endpoint is a private or non-public address"))
+					}
+				}
+			}
+			return nil
+		}
+	}
+	if ambientRefused(ctx) {
+		return &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: spec}
+	}
+	return checkGatewayEnv(ctx, strict)
+}
+
+func checkGatewayEnv(ctx context.Context, strict bool) error {
 	// The operator table is judged HERE (not only inside the catalog
 	// resolution): a malformed table must REFUSE the route — naming the
 	// variable — instead of silently degrading the gateway to unknown
 	// while the run continues unpriced.
-	if err := compatgw.CheckOperatorTable(os.Getenv); err != nil {
+	// The closure idiom (#2808): the seam's reader bound to the caller's
+	// ctx, handed as a value to both compatgw reads.
+	getenv := func(name string) string { return envGetenv(ctx, name) }
+	if err := compatgw.CheckOperatorTable(getenv); err != nil {
 		return err
 	}
-	cfg, err := compatgw.FromEnv(os.Getenv)
+	cfg, err := compatgw.FromEnv(getenv)
 	if err != nil {
 		return err
 	}
 	return cfg.Validate(strict)
 }
 
-// stampGatewaySpec records the invocation's catalog provenance on the
-// node output: which table answered and what it said (compact JSON — the
-// output travels through maps that must stay single-line-safe). An unknown
+// gatewaySpecRecord renders the invocation's catalog provenance: which
+// table answered and what it said (compact JSON — the output travels
+// through maps that must stay single-line-safe), and — when a price feed
+// answered — the feed's age, so the record that says WHICH table priced
+// the node also says HOW FRESH that word was (ADR-163 §6). An unknown
 // record is recorded AS unknown: the absence of a window or a price is a
-// fact about the catalog, not an omission. Nil-safe.
+// fact about the catalog, not an omission. Nil only when the record
+// cannot marshal.
+func gatewaySpecRecord(resolved compatgw.Resolved) json.RawMessage {
+	record := struct {
+		Source              string  `json:"source"`
+		ContextWindow       int     `json:"context_window,omitempty"`
+		MaxOutputTokens     int     `json:"max_output_tokens,omitempty"`
+		InputUSDPerMTok     float64 `json:"input_usd_per_mtok,omitempty"`
+		OutputUSDPerMTok    float64 `json:"output_usd_per_mtok,omitempty"`
+		CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok,omitempty"`
+		RefreshedAt         string  `json:"refreshed_at,omitempty"`
+	}{
+		Source:              resolved.Source,
+		ContextWindow:       resolved.Spec.ContextWindow,
+		MaxOutputTokens:     resolved.Spec.MaxOutputTokens,
+		InputUSDPerMTok:     resolved.Spec.InputCostPerM,
+		OutputUSDPerMTok:    resolved.Spec.OutputCostPerM,
+		CacheReadUSDPerMTok: resolved.Spec.CacheReadCostPerM,
+	}
+	if _, isFeed := compatgw.FeedSource(resolved.Source); isFeed && !resolved.RefreshedAt.IsZero() {
+		record.RefreshedAt = resolved.RefreshedAt.UTC().Format(time.RFC3339)
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// stampGatewaySpec records the invocation's catalog provenance on the
+// node output. The stamp on the map alone does not reach the operator:
+// the output's reserved namespace is re-projected from the Result
+// downstream (stampDelegateOutputMeta), so the caller also carries the
+// record on Result.GatewaySpec — this stamp is what the backend's own
+// return value shows. Nil-safe.
 func stampGatewaySpec(output map[string]any, resolved compatgw.Resolved) map[string]any {
 	if output == nil {
 		return output
 	}
-	record := struct {
-		Source           string  `json:"source"`
-		ContextWindow    int     `json:"context_window,omitempty"`
-		MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-		InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-		OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
-	}{
-		Source:           resolved.Source,
-		ContextWindow:    resolved.Spec.ContextWindow,
-		MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
-		InputUSDPerMTok:  resolved.Spec.InputCostPerM,
-		OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
-	}
-	if raw, err := json.Marshal(record); err == nil {
-		output["_gateway_spec"] = json.RawMessage(raw)
+	if raw := gatewaySpecRecord(resolved); len(raw) > 0 {
+		output["_gateway_spec"] = raw
 	}
 	return output
 }

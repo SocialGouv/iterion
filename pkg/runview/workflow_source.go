@@ -102,8 +102,10 @@ func compileSourceSnapshot(source *workflowfile.Snapshot) (*ir.Workflow, string,
 	}
 	defer cleanup()
 	// Projection resolves authoring resources but never rebinds execution to
-	// this server's MCP configuration, credentials or relative executables.
-	wf, cs, err := compileLoadedUnitMode(u, u.Files[0].Name, source.Main, true, b, false)
+	// this server's MCP configuration, credentials or relative executables —
+	// no execution stage runs here, so no workspace either (#1800).
+	// prepareExecution is off: no MCP catalog is resolved, so no trust is.
+	wf, cs, err := compileLoadedUnitMode(u, u.Files[0].Name, source.Main, true, b, false, "", AnalysisTrust)
 	if err != nil {
 		return nil, "", err
 	}

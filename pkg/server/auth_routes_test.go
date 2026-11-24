@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -352,13 +353,93 @@ func TestPeerIsTrusted(t *testing.T) {
 }
 
 func TestClientIP(t *testing.T) {
-	t.Run("untrusted peer: RemoteAddr wins", func(t *testing.T) {
+	// The ephemeral source port is never part of the identity (#2673):
+	// with it, every TCP connection of one client is a different client
+	// and buys its own rate-limit bucket.
+	t.Run("untrusted peer: the socket host wins, without its port", func(t *testing.T) {
 		s := &Server{cfg: Config{}}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = "203.0.113.5:54321"
 		r.Header.Set("X-Forwarded-For", "1.2.3.4")
-		if got := s.clientIP(r); got != "203.0.113.5:54321" {
-			t.Errorf("got %q, want RemoteAddr", got)
+		if got := s.clientIP(r); got != "203.0.113.5" {
+			t.Errorf("got %q, want the socket host 203.0.113.5 without its port", got)
+		}
+	})
+
+	// A dual-stack listener spells an IPv4 client's socket
+	// "::ffff:1.2.3.4": one host must not be two identities, and two
+	// identities are two rate-limit buckets.
+	t.Run("untrusted peer: an IPv4-mapped socket is the IPv4 address", func(t *testing.T) {
+		s := &Server{cfg: Config{}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "[::ffff:203.0.113.5]:54321"
+		if got := s.clientIP(r); got != "203.0.113.5" {
+			t.Errorf("got %q, want 203.0.113.5", got)
+		}
+	})
+
+	// A peer address the kernel did not spell as an IP is still that peer:
+	// it must not collapse to the empty identity every client would share.
+	t.Run("untrusted peer: a socket that is not an IP stays itself", func(t *testing.T) {
+		s := &Server{cfg: Config{}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "@"
+		if got := s.clientIP(r); got != "@" {
+			t.Errorf("got %q, want the peer as given", got)
+		}
+	})
+
+	// And a peer address the transport reported as NOTHING is not the
+	// empty identity either: net/http's listener always sets one, so this
+	// is an embedder's own transport or a handler called directly, and ""
+	// would be one bucket and one blank audit row shared by every such
+	// request. A name no address can be confused with says what happened.
+	t.Run("no peer address at all is a named identity, not the empty one", func(t *testing.T) {
+		for name, prepare := range map[string]func(*http.Request){
+			"no forwarded header":                func(*http.Request) {},
+			"a forwarded header no peer vouches": func(r *http.Request) { r.Header.Set("X-Forwarded-For", "203.0.113.5") },
+		} {
+			s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = ""
+			prepare(r)
+			got := s.clientIP(r)
+			if got == "" {
+				t.Errorf("%s: the identity is the empty string — every peerless request shares one bucket and writes a blank audit row", name)
+			}
+			if got != unknownPeer {
+				t.Errorf("%s: the identity is %q, want %q", name, got, unknownPeer)
+			}
+			if canonicalIP(got) != "" {
+				t.Errorf("%s: the sentinel %q parses as an address, so it can collide with a real client", name, got)
+			}
+		}
+	})
+
+	// The chain is client-writable up to MaxHeaderBytes and the walk runs
+	// BEFORE the limiter has a key to refuse the request with, so only the
+	// hops nearest us are read. A client that pads its way past the bound
+	// lands on the proxy's own bucket — less reach, not more.
+	t.Run("trusted peer: a chain longer than the hop bound is read from our end", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		chain := []string{"203.0.113.42"}
+		for i := 0; i < maxForwardedHops+1; i++ {
+			chain = append(chain, "10.0.0.7")
+		}
+		r.Header.Set("X-Forwarded-For", strings.Join(chain, ", "))
+		if got := s.clientIP(r); got != "10.0.0.7" {
+			t.Errorf("got %q, want 10.0.0.7 — only the %d hops nearest us are read, and they are all ours", got, maxForwardedHops)
+		}
+	})
+
+	t.Run("untrusted peer: an IPv6 socket keeps its address, loses its port", func(t *testing.T) {
+		s := &Server{cfg: Config{}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "[2001:db8::17]:443"
+		if got := s.clientIP(r); got != "2001:db8::17" {
+			t.Errorf("got %q, want 2001:db8::17", got)
 		}
 	})
 
@@ -372,18 +453,50 @@ func TestClientIP(t *testing.T) {
 		}
 	})
 
+	// Three entries, so three APPENDING hops of ours: the ingress wrote
+	// 10.0.0.8, the proxy at 10.0.0.8 wrote 10.0.0.7, and the one at
+	// 10.0.0.7 wrote the client. The COUNT is what says so — nothing in
+	// the chain's content tells a proxy's entry from a client's, which is
+	// why the reader walks exactly as far as the operator declares.
 	t.Run("trusted peer with X-Forwarded-For (chain)", func(t *testing.T) {
-		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, TrustedProxyHops: 3}}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = "10.1.1.1:443"
 		r.Header.Set("X-Forwarded-For", "203.0.113.5, 10.0.0.7, 10.0.0.8")
 		if got := s.clientIP(r); got != "203.0.113.5" {
-			t.Errorf("got %q, want client (leftmost) 203.0.113.5", got)
+			t.Errorf("got %q, want the entry the outermost of the three hops saw, 203.0.113.5", got)
 		}
 	})
 
-	t.Run("trusted peer with X-Real-IP fallback", func(t *testing.T) {
+	// The same chain with the default count reaches only the hop nearest
+	// us: an undeclared second hop costs per-client keying, it never
+	// hands the identity to what a client wrote.
+	t.Run("trusted peer: an undeclared hop stops the walk at the nearest one", func(t *testing.T) {
 		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "203.0.113.5, 10.0.0.7, 10.0.0.8")
+		if got := s.clientIP(r); got != "10.0.0.8" {
+			t.Errorf("got %q, want 10.0.0.8 — one declared hop reaches one entry", got)
+		}
+	})
+
+	// Only the header the OPERATOR declared is read. Reading whichever
+	// mechanism a request happened to carry would hand the choice to the
+	// client, which is the whole defect: an X-Real-IP nobody declared is
+	// a header a client can send.
+	t.Run("trusted peer: an undeclared mechanism is not read", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Real-IP", "203.0.113.99")
+		if got := s.clientIP(r); got != "10.1.1.1" {
+			t.Errorf("got %q, want the peer host 10.1.1.1: X-Forwarded-For is the declared header and the request carries none", got)
+		}
+	})
+
+	t.Run("trusted peer: the declared X-Real-IP is read", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: "X-Real-IP"}}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = "10.1.1.1:443"
 		r.Header.Set("X-Real-IP", "203.0.113.99")
@@ -392,12 +505,321 @@ func TestClientIP(t *testing.T) {
 		}
 	})
 
+	// A CDN names the client in a header of its own. Refusing a name
+	// outside a closed set of three would be a bound with no override.
+	t.Run("trusted peer: a declared CDN header is read as itself", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: "CF-Connecting-IP"}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("CF-Connecting-IP", "203.0.113.44")
+		r.Header.Set("X-Forwarded-For", "9.9.9.9")
+		if got := s.clientIP(r); got != "203.0.113.44" {
+			t.Errorf("got %q, want 203.0.113.44 — the declared header, not the one the client wrote", got)
+		}
+	})
+
+	// The operator's spelling is not the canonical one Header.Values
+	// looks a name up by ("x-real-ip" canonicalises to "X-Real-Ip"), and
+	// an identity that depended on the case of a config value would be
+	// read from no header at all.
+	t.Run("trusted peer: the declared name is case-insensitive", func(t *testing.T) {
+		for _, spelling := range []string{"x-real-ip", "X-REAL-IP", "X-Real-IP"} {
+			s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: spelling}}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "10.1.1.1:443"
+			r.Header.Set("X-Real-IP", "203.0.113.99")
+			if got := s.clientIP(r); got != "203.0.113.99" {
+				t.Errorf("declared %q: got %q, want 203.0.113.99", spelling, got)
+			}
+		}
+	})
+
 	t.Run("trusted peer without forward headers", func(t *testing.T) {
 		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = "10.1.1.1:443"
-		if got := s.clientIP(r); got != "10.1.1.1:443" {
-			t.Errorf("got %q, want RemoteAddr", got)
+		if got := s.clientIP(r); got != "10.1.1.1" {
+			t.Errorf("got %q, want the peer host 10.1.1.1 without its port", got)
+		}
+	})
+
+	// A proxy that writes the port into its forwarded entry would hand
+	// the limiter a per-connection key again.
+	t.Run("trusted peer: a forwarded entry loses its port too", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, TrustedProxyHops: 2}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "203.0.113.5:61234, 10.0.0.7")
+		if got := s.clientIP(r); got != "203.0.113.5" {
+			t.Errorf("got %q, want 203.0.113.5", got)
+		}
+	})
+
+	// The chain is read right to left as far as the declared hops: with
+	// two appending proxies in front, the second entry from the right is
+	// the address the outer one saw, and anything further left is what
+	// the client wrote.
+	t.Run("trusted peer: the rightmost entry outside the ranges is the client", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, TrustedProxyHops: 2}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "9.9.9.9, 203.0.113.77, 10.0.0.7")
+		if got := s.clientIP(r); got != "203.0.113.77" {
+			t.Errorf("got %q, want 203.0.113.77 — 9.9.9.9 is whatever the client wrote", got)
+		}
+	})
+
+	// A client can send its own header line; the proxy adds a second.
+	// Only the whole list is the chain.
+	t.Run("trusted peer: two X-Forwarded-For header lines are one chain", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, TrustedProxyHops: 2}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Add("X-Forwarded-For", "9.9.9.9")
+		r.Header.Add("X-Forwarded-For", "203.0.113.77, 10.0.0.7")
+		if got := s.clientIP(r); got != "203.0.113.77" {
+			t.Errorf("got %q, want 203.0.113.77", got)
+		}
+	})
+
+	// When every hop is inside the ranges the answer is the RIGHTMOST of
+	// them — the address the last appending proxy actually saw. The
+	// leftmost is the slot the client writes into, so answering with it
+	// would hand the identity back to the client; the leading empty entry
+	// is dropped, not carried, since every client would share it.
+	t.Run("trusted peer: a chain of our own proxies answers with its hop nearest us", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", ", 10.0.0.5, 10.0.0.7")
+		if got := s.clientIP(r); got != "10.0.0.7" {
+			t.Errorf("got %q, want 10.0.0.7 — the rightmost hop; 10.0.0.5 is one entry further into what the client wrote", got)
+		}
+	})
+
+	// The fallback must not hand the identity to a client that sits
+	// inside a configured range: with the chart's private-range default,
+	// every LAN client and every in-cluster pod does. Rotating a forged
+	// entry must leave the identity fixed, or #2673's own defect comes
+	// back through the header instead of the source port — and the
+	// forged value's own RANGE must not matter. A walk that skipped
+	// every in-range hop answered with an out-of-range forgery, because
+	// skipping the appended hop (the in-range client's own address) led
+	// it straight back into the half of the chain the client wrote.
+	t.Run("trusted peer: an in-range client's forged entry never becomes the identity", func(t *testing.T) {
+		seen := map[string]bool{}
+		for _, forged := range []string{
+			"10.9.9.1", "10.9.9.2", "10.9.9.3", // in range, like the client itself
+			"203.0.113.77", "198.51.100.5", "8.8.8.8", // outside every range
+		} {
+			s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "10.1.1.1:443"
+			// An appending proxy writes what the client sent, then the
+			// address it saw — here an in-range client of its own.
+			r.Header.Set("X-Forwarded-For", forged+", 10.2.2.2")
+			got := s.clientIP(r)
+			if got != "10.2.2.2" {
+				t.Errorf("forged %q: got %q, want 10.2.2.2 — the hop the proxy saw", forged, got)
+			}
+			seen[got] = true
+		}
+		if len(seen) != 1 {
+			t.Errorf("six forged entries produced %d identities %v, want 1: each one is a fresh rate-limit bucket", len(seen), seen)
+		}
+	})
+
+	// The same class through the declared RFC 7239 mechanism: the walk is
+	// one function, so a chain parsed from `Forwarded` must stop at the
+	// same hop.
+	t.Run("trusted peer: the RFC 7239 chain stops at the appended hop too", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: "Forwarded"}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("Forwarded", "for=203.0.113.77,for=10.2.2.2")
+		if got := s.clientIP(r); got != "10.2.2.2" {
+			t.Errorf("got %q, want 10.2.2.2 — the hop the proxy appended", got)
+		}
+	})
+
+	// No number of in-range entries a client writes moves the bound: the
+	// walk counts OUR hops, and with one appending proxy in front the
+	// first address from the right is the answer.
+	t.Run("trusted peer: padding the chain with in-range entries moves nothing", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "203.0.113.77, 10.0.0.1, 172.16.0.1, 192.168.0.1, 10.2.2.2")
+		if got := s.clientIP(r); got != "10.2.2.2" {
+			t.Errorf("got %q, want 10.2.2.2 — four in-range entries the client wrote skipped the bound", got)
+		}
+	})
+
+	// The override is load-bearing, not decoration: a CDN edge that
+	// appends in front of the ingress writes a SECOND entry of ours, and
+	// the client the operator wants is then the second from the right.
+	// Without the knob, listing the CDN's ranges would no longer reach
+	// the client.
+	t.Run("trusted peer: two declared hops answer with the entry the outer proxy saw", func(t *testing.T) {
+		cfg := Config{TrustedProxyCIDRs: []string{"10.0.0.0/8", "198.51.100.0/24"}, TrustedProxyHops: 2}
+		send := func(chain string) string {
+			s := &Server{cfg: cfg}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "10.1.1.1:443" // the ingress
+			r.Header.Set("X-Forwarded-For", chain)
+			return s.clientIP(r)
+		}
+		// forged, the client as the CDN saw it, the CDN edge as the
+		// ingress saw it.
+		if got := send("9.9.9.9, 203.0.113.5, 198.51.100.7"); got != "203.0.113.5" {
+			t.Errorf("got %q, want 203.0.113.5 — the address the outer declared hop saw", got)
+		}
+		// And an in-range client behind the same two hops is still
+		// unforgeable: its own address is the second from the right.
+		if got := send("9.9.9.9, 10.2.2.2, 198.51.100.7"); got != "10.2.2.2" {
+			t.Errorf("got %q, want 10.2.2.2", got)
+		}
+	})
+
+	// The residual, pinned so it is not denied: the subtest above is the
+	// APPENDED shape, which is the deployment the ranges are configured
+	// for. A peer that reaches the port DIRECTLY with nothing in front
+	// wrote the whole chain itself, so its rightmost entry is
+	// client-chosen too — it names any address it likes, including an
+	// in-range victim's, and rotating the value moves the key. Trusting
+	// a range is trusting what every address inside it says; the chart
+	// default makes that every in-cluster pod, which is why the ranges
+	// belong to the ingress controller and `networkPolicy.enabled` keeps
+	// the port out of everything else's reach (#2804).
+	t.Run("trusted peer: a direct in-range peer with nothing appended still names its own chain", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8", "192.168.0.0/16"}}}
+		send := func(forged string) string {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "10.1.2.3:51000" // an in-cluster pod, no proxy in front
+			r.Header.Set("X-Forwarded-For", forged)
+			return s.clientIP(r)
+		}
+		if got := send("10.9.9.1"); got != "10.9.9.1" {
+			t.Errorf("got %q, want the forged 10.9.9.1 — the documented residual of trusting a range, and the comment on forwardedClientIP says so", got)
+		}
+		if got := send("192.168.5.10"); got != "192.168.5.10" {
+			t.Errorf("got %q, want the forged 192.168.5.10 — the same peer names an arbitrary in-range victim", got)
+		}
+	})
+
+	// An identity is one spelling of one address: cycling spellings must
+	// not buy fresh buckets, and a value that is not an address at all
+	// must never become the audit IP or reach a log line.
+	t.Run("trusted peer: a forwarded address is canonicalised", func(t *testing.T) {
+		for _, spelling := range []string{"2001:0DB8:0000::0017", "[2001:db8::17]", "2001:db8::17"} {
+			s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "10.1.1.1:443"
+			r.Header.Set("X-Forwarded-For", spelling)
+			if got := s.clientIP(r); got != "2001:db8::17" {
+				t.Errorf("%s: got %q, want 2001:db8::17", spelling, got)
+			}
+		}
+	})
+
+	t.Run("trusted peer: an IPv4-mapped form answers as the IPv4 address", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "::ffff:203.0.113.5")
+		if got := s.clientIP(r); got != "203.0.113.5" {
+			t.Errorf("got %q, want 203.0.113.5 — one host, one identity", got)
+		}
+	})
+
+	t.Run("trusted peer: a forwarded value that is not an address falls through", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "not-an-ip\r\nX-Injected: 1")
+		if got := s.clientIP(r); got != "10.1.1.1" {
+			t.Errorf("got %q, want the peer host 10.1.1.1: a non-address must not become the identity", got)
+		}
+	})
+
+	// A bracketed IPv6 literal with no port is what a proxy writes into
+	// X-Forwarded-For; the brackets are not part of the address.
+	t.Run("trusted peer: a bracketed IPv6 entry without a port loses its brackets", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "[2001:db8::99]")
+		if got := s.clientIP(r); got != "2001:db8::99" {
+			t.Errorf("got %q, want 2001:db8::99", got)
+		}
+	})
+
+	t.Run("trusted peer: the declared RFC 7239 Forwarded is read", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: "Forwarded"}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("Forwarded", `for=203.0.113.60;proto=https;by=10.1.1.1`)
+		if got := s.clientIP(r); got != "203.0.113.60" {
+			t.Errorf("got %q, want 203.0.113.60", got)
+		}
+	})
+
+	// The RFC quotes a for= value that carries a port, and an IPv6
+	// address brings both brackets and colons: the element separator
+	// must not be looked for inside the quotes.
+	t.Run("trusted peer: Forwarded with a quoted IPv6 client and a proxy chain", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: "Forwarded", TrustedProxyHops: 2}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("Forwarded", `For="[2001:db8:cafe::17]:4711";proto=https, for=10.0.0.7`)
+		if got := s.clientIP(r); got != "2001:db8:cafe::17" {
+			t.Errorf("got %q, want 2001:db8:cafe::17", got)
+		}
+	})
+
+	t.Run("trusted peer: an obfuscated Forwarded identifier names no client", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}, ForwardedHeader: "Forwarded"}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("Forwarded", "for=_hidden;proto=https")
+		// An undeclared mechanism is not a fallback: this X-Real-IP is as
+		// client-writable as the obfuscated value beside it.
+		r.Header.Set("X-Real-IP", "203.0.113.99")
+		if got := s.clientIP(r); got != "10.1.1.1" {
+			t.Errorf("got %q, want the peer host 10.1.1.1: the declared header named no client and nothing else is read", got)
+		}
+	})
+
+	// An empty entry names nobody: it is dropped, and the real entry
+	// beside it is the client.
+	t.Run("trusted peer: an empty leftmost X-Forwarded-For entry is dropped", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", ", 203.0.113.5")
+		if got := s.clientIP(r); got != "203.0.113.5" {
+			t.Errorf("got %q, want 203.0.113.5", got)
+		}
+	})
+
+	t.Run("trusted peer: a header of separators alone falls back to the peer", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", " , ")
+		if got := s.clientIP(r); got != "10.1.1.1" {
+			t.Errorf("got %q, want the peer host 10.1.1.1", got)
+		}
+	})
+
+	t.Run("trusted peer: a header carrying only spaces falls through", func(t *testing.T) {
+		s := &Server{cfg: Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.1.1.1:443"
+		r.Header.Set("X-Forwarded-For", "   ")
+		r.Header.Set("X-Real-IP", "  ") // undeclared, so read by nothing
+		if got := s.clientIP(r); got != "10.1.1.1" {
+			t.Errorf("got %q, want the peer host 10.1.1.1", got)
 		}
 	})
 }

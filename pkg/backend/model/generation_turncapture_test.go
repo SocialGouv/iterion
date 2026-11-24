@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // TestTurnCaptureIsUniformAcrossGenerationModes locks the invariant the
@@ -22,6 +22,7 @@ import (
 // path: the failure was one mode silently lacking what the other had, so a
 // test that exercised only one would have stayed green through it.
 func TestTurnCaptureIsUniformAcrossGenerationModes(t *testing.T) {
+	t.Parallel()
 	type out struct {
 		OK bool `json:"ok"`
 	}

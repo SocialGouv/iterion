@@ -23,7 +23,9 @@ func (s *Server) registerOrgRoutes() {
 	s.mux.Handle("PATCH /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgMember)))
 	s.mux.Handle("DELETE /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleRemoveOrgMember)))
 	s.mux.Handle("GET /api/orgs/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleListOrgInvitations)))
-	s.mux.Handle("POST /api/orgs/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleCreateOrgInvitation)))
+	// The mint is gated exactly like the team-scoped twin
+	// (auth.MintTeamToken — see auth_routes.go).
+	s.mux.Handle("POST /api/orgs/{id}/invitations", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateOrgInvitation))))
 	s.mux.Handle("DELETE /api/orgs/{id}/invitations/{invite_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgInvitation)))
 	s.mux.Handle("GET /api/orgs/{id}/usage", s.requireAuth(http.HandlerFunc(s.handleOrgUsage)))
 	s.mux.Handle("GET /api/orgs/{id}/teams", s.requireAuth(http.HandlerFunc(s.handleListOrgTeams)))
@@ -219,12 +221,26 @@ func (s *Server) handleListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	mems, err := s.authStore().ListOrgMembershipsByOrg(r.Context(), orgID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "list members: %v", err)
+		s.identityFailure(w, r, fmt.Errorf("list the members of org %s: %w", orgID, err))
+		return
+	}
+	userIDs := make([]string, 0, len(mems))
+	for _, m := range mems {
+		userIDs = append(userIDs, m.UserID)
+	}
+	// The team roster's twin (auth_teams.go handleListTeamMembers): one bulk
+	// fetch, and a user absent from the map yields the zero User — the row
+	// still renders with id + role, because the read ANSWERED that the
+	// account is gone. A read that FAILED is not that: rendering it the same
+	// way showed every member as an account with no email or name, 200.
+	usersByID, err := s.authStore().GetUsersByIDs(r.Context(), userIDs)
+	if err != nil {
+		s.identityFailure(w, r, fmt.Errorf("load the member accounts of org %s: %w", orgID, err))
 		return
 	}
 	out := make([]orgMemberView, 0, len(mems))
 	for _, m := range mems {
-		u, _ := s.authStore().GetUser(r.Context(), m.UserID)
+		u := usersByID[m.UserID]
 		out = append(out, orgMemberView{UserID: m.UserID, Email: u.Email, Name: u.Name, Role: string(m.Role)})
 	}
 	writeJSON(w, struct {

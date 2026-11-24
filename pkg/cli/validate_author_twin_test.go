@@ -19,7 +19,7 @@ import (
 func writeTheBotBeside(t *testing.T, doc string) {
 	t.Helper()
 	p, out := newTestPrinter(cli.OutputJSON)
-	if _, err := cli.RunFmt(cli.FmtOptions{Paths: []string{doc}, To: "bot", Printer: p}); err != nil {
+	if _, err := cli.RunFmt(t.Context(), cli.FmtOptions{Paths: []string{doc}, To: "bot", Printer: p}); err != nil {
 		t.Fatalf("fmt --to bot %s: %v\n%s", doc, err, out.String())
 	}
 }
@@ -61,7 +61,7 @@ func runFmtTwin(t *testing.T, opts cli.FmtOptions) (string, error) {
 	t.Helper()
 	p, out := newTestPrinter(cli.OutputJSON)
 	opts.Printer = p
-	_, err := cli.RunFmt(opts)
+	_, err := cli.RunFmt(t.Context(), opts)
 	return out.String(), err
 }
 

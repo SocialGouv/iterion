@@ -24,7 +24,7 @@ const pipelineSchedulerInterval = 5 * time.Second
 func (s *Service) enqueuePipeline(parent context.Context, runID string, spec LaunchSpec, position int) (*LaunchResult, error) {
 	if qc := store.AsQueuedRunCreator(s.store); qc != nil {
 		wfName := ""
-		if wf, _, _, cErr := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); cErr == nil {
+		if wf, _, _, cErr := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust); cErr == nil {
 			wfName = wf.Name
 		}
 		created, err := qc.CreateQueuedRun(parent, runID, wfName, spec.FilePath, spec.BotID, varsToInputs(spec.Vars))
@@ -35,6 +35,7 @@ func (s *Service) enqueuePipeline(parent context.Context, runID string, spec Lau
 			s.logger.Warn("runview: persist queued pipeline %s: %v (queue entry is memory-only — lost on server restart)", runID, err)
 		} else {
 			created.Name = store.GenerateRunName(spec.FilePath + ":" + runID)
+			created.ExecutionContext = spec.ExecutionContext.Clone()
 			if err := s.store.SaveRun(parent, created); err != nil {
 				s.logger.Warn("runview: name queued pipeline %s: %v", runID, err)
 			}
@@ -155,10 +156,11 @@ func (s *Service) rebuildPipelineQueue() {
 			id: id,
 			at: at,
 			spec: LaunchSpec{
-				RunID:    id,
-				FilePath: r.FilePath,
-				BotID:    r.BotID,
-				Vars:     inputsToVars(r.Inputs),
+				RunID:            id,
+				FilePath:         r.FilePath,
+				BotID:            r.BotID,
+				Vars:             inputsToVars(r.Inputs),
+				ExecutionContext: r.ExecutionContext.Clone(),
 				// Carry the ticket through the restart so a recovered launch
 				// can still spend its own needs-attention reservation in
 				// dequeueReady. The board stamps Source.IssueID at launch, so

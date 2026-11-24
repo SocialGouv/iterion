@@ -46,12 +46,16 @@
 package expr
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 )
 
 // AST is the parsed form of an expression. It is opaque outside the package.
@@ -63,18 +67,166 @@ type AST struct {
 // Source returns the original source string for debugging.
 func (a *AST) Source() string { return a.src }
 
-// Parse parses an expression string and returns its AST. Returns an error on
-// malformed input. The returned AST can be evaluated many times against
-// different contexts.
+// A Budget is a read budget and what the expressions parsed on it spent:
+// one expression's own (Parse), or the one the expressions of a bot share
+// (ParseOn — the compiler reads every expression of a bot on one). An
+// expression lives inside one string, which the .bot lexer counts as a
+// single record, so the expression parser counts its tokens on its own: a
+// name, a value, an operator or a bracket is one, the end of the expression
+// one — and a reading past the count is refused at the token the count ran
+// out on, the tree it would have grown never built (#2627).
+type Budget struct {
+	limit, spent int
+}
+
+// NewBudget is a budget of limit records; readbudget.Read is the count in
+// force wherever a bot is read.
+func NewBudget(limit int) *Budget {
+	return &Budget{limit: limit}
+}
+
+// Spent is what the expressions parsed on b took of it.
+func (b *Budget) Spent() int { return b.spent }
+
+// Limit is b's count of records.
+func (b *Budget) Limit() int { return b.limit }
+
+// BudgetError is the refusal of an expression past the read budget: the
+// reading stopped at the token the count ran out on. Before is what the
+// readings before this one spent of the same budget — 0 on a budget of the
+// expression's own — so the refusal names the expressions that used the
+// count up, not only the one it fell on.
+type BudgetError struct {
+	Limit  int
+	Before int
+}
+
+func (e *BudgetError) Error() string {
+	s := fmt.Sprintf("expr: the expression is past the read budget of %d — every token (a name, a value, an operator, a bracket, a punctuation mark) spends one, the end of the expression one: the reader stops here", e.Limit)
+	if e.Before > 0 {
+		s += fmt.Sprintf("; the expressions read before it on the same budget spent %d of the count", e.Before)
+	}
+	return s
+}
+
+// BudgetHint is the remedy of an expression past the read budget, the
+// wording every reader of the budget gives beside its own cause. The
+// expressions of a bot are counted together, so the remedy is to shorten
+// them or to raise the count.
+const BudgetHint = "Shorten the bot's expressions — the budget counts them together, a loop cap once per edge that carries it — or raise the budget: it is " + readbudget.Env + " wherever a bot is read, a larger count raises it, 0 removes it."
+
+// ExcerptRunes is how much of an expression's text a diagnostic quotes.
+const ExcerptRunes = 64
+
+// MaxDiagnosticText is the bound every diagnostic's message and hint are
+// held to where they are recorded — the compiler's emit, the parser's
+// Report.Add — whatever the site wrote: a message that quoted an author's
+// text whole grew with it, and no enumeration of sites proves the last one
+// was found. Past the bound the text is cut and marked (Clip). Four
+// kibibytes: the catalogue's longest fix line is under 1.5 KiB.
+const MaxDiagnosticText = 4096
+
+// Clip is s held to at most max bytes, cut on a rune boundary and marked
+// with an ellipsis when it was longer.
+func Clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// Excerpt is an expression's text as a diagnostic quotes it: whole when
+// short, its first ExcerptRunes runes and an ellipsis otherwise. A string, a
+// name or a reference of any length is one token, so a message that quoted
+// it whole — once per reference it holds, once per edge that carries it —
+// grew as references × bytes, far under every budget; the span positions the
+// expression, the excerpt only names it.
+func Excerpt(src string) string {
+	n := 0
+	for i := range src {
+		if n == ExcerptRunes {
+			return src[:i] + "…"
+		}
+		n++
+	}
+	return src
+}
+
+// ExcerptAt is the excerpt of src around the byte offset at: the
+// ExcerptRunes-rune window that starts sixteen runes before it, an ellipsis
+// on each side it does not reach. A diagnostic that compares two texts
+// quotes each around their first difference, where Excerpt alone would show
+// two identical prefixes as "conflicting".
+func ExcerptAt(src string, at int) string {
+	if at <= 0 || at > len(src) {
+		return Excerpt(src)
+	}
+	start := at
+	for back := 0; back < 16 && start > 0; back++ {
+		_, size := utf8.DecodeLastRuneInString(src[:start])
+		start -= size
+	}
+	if start == 0 {
+		return Excerpt(src)
+	}
+	n := 0
+	for i := range src[start:] {
+		if n == ExcerptRunes {
+			return "…" + src[start:start+i] + "…"
+		}
+		n++
+	}
+	return "…" + src[start:]
+}
+
+// Spend takes n records of b for a reading the parser already did — a text
+// read again for another site — and refuses when fewer are left, the
+// count then spent whole, as a refused reading leaves it. A count of none,
+// or a negative one, takes nothing.
+func (b *Budget) Spend(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	if n > b.limit-b.spent {
+		before := b.spent
+		b.spent = b.limit
+		return &BudgetError{Limit: b.limit, Before: before}
+	}
+	b.spent += n
+	return nil
+}
+
+// Parse parses an expression string and returns its AST, read on a budget of
+// its own (readbudget.Read). Returns an error on malformed input, a
+// *BudgetError on an expression past the budget. The returned AST can be
+// evaluated many times against different contexts.
 func Parse(src string) (*AST, error) {
-	p := &parser{lex: newLexer(src)}
+	return ParseOn(src, NewBudget(readbudget.Read()))
+}
+
+// ParseOn is Parse on a budget the expressions of one reading share: the
+// compiler parses every expression of a bot on one, so the bot is held to
+// the count whole, however it splits its expressions.
+func ParseOn(src string, b *Budget) (*AST, error) {
+	p := &parser{lex: newLexer(src), budget: b, began: b.spent}
 	p.advance()
 	root, err := p.parseExpr()
+	if p.err != nil {
+		// The cause outranks what the cut reading parsed as: a lexer's
+		// diagnosis or the budget's refusal names the token the reading
+		// stopped on, where the shape error it caused names one that never
+		// came.
+		return nil, p.err
+	}
 	if err != nil {
 		return nil, err
 	}
 	if p.cur.kind != tokEOF {
-		return nil, fmt.Errorf("expr: unexpected trailing %s", p.cur.value)
+		return nil, fmt.Errorf("expr: unexpected trailing %s", Excerpt(p.cur.value))
 	}
 	return &AST{root: root, src: src}, nil
 }
@@ -94,21 +246,67 @@ func MustParse(src string) *AST {
 // returns the resolved value (or nil if not found). The evaluator never
 // inspects the structure beyond what the callback returns.
 type Context struct {
-	Vars      func(path []string) any
-	Input     func(path []string) any
-	Outputs   func(path []string) any
-	Artifacts func(path []string) any
-	Loop      func(path []string) any // loop.<name>.<...>
-	Run       func(path []string) any // run.<...>
+	// NumericMode is selected by the caller's persisted value-format authority.
+	// Its zero value retains legacy semantics; operands never select a mode.
+	NumericMode NumericMode
+	Vars        func(path []string) any
+	Input       func(path []string) any
+	Outputs     func(path []string) any
+	Artifacts   func(path []string) any
+	Loop        func(path []string) any // loop.<name>.<...>
+	Run         func(path []string) any // run.<...>
+	// Named holds namespaces a caller declares beyond the standard ones,
+	// keyed by name (a connector package's `payload`, `headers`, `event`…).
+	// A named namespace is resolved by its callback and never by the
+	// implicit-input rule; it never shadows a standard namespace, which
+	// resolves first. A caller that leaves Input nil also turns every
+	// other unknown root into an error instead of a field of `input`.
+	Named map[string]func(path []string) any
 }
 
 // Eval evaluates the AST against the context and returns the resulting
 // value (typed as bool, int64, float64, string, or nil for absent paths).
 func (a *AST) Eval(ctx *Context) (any, error) {
+	return a.EvalContext(context.Background(), ctx)
+}
+
+// EvalContext is Eval interruptible: the evaluator consults ctx as it works
+// (sampled, so a cheap evaluation pays nothing for it) and a cancelled ctx
+// ends the evaluation at the next node instead of at its end — a run's
+// exec-timeout lands DURING a pathological expression, not after it (#2775).
+func (a *AST) EvalContext(ctx context.Context, ectx *Context) (any, error) {
+	return a.evaluate(ctx, ectx, false)
+}
+
+func (a *AST) evaluate(ctx context.Context, ectx *Context, asBool bool) (any, error) {
+	mode := LegacyNumeric
+	if ectx != nil {
+		mode = ectx.NumericMode
+	}
+	if mode != LegacyNumeric && mode != ExactNumeric {
+		return nil, fmt.Errorf("expr: unsupported numeric mode %d", mode)
+	}
 	if a == nil || a.root == nil {
+		if asBool {
+			return false, nil
+		}
 		return nil, nil
 	}
-	return evalNode(a.root, &evalState{ctx: ctx, visits: maxEvalVisits})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("expr: evaluation interrupted: %w", err)
+	}
+	st := &evalState{ctx: ectx, numericMode: mode, cancel: ctx, visits: maxEvalVisits, work: evalBudget()}
+	v, err := evalNode(a.root, st)
+	if err != nil {
+		return nil, err
+	}
+	if asBool {
+		return st.boolean(v)
+	}
+	return v, nil
 }
 
 // maxEvalVisits bounds the total number of per-element visits a single
@@ -121,11 +319,15 @@ const maxEvalVisits = 100_000
 
 // evalState carries per-evaluation state threaded through the recursive
 // evaluator: the resolution Context, the lambda local-binding frame stack
-// (innermost last), and the remaining element-visit budget.
+// (innermost last), the remaining element-visit budget, the remaining work
+// budget, and the cancellation the caller asked the evaluation to honour.
 type evalState struct {
-	ctx    *Context
-	locals []map[string]any
-	visits int
+	numericMode NumericMode // fixed before callbacks run
+	ctx         *Context
+	locals      []map[string]any
+	visits      int
+	work        int
+	cancel      context.Context
 }
 
 // lookupLocal resolves a lambda-bound identifier from the innermost frame out.
@@ -147,6 +349,20 @@ func (st *evalState) consume() error {
 	return nil
 }
 
+// debit charges n units of evaluation work — one per node evaluated, plus
+// the produced length of every string a `+` or a builtin builds — and
+// refuses the evaluation past the work budget. The visit budget counts a
+// combinator's ELEMENTS; this counts what each visit costs, which a body of
+// thousands of nodes or a quadratic string concatenation multiplies past any
+// visit count (#2775). The bound is the operator's (EvalEnv), 0 removes it.
+func (st *evalState) debit(n int) error {
+	st.work -= n
+	if st.work < 0 {
+		return fmt.Errorf("expr: evaluation budget exceeded (the work of one evaluation — node evaluations and built string bytes — is past %d, the count %s sets, 0 for none)", evalBudget(), EvalEnv)
+	}
+	return nil
+}
+
 // evalBody pushes a single-binding frame, evaluates body, then pops it.
 func (st *evalState) evalBody(name string, val any, body node) (any, error) {
 	st.locals = append(st.locals, map[string]any{name: val})
@@ -158,11 +374,16 @@ func (st *evalState) evalBody(name string, val any, body node) (any, error) {
 // EvalBool evaluates and coerces the result to bool. Non-bool truthy values
 // follow standard rules: nil → false, "" → false, 0 → false, others → true.
 func (a *AST) EvalBool(ctx *Context) (bool, error) {
-	v, err := a.Eval(ctx)
+	return a.EvalBoolContext(context.Background(), ctx)
+}
+
+// EvalBoolContext is EvalBool interruptible, as EvalContext is Eval.
+func (a *AST) EvalBoolContext(ctx context.Context, ectx *Context) (bool, error) {
+	v, err := a.evaluate(ctx, ectx, true)
 	if err != nil {
 		return false, err
 	}
-	return truthy(v), nil
+	return v.(bool), nil
 }
 
 // Refs returns the unique namespace.path tuples referenced by the expression.
@@ -284,6 +505,16 @@ func joinPath(p []string) string {
 	}
 	return out
 }
+
+// Truthy is the language's reading of a value as a condition, the one
+// EvalBool applies: nil, false, zero, an empty string, list or map, and the
+// strings "false", "no" and "0" do not hold; anything else does. A guard
+// written as `payload.event.bot_id` holds when the field is set.
+//
+// A site whose truthy misreading would be the dangerous verdict asks for a
+// boolean instead — an operation's success predicate, where `body.error`, a
+// message on failure, would read as success.
+func Truthy(v any) bool { return truthy(v) }
 
 func truthy(v any) bool {
 	switch t := v.(type) {
@@ -579,7 +810,10 @@ type node interface{ exprNode() }
 
 type litBool struct{ v bool }
 type litInt struct{ v int64 }
-type litFloat struct{ v float64 }
+type litFloat struct {
+	v       float64
+	decimal string
+}
 type litString struct{ v string }
 type pathNode struct {
 	namespace string
@@ -658,6 +892,10 @@ type parser struct {
 	cur   token
 	err   error
 	depth int
+	// budget is what the reading spends a record of per token (advance),
+	// and began what the budget had spent when the reading started.
+	budget *Budget
+	began  int
 }
 
 // maxExprDepth caps recursive descent depth so a pathologically nested
@@ -683,11 +921,18 @@ func (p *parser) advance() {
 	if p.err != nil {
 		return
 	}
+	if p.budget.spent >= p.budget.limit {
+		// The next token is one past the budget: the reading stops here,
+		// the tree it would have grown never built.
+		p.err = &BudgetError{Limit: p.budget.limit, Before: p.began}
+		return
+	}
 	t, err := p.lex.next()
 	if err != nil {
 		p.err = err
 		return
 	}
+	p.budget.spent++
 	p.cur = t
 }
 
@@ -834,7 +1079,7 @@ func (p *parser) parsePostfix() (node, error) {
 			p.advance() // consume '.'
 			if p.cur.kind != tokIdent {
 				p.leave()
-				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", p.cur.value)
+				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", Excerpt(p.cur.value))
 			}
 			n = &indexNode{recv: n, index: litString{v: p.cur.value}}
 			p.advance() // consume IDENT
@@ -849,7 +1094,7 @@ func (p *parser) parsePostfix() (node, error) {
 		}
 		if p.cur.kind != tokRBracket {
 			p.leave()
-			return nil, fmt.Errorf("expr: expected ']' got %s", p.cur.value)
+			return nil, fmt.Errorf("expr: expected ']' got %s", Excerpt(p.cur.value))
 		}
 		p.advance() // consume ']'
 		p.leave()
@@ -866,17 +1111,18 @@ func (p *parser) parsePrimary() (node, error) {
 	case tokInt:
 		v, err := strconv.ParseInt(p.cur.value, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("expr: invalid integer %q", p.cur.value)
+			return nil, fmt.Errorf("expr: invalid integer %q", Excerpt(p.cur.value))
 		}
 		p.advance()
 		return litInt{v: v}, nil
 	case tokFloat:
 		v, err := strconv.ParseFloat(p.cur.value, 64)
 		if err != nil {
-			return nil, fmt.Errorf("expr: invalid float %q", p.cur.value)
+			return nil, fmt.Errorf("expr: invalid float %q", Excerpt(p.cur.value))
 		}
+		decimal := normalizeDecimalLiteral(p.cur.value)
 		p.advance()
-		return litFloat{v: v}, nil
+		return litFloat{v: v, decimal: decimal}, nil
 	case tokString:
 		v := p.cur.value
 		p.advance()
@@ -894,7 +1140,7 @@ func (p *parser) parsePrimary() (node, error) {
 			return nil, err
 		}
 		if p.cur.kind != tokRParen {
-			return nil, fmt.Errorf("expr: expected ')' got %s", p.cur.value)
+			return nil, fmt.Errorf("expr: expected ')' got %s", Excerpt(p.cur.value))
 		}
 		p.advance()
 		return inner, nil
@@ -912,7 +1158,7 @@ func (p *parser) parsePrimary() (node, error) {
 				return p.parseLambdaComb(ns)
 			}
 			if _, ok := builtins[ns]; !ok {
-				return nil, fmt.Errorf("expr: unknown function %q", ns)
+				return nil, fmt.Errorf("expr: unknown function %q", Excerpt(ns))
 			}
 			return p.parseFuncCallArgs(ns)
 		}
@@ -920,14 +1166,14 @@ func (p *parser) parsePrimary() (node, error) {
 		for p.cur.kind == tokDot {
 			p.advance()
 			if p.cur.kind != tokIdent {
-				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", p.cur.value)
+				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", Excerpt(p.cur.value))
 			}
 			path = append(path, p.cur.value)
 			p.advance()
 		}
 		return pathNode{namespace: ns, path: path}, nil
 	}
-	return nil, fmt.Errorf("expr: unexpected token %s", p.cur.value)
+	return nil, fmt.Errorf("expr: unexpected token %s", Excerpt(p.cur.value))
 }
 
 // parseListLit parses `[expr, ...]`, invoked with cur on the opening '['.
@@ -957,7 +1203,7 @@ func (p *parser) parseListLit() (node, error) {
 		}
 	}
 	if p.cur.kind != tokRBracket {
-		return nil, fmt.Errorf("expr: expected ',' or ']' in a list literal, got %s", p.cur.value)
+		return nil, fmt.Errorf("expr: expected ',' or ']' in a list literal, got %s", Excerpt(p.cur.value))
 	}
 	p.advance() // consume ']'
 	return &listLit{elems: elems}, nil
@@ -985,10 +1231,10 @@ func (p *parser) parseObjectLit() (node, error) {
 				key = p.cur.value
 				p.advance()
 			default:
-				return nil, fmt.Errorf("expr: object literal keys are identifiers or quoted strings, got %s", p.cur.value)
+				return nil, fmt.Errorf("expr: object literal keys are identifiers or quoted strings, got %s", Excerpt(p.cur.value))
 			}
 			if p.cur.kind != tokColon {
-				return nil, fmt.Errorf("expr: expected ':' after object literal key %q, got %s", key, p.cur.value)
+				return nil, fmt.Errorf("expr: expected ':' after object literal key %q, got %s", Excerpt(key), Excerpt(p.cur.value))
 			}
 			p.advance() // consume ':'
 			val, err := p.parseExpr()
@@ -996,7 +1242,7 @@ func (p *parser) parseObjectLit() (node, error) {
 				return nil, err
 			}
 			if seen[key] {
-				return nil, fmt.Errorf("expr: object literal repeats key %q", key)
+				return nil, fmt.Errorf("expr: object literal repeats key %q", Excerpt(key))
 			}
 			seen[key] = true
 			keys = append(keys, key)
@@ -1009,7 +1255,7 @@ func (p *parser) parseObjectLit() (node, error) {
 		}
 	}
 	if p.cur.kind != tokRBrace {
-		return nil, fmt.Errorf("expr: expected ',' or '}' in an object literal, got %s", p.cur.value)
+		return nil, fmt.Errorf("expr: expected ',' or '}' in an object literal, got %s", Excerpt(p.cur.value))
 	}
 	p.advance() // consume '}'
 	return &objectLit{keys: keys, vals: vals}, nil
@@ -1035,7 +1281,7 @@ func (p *parser) parseFuncCallArgs(name string) (node, error) {
 		}
 	}
 	if p.cur.kind != tokRParen {
-		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, p.cur.value)
+		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, Excerpt(p.cur.value))
 	}
 	p.advance() // consume ')'
 	// Arity is an authoring error like an unknown name, and belongs at the
@@ -1066,7 +1312,7 @@ func (p *parser) parseLambdaComb(name string) (node, error) {
 		return nil, err
 	}
 	if p.cur.kind != tokComma {
-		return nil, fmt.Errorf("expr: %s() expects a comma after the collection, got %s", name, p.cur.value)
+		return nil, fmt.Errorf("expr: %s() expects a comma after the collection, got %s", name, Excerpt(p.cur.value))
 	}
 	p.advance()
 	var initNode node
@@ -1076,7 +1322,7 @@ func (p *parser) parseLambdaComb(name string) (node, error) {
 			return nil, err
 		}
 		if p.cur.kind != tokComma {
-			return nil, fmt.Errorf("expr: reduce() expects a comma after the initial value, got %s", p.cur.value)
+			return nil, fmt.Errorf("expr: reduce() expects a comma after the initial value, got %s", Excerpt(p.cur.value))
 		}
 		p.advance()
 	}
@@ -1092,7 +1338,7 @@ func (p *parser) parseLambdaComb(name string) (node, error) {
 		return nil, fmt.Errorf("expr: %s() lambda takes %d parameter(s), got %d", name, want, len(params))
 	}
 	if p.cur.kind != tokRParen {
-		return nil, fmt.Errorf("expr: expected ')' to close %s(), got %s", name, p.cur.value)
+		return nil, fmt.Errorf("expr: expected ')' to close %s(), got %s", name, Excerpt(p.cur.value))
 	}
 	p.advance() // consume ')'
 	return &lambdaCombNode{name: name, coll: coll, init: initNode, params: params, body: body}, nil
@@ -1116,17 +1362,17 @@ func (p *parser) parseLambda(ctxName string) ([]string, node, error) {
 			break
 		}
 		if p.cur.kind != tokRParen {
-			return nil, nil, fmt.Errorf("expr: expected ')' after %s() lambda parameters, got %s", ctxName, p.cur.value)
+			return nil, nil, fmt.Errorf("expr: expected ')' after %s() lambda parameters, got %s", ctxName, Excerpt(p.cur.value))
 		}
 		p.advance()
 	case tokIdent:
 		params = append(params, p.cur.value)
 		p.advance()
 	default:
-		return nil, nil, fmt.Errorf("expr: %s() expects a lambda (e.g. x => x.field), got %s", ctxName, p.cur.value)
+		return nil, nil, fmt.Errorf("expr: %s() expects a lambda (e.g. x => x.field), got %s", ctxName, Excerpt(p.cur.value))
 	}
 	if p.cur.kind != tokArrow {
-		return nil, nil, fmt.Errorf("expr: %s() lambda expects '=>' after parameters, got %s", ctxName, p.cur.value)
+		return nil, nil, fmt.Errorf("expr: %s() lambda expects '=>' after parameters, got %s", ctxName, Excerpt(p.cur.value))
 	}
 	p.advance()
 	for _, pm := range params {
@@ -1146,12 +1392,26 @@ func (p *parser) parseLambda(ctxName string) ([]string, node, error) {
 // ---------------------------------------------------------------------------
 
 func evalNode(n node, st *evalState) (any, error) {
+	if err := st.debit(1); err != nil {
+		return nil, err
+	}
+	// Cancellation is sampled on the work counter — every sixty-fourth node —
+	// so an evaluation pays one branch per node for it and a cancelled caller
+	// is answered within a bounded number of evaluations, not at the end.
+	if st.cancel != nil && st.work&63 == 0 {
+		if err := st.cancel.Err(); err != nil {
+			return nil, fmt.Errorf("expr: evaluation interrupted: %w", err)
+		}
+	}
 	switch v := n.(type) {
 	case litBool:
 		return v.v, nil
 	case litInt:
 		return v.v, nil
 	case litFloat:
+		if st.exactNumbers() {
+			return st.decimalLiteral(v.decimal)
+		}
 		return v.v, nil
 	case litString:
 		return v.v, nil
@@ -1217,6 +1477,9 @@ func resolvePath(namespace string, path []string, st *evalState) (any, error) {
 		}
 		return ctx.Run(path), nil
 	}
+	if fn, ok := ctx.Named[namespace]; ok && fn != nil {
+		return fn(path), nil
+	}
 	// Bare identifier (e.g. `approved` in a `when` clause): interpret as a
 	// field of the implicit `input` namespace. This matches the legacy
 	// `when <field>` ergonomics where the predicate references a field of
@@ -1235,8 +1498,12 @@ func evalUnary(n *unaryNode, st *evalState) (any, error) {
 	}
 	switch n.op {
 	case "!":
-		return !truthy(v), nil
+		b, err := st.boolean(v)
+		return !b, err
 	case "-":
+		if st.exactNumbers() {
+			return st.negateNumber(v)
+		}
 		switch t := v.(type) {
 		case int64:
 			return -t, nil
@@ -1255,27 +1522,35 @@ func evalBinary(n *binaryNode, st *evalState) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !truthy(l) {
+		b, err := st.boolean(l)
+		if err != nil {
+			return nil, err
+		}
+		if !b {
 			return false, nil
 		}
 		r, err := evalNode(n.right, st)
 		if err != nil {
 			return nil, err
 		}
-		return truthy(r), nil
+		return st.boolean(r)
 	case "||":
 		l, err := evalNode(n.left, st)
 		if err != nil {
 			return nil, err
 		}
-		if truthy(l) {
+		b, err := st.boolean(l)
+		if err != nil {
+			return nil, err
+		}
+		if b {
 			return true, nil
 		}
 		r, err := evalNode(n.right, st)
 		if err != nil {
 			return nil, err
 		}
-		return truthy(r), nil
+		return st.boolean(r)
 	}
 
 	l, err := evalNode(n.left, st)
@@ -1286,6 +1561,9 @@ func evalBinary(n *binaryNode, st *evalState) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if st.exactNumbers() {
+		return st.exactBinary(n.op, l, r)
+	}
 	switch n.op {
 	case "==":
 		return equals(l, r), nil
@@ -1294,6 +1572,17 @@ func evalBinary(n *binaryNode, st *evalState) (any, error) {
 	case "<", "<=", ">", ">=":
 		return compare(n.op, l, r)
 	case "+", "-", "*", "/", "%":
+		if n.op == "+" {
+			// `+` concatenates as soon as one operand is a string: charge the
+			// produced length BEFORE arith builds it — a post-hoc charge pays
+			// for a string that already exists, and a left-deep chain
+			// re-copies its prefix at every step (#2775).
+			if size, concat := concatCharge(l, r); concat {
+				if err := st.debit(size); err != nil {
+					return nil, err
+				}
+			}
+		}
 		return arith(n.op, l, r)
 	}
 	return nil, fmt.Errorf("expr: unknown binary op %q", n.op)
@@ -1365,6 +1654,29 @@ func compare(op string, a, b any) (bool, error) {
 		}
 	}
 	return false, fmt.Errorf("expr: cannot compare %T %s %T", a, op, b)
+}
+
+// concatCharge estimates the produced length of a `+` that concatenates —
+// at least one string operand, the other string or numeric, the shapes arith
+// accepts — so the work budget is charged before the result is built.
+func concatCharge(a, b any) (int, bool) {
+	operandLen := func(v any) (int, bool) {
+		if s, ok := v.(string); ok {
+			return len(s), true
+		}
+		if _, ok := toFloat(v); ok {
+			return 24, true // a number renders short under %v
+		}
+		return 0, false
+	}
+	if _, ok := a.(string); !ok {
+		if _, ok := b.(string); !ok {
+			return 0, false
+		}
+	}
+	an, aok := operandLen(a)
+	bn, bok := operandLen(b)
+	return an + bn, aok && bok
 }
 
 func arith(op string, a, b any) (any, error) {
@@ -1574,7 +1886,12 @@ func mulCheckedInt64(a, b int64) (int64, bool) {
 // evaluator (which dispatches) read one declaration. A second copy would
 // drift, and the drift reads as "it compiled, then died mid-run".
 type builtin struct {
-	fn func(args []any) (any, error)
+	// fn receives the evalState so a builtin that BUILDS a string or a
+	// collection charges the work budget as it builds — before the
+	// allocation, never after it (#2775: a post-hoc charge let
+	// join(map(...)) allocate hundreds of MiB the budget would have
+	// refused, past any recover).
+	fn func(st *evalState, args []any) (any, error)
 	// min is the smallest accepted argument count; max the largest, or
 	// arityUnbounded when the builtin is variadic.
 	min, max int
@@ -1661,7 +1978,11 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if truthy(condVal) {
+		b, err := st.boolean(condVal)
+		if err != nil {
+			return nil, err
+		}
+		if b {
 			return evalNode(n.args[1], st)
 		}
 		return evalNode(n.args[2], st)
@@ -1688,10 +2009,17 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		}
 		args[i] = v
 	}
-	return b.fn(args)
+	// A builtin that builds a string or a collection charges the work budget
+	// as it builds, inside its implementation — never after the allocation.
+	if st.exactNumbers() {
+		if fn := exactNumericBuiltins[n.name]; fn != nil {
+			return fn(st, args)
+		}
+	}
+	return b.fn(st, args)
 }
 
-func builtinLength(args []any) (any, error) {
+func builtinLength(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: length() takes 1 argument, got %d", len(args))
 	}
@@ -1720,7 +2048,7 @@ func builtinLength(args []any) (any, error) {
 	return nil, fmt.Errorf("expr: length() expects array, string, or map, got %T", args[0])
 }
 
-func builtinConcat(args []any) (any, error) {
+func builtinConcat(st *evalState, args []any) (any, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("expr: concat() takes at least 1 argument")
 	}
@@ -1733,12 +2061,17 @@ func builtinConcat(args []any) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("expr: concat() argument %d is %T, want array", i+1, a)
 		}
+		// Charge the copy before it happens: the budget refuses a giant
+		// concat before its result exists, not after (#2775).
+		if err := st.debit(len(arr)); err != nil {
+			return nil, err
+		}
 		out = append(out, arr...)
 	}
 	return out, nil
 }
 
-func builtinUnique(args []any) (any, error) {
+func builtinUnique(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: unique() takes 1 argument, got %d", len(args))
 	}
@@ -1750,11 +2083,21 @@ func builtinUnique(args []any) (any, error) {
 		return nil, fmt.Errorf("expr: unique() expects array, got %T", args[0])
 	}
 	// Stringify for equality so heterogeneous arrays (which the runtime
-	// cheerfully produces from JSON) don't blow up on map/slice keys.
+	// cheerfully produces from JSON) don't blow up on map/slice keys. A
+	// string element IS its key (%v renders it as itself), so nothing
+	// copies; the key's length is still charged — the map walk hashes every
+	// byte, and a retained formatting of a non-string element is real
+	// memory (#2775).
 	seen := make(map[string]struct{}, len(arr))
 	out := make([]any, 0, len(arr))
 	for _, v := range arr {
-		key := fmt.Sprintf("%v", v)
+		key, isStr := v.(string)
+		if !isStr {
+			key = fmt.Sprintf("%v", v)
+		}
+		if err := st.debit(len(key) + 1); err != nil {
+			return nil, err
+		}
 		if _, dup := seen[key]; dup {
 			continue
 		}
@@ -1764,7 +2107,7 @@ func builtinUnique(args []any) (any, error) {
 	return out, nil
 }
 
-func builtinContains(args []any) (any, error) {
+func builtinContains(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: contains() takes 2 arguments, got %d", len(args))
 	}
@@ -1795,11 +2138,14 @@ func builtinContains(args []any) (any, error) {
 // field). Wrapping the accumulator as `tail(unique(concat(...)), N)` keeps a
 // bounded, most-recent window. n <= 0 yields an empty array; n >= len
 // returns the array unchanged. Order is preserved.
-func builtinTail(args []any) (any, error) {
+func builtinTail(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: tail() takes 2 arguments (array, n), got %d", len(args))
 	}
-	n, ok := toInt(args[1])
+	n, ok, err := st.integer(args[1])
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("expr: tail() expects a number as second argument, got %T", args[1])
 	}
@@ -1817,6 +2163,9 @@ func builtinTail(args []any) (any, error) {
 		return arr, nil
 	}
 	// Copy the last n elements so the result never aliases the input slice.
+	if err := st.debit(int(n)); err != nil {
+		return nil, err
+	}
 	out := make([]any, n)
 	copy(out, arr[int64(len(arr))-n:])
 	return out, nil
@@ -1830,17 +2179,21 @@ func builtinTail(args []any) (any, error) {
 // if(cond, then, else) returns then when cond is truthy, else
 // otherwise. As of ticket a3a9757b the un-taken branch is NOT
 // evaluated — `if(n > 0, total / n, 0)` is safe when n == 0.
-func builtinIf(args []any) (any, error) {
+func builtinIf(st *evalState, args []any) (any, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("expr: if() takes 3 arguments (cond, then, else), got %d", len(args))
 	}
-	if truthy(args[0]) {
+	b, err := st.boolean(args[0])
+	if err != nil {
+		return nil, err
+	}
+	if b {
 		return args[1], nil
 	}
 	return args[2], nil
 }
 
-func builtinJoin(args []any) (any, error) {
+func builtinJoin(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: join() takes 2 arguments, got %d", len(args))
 	}
@@ -1855,24 +2208,42 @@ func builtinJoin(args []any) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("expr: join() expects array as first argument, got %T", args[0])
 	}
-	parts := make([]string, len(arr))
+	// Build incrementally and charge each part BEFORE writing it: the budget
+	// refuses a giant join before its result string exists — a post-hoc
+	// charge of the built string let join(map(...)) allocate hundreds of MiB
+	// past any recover (#2775).
+	var out strings.Builder
 	for i, v := range arr {
-		parts[i] = fmt.Sprintf("%v", v)
+		// A string element renders as itself under %v: no copy to charge for.
+		part, ok := v.(string)
+		if !ok {
+			part = fmt.Sprintf("%v", v)
+		}
+		if err := st.debit(len(part) + len(sep)); err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			out.WriteString(sep)
+		}
+		out.WriteString(part)
 	}
-	return strings.Join(parts, sep), nil
+	return out.String(), nil
 }
 
 // builtinSort returns a new array sorted ascending. All-numeric arrays sort
 // numerically; all-string arrays lexicographically; mixed/other arrays sort by
 // their %v stringification. Ordering is deterministic for prompt-cache
 // stability. The input is never mutated.
-func builtinSort(args []any) (any, error) {
+func builtinSort(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: sort() takes 1 argument, got %d", len(args))
 	}
 	arr, err := toElemSlice(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("expr: sort() expects array, %w", err)
+	}
+	if err := st.debit(len(arr)); err != nil {
+		return nil, err
 	}
 	out := make([]any, len(arr))
 	copy(out, arr)
@@ -1905,13 +2276,16 @@ func builtinSort(args []any) (any, error) {
 }
 
 // builtinKeys returns a map's keys, sorted ascending (deterministic).
-func builtinKeys(args []any) (any, error) {
+func builtinKeys(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: keys() takes 1 argument, got %d", len(args))
 	}
 	m, err := toStringMap(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("expr: keys() expects a map, %w", err)
+	}
+	if err := st.debit(len(m)); err != nil {
+		return nil, err
 	}
 	out := make([]any, 0, len(m))
 	for _, k := range sortedMapKeys(m) {
@@ -1921,13 +2295,16 @@ func builtinKeys(args []any) (any, error) {
 }
 
 // builtinValues returns a map's values ordered by sorted key (deterministic).
-func builtinValues(args []any) (any, error) {
+func builtinValues(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: values() takes 1 argument, got %d", len(args))
 	}
 	m, err := toStringMap(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("expr: values() expects a map, %w", err)
+	}
+	if err := st.debit(len(m)); err != nil {
+		return nil, err
 	}
 	out := make([]any, 0, len(m))
 	for _, k := range sortedMapKeys(m) {
@@ -1939,7 +2316,7 @@ func builtinValues(args []any) (any, error) {
 // builtinSlice returns arr[start:end) with bounds clamped to [0, len]. A
 // negative index counts from the end (Python-style); end defaults past the last
 // element when out of range. The result never aliases the input.
-func builtinSlice(args []any) (any, error) {
+func builtinSlice(st *evalState, args []any) (any, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("expr: slice() takes 3 arguments (array, start, end), got %d", len(args))
 	}
@@ -1948,11 +2325,17 @@ func builtinSlice(args []any) (any, error) {
 		return nil, fmt.Errorf("expr: slice() expects array as first argument, %w", err)
 	}
 	n := int64(len(arr))
-	start, ok := toInt(args[1])
+	start, ok, err := st.integer(args[1])
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("expr: slice() start must be an integer, got %T", args[1])
 	}
-	end, ok := toInt(args[2])
+	end, ok, err := st.integer(args[2])
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("expr: slice() end must be an integer, got %T", args[2])
 	}
@@ -1972,6 +2355,9 @@ func builtinSlice(args []any) (any, error) {
 	if e < s {
 		e = s
 	}
+	if err := st.debit(int(e - s)); err != nil {
+		return nil, err
+	}
 	out := make([]any, e-s)
 	copy(out, arr[s:e])
 	return out, nil
@@ -1980,7 +2366,7 @@ func builtinSlice(args []any) (any, error) {
 // builtinSum totals a numeric array. All-integer inputs stay int64 (with
 // overflow detection); a fractional element promotes the sum to float64. Empty
 // is int64(0).
-func builtinSum(args []any) (any, error) {
+func builtinSum(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: sum() takes 1 argument, got %d", len(args))
 	}
@@ -2026,8 +2412,8 @@ func builtinSum(args []any) (any, error) {
 // subexpressions have to be spelled out four times inside nested `if`s, which
 // is how a deterministic guard stops being reviewable. Arguments are FLATTENED
 // one level, so `max(list, 7)` reads the list's elements alongside the scalar.
-func builtinMin(args []any) (any, error) { return minMax(args, "min") }
-func builtinMax(args []any) (any, error) { return minMax(args, "max") }
+func builtinMin(st *evalState, args []any) (any, error) { return minMax(args, "min") }
+func builtinMax(st *evalState, args []any) (any, error) { return minMax(args, "max") }
 
 func minMax(args []any, which string) (any, error) {
 	if len(args) == 0 {
@@ -2070,8 +2456,12 @@ func minMax(args []any, which string) (any, error) {
 // the engine when the compute output meets its schema. An integer passes
 // through; a non-number, or a float with no finite integer (NaN, ±Inf,
 // beyond the int64 range), is an error.
-func builtinFloor(args []any) (any, error) { return numberToInt(args, "floor", math.Floor) }
-func builtinRound(args []any) (any, error) { return numberToInt(args, "round", math.Round) }
+func builtinFloor(st *evalState, args []any) (any, error) {
+	return numberToInt(args, "floor", math.Floor)
+}
+func builtinRound(st *evalState, args []any) (any, error) {
+	return numberToInt(args, "round", math.Round)
+}
 
 func numberToInt(args []any, name string, fn func(float64) float64) (any, error) {
 	if len(args) != 1 {
@@ -2094,7 +2484,7 @@ func numberToInt(args []any, name string, fn func(float64) float64) (any, error)
 // builtinFlatten concatenates one level of nesting: each array element is
 // spliced in, each non-array element is kept as-is. Deeper nesting is left
 // intact (deep flatten is excluded to keep output size bounded by input).
-func builtinFlatten(args []any) (any, error) {
+func builtinFlatten(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: flatten() takes 1 argument, got %d", len(args))
 	}
@@ -2105,8 +2495,15 @@ func builtinFlatten(args []any) (any, error) {
 	out := make([]any, 0, len(arr))
 	for _, v := range arr {
 		if inner, ok := v.([]any); ok {
+			// Charge the copy before it happens, as concat does (#2775).
+			if err := st.debit(len(inner)); err != nil {
+				return nil, err
+			}
 			out = append(out, inner...)
 			continue
+		}
+		if err := st.debit(1); err != nil {
+			return nil, err
 		}
 		out = append(out, v)
 	}
@@ -2173,7 +2570,10 @@ func evalIndex(n *indexNode, st *evalState) (any, error) {
 	}
 	switch c := recv.(type) {
 	case []any:
-		i, ok := toInt(idx)
+		i, ok, err := st.integer(idx)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			return nil, fmt.Errorf("expr: array index must be an integer, got %T", idx)
 		}
@@ -2193,7 +2593,10 @@ func evalIndex(n *indexNode, st *evalState) (any, error) {
 	rv := reflect.ValueOf(recv)
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
-		i, ok := toInt(idx)
+		i, ok, err := st.integer(idx)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			return nil, fmt.Errorf("expr: array index must be an integer, got %T", idx)
 		}
@@ -2280,7 +2683,11 @@ func evalLambdaComb(n *lambdaCombNode, st *evalState) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if truthy(v) {
+			b, err := st.boolean(v)
+			if err != nil {
+				return nil, err
+			}
+			if b {
 				out = append(out, el)
 			}
 		}

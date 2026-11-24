@@ -18,6 +18,24 @@ local / desktop / cloud, the upload protocol, and the security model.
 > sandbox mount), just bound at answer time instead of launch time. See
 > [human-in-the-loop.md](human-in-the-loop.md#handing-the-workflow-a-file).
 
+> **Attachments can also arrive without any upload.** A bundle's
+> `attachments/` directory gives the AUTHOR's defaults, and a bot
+> binding of kind `context` gives the OPERATOR's reference documents (a
+> pinned git source materialised into every run of the bot, schedules
+> included — ADR
+> [147](adr/147-operator-bound-bot-context-is-a-pinned-source.md), setup
+> in
+> [cloud-admin-guide.md](cloud-admin-guide.md#binding-a-context-document-to-a-bot)).
+> When several sources claim one name the precedence is **author <
+> operator < launch**: a context binding overrides a bundle default, a
+> per-launch upload overrides both. Two bounds to read correctly: the
+> size ceiling applies to the DELIVERED DOCUMENT, not to the fetch —
+> the clone is depth-1 but otherwise unbounded — and the contained read
+> of the pinned file refuses symlinks escaping the checkout but cannot
+> see a hardlink (the checkout only ever comes from `git fetch` +
+> `checkout`, which never links a worktree file to a host path; see
+> `readContextFile`'s comment for the full reasoning).
+
 ## DSL
 
 ```iter fragment
@@ -56,6 +74,11 @@ C050 and the later declaration is skipped.
 Any other sub-field produces compile-time diagnostic `C054`. An
 unknown attachment name produces `C053`.
 
+The forms resolve wherever a template resolves: prompt and tool bodies,
+and the mapping surfaces alike — an edge `with:`, an `emit` payload, a
+`fail message:`, a human node's instructions (#2864). Only a compute
+node's `expr:` has no attachments resolver (**C151**).
+
 ### Diagnostics
 
 | Code | Meaning                                                                |
@@ -84,19 +107,103 @@ echo "[iterion] attachment=$PWD/exports/final.mp4 name=final_video mime=video/mp
 
 | Token   | Required | Notes                                                                    |
 | ------- | -------- | ------------------------------------------------------------------------ |
-| `<path>` | yes     | Everything up to the first `name=` / `mime=` token, so a path may contain spaces. Host-absolute, readable, and at most 50 MB. |
+| `<path>` | yes     | Everything up to the first `name=` / `mime=` / `required=` token, so a path may contain spaces. Host-absolute, readable, and at most 50 MB. |
 | `name`  | optional | The handle `/api/runs/{id}/attachments/{name}` serves. Defaults to the file's base name without its extension, sanitised to `[A-Za-z0-9_-]`. A name the run already carries is **never overwritten** — the directive is skipped with a warning, so a tool cannot clobber an operator's upload or an earlier iteration's deliverable. |
 | `mime`  | optional | Stored as-is when well formed; otherwise sniffed from the extension, falling back to `application/octet-stream`. Types the browser would EXECUTE (html, xhtml, svg, xml, javascript) are downgraded to `application/octet-stream`: the serve route replies `Content-Disposition: inline` with no nosniff, and tool stdout is not a trusted channel. |
+| `required` | optional | `required=true` makes the loss of THIS file the node's failure instead of an event beside its success. Off by default. The usual boolean spellings answer; any other value (`yes`, a typo, an empty value) reads as **true** — the token is only ever typed to ask for the guarantee, so a spelling no parser knows must not quietly cancel it. |
 
 The runtime reads the bytes and persists them through the same
 `WriteAttachment` path as an upload, so the result is an ordinary run
 attachment: same storage layout, same serving route, same presigning.
-One line per file; other stdout is left alone.
+One line per file; other stdout is left alone. On a node that declares
+`output:` the directive lines are read out of the node's answer before it
+is judged ([the output contract](dsl.md#tool)): a directive beside the JSON
+object publishes the object's fields — before this rule the pair was
+published as a `{"result": …}` text wrapper, declared fields absent — and
+a directive alone is an empty answer. The runtime scans stderr too, so the
+directive may go there instead — and on a node with a `postcondition:` it
+has to: that node's stdout is not read this way (its answer is the merge of
+its recipe's stdout and its postcondition's, the latter winning), so a
+directive beside the recipe's JSON leaves a text wrapper there.
 
-Failures are **non-fatal** — a missing or unreadable file is logged and
+### It shows up in the run summary
+
+A published file is also announced as a **headline result link**: the run
+summary lists `Deliverable → …/attachments/<name>` beside the pull
+requests the run opened, so a reader finds what it produced without
+opening a gate or the artifacts drawer. The engine emits one
+`preview_url_available` event per published file, carrying
+`kind=deliverable` — a link-only kind, never embedded in the Browser
+pane — plus `scope=external` and `source=tool-attachment`, which is what
+tells it apart from a `[iterion] preview_url=` line a tool printed
+itself.
+
+The address is the existing serving route, so the link grants exactly the
+rights the run does and no more: the route resolves the handle through
+the run document under the caller's own tenant, so a member of another
+team gets a 404 from the link just as from the run. The companion
+`/api/runs/{id}/attachments/{name}/url` mints an HMAC-signed URL instead
+— a bearer address any user agent can follow until it expires, which is
+a deliberate sharing gesture and not what the summary link is.
+
+It is **absolute**, built from `ITERION_PUBLIC_URL`, and when that origin
+is unset or unusable there is **no link at all** rather than a
+root-relative one: the studio reaches its own API through a base that is
+`/x/<id>/api` inside a scoped pane and a different origin in the desktop
+app, so a published `/api/runs/…` would address the wrong server. The
+file is published either way — `run_attachment_published` still carries
+its handle, which is what a gate reads — and the reason an origin was
+refused is logged once per run, the same place `run.url` reports it.
+
+Failures are **non-fatal by default** — a missing or unreadable file is
 skipped, never enough to fail the tool node. The tool's own output is
 its contract with the workflow; the directive is only how the bytes
 reach a human.
+
+A workflow whose POINT is the file says so with `required=true`, and
+then the loss fails the node:
+
+```sh
+echo "[iterion] attachment=$PWD/report.md mime=text/markdown required=true"
+```
+
+The node ends with `required attachment=<path> was not delivered to the
+run (<reason>)`, after the `run_attachment_lost` event is recorded — the
+failure replaces nothing, it is added. The guarantee is about the LOSS,
+so a required file that arrives leaves the node exactly as green as
+before, and the token changes nothing for any node that does not carry
+it. Three boundaries are deliberate:
+
+- A recipe that FAILED is judged by its own exit status: the files it
+  did not finish writing are that failure's consequence, and no
+  delivery verdict is computed for it.
+- A node with a `postcondition:` fails on the loss too, before the
+  recovery rungs — the postcondition answers about the world the recipe
+  acted on, while the loss is about the run's own store, and no rung can
+  mend it by re-running a command that already exited 0.
+- A `postcondition:` body, and an `action:` node's vendor payload, still
+  publish what they declare but can never FAIL the node: a check is the
+  node's oracle rather than its producer, and a response body the vendor
+  controls must not be able to end a run.
+
+`required=` therefore hands an author a loud failure in place of a
+silent loss — and, like every token on this line, it is read from a
+stream the author does not fully own (tool stdout carries fetched pages,
+catted files and model-written text). Opting in accepts that a line
+planted there can fail the node; it cannot corrupt what the node
+delivered.
+
+They are not **silent**, though. Every exit that does not publish emits
+a `run_attachment_lost` event on the run, carrying the declared `path`,
+the `reason` (`unreadable`, `not_a_file`, `over_cap`, `name_taken`,
+`store_write_failed`), a human `detail`, and `required` — always both
+ways, so a reader filtering the losses that failed a node cannot read an
+absent field as a `false`. Without it the only trace
+was a warning in the runner's log — and on a sandbox pod that is the
+one place the operator cannot read, so a run could lose its whole
+deliverable and look like it succeeded (#2668). The sibling
+`[iterion] preview_screenshot=` verb reports its losses the same way;
+the event names which directive it came from.
 
 To show it at a gate, return a descriptor from the same node and map it
 in the edge's `with {}`:
@@ -119,6 +226,42 @@ order; it is not required.
 
 > This is the writing counterpart of `[iterion] preview_screenshot=`,
 > which promotes a browser capture the same way.
+
+## A node declares the files it produces
+
+The directive above is a line the tool PRINTS. A node can declare the same
+files up front instead, so the contract is readable without running
+anything:
+
+```iter fragment
+tool export_report:
+  command: `make report`
+  deliverables: ["report.md", "out/annex.html"]
+```
+
+A declared deliverable is a **workspace-relative** path, and its **base
+name** is the handle the run serves it under: `out/annex.html` is served as
+`annex.html`, so a download address carries the file name the author wrote.
+`agent` and `judge` nodes accept the property too — they run tools in the
+same workspace. A `human` node's file comes from the operator's own upload
+and a `compute` node writes none, so there the parser refuses the property
+by name instead of dropping the declaration in silence.
+
+Two shapes are refused where the declaration is written, because no run
+could keep the promise:
+
+| Code | What it refuses                                                      |
+| ---- | -------------------------------------------------------------------- |
+| C317 | An entry that is not a workspace-relative file path: absolute (`/tmp/report.md`), escaping upwards (`../report.md`), naming a directory (`out/`), or empty. A `{{…}}` reference or a `${…}` form does not excuse the shape — no rendering makes `/tmp/report.md` relative — so a templated entry is held to the same rules; what it renders TO is the collector's to refuse, where the path is resolved. |
+| C318 | Two entries of one node sharing a base name (`out/report.md` and `tmp/report.md`): both would be served as `report.md`, and the run store refuses every one after the first rather than overwrite it. Said once per node, each shared name with its entries. The handle is per node, so two different nodes may each declare `report.md`. |
+
+The declaration has ONE reader, `ir.NodeDeliverables`, and the handle has
+one definition, `ir.DeliverableName`: the compiler that judges a
+declaration and the collector that uploads the bytes cannot disagree about
+which file is served under which name. The collection itself — the
+node-end upload into the run's file store, and the download route that
+serves a declared name — is the next slice of iterion#2690; a tool that
+must hand a file to a human today prints the directive above.
 
 ## Upload protocol
 
@@ -151,9 +294,19 @@ Content-Type: application/json
 }
 ```
 
-Staged uploads live under `<store>/uploads/<upload_id>/` until the
-launch promotes them to `<store>/runs/<run_id>/attachments/<name>/`.
-Unreferenced uploads are reaped after one hour (`uploadStagingTTL`).
+Where a staged upload waits is the run store's business — the
+`store.StagingStore` seam, a capability a store has or has not, like the
+run-files area. A local store keeps it under `<store>/uploads/<upload_id>/`
+(the bytes under the original filename, the record under `.iterion/meta.json`)
+until the
+launch promotes it to `<store>/runs/<run_id>/attachments/<name>/`. The
+cloud store has no disk: the record lives in the `staged_uploads`
+collection, stamped with the tenant and the user that staged it, and the
+bytes in the bucket under `uploads/<upload_id>/<filename>`; the launch
+promotes them to `attachments/<run_id>/…`. A promotion from another
+tenant does not find the upload, and nothing presigns one. A store that
+stages nothing answers the upload with a typed 503. Unreferenced uploads
+are reaped after one hour (`uploadStagingTTL`), on every server replica.
 
 ### Limits
 
@@ -191,7 +344,7 @@ Errors are mapped to standard codes:
 
 | Mode         | Layout                                                     |
 | ------------ | ---------------------------------------------------------- |
-| Local / desktop | `<store>/runs/<run_id>/attachments/<name>/<filename>` plus a sidecar `meta.json` |
+| Local / desktop | `<store>/runs/<run_id>/attachments/<name>/<filename>` plus a record under `.iterion/meta.json` |
 | Cloud (S3-compatible store) | `attachments/<run_id>/<name>/<filename>` (S3 key); metadata reflected in the runs collection |
 
 The metadata struct (`AttachmentRecord`) carries `name`,
@@ -261,11 +414,55 @@ not exist inside the container, and handing it to an agent produces a
 plausible-looking path that fails to open. The mount is read-only by
 construction: a malicious agent cannot corrupt the run store.
 
+A driver with no host filesystem (kubernetes) cannot bind the directory;
+it receives it as a **seed** instead (`sandbox.RunInfo.SeedDirs`): the
+pod declares an `emptyDir` at `/run/iterion/attachments`, the directory
+streams in with the workspace's tar pipeline after the pod is ready, and
+the copied files are made read-only (the volume itself stays writable —
+an `emptyDir` is root-owned and the sandbox user cannot change its
+mode). The run's stream says so (`sandbox_attachments_copied`), and
+`{{attachments.<name>.path}}` resolves to the same container path as on
+docker. A driver that can neither bind nor copy refuses a run that holds
+attachments (`ATTACHMENTS_UNDELIVERABLE`); a node that names a path the
+run cannot hand it fails before it runs (`ATTACHMENT_PATH_UNAVAILABLE`) —
+except an image attachment referenced with the plain `{{attachments.<name>}}`
+or `.path` spelling in the user prompt of an agent or judge whose every
+route is `claw`: that executor sends an image block, by URL when no copy
+exists, and needs no path. A `{{!…}}` spelling, a user prompt that is also
+the node's system or interaction prompt, and a router's prompt render the
+path as text, and are admitted on it.
+
+On a store with no root, the engine materialises the attachments before the sandbox starts (`materializeAttachments`). The guards live in `pkg/runtime/sandbox_attachments.go` and `pkg/runtime/attachment_admission.go`.
+
+`meta.json` is anybody's filename: the filesystem layout keeps each
+attachment's record under `.iterion/meta.json`, out of the namespace the
+bytes land in, so a bundle default, a tool's deliverable or an operator's
+upload under that name is an ordinary file (#2863). Records written
+before the move sit beside the bytes as `meta.json`; every reader falls
+back to that path, so existing runs and staged uploads stay readable.
+One name is RESERVED, though: `.iterion` itself. A bytes file under
+exactly that name would sit where the record's directory goes, so the
+write fails loudly and leaves nothing behind — never a partial record,
+and never a stranded file that wedges the run's listing. A store written
+BEFORE the move may still hold `.iterion` bytes with their record at the
+legacy `meta.json` beside them (the name was legal then): the reader
+falls back to that legacy record, so those attachments and staged
+uploads stay readable.
+
 ## Cloud notes
 
-- The runner pod reads the bytes through `blob.GetAttachment` (the S3
-  store) when a node opens an attachment by URL or path. No shared
-  filesystem is required.
+- The runner pod **materialises** the run's attachments before the
+  sandbox: the engine lists them on the Mongo store, streams each from
+  the blob backend into a directory of the run's own (`<name>/<filename>`,
+  read-only files) and removes it with the sandbox. That directory is
+  what the kubernetes driver seeds into the pod, and what the nodes open
+  by path when the run executes in the runner's own process; the
+  presigned URL (`{{attachments.<name>.url}}`) serves either way. A fetch
+  that fails parks the run resumable, typed `ATTACHMENTS_UNFETCHABLE`,
+  instead of running it without its files; a redelivery fetches again.
+  No shared filesystem is required. A cloud launch promotes the staged
+  uploads it names on the server, between the run row and the queue
+  message; a promotion that fails fails the launch (`LAUNCH_FAILED`).
 - Upload limits are advisory at the SPA level; the server pod
   re-validates each upload with its compiled server configuration.
   Today the cloud command has no upload-limit surface in `pkg/config`

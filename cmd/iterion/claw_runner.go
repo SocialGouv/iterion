@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -14,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -69,10 +73,13 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// store before the LLM loop starts. Anything else before the task
 	// envelope is a protocol error.
 	var (
-		ioTask          delegate.IOTask
-		replaySnapshots [][]byte
-		policyCfg       *permission.PolicyConfig
-		sawGateway      bool
+		ioTask             delegate.IOTask
+		replaySnapshots    [][]byte
+		policyCfg          *permission.PolicyConfig
+		sawGateway         bool
+		sawApprovalChannel bool
+		sawCodemodeState   bool
+		announcedTrust     *store.RunTrust
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -92,11 +99,47 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
 			continue
 		}
+		if env.Type == delegate.EnvelopeApprovalChannel {
+			// The launcher serves permission pauses for this crossing. The
+			// version rides the payload so a future revision fails closed
+			// on the version check instead of misparsing: anything that is
+			// not [delegate.ApprovalChannelV1] is a version skew, fatal
+			// before any model call.
+			var payload delegate.ApprovalChannelData
+			if uerr := json.Unmarshal(env.Data, &payload); uerr != nil {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("decode approval_channel envelope: %w", uerr))
+			}
+			if payload.Version != delegate.ApprovalChannelV1 {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("approval channel version %d, this runner speaks v%d — upgrade the host or the runner", payload.Version, delegate.ApprovalChannelV1))
+			}
+			sawApprovalChannel = true
+			continue
+		}
 		if env.Type == delegate.EnvelopeGatewayV1 {
 			// Empty capability marker: this host knows the gateway
 			// factory. Values never ride this envelope — the forwarded
 			// env carries them.
 			sawGateway = true
+			continue
+		}
+		if env.Type == delegate.EnvelopeCodemodeStateV1 {
+			if sawCodemodeState || env.ID != "" || len(env.Data) != 0 {
+				return emitFatal(dispatcher, stderr, errors.New("invalid codemode state v1 capability marker"))
+			}
+			sawCodemodeState = true
+			dispatcher.reader.OmitDecodePayload()
+			continue
+		}
+		if env.Type == delegate.EnvelopeWorkspaceTrust {
+			// The launcher says this workspace was written by someone the
+			// tenant is not. Recorded so the task can be checked against it
+			// below: the two must agree, or one side is a binary that does not
+			// know what the other means.
+			var payload delegate.WorkspaceTrustData
+			if uerr := json.Unmarshal(env.Data, &payload); uerr != nil {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("decode workspace_trust envelope: %w", uerr))
+			}
+			announcedTrust = &payload.WorkspaceTrust
 			continue
 		}
 		if env.Type == delegate.EnvelopePermissionPolicy {
@@ -121,6 +164,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		return emitFatal(dispatcher, stderr, fmt.Errorf("gateway task %q received without the gateway capability marker — the host binary predates gateway support; upgrade the host", ioTask.Model))
 	}
 
+	if sawCodemodeState != ioTask.CodemodeState || (sawCodemodeState && !ioTask.Codemode) {
+		return emitFatal(dispatcher, stderr, errors.New("codemode state v1 capability marker and task disagree — upgrade launcher and runner together"))
+	}
+	if sawCodemodeState {
+		ctx = model.WithCodemodeState(ctx, runnerCodemodeState{dispatcher})
+	} else {
+		ctx = model.WithCodemodeState(ctx, nil)
+	}
+
 	// start() must run AFTER the synchronous bootstrap loop above:
 	// EnvelopeReader is not goroutine-safe, so the boot loop must
 	// drain the pre-task envelopes (task + optional session_replay)
@@ -130,6 +182,25 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	task := delegate.FromIOTask(ioTask)
 	// Sandbox is intentionally nil — we ARE the sandbox now.
 	task.Sandbox = nil
+	// The two carriers of the workspace's provenance must agree, and the
+	// verdict on a disagreement is a refusal BEFORE any model call — the
+	// permission gate's rule, for the same reason: a floor the launcher
+	// believes it applied must never silently not exist.
+	if err := checkAnnouncedWorkspaceTrust(announcedTrust, task.WorkspaceTrust); err != nil {
+		return emitFatal(dispatcher, stderr, err)
+	}
+	// Every process this runner starts — the agent's bash, an `iterion run`
+	// it launches — inherits this environment: an untrusted task's trust
+	// rides it, as it does on every host-side process the engine starts
+	// (envtrust.EnvRunTrust). The launcher already put it in the runner's
+	// exec environment; set here from the task as well, so the carrier does
+	// not depend on how this process was started.
+	if entry, ok := model.RunTrustEnvEntry(task.WorkspaceTrust); ok {
+		k, v, _ := strings.Cut(entry, "=")
+		if err := os.Setenv(k, v); err != nil {
+			return emitFatal(dispatcher, stderr, fmt.Errorf("carry the workspace trust to the processes this runner starts: %w", err))
+		}
+	}
 	// Rebuild the permission gate the launcher shipped pre-task, through
 	// the same parser it was authored against. From here the ordinary
 	// unsandboxed Execute path applies it (opts.Permission), so builtins
@@ -141,6 +212,19 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			return emitFatal(dispatcher, stderr, fmt.Errorf("rebuild permission policy: %w", perr))
 		}
 		task.Permission = pol
+		// The runner-side twin of the fail-closed position: an ask-capable
+		// policy that arrives WITHOUT the approval-channel announcement
+		// means the launcher will not serve pauses for this crossing — a
+		// host that predates the channel, or one that deliberately does not
+		// serve it (container-local asks stay refused). Running the node
+		// with every ask degraded to a denial is exactly the silent
+		// downgrade C136 refuses, so the bootstrap fails here, before any
+		// model call, and names the skew.
+		if pol.CanAsk() && !sawApprovalChannel {
+			return emitFatal(dispatcher, stderr, fmt.Errorf(
+				"node %q declares a permission policy that can produce an Ask decision (mode %s) but the host did not announce the approval channel — the host binary predates sandbox approvals, or declines to serve them; upgrade the host, drop the ask rules, or run the node unsandboxed",
+				ioTask.NodeID, pol.Mode))
+		}
 	}
 	// Every tool that starts a process, reaches a filesystem or opens a
 	// model-supplied URL executes LOCALLY inside the runner, so its effects
@@ -160,7 +244,34 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	workspace, _ := os.Getwd() // docker exec --workdir lands us at the
 	// bind-mount target (default /workspace); fall back gracefully when
 	// Getwd fails — bash/read_file relative paths still work via cwd.
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace)
+	// The model registry and the relay hooks are built HERE, before the
+	// backend below, because the in-container `agent` tool needs both to
+	// spawn a real child conversation and it is registered while the tool
+	// set is assembled (tool.SandboxPlacementOf puts `agent` in the
+	// container: a sandboxed node's subagent must reach the container's
+	// tools, never the launcher's). Both are used once more below.
+	// The registry names what each call it builds spends — the node's, a
+	// subagent's — through the crossing's record of the env the launcher
+	// composed (ADR-161 decision 8: the keys are written by the process
+	// that built the call; the launcher relays them).
+	registry := model.NewSandboxRunnerRegistry(ioTask.CredentialFunds)
+	relayHooks := relayEventHooks(dispatcher, stderr)
+	// The scratch read roots (#2650, narrowed by #2869): the ordered list
+	// when the launcher pushes one (run family's subtree first, the shared
+	// project scratch behind it while still referenced) with the project
+	// scratch they lie beneath; ScratchDir alone for a launcher that
+	// predates the list. The run subtree is created here, once per task —
+	// a container-local scratch (kubernetes banks it instead of binding
+	// it) has none until something makes it, and the scope skips a root
+	// that does not resolve.
+	scratch := sandboxScratchScope{anchor: ioTask.ScratchAnchor, roots: ioTask.ScratchReadRoots}
+	if len(scratch.roots) == 0 && ioTask.ScratchDir != "" {
+		scratch.roots = []string{ioTask.ScratchDir}
+	}
+	if err := ensureSandboxScratchRoots(scratch); err != nil {
+		fmt.Fprintf(stderr, "iterion-claw-runner: %v — the root attaches once a write creates it\n", err)
+	}
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, scratch, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed, ioTask.WorkspaceTrust)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}
@@ -187,6 +298,20 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	}
 	captureSink := &dispatcherCaptureSink{dispatcher: dispatcher, stderr: stderr}
 	ctx = model.WithSandboxRunnerSession(ctx, sandboxRunnerSessionID, sessionStore, captureSink)
+	// The approval channel: with the announcement served, the permission
+	// gate forwards Asks across the IPC instead of pausing in-process —
+	// the runner blocks on the correlated decision, which carries the real
+	// tool result on allow (the launcher consumed the approval and
+	// executed the call host-side). The forwarder is installed only under
+	// the announcement: without it the gate keeps the in-process
+	// ErrAskUser raise, which inside this process surfaces as an opaque
+	// error — but that case never runs, because the bootstrap twin
+	// refused the ask-capable policy without the announcement.
+	if sawApprovalChannel {
+		ctx = model.WithSandboxApprovalForwarder(ctx, func(ctx context.Context, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+			return runApprovalRoundTrip(ctx, dispatcher, ask)
+		})
+	}
 	if ioTask.LauncherEndsNodeSession {
 		ctx = model.WithLauncherEndedNodeSession(ctx)
 	}
@@ -209,8 +334,18 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// claw backend retries them for an unsandboxed node, and the budget
 	// bounds billed attempts — so it is never read from this process's env,
 	// where a variable a repository's devcontainer declares would set it.
-	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicyFromWire(ioTask.Retry),
+	// The default lifecycle hooks ride here too — the same PreToolUse
+	// safety hook the host's in-process backend gets — so a dangerous call
+	// (`rm -rf /`, a fork bomb) is refused INSIDE the container with the
+	// tool_result the model reads, not wherever the sandbox's own walls
+	// happen to hold. Without it a workspace whose .claude/settings.json
+	// carries no hooks executes with opts.Hooks nil, and the refusal the
+	// in-process path promises never fires here; when settings hooks ARE
+	// present, claw_backend merges them over a fresh default, so the
+	// safety hook holds either way.
+	backend := model.NewClawBackend(registry, relayHooks, model.RetryPolicyFromWire(ioTask.Retry),
+		model.WithBackendLifecycleHooks(model.NewDefaultLifecycleHooks(relayHooks)),
+		model.WithSlashCommandCeiling(ioTask.SlashCommandMaxBytes),
 		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
 	start := time.Now()
@@ -220,10 +355,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		result.Duration = duration
 	}
 
-	ioRes := delegate.ToIOResult(result)
-	if err != nil {
-		ioRes.Error = err.Error()
-	}
+	ioRes := clawRunnerResult(result, err)
 	resultEnv, marshalErr := delegate.NewResultEnvelope(ioRes)
 	if marshalErr != nil {
 		return emitFatal(dispatcher, stderr, marshalErr)
@@ -290,6 +422,7 @@ func oversizedResultFallback(result delegate.IOResult, writeErr error) delegate.
 	fallback.Stderr = ""
 	fallback.PendingConversation = nil
 	fallback.PendingToolUseID = ""
+	fallback.PendingPermissionInput = nil
 	fallback.Error = oversizedResultError(result.Error, writeErr)
 	return boundOversizedResultFallback(fallback)
 }
@@ -398,4 +531,38 @@ func emitFatal(dispatcher *proxyDispatcher, stderr io.Writer, err error) error {
 	}
 	fmt.Fprintf(stderr, "iterion-claw-runner: %v\n", err)
 	return err
+}
+
+// clawRunnerResult preserves the provider cause beside the diagnostic string.
+// Older launchers still read Error; newer ones never infer a refusal from it.
+func clawRunnerResult(result delegate.Result, err error) delegate.IOResult {
+	ioRes := delegate.ToIOResult(result)
+	if err != nil {
+		ioRes.Error = err.Error()
+		var provider *api.APIError
+		if errors.As(err, &provider) {
+			ioRes.ProviderError = provider
+		} else {
+			var stream *model.APIError
+			if errors.As(err, &stream) && stream.StatusCode == 400 {
+				ioRes.ProviderError = &api.APIError{StatusCode: stream.StatusCode, Message: stream.Message, Retryable: stream.IsRetryable}
+				ioRes.ProviderErrorStream = true
+			}
+		}
+	}
+	return ioRes
+}
+
+// checkAnnouncedWorkspaceTrust compares the launcher's pre-task announcement
+// (delegate.EnvelopeWorkspaceTrust) with the trust the task carries. A
+// disagreement can only come from a binary that does not know what the other
+// side means — a task that lost the field on the way, or an announcement the
+// task does not match — and the runner refuses it before any model call. No
+// announcement leaves the task's own value to speak: an untrusted task is
+// still read as untrusted.
+func checkAnnouncedWorkspaceTrust(announced *store.RunTrust, carried store.RunTrust) error {
+	if announced != nil && *announced != carried {
+		return fmt.Errorf("workspace trust mismatch: the launcher announced %q before the task and the task carries %q — refusing before any model call", *announced, carried)
+	}
+	return nil
 }

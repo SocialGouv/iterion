@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // Credentials carries the resolved per-run BYOK plaintext keyed by
@@ -381,7 +383,15 @@ var ErrSubscriptionOAuthForbidden = errors.New(
 // operator's extra-usage balance is a cost decision taken on behalf of
 // everyone using that instance, and it should be possible to close.
 func ForbidSubscriptionOAuth() bool {
-	return strings.TrimSpace(os.Getenv("ITERION_FORBID_SUBSCRIPTION_OAUTH")) == "1"
+	return ForbidSubscriptionOAuthIn(os.Getenv)
+}
+
+// ForbidSubscriptionOAuthIn is ForbidSubscriptionOAuth read through getenv —
+// the posture form: a credential resolver judges the switch on the
+// environment it captured for the call (ADR-161), not on whatever the process
+// holds at the moment of the read.
+func ForbidSubscriptionOAuthIn(getenv func(string) string) bool {
+	return strings.TrimSpace(getenv("ITERION_FORBID_SUBSCRIPTION_OAUTH")) == "1"
 }
 
 // LLMEndpointAllowPrivate reports whether the operator lifted the
@@ -389,8 +399,15 @@ func ForbidSubscriptionOAuth() bool {
 // dial — the escape hatch for a self-hosted gateway on private
 // infrastructure. Off, the dial (and the pre-flight validation) refuse a
 // private, loopback or metadata address.
+//
+// The switch is the operator's alone: it is read as the process INHERITED
+// it (envtrust), so a value a project `.env` planted does not lift it. The
+// runner inside a sandboxed crossing auto-loads the workspace `.env`, and a
+// repository under review could otherwise make the runner lax where the run
+// proxy stays strict. Every reader — the gateway client, the claw backend's
+// pre-flight, the retry chain, the run proxy's pin — asks here.
 func LLMEndpointAllowPrivate() bool {
-	return strings.TrimSpace(os.Getenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE")) == "1"
+	return strings.TrimSpace(envtrust.Inherited("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE")) == "1"
 }
 
 // anthropicOAuthTokenPrefix is the shape Anthropic mints subscription OAuth
@@ -416,7 +433,13 @@ func IsAnthropicSubscriptionToken(token string) bool {
 // It is the one-call form of the SubscriptionOAuthOnly + ForbidSubscriptionOAuth
 // pair for callers that have no logger to warn through.
 func GuardSubscriptionOAuth(ctx context.Context, provider Provider, kind OAuthKind) error {
-	if !ForbidSubscriptionOAuth() {
+	return GuardSubscriptionOAuthIn(ctx, os.Getenv, provider, kind)
+}
+
+// GuardSubscriptionOAuthIn is GuardSubscriptionOAuth with the switch read
+// through getenv (ForbidSubscriptionOAuthIn).
+func GuardSubscriptionOAuthIn(ctx context.Context, getenv func(string) string, provider Provider, kind OAuthKind) error {
+	if !ForbidSubscriptionOAuthIn(getenv) {
 		return nil
 	}
 	if !SubscriptionOAuthOnly(ctx, provider, kind) {

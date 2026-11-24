@@ -34,7 +34,13 @@ import (
 // legitimate (pushing ahead of a rollout, a fork whose version does not
 // order) and is never silent — the response carries the overridden
 // requirement as a warning.
-func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, slug string, force bool) error {
+//
+// allowFold is the hatch on the fold refusal (#1612, #1679): the server
+// refuses a push that puts a stored multi-line value on one line, because
+// that is usually the writer destroying the author's file; an author who
+// collapses the value on purpose passes it, and the push lands with each
+// fold named in the response's warnings.
+func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, slug string, force, allowFold bool) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("bundle dir: %w", err)
@@ -67,6 +73,9 @@ func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, 
 	// names the bot, and a mismatch is a 409 saying so. A bot that is not
 	// there is a creation, decided on its absence.
 	payload := map[string]any{"files": files}
+	if allowFold {
+		payload["allow_fold"] = true
+	}
 	var stored struct {
 		ID         string            `json:"id"`
 		Version    int               `json:"version"`

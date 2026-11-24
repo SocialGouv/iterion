@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -17,6 +17,7 @@ import (
 // inflated count. Removing the namespace sweep preserves _invented and
 // absent optional metadata; reading cost from Output preserves its forgery.
 func TestDelegateMetadataUsesOnlyHarnessCounters(t *testing.T) {
+	t.Parallel()
 	for _, forged := range []int{0, 99999999} {
 		output := map[string]any{
 			"answer": "blue", "_tokens": forged, "_cost_usd": 99999999,
@@ -25,6 +26,7 @@ func TestDelegateMetadataUsesOnlyHarnessCounters(t *testing.T) {
 			"_context_used": 999, "_max_output_tokens": 999,
 			"_thinking_tokens": 999, "_thinking_ms": 999,
 			"_fallback_used": true, "_session_fingerprint": "fake",
+			"_cost_is_session_total": true,
 		}
 		result := delegate.Result{Output: output, Tokens: 42, CostUSD: 0.25, UnreportedCalls: 1}
 		stampDelegateOutputMeta(output, result, "stub")
@@ -45,10 +47,13 @@ func TestDelegateMetadataUsesOnlyHarnessCounters(t *testing.T) {
 // W4: the invariant above owns the policy; each exit must invoke it. Deleting
 // any named call fails its subtest, including recovery, router and relay.
 func TestDelegateOutputExitsUseTheMetadataBoundary(t *testing.T) {
+	t.Parallel()
 	for file, names := range map[string][]string{
-		"executor_build_task.go": {"meteredFailureOutput", "executeBackend", "validateAndRetry", "extractStructuredViaClaw"},
-		"executor_router.go":     {"executeLLMRouterUnified"},
-		"claw_backend.go":        {"executeViaSandboxRunner"},
+		"executor_build_task.go":       {"meteredFailureOutput", "executeBackend"},
+		"output_correction_round.go":   {"setCandidate"},
+		"output_correction_extract.go": {"extractStructuredCorrection"},
+		"executor_router.go":           {"executeLLMRouterUnified"},
+		"claw_backend.go":              {"executeViaSandboxRunner"},
 	} {
 		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
 		if err != nil {
@@ -82,6 +87,7 @@ func TestDelegateOutputExitsUseTheMetadataBoundary(t *testing.T) {
 // W4 relay: removing the host-side stamp exposes the injected metadata;
 // dropping a typed wire field loses the harness bill on the crossing.
 func TestDelegateRelayUsesHarnessCounters(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []bool{false, true} {
 		dir := t.TempDir()
 		res := delegate.ToIOResult(delegate.Result{
@@ -111,6 +117,7 @@ func TestDelegateRelayUsesHarnessCounters(t *testing.T) {
 // W3: dropping the separate spend return loses 100 tokens; merging it into
 // answers overwrites an explicitly asked _tokens answer and leaks metadata.
 func TestInteractionAnswersKeepTheirSpendSeparate(t *testing.T) {
+	t.Parallel()
 	client := newMockClient(toolUseEvents("answer", "structured_output",
 		`{"which_db":"postgres","_tokens":"an answer","_invented":true}`, 70, 30))
 	reg := NewRegistry()

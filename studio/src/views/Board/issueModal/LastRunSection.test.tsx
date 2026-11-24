@@ -90,7 +90,11 @@ describe("LastRunSection answer-from-board affordance", () => {
     // The schema-driven wizard renders the first output-schema field
     // (environment, an enum) with its options — proof the form comes from
     // the node's output schema, not the checkpoint's plain context-var map.
-    await waitFor(() => expect(screen.getByText(/environment/i)).toBeTruthy());
+    // The grouped field renders its name twice in the DOM (the visible
+    // label + the sr-only legend), so the presence query is plural.
+    await waitFor(() =>
+      expect(screen.getAllByText(/environment/i).length).toBeGreaterThan(0),
+    );
     expect(screen.getByText(/staging/i)).toBeTruthy();
     expect(screen.getByText(/production/i)).toBeTruthy();
     // The checkpoint context vars must NOT be rendered as answer fields…

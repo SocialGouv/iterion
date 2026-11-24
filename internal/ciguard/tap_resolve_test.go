@@ -70,7 +70,7 @@ func resolveTap(t *testing.T, formula, cask, inputTag string, releases ...tapRel
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", script)
+	cmd := exec.Command("bash", scriptUnderTest(t, script))
 	cmd.Dir = dir
 	cmd.Env = scriptEnv(t)
 	for i, kv := range cmd.Env {

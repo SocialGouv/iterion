@@ -127,7 +127,7 @@ func TestRegenerateWhatsNextCatalog_SplicesFiltersAndPreservesStatic(t *testing.
 	dir := fixtureCatalogWorkspace(t)
 	ClearSchemaCache()
 
-	dest, err := RegenerateWhatsNextCatalog(dir)
+	dest, err := RegenerateWhatsNextCatalog(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("RegenerateWhatsNextCatalog: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestRegenerateWhatsNextCatalog_NoOpWithoutTemplate(t *testing.T) {
 	// A bundle but no catalog static template anywhere.
 	writeFile(t, filepath.Join(dir, "bots", "solo", "manifest.yaml"), "name: solo\n")
 	writeFile(t, filepath.Join(dir, "bots", "solo", "main.bot"), "agent x:\n  model: \"test\"\n")
-	dest, err := RegenerateWhatsNextCatalog(dir)
+	dest, err := RegenerateWhatsNextCatalog(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +230,7 @@ chat:
 	generated := filepath.Join(dir, "bots", "whats-next", "skills", catalogGeneratedName)
 	writeFile(t, generated, "COMMITTED-CATALOG-SENTINEL")
 
-	dest, err := RegenerateWhatsNextCatalog(dir)
+	dest, err := RegenerateWhatsNextCatalog(context.Background(), dir)
 	if err == nil {
 		t.Fatalf("expected a refusal, got dest=%q", dest)
 	}
@@ -257,7 +257,7 @@ func TestRegenerateWhatsNextCatalog_LooseFileSkipDoesNotBlock(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	dest, err := RegenerateWhatsNextCatalog(dir)
+	dest, err := RegenerateWhatsNextCatalog(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("a loose-file skip must not block regen: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestRegenerateWhatsNextCatalog_ShadowedLooseFileDoesNotBlock(t *testing.T) 
 		t.Fatalf("diags = %#v, want exactly one shadowed diagnostic", diags)
 	}
 
-	dest, err := RegenerateWhatsNextCatalog(dir)
+	dest, err := RegenerateWhatsNextCatalog(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("a shadowed source must not block regen: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestRegenerateWhatsNextCatalog_ShadowedBundleBlocks(t *testing.T) {
 
 	// The committed state: a catalog regenerated while the workspace was
 	// clean, carrying the bundle's card.
-	dest, err := RegenerateWhatsNextCatalog(dir)
+	dest, err := RegenerateWhatsNextCatalog(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestRegenerateWhatsNextCatalog_ShadowedBundleBlocks(t *testing.T) {
 		t.Fatalf("re-anchoring %q on %q must find the bundle directory: %v", diags[0].Path, dir, serr)
 	}
 
-	if _, err := RegenerateWhatsNextCatalog(dir); err == nil {
+	if _, err := RegenerateWhatsNextCatalog(context.Background(), dir); err == nil {
 		t.Error("regenerating over a shadowed BUNDLE must refuse: its card is in no other entry, so the committed row would be deleted")
 	} else if !strings.Contains(err.Error(), "enabled-bot") {
 		t.Errorf("the refusal must name the source: %v", err)

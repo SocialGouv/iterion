@@ -123,10 +123,26 @@ type SubbotDecl struct {
 	// workspace-safety guard may fan it out in parallel. Mirror of an
 	// agent/judge node's `readonly:`. Default false = conservatively mutating.
 	Isolated bool
+	// AutoMerge arms the child run's worktree-finalization landing: when its
+	// own workflow completes, the engine merges its banked branch (the
+	// launch-intent vocabulary of the runs API). Requires `isolated: true` —
+	// a child running in the parent's workspace has no finalization of its
+	// own, so the intent would be dead on arrival.
+	AutoMerge bool
+	// MergeInto is the child's landing target ("current" default, "none", or
+	// a branch name); empty means the child's own default. Read only when
+	// AutoMerge arms the landing.
+	MergeInto string
+	// MergeStrategy is "squash" (default) or "merge". Read only when
+	// AutoMerge arms the landing.
+	MergeStrategy string
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // EmitDecl is an `emit` node: it publishes a named event with an optional
@@ -144,7 +160,10 @@ type EmitDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // WaitDecl is a `wait` node: it blocks its branch until the named event is
@@ -164,7 +183,10 @@ type WaitDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // AwaitAnswersDecl is an `await_answers` node: the deterministic sync point for
@@ -185,7 +207,10 @@ type AwaitAnswersDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +461,7 @@ type SecretField struct {
 	Env         string   // optional env var pointing at MountPath for file secrets
 	Optional    bool     // file secret: skip the mount (no error) when unresolved
 	Hosts       []string // approved egress hosts (nil = no restriction)
+	Sinks       []string // granted materialization sinks (nil = every sink; see pkg/dsl/secretsink)
 	Description string
 	Span        Span
 }
@@ -615,13 +641,14 @@ type LLMDecl struct {
 	Output            string           // schema reference name
 	Publish           string           // persistent artifact name (empty if not set)
 	ArtifactLabels    []string         // artifact_labels: applied to the published artifact
+	Deliverables      []string         // deliverables: workspace-relative files the run collects and serves under their base name
 	System            string           // prompt reference name
 	User              string           // prompt reference name
 	Session           SessionMode      // defaults to SessionFresh
 	SessionSlot       string           // optional durable slot shared by compatible persist nodes
 	Tools             []string         // tool capability names
 	ToolPolicy        []string         // per-node tool policy patterns (nil = inherit workflow)
-	Capabilities      []string         // host-side capabilities granted to the node (e.g. board.create)
+	Capabilities      []string         // host-side capabilities granted to the node (e.g. board.create); nil = inherit the workflow's, a declared `capabilities: []` = no grant (#1801)
 	Skills            []string         // skill-library skills referenced by the node (nil = inherit workflow default)
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
@@ -641,12 +668,16 @@ type LLMDecl struct {
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory        string           // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext    string           // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
+	Codemode          *CodemodeBlock   // codemode tool loop: a mode and its bounds; nil inherits the workflow (ADR-165)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Allow             []string         // node-level permission allow rules; a non-empty list REPLACES the workflow's allow: (empty = inherit)
 	Ask               []string         // node-level permission ask rules; a non-empty list REPLACES the workflow's ask: (empty = inherit)
 	Deny              []string         // node-level permission deny rules; a non-empty list REPLACES the workflow's deny: (empty = inherit)
 	Needs             []string         // resource names acquired before running (workflow.resources)
 	Fallbacks         []*FallbackDecl  // ordered `fallbacks:` routes tried when this node's primary fails (ADR-087); declaration order preserved for round-trip
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
 }
 
 // FallbackDecl is one named entry of a node's `fallbacks:` block — a
@@ -733,7 +764,10 @@ type RouterDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -799,7 +833,10 @@ type HumanDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -841,11 +878,19 @@ type ToolNodeDecl struct {
 	Output         string        // schema reference name
 	Publish        string        // persistent artifact name (empty if not set)
 	ArtifactLabels []string      // artifact_labels: applied to the published artifact
+	Deliverables   []string      // deliverables: workspace-relative files the run collects and serves under their base name
 	Await          AwaitMode     // convergence strategy (none/wait_all/best_effort)
 	Sandbox        *SandboxBlock // node-level sandbox override; nil inherits from workflow
 	Compress       string        // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission     string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs          []string      // resource names acquired before running (workflow.resources)
+
+	// Capabilities are the host capabilities granted to the node (ADR-151,
+	// #78=A): a tool node declares them exactly like an agent or judge —
+	// nil = inherit the workflow's, a declared `capabilities: []` = no grant
+	// (#1801). The `action:` recipe's native transport is what reads them
+	// (a board.* action gates on the grant like the board MCP tools do).
+	Capabilities []string
 
 	// Verified Action quad (ADR-044) — all optional; a tool node without
 	// these behaves exactly as before (recipe only, exit-code = success).
@@ -874,7 +919,10 @@ type ToolNodeDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ActionParam is one argument of a connector action.
@@ -918,7 +966,10 @@ type ComputeDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ComputeExpr is one entry inside a `compute` node's `expr:` block:
@@ -963,7 +1014,10 @@ type FailDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -973,23 +1027,25 @@ type FailDecl struct {
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
 	Name           string
-	Contract       string            // the bot's public contract, a top-level ContractDecl's name (empty = none)
-	Vars           *VarsBlock        // workflow-level variable declarations
-	Attachments    *AttachmentsBlock // workflow-level attachments declarations
-	Entry          string            // entry node name
-	DefaultBackend string            // workflow-level default backend (empty = not set)
-	ToolPolicy     []string          // workflow-level tool policy patterns (nil = open)
-	Capabilities   []string          // workflow-level default host capabilities (nil = inherit none)
-	Skills         []string          // workflow-level default skill-library references (nil = none)
-	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
-	Budget         *BudgetBlock      // execution limits (optional)
-	Resources      *ResourcesBlock   // named counting semaphores (optional)
-	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
-	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
-	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
-	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
-	AmbientContext string            // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
+	Contract       string               // the bot's public contract, a top-level ContractDecl's name (empty = none)
+	Vars           *VarsBlock           // workflow-level variable declarations
+	Attachments    *AttachmentsBlock    // workflow-level attachments declarations
+	BusinessStores []*BusinessStoreDecl // declared business-store identities; nil means no block
+	Entry          string               // entry node name
+	DefaultBackend string               // workflow-level default backend (empty = not set)
+	ToolPolicy     []string             // workflow-level tool policy patterns (nil = open)
+	Capabilities   []string             // workflow-level default host capabilities (nil = none; a declared `capabilities: []` is kept so the written form round-trips)
+	Skills         []string             // workflow-level default skill-library references (nil = none)
+	MCP            *MCPConfigDecl       // workflow-level MCP activation/filtering
+	Budget         *BudgetBlock         // execution limits (optional)
+	Resources      *ResourcesBlock      // named counting semaphores (optional)
+	Compaction     *CompactionBlock     // session compaction defaults for all nodes (optional)
+	Interaction    *InteractionMode     // workflow-level default interaction mode (nil = not set)
+	Worktree       string               // "auto" creates a per-run git worktree; "" or "none" runs in-place
+	Compress       string               // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory     string               // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	AmbientContext string               // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
+	Codemode       *CodemodeBlock       // codemode tool loop default for agent/judge nodes: a mode and its bounds; nil = unset → off (the switch reads no environment, ADR-132)
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string
@@ -1011,7 +1067,20 @@ type WorkflowDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
+}
+
+// BusinessStoreDecl names a business store the workflow expects. The launch
+// authority normalizes these declarations with the inherited execution context.
+type BusinessStoreDecl struct {
+	ID        string
+	Kind      string
+	Namespace string
+	Required  *bool // nil = false; preserve an explicit false through authoring
+	Span      Span
 }
 
 // BudgetBlock represents execution limits for a workflow.
@@ -1111,6 +1180,71 @@ type SandboxBlock struct {
 	Span            Span
 }
 
+// CodemodeBlock is the AST representation of a `codemode:` declaration
+// (ADR-165), in both of its forms:
+//
+//	codemode: on                  # short form — a mode, nothing else
+//	codemode:                     # block form — bounds, and it IMPLIES on
+//	  tool_calls: 256
+//	  wall: "2m"
+//
+// Mode is the activation discriminator the IR and the executor consume; the
+// bound fields are populated only by the block form, and the short form
+// leaves them zero — SandboxBlock's shape, for the same reason.
+//
+// The block form implying `on` is deliberate: bounds for a capability that is
+// off express nothing. An author who means off writes the short form, and a
+// `mode: off` beside a declared bound is C348 rather than a silent drop.
+//
+// The two unit conventions are the ones the rest of this DSL already uses,
+// not new ones: a duration is a QUOTED string (`timeout:`'s spelling), and a
+// byte size or a count is a BARE integer. Measured before choosing: this DSL
+// has no byte-size value form and the repository vendors no parser for one,
+// so a `256KiB` form would be its own lot with its own edges (KiB vs KB,
+// floats, overflow). Ugly and present beats absent — philosophy 1 reads a
+// bound with no override as a defect.
+//
+// A bound is held VERBATIM as the author wrote it so `iterion fmt` round-trips
+// it; the conversion to scripthost.Limits happens at IR compile. Zero (and an
+// empty duration) mean ABSENT, which is what Limits.Clamp already reads as
+// "nobody chose" — so an explicit `tool_calls: 0` is the default, not a ban.
+type CodemodeBlock struct {
+	Mode                string // "on" | "off" | "" (inherit when on a node)
+	Defer               string // "on" | "off" | "" (off): the node's own `tools:` list joins the codemode catalogue instead of the wire
+	ToolCalls           int64  // tool_calls: nested calls one program may make
+	ConcurrentToolCalls int64  // concurrent_tool_calls: nested calls in flight in one program
+	Wall                string // wall: the child's lifetime, e.g. "60s"
+	CPU                 string // cpu: the child's CPU-seconds ceiling, e.g. "30s"
+	Memory              int64  // memory: bytes of RLIMIT_DATA
+	ScriptBytes         int64  // script_bytes: bytes of program source
+	ResultBytes         int64  // result_bytes: bytes the program may return
+	ToolResultBytes     int64  // tool_result_bytes: bytes of ONE tool result
+	StoreEntries        int64  // store_entries: keys in the run bank
+	StoreBytes          int64  // store_bytes: total UTF-8 key and JSON value bytes in the run bank
+	Span                Span
+}
+
+// Bounded reports whether the block declares any bound — i.e. whether it was
+// written in the block form with a body. It is what tells a `codemode: on`
+// short form from a block that happens to carry only `mode: on`, and what the
+// unparser asks to choose a form.
+//
+// It reads a NON-ZERO bound, which makes a block whose only bound is the
+// literal `0` indistinguishable from a mode-only one. That is the shape of
+// `Limits.Clamp`'s own contract — a non-positive bound means "nobody chose" —
+// so the two really are the same program, and `iterion fmt` rewriting
+// `tool_calls: 0` to the short form loses no semantics. What it loses is the
+// chance to TELL the author that zero is the default rather than a ban;
+// saying that needs pointer fields (ast.MemoryBlock's shape, for this exact
+// reason) and is its own lot, filed rather than half-built here.
+func (c *CodemodeBlock) Bounded() bool {
+	if c == nil {
+		return false
+	}
+	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
+}
+
 // SandboxBuildBlock is the AST representation of a `build:` sub-block
 // under `sandbox:`. The fields mirror pkg/sandbox.Build 1:1 — the IR
 // compiler converts to the runtime shape via [ir.SandboxBuild].
@@ -1197,7 +1331,23 @@ type LoopClause struct {
 	// a runtime liveness monitor that halts a no-progress (fixpoint) loop.
 	Unbounded bool
 	FuelCap   int // optional per-loop fuel for the unbounded form (0 = inherit budget.max_iterations)
-	Span      Span
+	// Guard is the loop's own word on the budget guard (`as name(3)
+	// guard: off`): "on" or "off", empty inherits the chain
+	// (--loop-budget-guard → workflow loop_budget_guard: →
+	// ITERION_LOOP_BUDGET_GUARD → on). A loop whose iterations shrink —
+	// a re-ask of the still-pending subset, priced by the guard at its
+	// first, largest pass — opts out here: its cap alone bounds it.
+	Guard string
+	// SizedBy names the loop's work signal (`as name(3) sized_by
+	// "outputs.probe.pending"`): a quoted expression, evaluated to a
+	// number each time the loop's budget mark is taken and each time its
+	// back-edge is priced. The guard scales the previous crossing's cost
+	// by size_now / size_at_previous_crossing, so a loop whose iterations
+	// shrink — a re-ask of the still-pending subset — is priced by its
+	// real traversal instead of its first, largest pass (#2677). Empty
+	// keeps the unscaled pricing.
+	SizedBy string
+	Span    Span
 }
 
 // WithEntry is a single key-value mapping inside a `with { ... }` block.

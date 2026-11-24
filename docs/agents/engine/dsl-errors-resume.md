@@ -10,6 +10,41 @@ Read it when a run fails, resumes or rewinds, or a checkpoint looks torn ([docs/
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
+### Refusals before the engine
+
+`pkg/runner/pre_engine_refusal.go` records the runner's refusals before
+`Engine.Run`/`ResumeWithHostInputs`: workflow/IR loading, budget overrides,
+credentials, repository pin/workspace, MCP, executor, bundle, engine requirement,
+usage admission and launch inputs. It returns the original error; delivery
+classification, retry scheduling and refused-resume release keep their owners.
+The AST inventory follows each launch/resume branch; executable pipeline
+cases in `pkg/runner` cover these sites; engine success, pause and failure do not enter this recorder.
+
+The optional `store.PreEngineRefusalRecorder` has filesystem and Mongo twins.
+One atomic write checks both eligible status and publication time, including
+an already-running run: an older delivery cannot overwrite a newer attempt.
+An unmarked legacy delivery writes only an unmarked run. Generic queued retries
+keep their checkpoint, answered interaction, inputs and outcome unchanged;
+`Run.PreEngineRefusal` and `Run.Error` explain why the delivery is pending.
+Usage parking still creates the failed-resumable state its retry scheduler
+requires. IR and engine-version refusals retain their typed final verdicts,
+except when the existing queued-resume releaser owns the transition.
+
+The diagnostic belongs to the store: `SaveRun` preserves it for the same
+status/publication, ignores caller-authored copies and clears it on a changed
+attempt. A changed message or failure code clears the old cause even on the
+same status; rearming the same cause preserves it. Claim, new publication,
+pause, cancellation and completion clear it. Snapshots clone the diagnostic.
+The filesystem store rejects a mismatched persisted run ID or tenant; historical
+local runs without a tenant keep their existing local-store semantics.
+
+Only a successful write emits an event: `run_pre_engine_refused` for a still
+queued delivery, `run_failed` for a written failure. Document and event writes
+are not transactional. Missing capability, stale attempt, malformed publication,
+store failure or event failure is logged; none replaces the original error or
+falls back to an unfenced status write. Recording uses a bounded context that
+survives cancellation of the execution context.
+
 ### Store & Persistence
 
 ```
@@ -48,6 +83,31 @@ See `docs/resume.md` for the current status, checkpoint, and override semantics.
 The console selects an [immutable attempt snapshot](run-provenance.md); a resume
 with edited source never replaces the previous attempt's graph.
 
+### A tool command that fails the same way again
+
+`handleNodeFailure` (`pkg/runtime/recovery_dispatch.go`) is the one place a
+trunk node's failure is counted, dispatcher wired or not. For a `command:` /
+`script:` tool node classified `EXECUTION_FAILED` it keeps a salted digest of
+the failure (exit status + error text) and its streak in
+`Checkpoint.NodeFailureStreaks`; at `ITERION_NODE_MAX_IDENTICAL_FAILURES`
+(default: the ONE constant `DefaultNodeMaxIdenticalFailures`; `0` off;
+runner-wide) the run fails `TOOL_FAILED_PERMANENT` with
+`*runtime.IdenticalToolFailure` as cause (`identical_failure.go`). The limit
+counts EXECUTIONS across deliveries — two in a run's first delivery, one per
+redelivery. Counted (`countedToolFailure`): the command ran to an exit status
+its failure carries, and its text carries no wording of
+`transient_outage.go`, the ONE table of known outage wordings (a list, judged
+on the corpus in `transient_outage_test.go`; it changes no classification; a
+4xx on a tool's own line and a proxy's 403/407 are refusals, counted — git's
+RPC-stage refusal trails its hang-up line and is not). Success, an uncounted or
+different failure and a rewind end the streak; a resume does not. Never
+counted: agent/judge nodes, registry and `action:` recipes, `policy:
+recover`, a postcondition unmet after a zero exit,
+`sandbox.ErrExecStatusUnknown`, `NETWORK_TRANSIENT`, a tool node inside a
+fan-out branch (branches never cross `handleNodeFailure`). The board
+dispatcher gives up at once on the code (`pkg/dispatcher/commands.go`).
+Operator view: [docs/resume.md](../../resume.md#a-tool-command-that-fails-the-same-way-again-is-permanent).
+
 ### Concurrency
 
 - **Fan-out/convergence**: Router `fan_out_all` spawns parallel branches; downstream nodes aggregate via `await: wait_all` or `await: best_effort`
@@ -55,3 +115,14 @@ with edited source never replaces the previous attempt's graph.
 - **Workspace safety**: only one mutating branch allowed (agents/humans with tools); multiple read-only branches OK
 - **Shared budget**: mutex-protected token/cost/duration tracking across all branches
 
+
+### Admission, correction bounds and the rollout mode
+
+The reliability invariants of [#1006](https://github.com/SocialGouv/iterion/issues/1006) have owning layers, mapped in [ADR-152](../../adr/152-the-reliability-invariants-have-owning-layers.md); the published ledger is [docs/workflow-reliability-1006.md](../../workflow-reliability-1006.md), where a criterion reads `met` only when a NAMED test refuses its violation — three guards in `pkg/reliability` pin the row count, the existence of every witness and every owner link.
+
+- **Admission** (`admitRun`, `pkg/runtime/admission.go`) runs after the run document exists and before attachments, workspace setup or the first executor call, at launch AND at resume. It compares the normalisation error, the workflow revision against the run hash, the lineage, and the runner-expected revision/parent/policy; it does NOT compare the declared stores (`RunStore`, `BusinessStores`) — that half is owed a store-identity seam first. Every outcome is a durable `AdmissionDecision`: `legacy` records it unvalidated, `report` records and surfaces without refusing a run, `enforce` denies with `FailureLaunchFailed`.
+- **Correction is bounded at the producer, on two shipped paths.** A `tool` node's unmet postcondition goes through ADR-044's ladder (`pkg/backend/model/executor_verified_action.go`) under the author's declared `max_repair_attempts` / `max_agent_attempts`, with the postcondition as the only success oracle and a durable `node_verified_action` event — one bound answering to no test, the self-repair rung's attempt COUNT, which is why criterion 4 reads `partial`; the self-repair rung runs only for a command or a script recipe (`ir.ToolRecipeSelfRepairable`: a registry recipe has no corrected command to re-run, and C179 warns when that leaves no rung reachable).
+- **Schema correction** keeps the caller's durable allowance when the executor and store participate in the owned protocol. An agent or judge's feedback re-ask and optional structured extraction are distinct operations: each needs its own reservation and usage receipt. The extraction's bill is additive and keeps its actual credential route. An LLM router retains its local correction path. The allowance is configurable; see `ITERION_OUTPUT_CORRECTION_BUDGET` and the runtime options. Invalid parse feedback retains the raw parse diagnosis. Typed invocation stops are preserved; an auxiliary provider's credential error does not become the business node's authentication failure.
+- **Correction restart limit:** the pending extraction phase lives on the invocation's opaque handle. Cancellation between re-ask and extraction preserves the durable allowance but does not reconstruct that phase: a new engine resumes through a fresh business invocation/re-ask using the remaining correction allowance. This is also the legacy path's behavior, not exact continuation. `TestOwnedExtractionRestartPreservesAllowance` witnesses the limit; `TestOwnedExtractionAllowanceAndControl` proves separate reservations and stop handling. Owned recovery events describe persisted transitions, so an unchanged answer can follow `attempt` directly.
+
+- **The rollout mode** (`ITERION_RELIABILITY_MODE`, `pkg/reliability/rollout.go`) is the operator's FLOOR and its emergency cap: an explicit `legacy` is a cap no level overrules, a level may raise the gate and never lower it, and the database level above it is ADR-132 / [#2699](https://github.com/SocialGouv/iterion/issues/2699) territory. It is operator-grade refused to bots and to `.env` files (`internal/envtrust`), so no repo-provided environment sets it.

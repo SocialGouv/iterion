@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -192,5 +192,378 @@ func TestSelfRepairNeverShowsTheModelAMintedToken(t *testing.T) {
 	}
 	if !sawPlaceholder {
 		t.Error("the self-repair prompt does not show the placeholder in the token's place")
+	}
+}
+
+// The acceptance of #2033, through the REAL executor: a tool node's own
+// command names the grant, the tool process runs, and the bearer is nowhere
+// in that process's /proc/<pid>/cmdline — which any co-resident process reads
+// for the whole life of the command, and which Kubernetes copies into the
+// pods/exec audit log. It still ARRIVES: the command reads it from its own
+// environment, so the fix is not a silent loss of the publish capability.
+func TestTheMintedGrantNeverEntersAToolProcessCmdline(t *testing.T) {
+	blankHostCredentials(t)
+	// `$$` is the pid of the bash the executor starts, whose argv holds the
+	// resolved command; cat keeps the NUL separators for the reader below.
+	const command = `cat /proc/$$/cmdline > cmdline.bin; printf '%s' {{vars.forge_publish_token}} > token.txt`
+	refs, err := ir.ParseRefs(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeholder := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+
+	for _, tc := range []struct {
+		name     string
+		recorded map[string][]string
+	}{
+		// A fresh launch carries the grant in its launch vars; a resumed run
+		// carries it in the checkpoint vars the engine resumes from, and its
+		// RECORD may hold others (its own, an ancestor's, a fork's source).
+		{name: "fresh launch"},
+		{name: "resume", recorded: map[string][]string{store.ForgePublishTokenVar: {randomToken(t), randomToken(t)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tok := randomToken(t)
+			dir := t.TempDir()
+			wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			vars := map[string]string{store.ForgePublishTokenVar: tok, store.ForgePublishURLVar: "https://iterion.example/publish"}
+			guard := BuildSecretGuard(t.Context(), wf, vars, tc.recorded)
+			e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+			e.vars = map[string]any{store.ForgePublishTokenVar: tok, store.ForgePublishURLVar: "https://iterion.example/publish"}
+
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Command: command, CommandRefs: refs}
+			if _, err := e.Execute(context.Background(), node, nil); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline.bin"))
+			if err != nil {
+				t.Fatalf("the tool process did not run: %v", err)
+			}
+			argv := strings.ReplaceAll(string(cmdline), "\x00", " ")
+			if strings.Contains(argv, tok) {
+				t.Errorf("the tool process's cmdline carries the grant: %q", argv)
+			}
+			for _, other := range tc.recorded[store.ForgePublishTokenVar] {
+				if strings.Contains(argv, other) {
+					t.Errorf("the tool process's cmdline carries a recorded grant: %q", argv)
+				}
+			}
+			if !strings.Contains(argv, `"$`+placeholder+`"`) {
+				t.Errorf("cmdline = %q, want the grant referenced through the environment", argv)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tok {
+				// The run presents ITS grant: a lineage's other records are
+				// registered for redaction, never for carriage.
+				t.Errorf("the command received %d bytes, want the run's own grant: a publish would be refused", len(got))
+			}
+		})
+	}
+}
+
+// The provenance rule, at the seam: the guard resolves the grant for text the
+// AUTHOR wrote and for nothing else. A model's own command — the self-repair
+// rung's corrected command — goes through the plain materialiser.
+func TestOnlyAuthoredTextMaterializesTheMintedGrant(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	if got := g.AuthoredEnvPlaceholder(store.ForgePublishTokenVar); got != ph {
+		t.Fatalf("AuthoredEnvPlaceholder = %q, want %q — the template layer would render the value itself", got, ph)
+	}
+	body := "publish --token '" + ph + "'"
+	authored, env := g.MaterializeAuthoredShellEnv(body)
+	if strings.Contains(authored, tok) {
+		t.Errorf("the authored command inlines the grant: %q", authored)
+	}
+	if env[ph] != tok {
+		t.Errorf("the authored command's env does not carry the grant (%d entries)", len(env))
+	}
+	if !strings.Contains(authored, `"$`+ph+`"`) {
+		t.Errorf("authored = %q, want the environment reference", authored)
+	}
+	modelText, modelEnv := g.MaterializeShellEnv(body)
+	if modelText != body || len(modelEnv) != 0 {
+		t.Errorf("a model's command resolved the grant: %q env=%v", modelText, modelEnv)
+	}
+	// No inline fallback: a bare occurrence stays as written rather than
+	// being substituted into the command line the whole class avoids.
+	bare, bareEnv := g.MaterializeAuthoredShellEnv("publish --token " + ph)
+	if strings.Contains(bare, tok) || len(bareEnv) != 0 {
+		t.Errorf("a bare placeholder was inlined: %q env=%v", bare, bareEnv)
+	}
+}
+
+// The grant is scoped to the endpoints the server bound it to, so the egress
+// gate (Layer 2) refuses it toward anywhere else.
+func TestTheMintedGrantIsScopedToItsEndpoints(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{
+		store.ForgePublishTokenVar: tok,
+		store.ForgePublishURLVar:   "https://iterion.example/api/v1/forge/publish",
+		store.ForgePRStateURLVar:   "https://iterion.example/api/v1/forge/pr-state",
+	}, nil)
+	if !g.ExfiltratesTo("Authorization: Bearer "+tok, "attacker.example") {
+		t.Error("the grant leaves toward any host: the egress gate does not know its scope")
+	}
+	if g.ExfiltratesTo("Authorization: Bearer "+tok, "iterion.example") {
+		t.Error("the grant is refused toward the endpoint it was minted for: the publish itself would fail")
+	}
+	// An endpoint we cannot read is no scope at all — refusing the publish
+	// would be worse than the exposure.
+	unscoped := BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	if unscoped.ExfiltratesTo("Bearer "+tok, "attacker.example") {
+		t.Error("a grant whose endpoints are unknown was scoped to nothing reachable")
+	}
+}
+
+// Item 2 of #2033: a `script:` body is written to a temp file — pushed into
+// the workspace by a copy-based sandbox — so an inlined bearer would sit in
+// clear on disk for the node's lifetime. The body names the variable itself
+// (iterion cannot rewrite a reference in someone else's language) and the
+// engine hands the value to the interpreter: the script's own source, read
+// back by the script, carries no grant.
+func TestAScriptBodyReadsTheMintedGrantFromItsEnvironment(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	script := "cat \"$0\" > body.txt\nprintf '%s' \"$" + ph + "\" > token.txt\n"
+	dir := t.TempDir()
+	wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+	guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+	e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Script: script, Language: "sh"}
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "body.txt"))
+	if err != nil {
+		t.Fatalf("the script did not run: %v", err)
+	}
+	if strings.Contains(string(body), tok) {
+		t.Errorf("the script file on disk carries the grant: %q", body)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != tok {
+		t.Errorf("the script received %d bytes, want the grant: the publish would be skipped as ungranted", len(got))
+	}
+}
+
+// #2875, the measured leak this closes: a `{{vars.forge_publish_token}}` in a
+// `script:` body rendered the bearer as a language literal INTO the script's
+// temp file — in clear, on disk for the node's lifetime, pushed into the
+// workspace by a copy-based sandbox — while the previews (#2827) and
+// docs/secrets.md say a script body resolves nothing. The run refuses the
+// reference, before the file exists, naming the var and the door that works:
+// the body names the variable itself and reads it from the interpreter's
+// environment (the test above). The refusal is the build's, so every
+// interpreter takes it — a per-language swap would have to invent each
+// language's env-read expression (python's needs an import the body may not
+// have).
+func TestAScriptBodyRefusesAMintedVarReference(t *testing.T) {
+	blankHostCredentials(t)
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	for _, tc := range []struct {
+		language, script string
+	}{
+		{"sh", "cat \"$0\" > body.txt\nprintf '%s' {{vars.forge_publish_token}}\n"},
+		{"py", "import pathlib, sys\npathlib.Path(\"body.txt\").write_text(pathlib.Path(sys.argv[0]).read_text())\ntoken = {{vars.forge_publish_token}}\n"},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			tok := randomToken(t)
+			script := tc.script
+			refs, err := ir.ParseRefs(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+			e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+			e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Script: script, Language: tc.language, ScriptRefs: refs}
+			_, err = e.Execute(context.Background(), node, nil)
+			if err == nil {
+				t.Fatal("a script body referencing the minted grant ran — the bearer sat in its temp file in clear")
+			}
+			for _, want := range []string{store.ForgePublishTokenVar, ph} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not name %q: %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), tok) {
+				t.Error("the refusal itself carries the grant")
+			}
+			if body, rerr := os.ReadFile(filepath.Join(dir, "body.txt")); rerr == nil {
+				t.Errorf("the refused script ran; its source read back carries the grant: %v", strings.Contains(string(body), tok))
+			}
+		})
+	}
+}
+
+// The escape hatch that makes #2875's refusal an override and not an
+// absolute, on a REAL guard: the raw `{{!vars.x}}` form is the author's own
+// text, quoting included, so a `script:` body that writes it renders the
+// bearer into the script's temp file. That leak is the documented cost of an
+// explicit, greppable choice — the only form that keeps the value in a
+// script body — and it is asserted, so a tightening that quietly turns the
+// refusal into an absolute reddens here instead of passing. The sibling
+// above pins the default form; the preview's reading of the same hatch is
+// TestAPreviewNeverRendersTheMintedGrant, which drives a nil guard.
+func TestAScriptBodyKeepsTheMintedGrantInTheRawForm(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	// The author's own quoting around the reference: the raw form renders
+	// the value as written, where the default render would wrap it in the
+	// language literal's quotes and the script would read those back.
+	script := "cat \"$0\" > body.txt\nprintf '%s' '{{!vars.forge_publish_token}}' > token.txt\n"
+	refs, err := ir.ParseRefs(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+	guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+	e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Script: script, Language: "sh", ScriptRefs: refs}
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("the raw form was refused — the author's own text has no override left: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+	if err != nil {
+		t.Fatalf("the script did not run: %v", err)
+	}
+	if string(got) != tok {
+		t.Errorf("the script received %d bytes, want the grant verbatim: the raw form renders the author's own text, quoting included", len(got))
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "body.txt"))
+	if err != nil {
+		t.Fatalf("the script did not read its own source back: %v", err)
+	}
+	if !strings.Contains(string(body), tok) {
+		t.Errorf("the script file carries no value for the raw reference (%d bytes): the override renders nothing, so it buys nothing", len(body))
+	}
+}
+
+// The catalog's call-site shape, unchanged by the fix: every bot writes
+// `NAME={{vars.forge_publish_token}} <program>` and reads NAME from its
+// environment. The three names the catalog uses must all still arrive — a
+// shape that stopped carrying the grant would turn the publish into a silent
+// "no grant" skip, which is exactly what the bots report when it is absent.
+func TestEveryCatalogCallSiteShapeStillCarriesTheGrant(t *testing.T) {
+	blankHostCredentials(t)
+	// PUB_TOKEN: review-pr, branch-improve-loop's emit, gitops-warden.
+	// CHECK_AUTH: the delivery preflights. PR_STATE_TOKEN: the PR-state post.
+	for _, name := range []string{"PUB_TOKEN", "CHECK_AUTH", "PR_STATE_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			tok := randomToken(t)
+			command := name + `={{vars.forge_publish_token}} sh -c 'printf %s "$` + name + `" > token.txt'; cat /proc/$$/cmdline > cmdline.bin`
+			refs, err := ir.ParseRefs(command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+			e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+			e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Command: command, CommandRefs: refs}
+			if _, err := e.Execute(context.Background(), node, nil); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+			if err != nil {
+				t.Fatalf("the call site did not run: %v", err)
+			}
+			if string(got) != tok {
+				t.Errorf("%s received %d bytes, want the grant", name, len(got))
+			}
+			cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(strings.ReplaceAll(string(cmdline), "\x00", " "), tok) {
+				t.Errorf("%s's cmdline carries the grant", name)
+			}
+		})
+	}
+}
+
+// #2827: a preview renders without a guard — RenderCommand/RenderScript pass
+// nil, and a prompt's TemplateResolver has no materialiser behind it either —
+// while the placeholder indirection exists only where the materialiser that
+// resolves it exists ("freeze the identity"). Every one of those surfaces
+// renders a server-minted secret var as the guard's placeholder, the form
+// Materialize renders — never the value.
+func TestAPreviewNeverRendersTheMintedGrant(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	vars := map[string]any{store.ForgePublishTokenVar: tok, "workspace_dir": "ws"}
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+
+	// The command preview: the placeholder in the one form the run renders
+	// it, single-quoted for MaterializeAuthoredShellEnv.
+	command := "publish --dir {{vars.workspace_dir}} --token {{vars.forge_publish_token}}"
+	got := RenderCommand(command, mustRefs(command), nil, vars, nil, "preview", nil, nil)
+	want := "publish --dir 'ws' --token '" + ph + "'"
+	if got != want {
+		t.Errorf("RenderCommand = %q, want %q", got, want)
+	}
+	if strings.Contains(got, tok) {
+		t.Errorf("the command preview carries the grant: %q", got)
+	}
+
+	// The script preview: the placeholder as the language literal the value
+	// would have been.
+	script := "token = {{vars.forge_publish_token}}"
+	got, err := RenderScript(script, "py", mustRefs(script), nil, vars, nil, "preview", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `token = "` + ph + `"`; got != want {
+		t.Errorf("RenderScript = %q, want %q", got, want)
+	}
+	if strings.Contains(got, tok) {
+		t.Errorf("the script preview carries the grant: %q", got)
+	}
+
+	// The prompt preview — and the prompt path of a run itself: nothing
+	// materialises a vars placeholder there either, guard or not.
+	for name, r := range map[string]*TemplateResolver{
+		"guard nil":     {Vars: vars},
+		"guard present": {Vars: vars, Secrets: BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{store.ForgePublishTokenVar: tok}, nil)},
+	} {
+		if got := r.Resolve("publish with {{vars.forge_publish_token}}", nil, nil); got != "publish with "+ph {
+			t.Errorf("%s: prompt = %q, want the placeholder %q", name, got, ph)
+		} else if strings.Contains(got, tok) {
+			t.Errorf("%s: the prompt carries the grant: %q", name, got)
+		}
+	}
+
+	// Parity with the run, pinned so the carve-outs stay deliberate: the raw
+	// {{!vars.x}} form is the author's own text and keeps the value; the read
+	// surfaces' mask renders as itself.
+	raw := "publish --token {{!vars.forge_publish_token}}"
+	if got := RenderCommand(raw, mustRefs(raw), nil, vars, nil, "preview", nil, nil); !strings.Contains(got, tok) {
+		t.Errorf("the raw form lost the author's own text: %q", got)
+	}
+	maskedVars := map[string]any{store.ForgePublishTokenVar: store.RedactedLaunchVar}
+	masked := RenderCommand(command, mustRefs(command), nil, maskedVars, nil, "preview", nil, nil)
+	if !strings.Contains(masked, store.RedactedLaunchVar) || strings.Contains(masked, ph) {
+		t.Errorf("a var already holding the read-surface mask renders as %q, want the mask itself", masked)
 	}
 }

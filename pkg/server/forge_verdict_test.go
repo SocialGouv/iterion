@@ -249,9 +249,9 @@ func TestForgePublishVerdict_FailedApprovalSuppressesTheArm(t *testing.T) {
 	}
 }
 
-func TestForgePublishCapabilitiesFor_FailsClosedOnAnUnresolvableBot(t *testing.T) {
+func TestPullRequestGrantCapabilitiesFor_FailsClosedOnAnUnresolvableBot(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
-	if caps := s.forgePublishCapabilitiesFor(context.Background(), "team1", "no-such-bot"); len(caps) != 0 {
+	if caps := s.pullRequestGrantCapabilitiesFor(context.Background(), "team1", "no-such-bot"); len(caps) != 0 {
 		t.Errorf("an unresolvable bot must mint NO capabilities (fail closed), got %v", caps)
 	}
 }

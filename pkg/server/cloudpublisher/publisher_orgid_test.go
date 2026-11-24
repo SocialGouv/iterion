@@ -22,9 +22,12 @@ type fakeTeamResolver struct {
 	// llmFallback answers Team.LLMFallback per team id; a team absent from
 	// the map carries the empty (platform default) policy.
 	llmFallback map[string]string
-	err         error
-	orgErr      error
-	calls       int
+	// runnerPool answers Team.RunnerPool per team id (D13): a team absent
+	// from the map is unmapped, which is the shared default pool.
+	runnerPool map[string]string
+	err        error
+	orgErr     error
+	calls      int
 }
 
 func (f *fakeTeamResolver) GetTeam(_ context.Context, id string) (identity.Team, error) {
@@ -36,7 +39,21 @@ func (f *fakeTeamResolver) GetTeam(_ context.Context, id string) (identity.Team,
 	if !ok {
 		return identity.Team{}, identity.ErrNotFound
 	}
-	return identity.Team{ID: id, OrgID: orgID, LLMFallback: f.llmFallback[id]}, nil
+	return identity.Team{ID: id, OrgID: orgID, LLMFallback: f.llmFallback[id], RunnerPool: f.runnerPool[id]}, nil
+}
+
+// GetTeamByRunnerPool answers the one-team-per-pool accessor from the
+// runnerPool map: the team mapped to pool, ErrNotFound when none is.
+func (f *fakeTeamResolver) GetTeamByRunnerPool(_ context.Context, pool string) (identity.Team, error) {
+	if f.err != nil {
+		return identity.Team{}, f.err
+	}
+	for id, mapped := range f.runnerPool {
+		if mapped == pool {
+			return identity.Team{ID: id, OrgID: f.orgs[id], RunnerPool: mapped}, nil
+		}
+	}
+	return identity.Team{}, identity.ErrNotFound
 }
 
 func (f *fakeTeamResolver) GetOrg(_ context.Context, id string) (identity.Org, error) {

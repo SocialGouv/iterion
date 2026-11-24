@@ -21,15 +21,74 @@ func NewMemoryConfigStore() *MemoryConfigStore {
 }
 
 func (s *MemoryConfigStore) Create(_ context.Context, c Config) error {
-	return s.kit.Insert(c.ID, c, ErrDuplicate)
+	return s.kit.Insert(c.ID, storekit.Snapshot(c), ErrDuplicate)
 }
 
 func (s *MemoryConfigStore) Get(_ context.Context, id string) (Config, error) {
-	return s.kit.Get(id)
+	c, err := s.kit.Get(id)
+	return storekit.Snapshot(c), err
 }
 
 func (s *MemoryConfigStore) Update(_ context.Context, c Config) error {
-	return s.kit.Replace(c.ID, c)
+	c = storekit.Snapshot(c)
+	ok, err := s.kit.Mutate(c.ID, func(cur *Config) bool {
+		if cur.Version != c.Version || cur.ProvisionFrozen {
+			return false
+		}
+		c.Version++
+		c.LastUsedAt = cur.LastUsedAt
+		*cur = c
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *MemoryConfigStore) DisableProvision(_ context.Context, id, integrationID string) error {
+	ok, err := s.kit.Mutate(id, func(c *Config) bool {
+		if c.ProvisionIntegrationID != integrationID {
+			return false
+		}
+		c.Enabled = false
+		c.Version++
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrConflict
+	}
+	return nil
+}
+
+// ClearCredentialPins judges the row the store holds under the same lock as
+// the write: the caller's listing copy names nothing here, so a pin edit or
+// a second record's sweep landing after that copy was taken survives
+// untouched. Both maps are scanned unconditionally — the contract removes
+// every entry naming the record, so the first map's drop never spares the
+// second its judgment.
+func (s *MemoryConfigStore) ClearCredentialPins(_ context.Context, id, recordID string) (bool, error) {
+	cleared := false
+	_, err := s.kit.Mutate(id, func(c *Config) bool {
+		droppedKeys := storekit.DropStringMapValues(&c.KeyOverrides, recordID)
+		droppedSecrets := storekit.DropStringMapValues(&c.SecretOverrides, recordID)
+		cleared = droppedKeys || droppedSecrets
+		if !cleared {
+			return false
+		}
+		c.Version++
+		return true
+	})
+	if err != nil {
+		return false, err
+	}
+	return cleared, nil
 }
 
 func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
@@ -39,7 +98,7 @@ func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
 func (s *MemoryConfigStore) ListByTenant(_ context.Context, tenantID string) ([]Config, error) {
 	out := s.kit.List(func(c Config) bool { return c.TenantID == tenantID })
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out, nil
+	return storekit.Snapshot(out), nil
 }
 
 func (s *MemoryConfigStore) MarkUsed(_ context.Context, id string, t time.Time) error {
@@ -128,6 +187,31 @@ func (s *MemoryDeliveryStore) GetByIdempotencyKey(_ context.Context, key string)
 
 func (s *MemoryDeliveryStore) Update(_ context.Context, d Delivery) error {
 	return s.kit.Replace(d.ID, d)
+}
+
+// MarkRunOutcome stamps the outcome of the run this delivery launched (see
+// DeliveryStore). Keep its semantics in lock-step with the mongo twin.
+func (s *MemoryDeliveryStore) MarkRunOutcome(_ context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	stamped := at.UTC()
+	_, err := s.kit.Mutate(id, func(d *Delivery) bool {
+		// The row's own run is the authority: a retry relaunched this
+		// delivery under another id, and the predecessor's late terminal
+		// describes a run this row no longer reports.
+		if d.RunID == "" || d.RunID != runID {
+			return false
+		}
+		// Monotonicity guard (twin of the mongo filter): an out-of-order
+		// delivery cannot move the health fields backwards.
+		if d.LastRunAt != nil && d.LastRunAt.After(stamped) {
+			return false
+		}
+		d.LastRunStatus = status
+		d.LastRunError = errMsg
+		d.LastRunErrorCode = errCode
+		d.LastRunAt = &stamped
+		return true
+	})
+	return err
 }
 
 // ClaimFailedRetry is the compare-and-set take-over of a failed row (see
@@ -278,6 +362,19 @@ func (c *MemoryCounter) Allow(_ context.Context, tenantID, webhookID string, whe
 	c.org[ok]++
 	c.wh[wk]++
 	return true, nil
+}
+
+func (c *MemoryCounter) Release(_ context.Context, tenantID, webhookID string, when time.Time, _ Limits) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := monthKey(when)
+	if ok := tenantID + "|" + m; c.org[ok] > 0 {
+		c.org[ok]--
+	}
+	if wk := tenantID + "|" + webhookID + "|" + m; c.wh[wk] > 0 {
+		c.wh[wk]--
+	}
+	return nil
 }
 
 func (c *MemoryCounter) OrgCount(_ context.Context, tenantID string, when time.Time) (int, error) {

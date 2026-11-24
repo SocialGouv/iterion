@@ -24,6 +24,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,10 +34,14 @@ import (
 	"unicode"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
@@ -53,17 +58,22 @@ import (
 // that backs it. Both lifecycle handles are owned by the engine and
 // must be shut down on Run() exit.
 type activeSandbox struct {
-	run             sandbox.Run
-	proxy           *netproxy.Proxy
-	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
-	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
-	sharedStateDir  string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
-	scratchHostDir  string       // host dir bind-mounted onto ${PROJECT_SCRATCH_DIR}; empty when the scratch is container-local and dies with the sandbox — then banked at teardown (ADR-106)
-	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
-	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
-	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
-	askUserToken    string       // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
-	askUserListener *http.Server // the ask-user listener to shut down at teardown; nil when not started
+	run               sandbox.Run
+	proxy             *netproxy.Proxy
+	workspaceFolder   string                     // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
+	attachmentsDir    string                     // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
+	sharedStateDir    string                     // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
+	scratchHostDir    string                     // host dir bind-mounted onto ${PROJECT_SCRATCH_DIR}; empty when the scratch is container-local and dies with the sandbox — then banked at teardown (ADR-106)
+	credentialHome    credroute.SandboxHomeState // what this sandbox binds of the operator's home, as its credential admission read it — a subbot child adopting it is judged on the same mount
+	boardEndpoint     string                     // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
+	connectorEndpoint string                     // http URL of the connector facade on the SAME listener; empty when the handler does not serve /api/v1/mcp/connectors (the cloud runner pod's mux — #2632) so the executor never wires an endpoint that 404s
+	boardListener     *http.Server               // the board listener to shut down at teardown; nil when not started
+	askUserEndpoint   string                     // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
+	askUserToken      string                     // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
+	askUserListener   *http.Server               // the ask-user listener to shut down at teardown; nil when not started
+	// hostGuardCleanup removes the #2069 per-run config copies at teardown;
+	// nil-safe (no guard, or a driver with no host binds staged nothing).
+	hostGuardCleanup func()
 }
 
 // shutdown tears down both handles best-effort. Safe to call multiple
@@ -92,6 +102,9 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 			logger.Warn("runtime: sandbox ask-user listener shutdown: %v", err)
 		}
 	}
+	if a.hostGuardCleanup != nil {
+		a.hostGuardCleanup()
+	}
 }
 
 // startSandboxMCPListener binds a per-run, gateway-reachable HTTP
@@ -112,6 +125,26 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 //     tool surface (pkg/askusermcp) so interactive nodes keep the
 //     native ask_user tools in-container — the stdio __mcp-ask-user
 //     subcommand's host binary path is invisible there.
+//
+// portOfListenerEndpoint reads the numeric port a listener endpoint
+// advertises ("http://host:port[/path]", the shape startSandboxMCPListener
+// and the proxy's Endpoint write). ok is false for an empty endpoint or one
+// no listener URL could have produced — never a guessed default.
+func portOfListenerEndpoint(endpoint string) (int, bool) {
+	if endpoint == "" {
+		return 0, false
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
 func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path string) (endpoint string, srv *http.Server, err error) {
 	bind, advertise, err := proxyAddressesForDriver(driver)
 	if err != nil {
@@ -132,14 +165,27 @@ func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path s
 	return endpoint, srv, nil
 }
 
+// connectorEndpointFor derives the connector facade's URL on the same
+// listener from the board endpoint's (one mux, one listener): base plus the
+// connectors path. The derivation lives here — where the listener and its
+// board path are known — so the executor never rebuilds a URL from a suffix
+// convention it does not own.
+func connectorEndpointFor(boardEndpoint, boardPath string) string {
+	return strings.TrimSuffix(boardEndpoint, boardPath) + "/api/v1/mcp/connectors"
+}
+
 // workflowHasBoardCapability reports whether the workflow (or any of its
-// agent/judge nodes) declares a `board.*` capability — the gate for
-// starting the per-run board MCP listener.
-func workflowHasBoardCapability(wf *ir.Workflow) bool {
+// agent/judge nodes) holds a `board.*` capability — the gate for starting
+// the per-run board MCP listener. Held, not declared: the lists are read
+// through the workspace-trust floor (store.RunTrust.HostCapabilities), the
+// same resolver the executor hands each node, so a run whose nodes hold no
+// capability opens no listener for them to reach.
+func workflowHasBoardCapability(wf *ir.Workflow, trust store.RunTrust) bool {
 	if wf == nil {
 		return false
 	}
-	has := func(caps []string) bool {
+	has := func(declared []string) bool {
+		caps, _ := trust.HostCapabilities(declared)
 		for _, c := range caps {
 			if strings.HasPrefix(c, "board.") {
 				return true
@@ -167,17 +213,19 @@ func workflowHasBoardCapability(wf *ir.Workflow) bool {
 
 // workflowHasHostCapability gates the shared token-authenticated MCP
 // listener. Board tools use /board; read-only run tools use /runs on the same
-// listener and host-gateway alias.
-func workflowHasHostCapability(wf *ir.Workflow) bool {
-	if workflowHasBoardCapability(wf) {
+// listener and host-gateway alias. Read through the trust floor, like
+// workflowHasBoardCapability.
+func workflowHasHostCapability(wf *ir.Workflow, trust store.RunTrust) bool {
+	if workflowHasBoardCapability(wf, trust) {
 		return true
 	}
 	if wf == nil {
 		return false
 	}
-	has := func(caps []string) bool {
+	has := func(declared []string) bool {
+		caps, _ := trust.HostCapabilities(declared)
 		for _, capability := range caps {
-			if capability == runops.CapRunsRead {
+			if capability == runops.CapRunsRead || capability == connection.CapConnectors {
 				return true
 			}
 		}
@@ -223,6 +271,12 @@ type SandboxParams struct {
 	DefaultImage  string            // "" lets the runtime pick the built-in default
 	Environment   map[string]string // project env overlay; workflow sandbox.env wins
 
+	// Trust is who wrote the code in this run's workspace (store.RunTrust).
+	// The zero value is a trusted run — only an explicit untrusted marker
+	// arms the fork-lane admissions (the credential-reach refusal of
+	// #1768), so a run that predates the marker keeps its behavior.
+	Trust store.RunTrust
+
 	// HostStateOverride / HostStateDefault carry the precedence inputs
 	// for the host_state mount (auto-bind of ~/.iterion + ~/.claude).
 	// Empty values defer to the next layer in the chain. The chain is
@@ -261,6 +315,7 @@ type SandboxParams struct {
 	// the bench repo's worktree with `docs/renovacy/` commits. Empty
 	// disables the mount (cloud mode: cross-machine bind isn't
 	// supportable; needs an S3-backed scratch area instead).
+	RunFilesGrant         store.RunFilesGrant
 	RunFilesHostDir       string
 	RunFilesContainerPath string
 
@@ -294,10 +349,25 @@ type SandboxParams struct {
 	// inspection also forces a proxy to run even under network: open.
 	SecretRewriter netproxy.SecretRewriter
 
+	// Simulation marks a dry run: its sandbox is the simulation's, never
+	// the run's, so a declared secret's grants are not judged against it.
+	Simulation bool
+
+	// SecretHeld reports whether a declared secret resolved to something
+	// this run carries (a value, a mounted file); nil reads every optional
+	// secret as absent. The launch gate behind `sinks:` reads it.
+	SecretHeld func(name string) bool
+
 	// BoardMCPHandler, when non-nil, serves the dedicated board/runs MCP
 	// routes for a per-run gateway-reachable listener started alongside the
 	// egress proxy (C082). The historical name remains for compatibility.
 	BoardMCPHandler http.Handler
+	// BoardMCPConnectors says the handler ALSO serves /api/v1/mcp/connectors
+	// (the server's dedicated mux does; the cloud runner pod's does not —
+	// #2632). When false the connector endpoint stays empty and a
+	// `connectors`-capability node degrades with the delegate's documented
+	// warning instead of an endpoint that 404s at every call.
+	BoardMCPConnectors bool
 
 	// EffectiveBackend resolves a node's backend the way DISPATCH will —
 	// launch-time `--backend` overrides included. The engine
@@ -306,6 +376,20 @@ type SandboxParams struct {
 	// override, since they are applied at dispatch and never folded back
 	// into the IR. Same seam as the workspace-safety admission check.
 	EffectiveBackend effectiveBackendResolver
+
+	// Routes is the view the dispatch reads the run's chains under — its
+	// launch overrides, vars and provider allowlist — for the credential
+	// admission, which judges the same legs (model.Legs). The engine fills
+	// it from its executor (credentialRouteViewer) and the vars the run
+	// pushes it before its first node; the zero view reads the IR alone, the
+	// reading of an executor that applies none of its own.
+	Routes model.RouteView
+
+	// DetectedClawSpec is the model the dispatch sends for a claw node that
+	// names none (model.ClawExecutor.DetectedClawSpec), which the credential
+	// admission judges in its place. Nil — an executor that picks none — and
+	// such a node's spec stays empty.
+	DetectedClawSpec func(nodeID string) (string, error)
 }
 
 // workflowMaxDurationSeconds returns the workflow budget's max_duration
@@ -434,16 +518,26 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return err
 	}
 	defaultImage, defaultImageFallback := resolveDefaultSandboxImageWithFallback(p.DefaultImage)
-	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
+	// The image a project `.env` named was ignored (isolationenv): say so
+	// here, where a run logger exists and the image the run WILL start from
+	// is in hand, rather than at the read.
+	if warning := plantedSandboxDefaultImage(); warning != "" && logger != nil {
+		logger.Warn("runtime: %s — this run's sandbox starts from %s", warning, defaultImage)
+	}
+	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback, p.Trust)
 	if err != nil {
 		return nil, err
 	}
 	spec, source, skipReason := res.spec, res.source, res.skipReason
-	if spec == nil || !spec.Mode.IsActive() {
-		// Explicit opt-out (Mode=none / override none), or the built-in
-		// default degraded because the host can't sandbox — the latter
-		// must stay visible: emit sandbox_skipped so the run record says
-		// it executed unsandboxed and why.
+	// onHost: the run executes on this host — an explicit opt-out
+	// (Mode=none / override none), or a default or `auto` that degraded
+	// because the host can't sandbox.
+	onHost := spec == nil || !spec.Mode.IsActive()
+	var driver sandbox.Driver
+	var caps sandbox.Capabilities
+	if onHost {
+		// The degraded default must stay visible: emit sandbox_skipped so
+		// the run record says it executed unsandboxed and why.
 		if skipReason != "" {
 			payload := autoDegradePayload(sandbox.ModeAuto, source, skipReason, p.Workflow)
 			_ = emitEvent(store.EventSandboxSkipped, payload)
@@ -451,51 +545,50 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				logger.Warn("runtime: %s (run %s)", payload["reason"], p.RunID)
 			}
 		}
-		return nil, nil
-	}
-	// The operator's env overlay never loses to the target repo's
-	// devcontainer: repo-contributed keys (repoEnv) are exactly the
-	// ones that may be overwritten, workflow-authored keys stay.
-	mergeEnvironmentOverlay(spec, p.Environment, res.repoEnv)
+	} else {
+		// The operator's env overlay never loses to the target repo's
+		// devcontainer: repo-contributed keys (repoEnv) are exactly the
+		// ones that may be overwritten, workflow-authored keys stay.
+		mergeEnvironmentOverlay(spec, p.Environment, res.repoEnv)
 
-	// Select the driver up front: its capabilities decide which
-	// host-convenience mounts are even possible. selectSandboxDriver keys
-	// off spec.Mode + host availability only (not the mounts), so it's
-	// safe here; the mounts still land before driver.Prepare below, which
-	// is what the "configure mounts first" invariant requires.
-	driver, err := selectSandboxDriver(spec, logger, p.Drivers)
-	if err != nil {
-		// The MODE decides, and this is the one place it does (#1425).
-		// Not the SOURCE: a `sandbox: auto` written in the workflow,
-		// passed as --sandbox=auto or inherited from the built-in
-		// default all ask the same question, so they get the same
-		// answer.
-		//
-		//   - `auto` reads as "isolate if you can". No driver on this
-		//     host → run unsandboxed, and say so on the run's stream.
-		//     Returning nil (rather than the passthrough noop driver)
-		//     is what puts the run on the engine's no-sandbox branch,
-		//     where the host devbox and the `iterion` PATH shim are
-		//     provisioned — see startSandbox. This is the answer the
-		//     107 scheduled ticks measured on the operator's own host
-		//     (2026-07-20 → 2026-09-17) needed instead of dying.
-		//   - an explicit `sandbox: { mode: inline, image/build: … }`
-		//     is the container the author wired; the refusal IS the
-		//     isolation guarantee. The run parks with
-		//     [store.FailureSandboxDriverUnavailable] — the typed code
-		//     the schedule's last_run_error_code (#1426) and the
-		//     studio's failure row read — and the `sandbox_skipped`
-		//     event carries `refused: true` so the run's own stream
-		//     states the reason before any row updates.
-		if spec.Mode == sandbox.ModeAuto {
+		// Select the driver up front: its capabilities decide which
+		// host-convenience mounts are even possible. selectSandboxDriver keys
+		// off spec.Mode + host availability only (not the mounts), so it's
+		// safe here; the mounts still land before driver.Prepare below, which
+		// is what the "configure mounts first" invariant requires.
+		var err error
+		driver, err = selectSandboxDriver(spec, logger, p.Drivers)
+		switch {
+		case err != nil && spec.Mode == sandbox.ModeAuto:
+			// The MODE decides, and this is the one place it does (#1425).
+			// Not the SOURCE: a `sandbox: auto` written in the workflow,
+			// passed as --sandbox=auto or inherited from the built-in
+			// default all ask the same question, so they get the same
+			// answer.
+			//
+			//   - `auto` reads as "isolate if you can". No driver on this
+			//     host → run unsandboxed, and say so on the run's stream.
+			//     Returning nil (rather than the passthrough noop driver)
+			//     is what puts the run on the engine's no-sandbox branch,
+			//     where the host devbox and the `iterion` PATH shim are
+			//     provisioned — see startSandbox. This is the answer the
+			//     107 scheduled ticks measured on the operator's own host
+			//     (2026-07-20 → 2026-09-17) needed instead of dying.
+			//   - an explicit `sandbox: { mode: inline, image/build: … }`
+			//     is the container the author wired; the refusal IS the
+			//     isolation guarantee. The run parks with
+			//     [store.FailureSandboxDriverUnavailable] — the typed code
+			//     the schedule's last_run_error_code (#1426) and the
+			//     studio's failure row read — and the `sandbox_skipped`
+			//     event carries `refused: true` so the run's own stream
+			//     states the reason before any row updates.
 			payload := autoDegradePayload(spec.Mode, source, err.Error(), p.Workflow)
 			_ = emitEvent(store.EventSandboxSkipped, payload)
 			if logger != nil {
 				logger.Warn("runtime: %s (run %s)", payload["reason"], p.RunID)
 			}
-			return nil, nil
-		}
-		if errors.Is(err, sandbox.ErrDriverUnavailable) {
+			onHost = true
+		case errors.Is(err, sandbox.ErrDriverUnavailable):
 			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
 				"mode":       string(spec.Mode),
 				"source":     source,
@@ -509,14 +602,107 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				Hint:    "install docker or podman; or declare `sandbox: auto` to let the run degrade to the host with a sandbox_skipped event; or run it unsandboxed on purpose with --sandbox none",
 				Cause:   err,
 			}
+		case err != nil:
+			return nil, err
+		default:
+			// A sandbox that will actually start announces what the
+			// repository tried to put in it — after selection, so a run
+			// that degrades to the host never claims an allowlist it never
+			// had.
+			emitRepoTrustEvents(emitEvent, logger, res, source, p.RunID)
+			// The image is RESOLVED and the sandbox will start: this is the
+			// first moment the run can be told that the container it is
+			// about to enter carries no CLI for a backend it will dispatch,
+			// instead of discovering it as `exec: not found` at that node
+			// (#1643). Before the pulls and the mounts, so the refusal costs
+			// nothing, and after the driver is selected, so a `sandbox:
+			// auto` that degraded to the host — where the operator's own CLI
+			// may well be installed — is never refused.
+			if err := admitSandboxImageBackends(p.Workflow, spec, p.EffectiveBackend); err != nil {
+				return nil, err
+			}
+			caps = driver.Capabilities()
 		}
+	}
+	// The credential admission (#1768, ADR-161 decision 4), at the ONE site
+	// every resolved start passes: the mode, the driver and the host-state
+	// mount are known, and nothing is pulled, mounted or started yet — the
+	// host exits below included. A run the launch judges (the fork lane,
+	// every stamped run) whose node no credential funds is refused here;
+	// what it cannot read is warned.
+	placement := credroute.Sandbox{}
+	if !onHost {
+		placement = credroute.Sandbox{Contained: true, Home: sandboxCredentialHome(p, caps)}
+	}
+	if err := admitSandboxCredentials(ctx, p, placement, emitEvent, logger); err != nil {
 		return nil, err
 	}
-	// A sandbox that will actually start announces what the repository
-	// tried to put in it — after selection, so a run that degrades to
-	// the host never claims an allowlist it never had.
-	emitRepoTrustEvents(emitEvent, logger, res, source, p.RunID)
-	caps := driver.Capabilities()
+	if onHost {
+		// An unsandboxed run serves no `egress` grant, and `agent` only on
+		// a backend whose tool input is materialised on the host: a secret
+		// granted nothing the host serves is refused here, before any node
+		// runs (ADR-146, axis 3b).
+		if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, p.hostSecretService()); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	// What this sandbox serves a declared secret's grants with, judged here
+	// — the driver and the proxy's inspection are known, nothing is mounted
+	// or started yet, so a refusal leaves nothing behind. Egress reads the
+	// two facts startNetworkProxy reads (a rewriter is wired, the driver
+	// injects the CA); the noop driver runs the nodes on the host.
+	realDriver := driver.Name() != "noop"
+	// ADR-162 decision 7 — the credential crossing. An untrusted run's
+	// sealed keys cross as Layer 2 placeholders, and the proxy this start
+	// runs is what substitutes them toward the credential's own host. The
+	// crossing composes over the executor's guard HERE, once, where the
+	// driver's caps and the operator's hatch are known and nothing has
+	// been pulled, mounted or started: a start that cannot arm the
+	// substitution — TLS inspection off (ITERION_SANDBOX_TLS_INSPECT), a
+	// driver that cannot inject its CA — would hand the container
+	// placeholders that resolve nowhere, which is a typed refusal, never a
+	// run that authenticates with a token that cannot work. A run with no
+	// LLM credential never reaches this question: the admission above
+	// refused it. Trusted runs keep the guard's rewriter exactly as it
+	// was.
+	rewriter := p.SecretRewriter
+	if !p.Trust.Trusted() {
+		if crossings := credentialCrossings(ctx); len(crossings) > 0 {
+			if !sandboxTLSInspectEnabled() || !realDriver || !caps.SupportsTLSInspection {
+				return nil, &RuntimeError{
+					Code:    ErrCodeSandboxCrossingRefused,
+					Message: "untrusted (fork-lane) run refused before its sandbox started: its credentials cross as Layer 2 placeholders the sandbox proxy substitutes toward the credential's own host, and this start cannot arm that substitution (TLS inspection disabled or a driver without it)",
+					Hint:    "run the fork lane on a driver whose sandbox supports TLS inspection (kubernetes), and leave ITERION_SANDBOX_TLS_INSPECT at its default — an untrusted container holds no credential value and its only route out is the proxy",
+				}
+			}
+			rewriter = composeCredentialCrossing(rewriter, crossings)
+		}
+	}
+	// ADR-162 decision 7 — the network floor. The proxy is the untrusted
+	// run's ONLY route out, and that holds only where the network enforces
+	// it: a driver that writes no policy around the container leaves the
+	// proxy env a convention one ignored variable away from full egress
+	// (docker reaches it through proxy env alone today). So the admission
+	// reads the driver's SupportsNetworkPolicy and refuses the untrusted
+	// run TYPED on a driver that cannot hold the floor — kubernetes today;
+	// docker until it isolates the container's network. Trusted runs keep
+	// today's start on every driver.
+	if !p.Trust.Trusted() && !caps.SupportsNetworkPolicy {
+		return nil, &RuntimeError{
+			Code:    ErrCodeSandboxNetworkRefused,
+			Message: fmt.Sprintf("untrusted (fork-lane) run refused before its sandbox started: its only route out is the egress proxy and driver %q enforces no network policy around the container", driver.Name()),
+			Hint:    "run the fork lane on a driver whose sandbox enforces a per-run network policy (kubernetes, with a NetworkPolicy-aware CNI) — docker refuses fork runs until it isolates the container's network",
+		}
+	}
+	if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, secretSinkService{
+		sandboxed:  realDriver,
+		egress:     realDriver && rewriter != nil && caps.SupportsTLSInspection,
+		simulation: p.Simulation,
+		held:       p.SecretHeld,
+	}); err != nil {
+		return nil, err
+	}
 
 	// Configure all mounts BEFORE the driver prepares resources. Each
 	// helper is a silent no-op when its host source is missing, so
@@ -526,23 +712,143 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// dir on the host), and cleared again below when the driver drops host
 	// binds. attachmentPath keys off it rather than re-predicting.
 	attachmentsDir := addOptionalBindMount(spec, p.AttachmentsHostDir, p.AttachmentsContainerPath, "/run/iterion/attachments", "attachments", true, logger)
-	// The value the bot gave the run-files variable before the runtime's
-	// own took its place; handed back if that promise is withdrawn
-	// (finalizeMountsForDriver).
+	// The run-files path is a DECLARED read-back path (ADR-143): the
+	// runtime names it in spec.ReadBackPaths exactly when it also arranges
+	// the storage that serves it — the host bind on a driver with a
+	// filesystem, driver-owned storage (an emptyDir, its drained set
+	// capped) on a driver that drains it at teardown
+	// (Capabilities.SupportsReadBackDrain), nothing on a driver with
+	// neither — and the spec is refused at admission if the pairing is
+	// broken. The value the bot gave the run-files variable before the
+	// runtime's own took its place; handed back if that promise is
+	// withdrawn (finalizeMountsForDriver).
 	botRunFilesDir := ""
-	if runFilesContainerPath := addOptionalBindMount(spec, p.RunFilesHostDir, p.RunFilesContainerPath, "/iterion/artifact-files", "run-files", false, logger); runFilesContainerPath != "" {
-		// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
-		// so recipe authors don't have to hard-code container paths. The
-		// runtime's value wins where the bind is real: the run-files
-		// collector reads that directory and no other, so a bot's own value
-		// would send files where nothing collects them. The promise is
-		// withdrawn with the bind when the driver drops host binds
-		// (finalizeMountsForDriver).
-		if spec.Env == nil {
-			spec.Env = map[string]string{}
+	var readBackDirs []sandbox.ReadBackDir
+	if p.RunFilesHostDir != "" {
+		if p.RunFilesGrant != nil {
+			if p.RunFilesHostDir != p.RunFilesGrant.HostPath() {
+				return nil, store.ErrRunDataIdentityChanged
+			}
+			bound, err := p.RunFilesGrant.Bind(ctx, p.RunID)
+			if err != nil {
+				return nil, err
+			}
+			if err = p.RunFilesGrant.ValidateHostPath(bound); err != nil {
+				return nil, err
+			}
 		}
-		botRunFilesDir = spec.Env[runFilesEnvVar]
-		spec.Env[runFilesEnvVar] = runFilesContainerPath
+		if _, statErr := os.Stat(p.RunFilesHostDir); statErr == nil {
+			target := p.RunFilesContainerPath
+			if target == "" {
+				target = "/iterion/artifact-files"
+			}
+			var runFilesContainerPath string
+			// The mount whose storage holds the declared path on a driver
+			// that drains it — the source of the drain's figure. It stays
+			// empty on a bind driver, whose manifest entry nothing drains.
+			var servingMount string
+			switch {
+			case caps.SupportsHostBindMounts:
+				runFilesContainerPath = addOptionalBindMount(spec, p.RunFilesHostDir, target, target, "run-files", false, logger)
+				if p.RunFilesGrant != nil {
+					if runFilesContainerPath == "" {
+						return nil, store.ErrRunDataIdentityChanged
+					}
+					spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{Root: filepath.Dir(p.RunFilesHostDir), Path: p.RunFilesHostDir, Identity: p.RunFilesGrant})
+				}
+			case !caps.SupportsReadBackDrain:
+				// No host filesystem to bind the path with and no drain to
+				// bring its content back (noop runs its commands on the
+				// host): storage laid here would be a directory nothing
+				// collects, and the variable a promise about it — #815's
+				// defect, on the next driver that inherits the emptyDir
+				// without the drain. Nothing is laid, named or declared.
+				if logger != nil {
+					logger.Warn("runtime: sandbox: run-files path %s left unserved — the %s driver neither binds a host directory nor drains a read-back path; %s is not set and nothing is collected, so the artifact-files panel stays empty for this run", target, driver.Name(), runFilesEnvVar)
+				}
+			default:
+				// Storage the driver keeps: an emptyDir at the declared
+				// path. It carries NO sizeLimit: a kubelet evicts the WHOLE
+				// pod when an emptyDir's usage passes its sizeLimit — the
+				// run would die mid-flight, no drain, no workspace export,
+				// un-pushed work gone — where the read-back contract's cap
+				// (ADR-143) is the drain's meter on the host, which drops
+				// the member over the figure and keeps the rest
+				// (sandbox.ReadBackCapFor). The node's ephemeral storage is
+				// the cluster's to bound, as for everything else the pod
+				// writes. Kept by dropUnsupportedHostBinds (it is not a
+				// host bind), so the variable naming it survives.
+				//
+				// Asked of the mounts this driver keeps — host binds are
+				// dropped at finalizeMountsForDriver, so they serve nothing
+				// here — which of them, if any, is the path's storage
+				// (runFilesPodStorage): the bot's own writable mount AT the
+				// path is, and a second volumeMount at one mountPath is a
+				// pod the API server refuses; a mount above the path is
+				// not, and the emptyDir is laid at the path beneath it; a
+				// read-only one leaves the path unserved.
+				kept := make([]string, 0, len(spec.Mounts))
+				for _, m := range spec.Mounts {
+					if !mountIsHostBind(m) {
+						kept = append(kept, m)
+					}
+				}
+				bots, unserved := runFilesPodStorage(kept, target)
+				switch {
+				case unserved != "":
+					// No storage a tool could write: nothing is declared,
+					// named or drained — the variable would be a promise
+					// about a directory no tool can fill (#815's defect),
+					// and the drain would collect the mount's own content
+					// as the run's files.
+					if logger != nil {
+						logger.Warn("runtime: sandbox: run-files path %s left unserved — %s; %s is not set and nothing is drained, so the artifact-files panel stays empty for this run", target, unserved, runFilesEnvVar)
+					}
+				case bots != "":
+					servingMount = bots
+					runFilesContainerPath = target
+				default:
+					servingMount = "type=emptydir,target=" + target
+					spec.Mounts = append(spec.Mounts, servingMount)
+					runFilesContainerPath = target
+				}
+			}
+			if runFilesContainerPath != "" {
+				// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
+				// so recipe authors don't have to hard-code container paths.
+				// The runtime's value wins where the mount is real: the
+				// read-back drain collects that directory and no other, so
+				// a bot's own value would send files where nothing collects
+				// them. The promise is withdrawn with the mount when the
+				// driver drops host binds (finalizeMountsForDriver).
+				if spec.Env == nil {
+					spec.Env = map[string]string{}
+				}
+				botRunFilesDir = spec.Env[runFilesEnvVar]
+				spec.Env[runFilesEnvVar] = runFilesContainerPath
+				spec.ReadBackPaths = append(spec.ReadBackPaths, target)
+				// The dir's cap is the serving mount's to name: a bot that
+				// serves the path with its own sized emptyDir chose the
+				// figure, and the drain meters on it — never cut down to
+				// the default behind the author's back. Asked of the mounts
+				// the pod keeps, never of a host bind the driver drops.
+				readBackDirs = append(readBackDirs, sandbox.ReadBackDir{
+					ContainerPath: target,
+					HostDir:       p.RunFilesHostDir,
+					RootOpener:    p.RunFilesGrant,
+					CapBytes: sandbox.ReadBackCapFor(servingMount, func(format string, args ...any) {
+						if logger != nil {
+							logger.Warn(format, args...)
+						}
+					}),
+				})
+			}
+		} else if p.RunFilesGrant != nil {
+			return nil, fmt.Errorf("runtime: retained run-files directory unavailable: %w", statErr)
+		} else if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {
+			// Same report addOptionalBindMount gives its optional mounts.
+			logger.Warn("runtime: sandbox run-files host dir %s: %v — skipping mount", p.RunFilesHostDir, statErr)
+		}
 	}
 	// Tool scripts find the canonical tree-noise pathspecs via
 	// $ITERION_TREE_NOISE (pkg/treenoise) so a scope gate filters the tree
@@ -560,7 +866,45 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if caps.SupportsHostBindMounts {
 		bundleContainerPath = addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	}
-	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	// #2069: the host-config guard shadows the host configuration a
+	// host_state auto-bind (or the worktree .git bind) would otherwise hand
+	// the sandboxed agent read-WRITE — per-run copies and read-only
+	// overlays. Only a driver with a shared host filesystem has anything to
+	// guard; a nil guard (kubernetes, or ITERION_SANDBOX_HOST_STATE_GUARD=off)
+	// leaves every mount as it was. The .git shadows are applied inside
+	// applyHostStateMounts (via p.WorktreeGitDir) so every shadowed path
+	// rides the one sandbox_host_state_mounted audit event — while the .git
+	// bind itself stays BELOW, out of the HOME-tmpfs layering: a tmpfs laid
+	// at a bind's own destination shadows the bind in either argument order
+	// (measured, docker 29), so the .git tree must never feed
+	// homeNestedBindParents.
+	hostGuard := newHostConfigGuard(logger)
+	if !caps.SupportsHostBindMounts {
+		hostGuard = nil
+	}
+	// The copies are per-RUN state staged on the host: a dir holding
+	// ~/.claude.json (the account's userID), ~/.gitconfig and
+	// ~/.codex/config.toml. Armed here, the moment the guard exists, and
+	// disarmed at the single point where the live sandbox takes ownership of
+	// the teardown — so every return in between carries them away, errors
+	// and non-errors alike (the noop driver's early return staged copies no
+	// container ever mounted). Enumerating the returns instead is what left
+	// three of them leaking.
+	hostGuardAdopted := false
+	defer func() {
+		if !hostGuardAdopted {
+			hostGuard.cleanup()
+		}
+	}()
+	sharedStateDir, err := applyHostStateMounts(spec, p.Workflow, p, hostGuard, emitEvent, logger)
+	if err != nil {
+		// The workspace bind source failed the plan-time ask: not the tree
+		// the engine laid. Refusing the run here is the only honest
+		// posture — unlike the scratch there is no cold skip for a
+		// workspace, and the border re-ask would refuse the same source
+		// after the pull and the build.
+		return nil, fmt.Errorf("runtime: sandbox: %w", err)
+	}
 	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
 	// sub-bot children — separate runs in separate containers — can hand
 	// work to each other through it. AFTER applyHostStateMounts because it
@@ -586,11 +930,14 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// worktree .git — require a driver with a shared host filesystem. On
 	// kubernetes (SupportsHostBindMounts=false) type=bind is rejected at
 	// translateMounts; there the iterion/rtk binaries are baked into the
-	// sandbox image instead (see sandbox/*/Dockerfile).
+	// sandbox image instead (see sandbox/*/Dockerfile). The .git bind stays
+	// HERE, after applyHostStateMounts: it must not feed the HOME-tmpfs
+	// layering (a tmpfs at a bind's destination shadows the bind), and its
+	// #2069 shadows were already applied there.
 	if caps.SupportsHostBindMounts {
 		addClawBinaryMount(spec, p.Workflow, p.EffectiveBackend)
 		addRewriterMounts(spec)
-		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
+		addWorktreeGitMount(spec, p.WorktreeGitDir, logger, p.Trust)
 	}
 	if err := addSecretFileMounts(ctx, spec, p.Workflow, p.SecretVars); err != nil {
 		return nil, err
@@ -605,7 +952,62 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandboxed agent falls back to env creds + the workspace mount (skills are
 	// mirrored into <workspace>/.claude). type=secret/pvc/configmap pass through;
 	// docker keeps everything (the capability is true there).
-	attachmentsDir = finalizeMountsForDriver(spec, caps, attachmentsDir, botRunFilesDir, logger)
+	var dropped droppedBinds
+	attachmentsDir, dropped = finalizeMountsForDriver(spec, caps, attachmentsDir, botRunFilesDir, logger)
+	// Said once below, after the seed decision: a target a seed carries is
+	// not a target the container never had.
+	sayDropped := func() {
+		if !dropped.empty() {
+			_ = emitEvent(store.EventSandboxHostBindsDropped, dropped.payload(driver.Name()))
+		}
+	}
+	// The attachments are the one dropped bind nothing stands in for: a
+	// withdrawn variable sends a tool to a temp dir, a declined bundle
+	// provisions nothing, but a file the operator attached that no node can
+	// open is a run that goes on without what it was given. A run that holds
+	// attachments is refused here — typed, on its own stream, before any
+	// node — when the driver can neither bind their directory nor copy it in.
+	var seeds []sandbox.SeedDir
+	if attachmentsDir == "" && !caps.SupportsHostBindMounts {
+		if names := attachmentNamesIn(p.AttachmentsHostDir); len(names) > 0 && caps.SupportsHostDirCopy {
+			// No bind, but a copy: the driver seeds the directory at the same
+			// container path a bind would have served, and the path handed to
+			// nodes is that path — a fact once Start lands it, like a bind.
+			target := p.AttachmentsContainerPath
+			if target == "" {
+				target = attachmentsContainerPath
+			}
+			seeds = append(seeds, sandbox.SeedDir{HostDir: p.AttachmentsHostDir, ContainerPath: target, ReadOnly: true})
+			attachmentsDir = target
+			dropped = dropped.carry(target)
+			sayDropped()
+			_ = emitEvent(store.EventSandboxAttachmentsCopied, map[string]any{
+				"driver":      driver.Name(),
+				"target":      target,
+				"attachments": names,
+			})
+		} else if len(names) > 0 {
+			sayDropped()
+			refusal := attachmentsUndeliverable(driver.Name(), names)
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":        string(spec.Mode),
+				"source":      source,
+				"reason":      refusal.Message,
+				"refused":     true,
+				"error_code":  string(refusal.Code),
+				"driver":      driver.Name(),
+				"attachments": names,
+			})
+			if logger != nil {
+				logger.Warn("runtime: sandbox refused [%s]: %s (run %s)", refusal.Code, refusal.Message, p.RunID)
+			}
+			return nil, refusal
+		} else {
+			sayDropped()
+		}
+	} else {
+		sayDropped()
+	}
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
 	// sub-process inside the container so their tool calls (Bash, file
@@ -615,7 +1017,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if p.Workflow != nil && containsClawNode(p.Workflow, p.EffectiveBackend) {
 		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]any{
 			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
-			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
+			"limitations_v1": "MCP tools and ask_user run on the launcher, proxied over the runner channel: a stdio MCP server starts on the launcher, only the operator's servers start for a sandboxed run, and interaction: async is refused — see docs/sandbox.md",
 		})
 	}
 
@@ -633,15 +1035,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// token alone. After the sandbox starts, seedClaudeConfigDir below
 	// copies it into the writable CLAUDE_CONFIG_DIR the delegate points the
 	// CLI at. Added past the noop gate — a real driver is required to mount.
-	claudeOAuthMounted, err := addClaudeOAuthSecretFile(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
-	}
-	// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex node
-	// authenticates as the RUN rather than as the pod.
-	codexOAuthMounted, err := addCodexOAuthSecretFile(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+	// The fork lane's floor (ADR-162 decision 7): an untrusted run's
+	// container holds no credential value. The forfaits are OAuth
+	// credentials — a file and a refresh flow, not a header token toward
+	// one host — which the egress proxy cannot hold; the credential
+	// admission refuses the legs that would spend them typed, and the
+	// delivery never mounts them. A trusted run keeps today's delivery.
+	var claudeOAuthMounted, codexOAuthMounted bool
+	if p.Trust.Trusted() {
+		claudeOAuthMounted, err = addClaudeOAuthSecretFile(ctx, spec)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
+		}
+		// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex
+		// node authenticates as the RUN rather than as the pod.
+		codexOAuthMounted, err = addCodexOAuthSecretFile(ctx, spec)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+		}
 	}
 	// The forfait config dirs are seeded AFTER the container starts (below),
 	// but their paths are constants: advertise them on the container env now
@@ -665,7 +1076,33 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// workflow named no network base of its own was already completed
 	// to the iterion-default allowlist at resolution time
 	// (fuseDevcontainerSpec).
-	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger)
+	// The run's own gateway credential names the host its proxy pins
+	// strictly — read once here, where the ctx lives; the proxy start has
+	// no credential access.
+	runGatewayHost := ""
+	var secretEgressHosts []string
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if _, baseURL, gerr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); gerr == nil && baseURL != "" {
+			runGatewayHost = (compatgw.Config{BaseURL: baseURL}).Host()
+			if err := refuseRunGatewayAlias(runGatewayHost); err != nil {
+				return nil, err
+			}
+		}
+		secretEgressHosts = secretEgressHostCandidates(creds.GenericHosts, logger)
+	}
+	// ADR-162 decision 7 — the fork lane's egress floor: the credential's
+	// own host is the proxy's WHOLE allowlist. nil hands the trusted lane
+	// to startNetworkProxy unchanged; a fork run passes its crossing
+	// table's hosts (never nil — an untrusted run no credential names a
+	// host for starts under an allowlist that refuses every dial, fail
+	// closed). The bound secrets' hosts (secretEgressHosts above) stay a
+	// separate, additive opening: the operator bound them, and a fork's
+	// review reads the forge it reviews the same way a trusted one does.
+	var forkEgressHosts []string
+	if !p.Trust.Trusted() {
+		forkEgressHosts = credentialCrossingEgressHosts(ctx)
+	}
+	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, rewriter, emitEvent, logger, runGatewayHost, secretEgressHosts, forkEgressHosts)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
@@ -677,8 +1114,46 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// at `docker run` time — so the driver must know now that an
 	// endpoint will be advertised, proxy or no proxy (the default
 	// network: open starts none).
-	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow)
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow, p.Trust)
 	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
+
+	// ADR-162 decision 7 — the untrusted run's per-run policy names
+	// EXACTLY the proxy's port and the run's own listener ports, so an
+	// interactive workflow's ask-user listener binds BEFORE the driver
+	// writes that policy (kubernetes advertises the downward-API pod IP):
+	// its port must exist when Driver.Start renders the NetworkPolicy,
+	// not after. A trusted run keeps today's order — the listener binds
+	// once the live sandbox exists. The pre-bound listener is the active
+	// sandbox's to own from the moment below; until then one defer shuts
+	// it down on every path out of here (the mirror of the host guard's
+	// adoption flag).
+	var preboundAskUser *http.Server
+	preboundAskUserEndpoint, preboundAskUserToken := "", ""
+	if !p.Trust.Trusted() && wantsAskUserListener {
+		token, terr := askusermcp.NewRunToken()
+		if terr != nil {
+			if logger != nil {
+				logger.Warn("runtime: sandbox: ask-user MCP token mint failed (native ask_user disabled for this run): %v", terr)
+			}
+		} else {
+			endpoint, srv, aerr := startSandboxMCPListener(driver, askusermcp.Handler(askusermcp.DefaultPath, token), askusermcp.DefaultPath)
+			if aerr != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: ask-user MCP listener failed to start (native ask_user disabled for this run): %v", aerr)
+				}
+			} else {
+				preboundAskUser, preboundAskUserEndpoint, preboundAskUserToken = srv, endpoint, token
+			}
+		}
+	}
+	preboundAskUserAdopted := false
+	defer func() {
+		if preboundAskUser != nil && !preboundAskUserAdopted {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = preboundAskUser.Shutdown(shutdownCtx)
+		}
+	}()
 
 	info := sandbox.RunInfo{
 		RunID:              p.RunID,
@@ -688,6 +1163,34 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		ProxyCACert:        proxyCACert,
 		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
 		HostGatewayAlias:   wantsBoardListener || wantsAskUserListener,
+		SeedDirs:           seeds,
+		// The drain manifest mirrors the declaration: the container path
+		// the runtime named and the run file store's scratch dir it will
+		// land in. Every driver whose declared-path storage survived
+		// receives it — a bind-mount one too, though nothing there reads
+		// the manifest: the declared path already lives on the host
+		// through its bind, and only a WorkspaceExporter's drain consumes
+		// the entries (ADR-143).
+		ReadBackDirs: readBackDirs,
+		UntrustedRun: !p.Trust.Trusted(),
+	}
+	if info.UntrustedRun {
+		// The policy's port scope: the proxy's port, then the ask-user
+		// listener's when one is pre-bound. Every listener the untrusted
+		// run may reach on the runner pod is named here — above a runner
+		// concurrency of one, another run's listener sits on a port this
+		// list does not carry and the policy refuses it.
+		info.RunnerEgressPorts = []int{}
+		if port, ok := portOfListenerEndpoint(proxyEndpoint); ok {
+			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
+		}
+		if port, ok := portOfListenerEndpoint(preboundAskUserEndpoint); ok {
+			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
+		}
+		// The probe's direct-dial targets: the credential's own hosts,
+		// the fork lane's whole allowlist — served through the proxy,
+		// refused directly.
+		info.EgressAllowlistHosts = forkEgressHosts
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -706,10 +1209,49 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, err
 	}
 
-	run, err := driver.Start(ctx, prepared, info)
+	// The image is now LOCAL — pulled by Prepare, or built just above — so
+	// this is the first point its baked-in `ENV` can be read, and the last
+	// before a process sees it. The container starts THROUGH the screen:
+	// it neutralises the credential and routing names a
+	// repository-authored image contributes below the devcontainer env
+	// seam, starts the amended spec, and reports what the image planted
+	// from the container that actually started (#2317). Its findings reach
+	// the operator twice: the run's log, and the
+	// `sandbox_image_env_planted` event the studio and a bug report read.
+	//
+	// CLOSED by default: a neutralisation the class decided on and the
+	// driver refused is a planted credential about to ride into the
+	// container, so the boot stops with the names on it rather than
+	// starting under a guard that did not take (ARB-119) — the typed
+	// refusal in the chain is what tells that apart from a Start that
+	// failed on its own, and the event is out either way.
+	run, prepared, err := startScreenedSandbox(ctx, driver, prepared, info, logger, emitEvent, p.RunID)
 	if err != nil {
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
+		}
+		var refused *ImageEnvNeutralisationRefusedError
+		if errors.As(err, &refused) {
+			return nil, &RuntimeError{
+				Code:    ErrCodeCapabilityUnsupported,
+				Message: "sandbox: the image's planted credential and routing env could not be neutralised",
+				Hint:    "rebuild the image without those variables in its `ENV`, or name the ones the operator wants through with " + EnvSandboxImageEnvAllow + " (host-side, exact names — docs/sandbox.md, « the env an IMAGE bakes in »)",
+				Cause:   err,
+			}
+		}
+		var probe *sandbox.NetworkFloorProbeError
+		if errors.As(err, &probe) {
+			message := fmt.Sprintf("untrusted (fork-lane) run refused before its sandbox started: %v", probe)
+			hint := "the cluster's CNI does not enforce the per-run NetworkPolicy (kind's kindnetd does not) — run the fork lane on a cluster whose CNI enforces NetworkPolicy (Calico, Cilium, weave-net, kube-router)"
+			if probe.Unproven {
+				hint = "the start probe could not prove the network floor — " + probe.Detail + "; the fork lane needs an image that can dial (bash+timeout or nc) on a NetworkPolicy-enforcing CNI"
+			}
+			return nil, &RuntimeError{
+				Code:    ErrCodeSandboxNetworkRefused,
+				Message: message,
+				Hint:    hint,
+				Cause:   err,
+			}
 		}
 		return nil, fmt.Errorf("runtime: sandbox: start: %w", err)
 	}
@@ -722,6 +1264,23 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		attachmentsDir:  attachmentsDir,
 		sharedStateDir:  sharedStateDir,
 		scratchHostDir:  scratchHostDir,
+		credentialHome:  placement.Home,
+		// The #2069 copies die with the sandbox: its teardown removes the
+		// per-run scratch they were staged in.
+		hostGuardCleanup: hostGuard.cleanup,
+	}
+	// The ONE transfer of ownership: from here on the live sandbox's
+	// teardown removes the copies (active.shutdown, which the error paths
+	// below also call), so the armed defer stands down.
+	hostGuardAdopted = true
+	// The pre-bound ask-user listener joins the active sandbox the same
+	// way: its teardown (and every error path below) shuts it down, so
+	// the defer above stands down with this flag.
+	if preboundAskUser != nil {
+		active.askUserEndpoint = preboundAskUserEndpoint
+		active.askUserToken = preboundAskUserToken
+		active.askUserListener = preboundAskUser
+		preboundAskUserAdopted = true
 	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
@@ -759,6 +1318,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			}
 		} else {
 			active.boardEndpoint = endpoint
+			if p.BoardMCPConnectors {
+				active.connectorEndpoint = connectorEndpointFor(endpoint, "/api/v1/mcp/board")
+			}
 			active.boardListener = srv
 			if logger != nil {
 				logger.Info("sandbox: host MCP listener on %s (sandboxed board/runs tools enabled)", endpoint)
@@ -775,7 +1337,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// surface, authenticated by a per-run bearer token. Non-fatal on
 	// failure: the delegate then disables the tools per node with a loud
 	// warning (the [INTERACTION PROTOCOL] JSON fallback still applies).
-	if wantsAskUserListener {
+	// An untrusted run's listener was pre-bound above, before the driver
+	// wrote the policy that names its port.
+	if wantsAskUserListener && active.askUserListener == nil {
 		token, terr := askusermcp.NewRunToken()
 		if terr != nil {
 			if logger != nil {
@@ -818,6 +1382,29 @@ func workflowHasInteractiveNode(wf *ir.Workflow) bool {
 	return false
 }
 
+// hostSecretService is the service of a run on the host: no sandbox, no
+// proxy, `agent` through claude_code or in-process claw.
+func (p SandboxParams) hostSecretService() secretSinkService {
+	return secretSinkService{simulation: p.Simulation, held: p.SecretHeld}
+}
+
+// secretHolder is the structural view of the executor's guard the launch
+// gate reads: whether a declared secret resolved to something this run
+// carries. ClawExecutor implements it.
+type secretHolder interface {
+	HoldsSecret(name string) bool
+}
+
+// secretHeld returns the executor's answer to "does this run hold the
+// declared secret", or nil when the executor keeps no guard.
+func (e *Engine) secretHeld() func(string) bool {
+	h, ok := e.executor.(secretHolder)
+	if !ok {
+		return nil
+	}
+	return h.HoldsSecret
+}
+
 // secretEgressRewriter is the structural view of the executor's secret
 // guard that drives the proxy's TLS-inspection mode (Layer 2).
 // ClawExecutor implements it; defining it here keeps the runtime
@@ -846,14 +1433,68 @@ func (e *Engine) resolveSecretRewriter() netproxy.SecretRewriter {
 	return rw
 }
 
-// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the operator's own
+// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the OPERATOR's own
 // model gateways (comma- or space-separated, in the network rules' syntax),
 // whose request bodies the inspecting proxy leaves in placeholder form like
 // a provider's. netproxy.New refuses an entry that is not a host pattern.
-func sandboxModelHosts() []string {
-	return strings.FieldsFunc(os.Getenv("ITERION_SANDBOX_MODEL_HOSTS"), func(r rune) bool {
+//
+// The operator's: read through [isolationenv] like every other name that can
+// lower a run's isolation, because this one decides which hosts get
+// PLACEHOLDERS and which get the run's real secrets substituted into their
+// request bodies — a `!` exclusion of the repository's own gateway is enough.
+// A planted value is ignored, and the built-in model detection decides alone.
+func sandboxModelHosts(logger *iterlog.Logger) []string {
+	value, planted := isolationenv.Value(isolationenv.ModelHosts)
+	if planted && logger != nil {
+		logger.Warn("runtime: %s — the egress proxy keeps its built-in model-host detection", isolationenv.PlantedWarning(isolationenv.ModelHosts))
+	}
+	return strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || unicode.IsSpace(r)
 	})
+}
+
+// secretEgressHostCandidates unions the AllowedHosts of every generic
+// secret the run sealed (a bot-secret binding's egress lock — the forge
+// host of the repo's connection among them) into sandbox network rule
+// candidates. An entry that is no host pattern is dropped with a warning
+// naming its secret: the run keeps no egress to it — fail closed — and
+// the operator sees the value to fix.
+func secretEgressHostCandidates(hosts map[string][]string, logger *iterlog.Logger) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(hosts))
+	out := make([]string, 0, len(hosts))
+	for name, list := range hosts {
+		for _, raw := range list {
+			host := strings.TrimSpace(raw)
+			if host == "" || seen[host] {
+				continue
+			}
+			if _, err := netproxy.Compile(netproxy.ModeAllowlist, []string{host}); err != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: secret %q carries an egress host %q that is no host pattern — dropped, the run keeps no egress to it (%v)", name, host, err)
+				}
+				continue
+			}
+			seen[host] = true
+			out = append(out, host)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// refuseRunGatewayAlias refuses a credential whose gateway host is the
+// engine-owned alias in ANY spelling: the dial rewrites casings and a root
+// dot away before its own local-destination guard, so the alias's road to
+// the host's loopback — sanctioned for the per-run MCP listeners — would be
+// opened to a credential that named it, the pin never consulted.
+func refuseRunGatewayAlias(host string) error {
+	if netproxy.CanonicalHost(host) == "host.docker.internal" {
+		return fmt.Errorf("runtime: sandbox: the run's gateway credential names %s — the alias is the engine's own road to the host, never a credential's endpoint", host)
+	}
+	return nil
 }
 
 // gatewayPin is the run's proxy's PinSource: the host of the
@@ -923,8 +1564,28 @@ func startNetworkProxy(
 	rewriter netproxy.SecretRewriter,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
+	runGatewayHost string,
+	secretEgressHosts []string,
+	forkEgressHosts []string,
 ) (*netproxy.Proxy, string, []byte, error) {
-	mode, rules := ResolveNetworkPolicy(spec)
+	mode, rules, err := ResolveNetworkPolicy(spec)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	// ADR-162 decision 7 — the fork lane's egress floor. An untrusted
+	// run's only route out is this proxy, and the credential's own host
+	// is its WHOLE allowlist: no preset (iterion-default would admit the
+	// code hosts, the registries and **.googleapis.com — exactly the
+	// exfiltration roads a fork's diff must not gain) and no rule the
+	// workflow declares (the workflow is the untrusted artifact itself).
+	// forkEgressHosts is nil on the trusted lane; non-nil — empty counts —
+	// REPLACES the spec's policy before anything below reads it, so a
+	// workflow block naming `mode: open` widens nothing either.
+	if forkEgressHosts != nil {
+		mode = netproxy.ModeAllowlist
+		rules = append([]string{}, forkEgressHosts...)
+	}
 
 	// TLS inspection needs the driver to inject the per-run CA into the
 	// container trust store; drivers advertise that via
@@ -940,14 +1601,57 @@ func startNetworkProxy(
 	}
 
 	// With no host filtering AND no secret inspection there is nothing
-	// for the proxy to do — keep the zero-overhead open path.
-	if mode == netproxy.ModeOpen && rewriter == nil {
+	// for the proxy to do — keep the zero-overhead open path. A run
+	// holding a gateway credential is the exception: the pin is that
+	// credential's egress guard, and it needs the proxy running even
+	// where the policy admits everything.
+	if mode == netproxy.ModeOpen && rewriter == nil && runGatewayHost == "" {
 		return nil, "", nil, nil
 	}
+
+	// Rules the credentials themselves carry, weakest position first: the
+	// run's own gateway admits by an EXACT rule, the bound secrets' hosts
+	// follow, and the spec's rules land last — a workflow `!` exclusion
+	// stays the final word on any host (last match wins).
+	//
+	// The secret hosts are the DESIGN answer to a review that must read
+	// the forge it reviews: a binding's AllowedHosts is its egress lock,
+	// and a self-hosted forge appears in no preset — without this join the
+	// forge-native ticket lookup dies at the proxy's CONNECT. Allowlist
+	// mode only: a denylist would flip the entries to denials, and open
+	// mode admits them already. An entry opens exactly the host its
+	// credential names — never more.
+	if mode == netproxy.ModeAllowlist && len(secretEgressHosts) > 0 {
+		if logger != nil {
+			logger.Info("runtime: sandbox: egress opens %d host(s) from the run's bound secrets: %s (run %s)", len(secretEgressHosts), strings.Join(secretEgressHosts, ", "), runID)
+		}
+	}
+	// The gateway keeps its unconditional prepend (its pre-existing
+	// semantics); the secret hosts join an ALLOWLIST only — in a denylist
+	// the same entries would flip to denials, refusing the very host the
+	// credential names.
+	head := make([]string, 0, 1+len(secretEgressHosts))
+	if runGatewayHost != "" {
+		head = append(head, runGatewayHost)
+	}
+	if mode == netproxy.ModeAllowlist {
+		head = append(head, secretEgressHosts...)
+	}
+	rules = append(head, rules...)
 
 	policy, err := netproxy.Compile(mode, rules)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("compile policy: %w", err)
+	}
+	if runGatewayHost != "" && !policy.Allow(runGatewayHost) {
+		_ = emitEvent(store.EventSandboxNetworkDefaulted, map[string]any{
+			"kind":   "run_gateway_refused",
+			"host":   runGatewayHost,
+			"run_id": runID,
+		})
+		if logger != nil {
+			logger.Warn("runtime: sandbox: the workflow's network rules refuse the run's gateway %s (run %s) — the credential's endpoint stays refused", runGatewayHost, runID)
+		}
 	}
 
 	token, err := netproxy.NewToken()
@@ -967,7 +1671,7 @@ func startNetworkProxy(
 	opts := netproxy.Options{
 		Policy:           policy,
 		Token:            token,
-		ModelHosts:       sandboxModelHosts(),
+		ModelHosts:       sandboxModelHosts(logger),
 		MaxInspectedBody: maxBody,
 		OnBlocked: func(host, reason string) {
 			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
@@ -990,6 +1694,20 @@ func startNetworkProxy(
 	// reloaded mid-run names (the desktop's refresh) is pinned from the next
 	// connection on. A gateway named and replaced again before any
 	// connection is made through the proxy is not.
+	// The run's own credential pins its gateway at the OPERATOR's
+	// inherited strictness — the same answer the dial judges that URL
+	// with; a planted hatch does not speak for the operator.
+	if runGatewayHost != "" {
+		opts.PinRunSource = func() (string, bool) { return runGatewayHost, secrets.LLMEndpointAllowPrivate() }
+	}
+	// One tunneled-egress event per run, at shutdown: the tally of
+	// requests the policy admitted, host by host.
+	opts.OnTunnelsDone = func(tally map[string]int) {
+		_ = emitEvent(store.EventSandboxNetworkTunneled, map[string]any{
+			"hosts":  tally,
+			"run_id": runID,
+		})
+	}
 	opts.PinSource = gatewayPin
 
 	// TLS-inspection mode (Layer 2): mint a per-run CA so the proxy can
@@ -1041,7 +1759,26 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 //  2. spec.Network.Preset, when set, prefixes the rule list.
 //  3. spec.Network.Rules append after the preset.
 //
-// Default when spec.Network is nil: open (no proxy, full egress). Bots
+// Every assembled rule then passes ir.ExpandEnvWithDefault — the same
+// expansion model:/backend:/command:/timeout: already honour — resolved
+// against THIS process's env, which is where the proxy about to enforce
+// the rules runs. It is what lets a static (catalog) bot scope egress to
+// the deployment's gateway host (`"${OPENAI_COMPATIBLE_HOST}"`,
+// `"${GATEWAY_EGRESS:-gateway.internal}"`): the host is deployment env,
+// unknowable to the bot's author (#2099). A rule whose reference resolves
+// to nothing is an error, not a silently dropped rule — and "resolves to
+// nothing" is judged PER REFERENCE, not on the whole rule's text:
+// "api.${REGION}.example.com" with REGION unset expands to a pattern no
+// host matches, a drop that in allowlist mode would fail closed (the host
+// the author meant is refused) but in denylist mode would fail OPEN — the
+// denied host allowed — so the run refuses to start instead, naming the
+// rule. A rule every reference explicitly defaults is the author's own
+// "no rule when unset" (`"${EXTRA_EGRESS:-}"`) and is dropped, the one
+// greppable opt-out.
+//
+// Default when spec.Network is nil: open (no host filtering, full
+// egress; the proxy starts only when Layer 2 or a gateway credential
+// needs it, see startNetworkProxy). Bots
 // routinely shell out to package managers, build tooling, and
 // integration endpoints that no static allowlist can predict — landing
 // on a deny-by-default posture made every fresh workflow author fight
@@ -1060,7 +1797,7 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 // a repo-defined sandbox whose workflow named no network base of its
 // own. ModeAllowlist with an empty rule list is unchanged: it
 // blocks everything, surfacing as `network_blocked` events.
-func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
+func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string, error) {
 	mode := netproxy.ModeOpen
 	preset := ""
 	var extra []string
@@ -1087,7 +1824,30 @@ func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 		}
 	}
 	rules = append(rules, extra...)
-	return mode, rules
+	kept := make([]string, 0, len(rules))
+	for _, raw := range rules {
+		expanded, missing, allDefaulted := ir.ExpandEnvWithDefaultReport(raw)
+		// A reference that resolves to nothing refuses THE RULE, not only
+		// when the whole rule comes out empty: "api.${REGION}.example.com"
+		// with REGION unset expands to "api..example.com", a pattern no host
+		// matches — a rule silently dropped, which in denylist mode (and for
+		// an allowlist's `!` exclusions, their deny half) fails OPEN.
+		if len(missing) > 0 {
+			return "", nil, fmt.Errorf("sandbox network rule %q has a reference that resolves to nothing (%s) — set the referenced environment variable, or give it a ${VAR:-default}", raw, strings.Join(missing, ", "))
+		}
+		if strings.TrimSpace(expanded) == "" && strings.TrimSpace(raw) != "" {
+			if allDefaulted {
+				// Every reference carried an explicit `:-` default: the
+				// author said "no rule when unset" (the optional-egress
+				// idiom, `"${EXTRA_EGRESS:-}"`). Drop the rule — the
+				// greppable opt-out — rather than refusing it.
+				continue
+			}
+			return "", nil, fmt.Errorf("sandbox network rule %q expands to nothing — set the referenced environment variable, or give it a ${VAR:-default}", raw)
+		}
+		kept = append(kept, expanded)
+	}
+	return mode, kept, nil
 }
 
 // resolveSandboxSpec applies the precedence chain
@@ -1108,7 +1868,12 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
-	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	// Trusted on purpose: this wrapper feeds the mode-level probes
+	// (sandboxDriverForRun → RunWillBeSandboxed), which ask WHETHER a run
+	// is sandboxed and on which driver — questions the untrusted floor's
+	// devcontainer skip cannot change (see resolveSandboxSpecWithFallback).
+	// The start path itself passes the run's own trust.
+	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "", store.RunTrustDefault)
 	if err != nil {
 		return nil, res.source, res.skipReason, err
 	}
@@ -1141,9 +1906,20 @@ type resolvedSpec struct {
 // resolveSandboxSpecWithFallback carries the registry fallback for a
 // version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
 // down to the spec the driver receives, plus the trust metadata.
+// An UNTRUSTED run (ADR-162 U5) never reads the repository's
+// devcontainer: the file is the repository's — its image, its mounts,
+// its postCreateCommand — and mode=auto for an untrusted workspace
+// resolves from the workflow's own sandbox block over the operator's
+// default image, the same shape the "no devcontainer found" fallback
+// takes. What that floor cannot change is the mode's answer: both
+// branches resolve an ACTIVE spec from the same mode, so the launch-time
+// probes (RunWillBeSandboxed, via resolveSandboxSpec on the trusted
+// chain) never disagree with the start on WHETHER the run is sandboxed
+// or on which driver serves it.
 func resolveSandboxSpecWithFallback(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
+	trust store.RunTrust,
 ) (resolvedSpec, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
@@ -1163,6 +1939,28 @@ func resolveSandboxSpecWithFallback(
 			// falls back to the working directory), so a run reaches
 			// this only through a library caller that passes none.
 			return resolvedSpec{source: source, skipReason: "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)"}, nil
+		}
+		if !trust.Trusted() {
+			// The floor: no devcontainer of the repository under review is
+			// read, parsed or executed. Refusing an untrusted auto run with
+			// no operator image is the honest failure — the alternative
+			// (reading the repo's devcontainer to fill the gap) is the
+			// exfiltration the floor exists for. Production callers always
+			// resolve a default image (resolveDefaultSandboxImageWithFallback),
+			// so this guards embedders, exactly as the trusted branch below
+			// does.
+			if defaultImage == "" {
+				return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=auto on an untrusted workspace resolved no default sandbox image — the repository's devcontainer is not read for an untrusted run")
+			}
+			var spec sandbox.Spec
+			if wf != nil && wf.Sandbox != nil {
+				spec = fromIRSpec(wf.Sandbox)
+			}
+			spec.Mode = sandbox.ModeAuto
+			spec.Image = defaultImage
+			spec.ImageFallback = defaultImageFallback
+			expandSandboxSpec(&spec, repoRoot)
+			return resolvedSpec{spec: &spec, source: source + " (untrusted workspace: repo devcontainer ignored; default image: " + defaultImage + ")"}, nil
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -1228,6 +2026,10 @@ func resolveSandboxSpecWithFallback(
 		// expansion docker run rejects the literal `${localEnv:HOME}`
 		// string with "mount path must be absolute".
 		expandSandboxSpec(&spec, repoRoot)
+		// A bare class name (`image: rgaa`, #2632) resolves to the published
+		// variant image here — where the tag of the running binary is known.
+		// Everything else is the author's own reference, honoured verbatim.
+		spec.Image, spec.ImageFallback = resolveSandboxImageClass(spec.Image)
 		return resolvedSpec{spec: &spec, source: source}, nil
 	}
 
@@ -1424,13 +2226,26 @@ const sandboxDefaultSource = "global sandbox default"
 // ResolveGlobalSandboxDefault returns the effective global sandbox
 // default a PRODUCT ENTRY POINT (iterion run / resume / studio /
 // dispatch) should install via [WithSandboxDefault]: the
-// ITERION_SANDBOX_DEFAULT env value when set, else "auto" —
+// ITERION_SANDBOX_DEFAULT value the process INHERITED when set, else "auto" —
 // sandbox-by-default. The policy deliberately lives at the entry
 // points, not in the engine: an Engine constructed without
 // [WithSandboxDefault] (tests, embedders) stays neutral and runs
 // unsandboxed workflows unsandboxed.
-func ResolveGlobalSandboxDefault() string {
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_SANDBOX_DEFAULT"))); v != "" {
+//
+// INHERITED, through [isolationenv] — the ONE reader of every name that can
+// LOWER a run's isolation — and #1959 is why this tier belongs to the class:
+// [ApplySandboxFloor] neutralizes a non-operator bot's `sandbox: none` by
+// falling THROUGH to this default, so a one-line `.env` in the repository
+// under review would pick the posture the floor had just defended, event and
+// warn included. A planted value is ignored, and said out loud where a logger
+// exists: pass nil only at a call site that holds none — the ignore stands
+// either way.
+func ResolveGlobalSandboxDefault(logger *iterlog.Logger) string {
+	value, planted := isolationenv.Value(isolationenv.SandboxDefault)
+	if planted && logger != nil {
+		logger.Warn("runtime: %s — the global sandbox default stays %q", isolationenv.PlantedWarning(isolationenv.SandboxDefault), string(sandbox.ModeAuto))
+	}
+	if v := strings.ToLower(strings.TrimSpace(value)); v != "" {
 		return v
 	}
 	return string(sandbox.ModeAuto)
@@ -1438,6 +2253,12 @@ func ResolveGlobalSandboxDefault() string {
 
 // pickMode walks the precedence chain and returns the first
 // non-empty mode along with a human-readable source label.
+//
+// One filter sits ABOVE this chain without being a tier of it: the #1959
+// operator isolation floor ([ApplySandboxFloor]) removes a non-operator
+// bot source's `sandbox: none` from the workflow BEFORE this chain reads
+// it, so the opt-out never reaches here. The chain itself stays
+// source-blind.
 //
 // Special case: a CLI override of "auto" expresses intent ("turn the
 // sandbox on, read devcontainer.json") but is less specific than a
@@ -1487,6 +2308,13 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 // an active mode on a host with no container runtime degrades to an
 // unsandboxed run at engine start, and this predicate still answers
 // true for it (#1564).
+//
+// Callers that keep the mode-only reading on purpose say why at their site:
+// the launch surface's MCP start prediction (runview.predictedStartPolicy)
+// and the usage cap's ladder escapes (runner.ladderEscapes), both of which
+// mirror a decision the mode alone takes (#2166), and the usage cap's reading
+// of where a node resolves its credential (runner.usageCapPreflight), which
+// runs before the checkout the driver-aware answer reads.
 func WorkflowSandboxActive(wf *ir.Workflow, cliOverride, globalDefault string) bool {
 	mode, _ := pickMode(wf, cliOverride, globalDefault)
 	return sandbox.Mode(mode).IsActive()
@@ -1558,6 +2386,29 @@ func pickHostState(wfHostState, cli, global string) (string, string) {
 		return global, "ITERION_SANDBOX_HOST_STATE"
 	}
 	return string(sandbox.HostStateAuto), "default"
+}
+
+// resolveHostState is the ONE decision on what this run's sandbox binds
+// of the operator's home: pickHostState's chain, then the trust floor
+// (ADR-162 U5) — an untrusted workspace resolves `host_state: none`
+// whatever the chain said, because the home is where every login lives
+// (~/.claude/.credentials.json, ~/.codex/auth.json, ~/.gitconfig) and
+// none of it speaks for a run whose code an outsider wrote. The floor
+// sits ON the decision, not on the mount: sandboxCredentialHome (read
+// before credential admission) and applyHostStateMounts (the mount
+// plan) both call HERE, so the probe's reading and the plan cannot
+// disagree — an untrusted run's admission never sees a mounted home a
+// later mount would then withdraw (#1768's ordering hazard, the other
+// way round).
+//
+// The trust marker is the hatch: marking the workspace trusted
+// (store.RunTrust zero value) restores the chain verbatim.
+func resolveHostState(wf *ir.Workflow, p SandboxParams) (string, string) {
+	resolved, source := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
+	if !p.Trust.Trusted() {
+		return string(sandbox.HostStateNone), source + " (floored: untrusted workspace — no host home crosses)"
+	}
+	return resolved, source
 }
 
 // hostStateMount describes a single auto-bind from the host into the
@@ -1922,6 +2773,30 @@ func EngineRepoRoot(workDir string) string {
 	return abs
 }
 
+// runRepoRoot is the ONE resolver of the repo root an engine keys its
+// project-rooted dirs on (${PROJECT_SCRATCH_DIR}, ${PROJECT_MEMORY_DIR},
+// the sandbox's repo mount): the run record's RepoRoot when the run carries
+// a managed-worktree baseline, else EngineRepoRoot over the run's workspace
+// (falling back to the engine's own workDir when the record names none) —
+// the SAME input the launch path resolved it from, so a resumed
+// non-worktree run keys on the directory it filled at launch (#2867).
+//
+// run.RepoRoot deliberately stays a WORKTREE fact — it is never stamped
+// for an in-place run (TestEngineRun_ExplicitNoneSkipsWorktreeOnGitRepo),
+// because its readers (worktree reconstruction, fork worktree creation,
+// the files/LOC diff views) mean "managed worktree baseline". The root a
+// non-worktree run's project dirs key on is derived, never persisted.
+func runRepoRoot(r *store.Run, fallbackWorkDir string) string {
+	if r != nil && r.RepoRoot != "" {
+		return r.RepoRoot
+	}
+	workDir := fallbackWorkDir
+	if r != nil && r.WorkDir != "" {
+		workDir = r.WorkDir
+	}
+	return EngineRepoRoot(workDir)
+}
+
 // sandboxSetter is the optional interface ClawExecutor implements so
 // the engine can push the live [sandbox.Run] into the executor after
 // the run starts. Type-asserted at call time so test stubs don't have
@@ -1946,6 +2821,19 @@ type sharedStateSetter interface {
 // nodes (C082). Type-asserted at call time so test stubs need not implement it.
 type boardMCPSetter interface {
 	SetBoardEndpoint(endpoint string)
+}
+
+// connectorMCPSetter is the optional interface ClawExecutor implements so
+// the engine can push the connector facade's endpoint on the per-run host
+// MCP listener (#2758). It rides its own push — not a derivation from the
+// board endpoint — because a host may serve board/runs WITHOUT the
+// connector facade (the cloud runner pod, #2632): such a host never calls
+// it, and a sandboxed `connectors`-capability node then keeps the
+// documented degradation (the delegate's loud warning, tools disabled)
+// instead of an endpoint that 404s at every call. Type-asserted at call
+// time so test stubs need not implement it.
+type connectorMCPSetter interface {
+	SetConnectorEndpoint(endpoint string)
 }
 
 // askUserMCPSetter is the optional interface ClawExecutor implements so
@@ -1997,38 +2885,74 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	// A subbot child under a sandboxed parent executes in the PARENT's
 	// sandbox — never in one of its own (see SubbotRequest.ParentSandbox).
 	if e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
-		adopt, err := e.shouldAdoptSharedSandbox(emitForSandbox)
+		adopt, err := e.shouldAdoptSharedSandbox(ctx, emitForSandbox)
 		if err != nil {
 			return noopCleanup, err
 		}
 		if adopt {
+			// A parent's artifact-files mount cannot carry this child's birth.
+			// Until shared placement can serve a child-owned grant, refuse only
+			// incarnation-scoped adoption; legacy placement is unchanged.
+			if binding, ok := store.RunDataBindingFrom(ctx); ok && binding.Header().Protocol == store.IncarnationRunData {
+				return noopCleanup, fmt.Errorf("runtime: shared sandbox cannot serve a child-owned run-files grant: %w", store.ErrRunDataCapability)
+			}
+			// A child adopting the parent's sandbox goes out through the
+			// parent's proxy, whose rewriter is the parent's guard — the
+			// child's secrets are unknown to it — and mounts nothing of its
+			// own: `egress` and `file` serve none of the child's grants there,
+			// `agent` only through a claude_code node.
+			if err := refuseUnservableSecretGrants(e.workflow, e.backendResolver(), secretSinkService{
+				sandboxed:  true,
+				simulation: e.simulation != (Simulation{}),
+				held:       e.secretHeld(),
+			}); err != nil {
+				return noopCleanup, err
+			}
+			// The child's credential admission (ADR-161 decision 4), on its
+			// own nodes: it compiled at its dispatch, its legs reading the
+			// vars its `with:` bound then, and it is judged here, before any
+			// of its nodes spends. The parent's sandbox is its placement,
+			// the home mount that sandbox carries included.
+			if err := e.admitAdoptedCredentials(ctx, runID, inputs, emitForSandbox); err != nil {
+				return noopCleanup, err
+			}
 			return e.adoptSharedSandbox(ctx, runID, emitForSandbox)
 		}
 	}
 	var attachHost string
-	if e.store != nil && e.store.Root() != "" {
-		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
-	}
-	// Pre-create the per-run artifact-files directory so the bind mount
-	// has a source to point at. Both the filesystem store and the Mongo
-	// (cloud) store satisfy RunFilesStore — the filesystem store's dir IS
-	// the read source, while the Mongo store returns a runner-local
-	// scratch dir it later bridges to S3 (see pkg/store/mongo/runfiles.go).
-	// A store that doesn't satisfy the interface leaves runFilesHost empty
-	// and resolveAndStartSandbox skips the mount silently. Errors
-	// from EnsureRunFilesDir are logged but not fatal: the worst case is
-	// in-sandbox tools see ITERION_ARTIFACT_FILES_DIR unset and either
-	// fall back to a tmpdir or skip writing — far less disruptive than
-	// failing the whole sandbox boot over a feature one tool may not use.
-	var runFilesHost string
-	if rfs := store.AsRunFilesStore(e.store); rfs != nil {
-		dir, ensureErr := rfs.EnsureRunFilesDir(ctx, runID)
-		if ensureErr != nil {
-			e.logger.Warn("runtime: ensure run-files dir failed for run %s: %v", runID, ensureErr)
+	localAttachmentsCleanup := noopCleanup
+	if e.store != nil {
+		if root := e.store.Root(); root != "" {
+			attachHost = filepath.Join(root, "runs", runID, "attachments")
 		} else {
-			runFilesHost = dir
+			// No root to bind from: the attachments the run holds are fetched
+			// into a directory of this run's own, which is what the sandbox
+			// binds or seeds — and what the nodes open when there is none.
+			dir, err := e.materializeAttachments(ctx, runID)
+			if err != nil {
+				return noopCleanup, err
+			}
+			if dir != "" {
+				attachHost = dir
+				e.attachmentsLocalDir = dir
+				localAttachmentsCleanup = func() {
+					e.attachmentsLocalDir = ""
+					_ = os.RemoveAll(dir)
+				}
+			}
 		}
 	}
+	runFilesHost, runFilesGrant, closeRunFiles, grantErr := e.runFilesForSandbox(ctx, runID)
+	if grantErr != nil {
+		localAttachmentsCleanup()
+		return noopCleanup, grantErr
+	}
+	grantTransferred := false
+	defer func() {
+		if !grantTransferred {
+			closeRunFiles()
+		}
+	}()
 
 	bundleHost := e.resourceDirForRun()
 	var secretVars map[string]any
@@ -2041,6 +2965,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		FriendlyName:             e.runName,
 		RepoRoot:                 repoRoot,
 		WorkspacePath:            e.workDir,
+		Trust:                    e.trust,
 		SecretVars:               secretVars,
 		CLIOverride:              e.sandboxOverride,
 		GlobalDefault:            e.sandboxDefault,
@@ -2055,15 +2980,22 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		AttachmentsHostDir:       attachHost,
 		AttachmentsContainerPath: attachmentsContainerPath,
 		RunFilesHostDir:          runFilesHost,
+		RunFilesGrant:            runFilesGrant,
 		RunFilesContainerPath:    "/iterion/artifact-files",
 		BundleHostDir:            bundleHost,
 		BundleContainerPath:      "/run/iterion/bundle",
 		WorktreeGitDir:           worktreeGitDir,
 		SecretRewriter:           e.resolveSecretRewriter(),
+		Simulation:               e.simulation != (Simulation{}),
+		SecretHeld:               e.secretHeld(),
 		BoardMCPHandler:          e.boardMCPHandler,
+		BoardMCPConnectors:       e.boardMCPConnectors,
 		EffectiveBackend:         e.backendResolver(),
+		Routes:                   e.credentialRouteView(inputs),
+		DetectedClawSpec:         e.detectedClawSpec(),
 	})
 	if sbErr != nil {
+		localAttachmentsCleanup()
 		return noopCleanup, sbErr
 	}
 	// No sandbox → every command of this run executes directly on this
@@ -2104,8 +3036,10 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		// The facts a subbot child needs to execute in this sandbox.
 		e.activeShare = &SharedSandbox{
 			Run: active.run, WorkspaceFolder: active.workspaceFolder, SharedStateDir: active.sharedStateDir,
-			BoardEndpoint: active.boardEndpoint, AskUserEndpoint: active.askUserEndpoint, AskUserToken: active.askUserToken,
+			BoardEndpoint: active.boardEndpoint, ConnectorEndpoint: active.connectorEndpoint,
+			AskUserEndpoint: active.askUserEndpoint, AskUserToken: active.askUserToken,
 			ScratchContainerLocal: active.scratchHostDir == "",
+			CredentialHome:        active.credentialHome,
 		}
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
@@ -2129,6 +3063,15 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 				bs.SetBoardEndpoint(active.boardEndpoint)
 			}
 		}
+		// #2758: the connector facade rides the same listener, but only when
+		// the handler actually serves it (BoardMCPConnectors) — the cloud
+		// runner pod's mux does not (#2632), and a node handed a 404 endpoint
+		// fails per call instead of degrading with the delegate's warning.
+		if active.connectorEndpoint != "" {
+			if cs, ok := e.executor.(connectorMCPSetter); ok {
+				cs.SetConnectorEndpoint(active.connectorEndpoint)
+			}
+		}
 		// ADR-082 Phase 3: hand the per-run ask-user MCP endpoint + token
 		// to the executor so it can wire Task.AskUserHTTPEndpoint/
 		// AskUserRunToken for sandboxed interactive nodes. Empty when no
@@ -2148,19 +3091,23 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 	cleanup := func() {
+		defer closeRunFiles()
 		hostDevboxCleanup()
+		localAttachmentsCleanup()
 		if active == nil {
 			return
 		}
 		if active.run != nil {
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
+			drainRunFilesOnCleanup(ctx, active.run, e.logger, emitForSandbox)
 			e.bankScratchOnCleanup(ctx, runID, active)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), sandboxShutdownTimeout)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
+	grantTransferred = true
 	return cleanup, nil
 }
 
@@ -2178,11 +3125,12 @@ const sandboxShutdownTimeout = 30 * time.Second
 
 // SandboxTeardownBudget bounds what the engine still does in a sandbox once
 // its run was cancelled or parked, before it returns: the workspace HEAD
-// capture, the export, the scratch's bank (its archive and upload, its
-// record, the resume of the processes its quiesce stopped — each on a budget
-// of its own), the shutdown. The runner's lease covers that teardown, then
-// its own post-engine steps (runner.LeaseUnwindCeiling).
+// capture, the export, the run-files drain, the scratch's bank (its archive
+// and upload, its record, the resume of the processes its quiesce stopped —
+// each on a budget of its own), the shutdown. The runner's lease covers that
+// teardown, then its own post-engine steps (runner.LeaseUnwindCeiling).
 const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout +
+	sandboxRunFilesDrainTimeout +
 	scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget +
 	sandboxShutdownTimeout
 
@@ -2283,6 +3231,80 @@ func exportSandboxWorkspaceOnCleanup(
 	}
 }
 
+// sandboxRunFilesDrainTimeout bounds the read-back drain at teardown (a
+// tar stream of the run-files tree, sized like the workspace export it
+// shares the cleanup with — the whole teardown then fits the budget the
+// runner's lease is unwound on).
+const sandboxRunFilesDrainTimeout = 2 * time.Minute
+
+// drainRunFilesOnCleanup performs the read-back drain (ADR-143 §3-4) at
+// sandbox teardown: a driver that carries the run's declared read-back
+// paths streams them into the run file store's dir BEFORE the sandbox is
+// destroyed — the container's bytes only exist there, and the runner's
+// uploadRunFiles bridges them into the durable store once the engine has
+// returned. Drivers that share the host filesystem don't implement the
+// export seam — no-op; a run that declared no read-back path drains
+// nothing by construction.
+//
+// Runs on its own background ctx, like the workspace export beside it: a
+// cancelled run still flushes what it produced. A loss is loud (warn +
+// event), never silent — ADR-143 §4: a drain that fails, or lands its set
+// short of members the host declined, must be distinguishable from a run
+// that wrote nothing, and an empty or partial artifact-files panel is
+// exactly the silence this ticket is about.
+func drainRunFilesOnCleanup(
+	originalCtx context.Context,
+	run sandbox.Run,
+	logger *iterlog.Logger,
+	emitEvent func(store.EventType, map[string]any) error,
+) {
+	exporter, ok := run.(sandbox.WorkspaceExporter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(originalCtx), sandboxRunFilesDrainTimeout)
+	defer cancel()
+	if err := exporter.ExportRunFiles(ctx); err != nil {
+		// Every fact is read off the error the driver typed, never off
+		// its text: a reader of the run groups losses by the token, finds
+		// the members the host declined by name, and learns whether the
+		// set may hold a raced attempt's leftovers.
+		reason := sandbox.ReadBackLossReasonOf(err)
+		if logger != nil {
+			logger.Warn("runtime: sandbox run-files drain FAILED (%s) — what landed still uploads, so the panel may read partial rather than empty; the rest is lost with the sandbox (ADR-143): %v", reason, err)
+		}
+		data := map[string]any{
+			"driver": run.Driver(),
+			"reason": string(reason),
+			"error":  err.Error(),
+			// Always sent, both ways: a reader filtering the sets that may
+			// carry stale members cannot tell a false from an absent field.
+			"stale": sandbox.ReadBackStaleOf(err),
+		}
+		// The declined members, bounded at the source and here alike
+		// (sandbox.ReadBackDeclinedListed): the event names the first ones
+		// in dir and name order and counts every one — a count the loss
+		// carries, never the length of what it names. The bound keeps the
+		// event deliverable: an archive of a hundred thousand fifos would
+		// otherwise ride one record of the run's stream, and an event the
+		// store refuses says nothing at all.
+		if count := sandbox.ReadBackDeclinedCountOf(err); count > 0 {
+			declined := sandbox.ReadBackDeclinedOf(err)
+			listed := make([]map[string]any, 0, min(len(declined), sandbox.ReadBackDeclinedListed))
+			for _, m := range declined[:min(len(declined), sandbox.ReadBackDeclinedListed)] {
+				listed = append(listed, map[string]any{"dir": m.Dir, "name": m.Name, "why": string(m.Why)})
+			}
+			data["declined"] = listed
+			data["declined_count"] = count
+		}
+		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, data)
+		return
+	}
+	if logger != nil {
+		logger.Info("runtime: sandbox run files drained back to host")
+	}
+}
+
 // sharedSandboxIsCopyBased reports whether the parent's driver copies the
 // workspace into its sandbox (kubernetes) rather than bind-mounting it:
 // exactly the drivers that implement the write-through seam, because a
@@ -2371,7 +3393,7 @@ func nodeGateCanAsk(n ir.Node, wf *ir.Workflow) bool {
 //     under a copy-based parent: a parked child is resumed outside its
 //     parent, in an engine with no handle to adopt, i.e. in a pod of its
 //     own — the loss this mechanism exists to prevent.
-func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, map[string]any) error) (bool, error) {
+func (e *Engine) shouldAdoptSharedSandbox(ctx context.Context, emitForSandbox func(store.EventType, map[string]any) error) (bool, error) {
 	shared := e.sharedSandbox
 	copyBased := sharedSandboxIsCopyBased(shared.Run)
 	if declared := declaredSandboxFields(e.workflow); len(declared) > 0 {
@@ -2395,6 +3417,23 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 	}
 	if shared.ScratchContainerLocal && e.childCanPause() {
 		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
+	}
+	// A child holding a sealed gateway credential cannot borrow the
+	// parent's sandbox: the parent's proxy pins the PARENT's gateway host,
+	// and the child's key would egress past a pin set that never named it
+	// (an open parent: no proxy at all). NOT an error: the child falls
+	// through to a sandbox of its own, whose proxy pins its own
+	// credential — a refusal here would kill the run instead.
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if key, baseURL, err := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); err == nil && key != "" && baseURL != "" {
+			if emitErr := emitForSandbox(store.EventSandboxShared, map[string]any{
+				"adopted": false, "driver": shared.Run.Driver(), "parent_run": e.parentRunID,
+				"reason": "the child holds a sealed gateway credential for " + (compatgw.Config{BaseURL: baseURL}).Host() + "; the parent's proxy pins the parent's gateway",
+			}); emitErr != nil && e.logger != nil {
+				e.logger.Warn("runtime: emit sandbox_shared: %v", emitErr)
+			}
+			return false, nil
+		}
 	}
 	return true, nil
 }
@@ -2647,6 +3686,9 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	if bs, ok := e.executor.(boardMCPSetter); ok && shared.BoardEndpoint != "" {
 		bs.SetBoardEndpoint(shared.BoardEndpoint)
 	}
+	if cs, ok := e.executor.(connectorMCPSetter); ok && shared.ConnectorEndpoint != "" {
+		cs.SetConnectorEndpoint(shared.ConnectorEndpoint)
+	}
 	if as, ok := e.executor.(askUserMCPSetter); ok && shared.AskUserEndpoint != "" {
 		as.SetAskUserEndpoint(shared.AskUserEndpoint, shared.AskUserToken)
 	}
@@ -2663,7 +3705,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 		// by beginRunResources and restored when this child's scope ends. This
 		// refills them from the child's host mirror.
 		var werr error
-		pushed, werr = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
+		pushed, werr = writeThroughMirroredSkills(ctx, e.workDir, e.trust, refresher, e.logger)
 		if werr != nil {
 			return devboxCleanup, fmt.Errorf("runtime: the engine-owned skills copy did not land in the adopted sandbox, whose own copy was emptied for this child; a reader would report every name it cannot find as not covered: %w", werr)
 		}
@@ -2681,7 +3723,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	// (interaction semantics stay host-side, per run). A listener the parent
 	// never started is one the child does not get — the delegate falls back
 	// per node, loudly, and the event says so.
-	wantsBoard := workflowHasBoardCapability(e.workflow)
+	wantsBoard := workflowHasBoardCapability(e.workflow, e.trust)
 	wantsAskUser := workflowHasInteractiveNode(e.workflow)
 	if e.logger != nil {
 		if wantsBoard && shared.BoardEndpoint == "" {
@@ -2744,8 +3786,20 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 // entry for a name reports it as not covered. That is a security verdict
 // quietly downgraded — the outcome the reset exists to prevent — so adoption
 // fails closed at both halves or neither.
-func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) (int, error) {
+func writeThroughMirroredSkills(ctx context.Context, workDir string, trust store.RunTrust, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) (int, error) {
 	const perFile = 30 * time.Second
+	// Every READ here crosses a boundary: what it reads is pushed into the
+	// container the agent runs in. So the reads go through the workspace
+	// handle too, not only the writes — the walk filter below guards which
+	// entries are visited and nothing else, and os.ReadFile/os.Stat follow a
+	// link wherever it points. On the cloud runner the host on the other end
+	// of such a link is the pod: its credentials file, its service-account
+	// token, its environ.
+	wr, oerr := openWorkspaceRoot(workDir, trust)
+	if oerr != nil {
+		return 0, fmt.Errorf("runtime: open the workspace handle for write-through: %w", oerr)
+	}
+	defer wr.Close()
 	n := 0
 	var ownedErr error
 	push := func(path string, owned bool) {
@@ -2756,7 +3810,7 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher s
 			}
 			return
 		}
-		body, rerr := os.ReadFile(path)
+		body, rerr := wr.ReadFile(path)
 		if rerr != nil {
 			if owned && ownedErr == nil {
 				ownedErr = fmt.Errorf("runtime: read %s for write-through: %w", rel, rerr)
@@ -2789,8 +3843,31 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher s
 				}
 				return nil
 			}
-			if !d.IsDir() {
+			// The walk filter differs by lane. On an UNTRUSTED checkout it is
+			// IsRegular, not !IsDir: WalkDir does not descend into a symlinked
+			// DIRECTORY, but it reports a symlinked FILE with IsDir() == false
+			// and the read would follow it — carrying an arbitrary host file
+			// into the container under a name the checkout chose. A link that
+			// stays inside the workspace loses nothing: its bytes are the
+			// checkout's own and already in the copy. On a TRUSTED workspace the
+			// filter stays the pre-handle !IsDir(): the operator's own
+			// arrangement (a skills entry symlinked into a shared dotfiles
+			// tree) rides today and keeps riding — ADR-162 leaves a trusted
+			// run's behavior unchanged outside the points it names, and this
+			// walk is not one of them.
+			if d.Type().IsRegular() || (trust.Trusted() && !d.IsDir()) {
 				push(path, owned)
+				return nil
+			}
+			// A skipped link is said, never silent: on the untrusted lane the
+			// reader of the child's copy would otherwise report the name not
+			// covered with no trace of why.
+			if !trust.Trusted() && d.Type()&os.ModeSymlink != 0 && logger != nil {
+				rel := path
+				if r, rerr := filepath.Rel(workDir, path); rerr == nil {
+					rel = filepath.ToSlash(r)
+				}
+				logger.Warn("runtime: write-through skips the symlinked %s — an untrusted workspace's links never cross into the child's sandbox", rel)
 			}
 			return nil
 		})

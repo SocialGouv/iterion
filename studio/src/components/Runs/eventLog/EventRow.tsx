@@ -1,12 +1,8 @@
 import { memo, useCallback } from "react";
 
 import { EVENT_BADGE, indentForType, type AnnotatedEvent } from "./eventModel";
-import {
-  ToolPayloadBlock,
-  pickInlinePayload,
-  pickRef,
-  pickSize,
-} from "../detail/ToolCalls";
+import { ToolPayloadBlock } from "../detail/ToolCalls";
+import { pickInlinePayload, pickRef, pickSize } from "../detail/toolCallModel";
 
 // Event types that carry a tool I/O payload worth expanding inline (the
 // timeline equivalent of the per-node Tools tab). tool_started carries the
@@ -43,6 +39,10 @@ export const EventRow = memo(function EventRow({
   const isToolPayload = TOOL_PAYLOAD_TYPES.has(e.type);
   const input = isToolPayload ? pickInlinePayload(data, "input") : undefined;
   const output = isToolPayload ? pickInlinePayload(data, "output") : undefined;
+  // The row the payload blocks' copy buttons name themselves after: the
+  // timeline repeats input/output per event, and `seq` is what the row
+  // already shows.
+  const payloadSource = `${e.node_id ?? e.type} seq ${e.seq}`;
   const errorMsg =
     e.type === "tool_error"
       ? ((data["error"] as string) ?? (data["message"] as string) ?? undefined)
@@ -81,6 +81,7 @@ export const EventRow = memo(function EventRow({
           {input && (
             <ToolPayloadBlock
               label="input"
+              source={payloadSource}
               value={input}
               runId={e.run_id}
               toolUseID={pickRef(data, "input")}
@@ -91,6 +92,7 @@ export const EventRow = memo(function EventRow({
           {output && (
             <ToolPayloadBlock
               label="output"
+              source={payloadSource}
               value={output}
               runId={e.run_id}
               toolUseID={pickRef(data, "output")}

@@ -1,0 +1,246 @@
+package credheader_test
+
+import (
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/internal/credheader"
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+)
+
+// The block this package reads is the one the CLI reads, so the walk is pinned
+// against the CLI's own parser rather than against a second description of the
+// format: claw's ParseCustomHeaders is that reader (vendored, first-party). On
+// every block it ACCEPTS, "which lines authenticate" must mean the same thing
+// on both sides of the wire — a mirror written from the documentation drifts at
+// the edges the documentation does not mention (a \r line ending, a blank line,
+// a colon in the value, the word in a value instead of a name).
+//
+// On a block the parser REFUSES there is no mirror to hold: the reading is per
+// LINE on purpose, and each such block says here what it owes. The kept text
+// keeps the malformed line, so the CLI goes on refusing the block — the
+// operator's own to fix — instead of being handed a half-repaired one.
+func TestStripCredentialLines_AgreesWithTheCLIsParser(t *testing.T) {
+	cases := []struct {
+		raw string
+		// On a block the CLI's parser REFUSES: what this package owes,
+		// written per input rather than derived, so the arm discriminates
+		// instead of restating the code under test. wantKept keeps the lines
+		// the operator has to go and fix, so that parser goes on refusing the
+		// block instead of being handed a half-repaired one.
+		wantRefused []string
+		wantKept    string
+	}{
+		{raw: ""},
+		{raw: "   "},
+		{raw: "x-tenant: acme"},
+		{raw: "User-Agent: my-tool/1.0"},
+		{raw: "Authorization: Bearer sk-operator-gateway"},
+		{raw: "authorization: Bearer sk-lower"},
+		{raw: "  Authorization  :  Bearer sk-spaced"},
+		{raw: "x-api-key: sk-ambient-key"},
+		{raw: "X-API-Key: sk-ambient-upper"},
+		{raw: "api-key: sk-foundry-shape"},
+		{raw: "x-tenant: acme\nAuthorization: Bearer sk-second-line"},
+		{raw: "Authorization: Bearer sk-crlf\r\nx-tenant: acme"},
+		{raw: "x-tenant: acme\n\nAuthorization: Bearer sk-after-a-blank-line"},
+		{raw: "Authorization: Bearer sk-a\nx-api-key: sk-b\nx-tenant: acme"},
+		{raw: "x-note: see the authorization: guide"},
+		{raw: "X-Authorization: Bearer sk-other-header"},
+		{raw: "x-proxy: https://gw.example.test/authorization: no"},
+		// The refused half: blocks the parser rejects, with and without a
+		// well-formed credential line beside the bad one.
+		{raw: "Authorization", wantRefused: nil, wantKept: "Authorization"},
+		{raw: "nocolon", wantRefused: nil, wantKept: "nocolon"},
+		{raw: "Authorization: Bearer sk-x\nnocolon", wantRefused: []string{"authorization"}, wantKept: "nocolon"},
+		{raw: "# our gateway\nx-api-key: sk-x", wantRefused: []string{"x-api-key"}, wantKept: "# our gateway"},
+		{raw: "Authorization: Bearer sk-x\n:novalue", wantRefused: []string{"authorization"}, wantKept: ":novalue"},
+	}
+	for _, tc := range cases {
+		t.Run(strings.ReplaceAll(tc.raw, "\n", "|"), func(t *testing.T) {
+			kept, refused := credheader.StripCredentialLines(tc.raw)
+			headers, err := clawapi.ParseCustomHeaders(tc.raw)
+			if err != nil {
+				if !slices.Equal(refused, tc.wantRefused) {
+					t.Errorf("StripCredentialLines(%q) refused %v on a block the CLI's parser refuses (%v), want %v",
+						tc.raw, refused, err, tc.wantRefused)
+				}
+				if kept != tc.wantKept {
+					t.Errorf("StripCredentialLines(%q) kept %q, want %q — the lines the CLI refuses stay the operator's to fix",
+						tc.raw, kept, tc.wantKept)
+				}
+				return
+			}
+			var want []string
+			for name := range headers {
+				if credheader.IsCredentialName(name) {
+					want = append(want, strings.ToLower(strings.TrimSpace(name)))
+				}
+			}
+			slices.Sort(want)
+			if !slices.Equal(refused, want) {
+				t.Errorf("StripCredentialLines(%q) refused %v, the CLI's parser carries %v of those names (headers %v)",
+					tc.raw, refused, want, headers)
+			}
+			// What crossed, read by the CLI's own parser: exactly the lines
+			// that do not authenticate, with their values intact.
+			keptHeaders, keptErr := clawapi.ParseCustomHeaders(kept)
+			if keptErr != nil {
+				t.Fatalf("the CLI's parser refuses the kept text %q: %v", kept, keptErr)
+			}
+			for name, value := range headers {
+				got, present := keptHeaders[name]
+				if credheader.IsCredentialName(name) {
+					if present {
+						t.Errorf("%s survived the strip of %q", name, tc.raw)
+					}
+					continue
+				}
+				if !present || got != value {
+					t.Errorf("%s = %q, present=%v in the kept text %q, want the operator's own %q", name, got, present, kept, value)
+				}
+			}
+		})
+	}
+}
+
+// Nothing refused means nothing touched: the operator's block crosses byte for
+// byte, so a value this package cannot judge is never reformatted behind their
+// back.
+func TestStripCredentialLines_KeepsABlockWithNoCredentialByteForByte(t *testing.T) {
+	for _, raw := range []string{"", "   ", "x-tenant: acme\r\nUser-Agent: my-tool/1.0", "nocolon\n\nx-note: see the authorization: guide"} {
+		kept, refused := credheader.StripCredentialLines(raw)
+		if len(refused) != 0 {
+			t.Errorf("StripCredentialLines(%q) refused %v, want nothing", raw, refused)
+		}
+		if kept != raw {
+			t.Errorf("StripCredentialLines(%q) rewrote the block to %q", raw, kept)
+		}
+	}
+}
+
+// The refusal names the header, never its value: it is read into a log line
+// the operator sees, and the value of a credential line IS the credential.
+func TestStripCredentialLines_RefusalNamesTheHeaderNeverTheValue(t *testing.T) {
+	const secret = "sk-ambient-gateway-credential"
+	kept, refused := credheader.StripCredentialLines("Authorization: Bearer " + secret + "\nx-api-key: " + secret)
+	if !slices.Equal(refused, []string{"authorization", "x-api-key"}) {
+		t.Fatalf("refused = %v, want both credential names, sorted", refused)
+	}
+	for _, name := range refused {
+		if strings.Contains(name, secret) {
+			t.Errorf("the refusal %q carries the credential's value", name)
+		}
+	}
+	if strings.Contains(kept, secret) {
+		t.Errorf("the kept text %q carries the credential's value", kept)
+	}
+}
+
+// CarriesName answers on the NAME alone — the claim the delegate's remediation
+// makes about an ambient Authorization line — and is case-insensitive, as the
+// CLI's parser and HTTP itself are.
+func TestCarriesName_ReadsTheNameAlone(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"Authorization: Bearer sk-x", true},
+		{"authorization: Bearer sk-x", true},
+		{"  AUTHORIZATION : Bearer sk-x", true},
+		{"x-tenant: acme\nAuthorization: Bearer sk-x", true},
+		{"x-note: see the authorization: guide", false},
+		{"X-Authorization: Bearer sk-x", false},
+		{"Authorization", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := credheader.CarriesName(tc.raw, credheader.NameAuthorization); got != tc.want {
+			t.Errorf("CarriesName(%q, %q) = %v, want %v", tc.raw, credheader.NameAuthorization, got, tc.want)
+		}
+	}
+}
+
+// LineValue answers the value the request would carry: the LAST line of the
+// name wins (the CLI applies the block per line, last write wins), trimmed
+// of the space around it; a block holding none, or one whose value is
+// empty, answers ok=false — nothing the request would carry.
+func TestLineValue_LastLineOfTheNameWins(t *testing.T) {
+	cases := []struct {
+		raw   string
+		want  string
+		wantO bool
+	}{
+		{"Authorization: Bearer sk-x", "Bearer sk-x", true},
+		{"Authorization:  Bearer  sk-x  ", "Bearer  sk-x", true},
+		{"X-Tenant: acme\nAuthorization: Bearer first\nX-Note: n\nAuthorization: Bearer second", "Bearer second", true},
+		{"authorization: bearer sk-x", "bearer sk-x", true},
+		{"X-Tenant: acme", "", false},
+		{"Authorization:", "", false},
+		{"Authorization:   ", "", false},
+		{"Authorization", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := credheader.LineValue(tc.raw, credheader.NameAuthorization)
+		if got != tc.want || ok != tc.wantO {
+			t.Errorf("LineValue(%q) = %q, %v, want %q, %v", tc.raw, got, ok, tc.want, tc.wantO)
+		}
+	}
+}
+
+// Line answers what the CLI applies under a name: the LAST line's value, and
+// whether a line of the name is applied at all — an empty value included,
+// which claw's parser keeps and its identity sets over the header the CLI's
+// own auth put there, erasing it. Pinned against that parser on blocks it
+// accepts, for both names the Anthropic wire's auth sets.
+func TestLine_AgreesWithTheCLIsParser(t *testing.T) {
+	for _, raw := range []string{
+		"",
+		"X-Tenant: acme",
+		"Authorization: Bearer sk-x",
+		"Authorization:",
+		"Authorization:   ",
+		"x-api-key: k-1\nx-api-key: k-2",
+		"X-Tenant: acme\r\nAuthorization: Bearer a\r\nx-api-key:",
+		"authorization: bearer lower",
+	} {
+		headers, err := clawapi.ParseCustomHeaders(raw)
+		if err != nil {
+			t.Fatalf("bench: the CLI's parser refused %q: %v", raw, err)
+		}
+		for _, name := range []string{credheader.NameAuthorization, credheader.NameXAPIKey} {
+			wantValue, wantPresent := "", false
+			for k, v := range headers {
+				if strings.EqualFold(k, name) {
+					wantValue, wantPresent = v, true
+				}
+			}
+			if value, present := credheader.Line(raw, name); value != wantValue || present != wantPresent {
+				t.Errorf("Line(%q, %q) = %q, %v — the CLI applies %q, %v", raw, name, value, present, wantValue, wantPresent)
+			}
+		}
+	}
+}
+
+// The name set is the subject of the vendored-producer guard in
+// pkg/backend/model: keep it non-empty and lower-case here, or that guard
+// compares against nothing.
+func TestCredentialNamesAreLowerCaseAndSorted(t *testing.T) {
+	names := credheader.CredentialNames()
+	if len(names) == 0 {
+		t.Fatal("no credential header name: the strip has nothing to refuse")
+	}
+	if !slices.IsSorted(names) {
+		t.Errorf("CredentialNames() = %v, want them sorted", names)
+	}
+	for _, name := range names {
+		if name != strings.ToLower(name) {
+			t.Errorf("%q is not lower-case: the guard that derives these names compares them lower-cased", name)
+		}
+		if !credheader.IsCredentialName(strings.ToUpper(name)) {
+			t.Errorf("IsCredentialName(%q) is false under another spelling: HTTP header names are case-insensitive", strings.ToUpper(name))
+		}
+	}
+}

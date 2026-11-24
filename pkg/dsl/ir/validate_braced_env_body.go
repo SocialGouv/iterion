@@ -94,8 +94,8 @@ import "strings"
 //
 // A warning, like C153/C157/C158: yesterday's bot keeps compiling, and the
 // diagnostic names the fix. One finding per (body, name), on the read it
-// reports — the AST keeps no per-property span, so the position travels in
-// the message.
+// reports — positioned on the body's property line; the AST keeps no
+// position inside a body, so the line inside it travels in the message.
 func (c *compiler) validateBracedEnvBodies(w *Workflow) {
 	for _, n := range w.Nodes {
 		t, ok := n.(*ToolNode)
@@ -227,7 +227,7 @@ func (c *compiler) validateBracedEnvBodies(w *Workflow) {
 				// which is what makes the trade worth naming here rather
 				// than in a page the author may not open.
 				remedy += "; or declare `env_expansion: none` on the node, which keeps its bodies' environment forms verbatim at the price of the ADR-093 overlay for those bodies — an `${ITERION_*}` dial read there is no longer answered by the engine"
-				c.warnfAt(DiagBracedEnvDefeatsAssignment, t.ID, "",
+				c.warnfAtProperty(DiagBracedEnvDefeatsAssignment, "tool", t.ID, b.where,
 					"tool %q %s, body line %d: %s — %s. %s",
 					t.ID, b.where, strings.Count(b.text[:d.at], "\n")+1, form, mechanism, remedy)
 			}

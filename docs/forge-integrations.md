@@ -31,7 +31,11 @@ In the studio, **Integrations → Repositories** (`/integrations`):
    `gate_enabled` pin of
    [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand))
    — offered only for a repo not yet enabled on this connection; an enabled
-   repo changes it on the repo page — and click Enable. The preview says
+   repo changes it on the repo page — optionally name the issue labels that
+   start the bots (**`Start only on these issue labels`**, the integration's
+   `label_allowlist`: empty lets every label a bot reacts to through, and on
+   an enabled repo an untouched field keeps the stored list) and click
+   Enable. The preview says
    `Will deliver to:` and the hook URL about to be registered; the
    connection's **`Webhook delivery`** row above it pins another base for a
    forge that cannot reach this deployment's public URL
@@ -40,15 +44,15 @@ In the studio, **Integrations → Repositories** (`/integrations`):
    - derives a team-scoped **managed `forge_token`** secret from the
      connection (created once per connection);
    - creates (or extends) the iterion **webhook config** for that repo, with
-     a fresh `iwh_` secret it holds on both ends, the events the bots need,
+     an immutable `iwh_` secret per webhook identity, the events the bots need,
      and a per-webhook `SecretOverrides` pin to the managed token;
    - calls the forge API to **create the webhook** on the repo pointing at
      iterion's inbound URL with that `iwh_` secret;
    - records a **`RepoIntegration`** join row.
 
-Disable is the inverse, one click: delete the forge hook, the webhook
-config, and the join row (the managed secret survives — it is shared by the
-connection's other repos; it is removed when the connection is deleted).
+Disable retires the integration, deletes the forge hook and schedules, and
+retains verification tombstones. The connection-level managed secret survives
+until disconnect. Re-enable reserves a fresh webhook identity after cleanup.
 
 Both halves drawn from the code — the GitHub App connect, then the enable's
 fixed write order; the step table, the guards that refuse and the collections
@@ -111,10 +115,11 @@ sequenceDiagram
     O->>DB: generic_secrets create, admin token re-sealed, egress hosts pinned
     O->>DB: forge_connections stamp managed_secret_id
     O->>DB: bot_secret_bindings upsert, one per enabled bot
-    O->>O: command map, bot rules, fresh iwh_ webhook secret
+    O->>O: command map and bot rules
+    O->>DB: reserve versioned integration and immutable sealed webhook identity
     O->>DB: webhook_configs create or update, the enforcement half
     O->>G: upsert the repo hook with inbound URL, secret, native events
-    O->>DB: repo_integrations create or update, the report half
+    O->>DB: repo_integrations CAS activates the webhook and records settings
     O->>G: re-mint the github_app token for the provisioned repo set
     O->>DB: scheduled_bots replaced for the integration
     O-->>S: ProvisionResult with integration, webhook, hook, created
@@ -159,6 +164,48 @@ time — to the boolean request-body fields `merge_requests_events` /
 Unknown events / scope keys / levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
 
+The scope keys are `pull_requests`, `repository`, `issues`, `webhooks`,
+`statuses`, `approvals`, `merge`, `reviewers` and `actions`, each at `read`,
+`write` or `admin`. Most are informational — they size the requested OAuth
+scope and are shown in the enable dialog. Four mint a **capability into the
+run's publish grant** at `write` (or `admin`) — read from the manifest of the
+bundle the launch runs, so a team bundle shadowing a catalogue slug without
+declaring them holds none — and a bot that does not declare one never holds
+it:
+
+| scope | grant capability | what it lets the run ask the server to do |
+|---|---|---|
+| `approvals` | `approve` | approve the merge request ([merge gate](merge-gate.md)) |
+| `merge` | `merge` | arm merge-when-pipeline-succeeds |
+| `reviewers` | `reviewers` | request reviewers on escalation |
+| `actions` | `dispatch_workflow` | dispatch one workflow of the grant's repository (`POST /api/v1/forge/dispatch-workflow`) |
+
+(`statuses` is what makes a bot a required check; it mints no capability.)
+The operator pin `forge_publish_mutations` set to anything but `true` strips
+them all.
+
+`actions` is the opt-in of [`workflow-kick`](../bots/workflow-kick/README.md):
+the server dispatches the named `*.yml` on the repository's default branch
+(sent fully qualified, `refs/heads/<branch>`, never a same-named tag) with a
+GitHub App token minted for that one call
+(`{actions: write, metadata: read}`, the one repository), so the Actions
+permission never rides the connection's managed token that every run mounts —
+the App installation must grant `Actions: Read and write` for that per-call
+mint to succeed. Only a repo-bound schedule of such a bot is minted the
+capability — a pull-request, API or board launch never is — at the tick,
+carrying `dispatch_workflow` alone, bound to the **one workflow file** the
+schedule row's `workflow` var names (any other file is refused,
+`workflow_dispatch_workflow_outside_grant`), dispatching it **once per grant**,
+and bound to **no pull request**: the review and gate endpoint (`POST /api/v1/forge/publish-review`, its commit
+status and verdict gestures included), the pull-request read, the delivery
+preflight and the server's own gate repairs refuse it with `403
+grant_bound_to_no_pull_request` before any forge call, so a schedule's run can
+never post a review or paint a required check such as `revi/review` on any
+head of the repository. In Valkey such a grant lives under a key namespace of
+its own, which a server older than the binding does not read: mid-rollout, an
+older replica answers it "unknown token" rather than honouring it as a
+pull-request grant. A pull-request launch's grant is otherwise unchanged.
+
 Enabling **several** bots on one repo (a reviewer + a dependency guard)
 is the common case: the orchestrator writes one `BotRule` per
 co-enabled bot, and an inbound delivery fans out to every rule that
@@ -183,6 +230,36 @@ it on the webhook via `SecretOverrides` (Tier-0 in
 background worker ([pkg/forge/refresh.go](../pkg/forge/refresh.go)) that
 re-seals the connection blob, then rewrites the managed secret's plaintext;
 PAT connections never refresh.
+
+### Renewing a token (in place, keeping the connection)
+
+A connection whose credential dies is repaired **in place** — the repository
+integrations, forge hooks, minted project bots and managed secret all stay
+put, and the row goes back to `active`. The studio's connection card carries
+the gesture (team admins); the API accepts the same two shapes.
+
+- **A PAT connection — Replace token.** GitLab project and group access
+  tokens MUST expire (365 days at most on a default instance): on the forge,
+  **Rotate** the token (GitLab keeps the same bot user and issues a new value
+  with a new expiry), then paste the new value into the connection card's
+  **Replace token** action, or `PATCH /connections/{conn_id}` with
+  `{"pat": "<token>"}` alone. The server WhoAmIs the new token BEFORE writing
+  anything and refuses (422) one that belongs to a different account — the
+  hooks were registered by the first account's token — unless the move is
+  deliberate (`"allow_account_change": true`, audited as such). The token is
+  resealed under the same connection id and the managed `forge_token` secret
+  is rewritten, the same two writes the refresh worker makes; the value is
+  never logged (audit: `forge.connection.token_replaced`).
+- **An OAuth connection — Re-authorise.** A connection whose grant died
+  (refresh refused, `needs_reauth`) shows **Re-authorise** on its card
+  (`POST /connections/{conn_id}/reauthorize`): the same OAuth flow with the
+  connection id pinned in the signed state. The callback verifies the
+  authorisation completed as the SAME forge account (a different one is
+  refused — the repositories' minted bots hang off the first account's
+  grant), seals the fresh token pair into the existing row, clears
+  `status_reason`, and audits `forge.connection.reauthorized`. The refresh
+  sweep skips `needs_reauth`/`revoked` rows — a dead credential is never
+  retried against the forge — so this gesture is the only way back.
 
 > Note on *identity* (vs envelope): "never what a bot posts with" means the
 > **sealing envelope** differs (`forge_conn:<id>` → `generic_secret:<id>`), not
@@ -314,9 +391,10 @@ from it).
   so the existing inbound SSRF host-pin keeps applying; the global
   `ITERION_WEBHOOK_FORGE_HOSTS` allowlist still wins.
 - The `iwh_` webhook secret is minted server-side and **never shown to the
-  operator** — iterion holds both ends. A fresh one is minted on every
-  mutating provision so the forge hook secret and the iterion config hash
-  stay in lockstep without needing the prior plaintext.
+  operator** — iterion holds both ends. It is sealed per webhook epoch and
+  reused across retries, including requests that outlive their lease. Legacy
+  hooks migrate to a new URL; disable/re-enable rotates the epoch. See
+  [ADR-138](adr/138-forge-provisioning-immutable-identities.md).
 - Insufficient scope (the token can't create a hook) surfaces as a
   structured `insufficient_scope` 403 so the studio can prompt to reconnect
   with broader scope or paste a PAT.
@@ -338,7 +416,8 @@ authenticated by signed state + an agent-binding cookie:
 |---|---|---|
 | GET | `/connections` | list connections |
 | POST | `/connections` | connect (`mode: pat` \| `oauth` \| `app`) → `{connection}`, `{authorize_url}`, or `{install_url}` (GitHub-only `app`) |
-| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), or toggle `security_read_enabled` |
+| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), toggle `security_read_enabled`, or replace a PAT connection's token (`{"pat": "<token>"}`, sent alone — see [Renewing a token](#renewing-a-token)) |
+| POST | `/connections/{conn_id}/reauthorize` | OAuth connections: start the re-authorisation of the EXISTING connection (dead grant, `needs_reauth`) → `{authorize_url}`; the callback seals the fresh pair into the same row |
 | DELETE | `/connections/{conn_id}` | disconnect (deprovisions every repo first) |
 | GET | `/connections/{conn_id}/health` | stored + live connection and token health |
 | POST | `/connections/{conn_id}/refresh` | GitHub App only: re-probe installation grants, persist them, and mint a fresh token |

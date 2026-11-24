@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // Compile-time guard: *heartbeatStore MUST satisfy model.TurnWriter so
@@ -84,6 +86,7 @@ func TestHeartbeatStoreForwardsCreateChildRun(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	hb := newHeartbeatStore(fs, func(string) {})
+	storetest.SeedParentRun(t, fs, "parent")
 	pc := store.AsParentedRunCreator(hb)
 	if pc == nil {
 		t.Fatal("*heartbeatStore hides CreateChildRun; a dispatched subbot child is created with no ParentRunID")
@@ -163,6 +166,35 @@ func TestHeartbeatStoreForwardsReliabilityCapabilities(t *testing.T) {
 	}
 }
 
+func TestHeartbeatStorePreservesTheUnderlyingContextIdentity(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.ResolveStoreContextRef(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ResolveStoreContextRef(t.Context(), newHeartbeatStore(base, func(string) {}))
+	if err != nil || got != want {
+		t.Fatalf("heartbeat wrapper changes the store identity: got %+v err=%v want %+v", got, err, want)
+	}
+}
+
+// The heartbeat wrapper is never the store a bound stream reads through, and
+// it does not endorse itself: the endorsement of the store it wraps is not
+// promoted through the interface it embeds, so a bound stream over it is
+// refused typed rather than admitted by default.
+func TestHeartbeatStoreDoesNotEndorseBoundObservation(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireBoundObservationStore(newHeartbeatStore(base, func(string) {})); !errors.Is(err, store.ErrRunDataCapability) {
+		t.Fatalf("heartbeat wrapper admitted for a bound stream: %v", err)
+	}
+}
+
 // TestHeartbeatStoreHidesNoCapabilityTheEngineProbes: every optional store
 // capability the engine probes (store.As* in pkg/runtime) that the wrapped
 // store has is visible through the heartbeat wrapper. A hidden one degrades
@@ -170,13 +202,23 @@ func TestHeartbeatStoreForwardsReliabilityCapabilities(t *testing.T) {
 // no packed CLI session, mounts no run-files directory.
 func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 	probes := map[string]func(store.RunStore) bool{
-		"AsBackendSessionStore":   func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
-		"AsOutputCorrectionStore": func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
-		"AsParentedRunCreator":    func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
-		"AsQueuedAttemptClaimer":  func(s store.RunStore) bool { return store.AsQueuedAttemptClaimer(s) != nil },
-		"AsRunFilesStore":         func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
-		"AsScratchBankStore":      func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
-		"AsSpendStore":            func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },
+		"AsAttemptStore":               func(s store.RunStore) bool { return store.AsAttemptStore(s) != nil },
+		"AsBackendSessionStore":        func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
+		"AsCodemodeQuotaResumeClaimer": func(s store.RunStore) bool { return store.AsCodemodeQuotaResumeClaimer(s) != nil },
+		"AsCodemodeScratchStore":       func(s store.RunStore) bool { return store.AsCodemodeScratchStore(s) != nil },
+		"AsContextIdentityStore":       func(s store.RunStore) bool { return store.AsContextIdentityStore(s) != nil },
+		"AsObservedExecutionStore":     func(s store.RunStore) bool { return store.AsObservedExecutionStore(s) != nil },
+		"AsOutputCorrectionStore":      func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
+		"AsParentedRunCreator":         func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
+		"AsQueuedAttemptClaimer":       func(s store.RunStore) bool { return store.AsQueuedAttemptClaimer(s) != nil },
+		"AsResumePauseHandoffStore":    func(s store.RunStore) bool { return store.AsResumePauseHandoffStore(s) != nil },
+		"AsRunExecutionStore":          func(s store.RunStore) bool { return store.AsRunExecutionStore(s) != nil },
+		"AsRunFilesGrantStore":         func(s store.RunStore) bool { return store.AsRunFilesGrantStore(s) != nil },
+		"AsRunFilesStore":              func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
+		"AsRunOutcomeCASStore":         func(s store.RunStore) bool { return store.AsRunOutcomeCASStore(s) != nil },
+		"AsScratchBankStore":           func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
+		"AsSpendStore":                 func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },
+		"AsToolApprovalSpender":        func(s store.RunStore) bool { return store.AsToolApprovalSpender(s) != nil },
 	}
 	files, err := filepath.Glob(filepath.Join("..", "runtime", "*.go"))
 	if err != nil {
@@ -203,6 +245,13 @@ func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 		t.Fatal(err)
 	}
 	hb := newHeartbeatStore(base, func(string) {})
+	baseGrant := store.AsRunFilesGrantStore(base)
+	if baseGrant == nil {
+		t.Fatal("base lacks RunFilesGrantStore; capability check would be vacuous")
+	}
+	if got := store.AsRunFilesGrantStore(hb); got != baseGrant {
+		t.Fatalf("grant capability resolves to %T, want original base %T", got, baseGrant)
+	}
 	for name := range probed {
 		probe, ok := probes[name]
 		if !ok {
@@ -215,5 +264,61 @@ func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 	}
 	if !probes["AsScratchBankStore"](hb) {
 		t.Fatal("the dispatcher's store keeps no scratch bank — the check above proves nothing for it")
+	}
+}
+
+func TestHeartbeatStoreRunFilesGrantOpensOriginalScope(t *testing.T) {
+	t.Parallel()
+	if err := store.RequireRunDataStorage(store.IncarnationRunData); err != nil {
+		t.Skip(err)
+	}
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	r, err := base.CreateRunWithValueFormat(ctx, store.RunCreateSpec{ID: "grant", Format: store.ExactValueFormat, DataProtocol: store.IncarnationRunData})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.CaptureRunDataBinding(store.RunDataHeader{RunID: r.ID, Format: store.ExactValueFormat, Protocol: r.DataProtocol, BirthID: r.BirthID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = store.WithRunDataBinding(ctx, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = store.WithRunValueFormat(ctx, store.RunValueFormat{RunID: r.ID, Format: store.ExactValueFormat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb := newHeartbeatStore(newHeartbeatStore(base, nil), nil)
+	capability := store.AsRunFilesGrantStore(hb)
+	if capability != base {
+		t.Fatalf("nested wrapper lost original store: %T", capability)
+	}
+	grant, err := capability.OpenRunFilesGrant(ctx, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grant.Close()
+	root, err := grant.OpenRoot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	f, err := root.OpenFile("wrapper-witness", os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.Write([]byte("original"))
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatal(writeErr, closeErr)
+	}
+	got, err := os.ReadFile(filepath.Join(grant.HostPath(), "wrapper-witness"))
+	if err != nil || string(got) != "original" {
+		t.Fatal("grant did not retain original scope", string(got), err)
 	}
 }

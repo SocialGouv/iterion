@@ -303,6 +303,33 @@ What's already wired:
 - FormField inputs wire `aria-describedby` to their help icon and error message via the `FieldRow` wrapper. Set the `error` prop to render `<p role="alert">` and add `aria-invalid` on the input.
 - **Skip-link** from `AppShell` (`<a href="#main-content">`) becomes visible on keyboard focus and jumps to the main work surface. Implemented on Home, Editor, RunList, RunView, Board, Dispatcher — pages without an `id="main-content"` anchor degrade gracefully.
 
+### Clickable rows and cards
+
+A row, card or table row that reacts to a click takes one of the two shapes
+[`lib/a11y.ts`](../src/lib/a11y.ts) offers, and the choice is decided by ONE
+question: does the row hold anything focusable?
+
+| The row | Shape | Why |
+|---|---|---|
+| holds nothing focusable (text, badges, layout) | `clickableRowProps(onActivate, label?, opts?)` — `role="button"` + `tabindex` + Enter/Space | the row IS the control, and one tab stop is the whole row |
+| holds a control (a button, a link, a file input) | `pointerRowProps(onActivate, opts?)` — a click, nothing else | a `role="button"` around a control is a button inside a button (axe `nested-interactive`, WCAG 4.1.2), and the row's Enter races the inner control's |
+
+A pointer row is legal only because a real control inside it carries the
+keyboard path (RGAA 7.3) — the title button of a run card, the Open button of
+a table row, the `<label>` of a file drop zone ([`FileDropZone`](../src/components/shared/FileDropZone.tsx),
+whose sibling [`HiddenFileInput`](../src/components/shared/HiddenFileInput.tsx)
+is for the input a visible button drives instead). Neither shape takes a
+second `onClick` / `onKeyDown` / `role` / `tabIndex` beside the spread: a
+later JSX prop wins, so the helper's handler silently stops running. What a
+site needs travels through the helper — the activation carries the cursor
+position, or null when a key activated the row.
+
+Both halves are a gate, not a convention: the scan in
+[`src/__tests__/a11y/_clickableRows.ts`](../src/__tests__/a11y/_clickableRows.ts)
+follows every call site's descendants (components included, to their own
+definition) and `source-discipline.test.ts` fails on a row that breaks either
+rule. A descendant it cannot follow is reported until somebody decides it.
+
 ### Axe-core a11y tests
 
 A regression-trap for the shared primitives lives at [`src/__tests__/a11y/primitives.test.tsx`](../src/__tests__/a11y/primitives.test.tsx). It boots jsdom, renders Button / IconButton / EmptyState / Spinner / LiveDot / Badge / Skeleton / Checkbox / Radio / FieldLabel / BrandWordmark in every variant, and asserts zero axe-core violations against `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` rule sets. Add a new test there when you ship a new primitive.
@@ -313,11 +340,22 @@ pnpm -F iterion-studio test
 
 The jsdom environment is opt-in per file via `// @vitest-environment jsdom` so pure-function tests stay on the fast Node runner.
 
+#### SC 2.5.8 target-size: the real-engine half
+
+`wcag22aa` is in the jsdom net's declared scope, and its only rule today is `target-size` — which jsdom cannot judge (no layout: every element measures 0×0 and axe reads that as a PASS). The rule gets its verdict in a real browser from [`e2e/a11y/target-size.spec.ts`](../e2e/a11y/target-size.spec.ts) (helper: [`e2e/a11y/targetSize.ts`](../e2e/a11y/targetSize.ts)), driven by its own [`playwright.a11y.config.ts`](../playwright.a11y.config.ts) — deliberately OUTSIDE the default `e2e/specs` sweep: the decided trigger (#2765) is the `studio-e2e-advisory` workflow (weekly schedule + `workflow_dispatch`), never the per-PR gate. Run it on demand:
+
+```bash
+devbox run -- task test:a11y:target-size    # builds the binary; skips cleanly without chromium
+corepack pnpm -C studio test:a11y:target-size
+```
+
+The policy is decided (#2765): the studio's floor is SC 2.5.8's **24px AA minimum**, and WCAG's exceptions are accepted where one honestly applies. The spec walks a declared surface list (`SURFACES`), runs axe's `target-size` rule, and measures every sub-24px node it saw — including the ones axe PASSES only through the spacing exception, since accepting that exception is a decision to record, not a pass to swallow. A finding survives only behind an entry in `TARGET_SIZE_WAIVERS` (per surface, per selector/tag/container, `maxNodes`-bounded so a class cannot grow unexamined) whose `decision` names the WCAG exception it rests on — `spacing`, `inline` or `equivalent` — with a justification giving the measured facts. A waiver without a decision fails the run, a waiver that matches nothing fails, and so does an unwaivered finding. The list is the studio's documented-exception ledger for the criterion.
+
 Run a manual axe browser-extension sweep on `/`, `/editor`, `/runs/:id`, `/board`, `/dispatcher` (application settings are a dialog, not a route) before any large UI release — jsdom can't model the canvas, the WebSocket flows, or the full layout, so the unit suite is a floor not a ceiling.
 
 Open items still requiring human / browser verification:
 - Light-mode canvas variants on `softColor(color, 10)` backgrounds (contrast).
-- `role="button"` divs in `LogLinesView`, `Canvas/DetailSubNode`, `Canvas/AuxiliaryNode`, `Canvas/SubNodePalette`, `Board/index.tsx` — verify each has a keyboard handler (Enter/Space) and an `aria-label`. The canvas variants got keyboard nav in commit `81e6195d`.
+- `role="button"` divs in `LogLinesView`, `Canvas/DetailSubNode`, `Canvas/AuxiliaryNode`, `Canvas/SubNodePalette` — each has the keyboard handler (`clickableRowProps`, scanned by `source-discipline`), so what is left for a browser is the focus ring's visibility over the canvas and the drag affordance of a `draggable` row (#2770).
 - Full keyboard reachability of the canvas — cycling between root nodes via `Tab` alone.
 
 ## Don'ts

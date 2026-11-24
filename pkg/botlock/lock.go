@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 )
 
 const (
@@ -54,7 +54,7 @@ func Load(workdir string) (*Lock, error) {
 		return nil, fmt.Errorf("bot dependencies: read %s: %w", path, err)
 	}
 	var lock Lock
-	if err := yaml.UnmarshalStrict(body, &lock); err != nil {
+	if err := yamlx.UnmarshalStrict(body, &lock); err != nil {
 		return nil, fmt.Errorf("bot dependencies: parse %s: %w", path, err)
 	}
 	if err := lock.Validate(); err != nil {
@@ -105,7 +105,7 @@ func Encode(lock *Lock) ([]byte, error) {
 	if err := lock.Validate(); err != nil {
 		return nil, err
 	}
-	return yaml.Marshal(lock)
+	return yamlx.Marshal(lock)
 }
 
 // Validate enforces the lockfile's closed v1 contract.

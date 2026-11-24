@@ -7,10 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -44,13 +47,21 @@ type SharedSandbox struct {
 	// The parent's per-run MCP listeners, reachable from the same sandbox:
 	// a child's board-capability and interactive nodes use them instead of
 	// listeners of their own (none are started for a child).
-	BoardEndpoint   string
-	AskUserEndpoint string
-	AskUserToken    string
+	// ConnectorEndpoint is empty when the parent's host does not serve the
+	// connector facade (the cloud runner pod, #2632) — a child inherits the
+	// same degradation as a first-class run there.
+	BoardEndpoint     string
+	ConnectorEndpoint string
+	AskUserEndpoint   string
+	AskUserToken      string
 	// ScratchContainerLocal: the sandbox's ${PROJECT_SCRATCH_DIR} lives in
 	// the container and dies with it. The parent's teardown banks it
 	// (ADR-106); a child resumed on its own starts a sandbox without it.
 	ScratchContainerLocal bool
+	// CredentialHome is what the sandbox binds of the operator's home, as
+	// the parent's credential admission read it: an adopted child's own
+	// admission judges its nodes on the same mount (ADR-161 decision 4).
+	CredentialHome credroute.SandboxHomeState
 }
 
 // WithSharedSandbox makes the engine execute every node in the given
@@ -81,12 +92,29 @@ func WithLogger(l *iterlog.Logger) EngineOption {
 	return func(e *Engine) { e.logger = l }
 }
 
-// WithBoardMCP wires the dedicated board/runs MCP HTTP handler used to serve a
-// per-run gateway-reachable listener when a sandbox is active (C082). The
-// handler must never be the full server mux. The historical option name is
+// WithBoardMCP wires the dedicated host MCP HTTP handler used to serve a
+// per-run gateway-reachable listener when a sandbox is active (C082): the
+// board tools, the read-only run tools AND the connector facade — the
+// shape of the server's dedicated mux (boardMCPServiceOption). The handler
+// must never be the full server mux. The historical option name is
 // retained for compatibility.
 func WithBoardMCP(h http.Handler) EngineOption {
-	return func(e *Engine) { e.boardMCPHandler = h }
+	return WithBoardMCPScoped(h, true)
+}
+
+// WithBoardMCPScoped is WithBoardMCP for a mux that serves only PART of the
+// host MCP surface: connectors says whether /api/v1/mcp/connectors is among
+// the routes. The cloud runner pod's mux serves board + runs only (#2632 —
+// the connection plane lives on the server), and a sandboxed node must NOT
+// be handed a connector endpoint that 404s at every call: with connectors
+// false the executor is never given one, so a `connectors`-capability node
+// keeps the documented degradation — the delegate's loud warning, tools
+// disabled — instead of an AlwaysLoad MCP server that fails per call.
+func WithBoardMCPScoped(h http.Handler, connectors bool) EngineOption {
+	return func(e *Engine) {
+		e.boardMCPHandler = h
+		e.boardMCPConnectors = connectors
+	}
 }
 
 // WithSandboxOverride sets the CLI / Launch-modal level sandbox mode.
@@ -223,6 +251,25 @@ func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
 }
 
+// WithBudgetClock sets the clock every run budget this engine builds reads
+// its age on. Only tests set it, to advance a run's age by hand: a duration
+// witness then decides on the order of the events it staged — the node
+// holding its deadline, THEN the cap spent — never on a race between the
+// engine's own startup and a cap of a few hundred milliseconds on a loaded
+// machine. nil (the default) reads the wall clock.
+func WithBudgetClock(now func() time.Time) EngineOption {
+	return func(e *Engine) { e.budgetClock = now }
+}
+
+// WithParallelSaveWindow sets the coalescing window for routine fan-out
+// boundary checkpoints (#561). Within a window the boundaries of sibling
+// branches share one durable write; completion, pause, spend and abandoned
+// resume always write immediately. Zero or negative disables coalescing and
+// restores the legacy synchronous one-write-per-boundary behaviour.
+func WithParallelSaveWindow(d time.Duration) EngineOption {
+	return func(e *Engine) { e.parallelSaveWindow = d }
+}
+
 // WithWorkspaceTracker wires iterion's own workspace versioning, used to
 // capture and restore the files a run produces.
 //
@@ -326,16 +373,49 @@ func WithTrust(trust store.RunTrust, repoSHAExpected string) EngineOption {
 	}
 }
 
+// WithBotSourceTier records which bot-resolution tier served this run's
+// launch (store.BotSourceTierTeam/Platform/Baked) — the fact the #1959
+// isolation floor judges. It rides the queue message (schema v28), is
+// replayed from the run document on resume, and a subbot child inherits it
+// from its parent's message, exactly like WithTrust: the child's document
+// is built from a named field list and would otherwise read as the
+// operator's own, so the option also stamps the document.
+//
+// Empty means "no tier spoke" — a local launch of the operator's own file,
+// or a run document that predates the stamp — and stamps nothing (never
+// cleared: the floor treats empty as operator-trusted).
+func WithBotSourceTier(tier string) EngineOption {
+	return func(e *Engine) {
+		if tier != "" {
+			e.botSourceTier = tier
+		}
+	}
+}
+
 // WithRunnerPool stamps the sovereign runner pool (#2029) the run is frozen
 // to onto the persisted run document. The wire message carries the field
 // (child := *msg), but the DOCUMENT is built from a named field list — the
 // same trap WithTrust's subbot wiring closes for Trust. Empty means the
-// shared default pool and stamps nothing (never cleared: the stores hold
-// the stamp write-once).
+// shared default pool and stamps nothing (never cleared: the lanes replay
+// the stamp verbatim, and the store-level conformance test witnesses a
+// re-stamp surviving).
 func WithRunnerPool(pool string) EngineOption {
 	return func(e *Engine) {
 		if pool != "" {
 			e.runnerPool = pool
+		}
+	}
+}
+
+// WithContentBoundary replays the run's frozen gateway stamp (ADR-131) onto
+// the persisted run document: the credential that funds the run travels
+// with it, and a lane holding the pair passes it through exactly as frozen
+// — never re-derived. Nil stamps nothing (the document keeps its own value;
+// the lanes replay the stamp verbatim).
+func WithContentBoundary(b *store.RunContentBoundary) EngineOption {
+	return func(e *Engine) {
+		if b != nil {
+			e.contentBoundary = b
 		}
 	}
 }
@@ -511,6 +591,27 @@ func WithModelOverrides(o []store.RunModelOverride) EngineOption {
 	return func(e *Engine) { e.modelOverrides = o }
 }
 
+// WithLaunchModelOverrides records the launch's own override rows as the
+// launch wrote them, before the routing policy's cells folded in, so the
+// engine persists them on the run record (store.Run.LaunchModelOverrides):
+// every subbot child of the run's tree folds them again for its own bot.
+// Empty on resume (not re-supplied), so the persisted value is left
+// untouched — see engine_run.go.
+func WithLaunchModelOverrides(o []store.RunModelOverride) EngineOption {
+	return func(e *Engine) { e.launchModelOverrides = o }
+}
+
+// WithLLMRoutePolicy records the routing-policy snapshot the run's tree
+// froze at launch (store.Run.LLMRoutePolicy) so the engine persists it on
+// the run record. A subbot child's engine is handed its root run's: a
+// resume of the child on its own replays the root's providers allowlist
+// from its document, and the child's own children fold the root's snapshot
+// when the resumed child is the top of their tree. Nil on resume (not
+// re-supplied), so the persisted value is left untouched.
+func WithLLMRoutePolicy(p *store.RunLLMRoutePolicy) EngineOption {
+	return func(e *Engine) { e.llmRoutePolicy = p }
+}
+
 // WithBudgetOverrides records the raw run-level budget intent. Enforcement is
 // wired separately by mutating the workflow before Engine construction; this
 // option makes that intent durable for later resumes. The value is copied so
@@ -531,6 +632,25 @@ func WithBudgetOverrides(o *store.RunBudgetOverrides) EngineOption {
 // the choice durable across resumes and visible as the effective header mode.
 func WithPermissionOverride(mode string) EngineOption {
 	return func(e *Engine) { e.permissionOverride = mode }
+}
+
+// WithCodemodeOverride records the operator's launch-time codemode choice
+// (ADR-165) and its bounds raise on the run document — the same
+// persisted-and-replayed doctrine as WithPermissionOverride: a resume that
+// says nothing must find the launch's decision on the doc, not fall back to
+// the authored DSL and re-arm a capability the operator killed.
+func WithCodemodeOverride(mode string, bounds *scripthost.Limits) EngineOption {
+	return func(e *Engine) { e.codemodeOverride, e.codemodeBoundsOverride = mode, bounds }
+}
+
+// WithResumeCodemodeQuota supplies only the quota dimensions explicitly restated at resume.
+func WithResumeCodemodeQuota(quota store.CodemodeScratchLimits) EngineOption {
+	return func(e *Engine) { e.resumeCodemodeQuota = quota }
+}
+
+// WithResumeCodemodeQueuedAt pins a published quota restatement to its exact queued marker.
+func WithResumeCodemodeQueuedAt(at time.Time) EngineOption {
+	return func(e *Engine) { e.resumeCodemodeQueuedAt = at }
 }
 
 // WithRoutingPolicy pins the launch-frozen outcome contract on the
@@ -560,6 +680,17 @@ func WithForceResume(force bool) EngineOption {
 // a loss that execution met.
 func WithAcceptScratchLoss(accept bool) EngineOption {
 	return func(e *Engine) { e.acceptScratchLoss = accept }
+}
+
+// WithResumeRunCheck hands Resume the check the run it loads by ID must pass
+// before any step of the resume acts on it. A surface that admitted the
+// resume on the run's birth passes its comparison (runview.ActionOrigin's
+// Verify): the run lock is a file of the admitted run's directory, so a
+// successor recreated under the ID after that surface's last check would
+// otherwise be the run this engine claims and executes. Nil, the default,
+// checks nothing: the CLI, a detached `iterion resume`, the cloud runner.
+func WithResumeRunCheck(check func(*store.Run) error) EngineOption {
+	return func(e *Engine) { e.resumeRunCheck = check }
 }
 
 // WithOnResumeClaimed calls fn once, the moment a resume claims the run:
@@ -701,16 +832,89 @@ func WithContributionsUnresolved() EngineOption {
 	return func(e *Engine) { e.contributionsUnresolved = true }
 }
 
-// WithOutputValidation enables post-execution validation of node outputs
-// against their declared output schemas. When enabled, a node whose output
-// does not conform to its schema will cause the run to fail immediately.
+// EnvOutputValidation is the output-validation dial, read once per engine on
+// every surface (run, resume, subbot, studio, runner, dispatcher). It has
+// three positions:
+//
+//   - unset or empty — the default: an output that misses its declared
+//     schema is reported (node_output_schema_mismatch) and kept, and a tool
+//     recipe that declares `output:` and prints something else than a JSON
+//     object fails its node (model.ToolStdoutNotJSONError);
+//   - on (1, true, yes, y, on, enabled) — strict: every mismatch fails the
+//     node as well;
+//   - off, written out (0, false, no, n, off, disabled) — every mismatch is
+//     reported and kept, and a tool recipe's non-JSON stdout is wrapped as
+//     `{"result": "<text>"}` again.
+//
+// An unknown value warns and reads as unset.
+const EnvOutputValidation = model.EnvStrictOutputValidation
+
+// outputValidationDial is one position of EnvOutputValidation.
+type outputValidationDial uint8
+
+const (
+	outputValidationDefault outputValidationDial = iota
+	outputValidationStrict
+	outputValidationOff
+)
+
+func outputValidationFromEnv() outputValidationDial {
+	raw := os.Getenv(EnvOutputValidation)
+	if strings.TrimSpace(raw) == "" {
+		return outputValidationDefault
+	}
+	enabled, known := parseEnvBool(raw)
+	switch {
+	case !known:
+		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_VALIDATION_INVALID: %s=%q is not a boolean; using the default (advisory validation, a tool node's non-JSON stdout under `output:` refused)", EnvOutputValidation, raw)
+		return outputValidationDefault
+	case enabled:
+		return outputValidationStrict
+	}
+	return outputValidationOff
+}
+
+func defaultOutputValidation() bool {
+	return outputValidationFromEnv() == outputValidationStrict
+}
+
+// WithOutputValidation sets the output-validation dial by hand, over the
+// environment: true is its strict position, false its explicit off — advisory
+// warnings, and a tool recipe's non-JSON stdout wrapped (EnvOutputValidation).
+// Executor-validated LLM outputs retain their validation and correction loop.
 func WithOutputValidation(enabled bool) EngineOption {
-	return func(e *Engine) { e.validateOutputs = enabled }
+	return func(e *Engine) {
+		e.validateOutputs = enabled
+		e.toolStdoutWrapped = !enabled
+	}
+}
+
+// EnvOutputRefs is the dial on what a tool body's unresolved
+// `{{outputs.<node>.<field>}}` does when the producer ran and its own
+// `output:` schema declares the field. On by default: the node fails before
+// its body runs (model.UnresolvedOutputRefError). Off, written out (0, false,
+// no, n, off, disabled), restores the rendering of the hole — the reference's
+// own text in a `command:` / `postcondition:`, `null` in a `script:` or an
+// action parameter. Every other hole renders that way on both positions. An
+// unknown value warns and keeps the default.
+const EnvOutputRefs = model.EnvStrictOutputRefs
+
+func defaultOutputRefsOwed() bool {
+	raw := os.Getenv(EnvOutputRefs)
+	if strings.TrimSpace(raw) == "" {
+		return true
+	}
+	enabled, known := parseEnvBool(raw)
+	if !known {
+		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_REFS_INVALID: %s=%q is not a boolean; keeping the default (an owed output reference fails its tool node)", EnvOutputRefs, raw)
+		return true
+	}
+	return enabled
 }
 
 // WithOutputCorrectionBudget bounds the number of optional correction calls
 // made after a schema-invalid node output. A zero budget disables correction;
-// negative values are treated as zero. The budget is per node episode and is
+// negative values are treated as zero. The budget is per node invocation and is
 // persisted on the run so a resume cannot reset the bound.
 func WithOutputCorrectionBudget(budget int) EngineOption {
 	return func(e *Engine) {

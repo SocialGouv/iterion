@@ -269,7 +269,7 @@ func TestResolveResumeSource_HonorsPersistedOrigin(t *testing.T) {
 	// fall-through to another tier's content.
 	tctx := store.WithTenant(ctx, "t1")
 	row, _ := s.botSources.GetBySlug(tctx, "t1", "shared")
-	if err := s.botSources.Delete(tctx, row.ID); err != nil {
+	if err := s.botSources.Delete(tctx, row.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, _, _, err = s.resolveResumeSource(ctx, "t1", "bots/shared/main.bot", "", "")
@@ -337,7 +337,7 @@ func TestResolveResumeSource_InlineSourceDegradation(t *testing.T) {
 	// fallback), loudly, not a 400 telling them to do what they just did.
 	tctx := store.WithTenant(ctx, "t1")
 	row, _ := s.botSources.GetBySlug(tctx, "t1", "shared")
-	if err := s.botSources.Delete(tctx, row.ID); err != nil {
+	if err := s.botSources.Delete(tctx, row.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, src, lb, err := s.resolveResumeSource(ctx, "t1", "bots/shared/main.bot", edited, "")

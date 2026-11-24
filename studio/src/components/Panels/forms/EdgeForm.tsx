@@ -102,6 +102,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
               variant="ghost"
               size="sm"
               className="text-accent-text hover:text-accent-text"
+              aria-label="Add when condition"
               onClick={() => setWhen({ condition: "", negated: false })}
             >
               + Add
@@ -111,6 +112,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
               variant="ghost"
               size="sm"
               className="text-danger hover:text-danger-fg"
+              aria-label="Remove when clause"
               onClick={() => setWhen(undefined)}
             >
               Remove
@@ -195,6 +197,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
               variant="ghost"
               size="sm"
               className="text-accent-text hover:text-accent-text"
+              aria-label="Add loop"
               onClick={() => setLoop({ name: "", max_iterations: 3 })}
             >
               + Add
@@ -204,6 +207,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
               variant="ghost"
               size="sm"
               className="text-danger hover:text-danger-fg"
+              aria-label="Remove loop"
               onClick={() => setLoop(undefined)}
             >
               Remove
@@ -255,6 +259,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
             variant="ghost"
             size="sm"
             className="text-accent-text hover:text-accent-text"
+            aria-label="Add with entry"
             onClick={() => setWith([...withEntries, { key: "", value: "" }])}
           >
             + Add
@@ -341,7 +346,9 @@ function WithEntryRow({
         <IconButton
           variant="danger"
           size="sm"
-          label="Remove mapping"
+          // Sibling rows repeat the same cross; the mapping key is what a
+          // screen reader needs to tell them apart.
+          label={`Remove mapping ${entry.key || index + 1}`}
           className="mb-2 shrink-0"
           onClick={() => {
             const next = withEntries.filter((_, j) => j !== index);

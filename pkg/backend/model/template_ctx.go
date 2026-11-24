@@ -87,8 +87,9 @@ type AttachmentInfo struct {
 	// HostPath is where the ITERION PROCESS can read the bytes — always a
 	// host path, never a container one. Kept separate from Path because
 	// image inlining (imageContentBlock) reads the file here, on the
-	// host, while the prompt hands the node its own view. Empty for
-	// non-filesystem (cloud) stores, whose consumers use URL().
+	// host, while the prompt hands the node its own view. On a store with
+	// no filesystem root it is the run's materialised copy, or empty before
+	// one exists — consumers use URL() then.
 	HostPath         string
 	OriginalFilename string
 	MIME             string

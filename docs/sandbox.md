@@ -3,7 +3,7 @@
 The sandbox is the boundary that makes autonomous agents safe to run: every
 coding agent and shell tool node executes inside a throwaway per-run Docker (or
 Podman) container instead of against your host credentials and filesystem. It is
-**on by default**: at product entry points (`iterion run`, `resume`,
+**on by default** on a local host (in cloud the chart decides, see below): at product entry points (`iterion run`, `resume`,
 the studio, the dispatcher) a workflow that declares no `sandbox:`
 block runs as `sandbox: auto` (devcontainer-aware, falling back to the
 published default image). Opting out is explicit and discouraged —
@@ -22,7 +22,10 @@ host):
   the MODE decides, not the tier that named it. One cost the event
   states explicitly (`file_secrets_dropped: true`): an unsandboxed run
   has nowhere to mount `as: file` secrets, so a workflow that declares
-  them will not find them. (The resolver degrades the same way when it
+  them will not find them — and a secret whose `sinks:` grants nothing an
+  unsandboxed run serves (`egress` with no `command`, `params` or `file`
+  beside it; `agent` with no claude_code or in-process claw node) is refused
+  at the launch, typed ([secrets](secrets.md#sinks--where-a-declared-secret-may-be-materialised)). (The resolver degrades the same way when it
   can resolve no repository root, or no image at all for a
   `devcontainer.json` it cannot read — both need a library caller that
   supplies neither, since `iterion run`, studio and the runner always
@@ -42,12 +45,14 @@ Either verdict is readable where an operator looks: the event in
 `iterion report` — "Sandbox skipped — the run is NOT isolated: …", or
 "Sandbox refused [SANDBOX_DRIVER_UNAVAILABLE]: …".
 
-(The cloud runner was long assumed to pin `ITERION_SANDBOX_OVERRIDE=none`
-— the runner pod as the isolation boundary — but the production
-deployment measured on 2026-08-05 does NOT: it carries
-`ITERION_SANDBOX_DEFAULT=auto` with an EMPTY override, so cloud runs do
-get the k8s sandbox. Anything needing a bind-mounted workspace there
-must declare `sandbox: none`.)
+(In cloud the chart decides. Under `runner.sandbox.enabled: false` — the
+default in `charts/iterion/values.yaml` — the runner ConfigMap renders
+`ITERION_SANDBOX_OVERRIDE=none`: runs execute in the runner pod, which is
+the isolation boundary, and a bot's `sandbox:` block starts nothing.
+Under `runner.sandbox.enabled: true`, or a `runnerPools[]` entry's own
+`sandbox.enabled`, the runner resolves `auto` by default and a sandboxed
+run gets a sibling pod ([Cloud](#cloud-iterion_modecloud)); anything
+needing a bind-mounted workspace there must declare `sandbox: none`.)
 
 **The override does not qualify a deployment to run untrusted
 workspaces.** A run whose `trust` is not the trusted default — today the
@@ -63,6 +68,84 @@ it means for trusted runs; a deployment that wants to run the fork lane
 serves it from a runner class whose sandbox resolves active. The durable
 refusal rides the run's `admission` record with code
 `untrusted_without_sandbox`.
+
+**A fork run whose sandboxed nodes get no credential is refused before the
+container starts.** The sandbox alone is not enough: an operator
+authenticated only through a file-based subscription login (`claude login`,
+a ChatGPT login) has that login reach a local docker sandbox through the
+`host_state` mount — and a `host_state: none` run withdraws exactly that
+channel, leaving the node to die mid-run on the backend's opaque "not
+logged in". At sandbox start (driver selected, nothing pulled or mounted
+yet), a per-backend predicate — `claude_code`, `claw`, pi — answers "will
+a credential reach this node's process?" from what each backend actually
+delivers: the run's resolved credentials, the launcher env each backend
+forwards by name at exec time, the dispatch-time forfait copies, and the
+`host_state` mount itself. A node with no channel refuses the launch with
+`SANDBOX_CREDENTIAL_UNREACHABLE`, naming the backend, the node, and the
+ways out (an API key the backend forwards, or `host_state: auto` on a
+runner that still mounts the login — a credential declared `as: file`
+reaches the container's filesystem, not the backend CLI's auth, so it does
+not lift this refusal); a
+node whose backend the predicate cannot read is a
+`sandbox_no_credential_warning`, never a refusal on a guess. A trusted run
+is judged only when it is stamped to its own credentials (ADR-131 §7), and
+handing the operator's own OAuth token to a fork's container is refused by
+design — the token is the operator's identity, not a scoped run credential
+(#1768).
+
+The answer is the credential resolver's ([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)),
+the one the dispatch spends on: every leg of every model-calling site of the
+run — agent and judge nodes, an `llm` router, a human node's LLM half, a
+Verified Action's recovery rungs, each asked where its call is made (a
+direct generation in process, on the host) — at the one site every start
+passes, before a `none` or degraded `auto` run starts on the host too, and
+in a subbot child's adopt branch, on its own nodes. The sites are one
+enumeration (`model.CallSites`), the one the usage-cap pre-flight keys. A
+stamped node only the pod's environment would fund refuses with
+`CREDENTIAL_AMBIENT_REFUSED`; one funded by a subscription alone that
+`ITERION_FORBID_SUBSCRIPTION_OAUTH` refuses, with
+`CREDENTIAL_SUBSCRIPTION_FORBIDDEN`. A refused `fallbacks:` route,
+interaction generation, review companion or supervisor spec is warned, and so
+is an `llm_or_human` node's LLM half, which falls back to the human pause.
+
+The stamp binds every backend (ADR-161 decision 5). `kimi`, `grok` and
+`opencode` read their own configuration, never a run credential: a stamped
+node made of them refuses with `CREDENTIAL_AMBIENT_REFUSED` (route it to
+`claw` or `claude_code`), a `fallbacks:` rung on one is warned and never
+serves, and an unstamped one is admitted with the
+`sandbox_no_credential_warning`. Until their credential arms land, a
+stamped `pi` or `codex` leg is refused too — same code, its own remedy
+(route the node to `claw` or `claude_code` on the run's own credentials):
+their dispatch reads the pod's stores and keys past the run's seal. Each
+of these refusals also stands at the dispatch, before the CLI starts.
+
+**An untrusted run's sandbox is a floor, not a fence post.** The fork
+lane's run — a workspace an outsider wrote — is held to
+[ADR-162](adr/162-the-fork-review-lane-is-a-gesture-on-floors-that-land-first.md)
+decision 7's floors, each refused typed at the
+seat that owns it. No host state crosses: the operator's home and git
+identity, the checkout's `.git` tree, the repository's devcontainer and
+devbox resolve `host_state` none through the one decision the credential
+admission and the mount plan share. No credential value crosses: every
+sealed key or gateway pair enters the container as a placeholder the
+egress proxy substitutes toward the credential's own host, and a channel
+the proxy cannot hold — a forfait's OAuth file and refresh flow, the
+operator's host login, the launcher's ambient env, a signing key that
+names no host — refuses the landing with `SANDBOX_CROSSING_REFUSED`,
+never crosses raw or dead
+([secrets](secrets.md#layer-2--tls-inspection-egress-default-on-for-sandboxed-runs)).
+The network is a floor too: the run is admitted only on a driver whose
+CNI enforces NetworkPolicy (docker, which cannot, refuses it with
+`SANDBOX_NETWORK_REFUSED`), and the per-run policy the kubernetes driver
+writes names exactly the runner pod's IP on the run's own TCP ports —
+DNS dropped, the proxy resolves runner-side. A non-enforcing CNI (kind's
+kindnetd) applies that policy as a no-op, so before the first spawn a
+start probe that ignores the proxy env dials the roads the policy must
+have closed — the cluster API service, the credential's own hosts, the
+runner pod's metrics port — and every direct dial must fail: one that
+connects, or a floor no probe could witness, refuses the run with the
+same `SANDBOX_NETWORK_REFUSED`, naming the road that stayed open or the
+verdict that never came.
 
 ## Quick start
 
@@ -147,6 +230,7 @@ below as one that does not.
 | Pod Ready wait | kubernetes | 10 min | `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` |
 | Workspace copy (host tar → `kubectl exec` tar) | kubernetes | 15 min | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
 | Workspace git fixup | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
+| Seed copy (the run's attachments: host tar → `kubectl exec` tar, one phase per seed) | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
 | `post_create` snippet | kubernetes | 30 min | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
 | Image pull | docker | 10 min | `ITERION_SANDBOX_PULL_TIMEOUT` |
 | `post_create` snippet | docker | 30 min (the same knob as kubernetes) | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
@@ -247,29 +331,146 @@ promise made on it must go with it. On the pod backend:
 
 | Promise | On docker | On kubernetes |
 |---|---|---|
-| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
+| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | set — the path is served by an **`emptyDir` the driver keeps** (ADR-143) and **drained at teardown** into the run file store, its set metered against the read-back cap, from where the panel and its downloads read |
 | `ITERION_ENGINE_BIN` (the engine's own iterion binary, for a bot script that re-enters the CLI; never resolved from the workspace) | set — the container path the bind mount or the image bakes | set — the container path, via per-exec env, so no bind to drop |
-| Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
+| Attachments path handed to nodes | the container path | the container path — the directory is **copied in** at start (`RunInfo.SeedDirs`, an `emptyDir` per seed, the workspace's tar pipeline; `sandbox_attachments_copied` on the run's stream), its files read-only. A driver that can neither bind nor copy **refuses the run** that holds attachments: `ATTACHMENTS_UNDELIVERABLE`, `sandbox_skipped` with `refused: true` and the names — a run that goes on without what it was given is the worst of the three outcomes (#2086) |
 | The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
+
+The attachments are the one dropped bind that is carried, not withdrawn:
+a driver that cannot bind the directory but can copy it
+(`Capabilities.SupportsHostDirCopy`, kubernetes) receives it as a seed at
+the same container path, and on a store with no filesystem root (cloud)
+the engine first fetches the run's attachments into a directory of the
+run's own, which is what the sandbox binds or seeds — and what the nodes
+open when the run executes in the runner's own process.
+
+Every drop is a **run event**, `sandbox_host_binds_dropped` — the driver,
+the container targets the dropped binds served, the variables withdrawn
+with them and any value handed back — so a reader of the run, not only of
+the runner's log, sees what the container never had. And a node that
+names an attachment's path (`{{attachments.<name>.path}}`, or the bare
+form) while the run holds the attachment with no path it can open fails
+**before it runs**, typed `ATTACHMENT_PATH_UNAVAILABLE`, instead of
+running on an empty string; `{{attachments.<name>.url}}` serves wherever
+the node runs, and so does an image attachment referenced with the plain
+spelling in the user prompt of an agent or judge whose every route is
+`claw` (that executor sends an image block, by URL when no copy exists). An attachment the run does not hold still renders empty —
+a declared optional attachment nobody uploaded is the bot's to test for.
 
 The measured cost of getting this wrong: the run-files variable once
 named a directory the pod never had, a gate wrapper redirecting its
 report into it died on "Directory nonexistent", and four lots read an
 oracle verdict out of an environment failure.
 
-**Known gap — run-files on pods.** Nothing collects a pod's run files:
-the collector reads the host directory the bind would have served, and
-the pod writes to a temp dir that dies with it. Closing it needs a
-read-back seam the driver does not have — an emptyDir at the container
-path plus a drain at teardown, i.e. `WorkspaceExporter`'s shape widened
-past the workspace. Until then the artifact-files panel is empty for a
-pod run, and the variable stays honestly unset rather than naming a
-directory nobody reads.
-`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt`
-([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walks
+**Run files on pods — the read-back contract.** The pod case is the
+contract [ADR-143](adr/143-sandbox-read-back-contract.md) wrote: a
+read-back path is **declared** (`spec.ReadBackPaths`, alongside the
+mounts, never inferred), **served by storage the driver owns** (an
+`emptyDir` at the container path — the mount type
+`type=emptydir,target=…[,size=…]` is available to bot
+`sandbox.mounts:` on kubernetes too), and **drained at teardown**
+(`WorkspaceExporter.ExportRunFiles`, the export seam's second half)
+into the run file store's directory, from where the runner's upload
+bridges it to the durable read source. A drain that loses files is
+`sandbox_runfiles_drain_failed` on the run — a lossy drain must stay
+distinguishable from a run that wrote nothing, because an empty or
+partial artifact-files panel is exactly the silence that once made
+every cloud deliverable disappear (#2668) — and the event carries a
+stable `reason` (`sandbox.ReadBackLossReason`: `over_cap`, `unsettled`,
+`archiver`, `refused`, `declined`), read off the typed error the driver
+returns, so a cap reached is told from a tool still writing at teardown
+without parsing the prose. An `unsettled` drain of more than one
+attempt leaves the **union** of its attempts' members on the host — a
+stale superset of the pod's final tree, so a file the run removed
+between attempts may still upload; so does any other failure that
+follows an attempt which raced a writer, since it ends the drain before
+a settled attempt sweeps; the event's `stale: true` and its error say
+so. One raced attempt alone — the whole budget at
+`ITERION_SANDBOX_EXPORT_ATTEMPTS=1`, or the only one before the drain's
+deadline — leaves its own archive and no union: `unsettled`,
+`stale: false`. A member the host declines on
+principle (a name it cannot write where it spells, a link that leaves
+the tree, a link the kernel refuses to create, a hardlink to no file the
+archive landed, a kind it does not write back, a pre-drain tree where the
+archive carries a file or a link, a pre-drain file or link where it
+carries a dir or another link, or on its path — the drain writes every
+member beneath the host dir through no link, so a link can decline a
+member, never redirect it, a name a filesystem that folds case or
+Unicode normalization resolves to an entry listed under another
+spelling is declined, never landed on it, and only a member carrying
+bytes overwrites what the host held) is
+skipped, and the members after it still land — one collision never costs
+the rest of the set — but never in silence: the drain's verdict is `declined` (or the
+failure's own reason, when one followed), and the event lists each
+member under `declined` as `{dir, name, why}` with a
+`sandbox.ReadBackDeclineWhy` token, the first 100 in path order and the
+total in `declined_count`. The bound holds at every site an archive's
+names reach (`sandbox.ReadBackDeclinedListed`): the drain keeps the
+first 100 a dir declined and counts the rest, and the runner's log —
+teed into the store in cloud — carries at most 100 per-member lines per
+declared dir (a declined member, a raced leftover swept) and one line
+counting the ones held back, so an archive of a hundred thousand fifos
+costs a counter, not a hundred thousand records. A hardlink to a file the same archive landed — tar
+carries every name of a file but the first that way — lands as a copy,
+metered like the file. Each declared dir's set is capped, and the cap
+is named and metered **on the host, in the drain**: the member that
+takes the set past the figure is dropped, never landed cut short, what
+landed before it stays and the rest stays in the pod, so what the panel
+serves is whole or absent. The meter counts what the host holds, never
+one archive alone: a retried drain's attempts are one set — each file
+once, at the size its latest landing left — so a tool still writing at
+teardown under rotating names cannot land the cap once per attempt, and
+a later attempt's member that needs the room only an earlier attempt's
+leftovers hold sweeps those first (the sweep a settled attempt runs,
+run early), so an archive that settles is never refused for what a
+raced one left. Driver-owned storage is laid only on a driver that
+drains it — `Capabilities.SupportsReadBackDrain`, the way out as
+`SupportsHostDirCopy` is the way in (kubernetes) — and a driver with
+neither a host bind nor the drain (noop, whose commands run on the
+host) leaves the path **unserved**: no storage, no variable, no
+declaration, and a warning in the runner's log, never a directory
+nothing collects. The storage is decided on the mounts the pod
+keeps, by the nearest one at or above the path (`sandbox.MountServing`
+— the predicate that also judges what a dropped host bind took with it;
+a mount's fields read as the drivers read them, the last one naming a
+key winning, `sandbox.MountField`):
+a bot's own writable mount **at** the path is the path's storage (a pvc
+there drains what it holds, earlier runs' files included — the author's
+choice); a mount **above** the path holds it in its tree, never as a
+directory anyone promised, so the runtime lays its own `emptyDir` at the
+path beneath it; and a read-only mount at the path — or a read-only pvc
+or emptydir above it, where no container runtime can create a mount
+point (the kubelet lays them in configmap and secret volumes only) —
+leaves the path **unserved**: the variable is not set and nothing is
+drained, with a warning in the runner's log. The figure is the serving
+mount's to name (`sandbox.ReadBackCapFor`), never a host bind's the
+driver drops: a bot that serves the path with its own
+`type=emptydir,target=/iterion/artifact-files,size=2Gi` is metered at
+2 GiB — the author's explicit choice, never cut down to the default —
+`ITERION_SANDBOX_READBACK_CAP` overrides the default for every dir
+whose mount names no size, and `sandbox.ReadBackCapBytes` (256 MiB)
+is the default. The runtime's own `emptyDir` carries **no
+`sizeLimit`**, deliberately: a kubelet **evicts the whole pod** once an
+emptyDir's usage passes its `sizeLimit` ("Usage of EmptyDir volume …
+exceeds the limit") — the run would die mid-flight, no drain, no
+workspace export, un-pushed work gone — so the pod-side storage is
+bounded by the cluster's own ephemeral-storage policy like everything
+else the pod writes, and a `size=` a bot writes on its own emptydir is
+that eviction, chosen. What the contract does not promise: a pod that
+dies before teardown takes its `emptyDir` with it — bytes that must
+survive an abrupt end are published as the run goes (`attachment=`),
+not left for the drain.
+`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt` and
+`TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt`
+([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walk
 every `spec.Env` value and every path in `spec.PostCreate` against the
-mounts the driver keeps, so the next promise made on a dropped bind
-fails in CI rather than in a campaign.
+mounts the driver keeps, so the next promise made on a dropped bind —
+or a variable naming a path no kept mount serves — fails in CI rather
+than in a campaign. A declared read-back path has a different
+guardian: `Spec.Validate` refuses a path no mount serves at admission
+(named ⇒ served, ADR-143 §2; pinned by the `TestValidateReadBackPath*`
+tests in pkg/sandbox), so the declaration breaks the run before it
+starts instead of surfacing in a campaign.
 
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 
@@ -282,7 +483,9 @@ When `host_state: auto` (the default), iterion also bind-mounts:
 
 Both are RW. The container's `HOME` env var is set to the host home so
 processes that resolve `~` land in the mounted tree (no EACCES against
-a stock image's `/root`).
+a stock image's `/root`). The pin yields to a `HOME` already in the
+spec, which is the workflow's `sandbox.env:` alone: a devcontainer's is
+refused by the env deny class before it gets there (#2318).
 
 **UID remapping (Linux only):** when `host_state: auto` is active and
 the spec doesn't pin a `User`, the docker driver runs the container as
@@ -313,13 +516,43 @@ every intermediate ancestor re-laid (`$HOME/.local/share/pnpm` →
 `$HOME/.local` and `$HOME/.local/share`), so siblings like
 `$HOME/.local/share/fnm` stay writable too.
 
+Where the host-UID remap does NOT run — a non-Linux docker host, or an
+engine running as root — there is no host UID to lay with, so the two
+ephemeral homes are owned by the CONTAINER user instead: the tmpfs carries
+`uid=` from `spec.User` when it names one, and is world-writable
+(`mode=0777`) when it does not. This must be emitted, not assumed: a docker
+tmpfs without `uid=` is `root:root` (measured: `--user 1000 --tmpfs
+d:mode=0755` → `touch: Permission denied`), and a `root:root` ephemeral
+home is a home the in-sandbox CLI cannot write. The world-writable
+fallback loses nothing — a tmpfs keeps no byte past the run, and the
+home's isolation never rested on its mode.
+
 **Warm package caches.** Alongside the Go build/module caches, the Node
-package caches (`~/.npm`, `~/.local/share/pnpm`, `~/.cache/yarn`) are
-bind-mounted read-write at the same path when they exist on the host —
-without them every sandboxed run re-downloads its packages over the
-network on a cold `npm ci`/`pnpm install`. All content-addressed and
-safe to share across parallel runs; gated under `host_state` and
-skipped when absent.
+package caches (`~/.npm`, `~/.local/share/pnpm`, `~/.cache/yarn`) are served
+at the same path inside the container — without them every sandboxed run
+re-downloads its packages over the network on a cold `npm ci`/`pnpm install`.
+They are the sandbox's OWN caches, not the host's: the source is
+`<iterion home>/sandbox-caches/<the path under $HOME>`, created on demand,
+shared by every sandboxed run and read by no tool of the host (#2069 —
+`$PNPM_HOME` holds the global bins `pnpm setup` puts on the operator's PATH,
+the module cache holds the toolchain binary `GOTOOLCHAIN=auto` executes, and
+the build cache holds objects `go build` relinks without re-hashing them, so
+binding the host's own read-write handed a sandboxed agent the host's next
+build). Gated under `host_state`, and on the iterion home being the
+operator's own — with no home iterion owns, the run simply builds cold.
+
+Measured cost of the switch: the FIRST sandboxed run after it compiles cold
+(12.1 s for `./pkg/runtime` on a dedicated cache, against 0.1 s on the
+second run through the same directory), and the caches are stored twice on
+disk. Residual, stated: a sandboxed run can still poison the cache the NEXT
+sandboxed run uses — they share one store, as parallel runs always did. The
+store is created `0700` and owned by the engine's user, so a container that
+pins a UID of its own (a devcontainer `remoteUser`/`containerUser`) gets NO
+cache and a warn saying why: handing over a directory it cannot even read
+would surface as `permission denied` inside `go build` with nothing in the run
+record to explain it — the same condition, and the same answer, as the project
+scratch's. `iterion clean` reclaims the store by the same age rule as scratch
+and discovers a store whose only volume is that cache (`--all-projects`).
 
 **Overlap handling:** when the workspace bind-mount already contains
 one of the candidate paths (typically a project-local `<repo>/.iterion/`
@@ -337,6 +570,189 @@ on shared infrastructure. The `kubernetes` driver hard-errors on
 `host_state: auto` for the same reason: cloud pods have no host
 filesystem to bind and the design refuses to fake it.
 
+**Host-configuration guard (#2069).** A sandboxed agent — a prompt-injected
+one, say — must not be able to plant what the HOST later executes. So under
+the guard, on by default wherever the driver has host bind mounts, the two CLI
+homes the sandbox gets are NOT the operator's: `~/.claude` and `~/.codex` are
+a **per-run tmpfs**, and only what the host reads is bound back on top of it.
+The in-sandbox CLI writes its home as freely as ever — in the tmpfs — and
+every byte dies with the run.
+
+Read-only by default, and the reason it is that way round is the enumeration
+problem. A read-only overlay list must name every path the HOST executes, and
+a forgotten one writes the operator's home *in silence*; a tmpfs must name
+every path the SANDBOX needs to SEE, and a forgotten one is simply absent in
+the container — the shape the CLI meets on a fresh machine. The write set of a
+real authenticated run is not a list this repository can hold (measured on the
+image's claude 2.1.175: an unauthenticated `--version` already writes
+`backups/`, and in a home one state away it does not). The READ set is,
+because it is the operator's own configuration.
+
+- what the host EXECUTES or LOADS AS INSTRUCTIONS binds **read-only** on top
+  of the tmpfs: under `~/.claude`, `hooks/` (the scripts a settings `command:`
+  names — a hook is a pointer, the script is what runs), `local/` (the CLI
+  install iterion's own probe resolves and runs), `plugins/`,
+  `cowork_plugins/`, `dev-mods/`, `mcp-skill-archives/`, `skills/`,
+  `commands/`, `agents/`, `output-styles/`, `rules/`, `workflows/` and
+  `routines/` (`hostExecutedClaudeHomeEntries`); `~/.codex/prompts/` and the
+  instruction files `~/.codex/AGENTS.md` and `AGENTS.override.md`; and, in the
+  iterion home, `plugins/`, `skills/` and `connectors/`
+  (`hostLoadedIterionHomeEntries` — the host-side process starts a plugin's
+  MCP servers and rewriters, `mirrorLibrarySkills` copies a library skill into
+  every run's workspace where the agent loads it as instructions, and a
+  connector package decides what a `tool … action:` call reaches and which
+  sealed credential goes with it);
+- files the CLI reads AND rewrites in place bind a **per-run copy** seeded
+  from the host content: `~/.claude/settings.json`, `settings.local.json` and
+  `CLAUDE.md`, `~/.codex/config.toml`, the three that are not under an
+  ephemeral home — `~/.gitconfig`, `~/.claude.json` and
+  `<iterion home>/plugins.yaml` — and the worktree `.git`'s `config`. Reads
+  see the operator's config, writes (a permission "always allow" landing in
+  `settings.local.json`, say) land in the copy and die with the teardown. The
+  copies live in a `0700` scratch dir of `0600` files, removed on every exit
+  path of the sandbox start and at teardown; a scratch orphaned by a killed
+  engine is swept at the next run's guard (iterion's own prefix, older than
+  24 h);
+- four paths bind **read-write**, each because an iterion process OUTSIDE the
+  container reads or writes the same tree: `~/.claude/projects/` (the session
+  transcripts `session: persist` packs from the host path after the run,
+  `delegate.SessionFilesRoot` + `sessionpack.CollectBySessionID`),
+  `~/.claude/.credentials.json` (the forfait OAuth token the CLI reads and
+  refreshes), `~/.codex/auth.json` and `~/.codex/sessions/`. Made ephemeral, a
+  sandboxed `claude_code` or `codex` node on a forfait would have no
+  credential at all and every persisted session would restart from scratch.
+
+Nothing else of the two homes crosses the boundary. A `~/.claude` entry the
+list forgets now costs FIDELITY — an in-sandbox session that does not see a
+skill — where it used to cost the host's integrity; extending
+`hostExecutedClaudeHomeEntries` is how a future CLI directory joins.
+
+**A bind source is checked, not spelled.** A bind mount's SOURCE is resolved
+by the kernel on the HOST, following every symlink in it — so a bind whose
+source lives under a directory the sandbox itself writes is a bind whose
+source the SANDBOX chooses, and nothing about the mount's string looks wrong.
+The iterion home is bound read-write by design (the run store, the memory tree
+and the project scratch must outlive the run) and it is the source of the
+project scratch, of the sandbox's own cache store and of the `plugins.yaml`
+copy; the worktree `.git` tree has the same shape. Before any of those is
+emitted, `safepath.RealBindSource` requires the resolved source to BE the path
+it is named — `filepath.EvalSymlinks` against the resolved store root,
+re-asked after the `MkdirAll` that creates it, so a link planted between the
+two does not survive into the mount plan. A failure is a loud warn and a
+skip: the cold run, the pre-existing "cache absent" state, never a bind.
+Without it a run that replaced
+`<iterion home>/sandbox-caches/.cache/go-build` with a symlink to
+`~/.claude/hooks` had the NEXT run mount the operator's hooks read-write,
+under an audit line still spelling the store.
+
+**The check is asked twice, and the second ask is at the border.** The
+daemon resolves a bind's source at container CREATION, but the check above
+runs when the PLAN is built — before the driver pulls the image, which is
+minutes. A sandboxed run alive through that window can swap a verified leaf
+for a symlink and choose where the next creation's mount lands (measured on
+docker 29: plan verified, leaf swapped, creation wrote the attacker's host
+path through the emitted mount string). So the plan names EVERY source it
+verified — whatever a shadow asked `checkBindSource` about, the scratch,
+the caches, the overlays — in `Spec.BindSourceChecks`, plus the run's own
+workspace: the one bind the DRIVER derives from run metadata rather than
+from this plan, read-write, and for a worktree run under the same home. The
+workspace's question is not the store's — the checkout IS supposed to be
+writable — it is the tree's identity: still the directory the engine laid
+for this run, no component a link. It is `MustExist`, the one kind nothing
+recreates: a store-backed source that went missing is mkdir'd cold, a
+missing workspace refuses the creation. The driver re-asks every entry
+immediately before the create command; a source that no longer verifies
+refuses it, naming the swap and where the leaf now points; the retry
+self-heals, because the guard then sees the planted leaf at plan time and
+skips the bind cold. The ask judges the engine's filesystem — a daemon on
+another host (remote DOCKER_HOST) resolves sources on a tree these checks
+never saw. **Said plainly: the race itself is irreducible.**
+Between the last ask and the daemon's own resolution there is always a
+window, and no userspace check can shrink it to zero — closing it fully
+needs the kernel to pin the resolution (a mount API that hands the daemon
+an already-opened path, or a source outside every directory the sandbox
+writes). What the second ask buys is the window's SHAPE: minutes of pull
+and build become the microseconds between the re-ask and the create, and a
+swap caught there stops the container instead of mounting what the swap
+chose.
+
+The cache store is also bound **read-only at its own path** inside the
+container. The run still writes the caches through the `$HOME` paths they are
+bound at — mount options are per mountpoint — and can no longer rewrite the
+store itself, which is where such a symlink would be planted.
+
+Docker mounts nested binds by destination depth, parents first, so the
+overlays win over the parent binds regardless of list order (measured on
+docker 29). Every shadowed path is listed in the
+`sandbox_host_state_mounted` event's `guarded` field — `copy:`/`copy-seeded:`,
+`ro:`/`ro-created:`, `tmpfs:` and `rw:`/`rw-created:` — so `docker inspect`
+never shows a host bind the run's events cannot explain.
+`ITERION_SANDBOX_HOST_STATE_GUARD=off` disables the guard and restores the
+all-writable posture, for the operator whose bots deliberately manage host
+config.
+
+**What a guarded run adds to the operator's home.** Under the two ephemeral
+homes: nothing. A path the host does not have is absent in the container too
+and a plant lands in the tmpfs, so there is no mountpoint to create — which is
+why `~/.claude` and `~/.codex` use the *existing-only* shadows and no file is
+seeded there. An `AGENTS.override.md` iterion created in a home that had none
+would be a first-wins shadow of the operator's own `AGENTS.md`, forever (the
+precedence of `docs/adr/0119`), and an absent instruction file is as
+meaningful as its content. What is still created is in iterion's OWN home and
+in the worktree iterion made: `<iterion home>/{plugins,skills,connectors}`, an
+empty `<iterion home>/plugins.yaml`, `.git/hooks/`, and the two session roots
+`~/.claude/projects/` and `~/.codex/sessions/` — created because a
+`session: persist` would otherwise have nothing to pack (measured: those two
+are the ONLY paths a guarded run adds under the operator's two CLI homes). They are inert
+(an empty plugin registry file leaves every plugin's state exactly as its
+absence did) and they are never removed.
+
+One write shape changes under the guard, loudly: a copy-bound file absorbs
+STREAMING writes into the copy — measured on `~/.claude/settings.json`,
+rewritten from inside the container with the host file left byte-identical,
+and the image's claude 2.1.175 starts and runs against a copy-bound
+`~/.claude.json` — but an ATOMIC write, write a sibling and rename over the
+file, FAILS with EBUSY, because a
+mountpoint cannot be renamed over. It does not fall back to the copy:
+`git config --global user.email …` on a guarded home dies with
+`could not write config file …: Device or resource busy` and exit 4, and so
+does `--unset` (measured, docker 29.9.2). A bot that must write git config
+per run points `GIT_CONFIG_GLOBAL` at a path of its own; a bot that edits
+workspace-local git config (golden-master's extend identity swap is the
+catalog case) refuses loudly instead of writing, and the hatch above
+restores the writable config.
+
+Residual, deliberately out of scope and NOT free of host code execution: a
+transcript a sandboxed run wrote under `~/.claude/projects/` is read back by a
+later `claude --resume` on the host, which is an instruction surface — and the
+read-write bind is what makes `session: persist` work at all. The worktree
+`.git` likewise keeps objects/refs writable, which a commit needs. The two
+credential files the container can read are the subject of the opt-out above:
+`host_state: none` on shared infrastructure.
+
+**One reader for everything that can lower isolation.** `internal/isolationenv`
+is the single reader of every environment variable whose value could make the
+operator's run LESS isolated than it would be unset: the two sandbox-mode
+tiers `ITERION_SANDBOX_DEFAULT` and `ITERION_SANDBOX_OVERRIDE`, the image
+`sandbox: auto` starts (`ITERION_SANDBOX_DEFAULT_IMAGE` — the image is the
+code that runs with the host state mounted), the proxy's model-host list
+(`ITERION_SANDBOX_MODEL_HOSTS`, which decides whose request bodies keep their
+placeholders instead of the run's real secrets), and the two hatches
+`ITERION_SANDBOX_HOST_STATE_GUARD` and `ITERION_SANDBOX_FLOOR`. All are read
+from the environment iterion INHERITED, never from a project `.env`: the
+nearest `.env` walking up from the working directory is a file in the
+repository under review, which a sandboxed agent of a previous run had as its
+workspace. A planted value is IGNORED, with a warn naming the consequence
+rather than the setting (and `hatch_ignored` on the `sandbox_floor_applied`
+event) — export the variable in the operator's own environment for it to
+count. The package doc carries the membership rule and the reason each sibling
+variable is NOT in the class, and a second reader is a test failure (a source
+scan over the module's non-test Go files): the defect this closes was not a
+wrong answer but a SECOND reader. The #1959 floor neutralizes a non-operator
+bot's `sandbox: none` by falling THROUGH to `ITERION_SANDBOX_DEFAULT`, which
+`os.Getenv` read — so one line in a repository `.env` picked the posture the
+floor had just defended, event and warn included.
+
 **host_state mounts only the state the operator chose.** The iterion home
 (`$ITERION_HOME`, else `~/.iterion`) and the scratch dir under it are
 bind-mounted read-write only when that home is the one the operator chose —
@@ -351,9 +767,10 @@ per-run state in the checkout's `.iterion/`, as with `host_state: none`, and
 
 Audit trail: the `sandbox_host_state_mounted` event in `events.jsonl`
 lists the resolved source (CLI / workflow / env / default), the
-container workspace path, every mount that landed,
-`iterion_home_not_mounted` when the iterion home was left out, and
-`home_not_mounted` when a `.env` set the home dir.
+container workspace path, every mount that landed, the guard's
+`guarded` shadow list (#2069), `iterion_home_not_mounted` when the
+iterion home was left out, and `home_not_mounted` when a `.env` set the
+home dir.
 
 ### Network policy
 
@@ -362,8 +779,18 @@ iterion-managed HTTP CONNECT proxy runs on the host (ephemeral port).
 The container receives the proxy URL via standard `HTTPS_PROXY` /
 `HTTP_PROXY` env vars and reaches it via the `host.docker.internal`
 alias under the docker driver, the runner pod's IP under kubernetes.
+The same proxy also runs under `open` when the run carries secrets
+Layer 2 inspects ([secrets](secrets.md#layer-2--tls-inspection-egress-default-on-for-sandboxed-runs))
+or a gateway credential: the policy then admits every public host the
+workflow's own `!host` exclusions do not refuse, and the proxy guards
+the secrets. Those exclusions bite only while the proxy runs — with no
+proxy, an open policy's rules are inert. In every mode the proxy's
+dialer refuses loopback, link-local and unspecified addresses (the
+SSRF guard), except the sanctioned `host.docker.internal` alias, which
+it dials to its own host's loopback — any port, unless the policy
+refuses the alias (under kubernetes, the runner pod's loopback).
 
-**Default mode is `open`** — no proxy, full egress — except on a
+**Default mode is `open`** — no host filtering, full egress — except on a
 repo-defined sandbox (mode `auto` with a found `devcontainer.json`)
 where the workflow declares no `network:` block: there the default is
 the `iterion-default` allowlist preset, because open egress on such a
@@ -381,13 +808,58 @@ sandbox:
     rules: ["internal.acme.dev"]     # an inline list, never `- item` lines
 ```
 
+**The workflow is the only seat of the egress policy.** No environment
+variable, chart value or platform setting sets the mode, the preset or
+the rules for a whole deployment: a deployment whose runs must all be
+filtered has every workflow declare `network:` with an `allowlist` or
+`denylist` mode (a block without `mode:` stays open, C312, except on a
+repo-defined sandbox, where it is completed to an allowlist), and a host the
+deployment refuses is refused per workflow by a `!host` exclusion
+written after the preset (last match wins) — never by editing the
+preset. The per-run NetworkPolicy of the kubernetes driver follows the
+proxy, and the chart's NetworkPolicy never selects a sandbox pod — on
+an enforcing CNI it closes the runner's proxy port to it instead
+([cloud](#cloud-iterion_modecloud)).
+
 The shipped **`iterion-default`** preset is the recommended
-starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai and the ChatGPT forfait's chatgpt.com, xAI/Grok,
-openrouter, bedrock, googleapis, azure, mistral, z.ai, moonshot)
-plus package registries (npm, PyPI, golang proxy) plus code hosts
-(github, gitlab, bitbucket) plus apt mirrors. It is **not**
-applied implicitly to a workflow that
+starting point for allowlist mode. Its rules, verbatim from
+[`preset.go`](../pkg/sandbox/netproxy/preset.go) — a test keeps this
+list and the code equal. It names the hosts of the providers the engine
+routes to by name, z.ai (with Zhipu's open.bigmodel.cn) and Moonshot
+(with its mainland gateway) included: a product list, not a statement of where a deployment sends
+data:
+
+```text
+# LLM providers
+api.anthropic.com
+api.openai.com
+chatgpt.com                           # the ChatGPT forfait's backend
+openrouter.ai
+api.x.ai                              # xAI Grok
+bedrock-runtime.*.amazonaws.com       # AWS Bedrock, regional endpoints
+bedrock-runtime-fips.*.amazonaws.com
+bedrock.*.amazonaws.com
+**.googleapis.com                     # Gemini, Vertex AI
+**.openai.azure.com                   # Azure OpenAI
+api.mistral.ai
+api.z.ai                              # z.ai's Anthropic-compatible facade (GLM)
+open.bigmodel.cn                      # Zhipu's host of the same wire (mainland)
+api.moonshot.ai                       # Moonshot (Kimi) and its mainland gateway
+api.moonshot.cn
+# Package registries
+registry.npmjs.org, **.npmjs.org, pypi.org, files.pythonhosted.org
+proxy.golang.org, sum.golang.org
+# Code hosts
+github.com, **.github.com, codeload.github.com, objects.githubusercontent.com
+gitlab.com, **.gitlab.com, bitbucket.org, **.bitbucket.org
+# apt mirrors
+deb.debian.org, security.debian.org
+# Nix store / devbox (the iterion-sandbox-{slim,full} images)
+cache.nixos.org, channels.nixos.org, releases.nixos.org, nix-community.cachix.org
+devbox.sh, **.devbox.sh, get.jetify.com
+```
+
+The preset is **not** applied implicitly to a workflow that
 declares `network:` — operators name it explicitly so the
 default-open posture and the curated-allowlist posture are
 unambiguous from the YAML. Its one implicit application is the
@@ -412,10 +884,26 @@ Pattern syntax (last-match-wins evaluation):
 | `api.anthropic.com`  | exact case-insensitive host              |
 | `*.example.com`      | exactly one DNS label (`foo.example.com`) |
 | `**.example.com`     | one or more labels (`a.b.example.com`)   |
+| `api.*.example.com`  | exactly one label in the middle (`api.eu-west-3.example.com`) |
 | `**`                 | any host (the "open" sentinel)            |
 | `1.2.3.4`            | IPv4 literal exact match                  |
 | `10.0.0.0/8`         | CIDR range                                |
 | `!pattern`           | exclusion (negation)                      |
+
+Rules expand `${VAR}` / `${VAR:-default}` against the **runner's**
+environment when the proxy starts — the same expansion `model:`,
+`backend:` and `command:` already honour — so a catalog bot can scope
+egress to a host only the deployment knows, above all the
+[OpenAI-compatible gateway](backends.md#the-openai-compatible-gateway-openai_compatible)
+(`rules: ["${OPENAI_COMPATIBLE_HOST}"]`). A reference that resolves to
+nothing refuses the sandbox start and names the rule, rather than
+silently dropping it — a dropped allowlist rule would merely confuse,
+but a dropped denylist rule would fail *open*. The test is
+**per reference**, not the rule's whole text: `api.${REGION}.example.com`
+with `REGION` unset expands to a pattern no host matches, the same silent
+drop in worse disguise. A rule every reference explicitly defaults is the
+author's "no rule when unset" — `rules: ["${EXTRA_EGRESS:-}"]` is dropped
+when the variable is absent, the one greppable opt-out.
 
 Modes:
 
@@ -423,7 +911,7 @@ Modes:
 | ----------- | ----------------------------------------- |
 | `allowlist` | deny                                      |
 | `denylist`  | allow                                     |
-| `open`      | accept everything (skips the proxy entirely; **the default**) |
+| `open`      | accept everything (**the default**; no proxy unless Layer 2 or a gateway credential needs one) |
 
 **IP literals are refused by default in allowlist mode** even when
 their hostname is allowed, which closes the cloud-metadata exfiltration
@@ -444,7 +932,10 @@ which the proxy dials on the host's loopback.
 (`OPENAI_COMPATIBLE_BASE_URL`), the proxy resolves the gateway's host
 itself through iterion's SSRF guard and connects only to an address the
 guard validated — no loopback, private, link-local, multicast or
-cloud-metadata one, unless `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`. Every
+cloud-metadata one, unless the operator exports
+`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` — the switch is read as the process
+inherited it, so a project `.env` cannot lift it, in the host or in the
+runner of a sandboxed crossing alike. Every
 client of the run that reaches that name is held to it, through a CONNECT
 tunnel, a plain-HTTP forward or an inspected tunnel alike, so an answer the
 guard refuses is refused where the connection is made, whatever the
@@ -527,8 +1018,17 @@ never lets the repository speak for the operator:
   removed outright with a `sandbox_env_denied` event naming each key
   whose repository value the screen refused (`containerEnv` wins a
   collision with `remoteEnv`, so a refused `containerEnv` value
-  removes the name). The class, matched case-insensitively except for
-  the exact names:
+  removes the name). The class, matched **case-insensitively in all
+  three forms** — suffixes, namespaces and exact names alike, so a
+  repository's lower-case `path`, `env`, `editor` or `kubeconfig` key is
+  dropped like its upper-case twin. That is a margin, not a claim about a
+  consumer: an environment name is case-sensitive to the program that
+  reads it (measured, a lower-case `bash_env` is sourced by no bash), and
+  the exceptions are deliberate on the consumer's side — curl picks up a
+  lower-case `http_proxy`, and the claude CLI reads both spellings of the
+  gcloud project. Refusing every spelling costs the repository nothing it
+  cannot write in the workflow's own `sandbox.env:`, and it is one rule
+  instead of a twin per row. The class:
   - the suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
     `*_PROXY` (covering `NO_PROXY`);
   - the configuration namespaces of the agents iterion runs, of the
@@ -545,7 +1045,10 @@ never lets the repository speak for the operator:
     `SENTRY_*` (the iterion binary is its own in-container runner and
     wires error tracking at startup: unset the package is off, so a
     planted DSN switches an outbound channel on), `GIT_*`, the forge
-    CLIs' `GH_*` and `GLAB_*`, the dynamic loader's `LD_*`,
+    CLIs' `GH_*` and `GLAB_*` (`GIT_*` covers git's
+    config-from-the-environment too: `GIT_CONFIG_COUNT` with
+    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`, and
+    `GIT_CONFIG_PARAMETERS`), the dynamic loader's `LD_*`,
     `OPENSSL_*`, nix's `NIX_*` (a `plugin-files` in `NIX_CONFIG` is
     dlopened by the `devbox install` iterion itself runs), bash's
     exported functions `BASH_FUNC_*`, the bun
@@ -553,7 +1056,11 @@ never lets the repository speak for the operator:
     the claude CLI's own process) and `NPM_CONFIG_*` (npm turns
     `NPM_CONFIG_NODE_OPTIONS` / `_SCRIPT_SHELL` into the options and
     the shell of every node child it spawns, `npx`-launched MCP
-    servers included);
+    servers included), and the XDG base dirs `XDG_*`, which is where
+    those configurations and credential stores LIVE (git reads
+    `$XDG_CONFIG_HOME/git/config`, opencode's login sits under
+    `$XDG_DATA_HOME`) — the whole family, not only the two names seen
+    planted;
   - the exact names `NODE_OPTIONS`, `NODE_PATH`,
     `GCONV_PATH`, `SHELL`, `BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
     `ENV`, `ZDOTDIR`, `PATH`, `GOFLAGS`, `SSH_ASKPASS`,
@@ -563,9 +1070,13 @@ never lets the repository speak for the operator:
     first names a file that sets `GOFLAGS` itself), `KUBECONFIG` /
     `DOCKER_HOST` / `DOCKER_CONFIG` (a kubeconfig's `exec` plugin and a
     docker `credsStore` are programs); the agents' config homes `CODEX_HOME`,
-    `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR`; `OPENAI_API_BASE`,
-    `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (and the
-    lower-case `gcloud_project` the CLI also reads),
+    `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR`, and `HOME` itself — every
+    one of those files is resolved from it when its own variable is
+    unset, `~/.gitconfig` first (the EXACT name only, so a toolchain's
+    `JAVA_HOME` or `ANT_HOME` still configures the repository's own
+    build); `OPENAI_API_BASE`,
+    `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (one entry for
+    both spellings the CLI reads: the names match case-insensitively),
     `AGENT_PROXY_URL`, `SESSION_INGRESS_URL` (the claude CLI's API base
     when no `ANTHROPIC_BASE_URL` is set — the usual case),
     `BETA_TRACING_ENDPOINT`,
@@ -591,7 +1102,27 @@ never lets the repository speak for the operator:
   they are denied because iterion's own nodes and provisioning run
   under them), what
   needs a terminal nobody has there (`PAGER`, `LESSOPEN`, `BROWSER`),
-  and `HOME` / the `XDG_*` dirs, whose own road is tracked separately.
+  and the `*_HOME` of a toolchain (`JAVA_HOME`, `ANT_HOME`, `GEM_HOME`):
+  `HOME` is an exact name in the class, never a suffix.
+
+  A planted `HOME` or `XDG_CONFIG_HOME` points git at a gitconfig the
+  repository committed: an `insteadOf` there rewrites every URL the
+  run's clone, fetch and push resolve (a review bot then reviews
+  attacker-picked content, and a push can land in an attacker's fork),
+  and a `credential.helper` there is RUN and handed the operator's
+  token — reproduced on #2316, rounds 5-6. The same road carries the
+  agents' `$HOME` settings and hooks where no forfait mount pins their
+  config dir, `$HOME/.npmrc`, and under `XDG_DATA_HOME` the credential
+  store an agent logs into. The runtime's own `HOME` pin is not the
+  guard: it yields to a value already set, it takes `HOME` alone, and
+  it exists only where `host_state` binds a home. So a devcontainer
+  that sets `HOME` or an `XDG_*` dir no longer gets it — the container
+  keeps iterion's pin (under `host_state`) or the image's own value,
+  and the `sandbox_env_denied` event names what was refused. A
+  repository that needs a home of its own says so in the IMAGE it
+  ships, which is its own artefact, or the workflow declares
+  `sandbox.env.HOME:` — the operator's reviewed channel, which still
+  wins.
 
   A planted `ANTHROPIC_BASE_URL` would re-route every LLM call the
   container makes to the planter's collector; a planted
@@ -629,6 +1160,384 @@ auto mode's contract. The default-image fallback branches (no
 devcontainer, or one the sandbox cannot use) keep the historical
 open-network default: nothing repo-authored survives into those
 specs.
+
+### The env an IMAGE bakes in
+
+The deny class above screens `containerEnv` / `remoteEnv`. It does not
+see the other channel into the same environment: the devcontainer always
+names an `image` or a `build`, and that image's `ENV` applies to every
+process iterion starts in the container, because the drivers pass
+`--env` for `spec.Env` alone. A repository that commits
+`{"image":"ghcr.io/planter/dev:1"}` whose Dockerfile carries
+`ENV CLAUDE_CODE_USE_BEDROCK=1` plus the planter's AWS keys redirects
+every prompt of the run with **zero `containerEnv` entries** (#2317).
+
+So the runtime screens the image too, once it is local — after the pull,
+after a `build:` has materialised it, before anything starts — and the
+class gets one of two answers:
+
+- the **credential and routing** sub-class is **neutralised**: the
+  container starts with `--env NAME=`, which overrides the image's `ENV`
+  with an empty value every one of those consumers reads as absent. It
+  is the suffix family (`*_BASE_URL`, `*_API_KEY`, `*_TOKEN`,
+  `*_SECRET`, `*_PROXY`), the provider and agent namespaces (`CLAUDE_`,
+  `ANTHROPIC_`, `AWS_`, `AZURE_`, `GOOGLE_`, `OPENCODE_`, `CCR_`,
+  `OTEL_`, `SENTRY_`, `GH_`, `GLAB_`, `CLAW_`, `CLAWD_`, `HOOK_`, …)
+  and the exact endpoint, region, project and managed-identity names
+  (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …). Each of
+  those consumers reads a VALUE — a truthiness, a URL, a key, an
+  identity — so an empty one is inert, and no image iterion publishes
+  bakes one. This is the **declarative redirection** of the operator's
+  own credentials and model routes, and closing it is the whole promise
+  of this screen (ARB-121 on Jo's question #63);
+- **`ITERION_` answers by sub-class, name by name**, because it is the
+  one MIXED namespace: iterion's own images bake `ITERION_VERSION`,
+  `ITERION_COMMIT` and `ITERION_BOTS_PATH` on purpose, while other
+  members of it choose exactly what this screen exists for. Neutralised:
+  the stores' and wires' hosts and credentials (`ITERION_MONGO_URI`,
+  `ITERION_S3_ENDPOINT` and the S3 keys, `ITERION_REDIS_*`,
+  `ITERION_SMTP_*`, `ITERION_SECRETS_*`, the `ITERION_OAUTH_FORFAIT_*`
+  wires the stored subscription is refreshed on), the platform
+  credential/routing policy (`ITERION_PLATFORM_*` — which credential
+  serves a route), the identity chain (`ITERION_OIDC_*`) and the
+  switches that **lift a guard** on a route or on a credential
+  (`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE`,
+  `ITERION_CONNECTOR_ALLOW_PRIVATE`,
+  `ITERION_RUNNER_CLONE_ALLOW_PRIVATE`, `ITERION_OPENAI_USE_OAUTH`,
+  `ITERION_DISABLE_AUTH`, `ITERION_SECRETS_REDACT`) — including the seven
+  such lifts no credential or host word leaks out of, which the shape
+  cannot spell at all and an exact row answers: the opt-in that lets a
+  project `.env` plant the whole routing class
+  (`ITERION_DOTENV_ENDPOINTS`, ARB-122) and the switch that makes an
+  engine child read that file at all (`ITERION_DOTENV_FORCE`), the two
+  that hand the launcher's environment to a workflow-controlled MCP
+  config or to an MCP server child (`ITERION_MCP_EXPAND_UNTRUSTED_ENV`,
+  `ITERION_MCP_SERVER_ENV_PASSTHROUGH`), the one that lets workflow text
+  read the platform's credential-shaped variables
+  (`ITERION_CLOUD_ENV_PASSTHROUGH`), the grant that lets a
+  repository-shipped `connectors/<id>/` package serve a consented
+  connection and spend the operator's credential on a call the consent
+  never granted (`ITERION_CONNECTOR_PROJECT_CATALOG`), and this screen's
+  own escape hatch
+  (`ITERION_SANDBOX_IMAGE_ENV_ALLOW`, which a baked value would use to
+  allowlist the image out of the neutralisation). Reported: every
+  `ITERION_` name that chooses **neither** a credential nor a route and
+  lifts no guard on either — the three our own images bake, the bounds
+  on what a run may spend, the binaries a step runs, the permission
+  gate's mode. The partition is a measurement, not a list: the shared
+  credential-routing name shape (the one every `.env` loader refuses a
+  plant by, ARB-122) answers it, the engine's own credential and route
+  families answer the members that shape cannot see, and
+  pkg/platformcfg's sweep walks every `ITERION_` name spelled as a
+  literal in the engine's Go source, the claw runtime (`pkg/claw`) included, and
+  in the manifests it embeds — 416 names, 94 of them neutralised and 322
+  reported — where a name whose side disagrees with the shape arrives
+  red until a row carries the reason (#2859). A name the engine
+  **composes** at runtime is outside that scan by construction — only
+  the prefix is a literal (`ITERION_PLUGIN_<NAME>_<KEY>`,
+  `ITERION_MEMORY_QUOTA_<VOLUME>`) — and the shape and the family rows
+  answer it on the ASSEMBLED name instead: measured,
+  `ITERION_PLUGIN_FIRECRAWL_API_URL` reads as a route and is emptied,
+  `ITERION_MEMORY_QUOTA_ORG` chooses neither and is reported. What the
+  scan's reach costs is that residue, not a verdict: a plugin key the
+  shape does not spell — `endpoints`, `addr` — lands reported with no
+  sweep entry to redden over it;
+- **the rest of the class is told, and keeps its value.** Emptying
+  `PATH`, `HOME`, `GOROOT`, a loader library path or an `XDG_` dir
+  breaks an image doing its job — iterion's own `full` variant bakes
+  `PATH`, and its runner image bakes `ITERION_VERSION` — and emptying
+  `KUBECONFIG`, `DOCKER_HOST` or `DOCKER_CONFIG` would send the client
+  to its DEFAULT, which under `host_state` is the operator's own,
+  **worse** than the planted path. The TLS bundles and the names of
+  binaries a CLI spawns are reported for the same reason: an image may
+  legally bake them, and their consumers read presence as much as value.
+  The names that lead to CODE are in this half too, for a different
+  reason, and the next paragraph is that reason.
+
+**Every channel into CODE is told, and kept.** A name an image bakes that
+leads to code, or to a configuration a program EXECUTES, at the startup
+of a process iterion runs there is **reported and not emptied** — the
+operator reads it under `planted` and `reported`, and the value reaches
+the container. The channels are real and each was measured to FIRE, on a
+disposable image through the program's own startup path; the table in
+pkg/runtime's `sandbox_image_env_startup_code_class_test.go` holds the
+rows, and these are the measurements, not a list to trust:
+
+- the loader, in every process: `LD_PRELOAD`'s constructor ran in **pid
+  1** of a container created with `--env ANTHROPIC_BASE_URL= --env
+  AWS_ACCESS_KEY_ID= …` and put the planter's route and keys back — for
+  `bash`, for `node` and for an `npm`-started MCP server alike;
+  `LD_AUDIT` did it through the audit interface, and
+  `LD_LIBRARY_PATH=/planted/lib` with one shim in it (`libdl.so.2`,
+  whose glibc original is an empty stub) had **node** read back the
+  planter's route, token, access key and Bedrock switch;
+- the shells iterion runs a tool node and an agent's Bash tool with:
+  `BASH_ENV` is sourced by every *non-interactive* bash, `SHELLOPTS`
+  with `PS4` ran the planter's program once per traced command, and a
+  planted `BASH_FUNC_git%%` answered `git --version`;
+- node and the two npm roads into a node child: `NODE_OPTIONS`
+  (`--require=…`, in the CLI's own process), `NODE_PATH`,
+  `NPM_CONFIG_NODE_OPTIONS` (npm re-exports it as `NODE_OPTIONS` to
+  every `npm run` and `npm exec` child, which is how an MCP server
+  starts) and `NPM_CONFIG_SCRIPT_SHELL`;
+- the bun runtime the claude CLI is built on: `BUN_OPTIONS`, whose
+  `--preload` ran inside `claude --version` itself;
+- glibc's and OpenSSL's module roads: `GCONV_PATH`, dlopened by the
+  charset conversion python does at interpreter startup — including
+  under `python3 -I`, the argv of iterion's own python node — and
+  `OPENSSL_CONF`, a config file that dlopens the provider module it
+  names, measured in `curl` and in the `openssl` CLI;
+- git, by every road that needs no file and no `HOME`: `GIT_CONFIG_COUNT`
+  with `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` and
+  `GIT_CONFIG_PARAMETERS` are `git -c` spelled in the environment (a
+  planted `core.sshCommand` ran on `git ls-remote`, `core.hooksPath` on
+  the commit an agent makes, and `credential.helper` is #2316's
+  mechanism), and the command-valued names — `GIT_SSH_COMMAND`,
+  `GIT_SSH`, `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `GIT_EDITOR`,
+  `GIT_EXTERNAL_DIFF`, `GIT_TEMPLATE_DIR` — are programs git runs: the
+  planter's ran once per file of a plain `git diff`, on a fetch, and as
+  the hook a `GIT_TEMPLATE_DIR` installs into the agent's own commit;
+- GNU tar's own options: `TAR_OPTIONS`, whose `--checkpoint-action=exec=`
+  ran in a `tar -czf` iterion starts.
+
+Why they are told and not emptied, said plainly: **an image a repository
+chooses is the repository's code** — its binaries, its files and its
+`postCreateCommand` — by the same contract that makes "the devcontainer's
+image/build, mounts, user, `workspaceFolder` and `postCreateCommand`
+still define the container" auto mode's rule, and the fork road into that
+position is refused at admission (`admitSandboxImageBackends`). Emptying
+one variable of a channel the image's own files re-open promises the
+operator something the artefact cannot owe: measured, an image-laid
+`/usr/etc/npmrc` re-plants `NODE_OPTIONS` with **no variable at all**,
+and an `LD_LIBRARY_PATH` shim re-plants the whole credential half with
+every neutralisation applied. So the page makes no promise there — it
+reports, which is what an operator can act on, and keeps the one promise
+the ENV road can keep. A screen that emptied these names would also break
+images doing their job (an image baking `NODE_PATH` for its own global
+modules, `OPENSSL_CONF` for its own provider) for a guarantee it does not
+buy.
+
+What this screen is NOT, therefore: a defence against a malicious image.
+It is the guard that stops a repository from **declaring** a model route
+or a credential into the run with nothing but a `devcontainer.json` and
+an `ENV` line.
+
+Membership is **case-insensitive in all three forms** — suffixes,
+namespaces and exact names alike — so no entry needs a lower-case twin.
+It is a margin and not a claim about a consumer: see the devcontainer
+channel above, where the same rule is stated with what it costs a
+repository.
+
+Every screen that finds something says so **twice**: a warning per
+disposition in the run's log, and one `sandbox_image_env_planted` event
+carrying the whole class. An image that plants nothing of the class emits
+nothing.
+
+**The record is DEDUCED from the container, not predicted from the
+spec.** `planted` is the one fact that needs no container: the names of
+the class the image bakes, read from `image inspect`, and what an
+operator judges the image on. Every other key is a claim about a
+container's own environment, so each is a MEASUREMENT of it — the
+image's `ENV` compared, name by name, to the `--env`-resolved
+environment the container was CREATED with, read back by the driver that
+created it (`sandbox.StartedEnvReader`, `docker container inspect -f
+'{{json .Config.Env}}'`):
+
+- `neutralized` — the container carries the name EMPTY where the image
+  baked a value;
+- `reported` — the container carries the image's exact value, which its
+  processes read;
+- `allowed` — the same measurement for a name the host knob named: the
+  image's own value, untouched, as the operator asked;
+- `operator_set` — the container carries the value the RUN's own
+  reviewed env holds (the workflow's `sandbox.env:`, the launch overlay,
+  the forfait config dirs);
+- `driver_set` — the container carries ITERION's own value, for a name
+  the driver DECLARES its Start sets (`StartEnvNames`): it appends
+  `--env` pairs of its own *after* the spec's — the egress proxy's six
+  spellings when a network policy is enforced, the six CA bundles and
+  the JVM truststore when that proxy inspects TLS — and the last pair
+  for a name is the one the container gets;
+- `unexplained` — the container's value matches none of those. Nothing
+  in this repository produces one; it is the shape of a driver whose
+  declaration drifted from its argv, and it is published rather than
+  filed under a neighbour.
+
+`neutralized` and `reported` always travel together once the container
+was read, the empty list included, so "this half caught nothing" never
+reads like "this event does not report that half"; the four others
+travel only when they hold, so their presence is the signal.
+
+Why a measurement and not a rule: the rules were applied in the wrong
+ORDER twice. A record predicted from them published `HTTP_PROXY` as
+emptied of a container carrying the proxy URL (four of nine names on one
+run), and then `NODE_EXTRA_CA_CERTS` as "let through untouched" of a
+container carrying iterion's per-run CA — an operator who allowed their
+image's CA bundle through read that the image controlled the TLS trust
+of the connections carrying their credentials. Both times the rules were
+right. Read off the container, the question cannot arise: the host knob
+withholds iterion's `--env NAME=`, it does not stop the driver's pair
+from winning, and the name lands where the container puts it.
+
+**A container that cannot be read says so.** `undeduced` carries the
+reason — no container this driver could hand back (the screen refused
+the boot, or Start failed, which can be a `postCreateCommand` failing in
+a container the driver then removes), the driver cannot read one back,
+or the read failed — and then
+**not one disposition travels**: `planted` plus that reason is the whole
+record. An empty `neutralized` beside it would read as "nothing was
+planted" where the fact is "nobody looked". `unscreened` is the same
+discipline one step earlier: the class itself was never read, so not
+even `planted` is known.
+
+Both partitions cover the **whole** class, the reported half included:
+iterion sets some of those names itself — `HOME` under `host_state`, and
+under TLS inspection the CA bundles of `caBundleEnvNames` plus the JVM
+truststore pair of `javaTrustPairs` (pkg/sandbox/docker, which
+`Driver.StartEnvNames` declares to the screen) — so a `reported` list
+that held them would promise the image controls the TLS trust of the
+connections that carry the run's credentials, when iterion's per-run CA
+is what the container got. No count is given here on purpose: the
+declaration is read from the driver at run time and `driver_set` is where
+those names land, which is a measurement rather than a number this page
+would have to keep true.
+
+**A neutralisation the driver refuses stops the run** — and **no docker
+image can trigger it today**, which is proved rather than assumed: the
+screen only hands over names a driver could pass and a process could
+resolve, and docker's own `--env` guard refuses on exactly those
+characters, an empty value being refused for nothing else (walked over
+1039 names, 0 usable-but-refused, in pkg/sandbox/docker's
+`TestUsableEnvNameImpliesTheDockerEnvGuardAccepts`). So read what follows
+as the shape of the branch, not as an outcome to watch for: it is kept
+closed by default for the NEXT screener, whose guard may be narrower.
+The override IS the guard, so the screen is closed by default: when the
+class decides a name must be emptied and the driver will not take the
+pair, the boot refuses with `FailureCode = CAPABILITY_UNSUPPORTED`,
+naming the image and the variables, and **no container starts** — the event goes out first,
+under its own `refused` / `refused_names` keys, so the run's record says
+what the image planted even though nothing ran. That is a different fact
+from `unscreened`, which says the channel was never read (a driver whose
+images the kubelet pulls) and under which the run *proceeds*: a reader of
+the two keys can tell a blocked boot from a cloud run. The operator's
+answer to a refusal they judge acceptable is the host-side allow knob
+below.
+
+A name let through keeps its value and is still reported — the operator
+asked for the variable, not for silence. What the knob withholds is
+ITERION's `--env NAME=`; it does not stop the **driver's own pair** from
+winning, so a name it lets through on a run with an enforced network
+policy (`HTTPS_PROXY`) or TLS inspection (`NODE_EXTRA_CA_CERTS`) is
+published under `driver_set`, not `allowed`: the event says what the
+container has. A variable the screen neutralises is **set and empty**,
+not absent: `docker inspect` shows it, and a consumer that reads
+presence rather than value still sees it. That is the accepted cost of
+not refusing an image that works.
+
+**Where the override applies, measured.** The screen acts on the layer
+the container is *created* with: `/proc/1/environ` of a run on a planted
+image reads `CLAUDE_CODE_USE_BEDROCK=`, set and empty, and a tool node's
+own environment carries no planted value either. Two layers, because only
+the first is the screen's: a command iterion runs through `docker exec`
+also receives the run's own env layer, and that layer may legitimately
+set one of these names to the OPERATOR's value — the reviewed channel
+winning, which is the point.
+
+So the promise is precise, and it is **about the neutralised sub-class,
+through the ENV road, only**: for a name of that sub-class the
+repository's value never reaches a process *by way of the image's `ENV`*
+— the name may still be *set*, to the operator's own value or to the
+driver's, and `operator_set` / `driver_set` say when. For the
+**reported** half the image's value *does* reach every process in the
+container, **unless this run sets the name itself**: that half is told,
+not emptied, and the two dispositions above are what take iterion's own
+seven names out of it. Measured on the same run, in the same container,
+with a reported name neither iterion nor the operator sets
+(`KUBECONFIG`): `/proc/1/environ` and a tool node's own environment both
+read back the image's exact value, while the four planted credentials
+read empty.
+
+**What the ENV road does not close, measured.** A FILE the image lays
+down can re-plant a neutralised name with **no environment variable at
+all**: an image that writes `node-options=--require=/planted/replant.js`
+into npm's own global config — `/usr/etc/npmrc` in the default image's
+npm, which `npm config get globalconfig` names and no variable points at
+— had `npm run` and `npm exec` children start with
+`NODE_OPTIONS=--require=…` and the planted module re-export the
+credentials, with every neutralisation of the table applied. The screen
+does not chase it, deliberately: forcing `NPM_CONFIG_GLOBALCONFIG` would
+break an image that legitimately configures a corporate registry mirror
+there. The residue is the contract rather than a hole — **the files and
+binaries an image ships, and its `postCreateCommand`, ARE the
+repository's code by the same contract that makes "the devcontainer's
+image/build, mounts, user, `workspaceFolder` and `postCreateCommand`
+still define the container" auto mode's rule**: the workspace is trusted
+to the extent admission allows it (a fork's head never reaches this
+code), and what this screen closes is the ENV road into the *operator's
+own* credentials and model routes, not a malicious image.
+
+The engine's own namespace keeps the same line, and its residue is named
+for the same reason: an `ITERION_` name that chooses neither a credential
+nor a route is **told and kept** — the permission gate's mode
+(`ITERION_PERMISSION`), the binaries a step runs (`ITERION_*_BIN`,
+`ITERION_ASSISTANT_PYTHON`), the config home every store is resolved from
+(`ITERION_HOME`, whose empty value would send the runner to the
+operator's own under `host_state`, worse than the planted path), and the
+bounds on what a run may spend. An image that bakes one of those is an
+image a repository chose, which is its own code: the operator reads the
+name under `planted` and `reported`, and the run's own channels — the
+workflow's `sandbox.env:`, the launch overlay and what the engine writes
+for its child — are applied on top of it.
+
+The guard lifts that stay on that reported side are named too, because
+the line runs through a family rather than around it — each lifts a
+guard, none of them on a route or on a credential:
+
+- the **isolation** tier (`ITERION_SANDBOX_DEFAULT`,
+  `ITERION_SANDBOX_OVERRIDE`, `ITERION_SANDBOX_FLOOR`,
+  `ITERION_SANDBOX_HOST_STATE_GUARD`, `ITERION_SANDBOX_DEFAULT_IMAGE` —
+  `internal/isolationenv`), which decides where the repository's code
+  runs and what is mounted under it, which is ARB-121's own subject.
+  `ITERION_SANDBOX_MODEL_HOSTS` is the one member of that inventory this
+  screen DOES empty, and the reason is the line itself: it decides which
+  host receives the run's real secrets substituted into a request body;
+- the **project-trust** switches (`ITERION_PI_TRUST_PROJECT`,
+  `ITERION_OPENCODE_TRUST_PROJECT`), which run the repository's own
+  skills, plugins and settings — the position an image already holds;
+- the **loading** switches (`ITERION_MCP_AUTOLOAD`,
+  `ITERION_MCP_HEALTHCHECK`, `ITERION_SKIP_MCP_HEALTH`,
+  `ITERION_PLUGINS_ENABLE`, `ITERION_PLUGINS_DISABLE`,
+  `ITERION_SKILLS`, `ITERION_CLAUDE_CODE_STRICT_MCP`), which decide what
+  is loaded, not where a call goes or what it carries;
+- the **browser-facing** guards of the server's own pages
+  (`ITERION_SECURITY_HEADERS`, `ITERION_ALLOWED_ORIGINS`,
+  `ITERION_REQUIRE_ORIGIN`, `ITERION_REQUIRE_WS_ORIGIN`,
+  `ITERION_CANONICAL_REDIRECT`, `ITERION_STUDIO_INSECURE_NONLOOPBACK`,
+  `ITERION_RUN_BIRTH_CHECK`).
+  The cookie's own transport (`ITERION_COOKIE_SECURE`,
+  `ITERION_COOKIE_DOMAIN`) and the auth requirement
+  (`ITERION_DISABLE_AUTH`) are neutralised, which is the part of that
+  family that touches a credential;
+- `ITERION_SANDBOX_TLS_INSPECT`, whose off position removes the secret
+  substitution rather than widening it (the run's secrets then stay
+  placeholders), and `ITERION_BOT_VARS_ENV_PINS`, which chooses between
+  two operator-grade sources for a name this screen has already answered.
+
+**Not screened, said out loud.** `image inspect` is a local-store read,
+so only a driver that resolves images locally can do it: the **docker**
+driver screens, the **kubernetes** driver (whose images the kubelet
+pulls) and the noop passthrough do not, and a run on them says
+`the env image X bakes in was NOT screened` with the reason. A failed
+read says the same. Nothing is ever inferred from a silence.
+
+**The escape hatch is the operator's, and host-side only.**
+`ITERION_SANDBOX_IMAGE_ENV_ALLOW=NAME1,NAME2` names the variables an
+image may contribute untouched — exact names, comma-separated,
+case-sensitive (it names a variable as the IMAGE spells it, not a class
+entry), no prefix matching. It is read from the runner's own
+process environment: never from the workspace, never from a stored bot
+var (`ITERION_SANDBOX_` is an infra prefix of the bot-var deny list),
+so **the repository under review can never allowlist itself**.
 
 Block form without `mode:` is treated as `mode: inline`. You may also
 write `mode: inline` explicitly. Inline mode must declare exactly one of
@@ -691,6 +1600,12 @@ iterion sandbox doctor                 # report driver + capabilities
   driver's workspace copy AND of the git fixup that follows, each
   end-to-end. Unset → 15 min. See [setup phases and their
   timeouts](#setup-phases-and-their-timeouts).
+- `ITERION_SANDBOX_READBACK_CAP` — the figure the read-back drain
+  meters a declared dir's set against (a Kubernetes byte quantity:
+  `1Gi`, `500M`, `1073741824`), for every dir whose serving mount
+  names no `size=` of its own. Unset → 256 MiB. A value that is no byte
+  quantity is reported and the default kept. See [the read-back
+  contract](#a-promise-the-driver-drops-takes-its-variable-with-it).
 - `ITERION_SANDBOX_POST_CREATE_TIMEOUT` — budget of the `post_create`
   snippet on BOTH drivers. Unset → 30 min. Raise it for a devcontainer
   that installs a large toolchain.
@@ -706,7 +1621,12 @@ iterion sandbox doctor                 # report driver + capabilities
   `iterion-runner-devbox` image), so a bot's sandbox block — written
   for local runs — executes directly in the runner pod instead of
   spawning a sibling sandbox pod. The Helm chart sets this
-  automatically whenever `runner.sandbox.enabled` is false.
+  automatically whenever `runner.sandbox.enabled` is false; a
+  `runnerPools[]` entry's own `sandbox.enabled` decides it for that
+  pool alone (an empty literal lifts it — with `ITERION_SANDBOX_DEFAULT`
+  pinned to `auto` there, so a bot declaring no `sandbox:` block is
+  sandboxed too — and `none` sets it — see
+  [cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)).
 
 ### Precedence (highest → lowest)
 
@@ -733,6 +1653,44 @@ The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
 `ITERION_SANDBOX_HOST_STATE`. The built-in default is `auto`.
 
+### The operator isolation floor (#1959)
+
+The chain above decides between *who asked* — and a workflow-level
+`sandbox: none` asked by a bot source the operator does not control is
+not honoured: in cloud, a bot resolved from a **team** botsource row (a
+fork authored in the studio editor) gets its opt-out neutralized, loudly
+— a warn in the run log and a `sandbox_floor_applied` event naming the
+tier, the overridden mode and the hatch — and mode resolution falls
+through to the operator's own tiers (the CLI-strength override, then the
+global default). Operator-origin sources keep their opt-out: the **baked**
+catalog the deployment shipped (`bots/copilot` opts out deliberately and
+keeps working), the **platform** override, and any local launch, which is
+the operator's own file. An unrecognized tier floors too — the floor
+fails closed on vocabulary it does not know.
+
+The tier rides the queue message (schema v28) and the run document, so a
+resume and a subbot child are judged by the source the launch resolved,
+on every attempt — the in-process lane stamps it on the document too, or a
+local resume would read the empty tier as the operator's own. The one
+decision lives in `runtime.ApplySandboxFloor`; the engine applies it before
+admission so the admission probe and the sandbox start judge the same
+workflow. `ITERION_SANDBOX_FLOOR=off` is the greppable escape hatch for an
+operator who trusts their team tier — read from the operator's own
+environment, never from a project `.env` (a planted value is ignored with a
+warn, and the event says `hatch_ignored`).
+
+**What the floor does NOT promise.** Neutralizing the opt-out removes the
+bot's word on the question; it does not guarantee isolation. Resolution
+falls through to the operator's tiers, whose default is `auto`, and `auto`
+on a host with no container runtime degrades to an unsandboxed run with its
+own `sandbox_skipped` event (#1425). The `sandbox_floor_applied` event says
+so in its `isolation` field: read `sandbox_started` / `sandbox_skipped` for
+what actually happened. Two publisher-side screens (the run-fallback and
+policy-ladder predictions in `pkg/server/cloudpublisher`) read the
+workflow's own block UNFLOORED, stated at their sites: they are also reached
+from a credential preview that has resolved no source, so they hold no tier
+to judge; they are advisory, and the runner's screen is the authority.
+
 ## Default image
 
 When `sandbox: auto` is in effect but no `.devcontainer/devcontainer.json`
@@ -743,6 +1701,9 @@ pinned to the running iterion version:
 | ------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 24, devbox + Nix                                                                |
 | **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
+| **sec** (opt-in)   | `ghcr.io/socialgouv/iterion-sandbox-sec:<version>`   | full + the security-audit toolchain (the sec-audit bots' floor)                                     |
+| **browser** (opt-in) | `ghcr.io/socialgouv/iterion-sandbox-browser:<version>` | slim + Chromium + Playwright MCP (`ULTRA11Y_BROWSER_PATH` names `/usr/bin/chromium`)             |
+| **rgaa** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-rgaa:<version>`  | browser + the pinned ultra11y engine, installed globally — the rgaa-audit bot's class               |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
 Snapshot/dev binaries pull the `:edge` tag. The published images can also
@@ -750,14 +1711,28 @@ ship a **static** `iterion` on their own PATH, which sidesteps the
 host-binary bind-mount entirely (`CGO_ENABLED=0`; a nix-dynamic build dies
 in-container — see [the dogfood note](agents/workflow/dogfood.md)).
 
-**Why two variants?** The slim image is small enough to pull on
-demand and supports the common workflow (the agent calls `devbox install`
-against the workspace `devbox.json` to materialise its toolchain). The
-full image trades extra MB at first pull for not having to install
-common operator + language toolchains (Go, Node, Python, Kubernetes
-CLIs, GitHub CLI, …) on every run.
+**Declaring a variant from the bot (`sandbox.image` classes, #2632):** the
+block form's `image:` takes a bare class name — `slim`, `full`, `sec`,
+`browser`, `rgaa` — which resolves at launch to the published variant image
+of that class, pinned to the running iterion with the same `:latest`
+registry fallback the default carries:
 
-**Selecting the full variant per-run:**
+```iter fragment:workflow
+sandbox:
+  image: rgaa        # ghcr.io/socialgouv/iterion-sandbox-rgaa:<version>
+```
+
+The vocabulary is the closed, operator-controlled list in
+`pkg/sandbox/imageclass` — a class names an image iterion itself builds and
+measures. Everything else keeps its reading: a full reference
+(`registry/repo:tag`, a digest pin) is your own image, honoured verbatim
+(the escape hatch); an unknown bare word is passed through verbatim too —
+it may be a locally built image — with the compiler's C325 warning naming
+both readings. The class form is inline mode, so it outranks even
+`--sandbox auto` (a block with an `image:` is the author's wired container,
+not a degradable `auto`).
+
+**Selecting a variant per-run (operator side):**
 
 ```bash
 iterion run foo.bot \
@@ -770,7 +1745,7 @@ iterion run foo.bot \
 export ITERION_SANDBOX_DEFAULT_IMAGE=ghcr.io/socialgouv/iterion-sandbox-full:edge
 ```
 
-**Bringing your own:** if neither variant fits, point the override at
+**Bringing your own:** if no variant fits, point the override at
 your own image (must support `sleep infinity` as PID 1 — i.e. provide
 `/bin/sh` and `sleep`). Or commit a `.devcontainer/devcontainer.json`
 to the repo to disable the fallback for that workspace; iterion will
@@ -800,9 +1775,10 @@ The repo's installs in place so relative package references
 ### Runs without a sandbox (cloud runner pods, plain host runs)
 
 Provisioning is **not** tied to a sandbox container. When no sandbox is
-active — which is **every cloud run** (the chart pins
-`ITERION_SANDBOX_OVERRIDE=none`: the runner pod is the isolation
-boundary, so a bot's inline `sandbox:` block never starts a container)
+active — which is **every cloud run on the chart's default**
+(`runner.sandbox.enabled: false` renders `ITERION_SANDBOX_OVERRIDE=none`:
+the runner pod is the isolation boundary, so a bot's inline `sandbox:`
+block never starts a container)
 and every local `iterion run` without a sandbox declaration — the same
 two sources are provisioned **on the executing host**: `devbox install`
 runs at run start (the bot's config staged into a per-run temp dir,
@@ -959,12 +1935,69 @@ your repo root and `sandbox: auto` will pick them up.
 | ------------- | ----------------------------------------------------- |
 | `claude_code` | **fully sandboxed** (CLI runs inside the container)   |
 | `pi`          | **fully sandboxed** in both RPC and print transports |
-| `kimi` / `grok` | architecturally sandboxable, but **not in the stock image** — same as `opencode` below |
-| `opencode`    | **not shipped in the stock image** (the cloud runner image has the same gap) — the published sandbox image bakes claude-code and pi (and carries codex in node_modules), so a sandboxed `opencode`, `kimi` or `grok` node dies at `exec: not found` unless a custom image or a PATH inside the container supplies the binary. Nothing refuses it earlier: the limit is the image's contents, not the backend. |
+| `kimi` / `grok` | architecturally sandboxable, but **in no published image** — same as `opencode` below |
+| `opencode`    | **in no published image** (the cloud runner image has the same gap) — the published sandbox images bake claude-code and pi (and carry codex in `node_modules`, off PATH), so a sandboxed `opencode`, `kimi` or `grok` node needs a custom image or a PATH inside the container to supply the binary. A run whose RESOLVED sandbox image is one iterion publishes is **refused at start** rather than dying at `exec: not found` — see [A backend no published image can run](#a-backend-no-published-image-can-run). |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **sandboxed**: shell and script recipes run inside the container (`bash -c`); a registry-tool recipe (`command: <tool>`) is a launcher closure, so it runs only for a launcher-placed tool and is refused otherwise — under a Verified Action (`postcondition:`) that refusal fails the node whatever its `policy:`, since no rung can make the recipe runnable |
 | MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers are started by the `claude_code` CLI itself (in the container when the node is sandboxed) and beside pi for pi RPC. claw connects them in the LAUNCHER, so under an active sandbox it starts only the operator's — a builtin, or a plugin installed under the iterion home the operator's own environment names, enabled and configured by the operator in both cases — see [MCP servers under a sandbox](#mcp-servers-under-a-sandbox). |
+
+### A backend no published image can run
+
+A sandboxed node whose backend runs a CLI the container has no executable
+for used to die mid-run at `exec: <cli>: not found` — an explicit failure
+that named neither the cause nor the cure (#1643). Four places now say it,
+each with what it actually knows:
+
+- **At compile time, a warning (C321).** The backend's `image-presence`
+  cell reads `unwired (no image)`: no image iterion publishes carries its
+  executable. A warning and not a refusal — the compiler knows neither the
+  image the run will resolve nor whether it will be sandboxed at all.
+  Silenced by the workflow's own `sandbox: none`.
+- **At launch, a warning on the run's log.** Said where the run's
+  sandboxing is resolved and the launch's own `model_overrides` backend is
+  read — a route the compiler never saw. The launch API still accepts every
+  backend name: tightening its enum would refuse a name an operator's own
+  image serves.
+- **At run start, a typed refusal.** The sandbox spec is resolved, so the
+  IMAGE is known. If it is one of the images iterion publishes
+  (`iterion-sandbox-slim`/`-full`/`-sec`/`-browser`/`-rgaa`) **and** that image
+  carries no CLI for a backend the run will dispatch, the run is refused
+  before any pull, with `CAPABILITY_UNSUPPORTED` naming the image, the
+  missing executable and both exits. This is the only place the per-image
+  fact exists: `codex` is on the runner images' PATH and outside the stock
+  sandbox's, so only the resolved image can decide.
+- **At dispatch on a host, a typed refusal.** An unsandboxed run (or the
+  noop driver) executes the CLI on the host itself, where no image is
+  involved — the one plane the run-start refusal cannot see. When the
+  backend's `image-presence` cell reads `unwired (no image)` AND its default
+  CLI does not resolve on the host's PATH, dispatch is refused before any
+  spawn with `delegate.ErrBackendCLIAbsent` (classified
+  `CAPABILITY_UNSUPPORTED`), naming the backend, the executable and the
+  remedies: install the CLI, pin its binary (`command:`, or the backend's
+  host env pin where one exists), or route to a backend the published
+  images serve. An explicit `command:` pin that resolves to nothing keeps
+  the legacy spawn error — that is a pin defect, not the image gap.
+
+**Why the three CLIs are not baked** (measured 2026-10, ARB-82): `kimi` and
+`grok` have no npm distribution to pin (the npm names `kimi-cli` and
+`grok-cli` are unrelated third-party packages), and `opencode` has two live
+distribution lines (`opencode-ai` 1.x and `@opencode/cli` 2.x) for +178 MB
+of image — so baking is a product decision, not a pin, and the typed
+refusals above are the safety deliverable until it is taken (#1643).
+
+**The predicate is the escape hatch.** It speaks only for the images
+iterion publishes, because only their contents are measured
+(`TestImagePresenceIsDerivedFromTheImageManifests` reads
+`docker/llm-clis/package.json` and the Dockerfiles). An image you build —
+even from those manifests, under your own namespace, with the CLI baked in —
+is yours: `sandbox: { image: … }`, `build:`, `--sandbox-default-image` and
+`ITERION_SANDBOX_DEFAULT_IMAGE` all pass. So do `sandbox: none`,
+`--sandbox none` and `ITERION_SANDBOX_OVERRIDE=none`, which run the node on
+the host — where the dispatch-plane refusal above takes over if the CLI is
+absent there too. A backend the registry does not know — a custom
+registration — is never refused: a measured absence is a fact, the absence
+of a measurement is not.
 
 ### Claw backend in sandbox
 
@@ -1011,19 +2044,49 @@ binary in (subject to architecture matching) via `runArgs`:
 registry from the environment the launcher forwards, and from nothing
 else of the host's: the provider keys, the endpoints they are spent on
 (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
-`XAI_BASE_URL`, …), the spend and client-identity settings, and the
-knobs its own loop reads (`ITERION_CLAW_STREAM_COLD_TIMEOUT` /
-`_IDLE_TIMEOUT`) — each when the host sets it. The endpoints on that
-list (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
-`XAI_BASE_URL`, `AZURE_OPENAI_ENDPOINT`) cross as explicit EMPTIES when
-the host leaves them unset, and the exec env outranks the container's,
+`XAI_BASE_URL`, …), the routing settings that decide WHICH deployment,
+project, region or API contract a key is spent on
+(`AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`,
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_REGION`), the spend and
+client-identity settings, and the knobs its own loop reads
+(`ITERION_CLAW_STREAM_COLD_TIMEOUT` / `_IDLE_TIMEOUT`) — each when the
+host sets it. Those routing names are read by claw's own provider
+packages rather than by a provider table, which is why they were missing
+until #1804; `TestEveryVendoredProviderEnvNameIsDecided` derives them
+from the claw source the registry imports (`pkg/claw`), so a provider claw gains
+arrives forwarded or red. The whole routing list — the endpoints plus
+the four names above and `CLAW_OPENAI_REASONING_SUMMARY` — crosses as
+explicit EMPTIES when the host leaves them unset, and the exec env
+outranks the container's,
 so nothing inside — the image's `ENV`, the workflow's `sandbox.env:`,
 the workspace's `.env` — re-points a forwarded credential: the host env
 is the supported channel for them. Any OTHER name the host leaves unset
 is whatever the container's own environment says — its image, a
 `containerEnv` key the deny class above lets through, and the
 workspace's `.env`, which the runner loads at start as the CLI does —
-so set what you rely on, and keep the run on an allowlist. The retry budget the launcher
+so set what you rely on, and keep the run on an allowlist. What
+deliberately does NOT cross: the web-search credentials
+(`BRAVE_API_KEY`, `SEARXNG_URL`, `SEARXNG_ENDPOINT`). `web_search` is
+served on the LAUNCHER, with the launcher's credentials
+([pkg/backend/tool/sandbox_placement.go](../pkg/backend/tool/sandbox_placement.go)),
+so a key in the container would buy nothing and travel into a container a
+fork's agent runs in. The display pair (`DISPLAY`, `WAYLAND_DISPLAY`)
+never crosses either — decided launcher-side for ever by #2802:
+`computer_use` drives the launcher host's display, a sandboxed node has
+none, and the tool is refused for a sandboxed node rather than proxied
+([claw_vendored_tool_env_test.go](../pkg/backend/model/claw_vendored_tool_env_test.go)
+derives and pins the classification). Nor do the names claw's tools read
+from the environment of the process they run in (#3256): the locations
+claw's credential read guard protects (`KUBECONFIG`, `DOCKER_CONFIG`,
+`GH_CONFIG_DIR`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_GLOBALCONFIG`,
+`AWS_SHARED_CREDENTIALS_FILE`), `TMPDIR`, `XDG_CACHE_HOME`, `PATH` and `PWD`.
+Each names a place on the host that sets it, so with a container driver the
+container's process reads its own — from its image, a `containerEnv` key, or a
+project `.env` overlay; the engine never copies the launcher's value (a
+`containerEnv` value written as `${localEnv:…}` expands from the launcher, by
+the operator's choice). `HOME` is the runner home below. The noop driver runs
+the runner on the host: `HOME` is still the runner home and `PWD` the
+workspace, the other names the host's own. The retry budget the launcher
 resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
 task envelope instead: it bounds billed attempts, so the container's own
 environment never sets it — a runner image older than that field keeps its built-in
@@ -1064,6 +2127,16 @@ existing tool registry / MCP manager / ask_user channel; the runner
 executes the in-container tools itself and builds, for each
 launcher-placed one, a proxy ToolDef closure that round-trips the call
 across the channel.
+
+**The engine classifies a cut from its own context, never from the
+crossing's words.** A crossing the engine ends reports what the far side saw
+— a killed process, a closed pipe — and never the `context` error that ended
+it, so the engine reads the fact where it holds it: the run's context at the
+node boundary (a cancelled run), the deadline it froze into the node's
+context (a budget stop, which never re-runs the node it cut), and the
+branch's context (a sibling retired by the first failure is a stopped
+branch, not a failure of its own that would erase the typed code the run
+carries). The crossing's words stay as the detail of the error.
 
 **The launcher's side of the crossing has three rules of its own**, in
 `executeViaSandboxRunner`, `refuseForwardedCall` and `multiplexerHandler`
@@ -1210,19 +2283,27 @@ across the channel.
   (`pkg/errtrack`, Sentry) reaches no link holding the far side's text in
   clear.
 
-  What a CUT crossing's error carries, today, is what the crossing OBSERVED,
-  redacted — not the reason the run ended. The multiplexer tests the context
-  only between two envelopes, and what unblocks a read parked on a held pipe is
+  What a CUT crossing's error carries is what the crossing OBSERVED, redacted
+  — not the reason the run ended. The multiplexer tests the context only
+  between two envelopes, and what unblocks a read parked on a held pipe is
   `clawRunnerWaitDelay` closing this process's own ends, so the error of a
   cancelled or timed-out crossing usually names the closed pipe or the signal
   that killed the runner; the cut reaches the error's chain only when the
-  multiplexer happens to notice the context between two envelopes. Three
-  readers need the cut itself: a convergence quoting a cancelled sibling's
-  cause, the engine's duration-budget arm, and recovery dispatch, which
-  classifies by the error's TEXT and finds the container's whole stderr quoted
-  there. Issue [#2456](https://github.com/SocialGouv/iterion/issues/2456) owns
-  that, because carrying a cut out of the crossing re-models how the engine
-  classifies one.
+  multiplexer happens to notice the context between two envelopes. That is
+  left as it is, deliberately: none of the three readers that need the cut
+  takes it from the crossing's words. A convergence and the engine's
+  duration-budget arm read the context the engine itself holds (above), and
+  recovery dispatch reads the one bound the crossing cannot know about — the
+  node's own `timeout:` — from the type the site that froze it NAMES
+  (`model.ErrNodeDeadline`, written by `executeBackend`, classified by
+  `recovery.Classify` before any text needle, and ended by
+  `NodeTimeoutRecipe` without a re-run, because a retry would start a fresh
+  bound). The needles stay what they were written for: a request-level
+  timeout INSIDE the node is the upstream client's own bound and remains a
+  transient fault. The guarantee is pinned as a matrix over {run cancel, node
+  `timeout:`, run `max_duration`} × the three accounts a backend gives of a
+  cut, driven through the real engine
+  (`pkg/runtime/recovery/cut_guarantee_matrix_test.go`).
 
 > **Where an advertised tool executes is a boundary, not a fallback.**
 > A tool the runner proxies runs on the HOST, with the launcher's
@@ -1237,12 +2318,13 @@ across the channel.
 >   model-supplied URL, so the runner executes it in-container:
 >   `bash`, `diagnostic_shell`, `repl`, `read_file`, `write_file`,
 >   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
->   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
+>   `skill`, `command` (the workspace slash-command lookup), `read_image`, `web_fetch`, `remote_trigger`,
 >   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
->   runner registers claw's agent tool in the container — and, with no
->   subagent runner wired, it refuses every call with the same typed
->   capability refusal an unsandboxed node gets, C159). A missing local
->   registration is a fatal runner error, never a proxy.
+>   runner registers claw's agent tool in the container AND wires the
+>   subagent runner there, so a sandboxed node's child conversation runs
+>   on the container's tools and the container's keys, bounded by the node
+>   exactly as an unsandboxed one is). A missing local registration is a
+>   fatal runner error, never a proxy.
 > - **launcher** — launcher-owned state, run with the launcher's process:
 >   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
 >   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the
@@ -1272,7 +2354,7 @@ across the channel.
 >   (`sandbox: none` / `--sandbox none`) — a node-level `sandbox:` is not
 >   honoured at run time.
 >
-> A name nothing classifies — a claw bump's new tool — is refused, not
+> A name nothing classifies — a new claw tool — is refused, not
 > proxied: the default direction is the safe one. A name that merely
 > starts like an MCP tool (`mcp_bash`) is not one: the MCP rule needs a
 > server and a tool segment.
@@ -1350,10 +2432,15 @@ across the channel.
   too, so the capture coming back continues the session; a copy it cannot
   carry reached no crossing at all, and what comes back is one blind
   crossing's own turns, which must not replace the session the host holds.
-  The residual is version skew alone: a crossing stranded by a relayed gap
-  (a replay a container could not decode, a reason a newer runner names) and
-  then resumed does mirror, because the host's copy is deliverable and
-  nothing on the pause says the crossing never saw it.
+  A pause produced by a stranded crossing carries the stranding WITH it
+  (#2461): the launcher stamps the pause result, the runtime checkpoints the
+  fact as `backend_session_stranded` beside the conversation, and the resume
+  hands it back to the crossing it spawns — whose captures then stay out of
+  the session exactly as the original stranded crossing's did, version skew
+  (a replay a container could not decode, a reason a newer runner names)
+  included. A checkpoint written before the field existed reads as absent,
+  the pre-field behaviour: only a pause written by a runner that knows the
+  fact can carry it.
   Every gap in the host's copy — a refused snapshot, a refused write, a
   replay the runner could not decode — is relayed as a `session_mirror_gap`
   event, which the launcher logs whatever the crossing's outcome; the
@@ -1487,14 +2574,22 @@ iterion's built-in MCP tools reach a sandboxed `claude_code` node over a
 cannot see:
 
 - **board capabilities** (`board.*`) — served at `/api/v1/mcp/board`
-  ([pkg/server/mcp_board_handler.go](../pkg/server/mcp_board_handler.go));
+  ([pkg/hostmcp](../pkg/hostmcp/hostmcp.go), wrapped by
+  [pkg/server/mcp_board_handler.go](../pkg/server/mcp_board_handler.go)).
+  The serving host is the process the sandbox answers to: the
+  studio/server for an in-process run, the **runner pod** for a cloud
+  run (#2632) — there the board resolved per call is the grant's
+  tenant's Mongo board, and the pod's `NO_PROXY` carries the runner pod
+  IP so a proxy-mode run dials the listener direct;
 - **interactive questions** (`ask_user`, `ask_user_async`,
   `await_answers`) — served at `/api/v1/mcp/ask-user`
   ([pkg/askusermcp/http.go](../pkg/askusermcp/http.go)).
 
 Each request is authenticated by an ephemeral `X-Iterion-Run` token the
 runtime mints and registers for the run, so a sandboxed agent can call
-these tools but nothing else can. Outside a sandbox the same capabilities
+these tools but nothing else can. The grant is scoped to the node's
+capabilities, pinned to the run's tenant on cloud, revoked as the node
+returns, and a 24 h TTL reaps it if the process dies before that. Outside a sandbox the same capabilities
 are wired as host-side stdio MCP servers (`iterion __mcp-board` /
 `iterion __mcp-ask-user`). A user-declared stdio MCP server on `claude_code`
 is started by the CLI itself, from the config iterion hands it on
@@ -1926,31 +3021,58 @@ runner:
 
 V1 limitations (deferred to V2):
 
-- **Per-run NetworkPolicy** is now synthesised (V2-5): every sibling
-  pod gets a NetworkPolicy locking egress to the runner pod's IP
-  (proxy) plus DNS to `kube-system / k8s-app=kube-dns`. **Enforcement
-  requires a NetworkPolicy-aware CNI** — Calico, Cilium, weave-net,
-  kube-router. Default kindnetd / EKS VPC CNI without policy add-on
-  do **not** enforce; the resource still applies cleanly but is a
-  no-op. The CONNECT proxy continues to enforce hostname allowlist
+- **Per-run NetworkPolicy** is synthesised (V2-5) **when the run's
+  proxy runs** — a non-open `network:` policy, a Layer 2 rewriter
+  guarding the run's secrets, or a run gateway credential: the sibling
+  pod then gets a NetworkPolicy locking egress to the runner pod's IP
+  (proxy) plus DNS to `kube-system / k8s-app=kube-dns`. A run under
+  `open` with no proxy — the default for a workflow declaring no
+  `network:` — gets **no** per-run NetworkPolicy, and the chart's own
+  NetworkPolicy (`networkPolicy.enabled`) selects the release's app
+  pods by their `app.kubernetes.io/*` labels, never the
+  `iterion.io/*`-labelled sandbox pods: that pod's egress is whatever
+  the cluster allows, outside the chart's egress allowlist.
+  **Enforcement requires a NetworkPolicy-aware CNI** — Calico, Cilium,
+  weave-net, kube-router. Default kindnetd / EKS VPC CNI without policy
+  add-on do **not** enforce; the resource still applies cleanly but is
+  a no-op. The CONNECT proxy continues to enforce hostname allowlist
   at the application layer regardless of CNI.
+- **The chart's NetworkPolicy closes the proxy port.** With
+  `networkPolicy.enabled` on an enforcing CNI, the chart's Ingress
+  rules admit only the server and metrics ports on the runner pod,
+  while the runner's CONNECT proxy and per-run MCP listeners bind an
+  ephemeral port (`ProxyConfig` returns `0.0.0.0:0`). A sandbox pod
+  cannot reach the proxy, so a run that needs it — allowlist or
+  denylist, a repo-defined sandbox, Layer 2, a gateway credential —
+  fails at its first egress; `networkPolicy.ingress.extraAllow` widens
+  the server port's rule only. See
+  [cloud-deployment](cloud-deployment.md#networkpolicy-egress).
 - **`sandbox.build`** (Dockerfile-at-run-start) is **rejected in
   cloud mode** — see "BuildKit (local docker only)" below for the
   rationale and the cloud-side workaround.
-- ✅ **`sandbox.mounts`** now honours PVC / ConfigMap / Secret
-  entries (V2-7). Mount string format mirrors the docker driver
+- ✅ **`sandbox.mounts`** now honours PVC / ConfigMap / Secret /
+  EmptyDir entries (V2-7). Mount string format mirrors the docker driver
   with k8s-native types:
   ```
   mounts:
     - "type=pvc,source=cargo-cache,target=/cargo"
     - "type=configmap,source=app-cfg,target=/etc/app.json,key=app.json,readonly"
     - "type=secret,source=db-creds,target=/secrets"
+    - "type=emptydir,target=/work,size=1Gi"
   ```
   Bind mounts are explicitly rejected — pods have no host
   filesystem; the error message points authors at the PVC
   alternative. PVCs must exist in the namespace before the run pod
   is admitted; iterion does not provision them. Secrets always
-  mount with `defaultMode=0400`.
+  mount with `defaultMode=0400`. `type=emptydir` names no source —
+  its storage is driver-owned; without a `size=` the emptyDir is
+  bounded only by the kubelet's ephemeral-storage limits. A `size=`
+  renders a `sizeLimit`, which the kubelet enforces by **evicting the
+  pod** once the volume's usage passes it — the run ends there, with
+  nothing drained or exported — so write one only where that is the
+  outcome wanted. On the run-files path (`/iterion/artifact-files`)
+  a `size=` also names the figure the drain meters that dir against
+  ([the read-back contract](#a-promise-the-driver-drops-takes-its-variable-with-it)).
 - **Image-pull secrets** for private registries beyond the
   runner's own image are not propagated; declare them on the
   pod's namespace ServiceAccount as `imagePullSecrets` and they
@@ -2084,8 +3206,11 @@ of `claude_code` nodes run with `--backend '*=claw'` gets both.
 ### `network_blocked` events you don't expect
 
 This only happens when the workflow opted in to an `allowlist`
-(or `denylist`) `network:` block — `mode: open` is the default and
-skips the proxy entirely. Either the rule set you picked is too
+(or `denylist`) `network:` block, when a repo-defined sandbox got the
+`iterion-default` allowlist (a `sandbox_network_defaulted` event says
+so), or when a `!host` exclusion under `mode: open` bites while Layer 2
+or a gateway credential runs the proxy — `mode: open`, the default,
+filters no other host. Either the rule set you picked is too
 restrictive for your workflow (extend `network.rules` or drop back
 to `mode: open`), or the agent is genuinely talking to a domain
 you didn't intend to allow. Check `events.jsonl` for the host
@@ -2095,7 +3220,8 @@ A reason starting `pinned host:` is the gateway's pin (see
 [Network policy](#network-policy)) refusing the address the gateway's
 name resolved to: a private answer for a gateway that should be public —
 a rebinding resolver, or a self-hosted gateway that needs
-`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` — or a name that did not resolve.
+`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` exported by the operator — or a name
+that did not resolve.
 
 A few claude-code endpoints (telemetry / MCP probes) are
 **silent-denied** by default — the connection is still refused, but
@@ -2150,7 +3276,7 @@ and forwarding decorator, are:
 
 Two more execs **bypass `Run.Exec`**: Kubernetes `populateWorkspace`
 (`driver.go:1175`, pod tar extraction) and `exportOnce` (`driver.go:1476`, pod
-tar archive). Both call `kubectlCmdContext` directly and wait for the client;
+tar archive). Both call `Kubectl.cmdContext` directly and wait for the client;
 archive validation does not prove the remote process ended. Completion must
 preserve binary/streamed stdout rather than insert a line into an archive.
 

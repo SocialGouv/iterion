@@ -265,7 +265,13 @@ func (s *FSStore) ReadDocument(_ context.Context, ref knowledge.SpaceRef, path s
 // an over-quota write returns a *knowledge.QuotaError and never lands
 // on disk. Counters are updated only after the write succeeds, under
 // the global quota lock, so concurrent writers stay consistent.
-func (s *FSStore) WriteDocument(_ context.Context, ref knowledge.SpaceRef, in knowledge.DocumentInput) (knowledge.DocumentMeta, error) {
+func (s *FSStore) WriteDocument(ctx context.Context, ref knowledge.SpaceRef, in knowledge.DocumentInput) (knowledge.DocumentMeta, error) {
+	// The SHARED gate on a mutation, before any IO: the instance-wide
+	// `global` space answers to platform authority on the context, whichever
+	// adapter hosts it (knowledge.AuthorizeSpaceWrite).
+	if err := knowledge.AuthorizeSpaceWrite(ctx, ref); err != nil {
+		return knowledge.DocumentMeta{}, err
+	}
 	// The SHARED clamp, not just the scope one below. Scope.Resolve keeps a
 	// path inside the space but silently normalises it through filepath.Clean,
 	// so this adapter used to accept `./notes.md` and store it as `notes.md`
@@ -331,7 +337,10 @@ func (s *FSStore) WriteDocument(_ context.Context, ref knowledge.SpaceRef, in kn
 
 // DeleteDocument removes a document (no-op if absent) and credits its
 // bytes back to the per-space and aggregate counters.
-func (s *FSStore) DeleteDocument(_ context.Context, ref knowledge.SpaceRef, path string) error {
+func (s *FSStore) DeleteDocument(ctx context.Context, ref knowledge.SpaceRef, path string) error {
+	if err := knowledge.AuthorizeSpaceWrite(ctx, ref); err != nil {
+		return err
+	}
 	if err := knowledge.ValidateDocPath(path); err != nil {
 		return err
 	}

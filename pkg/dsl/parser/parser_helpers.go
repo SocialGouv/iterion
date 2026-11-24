@@ -111,9 +111,9 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 }
 
 // parseBracketElems reads the elements of an inline list whose `[` is already
-// consumed, through the closing `]`. It is shared with parseDeclaredToolList,
-// the one list whose empty inline form is a value rather than an absence —
-// which also reaches it on a `[` that was NOT read, so the first token may
+// consumed, through the closing `]`. It is shared with parseDeclaredRefList,
+// the lists whose empty inline form is a value rather than an absence —
+// which also reach it on a `[` that was NOT read, so the first token may
 // already end the line; appendElem refuses it there rather than hand it to an
 // element reader.
 func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []string {
@@ -122,7 +122,7 @@ func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []s
 	// The property whose value the list is, for the resync below: the tokens
 	// just consumed are `<name> : [` on both paths into this loop, and the
 	// name's column is the indentation a sibling property shares. On
-	// parseDeclaredToolList's fall-through path the `[` was NOT read (the
+	// parseDeclaredRefList's fall-through path the `[` was NOT read (the
 	// offending token stands where it would be), the shape check fails, and
 	// the give-up keeps its old recovery — the one the line-end tests pin.
 	propTok, propOk := Token{}, false
@@ -237,7 +237,7 @@ func opensBracket(t Token) bool {
 // Two less-indented shapes are rescued too (#2081). A line at an ANCESTOR
 // block's column — a `rules:` broken under `network:` with `image:`
 // following under `sandbox:` — is landed on when the parser still has that
-// column open (openBlockColumns), and each block loop between the list and
+// column open (openBlocks), and each block loop between the list and
 // the ancestor is handed the one closing DEDENT it waits for, spliced ahead
 // of the ancestor line: the broken remainder's own dedents cannot be trusted
 // for the count, because a closer dedented to column 1 over-pops every
@@ -440,13 +440,23 @@ func (p *parser) rescueTopLevelDeclaration(i int, t Token, cols []int, depth, pe
 
 // consumeBrokenListRemainder eats the n peeked tokens of a broken inline
 // list's remainder, saying each lexer diagnosis the span held once, the way
-// skipIndentedBlock says one.
+// skipIndentedBlock says one. The span is recorded on the open-block stack
+// (skipped): the parser's block loops never see these tokens, so the stack
+// must not read their INDENT/DEDENT pairs either — a replay that did let a
+// second resync in the same block read one level short and land with too
+// few DEDENTs, handing a later declaration to a loop that refuses it
+// (#2771).
 func (p *parser) consumeBrokenListRemainder(n int) {
+	if n <= 0 {
+		return
+	}
+	from := p.lex.ti
 	for ; n > 0; n-- {
 		if tok := p.next(); tok.Type == TokenError {
 			p.lexerError(tok)
 		}
 	}
+	p.blocks.skipped = append(p.blocks.skipped, indexSpan{from, p.lex.ti})
 }
 
 // declStartsBlock reports whether the token opens a top-level declaration —
@@ -516,7 +526,9 @@ func (p *parser) rescueCannotClaim(t Token, i int, host string) bool {
 // stream index at, tagged with that token's line. A block loop closes on any
 // DEDENT, so only the count matters: the resync's DEDENT accounting hands
 // each open loop the one closing token the broken list's remainder denied
-// it.
+// it. The insert is the lexer queue's cut-and-join, never a recopy of the
+// stream's tail: a source whose broken lists repeat rescues per list, and
+// recopying the tail at every rescue is quadratic in them (#2880).
 func (p *parser) spliceDedents(at, n, line int) {
 	if n <= 0 {
 		return
@@ -525,10 +537,132 @@ func (p *parser) spliceDedents(at, n, line int) {
 	for k := range dedents {
 		dedents[k] = Token{Type: TokenDedent, Line: line, Column: 1}
 	}
-	p.lex.tokens = slices.Insert(p.lex.tokens, at, dedents...)
+	p.lex.splice(at, dedents)
+	m := &p.closePoint
+	if m.valid {
+		switch {
+		case at <= m.cursor:
+			// Behind the memo's cursor (the landing line's own splice): the
+			// fresh scans the memo stands for start at or past the cursor and
+			// never count these DEDENTs; the indices shift.
+			m.cursor += n
+			m.at += n
+		case at <= m.at:
+			// Inside the memo's region (the close point's own splice): a
+			// fresh scan counts these DEDENTs against the count to splice.
+			m.n -= n
+			m.at += n
+		}
+	}
+	if at < p.blocks.ti {
+		// The open-block stack read past the splice point: what it read
+		// is no longer the stream, so it starts over (openBlocks). The
+		// skipped spans' indices move with the insertion; a splice inside
+		// a span grows it (the resync only ever splices at or past the
+		// cursor, so this is the defensive path).
+		for k := range p.blocks.skipped {
+			sp := &p.blocks.skipped[k]
+			if sp.from >= at {
+				sp.from += n
+				sp.to += n
+			} else if sp.to > at {
+				sp.to += n
+			}
+		}
+		p.blocks.reset()
+	}
 }
 
 // listBlockClosePoint scans past a rescued line (at peek index start) for
+// the point where the open block loops above it close — scanBlockClosePoint
+// is the scan. Consecutive resyncs of sibling broken lists in one nested
+// block ask for suffixes of the SAME region (the enclosing block's tail), so
+// the last scan is memoized (closePointMemo) and a later start inside the
+// region is answered from it (#2768): N sibling broken lists cost one scan
+// of the region, not N.
+func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
+	m := &p.closePoint
+	abs := p.lex.ti + start
+	if m.valid && m.col == col && slices.Equal(m.cols, cols) && slices.Equal(m.hosts, hosts) &&
+		abs >= m.cursor && abs < m.at {
+		m.hits++
+		if !m.ok {
+			// The bail the memo holds stands ahead of this start: a fresh
+			// scan meets the same token with the same verdict. (A start AT or
+			// past it re-scans: the scan never checks its own first token.)
+			at, dedents, ok = m.at-p.lex.ti, 0, false
+		} else {
+			// The answer a fresh scan from abs gives is the memo's, minus the
+			// net INDENT−DEDENT of the consumed prefix: the scan's count is
+			// loops + the region's net, and the region lost its [cursor, abs)
+			// prefix.
+			net := 0
+			for k := m.cursor; k < abs; k++ {
+				m.read++
+				switch p.lex.tokens[k].Type {
+				case TokenIndent:
+					net++
+				case TokenDedent:
+					net--
+				}
+			}
+			m.cursor = abs
+			m.n -= net
+			if m.n >= 0 {
+				at, dedents, ok = m.at-p.lex.ti, m.n, true
+			} else {
+				// The count a fresh scan computes at the close is negative:
+				// its bail, not a landing.
+				at, dedents, ok = m.at-p.lex.ti, 0, false
+			}
+		}
+	} else {
+		at, dedents, ok = p.scanBlockClosePoint(start, col, cols, hosts)
+		m.valid, m.ok = true, ok
+		m.col = col
+		m.cols = slices.Clone(cols)
+		m.hosts = slices.Clone(hosts)
+		m.cursor = abs
+		m.at = p.lex.ti + at
+		m.n = dedents
+	}
+	if closePointCheck != nil {
+		closePointCheck(p, start, col, cols, hosts, at, dedents, ok)
+	}
+	return at, dedents, ok
+}
+
+// closePointMemo is the memo of the last close-point scan (#2768): the query
+// (col, and the open-block stack cols/hosts the verdict was read against),
+// the region it covered — cursor, the absolute index of the last start
+// answered, to at, the absolute index of the close point's first content
+// token (of the token the scan bailed on, when ok is false) — and the
+// verdict: ok, and n, the DEDENT count a fresh scan from cursor answers as
+// the stream stands. spliceDedents keeps the indices and the count current
+// (it is the stream's one mutation); a query with a different stack, or a
+// start behind the cursor (a rewind) or at/past at, re-scans.
+type closePointMemo struct {
+	valid  bool
+	ok     bool
+	col    int
+	cols   []int
+	hosts  []string
+	cursor int
+	at     int
+	n      int
+	// read counts the tokens the close-point scans and the memo walks read,
+	// the witness of #2768: over a reading they read the region once. hits
+	// counts the queries the memo answered without a scan.
+	read int
+	hits int
+}
+
+// closePointCheck, when set, is handed every answer listBlockClosePoint
+// gives; the package's tests set it to hold the memo to a from-scratch scan
+// of the same query (close_point_test.go's reference). Nil outside tests.
+var closePointCheck func(p *parser, start, col int, cols []int, hosts []string, at, dedents int, ok bool)
+
+// scanBlockClosePoint scans past a rescued line (at peek index start) for
 // the point where the open block loops above it close: the first line that
 // starts left of col with a property or declaration of its own, or EOF. It
 // returns the peek index of that line's first content token (of the EOF
@@ -539,23 +673,25 @@ func (p *parser) spliceDedents(at, n, line int) {
 // open at and above the rescued line — plus the levels the rescued block's
 // own subtree pushed along the way (their pops sit in the same run, so they
 // join both sides of the count). The count is unsafe — ok is false and the
-// rescue bails — when a line-start lexer diagnosis stands before the point,
-// when the closing line opens a level of its own (an INDENT the splice
-// would have to precede, leaving it with no loop to open), when the line
-// left of col starts with junk no block owns (a second broken list's
-// closer), or when the count goes negative.
-func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
+// rescue bails, at the peek index of the token that refused — when a
+// line-start lexer diagnosis stands before the point, when the closing line
+// opens a level of its own (an INDENT the splice would have to precede,
+// leaving it with no loop to open), when the line left of col starts with
+// junk no block owns (a second broken list's closer), or when the count goes
+// negative.
+func (p *parser) scanBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
 	lineStart := false
 	lineIndent := false // the line now starting opened with an INDENT
 	depth := 0          // levels the rescued block's own subtree pushed since start
 	pending := 0        // DEDENTs of the line now starting, not yet attributed
 	for j := start; ; j++ {
+		p.closePoint.read++
 		t := p.lex.PeekAt(j)
 		switch {
 		case t.Type == TokenEOF:
 			n := len(cols) - 1 + depth - pending
 			if n < 0 {
-				return 0, 0, false
+				return j, 0, false
 			}
 			return j, n, true
 		case lineEnds(t):
@@ -567,10 +703,10 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 		case t.Type == TokenDedent:
 			pending++
 		case t.Type == TokenError && lineStart:
-			return 0, 0, false
+			return j, 0, false
 		case lineStart && t.Column < col:
 			if lineIndent || tokenAsIdent(t) == "" {
-				return 0, 0, false
+				return j, 0, false
 			}
 			if idx := slices.Index(cols, t.Column); idx > 0 && p.rescueCannotClaim(t, j, hosts[idx]) {
 				// A declaration the still-open block at this column cannot
@@ -580,7 +716,7 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 				// read at the top level once the earlier refusals closed the
 				// blocks. A declaration at the TOP LEVEL's column reads as
 				// itself after the splice, so only an owned column refuses.
-				return 0, 0, false
+				return j, 0, false
 			}
 			loops := 0
 			for _, c := range cols[1:] {
@@ -590,7 +726,7 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 			}
 			n := loops + depth - pending
 			if n < 0 {
-				return 0, 0, false
+				return j, 0, false
 			}
 			return j, n, true
 		default:
@@ -602,7 +738,7 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 					// main read at the top level once the earlier refusals
 					// closed the blocks. The rescue bails; the ordinary
 					// recovery reads it as ever.
-					return 0, 0, false
+					return j, 0, false
 				}
 			}
 			if lineStart {
@@ -617,64 +753,163 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 	}
 }
 
-// openBlockColumns replays the consumed stream's INDENT/DEDENT pairs to list
-// the columns at which the parser's open blocks read their lines — the base
-// (top level, column 1) first, the innermost block last. It exists for the
-// broken-list resync, which must tell a line an ancestor owns from a line no
-// open block owns: the tokens carry no level, but the history does. The
-// INDENT carries no column, so the level it pushed is read off the first
-// real token of the line it opens (resync-spliced DEDENTs may sit between).
-// An earlier resync's consumed remainder held INDENT/DEDENT pairs the
-// parser's loops never saw, so the replay can drift from the loops a later
-// resync still has open — it then bails where it could have landed, never
-// the reverse.
+// openBlocks lists the columns at which the parser's open blocks read their
+// lines — the base (top level, column 1) first, the innermost block last —
+// and, beside each, the keyword of the declaration header that opened it
+// ("" for none). It exists for the broken-list resync, which must tell a
+// line an ancestor owns from a line no open block owns: the tokens carry no
+// level, but the history does, so the consumed stream's INDENT/DEDENT pairs
+// are replayed into a stack (openBlockStack). The replay is kept current
+// rather than rebuilt: a call reads the tokens consumed since the last one,
+// so a source leaving forty thousand lists open costs the resync one pass
+// over its tokens, not one per list (#2626); the stack starts over when the
+// cursor stands behind what it read (a lookahead's rewind) or a splice
+// landed inside it (spliceDedents). The INDENT carries no column, so the
+// level it pushed reads its column off the first real token of the line it
+// opens (resync-spliced DEDENTs may sit between); until that token is
+// consumed the level reads as column 1. An earlier resync's consumed
+// remainder is not read (skipped): the parser's block loops never saw those
+// tokens, so the INDENT/DEDENT pairs they hold must not move the stack — a
+// replay that read them let a second resync in the same block land with too
+// few DEDENTs and lose a declaration (#2771).
 func (p *parser) openBlocks() (cols []int, hosts []string) {
-	cols = []int{1}
-	hosts = []string{""}
-	toks := p.lex.tokens[:p.lex.ti]
-	var lineFirst, lineSecond, lineThird Token
-	prevHeader := "" // the keyword of the declaration header the previous line opened
-	flush := func() {
-		if lineFirst.Type != 0 && declStartsBlock(lineFirst) &&
-			tokenAsIdent(lineSecond) != "" && lineThird.Type == TokenColon {
-			prevHeader = lineFirst.Value
-		} else {
-			prevHeader = ""
-		}
-		lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
+	s := &p.blocks
+	if s.cols == nil || s.ti > p.lex.ti {
+		s.reset()
 	}
-	for i := 0; i < len(toks); i++ {
-		switch toks[i].Type {
-		case TokenIndent:
-			col := 1
-			for j := i + 1; j < len(toks); j++ {
-				if toks[j].Type != TokenIndent && toks[j].Type != TokenDedent {
-					col = toks[j].Column
-					break
-				}
-			}
-			cols = append(cols, col)
-			hosts = append(hosts, prevHeader)
-			lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
-		case TokenDedent:
-			if len(cols) > 1 {
-				cols = cols[:len(cols)-1]
-				hosts = hosts[:len(hosts)-1]
-			}
-		case TokenNewline:
-			flush()
-		default:
-			switch {
-			case lineFirst.Type == 0:
-				lineFirst = toks[i]
-			case lineSecond.Type == 0:
-				lineSecond = toks[i]
-			case lineThird.Type == 0:
-				lineThird = toks[i]
-			}
+	s.readThrough(p.lex.tokens[:p.lex.ti])
+	cols = slices.Clone(s.cols)
+	for i, c := range cols {
+		if c == 0 {
+			cols[i] = 1
 		}
+	}
+	hosts = slices.Clone(s.hosts)
+	if openBlocksCheck != nil {
+		openBlocksCheck(p, cols, hosts)
 	}
 	return cols, hosts
+}
+
+// openBlockStack is the open-block stack openBlocks reads: the replay of the
+// consumed stream's INDENT/DEDENT pairs, kept current token by token, minus
+// the spans the parser's loops never saw (skipped).
+type openBlockStack struct {
+	// ti is how far the stack has read: p.lex.tokens[:ti] are in it, the
+	// skipped spans excepted.
+	ti int
+	// cols and hosts are the stack, the top level first: the column each
+	// open block reads its lines at — 0 while the level's first real token
+	// is not consumed yet — and the keyword of the declaration header that
+	// opened it.
+	cols  []int
+	hosts []string
+	// unresolved counts the innermost levels whose column is still 0: the
+	// levels pushed since the last real token, which sit on top.
+	unresolved int
+	// lineFirst, lineSecond and lineThird are the first three tokens of the
+	// line being read, and prevHeader the keyword of the declaration header
+	// the previous line opened — "" when it opened none — which hosts the
+	// level the next INDENT pushes.
+	lineFirst, lineSecond, lineThird Token
+	prevHeader                       string
+	// replayed counts the tokens read into the stack over the whole
+	// reading, a start-over included; the witness of #2626 holds it to the
+	// stream's length — a token is read once, however many resyncs ask.
+	replayed int
+	// skipped are the absolute index spans of the consumed broken-list
+	// remainders, recorded by consumeBrokenListRemainder: the parser's
+	// block loops never saw those tokens, so the stack must not read their
+	// INDENT/DEDENT pairs either (#2771). The spans arrive in order and
+	// never overlap (the stream's cursor only moves forward past a
+	// remainder); si is the span the catch-up reads at. Splices land at or
+	// past the cursor, never inside a span; the one defensive exception
+	// (a splice behind what the stack read) shifts them. Kept over reset,
+	// as replayed is: they name spans of the stream, not of the reading.
+	skipped []indexSpan
+	si      int
+}
+
+// indexSpan is a half-open span [from, to) of absolute stream indices.
+type indexSpan struct{ from, to int }
+
+// openBlocksCheck, when set, is handed every answer openBlocks gives; the
+// package's tests set it to hold the kept stack to a replay of the consumed
+// stream at each call. Nil outside tests.
+var openBlocksCheck func(p *parser, cols []int, hosts []string)
+
+// reset starts the stack over from the first token of the stream, keeping
+// the count of tokens read so far and the skipped spans (they name spans of
+// the stream, unchanged by a start-over).
+func (s *openBlockStack) reset() {
+	*s = openBlockStack{cols: []int{1}, hosts: []string{""}, replayed: s.replayed, skipped: s.skipped}
+}
+
+// readThrough reads the tokens of toks the stack has not read yet, past the
+// skipped spans without push/pop: the parser's loops never saw them.
+func (s *openBlockStack) readThrough(toks []Token) {
+	for s.ti < len(toks) {
+		for s.si < len(s.skipped) && s.skipped[s.si].to <= s.ti {
+			s.si++
+		}
+		if s.si < len(s.skipped) && s.ti >= s.skipped[s.si].from {
+			s.ti = s.skipped[s.si].to
+			continue
+		}
+		s.read(toks[s.ti])
+		s.ti++
+	}
+}
+
+// read is one more consumed token in the stack.
+func (s *openBlockStack) read(t Token) {
+	s.replayed++
+	switch t.Type {
+	case TokenIndent:
+		s.cols = append(s.cols, 0)
+		s.hosts = append(s.hosts, s.prevHeader)
+		s.unresolved++
+		s.lineFirst, s.lineSecond, s.lineThird = Token{}, Token{}, Token{}
+	case TokenDedent:
+		if len(s.cols) > 1 {
+			s.cols = s.cols[:len(s.cols)-1]
+			s.hosts = s.hosts[:len(s.hosts)-1]
+			if s.unresolved > 0 {
+				s.unresolved--
+			}
+		}
+	default:
+		// The first token that is neither INDENT nor DEDENT gives the
+		// levels pushed since the last one their column.
+		for i := len(s.cols) - s.unresolved; i < len(s.cols); i++ {
+			s.cols[i] = t.Column
+		}
+		s.unresolved = 0
+		if t.Type == TokenNewline {
+			s.endLine()
+			return
+		}
+		switch {
+		case s.lineFirst.Type == 0:
+			s.lineFirst = t
+		case s.lineSecond.Type == 0:
+			s.lineSecond = t
+		case s.lineThird.Type == 0:
+			s.lineThird = t
+		}
+	}
+}
+
+// endLine closes the line being read: a `<keyword> <name>:` header of a
+// block-opening declaration hosts the level the next INDENT pushes.
+func (s *openBlockStack) endLine() {
+	if s.lineFirst.Type != 0 && declStartsBlock(s.lineFirst) &&
+		tokenAsIdent(s.lineSecond) != "" && s.lineThird.Type == TokenColon {
+		s.prevHeader = s.lineFirst.Value
+	} else {
+		s.prevHeader = ""
+	}
+	s.lineFirst, s.lineSecond, s.lineThird = Token{}, Token{}, Token{}
 }
 
 // parseDashList parses the YAML-style form of a list: after the property's
@@ -779,20 +1014,36 @@ func (p *parser) parseToolList() []string {
 	return p.parseBracketList(p.refListElem)
 }
 
-// parseDeclaredToolList parses an agent/judge `tools:` — the one list whose
-// EMPTY inline form is a value rather than an absence. `tools: []` is the
-// author saying "this node has no tools"; no `tools:` line at all leaves the
-// surface undeclared, which the CLI backends read as "no restriction". The
-// two are told apart by nilness from here down, through the ONE predicate
+// parseDeclaredToolList parses an agent/judge `tools:` — a list whose EMPTY
+// inline form is a value rather than an absence. `tools: []` is the author
+// saying "this node has no tools"; no `tools:` line at all leaves the surface
+// undeclared, which the CLI backends read as "no restriction". The two are
+// told apart by nilness from here down, through the ONE predicate
 // toolcatalog.ToolsDeclared.
-//
-// Every other bracket list keeps parseBracketList's nil: `capabilities: []`
-// in particular must stay indistinguishable from an absent one, because a nil
-// capability list is what makes a node inherit the workflow's.
 //
 // The `- item` form cannot express an empty list — an indented block with no
 // item is a parse error — so it never yields a declared-empty surface.
 func (p *parser) parseDeclaredToolList() []string {
+	return p.parseDeclaredRefList("tools", "tool")
+}
+
+// parseDeclaredCapabilityList parses an agent/judge/workflow `capabilities:`
+// — the SECOND list whose empty inline form is a value (#1801).
+// `capabilities: []` is the author saying "this node holds NO host
+// capability": an explicit empty grant that OVERRIDES the workflow's list,
+// where an absent `capabilities:` line inherits it (the executor resolves
+// the inheritance on nil). Before #1801 the empty form compiled to nil and
+// silently inherited — the author who emptied the list got the parent grant
+// instead of no grant.
+func (p *parser) parseDeclaredCapabilityList() []string {
+	return p.parseDeclaredRefList("capabilities", "capability")
+}
+
+// parseDeclaredRefList parses the lists whose empty inline form is a
+// declaration: `tools:` and `capabilities:`. Every OTHER bracket list keeps
+// parseBracketList's nil — `tool_policy: []` or `skills: []` stay
+// indistinguishable from an absent line.
+func (p *parser) parseDeclaredRefList(prop, elem string) []string {
 	if lineEnds(p.peek()) {
 		return p.parseDashList(p.refListElem)
 	}
@@ -819,8 +1070,8 @@ func (p *parser) parseDeclaredToolList() []string {
 	out := p.parseBracketElems(p.refListElem)
 	if out == nil {
 		p.addErrorHint(DiagExpectedToken, at,
-			"no tool name was read from this list: every element was refused",
-			"Write `tools: []` for a node with no tools, or name the tools.")
+			"no "+elem+" name was read from this list: every element was refused",
+			"Write `"+prop+": []` to declare none, or name the "+prop+".")
 	}
 	return out
 }
@@ -912,6 +1163,27 @@ func (p *parser) expectInt() int {
 	t := p.next()
 	if t.Type == TokenInt {
 		v, err := strconv.Atoi(t.Value)
+		if err != nil {
+			p.addError(DiagExpectedToken, t, fmt.Sprintf("invalid integer %q: %v", t.Value, err))
+			return 0
+		}
+		return v
+	}
+	p.expectFailed(t, TokenInt, "expected integer, got "+t.Type.String())
+	return 0
+}
+
+// expectInt64 is expectInt for a value whose range needs the wider type. A
+// codemode `memory:` is a byte count and its platform ceiling (2 GiB) is
+// already one past what an int32 holds, so `strconv.Atoi` — whose int is
+// 32 bits on a 32-bit build — refuses the very value the registry documents.
+// Measured under GOARCH=386 before this existed: `memory: 2147483648` drew
+// E002 "value out of range". The AST field and the author writer were widened
+// on purpose; the reader was the half left behind.
+func (p *parser) expectInt64() int64 {
+	t := p.next()
+	if t.Type == TokenInt {
+		v, err := strconv.ParseInt(t.Value, 10, 64)
 		if err != nil {
 			p.addError(DiagExpectedToken, t, fmt.Sprintf("invalid integer %q: %v", t.Value, err))
 			return 0

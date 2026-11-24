@@ -91,7 +91,7 @@ func TestForgeEnable_IndeterminateHookWriteReachesOps(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("code=%d body=%s, want 502: the forge's own failure", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "provisioning failed") {
+	if !strings.Contains(w.Diagnostic(t), "provisioning failed") {
 		t.Errorf("the answer does not name the failure: %s", w.Body.String())
 	}
 	warned := logs.String()
@@ -149,7 +149,7 @@ func TestWriteForgeProvisionError_IndeterminateHookWriteLogsAndKeepsTheStatus(t 
 			s.logger = iterlog.New(iterlog.LevelWarn, logs)
 
 			w := httptest.NewRecorder()
-			s.writeForgeProvisionError(w, tc.err)
+			s.writeForgeProvisionError(w, httptest.NewRequest(http.MethodPost, "/api/teams/t/forge/repo-bots", nil), tc.err)
 			if w.Code != tc.wantCode {
 				t.Errorf("code=%d, want %d (the forge's own failure decides it): %s", w.Code, tc.wantCode, w.Body.String())
 			}

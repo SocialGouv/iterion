@@ -311,3 +311,133 @@ func TestFinalizeConflictMerge_RefusesAResolutionThatRewritesTheContract(t *test
 		t.Fatalf("the landing committed a rewritten contract: err=%v", err)
 	}
 }
+
+// git writes warnings, hints and advice on STDERR whenever the environment
+// gives it a reason to — an advice.* nobody disabled, an ambiguous refname,
+// a repository it had to repair — and the staged-contract check PARSES git's
+// answer: index entries split on NUL, the fields of a tree line. Read
+// through the combined stream, such a line becomes a second index entry and
+// the last 3-field line of a tree listing, so a resolution carrying exactly
+// the judged bytes is refused over the machine's noise. The shim is the real
+// git with one stderr line before its answer and one after: the production
+// path, the real binary, one term changed.
+func TestFinalizeConflictMerge_GitTalkingOnStderrDoesNotRefuseTheLanding(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		gittest.Run(t, dir, args...)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t.t")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
+	write("file.txt", "alpha\nbravo\ncharlie\n")
+	write("contract.yaml", "the contract\n")
+	run("add", "-A")
+	run("commit", "-qm", "base")
+	judged := gittest.Run(t, dir, "rev-parse", "HEAD")
+
+	run("checkout", "-qb", "feature")
+	write("file.txt", "alpha\nBRAVO-FEATURE\ncharlie\n")
+	run("commit", "-qam", "feat")
+	run("checkout", "-q", "main")
+	write("file.txt", "alpha\nbravo-main\ncharlie\n")
+	run("commit", "-qam", "main-change")
+	_, _ = gittest.Try(dir, "merge", "--squash", "feature")
+	resolution := "alpha\nresolved\ncharlie\n"
+	if err := StageResolvedFile(dir, "file.txt", resolution); err != nil {
+		t.Fatalf("StageResolvedFile: %v", err)
+	}
+
+	// The shim goes up only now: the fixture above reads git's values
+	// through gittest.Run, whose contract is the trimmed COMBINED output,
+	// so a warning would land inside `judged` itself.
+	shimDir := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		"printf 'warning: a line the environment decided to print\\n' >&2\n" +
+		"'" + realGit + "' \"$@\"\n" +
+		"status=$?\n" +
+		"printf 'hint: and one after the answer\\n' >&2\n" +
+		"exit $status\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+originalPath)
+
+	// contract.yaml is staged with the bytes the verdict judged: nothing in
+	// the repository justifies a refusal.
+	verdict := &LandingVerdict{JudgedHead: judged,
+		JudgedTree: `{"table":{"contract.yaml":{"w":"file:y","i":"y","t":"H","f":"unspecified"}},"rest":{"count":0,"digest":"x"}}`}
+	sha, err := FinalizeConflictMerge(dir, "resolved squash", verdict)
+	if err != nil {
+		t.Fatalf("a git warning on stderr refused a landing whose contract.yaml is byte-identical to the judged one: %v", err)
+	}
+
+	// The effect, read from the repository with the shim back down.
+	t.Setenv("PATH", originalPath)
+	if got := gittest.Run(t, dir, "show", sha+":file.txt"); got != strings.TrimSuffix(resolution, "\n") {
+		t.Fatalf("the landing carries %q, want the resolution", got)
+	}
+}
+
+// The staged-contract check reads git's tree listing as a SET. A verdict key
+// that resolves to several entries at the landed commit leaves no single
+// judged blob, and taking one of them by its RANK in the listing makes the
+// verdict depend on the order git prints — an order nothing here guarantees.
+// Here the entry that sorts last carries the same bytes as the staged file,
+// so a positional read finds its comparison satisfied and ACCEPTS a landing
+// whose contract key it never resolved. The ambiguity is the refusal.
+func TestFinalizeConflictMerge_RefusesAVerdictKeyThatNamesSeveralBlobsAtTheLandedCommit(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) { t.Helper(); gittest.Run(t, dir, args...) }
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t.t")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
+	// a.yaml and zz.yaml carry the same bytes, so they share one blob: the
+	// entry that sorts LAST is indistinguishable from the staged one.
+	write("a.yaml", "the contract\n")
+	write("b.yaml", "other\n")
+	write("zz.yaml", "the contract\n")
+	run("add", "-A")
+	run("commit", "-qm", "base")
+	judged := gittest.Run(t, dir, "rev-parse", "HEAD")
+
+	// The index keeps exactly ONE entry under the key, so the staged-entry
+	// check upstream passes and the tree listing is what decides.
+	run("rm", "-q", "--cached", "b.yaml", "zz.yaml")
+	entries := strings.Count(gittest.Run(t, dir, "ls-files", "-s", "--", "."), "\n") + 1
+	if entries != 1 {
+		t.Fatalf("the fixture stages %d entries under the key, want exactly 1 — the witness would stop at the staged-entry check", entries)
+	}
+
+	verdict := &LandingVerdict{JudgedHead: judged,
+		JudgedTree: `{"table":{".":{"w":"file:y","i":"y","t":"H","f":"unspecified"}},"rest":{"count":0,"digest":"x"}}`}
+	sha, err := FinalizeConflictMerge(dir, "resolved squash", verdict)
+	if err == nil {
+		t.Fatalf("the landing was accepted (%s) though the verdict key resolves to three blobs at the landed commit: the comparison took whichever entry git printed last", sha)
+	}
+	if !strings.Contains(err.Error(), "want exactly one") {
+		t.Fatalf("the refusal does not name the ambiguity: %v", err)
+	}
+	if head := gittest.Run(t, dir, "rev-parse", "HEAD"); head != judged {
+		t.Fatalf("HEAD moved to %s: the refusal must land nothing", head)
+	}
+}

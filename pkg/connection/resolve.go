@@ -37,16 +37,68 @@ type Resolver struct {
 	// writes can widen it. Threading it from the call site would put the
 	// decision back where the untrusted text is.
 	TenantID string
+	// Trust says who wrote the code in the workspace of the run this resolver
+	// serves, and it is REQUIRED: the zero value states nothing and refuses
+	// every action, read or mutating (trust.go).
+	//
+	// A FIELD for the same reason as TenantID, and the reason is stronger
+	// here: the executor that calls ResolveAction holds no run document, so
+	// threading trust through the call would make the layer with the LEAST
+	// knowledge answer the question — on the very path the untrusted text
+	// reaches.
+	Trust ActionTrust
 }
 
 // ResolveAction implements the executor's seam.
 //
-// The order is deliberate. The OPERATION is resolved first, then the
-// connection, then the credential — cheapest and least sensitive first, so a
-// misspelt operation id never causes a credential to be unsealed. Each step's
-// failure names what to fix, because every one of them surfaces to an operator
-// as "the node failed" otherwise.
+// The order is deliberate. The OPERATION is resolved first, then the run's
+// TRUST, then the connection, then the credential — cheapest and least
+// sensitive first, so a misspelt operation id never causes a credential to be
+// unsealed, and a run whose workspace the tenant does not control never causes
+// a tenant-scoped store read either. Each step's failure names what to fix,
+// because every one of them surfaces to an operator as "the node failed"
+// otherwise.
 func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	return r.resolve(ctx, actionID, connRef{alias: alias}, CapAction)
+}
+
+// ResolveActionByConnection is the same resolution for a caller that holds
+// the connection's id rather than an alias a workflow wrote: a poller, whose
+// record names the connection it reads (ADR-168 §7). Polling spends the
+// connection's credential, so it asks the `action` grant like an action node,
+// through the one path every other check runs on. The connection must be one
+// of the operation's connector: an id is not a name a package can widen.
+func (r *Resolver) ResolveActionByConnection(ctx context.Context, actionID, connectionID string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	return r.resolve(ctx, actionID, connRef{id: connectionID}, CapAction)
+}
+
+// connRef names the connection a resolution uses: by alias, as a workflow
+// writes it, or by id, as a record that already chose it holds it.
+type connRef struct {
+	alias, id string
+}
+
+// label is how a refusal names the connection.
+func (c connRef) label() string {
+	if c.id != "" {
+		return c.id
+	}
+	return c.alias
+}
+
+// ResolveAgent is the MCP facade's half of the same chokepoint (#2758): the
+// operation the MODEL chose, resolved against the same catalog, the same
+// trust verdict and the same store, differing from ResolveAction in exactly
+// one thing — the capability the connection must declare. The two are one
+// code path so the facade cannot drift from the node on anything but the
+// grant it asks for.
+func (r *Resolver) ResolveAgent(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	return r.resolve(ctx, actionID, connRef{alias: alias}, CapAgent)
+}
+
+// resolve is the ONE resolution path; `want` is the use being authorised.
+func (r *Resolver) resolve(ctx context.Context, actionID string, ref connRef, want Capability) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	alias := ref.label()
 	var zero spec.Operation
 	if r == nil || r.Catalog == nil || r.Store == nil {
 		return nil, zero, exec.Credential{}, "", errors.New("connection: resolver is not wired (catalog or store missing)")
@@ -58,30 +110,36 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 		return nil, zero, exec.Credential{}, "", errors.New("connection: resolver has no tenant, so it may read nobody's connections")
 	}
 
-	connectorID, _, ok := strings.Cut(actionID, ".")
-	if !ok || connectorID == "" {
-		return nil, zero, exec.Credential{}, "", fmt.Errorf("action %q is not an operation id — it must read `connector.resource.verb`", actionID)
-	}
-
-	pkg, err := r.Catalog.Package(connectorID)
+	// The CATALOGUE half, through the one function that answers it: a surface
+	// that resolves an action WITHOUT running it (`iterion validate
+	// --connectors`) has to refuse the same thing with the same sentence, and
+	// a second copy of "cut the id, ask the tier, ask the package" is how the
+	// two would drift.
+	pkg, op, tier, err := ResolveOperation(r.Catalog, actionID)
 	if err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
-	op, found := pkg.Operation(actionID)
-	if !found {
-		return nil, zero, exec.Credential{}, "", fmt.Errorf("connector %q (v%s) has no operation %q%s",
-			connectorID, pkg.Connector.Version, actionID, suggestOperation(pkg, actionID))
+	connectorID, _, _ := strings.Cut(actionID, ".")
+
+	// WHO WROTE THE CODE, before the connection is even looked up.
+	//
+	// The TRUST alone is the predicate — not the effect: #1802 refused only
+	// mutations and let a review READ, and ADR-162 decision 6 withdrew the
+	// reads too, because what such a run reads can leave through the run's one
+	// route out. The operation is still resolved first so the refusal can name
+	// it, and that touches only the local catalog. Placed before the store read
+	// so an untrusted run's action learns nothing about which aliases this
+	// tenant has, and before openCredential so nothing is unsealed for it.
+	// trust.go holds the whole reasoning.
+	if !r.Trust.tenantsOwnCode() {
+		return nil, zero, exec.Credential{}, "", &TrustError{Action: op.ID, Alias: alias, Effect: op.Effect, Trust: r.Trust}
 	}
 
-	conn, err := r.Store.ByAlias(ctx, r.TenantID, connectorID, alias)
+	conn, err := r.lookup(ctx, connectorID, ref)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, zero, exec.Credential{}, "", fmt.Errorf("no %q connection named %q for this tenant%s",
-				connectorID, alias, r.suggestAlias(ctx, connectorID))
-		}
-		return nil, zero, exec.Credential{}, "", fmt.Errorf("resolve connection %q: %w", alias, err)
+		return nil, zero, exec.Credential{}, "", err
 	}
-	if err := r.checkUsable(conn, pkg, op); err != nil {
+	if err := r.checkUsable(conn, pkg, tier, op, want); err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
 
@@ -137,12 +195,57 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 	return pkg, op, cred, conn.BaseURL, nil
 }
 
+// lookup reads the connection a resolution names, in the resolver's tenant.
+func (r *Resolver) lookup(ctx context.Context, connectorID string, ref connRef) (Connection, error) {
+	if ref.id != "" {
+		conn, err := r.Store.Get(ctx, r.TenantID, ref.id)
+		if errors.Is(err, ErrNotFound) {
+			return Connection{}, fmt.Errorf("no connection %q for this tenant", ref.id)
+		}
+		if err != nil {
+			return Connection{}, fmt.Errorf("resolve connection %q: %w", ref.id, err)
+		}
+		if conn.Connector != connectorID {
+			return Connection{}, fmt.Errorf("connection %q is a %q connection, and the operation is %q's", ref.id, conn.Connector, connectorID)
+		}
+		return conn, nil
+	}
+	conn, err := r.Store.ByAlias(ctx, r.TenantID, connectorID, ref.alias)
+	if errors.Is(err, ErrNotFound) {
+		return Connection{}, fmt.Errorf("no %q connection named %q for this tenant%s",
+			connectorID, ref.alias, r.suggestAlias(ctx, connectorID))
+	}
+	if err != nil {
+		return Connection{}, fmt.Errorf("resolve connection %q: %w", ref.alias, err)
+	}
+	return conn, nil
+}
+
 // checkUsable refuses a connection that must not serve this call.
 //
 // Checked at the moment of USE rather than trusted from the record's own
 // status, because both facts change under the run: a credential is revoked
 // while a loop iterates, an operator narrows a capability between two nodes.
-func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Operation) error {
+// The TIER is a parameter because the two refusals below are about the package
+// a tier is serving RIGHT NOW against a record entrusted to another one, and
+// "which tier" is the first thing an operator has to know to repair it: the
+// id, the scheme id and the placement can all three be identical between two
+// tiers, so the id names nothing. It is printed, never branched on.
+func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op spec.Operation, want Capability) error {
+	// The MATURITY the package declares is the server's word that the
+	// capability is fit to bind at all ("DATA THE SERVER ENFORCES, not a
+	// display category"), and `Attachable` is written as "may be bound to a
+	// bot OR USED BY A NODE" — an agent through the facade is a third door on
+	// the same promise. Without this, a package at the inert floor
+	// (`maturity: spotted`) or one whose level is a TYPO — which reads as
+	// spotted — resolved and was served here, while the node path's own gate
+	// (checkOperationUsable) refused the same operation by name: one rule,
+	// two answers, and the agent's answer was the permissive one. Typed, like
+	// CapabilityError: the caller tells "wait for the package to be
+	// qualified" from "widen the grant".
+	if m := pkg.EffectiveMaturity(op); !m.Attachable() {
+		return &MaturityError{Operation: op.ID, Maturity: m, Tier: tier}
+	}
 	if !conn.Status.Usable() {
 		reason := conn.StatusReason
 		if reason == "" {
@@ -178,20 +281,23 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 	// credential needs re-consenting.
 	scheme, found := pkg.Connector.AuthScheme(conn.SchemeID)
 	if !found {
-		return fmt.Errorf("connection %q names scheme %q, which connector %q no longer declares — reconnect it against the package now installed",
-			conn.Alias, conn.SchemeID, pkg.Connector.ID)
+		return fmt.Errorf("connection %q names scheme %q, which connector %q no longer declares in the package the %s serves — reconnect it against the package now installed",
+			conn.Alias, conn.SchemeID, pkg.Connector.ID, tier)
 	}
 	if got := placementOf(scheme); !conn.AuthPlacement.Equal(got) {
-		return fmt.Errorf("connection %q was entrusted for %s and the package now asks for %s — refusing rather than sending the credential somewhere it was not granted to go; reconnect it if the change is intended",
-			conn.Alias, conn.AuthPlacement.Describe(), got.Describe())
+		return fmt.Errorf("connection %q was entrusted for %s and the %s now asks for %s — refusing rather than sending the credential somewhere it was not granted to go; reconnect it if the change is intended",
+			conn.Alias, conn.AuthPlacement.Describe(), tier, got.Describe())
 	}
 	// The capability is the whole answer to "may this connection be used for
 	// this?". A deterministic node and an agent facade are different uses of
 	// one credential, and an operator may legitimately allow one and not the
 	// other.
-	if !conn.Has(CapAction) {
-		return fmt.Errorf("connection %q may not serve a deterministic node: it declares %s, not %q — an operator grants that use deliberately",
-			conn.Alias, describeCaps(conn.Capabilities), CapAction)
+	//
+	// TYPED (agent.go): the refusal reaches the caller — the node executor,
+	// the MCP facade — as the call's failure, and it has to tell "widen this
+	// grant" from "the grant you hold is one this build cannot honour".
+	if !conn.Has(want) {
+		return &CapabilityError{Alias: conn.Alias, Want: want, Have: conn.Capabilities}
 	}
 	// The scheme the connection holds must be one the operation accepts, and
 	// the grant must cover what the operation needs. Refused locally: the
@@ -235,7 +341,21 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 // suggestAlias names the aliases the tenant does have for this connector. A
 // bare "not found" on a name the operator is sure they created usually means a
 // different connector, and listing what exists says so in one line.
+//
+// A run whose workspace the tenant does not control is told nothing: the list
+// is tenant data, and the reader of a refusal served to such a run is whoever
+// wrote that run's workspace — the error would be an inventory of the tenant's
+// connections (#1802's rule, applied by #2810 one layer up to the catalog's
+// packages). The resolution now refuses such a run before any store read, so
+// this gate is the second lock on the same door rather than the only one — kept
+// because the refusal that reaches it can come from a caller yet to be written.
+// It reads the same predicate those decisions read, and sits HERE rather than
+// at the one call site so every future caller inherits it. Withheld before the
+// List call, so the probe costs the tenant's store nothing either.
 func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
+	if !r.Trust.tenantsOwnCode() {
+		return ""
+	}
 	all, err := r.Store.List(ctx, r.TenantID, connector)
 	if err != nil || len(all) == 0 {
 		return " (this tenant has no " + connector + " connection at all)"
@@ -245,6 +365,50 @@ func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
 		names = append(names, c.Alias)
 	}
 	return " (it has: " + strings.Join(names, ", ") + ")"
+}
+
+// ResolveOperation answers the catalogue half of a resolution: the package a
+// tier serves for the action's connector, the operation that package declares,
+// and WHICH tier served it.
+//
+// EXPORTED, and ResolveAction's own first steps, because resolution happens at
+// two surfaces that must agree. A run resolves to CALL; `iterion validate
+// --connectors` resolves to TELL, with no connection, no credential and no
+// trust verdict — and its whole value is that it refuses exactly what a run
+// would refuse, naming the same thing to fix. Each of the three failures below
+// is a different repair (a malformed action id in the `.bot`, a package to
+// install, an operation id to correct), and the layered catalog's per-tier
+// reasons are what send the reader to the right directory.
+//
+// It touches the local catalog only. Nothing here reads a connection record or
+// unseals a credential, which is what lets an authoring surface call it: a
+// misspelt operation id cannot cost a credential read, the ordering rule
+// ResolveAction's own doc states.
+func ResolveOperation(catalog Catalog, actionID string) (*spec.Package, spec.Operation, Tier, error) {
+	var zero spec.Operation
+	if catalog == nil {
+		// Refused rather than read as "no such connector": a caller with no
+		// catalog has an install to fix, not a `.bot` to correct.
+		return nil, zero, Tier{}, errors.New("connection: no connector catalog to resolve against")
+	}
+	connectorID, _, ok := strings.Cut(actionID, ".")
+	if !ok || connectorID == "" {
+		return nil, zero, Tier{}, fmt.Errorf("action %q is not an operation id — it must read `connector.resource.verb`", actionID)
+	}
+	pkg, tier, err := catalog.Package(connectorID)
+	if err != nil {
+		return nil, zero, Tier{}, err
+	}
+	op, found := pkg.Operation(actionID)
+	if !found {
+		// The TIER, not just the connector id and version: two tiers can hold
+		// the same id at the same version, and an operator told only "forgejo
+		// v1.2 has no such operation" reads the package they expected to win
+		// rather than the one that answered.
+		return nil, zero, Tier{}, fmt.Errorf("connector %q (v%s) from the %s has no operation %q%s",
+			connectorID, pkg.Connector.Version, tier, actionID, suggestOperation(pkg, actionID))
+	}
+	return pkg, op, tier, nil
 }
 
 // suggestOperation points at the nearest operation id, which for a mistyped

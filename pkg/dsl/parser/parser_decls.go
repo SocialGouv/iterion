@@ -350,6 +350,13 @@ func (p *parser) parseSecretField() *ast.SecretField {
 			}
 		case "hosts":
 			sf.Hosts = p.parseStringList()
+		case "sinks":
+			// `sinks: []` reads as no list — every sink, like an absent
+			// property: the empty form has no meaning of its own, and one it
+			// could not keep through the printers and the JSON transport
+			// (which drop an empty list) would turn into that reading
+			// silently on the way.
+			sf.Sinks = p.parseStringList()
 		case "description":
 			sf.Description = p.expectString()
 		default:

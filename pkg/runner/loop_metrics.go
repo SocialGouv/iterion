@@ -3,17 +3,23 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // metricsEmitter wraps a model.EventEmitter and taps llm_step_finished
@@ -28,6 +34,9 @@ import (
 type metricsEmitter struct {
 	inner model.EventEmitter
 	reg   *metrics.Registry
+	// priceCtx prices the gateway branch through the run's carried
+	// environment (see newMetricsEmitter); nil prices from the process.
+	priceCtx context.Context
 
 	// modelByNode names the model each node's route is keyed on. Seeded by
 	// delegate_started (the node's declared spec, provider included),
@@ -54,7 +63,12 @@ type metricsEmitter struct {
 	modelByNode    map[string]string
 	declaredByNode map[string]string
 	stepsSeen      map[string]bool
+	// outerSteps holds a node's stepsSeen while one of its schema re-asks
+	// run inside the fallback chain runs (EventDelegateStarted with
+	// "reask_in_chain").
+	outerSteps     map[string]bool
 	priceByModel   map[string]modelRate
+	extractionSeen map[string]bool
 
 	// declinedRoutes remembers the routes recordCredentialSpend could name
 	// no credential for, so that decline is warned once per route.
@@ -77,6 +91,21 @@ type metricsEmitter struct {
 	// claw node can be pointed at any provider the registry knows).
 	byRoute map[routeKey]routeTotals
 
+	// credPlan is the publisher's stamped node-and-provider →
+	// credential-fingerprint plan (queue.RunMessage.CredPlan): the
+	// launch-frozen answer to "which sealed credential does this node's
+	// route spend". Nil on publications that carry no plan — the fine
+	// table below never fills, and the pool report keeps the coarse
+	// whole-attempt booking.
+	credPlan map[string]string
+	// byFingerprint is the fine table the pool report slices by (#2288):
+	// the same observations byRoute carries, grouped by the CREDENTIAL
+	// that served them instead of the (backend, model, source) route.
+	// Filled only from the plan — an observation the plan names nothing
+	// for joins no row, never the donor's by guess, and counts in missed
+	// below.
+	byFingerprint map[string]credpool.FingerprintSpend
+
 	// sawAuthFailure records that the provider rejected this run's
 	// credential at some point, even if the attempt did not END on that
 	// error. Recovery converts an auth failure into a human pause, so by
@@ -86,6 +115,50 @@ type metricsEmitter struct {
 	// donor's daily quota each time (measured on prod: 2 runs, credential
 	// dead, pledge still "active").
 	sawAuthFailure bool
+
+	// credVerdicts is what each credential the attempt's exhausted chains
+	// ran on met, keyed by its fingerprint (chainRouteVerdictLocked): the
+	// route verdicts of the node_recovery events, each placed on the
+	// credential its route spent — never on a credential another route of
+	// the same chain spent. unplacedVerdict says a credential verdict could
+	// not be placed (a route naming neither its keys nor a plan row), and
+	// unchainedVerdict that one was read outside any chain (the node's own
+	// code); either withholds the fine condition table
+	// (fineConditions), and the pool report keeps the coarse condition.
+	credVerdicts     map[string]credVerdict
+	unplacedVerdict  bool
+	unchainedVerdict bool
+
+	// probe answers the credential window's probe this attempt follows, when
+	// it follows one (watchProbeAnswer): nil otherwise.
+	probe *probeWatch
+
+	// missed accumulates the observations a STAMPED plan named nothing for,
+	// on the routes a plan is supposed to answer. Env-funded spend is
+	// excluded — the openai_compatible gateway and a claude_code session
+	// riding the pod's ambient env are credentials the runner's environment
+	// holds, which no plan row ever names on purpose, so their empty joins
+	// are correct, not drift. Any miss VOIDS the fine table at the pool
+	// report (fineFingerprintSpend): the unplaced slice may have run on the
+	// lease's own credential (a claw subagent of a donor-funded node, a
+	// served model whose prefix names no provider), and a table without it
+	// would book the donor short — the coarse whole-attempt booking stands.
+	missed planMiss
+
+	// disagreed counts the observations whose own credential keys named a
+	// fingerprint other than the one the stamped plan predicted for their
+	// node and provider. The observation books on its own fingerprint — the
+	// plan is a prediction, the keys the call's record (ADR-161 decision 8)
+	// — and the report says so, once.
+	disagreed int64
+}
+
+// planMiss is the spend a stamped plan's keys answered nothing for, on the
+// routes a plan is supposed to answer (env-funded routes excluded).
+type planMiss struct {
+	costUSD      float64
+	tokens       int64
+	observations int64
 }
 
 // modelRate is the per-token cost (USD) for a given model, derived
@@ -101,8 +174,21 @@ type modelRate struct {
 // routeKey names one (backend, model) pair a run spent on, and — for a
 // delegate that stamps it — the credential route its session ran on
 // (delegate_finished's `fingerprint`): two nodes of one backend and model
-// can spend two credentials when their provider hints differ.
-type routeKey struct{ backend, model, source string }
+// can spend two credentials when their provider hints differ. credential is
+// what the call spent where its events carried the credential keys (ADR-161
+// decision 8): the ledger books on its slot rather than re-deriving one.
+type routeKey struct {
+	backend, model, source string
+	credential             credroute.Spend
+}
+
+// observedCredential reads an event payload's credential keys (the zero
+// Spend where it carries none) — the call's own record of what it spent,
+// the key every table books the observation under.
+func observedCredential(data map[string]any) credroute.Spend {
+	s, _ := credroute.SpendFromEvent(data)
+	return s
+}
 
 // routeTotals is one route's slice of the run's consumption.
 type routeTotals struct {
@@ -125,16 +211,25 @@ func (t routeTotals) tokens() int64 {
 	return t.inputTokens + t.outputTokens + t.aggregateTokens
 }
 
-func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
+func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry, credPlan map[string]string, priceCtx context.Context) *metricsEmitter {
 	return &metricsEmitter{
-		inner:          inner,
-		reg:            reg,
+		inner: inner,
+		reg:   reg,
+		// priceCtx is the run's context — the one injectCredentials
+		// planted the sealed price-feed table on (ADR-163): rateForLocked
+		// prices gateway models through it, so the org cap and the
+		// credential ledger book the same table the node's stamp carries.
+		// Nil (the zero construction) prices from the process env.
+		priceCtx:       priceCtx,
 		modelByNode:    make(map[string]string),
 		declaredByNode: make(map[string]string),
 		stepsSeen:      make(map[string]bool),
 		priceByModel:   make(map[string]modelRate),
 		byRoute:        make(map[routeKey]routeTotals),
 		declinedRoutes: make(map[routeKey]bool),
+		credPlan:       credPlan,
+		byFingerprint:  make(map[string]credpool.FingerprintSpend),
+		credVerdicts:   make(map[string]credVerdict),
 	}
 }
 
@@ -214,15 +309,52 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 	return true
 }
 
+// addRoute is the locked entry the OnUsage sink calls from the
+// coordinator goroutine — a different one than the event stream's, so it
+// takes the mutex observe holds on the same maps and totals.
+//
+// The sink's observation joins the credential plan like an event's: the
+// source is the node half the walk recorded (a supervisor's
+// `supervisor:<name>` site), and an observation that joins no row is a
+// miss the report must count — a sink path that stayed outside the miss
+// accounting would send a table without its slice, booking the lease
+// short under real spend.
+func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bookObservationLocked(source, routeKey{backend: backend, model: modelName, source: source}, "", cost, in, out, aggregate)
+}
+
+// bookObservationLocked folds one priced observation into every table that
+// reads it: its (backend, model, source) route bucket, and — on a run whose
+// publisher stamped a credential plan — the plan join (#2288): the
+// fingerprint the plan names for (nodeID, provider) takes the observation
+// into its fine row, and an observation the plan names nothing for counts
+// as a miss. provider is the observation's own word (the serving element's
+// provider the event carries), "" when it carries none — the join then
+// derives one from the route.
+//
+// The ONE entry every observation path takes — the OnUsage sink, the step
+// branch and every slice of a delegate event (observeDelegate) — so no path
+// can book the route table without the join: a path that skipped the fine
+// row would ship a table without its slice, and one that skipped the miss
+// would ship it unvoided, either way booking the lease short. Called with
+// m.mu held, alongside the run-total accumulation it mirrors.
+func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
+	m.addRouteLocked(route, cost, in, out, aggregate)
+	fp := m.fingerprintFor(nodeID, route, provider)
+	m.addFingerprintLocked(fp, cost, in, out, aggregate)
+	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
+}
+
 // addRouteLocked folds one observation into its (backend, model) bucket.
-// Called with m.mu held, alongside the run-total accumulation it mirrors —
-// the two must never diverge, so they are updated in the same critical
-// section.
-func (m *metricsEmitter) addRouteLocked(backend, modelName, source string, cost float64, in, out, aggregate int64) {
+// Called with m.mu held, through bookObservationLocked — the run totals,
+// the route table and the plan join must never diverge, so they are
+// updated in the same critical section.
+func (m *metricsEmitter) addRouteLocked(k routeKey, cost float64, in, out, aggregate int64) {
 	if m.byRoute == nil {
 		m.byRoute = make(map[routeKey]routeTotals)
 	}
-	k := routeKey{backend: backend, model: modelName, source: source}
 	t := m.byRoute[k]
 	t.costUSD += cost
 	t.inputTokens += in
@@ -244,20 +376,175 @@ func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
 	return out
 }
 
+// fineSnapshot reads the fine table (#2288) — the run's consumption grouped
+// by the CREDENTIAL that served each observation, the fingerprints the
+// publisher's plan named, the space the pool lease's own stamp lives in —
+// together with the join-miss accounting, in ONE critical section: the
+// report's verdict on the misses (send the table, or void it) judges
+// exactly the rows it would send. Both are empty on a publication that
+// carried no plan.
+func (m *metricsEmitter) fineSnapshot() (map[string]credpool.FingerprintSpend, planMiss) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := make(map[string]credpool.FingerprintSpend, len(m.byFingerprint))
+	maps.Copy(rows, m.byFingerprint)
+	return rows, m.missed
+}
+
+// planDisagreements is the count of observations whose own credential keys
+// named a fingerprint other than the plan's prediction (disagreed).
+func (m *metricsEmitter) planDisagreements() int64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.disagreed
+}
+
+// fingerprintFor resolves the credential fingerprint one observation books
+// in the fine table, on a run whose publisher stamped a credential plan.
+//
+// An observation that carries the credential keys (ADR-161 decision 8) books
+// on its own: the fingerprint of the run slot it names, or nobody where the
+// call spent no slot of the run's — the pod's env, a host login, a backend's
+// own config, an environment the plan never names on purpose
+// (planRouteFundedByEnv). The plan stays a prediction: where it predicted
+// another fingerprint for the observation's node and provider, the
+// observation still books on its own, and the disagreement is counted for
+// the report's warning.
+//
+// An observation without the keys (a backend whose arm has not landed)
+// joins the plan: its entry for the node the event names, refined by the
+// provider the serving chain element resolved — the event's own `provider`
+// word when it stamps one, the claude_code label's slot and the model's
+// prefix when it does not. "" when the plan names nothing for it: the
+// observation joins no row of the fine table, never the donor's by guess,
+// and counts as a miss (notePlanMissLocked).
+//
+// The structured-output recovery's own call (hostExtractionSource) is in no
+// plan: the publisher predicts the node's routes, never the detector's pick.
+// Its own keys alone decide — the run slot it spent, or nobody — and it is
+// never a disagreement. Called under m.mu.
+func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider string) string {
+	if len(m.credPlan) == 0 || nodeID == "" {
+		return ""
+	}
+	if route.source == hostExtractionSource {
+		return ownFingerprint(route.credential)
+	}
+	if provider == "" {
+		provider = planProviderFor(route)
+	}
+	predicted := ""
+	if provider != "" {
+		predicted = m.credPlan[nodeID+model.PlanKeySep+provider]
+	}
+	if route.credential.Channel == "" {
+		return predicted
+	}
+	own := ownFingerprint(route.credential)
+	if predicted != "" && predicted != own {
+		m.disagreed++
+	}
+	return own
+}
+
+// ownFingerprint is the fine-table fingerprint a call's own credential keys
+// book on: the run slot's it spent, "" — nobody — where it spent no slot of
+// the run's.
+func ownFingerprint(spent credroute.Spend) string {
+	if !spent.RunSlot() {
+		return ""
+	}
+	return spent.Fingerprint
+}
+
+// addFingerprintLocked folds one observation into its credential bucket.
+// Called under m.mu, from bookObservationLocked beside addRouteLocked — the
+// two tables read the same observation, and a guard that dropped one would
+// drop it from both.
+func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, aggregate int64) {
+	if fp == "" {
+		return
+	}
+	t := m.byFingerprint[fp]
+	t.Fingerprint = fp
+	t.CostUSD += cost
+	t.InputTokens += in
+	t.OutputTokens += out
+	t.AggregateTokens += aggregate
+	m.byFingerprint[fp] = t
+}
+
+// hostExtractionSource labels the structured-output recovery's own call
+// (reask "extract"): a claw call on the model HOST detection picked, which
+// the credential plan never predicts for the node. Its event's credential
+// keys — the claw arm's Spend for the call — book it: the run slot it spent
+// (a donor's lent key included), or nobody for the pod's money. An event
+// without them books nobody and is no miss.
+const hostExtractionSource = "host-extraction"
+
+// planRouteFundedByEnv reports that a route's spend belongs to a credential
+// the runner's ENVIRONMENT holds rather than one the plan could name: a call
+// whose own credential keys name no slot of the run's, and — for an event
+// without them — the openai_compatible gateway (EnvFunded — the walk records
+// no bundle row for it on purpose), a claude_code session that rode the
+// pod's ambient anthropic env, and the structured-output recovery's call.
+// Booking nobody for these is correct, never drift.
+func planRouteFundedByEnv(route routeKey) bool {
+	if route.credential.Channel != "" {
+		// The call's own record: a spend on no slot of the run's is the
+		// environment's (or a backend's own config), placed on nobody.
+		return !route.credential.RunSlot()
+	}
+	if modelroute.Parse(route.model).Gateway() || route.source == hostExtractionSource {
+		return true
+	}
+	return route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env"
+}
+
+// notePlanMissLocked folds one observation the plan named nothing for into
+// the join-miss accounting. Called under m.mu, from bookObservationLocked
+// beside addFingerprintLocked — the same observation feeds both, and a
+// guard that dropped one would drop it from both. A spendless observation (no cost, no tokens) counts
+// nothing: a free call that joins nothing is not money the lease loses.
+// An env-funded route places nobody by design and voids nothing.
+func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost float64, tokens int64) {
+	if len(m.credPlan) == 0 || fp != "" || planRouteFundedByEnv(route) {
+		return
+	}
+	if cost == 0 && tokens == 0 {
+		return
+	}
+	m.missed.costUSD += cost
+	m.missed.tokens += tokens
+	m.missed.observations++
+}
+
 // The executor writes through this emitter, but the ENGINE writes straight
 // to its own store — and node_recovery, the only place a recovery-absorbed
 // auth failure is still named, is an ENGINE event. The runner therefore
 // also registers observe via runtime.WithEventObserver (see loop.go).
 
 // rateForLocked returns the cached per-token rates for the given model,
-// resolving once via cost.EstimateUSD. Called under m.mu.
+// resolving once via the cost probes — through the run's own environment
+// when the emitter carries one, so a feed-priced gateway node's org-cap
+// and ledger rows price at the sealed table, never the process floor.
+// Called under m.mu.
 func (m *metricsEmitter) rateForLocked(modelName string) modelRate {
 	if r, ok := m.priceByModel[modelName]; ok {
 		return r
 	}
 	const probe = 1_000_000
-	inUSD := cost.EstimateUSD(modelName, probe, 0)
-	outUSD := cost.EstimateUSD(modelName, 0, probe)
+	var inUSD, outUSD float64
+	if m.priceCtx != nil {
+		inUSD = cost.EstimateUSDQuietInEnv(m.priceCtx, modelName, probe, 0)
+		outUSD = cost.EstimateUSDQuietInEnv(m.priceCtx, modelName, 0, probe)
+	} else {
+		inUSD = cost.EstimateUSD(modelName, probe, 0)
+		outUSD = cost.EstimateUSD(modelName, 0, probe)
+	}
 	r := modelRate{
 		inputUSDPerToken:  inUSD / float64(probe),
 		outputUSDPerToken: outUSD / float64(probe),
@@ -337,6 +624,8 @@ func (m *metricsEmitter) RecordNodeServed(ctx context.Context, runID, nodeID str
 
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
+	case store.EventStructuredExtraction:
+		m.observeStructuredExtraction(evt)
 	case store.EventDelegateStarted:
 		if evt.NodeID == "" {
 			return
@@ -344,7 +633,22 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		declared, _ := evt.Data["declared_model"].(string)
 		m.mu.Lock()
 		// A new attempt of the node: whether its steps are observed is
-		// decided afresh.
+		// decided afresh. A schema re-ask run inside the fallback chain
+		// ("reask_in_chain") is a turn INSIDE the attempt, before the
+		// attempt's own delegate event, so the attempt's verdict is set
+		// aside and restored once the re-ask's delegate event is booked
+		// (observeDelegate); a re-ask after the chain comes once the
+		// attempt's event is booked and starts afresh like any. Only
+		// that event clears it: a sibling replica of the node starting in
+		// between (fan_out_each) must not drop the verdict of the attempt
+		// still correcting. The verdict is per node, so replicas still
+		// share it (#3064).
+		if inChain, _ := evt.Data["reask_in_chain"].(bool); inChain {
+			if m.outerSteps == nil {
+				m.outerSteps = map[string]bool{}
+			}
+			m.outerSteps[evt.NodeID] = m.stepsSeen[evt.NodeID]
+		}
 		delete(m.stepsSeen, evt.NodeID)
 		if declared != "" {
 			m.declaredByNode[evt.NodeID] = declared
@@ -369,6 +673,13 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		const backend = "claw"
 		inputT := toFloat(evt.Data["input_tokens"])
 		outputT := toFloat(evt.Data["output_tokens"])
+		// The slot word the loop stamped — the same `provider` the delegate
+		// events carry — read FIRST in the fingerprint join: a hint-steered
+		// claw route can spend a slot the model spec's own prefix does not
+		// name, and a join re-derived from the spec joins no row on exactly
+		// those routes. An event that carries no word (a container whose
+		// runner predates the stamp) falls back to the spec derivation.
+		provider, _ := evt.Data["provider"].(string)
 
 		// Single critical section: resolve the per-node model name,
 		// accumulate run-level token + cost totals, and compute the
@@ -396,9 +707,12 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
+		route := routeKey{backend: backend, model: modelName, credential: observedCredential(evt.Data)}
+		m.bookObservationLocked(evt.NodeID, route, provider, costDelta, int64(inputT), int64(outputT), 0)
+		// A claw step is a call the provider served.
+		m.noteProbeAnswerLocked(evt.NodeID, route, provider, costDelta, int64(inputT)+int64(outputT))
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
-			k := routeKey{backend: backend, model: modelName}
+			k := route
 			t := m.byRoute[k]
 			t.unreportedCalls++
 			m.byRoute[k] = t
@@ -418,12 +732,24 @@ func (m *metricsEmitter) observe(evt store.Event) {
 	case store.EventNodeRecovery:
 		// The engine already classified the failure here (typed, from
 		// recovery.Classify) — this is the only place the reason survives
-		// once recovery turns an auth rejection into a pause.
-		if code, _ := evt.Data["code"].(string); code == string(runtime.ErrCodeAuthFailed) {
-			m.mu.Lock()
+		// once recovery turns an auth rejection into a pause. A dead
+		// credential on ONE route of an exhausted chain is read too: the
+		// node's code is then the window another route met (the run waits
+		// for it, #3032), and the rejection lives in the route verdicts
+		// the same event carries (runtime.ChainRouteVerdicts).
+		code, _ := evt.Data["code"].(string)
+		routes, chained := evt.Data["chain_routes"].([]map[string]any)
+		m.mu.Lock()
+		if code == string(runtime.ErrCodeAuthFailed) || chainRouteRejectedCredential(routes) {
 			m.sawAuthFailure = true
-			m.mu.Unlock()
 		}
+		if !chained && credentialVerdictCode(code) {
+			m.unchainedVerdict = true
+		}
+		for _, route := range routes {
+			m.chainRouteVerdictLocked(evt.NodeID, route)
+		}
+		m.mu.Unlock()
 	case store.EventDelegateStall:
 		// The F8.1 class: a served model blocking on an orchestration wait
 		// it never armed. Counted per outcome so "recovered in place" and
@@ -463,134 +789,228 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// only the finished branch left every failed attempt unbilled in
 		// RunTotals, and the org's monthly bucket under-read what the
 		// credential actually spent. Same accounting as the finished
-		// branch below: one aggregate token count to the aggregate
-		// direction, cost from the delegate's own figure, the claw
-		// summarised guard so a loop whose llm_step_finished steps were
-		// already priced is not charged twice when its aggregate then
-		// errors. The two events are mutually exclusive per attempt
-		// (the executor fires one or the other), so no sum double-counts.
-		backend, _ := evt.Data["backend"].(string)
-		if backend == "" {
-			backend = "delegate"
-		}
-		tokensF := toFloat(evt.Data["tokens"])
-		effective, _ := evt.Data["effective_model"].(string)
-		served, _ := evt.Data["route_model"].(string)
-		var source string
-		if backend == delegate.BackendClaudeCode {
-			source, _ = evt.Data["fingerprint"].(string)
-		}
-
-		m.mu.Lock()
-		switch {
-		case served != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = servedRoute(served, effective)
-		case effective != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
-		}
-		modelName := m.modelByNode[evt.NodeID]
-		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
-		var costDelta float64
-		if !summarised {
-			costDelta = toFloat(evt.Data["cost_usd"])
-			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
-				if rate := m.rateForLocked(modelName); rate.known {
-					costDelta = tokensF * rate.inputUSDPerToken
-				}
-			}
-			m.runAggregateTokens += int64(tokensF)
-			m.runCostUSD += costDelta
-			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-		}
-		m.mu.Unlock()
-		if summarised {
-			return
-		}
-		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
-		if costDelta > 0 && m.reg != nil {
-			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
-		}
+		// branch: the two events are mutually exclusive per attempt (the
+		// executor fires one or the other), so no sum double-counts.
+		m.observeDelegate(evt)
 	case store.EventDelegateFinished:
-		backend, _ := evt.Data["backend"].(string)
-		if backend == "" {
-			backend = "delegate"
-		}
-		tokensF := toFloat(evt.Data["tokens"])
-		effective, _ := evt.Data["effective_model"].(string)
-		served, _ := evt.Data["route_model"].(string)
-		// Only claude_code's labels name a credential slot the ledger reads
-		// (routeSlot); keying another backend's route on its label would only
-		// split one route in two.
-		var source string
-		if backend == delegate.BackendClaudeCode {
-			source, _ = evt.Data["fingerprint"].(string)
-		}
+		m.observeDelegate(evt)
+	}
+}
 
-		// Single critical section: resolve the per-node model name and
-		// accumulate the aggregated token count. Prometheus write
-		// happens after the unlock via addTokens (counter Add is atomic).
-		m.mu.Lock()
-		switch {
-		case served != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = servedRoute(served, effective)
-		case effective != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
-		}
-		modelName := m.modelByNode[evt.NodeID]
-		// claw dispatches through the same observability hook as the CLI
-		// delegates, so when its LLM loop has been observed step by step
-		// (llm_step_finished, counted and priced above) this delegation
-		// total is the SUM of those steps: counting it again would charge
-		// every claw run twice — an org's monthly cap tripping at half its
-		// budget, a lending donor drained at twice the rate they agreed to.
-		// The steps are the evidence, not the backend name: a claw loop in a
-		// sandbox container relays them across the IPC, and an in-container
-		// runner too old to relay them leaves this total as the only
-		// observation there is — which is then booked like any delegate's.
-		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
-		var costDelta float64
-		if !summarised {
-			// The delegate already priced this call (its own CLI figure, the
-			// token estimate a subscription session falls back to, or claw's
-			// in-container annotation) and carries the result on the event;
-			// accumulating it is what keeps a claude_code run from reporting
-			// $0 for the whole attempt — the number every consumer of
-			// RunTotals (org monthly cost cap, credential-pool quota) meters
-			// on. An absent key means the delegate's price sources did not
-			// know the model. claw's sources were consulted in the container,
-			// where no cache may exist yet, so the host prices the aggregate
-			// off its own — at the INPUT rate, a floor: one aggregate count
-			// cannot be split into input and output, and output is dearer. A
-			// model no source prices stays at zero: unknown, never free.
-			costDelta = toFloat(evt.Data["cost_usd"])
-			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
-				if rate := m.rateForLocked(modelName); rate.known {
-					costDelta = tokensF * rate.inputUSDPerToken
-				}
-			}
-			m.runAggregateTokens += int64(tokensF)
-			m.runCostUSD += costDelta
-			// The delegate reports ONE token count and no split. It goes to
-			// the aggregate counter rather than to input: a sum stays exact
-			// either way, and only this way does a reader of the public
-			// per-credential endpoint see "not split" instead of a
-			// confident, wrong input figure (#992).
-			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-		}
-		m.mu.Unlock()
-		if summarised {
-			return
-		}
+// observeDelegate books one delegate event's figure (delegate_finished,
+// delegate_error) into the run totals, the route table, the plan join and
+// the Prometheus counters.
+//
+// The figure is split by route before anything is booked: the slices a
+// fallback chain folded in from the routes it abandoned (`folded_spend`)
+// each book on THEIR route and plan row, and the rest — the figure minus
+// those slices — on the route the event names. Booked whole on the event's
+// labels, a claude_code primary that burned a lent subscription before a
+// claw rung served on the team's own key would land on the team's row, or
+// vanish with the claw figure the summarised guard skips.
+func (m *metricsEmitter) observeDelegate(evt store.Event) {
+	backend, _ := evt.Data["backend"].(string)
+	if backend == "" {
+		backend = "delegate"
+	}
+	effective, _ := evt.Data["effective_model"].(string)
+	served, _ := evt.Data["route_model"].(string)
+	provider, _ := evt.Data["provider"].(string)
+	fingerprint, _ := evt.Data["fingerprint"].(string)
+	folded := foldedSpendOf(evt.Data["folded_spend"])
 
-		// Delegate events report a single aggregated token count. It gets
-		// its own direction label: summing every direction stays exact,
-		// and a dashboard reading `direction="input"` is no longer served
-		// output tokens under that name.
-		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
-		if costDelta > 0 && m.reg != nil {
-			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
+	// Single critical section: resolve the per-node model name and book
+	// every slice. Prometheus writes happen after the unlock (counter Add
+	// is atomic).
+	m.mu.Lock()
+	switch {
+	case served != "" && evt.NodeID != "":
+		m.modelByNode[evt.NodeID] = servedRoute(served, effective)
+	case effective != "" && evt.NodeID != "":
+		m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
+	}
+	// The event's own slice: what its figure holds beyond the folded ones.
+	// The executor sums the folded slices onto the last route's own figure,
+	// in this order, so the difference is that route's own spend — up to
+	// float rounding, and exactly zero when it spent nothing (a skip, a
+	// route refused before it spent).
+	reaskMode, _ := evt.Data["reask"].(string)
+	own := delegateSlice{
+		backend:     backend,
+		model:       m.modelByNode[evt.NodeID],
+		provider:    provider,
+		fingerprint: fingerprint,
+		credential:  observedCredential(evt.Data),
+		tokens:      toFloat(evt.Data["tokens"]),
+		cost:        toFloat(evt.Data["cost_usd"]),
+		unstepped:   reaskMode == model.ReaskExtract,
+	}
+	slices := make([]delegateSlice, 0, len(folded)+1)
+	for _, s := range folded {
+		own.tokens -= s.tokens
+		own.cost -= s.cost
+		s.model = m.foldedModelLocked(evt.NodeID, s.route, s.effective)
+		slices = append(slices, s)
+	}
+	own.tokens, own.cost = max(own.tokens, 0), max(own.cost, 0)
+	slices = append(slices, own)
+	booked := make([]delegateSlice, 0, len(slices))
+	for _, s := range slices {
+		if b, ok := m.bookDelegateSliceLocked(evt.NodeID, s); ok {
+			booked = append(booked, b)
 		}
 	}
+	// A FINISHED delegation's own route served it. The folded slices are
+	// the routes the chain abandoned, and a delegate_error's spend may end
+	// on the very refusal the probe is asking about: neither answers.
+	if evt.Type == store.EventDelegateFinished {
+		m.noteProbeAnswerLocked(evt.NodeID, delegateSliceRoute(own), own.provider, own.cost, int64(own.tokens))
+	}
+	// The re-ask's delegate event is booked: the enclosing attempt's
+	// steps verdict comes back for that attempt's own delegate event.
+	if reask, _ := evt.Data["reask"].(string); reask != "" {
+		if outer, ok := m.outerSteps[evt.NodeID]; ok {
+			if outer {
+				m.stepsSeen[evt.NodeID] = true
+			} else {
+				delete(m.stepsSeen, evt.NodeID)
+			}
+			delete(m.outerSteps, evt.NodeID)
+		}
+	}
+	m.mu.Unlock()
+
+	// Delegate events report a single aggregated token count. It gets its
+	// own direction label: summing every direction stays exact, and a
+	// dashboard reading `direction="input"` is no longer served output
+	// tokens under that name.
+	for _, b := range booked {
+		m.addTokens(b.backend, b.model, "aggregate", b.tokens)
+		if b.cost > 0 && m.reg != nil {
+			m.reg.LLMCostUSDTotal.WithLabelValues(b.backend, normalizeModelLabel(b.model)).Add(b.cost)
+		}
+	}
+}
+
+// delegateSlice is one route's part of a delegate event's figure: a slice
+// the chain folded in from an abandoned route (`folded_spend`), or the rest,
+// under the event's own labels. route and effective are the slice's own
+// facts; model is the route key the meter books it under.
+type delegateSlice struct {
+	backend, route, effective, model, provider, fingerprint string
+	// credential is the slice's credential keys (observedCredential).
+	credential   credroute.Spend
+	tokens, cost float64
+	// unstepped says the slice's figure was never emitted as steps — the
+	// structured-output recovery's direct claw call (reask "extract") —
+	// so the claw steps guard does not apply to it.
+	unstepped bool
+}
+
+// foldedSpendOf reads a delegate event's `folded_spend` (the executor's
+// foldedSpendPayload). An entry that is not an object names no route: its
+// spend is not subtracted, so it stays in the event's own slice and books
+// on the event's labels, as an unsplit figure does.
+func foldedSpendOf(raw any) []delegateSlice {
+	entries, _ := raw.([]any)
+	out := make([]delegateSlice, 0, len(entries))
+	for _, e := range entries {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		s := delegateSlice{tokens: toFloat(entry["tokens"]), cost: toFloat(entry["cost_usd"])}
+		s.backend, _ = entry["backend"].(string)
+		if s.backend == "" {
+			s.backend = "delegate"
+		}
+		s.route, _ = entry["route_model"].(string)
+		s.effective, _ = entry["effective_model"].(string)
+		s.provider, _ = entry["provider"].(string)
+		s.fingerprint, _ = entry["fingerprint"].(string)
+		s.credential = observedCredential(entry)
+		out = append(out, s)
+	}
+	return out
+}
+
+// foldedModelLocked names the route key a folded slice books under, from
+// its own route and reported model the way the event's own figure is keyed
+// (servedRoute, routeModel). Called under m.mu.
+func (m *metricsEmitter) foldedModelLocked(nodeID, route, effective string) string {
+	switch {
+	case route != "":
+		return servedRoute(route, effective)
+	case effective != "":
+		return routeModel(m.declaredByNode[nodeID], effective)
+	}
+	return m.declaredByNode[nodeID]
+}
+
+// bookDelegateSliceLocked books one slice of a delegate event into the run
+// totals and, through bookObservationLocked, the route table and the plan
+// join; it returns the slice as booked (its cost priced) for the
+// Prometheus counters, false when the slice books nothing. Called under
+// m.mu.
+//
+// The claw summarised guard: claw dispatches through the same observability
+// hook as the CLI delegates, so when this node's claw loop has been
+// observed step by step (llm_step_finished, counted and priced as it ran) a
+// claw slice is the SUM of those steps — counting it again would charge
+// every claw run twice: an org's monthly cap tripping at half its budget, a
+// lending donor drained at twice the rate they agreed to. The steps are the
+// evidence, not the backend name: a claw loop in a sandbox container relays
+// them across the IPC, and an in-container runner too old to relay them
+// leaves the slice as the only observation there is — booked like any
+// delegate's. The guard is the SLICE's backend's, never the event's: a
+// folded claude_code slice under a claw rung's event was never a step, and
+// a folded claw slice under a claude_code rung's event was.
+//
+// Only claude_code's labels name a credential slot the ledger reads
+// (routeSlot); keying another backend's route on its label would only split
+// one route in two.
+func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice) (delegateSlice, bool) {
+	if s.backend == delegate.BackendClaw && !s.unstepped && m.stepsSeen[nodeID] {
+		return s, false
+	}
+	// The delegate already priced its call (its own CLI figure, the token
+	// estimate a subscription session falls back to, or claw's in-container
+	// annotation) and carries the result on the event; accumulating it is
+	// what keeps a claude_code run from reporting $0 for the whole attempt
+	// — the number every consumer of RunTotals (org monthly cost cap,
+	// credential-pool quota) meters on. An absent cost means the delegate's
+	// price sources did not know the model. claw's sources were consulted in
+	// the container, where no cache may exist yet, so the host prices the
+	// slice off its own — at the INPUT rate, a floor: one aggregate count
+	// cannot be split into input and output, and output is dearer. A model
+	// no source prices stays at zero: unknown, never free.
+	if s.cost == 0 && s.backend == delegate.BackendClaw && s.tokens > 0 && s.model != "" {
+		if rate := m.rateForLocked(s.model); rate.known {
+			s.cost = s.tokens * rate.inputUSDPerToken
+		}
+	}
+	m.runAggregateTokens += int64(s.tokens)
+	m.runCostUSD += s.cost
+	// The delegate reports ONE token count and no split. It goes to the
+	// aggregate counter rather than to input: a sum stays exact either way,
+	// and only this way does a reader of the public per-credential endpoint
+	// see "not split" instead of a confident, wrong input figure (#992).
+	m.bookObservationLocked(nodeID, delegateSliceRoute(s), s.provider, s.cost, 0, 0, int64(s.tokens))
+	return s, true
+}
+
+// delegateSliceRoute is the route key a delegate slice books under: the
+// claude_code session label is its source, the structured-output recovery's
+// call is hostExtractionSource.
+func delegateSliceRoute(s delegateSlice) routeKey {
+	var source string
+	if s.backend == delegate.BackendClaudeCode {
+		source = s.fingerprint
+	}
+	if s.unstepped {
+		source = hostExtractionSource
+	}
+	return routeKey{backend: s.backend, model: s.model, source: source, credential: s.credential}
 }
 
 // RunTotals snapshots the run's accumulated LLM consumption — what
@@ -620,6 +1040,159 @@ func (m *metricsEmitter) spentOnTheProvider() bool {
 	}
 	costUSD, inputTokens, outputTokens, aggregateTokens := m.RunTotals()
 	return costUSD > 0 || inputTokens > 0 || outputTokens > 0 || aggregateTokens > 0
+}
+
+// chainRouteRejectedCredential reports a node_recovery event's route verdicts
+// (runtime.ChainRouteVerdicts, the engine's own slice: the observer sees the
+// event as the engine emitted it) naming a credential the provider rejected.
+func chainRouteRejectedCredential(routes []map[string]any) bool {
+	return slices.ContainsFunc(routes, func(route map[string]any) bool {
+		code, _ := route["code"].(string)
+		return code == string(runtime.ErrCodeAuthFailed)
+	})
+}
+
+// credentialVerdictCode reports a failure code that changes a credential's
+// availability in the pool: a dead credential, or a usage window.
+func credentialVerdictCode(code string) bool {
+	return code == string(runtime.ErrCodeAuthFailed) || code == string(runtime.ErrCodeUsageLimitBlocked)
+}
+
+// credVerdict is what one credential met across the attempt's exhausted
+// chains: a rejection, a usage window, and the earliest instant one of its
+// windows named (zero: none did).
+type credVerdict struct {
+	authFailed bool
+	window     bool
+	windowAt   time.Time
+}
+
+// chainRouteVerdictLocked places one route verdict of an exhausted chain on
+// the credential its route spent (routeCredentialLocked). Only a verdict
+// that changes a credential's availability is placed; a route the runner
+// cannot place marks the attempt's verdicts unplaced. Called under m.mu.
+func (m *metricsEmitter) chainRouteVerdictLocked(nodeID string, route map[string]any) {
+	code, _ := route["code"].(string)
+	if !credentialVerdictCode(code) {
+		return
+	}
+	backend, _ := route["backend"].(string)
+	modelSpec, _ := route["route_model"].(string)
+	provider, _ := route["provider"].(string)
+	var source string
+	if backend == delegate.BackendClaudeCode {
+		source, _ = route["fingerprint"].(string)
+	}
+	fp, placed := m.routeCredentialLocked(nodeID, routeKey{backend: backend, model: modelSpec, source: source, credential: observedCredential(route)}, provider)
+	if !placed {
+		m.unplacedVerdict = true
+		return
+	}
+	if fp == "" {
+		// The environment's credential (planRouteFundedByEnv): no lease
+		// lends it, so its verdict is no donor's.
+		return
+	}
+	v := m.credVerdicts[fp]
+	if code == string(runtime.ErrCodeAuthFailed) {
+		v.authFailed = true
+	} else {
+		v.window = true
+		if at := routeWindowReopensAt(route); !at.IsZero() && (v.windowAt.IsZero() || at.Before(v.windowAt)) {
+			v.windowAt = at
+		}
+	}
+	m.credVerdicts[fp] = v
+}
+
+// routeWindowReopensAt is the instant a route's usage-window refusal names:
+// its typed reset (reset_at), else one parsed from its words, zero when it
+// names none.
+func routeWindowReopensAt(route map[string]any) time.Time {
+	if raw, _ := route["reset_at"].(string); raw != "" {
+		if at, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return at.UTC()
+		}
+	}
+	words, _ := route["error"].(string)
+	if at, ok := delegate.ParseResetHint(words, time.Now().UTC()); ok {
+		return at.UTC()
+	}
+	return time.Time{}
+}
+
+// routeCredentialLocked names the credential one route spent — for a chain
+// verdict (chainRouteVerdictLocked) and for a probe's answer
+// (noteProbeAnswerLocked) — in the order its spend joins the plan
+// (fingerprintFor), one step stricter, since a verdict moves a lease and an
+// answer releases a window where a spend only books:
+//
+//   - the route's own credential keys (ADR-161 decision 8) — the run slot
+//     they name, or nobody for a spend on no slot of the run's;
+//   - for a route without them, a label that says the call rode the
+//     environment (the structured-output recovery's call, a claude_code
+//     session on the pod's ambient anthropic env): nobody, whatever the plan
+//     predicted;
+//   - the credential plan's row for the node and the route's provider — a
+//     gateway route included: the walk records a row for one only when a
+//     sealed key funds it (ADR-131 §5);
+//   - a gateway route the plan names no row for: nobody — the environment
+//     funds it (planRouteFundedByEnv).
+//
+// placed is false when none of these names one: the route may have spent
+// any credential, the lease's included. Called under m.mu.
+func (m *metricsEmitter) routeCredentialLocked(nodeID string, route routeKey, provider string) (fp string, placed bool) {
+	if route.credential.Channel != "" {
+		return ownFingerprint(route.credential), true
+	}
+	if route.source == hostExtractionSource || (route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env") {
+		return "", true
+	}
+	if len(m.credPlan) > 0 && nodeID != "" && route.backend != "" {
+		if provider == "" {
+			provider = planProviderFor(route)
+		}
+		if provider != "" {
+			if fp = m.credPlan[nodeID+model.PlanKeySep+provider]; fp != "" {
+				return fp, true
+			}
+		}
+	}
+	if planRouteFundedByEnv(route) {
+		return "", true
+	}
+	return "", false
+}
+
+// fineConditions is the attempt's fine condition table for the pool report
+// (credpool.Outcome.Conditions): what each credential its exhausted chains
+// met, one row per credential in a stable order. Nil — the coarse condition
+// stands for every lease — when the attempt met no chain verdict, when one
+// could not be placed, or when a credential verdict was read outside any
+// chain: a table missing a verdict would clear a lease whose credential met
+// it. A credential that met a rejection is AUTH_FAILED whatever else it met:
+// resting it on a window would hand it back still dead.
+func (m *metricsEmitter) fineConditions() []credpool.FingerprintCondition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.credVerdicts) == 0 || m.unplacedVerdict || m.unchainedVerdict {
+		return nil
+	}
+	out := make([]credpool.FingerprintCondition, 0, len(m.credVerdicts))
+	for fp, v := range m.credVerdicts {
+		row := credpool.FingerprintCondition{Fingerprint: fp}
+		switch {
+		case v.authFailed:
+			row.Condition = credpool.ConditionAuthFailed
+		case v.window:
+			row.Condition, row.CooldownUntil = credpool.ConditionUsageWindow, v.windowAt
+		default:
+			continue
+		}
+		out = append(out, row)
+	}
+	slices.SortFunc(out, func(a, b credpool.FingerprintCondition) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
+	return out
 }
 
 // SawAuthFailure reports whether the provider rejected this run's
@@ -704,4 +1277,33 @@ func toFloat(raw any) float64 {
 		return float64(v)
 	}
 	return 0
+}
+
+// meterSupervisorSpecs wires each surviving supervisor spec's evaluation
+// cost onto the run's usage ledger (F12): the OnUsage sink books the route
+// the evaluation will actually resolve — the pin, the env default, the
+// ctx-funded detector family, the same resolution preflightSupervisors
+// judged; a private re-derivation would file tokens under a name neither
+// the walk nor the rates recognise — under its supervisor:<name> source,
+// the same route totals recordCredentialSpend meters per credential at the
+// run's end.
+//
+// The slice ELEMENTS carry the sink, never copies: StartDeclared receives
+// this slice's backing array, and a sink set on a copied struct books
+// nowhere — the evaluation spends, the ledger stays empty.
+func meterSupervisorSpecs(ctx context.Context, specs []supervise.Spec, usage *metricsEmitter) {
+	for i := range specs {
+		resolved, rerr := supervise.ResolveModel(ctx, specs[i].Model, specs[i].ProviderHint)
+		if rerr != nil {
+			resolved = ""
+		}
+		specs[i].OnUsage = func(in, out int) {
+			// An evaluation reports an OBSERVED split: the two directions carry
+			// it and the aggregate stays zero. The three counters are disjoint
+			// on every table this observation feeds (credusage.Spend fills one
+			// or the other, credpool.Usage's true total is their sum), so the
+			// sum filed beside the split would count each token twice.
+			usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+specs[i].Name, 0, int64(in), int64(out), 0)
+		}
+	}
 }

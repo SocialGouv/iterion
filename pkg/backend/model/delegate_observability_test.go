@@ -18,6 +18,7 @@ import (
 // CLI-backend run has no llm_request.model escape hatch, so these two
 // surfaces ARE the record of what actually ran.
 func TestDelegateModelReachesStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -111,6 +112,7 @@ func TestDelegateModelReachesStore(t *testing.T) {
 // model an earlier success had stored — the fact a failed run.json must
 // still keep. An error that DOES report a model still overwrites.
 func TestDelegateErrorDoesNotBlankRecordedModel(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -164,6 +166,7 @@ func TestDelegateErrorDoesNotBlankRecordedModel(t *testing.T) {
 }
 
 func TestDelegateModelNoDriftWhenSameModel(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, runID, declared, effective string
 	}{
@@ -201,6 +204,7 @@ func TestDelegateModelNoDriftWhenSameModel(t *testing.T) {
 }
 
 func TestDelegateModelDriftDeduped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -248,6 +252,7 @@ func TestDelegateModelDriftDeduped(t *testing.T) {
 }
 
 func TestDelegateInfoFromResult_carriesEffectiveModel(t *testing.T) {
+	t.Parallel()
 	got := delegateInfoFromResult("claude_code", delegate.Result{
 		EffectiveModel:     "glm-4.6",
 		ContextWindow:      200_000,
@@ -311,6 +316,7 @@ func findEvent(t *testing.T, evts []*store.Event, typ store.EventType) *store.Ev
 // agree and no drift fires. The session fingerprint is the only evidence:
 // it must reach the run record and raise one event per node and facade.
 func TestDelegateFacadeRoutingReachesStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -379,6 +385,7 @@ func TestDelegateFacadeRoutingReachesStore(t *testing.T) {
 // differs, and the event's name is a claim about the outcome. The
 // attempted route must still reach the run record.
 func TestDelegateFacadeRoutingSilentOnFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {

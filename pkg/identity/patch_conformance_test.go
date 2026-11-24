@@ -319,6 +319,38 @@ func runPatchSuite(t *testing.T, s Store) {
 		}
 	})
 
+	t.Run("team: the run visibility axis moves alone and survives an unrelated patch", func(t *testing.T) {
+		org := RunVisibilityOrg
+		got, err := s.PatchTeam(ctx, "pt1", TeamPatch{RunVisibility: &org})
+		if err != nil {
+			t.Fatalf("open axis: %v", err)
+		}
+		if got.RunVisibility != RunVisibilityOrg {
+			t.Fatalf("axis not applied: %+v", got)
+		}
+		// Same F2 core as the runner pool: a whole-document replace from a
+		// stale read would erase the axis. An unrelated patch must leave
+		// it standing.
+		name := "Renamed Once More"
+		got, err = s.PatchTeam(ctx, "pt1", TeamPatch{Name: &name})
+		if err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		if got.RunVisibility != RunVisibilityOrg {
+			t.Fatalf("an unrelated patch erased the run visibility: %+v", got)
+		}
+		// "" is a meaningful write (close the axis), distinct from "leave
+		// untouched".
+		empty := ""
+		got, err = s.PatchTeam(ctx, "pt1", TeamPatch{RunVisibility: &empty})
+		if err != nil {
+			t.Fatalf("close axis: %v", err)
+		}
+		if got.RunVisibility != RunVisibilityTeam {
+			t.Fatalf("explicit reset did not close the axis: %+v", got)
+		}
+	})
+
 	t.Run("team: a taken slug is refused, not silently applied", func(t *testing.T) {
 		taken := "patch-team-two"
 		if _, err := s.PatchTeam(ctx, "pt1", TeamPatch{Slug: &taken}); !errors.Is(err, ErrSlugAlreadyTaken) {

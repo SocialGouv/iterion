@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 const workspaceWriteChild = `tool create:
@@ -40,7 +41,7 @@ func TestRunnerClawToolsUseTheRunClone(t *testing.T) {
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase, SandboxOverride: "none"}}
 	msg := &queue.RunMessage{RunID: "run-workspace-tools", WorkflowName: "wf"}
-	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, clone, iterlog.Nop(), nil)
+	exec, _, err := r.buildExecutor(preparedRunnerFixture(t, context.Background(), r, msg.RunID), msg, &ir.Workflow{Name: "wf"}, clone, iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +87,9 @@ func TestRunnerSubbotWritesIntoTheLentWorkspace(t *testing.T) {
 	writeSubbotFixture(t, botDir, "child.bot", workspaceWriteChild)
 	msg := &queue.RunMessage{RunID: "run-parent-workspace", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, botDir, workspace, iterlog.Nop())
-	_, err := run(context.Background(), runtime.SubbotRequest{
+	_, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"path": "child.txt", "content": "runner child\n"},
 		ParentRunID: msg.RunID, NodeID: "child", ReattachKey: "child", WorkDir: workspace,
 	})
@@ -119,7 +121,7 @@ func TestRunnerBuildExecutorCreatesAMissingWorkspace(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-yet-created")
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase, SandboxOverride: "none"}}
 	msg := &queue.RunMessage{RunID: "run-missing-workspace", WorkflowName: "wf"}
-	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, missing, iterlog.Nop(), nil)
+	exec, _, err := r.buildExecutor(preparedRunnerFixture(t, context.Background(), r, msg.RunID), msg, &ir.Workflow{Name: "wf"}, missing, iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

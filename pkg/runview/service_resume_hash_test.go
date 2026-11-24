@@ -72,8 +72,8 @@ func TestConsumeArtifactResumePreflightClearsLaunchCapture(t *testing.T) {
 	}
 }
 
-func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (int, error) {
-	return 1, nil
+func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (LaunchSubmission, error) {
+	return LaunchSubmission{QueuePosition: 1}, nil
 }
 
 func (*resumeHashPublisher) CancelRun(context.Context, string) error {
@@ -98,7 +98,7 @@ func seedChangedWorkflowRun(t *testing.T, svc *Service, runID, botPath string) {
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	_, originalHash, err := CompileWorkflowFromSource(botPath, resumeHashBotOriginal)
+	_, originalHash, err := CompileWorkflowFromSource(botPath, resumeHashBotOriginal, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("compile original workflow: %v", err)
 	}

@@ -285,6 +285,32 @@ func TestEvaluateTamperedHashEscalates(t *testing.T) {
 	}
 }
 
+// A finalize that REFUSED to merge (merge_status=skipped: a wip-banked
+// HEAD, or no merge target at all) is not overridden by a contract:
+// success_when held or not, the merge verdict escalates — the operator
+// hears the refusal and decides, the automation never lands unreviewed
+// content behind finalize's back.
+func TestEvaluateAFinalizeRefusalEscalatesInsteadOfMerging(t *testing.T) {
+	r := runWith(map[string]map[string]any{"review": {"approved": true}},
+		policy("outputs.review.approved", nil, "merge"))
+	r.MergeStatus = store.MergeStatusSkipped
+	v := Evaluate(r)
+	if v.Decision != DecisionEscalate {
+		t.Fatalf("merge verdict on a skipped finalize = %q, want escalate", v.Decision)
+	}
+	if !strings.Contains(v.Reason, "skipped") {
+		t.Fatalf("reason = %q, want the refusal named", v.Reason)
+	}
+	// A contract that does NOT grant merge is untouched: the refusal
+	// only binds the merge verdict.
+	noMerge := runWith(map[string]map[string]any{"review": {"approved": true}},
+		policy("outputs.review.approved", nil))
+	v = Evaluate(noMerge)
+	if v.Decision != DecisionEscalate || strings.Contains(v.Reason, "skipped") {
+		t.Fatalf("no-merge contract verdict = %q (%q), want the plain escalate", v.Decision, v.Reason)
+	}
+}
+
 // The launch must refuse a contract whose refs the workflow cannot
 // serve: an author typo would otherwise read "unreadable → escalate"
 // at the terminal, forever, silently.

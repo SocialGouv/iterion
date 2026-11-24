@@ -5,8 +5,8 @@ Two lines answer two different questions, and a public surface needs both:
 - the **definition** answers *what does it do* — it is the same sentence
   everywhere, to the byte;
 - the **category line** answers *what kind of thing is it* — it is a metaphor,
-  and each surface is free to phrase it in its own voice (the cloud home's hero
-  is written, the chart README is terse).
+  and each surface is free to phrase it in its own voice (the cloud home writes
+  it into its control-plane section, the chart README is terse).
 
 Only the definition is guarded. `scripts/brand/positioning-check.sh` reads the
 sentence below and fails when a listed surface stops carrying it the expected

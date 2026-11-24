@@ -59,9 +59,9 @@ import (
 //	  forge.ErrOAuthAppNotFound            0
 //	  forge.ErrBoardBindingNotFound        0
 //	  forge.ErrProvisionApprovalNotFound   0
-//	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 itself
-//	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 itself
-//	  forge.ErrProvisionDivergedRetry      0  rides beside ErrProvisionDiverged; the approval arm spares it
+//	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 launch_vars_drop itself, keys listed
+//	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 provision_diverged itself; the 5xx floor keeps that code, NOT the converge-on-rerun prose
+//	  forge.ErrProvisionDivergedRetry      0  rides beside ErrProvisionDiverged; the approval arm spares it, and the route says so with provision_diverged_retry + retryable
 //	  forge.ErrBotNotProvisionable         0  the approval arm consumes the dead-end record
 //
 //	OUTSIDE it, and never sent at all — the one 0 the caller never sees
@@ -88,6 +88,10 @@ import (
 //	  forge.ErrProjectBotNotPermitted      0  the provisioning route answers 403 project_bot_not_permitted itself
 //	  forge.ErrProjectBotUnsupported       0  a configuration contradiction; the provisioning route answers 422
 //	  forge.ErrRepoNotEnabled              0  iterion's own state; the launch route and the board lane's writes answer 409
+//	  forge.ErrProvisionBusy               0  local lease contention; provisioning answers 409
+//	  forge.ErrIntegrationConflict         0  local snapshot conflict; provisioning answers 409
+//	  forge.ErrMintNotApproved             0  the derivation chokepoint refused the credential behind a NEW hook identity's mint; writeForgeProvisionError hands it to derivationError, which answers the credential's own 401/403
+//	  forge.ErrWorkflowNotDispatched       0  a marker beside the forge's answer; the dispatch endpoint answers 422 workflow_dispatch_refused_by_forge itself
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

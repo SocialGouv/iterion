@@ -30,16 +30,19 @@ type doorPublishFixture struct {
 	// donorGatewayKeyID names the gateway key row seeded in the donor
 	// store: a drifted gateway pledge's KeyID points at it.
 	donorGatewayKeyID string
-	rs                *store.FilesystemRunStore
-	pub               *Publisher
-	broker            *credpool.Broker
-	pools             *credpool.MemoryPoolStore
-	pledges           *credpool.MemoryPledgeStore
-	leases            *credpool.MemoryLeaseStore
-	tenantKey         string
-	logs              *bytes.Buffer
-	published         []*queue.RunMessage
-	publishOK         *bool
+	// donorBPledgeID is donor B's entry — the one the resume-switches-to-A
+	// test withdraws by id (an api_key pledge is identified by its key).
+	donorBPledgeID string
+	rs             *store.FilesystemRunStore
+	pub            *Publisher
+	broker         *credpool.Broker
+	pools          *credpool.MemoryPoolStore
+	pledges        *credpool.MemoryPledgeStore
+	leases         *credpool.MemoryLeaseStore
+	tenantKey      string
+	logs           *bytes.Buffer
+	published      []*queue.RunMessage
+	publishOK      *bool
 }
 
 // newDoorPublishFixture wires the whole launch path: a tenant with ONLY an
@@ -62,7 +65,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	kid := secrets.NewApiKeyID()
 	sealed, _ := secrets.SealAPIKey(sealer, kid, []byte("sk-ant-tenant"))
 	if err := keys.Create(store.WithTenant(ctx, poolTeam), secrets.ApiKey{ID: kid, ScopeTeamID: poolTeam,
-		Provider: secrets.ProviderAnthropic, Name: "own", SealedSecret: sealed, Fingerprint: "fp-own", CreatedAt: time.Now().UTC()}); err != nil {
+		Provider: secrets.ProviderAnthropic, Name: "own", SealedSecret: sealed, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderAnthropic, "sk-ant-tenant", ""), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed tenant key: %v", err)
 	}
 	// The DONOR's zai key, pledged through the broker's own store.
@@ -89,7 +92,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	dsealed, _ := secrets.SealAPIKey(sealer, dkid, []byte("zai-donated-key"))
 	if err := donorKeys.Create(store.WithTenant(ctx, "donor-team"), secrets.ApiKey{ID: dkid, TenantID: "donor-team",
 		ScopeTeamID: "donor-team", ScopeUserID: "donor", Provider: secrets.ProviderZAI, Name: "lent",
-		SealedSecret: dsealed, Fingerprint: "fp-donor-zai", CreatedAt: time.Now().UTC()}); err != nil {
+		SealedSecret: dsealed, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderZAI, "zai-donated-key", ""), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed donor key: %v", err)
 	}
 	// Donor B's key rides the SAME store (a resume's landscape flip is
@@ -98,7 +101,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	dsealed2, _ := secrets.SealAPIKey(sealer, dkid2, []byte("zai-donated-b"))
 	if err := donorKeys.Create(store.WithTenant(ctx, "donor-b"), secrets.ApiKey{ID: dkid2, TenantID: "donor-b",
 		ScopeTeamID: "donor-b", ScopeUserID: "donor-b", Provider: secrets.ProviderZAI, Name: "lent-b",
-		SealedSecret: dsealed2, Fingerprint: "fp-donor-b", CreatedAt: time.Now().UTC()}); err != nil {
+		SealedSecret: dsealed2, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderZAI, "zai-donated-b", ""), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed donor B key: %v", err)
 	}
 	pools := credpool.NewMemoryPoolStore()
@@ -107,14 +110,14 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "zai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "zai", dkid), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai", KeyID: dkid},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: consenting,
 	}); err != nil {
 		t.Fatalf("seed pledge: %v", err)
 	}
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai"), PoolID: "pool-1", UserID: "donor-b",
+		ID: credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai", dkid2), PoolID: "pool-1", UserID: "donor-b",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai", KeyID: dkid2},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: true,
 	}); err != nil {
@@ -128,6 +131,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	logs := &bytes.Buffer{}
 	f := &doorPublishFixture{
 		donorGatewayKeyID: gwKeyID,
+		donorBPledgeID:    credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai", dkid2),
 		sealer:            sealer, rs: rs, broker: broker, pools: pools, pledges: pledges, leases: leases, tenantKey: kid,
 		logs: logs, published: []*queue.RunMessage{}, publishOK: new(bool),
 	}
@@ -210,6 +214,12 @@ func TestFallbackDoorPublish_doorServedRunIsNotGrantless(t *testing.T) {
 	if len(open) == 0 {
 		t.Fatal("the door lease did not survive publication — the grantless supersede closed it")
 	}
+	// The message names the attempt the door lease belongs to: the
+	// attempt's report settles exactly that lease (credpool
+	// ReportAttemptID), whatever the publication instant.
+	if msg.PoolAttemptID == "" || msg.PoolAttemptID != open[0].AttemptID {
+		t.Fatalf("PoolAttemptID = %q, want the door lease's attempt id %q", msg.PoolAttemptID, open[0].AttemptID)
+	}
 }
 
 // TestFallbackDoorPublish_resumeSwitchesDonorsAndSaysSo: launch served by
@@ -239,7 +249,7 @@ func TestFallbackDoorPublish_resumeSwitchesDonorsAndSaysSo(t *testing.T) {
 	}
 
 	// The landscape flips: B withdraws — the resume must switch to A.
-	bid := credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai")
+	bid := f.donorBPledgeID
 	if err := f.pledges.Upsert(ctx, credpool.Pledge{
 		ID: bid, PoolID: "pool-1", UserID: "donor-b",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai"},
@@ -261,6 +271,11 @@ func TestFallbackDoorPublish_resumeSwitchesDonorsAndSaysSo(t *testing.T) {
 	open, _ := f.leases.ListOpenByRun(context.Background(), "run-sw")
 	if len(open) != 1 || open[0].DonorID != "donor" {
 		t.Fatalf("open leases after the resume = %+v, want donor A's alone (B's superseded at the acquisition, A's alive after publication)", open)
+	}
+	// The resume's message names ITS attempt — the new lease's id, never
+	// the launch's.
+	if msg.PoolAttemptID == "" || msg.PoolAttemptID != open[0].AttemptID || msg.PoolAttemptID == before[0].AttemptID {
+		t.Fatalf("resume PoolAttemptID = %q, want the resume lease's %q (the launch's was %q)", msg.PoolAttemptID, open[0].AttemptID, before[0].AttemptID)
 	}
 }
 
@@ -324,11 +339,52 @@ func TestFallbackDoorPreview_parity(t *testing.T) {
 	}
 }
 
-// The door's refused-gateway path is unreachable at v25 (the door's wants
-// map slots through allKnownProviders, which excludes the provider until
-// #2005 PR-C'): the released-grant carry is witnessed at the unit level
+// The preview's door answers the launch's own gate — acquireDoorGrant's
+// sharedTiersBlocked, `runnerPool != "" || sovereign`: the door is the pool
+// tier wearing another coat, so a team mapped to a runner pool gets no grant
+// from it. A preview that knows only the sovereign half of that gate
+// announces what the door WOULD serve for a launch that opens no door, which
+// is the same divergence as a verdict computed on fills nothing acquires.
+func TestFallbackDoorPreview_shutForAPoolMappedTeam(t *testing.T) {
+	const pool = "pool-a"
+	f := newDoorPublishFixture(t, true)
+	f.pub.identity = &fakeTeamResolver{orgs: map[string]string{poolTeam: poolOrg}, runnerPool: map[string]string{poolTeam: pool}}
+	f.pub.pools = activeRegistry(pool)
+
+	preview, err := f.pub.PreviewCredentials(context.Background(), runview.CredentialPreviewSpec{
+		Context:        runview.CredentialPreviewContext{TeamID: poolTeam, BotID: "docs-refresh"},
+		OwnerID:        "requester",
+		Launch:         runview.LaunchSpec{BotID: "docs-refresh"},
+		LLMRoutePolicy: f.policy(),
+	}, f.wf())
+	if err != nil {
+		t.Fatalf("PreviewCredentials: %v", err)
+	}
+
+	// The live launch, same mapping, through SubmitLaunch — which reads the
+	// mapping itself: no door lease is taken for this run.
+	f.launch(t, "run-pooled-door")
+	open, err := f.leases.ListOpenByRun(context.Background(), "run-pooled-door")
+	if err != nil {
+		t.Fatalf("ListOpenByRun: %v", err)
+	}
+	if len(open) != 0 {
+		t.Fatalf("the launch took %d pool lease(s) for a pool-mapped team — the premise of this witness is that the door stays shut", len(open))
+	}
+
+	if len(preview.Pool.DoorWants) != 0 || preview.Pool.DoorReason != "" {
+		t.Fatalf("door_wants = %v, door_reason = %q — the preview describes a door the launch never opens for a team mapped to runner pool %q",
+			preview.Pool.DoorWants, preview.Pool.DoorReason, pool)
+	}
+}
+
+// The door's refused-gateway path is unreachable in production for good: the
+// door's wants map slots through the pool's vocabulary (wantForSlot over
+// model.KnownPoolProviders), which never names the gateway (ADR-131 §5). The
+// released-grant carry is witnessed at the unit level
 // (TestAcquireDoorGrant_AnUnsealedGrantIsReleased) and the pool lane's
-// release-reopen chain by TestFailedResumeWithARefusedGrantReopens (the
-// pool lane is drift-reachable by mutating poolWantOrder, whose contents
-// nothing pins — its gateway arm is exactly as unreachable in production
-// as the door's until PR-C'). PR-C' lifts this.
+// release-reopen chain by
+// TestFailedResumeWithARefusedGrantReopensTheSupersededLease, which reaches
+// the legacy pool's gateway arm only by mutating poolWantOrder — whose
+// gateway-free contents TestWantForSlot_totalOverTheVocabulary pins, so that
+// arm is exactly as unreachable in production as the door's.

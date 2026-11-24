@@ -22,6 +22,25 @@ func DenyMessage(toolName string, input map[string]any, rule string) string {
 	return b.String()
 }
 
+// UndelegatableAskMessage is the tool_result text shown to the MODEL of a
+// child conversation when the gate's verdict is Ask: a sub-agent cannot
+// pause the run (#2877), so the approval request degrades to a refusal that
+// says so — and points at the parent's own ask channel, the only route an
+// operator's answer can come back by.
+func UndelegatableAskMessage(toolName string, input map[string]any, rule string) string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "Permission denied: the `%s` tool", toolName)
+	if arg := briefArg(toolName, input); arg != "" {
+		fmt.Fprintf(b, " for %q", arg)
+	}
+	b.WriteString(" requires operator approval")
+	if rule != "" {
+		fmt.Fprintf(b, " (ask rule: %s)", rule)
+	}
+	b.WriteString(", and a sub-agent cannot pause the run to obtain it. Do not retry this action; report it in your final answer so the parent agent can ask the operator itself.")
+	return b.String()
+}
+
 // AskPrompt is the question surfaced to the HUMAN when a call needs
 // approval (ModeAsk, off-policy). The operator answers with one of the
 // AnswerAllowOnce / AnswerAllowAlways / AnswerDeny tokens (the studio
@@ -46,11 +65,26 @@ func AskPrompt(toolName string, input map[string]any, rule string) string {
 // case-insensitively and trimmed; "allow always" / "always" map to
 // AnswerAllowAlways. Anything unrecognized is treated as a denial
 // (fail-safe).
+// ApprovalInteractionKey identifies the exact pause an operator answered.
+const ApprovalInteractionKey = "_approval_interaction_id"
+
 const (
 	AnswerAllowOnce   = "allow"
 	AnswerAllowAlways = "allow always"
 	AnswerDeny        = "deny"
 )
+
+// ParseExactApprovalAnswer accepts only the decision tokens for an exact pause.
+func ParseExactApprovalAnswer(s string) (allow bool, always bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case AnswerAllowOnce, "allow once":
+		return true, false
+	case AnswerAllowAlways:
+		return true, true
+	default:
+		return false, false
+	}
+}
 
 // ParseAnswer classifies an operator's free-text reply to an AskPrompt.
 // Returns (allow, always). A reply that doesn't clearly approve is a
@@ -100,13 +134,39 @@ func GrantRuleFor(toolName string, input map[string]any, always bool) string {
 // authorization rule. Unlike briefArg, it must not truncate: Evaluate matches
 // its scoped rules against the full summary of the re-issued tool call.
 func grantArg(toolName string, input map[string]any) string {
-	s := summarize(canonicalToolName(toolName), input)
-	// summarize may join several candidates with '\n'; scope the approval to
-	// the same first candidate presented to the operator.
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
+	canon := canonicalToolName(toolName)
+	// A search tool's approval binds the DIRECTORY, under the same `path:`
+	// prefix a rule uses. The pattern is the weaker half of the identity:
+	// an approval scoped to it let an agent replay the approved search
+	// against any other directory, which turns the approval prompt into an
+	// exfiltration path. Inside the root the operator saw, the pattern may
+	// vary — that is the scope they granted.
+	if searchesByPattern(canon) {
+		if pattern := str(input, "pattern"); globPatternClimbs(canon, pattern) {
+			// A glob whose pattern climbs out of its root has no directory
+			// to bind: summarize offers it to no opening rule but a bare or
+			// unbounded one. The approval quotes the pattern, so the prompt
+			// shows the climb, and the literal rule it yields matches no
+			// call — the retry asks again. Binding the root would vouch for
+			// a search that leaves it; an empty argument here would make
+			// the once-grant a bare, whole-tool one.
+			return pattern
+		}
+		if root := primaryPath(canon, input); root != "" {
+			return "path:" + root
+		}
 	}
-	return s
+	// No path root: an approval quotes the argument the MODEL wrote, which
+	// is summarize's first exact candidate — the normalised spellings exist
+	// for matching, and a rule carrying one would read as a path the agent
+	// never named. An exact rule reads every spelling of the call, the
+	// climbing one as sent included (candidates), so the once-grant matches
+	// its own retry and nothing else.
+	cands := summarize(canon, input, "").exact
+	if len(cands) == 0 {
+		return ""
+	}
+	return cands[0]
 }
 
 // briefArg renders the most identifying argument of a tool call for

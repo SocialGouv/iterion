@@ -17,7 +17,8 @@ import (
 // tree through the same two calls: Mask, and FenceScanner.Code over Lines.
 // Whatever this package reads differently, they all read differently, so a
 // change to the reading must be decided on the corpus the readers serve.
-// This is that witness: every tracked .md, .yaml and .yml outside vendor/,
+// This is that witness: every tracked .md, .yaml and .yml outside vendor/ that
+// git does not mark linguist-generated (the regenerated maps),
 // hashed under the reading — the docs and ADRs, and the bots' own skills,
 // presets and manifest.yaml under bots/. The walk is internal/corpusreading's,
 // the one the release cut and `task corpus:reading` write the golden with:

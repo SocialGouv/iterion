@@ -133,13 +133,21 @@ func planAdmissionMismatch(kind admissionMismatchKind, mismatchErr error, delay 
 			delay = natsq.SchemaMismatchNakDelay
 		}
 	}
+	// A stale-producer park carries a version this runner accepts: the
+	// server replica that published it lags, not the fleet, and only a
+	// resume from one that publishes the rule's version recovers the run.
+	remedy := "resume this run once the runner fleet accepts the schema the server publishes: it re-publishes the run at that version"
+	var stale *queue.StaleProducerError
+	if errors.As(mismatchErr, &stale) {
+		remedy = fmt.Sprintf("the runners accept v%d; resume this run from a server replica that publishes v%d or later: it re-publishes the run at that version", stale.V, stale.Want)
+	}
 	plan := admissionMismatchPlan{
 		reason: string(kind),
 		delay:  delay,
 		final:  maxDeliver > 0 && delivered >= maxDeliver,
 		parkedRunError: fmt.Sprintf(
-			"schema version mismatch: %v (queue message v%d parked on DLQ — resume this run once the runner fleet accepts the schema the server publishes: it re-publishes the run at that version; a replay of the parked copy is refused — see docs/cloud-queue-schema-rollout.md)",
-			mismatchErr, env.V,
+			"schema version mismatch: %v (queue message v%d parked on DLQ — %s; a replay of the parked copy is refused — see docs/cloud-queue-schema-rollout.md)",
+			mismatchErr, env.V, remedy,
 		),
 	}
 	if kind == admissionMismatchFutureEpoch {
@@ -266,7 +274,16 @@ func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissio
 			// lookup could otherwise close that successor.
 			poolRelease = r.cfg.CredPool.CaptureRelease(flipCtx, env.RunID)
 		}
-		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt, admissionParkOutcome(kind, payloadParked))
+		meta := admissionParkOutcome(kind, payloadParked)
+		if env.Resume != nil && env.Resume.CodemodeQuota != nil {
+			meta.ExactQueuedAt = env.Resume.CodemodeQuota.QueuedAt
+			if meta.ExactQueuedAt.IsZero() {
+				flipCancel()
+				logger.Warn("runner: mismatched quota resume for run %s has no exact queued marker — run document not flipped", env.RunID)
+				break
+			}
+		}
+		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt, meta)
 		flipCancel()
 		if serr != nil {
 			logger.Warn("runner: %s admission-rejection status flip for %s: %v", plan.reason, env.RunID, serr)
@@ -346,7 +363,7 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 	// story and the queue's diverged.
 	if changed, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
 		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — resume the run to retry it; a replay of the parked copy is refused)", err),
-		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal},
+		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
 		store.RunnerVerdictFromStatuses()); serr != nil {
 		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)
 	} else if !changed {
@@ -365,15 +382,19 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 // at Info) instead of never.
 func (r *Runner) pollPending(ctx context.Context) {
 	const staleAfter = 5 // consecutive failed samples before the gauge counts as stale
+	tr := stallTracker{stalledAfter: r.cfg.StalledAfter}
 	t := time.NewTicker(r.cfg.PendingPoll)
 	defer t.Stop()
 	failures := 0
+	lastDelivered := uint64(0) // consumer delivery sequence at the previous sample
+	lastInflow := uint64(0)    // stream last sequence at the previous sample
+	inflowKnown := false       // the first sample has no inflow baseline
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			pending, err := r.consumer.Pending(ctx)
+			sample, err := r.consumer.Sample(ctx)
 			if err != nil {
 				failures++
 				if failures == staleAfter {
@@ -387,7 +408,193 @@ func (r *Runner) pollPending(ctx context.Context) {
 				r.cfg.Logger.Info("runner: pending poll recovered after %d failed samples", failures)
 			}
 			failures = 0
-			r.cfg.Metrics.NATSPendingMessages.Set(float64(pending))
+			r.cfg.Metrics.NATSPendingMessages.Set(float64(sample.Pending))
+			// Delivery progress is fleet-global and needs a second witness:
+			// messages arriving while the consumer delivers nothing is the
+			// wedge shape. When the inflow read fails, delivery movement
+			// alone decides, so a degraded probe degrades to silence, not
+			// to a false alarm.
+			deliveredMoved := sample.DeliveredConsumerSeq != lastDelivered
+			lastDelivered = sample.DeliveredConsumerSeq
+			// Fleet-global delivery liveness: deliveries moving is life.
+			// When the stream is quiet there is nothing new to deliver, so
+			// stasis is also life; stasis counts against the runner only
+			// while messages keep arriving (the Oct 30 wedge: stream
+			// 12977→12987 advancing, consumer delivery frozen at its first
+			// five). A degraded inflow probe reads as life, never as an
+			// alarm.
+			progress := true
+			if inflow, err := r.consumer.StreamLastSeq(ctx); err == nil {
+				if inflowKnown && inflow != lastInflow {
+					progress = deliveredMoved
+				}
+				lastInflow = inflow
+				inflowKnown = true
+			}
+			hasWork := sample.Pending > 0 || sample.AckPending > 0
+			stalled, edge := tr.observe(hasWork, progress, time.Now())
+			r.cfg.Metrics.NATSStalled.Set(stalledGaugeValue(stalled))
+			switch edge {
+			case stallOnset:
+				// Work held by the consumer while messages arrive and
+				// nothing delivers means the broker or the durable consumer
+				// wedged: runs queue forever. The Oct 30 wedge was exactly
+				// this shape — five ack-pending messages, NumPending zero,
+				// redelivery frozen, consumer delivery sequence stuck while
+				// the stream advanced — held for 15 hours (issue #2890).
+				// This log and the iterion_nats_stalled gauge are the signal
+				// that must fire in minutes, not days.
+				r.cfg.Logger.Error("runner: the runs consumer has held work with no delivery for %s (pending=%d ack-pending=%d ack-floor=%d delivered=%d) — deliveries are wedged, runs will not start; recreate the consumer or replay the DLQ", time.Since(tr.since).Round(time.Second), sample.Pending, sample.AckPending, sample.AckFloorSeq, sample.DeliveredConsumerSeq)
+				r.selfHealStall(ctx, sample)
+			case stallRecovered:
+				r.cfg.Logger.Info("runner: the runs consumer drain resumed after a stall")
+			}
 		}
 	}
+}
+
+// logLeadershipRecovery surfaces the post-election verification's typed
+// outcome at the level each arm deserves: the healthy shapes (nothing
+// held, deliveries resumed, a quiet stream under held work — the busy
+// fleet's steady state, which the stall detector owns) and the pool /
+// cut-short abstentions are Info or quieter, the operator's off switch
+// and the unreadable posture are Warn (the posture stall detector keeps
+// watch), the recreate is Warn with its redelivery consequences named,
+// and a failed recreate is Error with the manual remediation named.
+func (r *Runner) logLeadershipRecovery(outcome natsq.LeadershipRecovery) {
+	switch outcome {
+	case natsq.LeadershipRecoveryDisabled:
+		r.cfg.Logger.Warn("runner: leadership change — the consumer self-heal is disabled; if deliveries do not resume, recreate the runs consumer by hand (consumer rm + restart, or admin dlq replay)")
+	case natsq.LeadershipRecoveryPoolOwned:
+		r.cfg.Logger.Info("runner: leadership change on a pool consumer — the server's reconciler owns its topology, no runner-side heal")
+	case natsq.LeadershipRecoveryUnreadable:
+		r.cfg.Logger.Warn("runner: leadership change — the consumer posture stayed unreadable through the verify window (election still running or broker degraded); the stall detector keeps watch")
+	case natsq.LeadershipRecoveryCutShort:
+		r.cfg.Logger.Debug("runner: leadership change verification cut short by shutdown — no gesture performed")
+	case natsq.LeadershipRecoveryNoWork:
+		r.cfg.Logger.Info("runner: leadership change — the consumer holds nothing, fetching resumes")
+	case natsq.LeadershipRecoveryResumed:
+		r.cfg.Logger.Info("runner: leadership change — deliveries resumed after the election, no heal needed")
+	case natsq.LeadershipRecoveryNoInflow:
+		r.cfg.Logger.Info("runner: leadership change — held work but a quiet stream across the verify window: a healthy busy fleet reads exactly like this, so no recreate; the stall detector owns the shape if a wedge forms while messages arrive")
+	case natsq.LeadershipRecoveryRecreated:
+		r.cfg.Logger.Warn("runner: leadership change froze the runs consumer (held work, no delivery while the stream advanced across the verify window) — deleted and recreated; held work redelivers from the stream, deliveries an executing run still holds park on the DLQ for replay")
+	case natsq.LeadershipRecoveryRecreateFailed:
+		r.cfg.Logger.Error("runner: leadership change froze the runs consumer and the recreate failed — the stall detector remains the net; recreate the consumer by hand if the stall onset fires")
+	}
+}
+
+// selfHealStall recreates the runs consumer when the stall is still
+// frozen at its onset posture: the Oct 30 wedge never self-resolved and
+// only a consumer deletion cleared it (issue #2890). Guards, in order:
+// the operator's off switch; a fresh Sample — if deliveries moved since
+// the onset, a sibling healed or the wedge resolved, and deleting a live
+// consumer would only churn redeliveries; then Recreate, whose delete +
+// idempotent re-create converges when several pods heal the same wedge.
+// Messages a still-executing run holds redeliver onto the run lock and
+// park on the lock-failure DLQ for replay — never double-executed.
+// stallHealDecision is what the guards decided for one onset.
+type stallHealDecision int
+
+const (
+	stallHealSkippedDisabled stallHealDecision = iota
+	stallHealSkippedUnreadable
+	stallHealSkippedResolved
+	stallHealPerformed
+)
+
+// decideStallHeal is the guard half of the self-heal, pure so a
+// regression in the interlocks cannot silently delete a healthy
+// consumer (revi round 1, finding Re92388): the off switch wins first,
+// an unreadable posture skips (no information, no deletion), and a
+// delivery sequence that moved since the onset means the wedge resolved
+// or a sibling healed — only the unchanged frozen posture deletes.
+func decideStallHeal(disabled bool, onset, fresh natsq.Sample, freshErr error) stallHealDecision {
+	if disabled {
+		return stallHealSkippedDisabled
+	}
+	if freshErr != nil {
+		return stallHealSkippedUnreadable
+	}
+	if fresh.DeliveredConsumerSeq != onset.DeliveredConsumerSeq {
+		return stallHealSkippedResolved
+	}
+	return stallHealPerformed
+}
+
+func (r *Runner) selfHealStall(ctx context.Context, onset natsq.Sample) {
+	fresh, freshErr := r.consumer.Sample(ctx)
+	switch decideStallHeal(r.cfg.DisableStallSelfHeal, onset, fresh, freshErr) {
+	case stallHealSkippedDisabled:
+		r.cfg.Logger.Warn("runner: stall self-heal disabled — recreate the runs consumer by hand (consumer rm + restart, or admin dlq replay)")
+	case stallHealSkippedUnreadable:
+		r.cfg.Logger.Warn("runner: stall self-heal skipped — posture unreadable: %v", freshErr)
+	case stallHealSkippedResolved:
+		r.cfg.Logger.Info("runner: stall self-heal skipped — deliveries moved since the onset (%d → %d): the wedge resolved on its own or a sibling healed it", onset.DeliveredConsumerSeq, fresh.DeliveredConsumerSeq)
+	case stallHealPerformed:
+		if err := r.consumer.Recreate(ctx); err != nil {
+			r.cfg.Logger.Error("runner: stall self-heal recreate failed: %v — the consumer stays wedged; recreate it by hand", err)
+			return
+		}
+		r.cfg.Logger.Warn("runner: stall self-heal deleted and recreated the runs consumer — held work redelivers from the stream; deliveries an executing run still holds park on the DLQ for replay")
+	}
+}
+
+// stallTracker turns consecutive hasWork samples into a stall signal.
+// Work is anything the consumer holds — queued (pending) or delivered
+// and unacknowledged (ack-pending: the Oct 30 wedge's shape, whose
+// zombie messages never appeared in NumPending). progress is the
+// caller's fleet-global delivery liveness: deliveries advancing, or the
+// stream quiescent so there is nothing new to deliver. A long delivery
+// mid-run holds ack-pending but a quiet stream means progress, and a
+// busy stream with no movement means the wedge — hasWork without
+// progress across the window is the alarm. Failed samples carry no
+// information, so the caller skips observe for them and the episode
+// clock neither advances nor resets.
+type stallTracker struct {
+	stalledAfter time.Duration // sustained hasWork-without-progress before stalling (0 = 10m)
+	since        time.Time     // first hasWork sample of the current episode
+	stalled      bool
+}
+
+type stallEdge int
+
+const (
+	stallNone stallEdge = iota
+	stallOnset
+	stallRecovered
+)
+
+func stalledGaugeValue(stalled bool) float64 {
+	if stalled {
+		return 1
+	}
+	return 0
+}
+
+// observe records one sample and returns whether the tracker is in the
+// stalled state, plus the transition edge when this sample crossed it.
+// progress is the delivery-liveness witness the caller computes across
+// samples — a progress sample is a sign of life that resets the window.
+func (s *stallTracker) observe(hasWork, progress bool, now time.Time) (stalled bool, edge stallEdge) {
+	limit := s.stalledAfter
+	if limit <= 0 {
+		limit = 10 * time.Minute
+	}
+	if !hasWork || progress {
+		s.since = time.Time{}
+		if s.stalled {
+			s.stalled = false
+			return false, stallRecovered
+		}
+		return false, stallNone
+	}
+	if s.since.IsZero() {
+		s.since = now
+	}
+	if !s.stalled && now.Sub(s.since) >= limit {
+		s.stalled = true
+		return true, stallOnset
+	}
+	return s.stalled, stallNone
 }

@@ -265,6 +265,18 @@ func runCounterConformance(t *testing.T, c Counter) {
 		t.Fatalf("ListByRepo(%q) = %d rows, want 2 (both credentials that served it)", repoA, len(byRepo))
 	}
 
+	// The fold: a forge resolves case-variant slugs to ONE repository, so
+	// the read must too — the per-repo quota reads through this listing, and
+	// a spelling that read as an empty month would uncap the repository. The
+	// rows keep their own spelling; a query whose fold matches nothing
+	// stored still returns nothing.
+	if n, err := c.ListByRepo(ctx, sept, "socialgouv/ITERION"); err != nil || len(n) != 2 || n[0].CostUSD != 1.0 {
+		t.Fatalf("ListByRepo(case variant of %q) = %v, %v; want the same 2 rows, biggest first", repoA, n, err)
+	}
+	if n, _ := c.ListByRepo(ctx, sept, "socialgouv/NEVER-RAN"); len(n) != 0 {
+		t.Fatalf("ListByRepo(case variant of an unstored repo) = %v, want nothing", n)
+	}
+
 	// Order is deterministic: the summed sequence is what a client diffs
 	// between two polls, and a map iteration would reshuffle ties.
 	first, _ := c.List(ctx, sept, "team-a")

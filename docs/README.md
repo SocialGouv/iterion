@@ -6,6 +6,7 @@ This index describes the current repository state. Guides and references below a
 
 | Page | Purpose |
 |---|---|
+| [getting-started.md](getting-started.md) | One copy-paste prompt that has your AI agent install the CLI and skill, connect to iterion.cloud, check the connection, then propose a first bot on one of your repositories. |
 | [current-state.md](current-state.md) | Living as-built overview: shipped surfaces, runtime/backend status, security defaults, cloud control plane, and known limits. |
 | [why-iterion.md](why-iterion.md) | Product rationale, workflow patterns, and the asymptote lens. |
 | [install.md](install.md) | Install through the CLI, studio, desktop, Docker, cloud, dispatcher, scheduler, or TypeScript SDK. |
@@ -24,6 +25,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 - [Feature matrix](comparisons/feature-matrix.md) — 21 features across 10 products, with sources and conditions.
 - [Iterion feature inventory](comparisons/feature-inventory.md) — 140 criteria across 16 categories.
 - [Methodology and sources](comparisons/methodology.md) — capability scope and proposed integrations.
+- [Live agents — OpenMausBot, mapped onto iterion](references/live-agents-openmausbot.md) — what an always-on personal-agent product does that a parked run does not, the gap, and what is not pursued. Read it before proposing a long-lived agent or a crew.
 
 ## Author `.bot` workflows
 
@@ -50,7 +52,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [recipes.md](recipes.md) | In-source presets and external recipe overlays. |
 | [attachments.md](attachments.md) | File and image inputs. |
-| [bundles.md](bundles.md) | Deterministic `.botz` packaging with skills and resources. |
+| [bundles.md](bundles.md) | Bundle discovery, presets and deterministic `.botz` packaging with skills and resources. |
 | [import.md](import.md) | Lossy, non-executing import of Claude Code workflow JavaScript into draft `.bot` files. |
 | [backends.md](backends.md) | Backend/model matrix, harness behavior, and provider support. |
 | [models.md](models.md) | The model registry (`GET /api/models`, `iterion models`), the picker's capability guard, and the operator's persisted model choice. |
@@ -139,7 +141,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
 | [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |
 | [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | Pre-exposure security and reliability checklist. |
-| [sovereign-pools.md](sovereign-pools.md) | Sovereign runner pools: team→pool mapping, registry, per-pool topology, admission, server-surface refusals, and the admin surface. |
+| [sovereign-pools.md](sovereign-pools.md) | Sovereign runner pools: audited cutover and CLI, registry host projection, per-pool DLQ metrics, credential boundary and deployment residuals. |
 | [ci-performance-buildkit-operator.md](ci-performance-buildkit-operator.md) | BuildKit operator and CI-cache tuning. |
 
 ## Desktop
@@ -160,6 +162,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 |---|---|
 | [agents/](agents/) | **Working on iterion itself**: the doctrine tree every agent session and contributor follows — the required before-merge review loop, bot-authoring rules, testing and dogfood discipline, the operational runbook index. [AGENTS.md](../AGENTS.md), the instruction root every agent loads, routes to it. |
 | [architecture.md](architecture.md) | End-to-end compiler, runtime, backend, persistence, control-plane, automation, and extension architecture. |
+| [code-architecture.md](code-architecture.md) | For contributors, the shape of the code: one binary and its roles, the seams with their local and cloud adapters, composition roots, where state lives, the executable architecture guards, the style and its accepted deviations, the reference harness. |
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
 | [e2e-coverage-matrix.md](e2e-coverage-matrix.md) | Feature coverage inventory, Studio browser advisory lane, skip semantics and regression witnesses. |

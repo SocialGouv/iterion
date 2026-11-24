@@ -259,15 +259,16 @@ const maxGatewayBaseURLBytes = 2048
 // glued to the URL, an IPv6 zone), a value over maxGatewayBaseURLBytes, a
 // port outside 1–65535, a path with an empty, "." or ".." segment, a host
 // with an empty label, a literal address that is not public unicast
-// (loopback, private, link-local, metadata — pkg/secure/httpdial's set),
+// (loopback, private, CGNAT, link-local, metadata, a non-public IPv6
+// transition address — pkg/secure/httpdial's set),
 // a single-label host (localhost and every /etc/hosts alias, _gateway,
 // instance-data, a Service name — a public gateway has a dot), the names a
-// cluster, a cloud or a container reserves for itself (reservedGatewayHosts
-// and reservedGatewaySuffixes), and a host written as a number in any base
-// (see canonicalGatewayHost). The path is ASCII letters, digits and
-// "-._~:@/" only: a blank-looking printable rune must not glue a secret to
-// it, and a backslash or a sub-delimiter is read as something else by a
-// browser's parser. A name that RESOLVES to such an address is the
+// cluster, a cloud or a container reserves for itself (httpdial.ReservedName,
+// the set the strict dial guard refuses too), and a host written as a
+// number in any base (see canonicalGatewayHost). The path is ASCII
+// letters, digits and "-._~:@/" only: a blank-looking printable rune must
+// not glue a secret to it, and a backslash or a sub-delimiter is read as
+// something else by a browser's parser. A name that RESOLVES to such an address is the
 // dial-time guard's to refuse, once a run dials the gateway.
 //
 // The host is CONVERTED before it is judged: an internationalised name is
@@ -319,10 +320,10 @@ func ValidateGatewayBaseURL(raw string) (string, error) {
 	}
 	if ip != nil {
 		if !httpdial.IsPublicUnicast(ip) {
-			return "", &ShapeError{Field: "base_url", Reason: "names a loopback, private, link-local or metadata address — a gateway a run dials is a public host"}
+			return "", &ShapeError{Field: "base_url", Reason: "names a non-public address (loopback, private, CGNAT, link-local, metadata, or a non-public IPv6 transition address) — a gateway a run dials is a public host"}
 		}
-	} else if reservedGatewayHost(host) {
-		return "", &ShapeError{Field: "base_url", Reason: "names a host the cluster, the cloud or the container reserves (" + strings.Join(reservedGatewayHosts, ", ") + ", *" + strings.Join(reservedGatewaySuffixes, ", *") + ")"}
+	} else if httpdial.ReservedName(host) {
+		return "", &ShapeError{Field: "base_url", Reason: "names a host the cluster, the cloud or the container reserves (" + httpdial.ReservedNames() + ")"}
 	}
 	hostport := host
 	if port := u.Port(); port != "" {
@@ -485,27 +486,35 @@ func literalHost(ip net.IP) string {
 	return s
 }
 
-// reservedGatewayHosts and reservedGatewaySuffixes name what no tenant
-// gateway can legitimately be: the names a cluster, a cloud, a container or
-// a workstation resolves to itself (single-label aliases such as
-// localhost4 or ip6-localhost are already refused as single labels).
-var (
-	reservedGatewayHosts    = []string{"localhost.localdomain", "kubernetes.default"}
-	reservedGatewaySuffixes = []string{".localhost", ".localdomain", ".localdomain4", ".localdomain6", ".local", ".internal", ".svc", ".cluster.local"}
-)
-
-// reservedGatewayHost reports a host name no tenant gateway can legitimately
-// carry.
-func reservedGatewayHost(host string) bool {
-	for _, h := range reservedGatewayHosts {
-		if host == h {
-			return true
+// ValidateBasicShape is ValidateTokenShape for an HTTP basic credential,
+// which is not token-shaped: a password may hold spaces ("correct horse
+// battery staple"), and a username may not hold the colon that ends it on
+// the wire. Both refuse what a paste glues on — a newline, a NUL, a control
+// or invisible character — and nothing else; the username is the one the
+// caller will send, already trimmed.
+func ValidateBasicShape(username, password string) error {
+	if username == "" {
+		return &ShapeError{Field: "username", Reason: "is empty"}
+	}
+	if strings.ContainsRune(username, ':') {
+		return &ShapeError{Field: "username", Reason: "contains a colon — HTTP basic ends the username at the first one"}
+	}
+	for _, f := range []struct{ field, value string }{{"username", username}, {"password", password}} {
+		if f.value == "" {
+			return &ShapeError{Field: f.field, Reason: "is empty"}
+		}
+		if !utf8.ValidString(f.value) {
+			return &ShapeError{Field: f.field, Reason: "is not valid UTF-8"}
+		}
+		for i, r := range f.value {
+			switch {
+			case r == '\n' || r == '\r':
+				return &ShapeError{Field: f.field, Reason: fmt.Sprintf("contains a newline at position %d — this looks like a paste, not the credential", i)}
+			case r == ' ' && f.field == "password":
+			case r < 0x20 || r == 0x7f || (!unicode.IsPrint(r) && r != ' '):
+				return &ShapeError{Field: f.field, Reason: fmt.Sprintf("contains a control or invisible character (U+%04X) at position %d", r, i)}
+			}
 		}
 	}
-	for _, suffix := range reservedGatewaySuffixes {
-		if strings.HasSuffix(host, suffix) {
-			return true
-		}
-	}
-	return false
+	return nil
 }

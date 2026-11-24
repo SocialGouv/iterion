@@ -30,18 +30,55 @@ green.
   `main` — Tests, Container Image, Trivy, and through Container Image's
   completion Runner Image and Sandbox Base Images — run once per batch). A
   lone PR still merges after `min_entries_to_merge_wait_minutes` (5).
+- **How long the queue waits for a check** — `check_response_timeout_minutes`
+  (60), read from the ruleset on 2026-10-29 with
+  `gh api repos/SocialGouv/iterion/rulesets/18857412` (that GET is also the
+  rollback of any change to it, since the PUT below wants the complete
+  representation). An entry whose required check never reports is dequeued
+  `checks_timed_out` after that long, and so is every entry behind it.
+  Measured 2026-10-15 (SocialGouv/iterion#2377): a required job sat **70
+  minutes** `queued` on `arc-runners` with no runner while its siblings ran,
+  and the queue ejected the pull request. The pool had capacity — the Actions
+  service was holding the job on a phantom runner, the ghost class
+  `.github/workflows/arc-canary.yml` exists to detect.
+
+  > **The alert and the dequeue currently race, by arithmetic.** The canary
+  > pages on a probe nothing picked up within `STALL_SECONDS` (1500 s, 25 min,
+  > `scripts/ci/arc-canary-verdict.sh`), it probes every 30 minutes, and its
+  > watchdog gives the period it judges a 5-minute head start — so dispatch
+  > can stop being trustworthy up to **30 + 25 + 5 = 60 minutes** before anyone
+  > is paged, exactly the queue's own patience. The page is supposed to land
+  > while a human can still set `CI_SELF_HOSTED` to `off` (below), not after
+  > the queue has given up. Closing that gap is one field of the ruleset —
+  > `check_response_timeout_minutes` to 90 — and an admin's PUT, which is what
+  > is left on #2377; `internal/ciguard` holds the three numbers above to the
+  > ceiling this file claims, and holds every site that writes the timeout to
+  > one value.
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
   `nats-conformance` once an admin adds it to ruleset 18857412.
   `test` and `race` are AGGREGATOR CONTEXTS, not test-running jobs: the work
-  lives in the gated legs (`test-unit`, `test-e2e`, `studio`, the
-  `race-shard` matrix) that run in the queue behind them, and each aggregator
+  lives in the gated legs (the `test-unit` matrix, the `test-e2e` matrix,
+  `studio`, the `race-shard` matrix) that run in the queue behind them, and each aggregator
   re-verifies every leg's conclusion under `if: ${{ !cancelled() && <tap skip> }}`
   — the run-state clause combined with the one verified skip
   ([below](#the-one-verified-skip-the-homebrew-tap-update)), so an aggregator
   skips exactly the entries its legs skip and runs on every other one. The
   required NAMES stay stable — a PR that renamed one could never pass its own
-  queue build — while work scales sideways (shards, new legs). The legs
+  queue build — while work scales sideways (shards, new legs). `test-e2e`
+  partitions Go's discovered top-level Test, Example and Fuzz corpus names
+  into four shards; subtests follow their parent, and each shard keeps the
+  900-second test timeout. Reproduce one with
+  `pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i 0)`
+  then `go test -mod=vendor -count=1 -run "$pattern" -timeout 900s ./e2e`,
+  in the same devbox and build environment, under `set -euo pipefail`.
+  Discovery has its own configurable `-list-timeout` (five minutes; zero
+  disables it); its failure stops execution. Discovery owns a Unix process
+  group through cancellation and output drainage, using the shared
+  `ITERION_PROC_WAIT_DELAY` override; a descendant starting another session
+  escapes that group. This new test-discovery mode refuses Windows, whose
+  process helper cannot provide group ownership. Package sharding is unchanged.
+  The legs
   themselves carry the tap skip and nothing else, a contract `internal/ciguard`'s
   `gatedJobs` enforces: a leg any other condition skips reports Success on the
   pull request while reddening its queue entry forever, and a leg without the
@@ -197,6 +234,93 @@ sparingly; the queue is the default path. Non-admins must go through a PR + the
 queue.
 For reviewed chantier work, the [operator direct-landing lane](#the-operator-direct-landing-lane-decided-2026-10-22) generalises this bypass — and owes it what a hotfix does not: the train, the locally reproduced gate and the greppable trailers.
 
+### A parked gate (decided 2026-11-10)
+
+`revi/review` can stay `PENDING` for days with nothing wrong with the pull
+request: `iterion-forge-core[bot]` posts a `<!-- iterion:gate-paused -->`
+comment naming a **dated automatic resume** and the upstream error. Measured on
+2026-11-10 (#3132): a 429 `[1310] Weekly/Monthly Limit Exhausted` on the
+reviewer node parked the run for ~103 h while the other six required checks
+were green. Read that comment before concluding anything about the PR, and
+before pushing again — a push restarts the review sooner but lands on the same
+exhausted quota.
+
+**The first move is not this bypass.** It is the one
+[review-and-merge.md](agents/workflow/review-and-merge.md#a-parked-gate-is-a-rerouting-signal-not-a-wait)
+names: identify the blocked credential and **lend a live one** at runtime
+(`iterion remote admin llm oauth set …`, no redeploy), which needs the
+operator's explicit go. This bypass is for when that is unavailable or refused.
+Re-shaping the *pools* under pressure is a different act — deployment
+configuration ([sovereign pools](sovereign-pools.md)), decided outside an
+incident.
+
+**Then the operator (admin) may merge that pull request, bypassing the parked
+gate.** What it owes:
+
+1. **The other six required checks green, read as a SET** — `gh pr checks`, not
+   the one you are waiting on. The required set is exactly `test`, `race`,
+   `vendor-check`, `mongo-conformance`, `golangci`, `brand` and `revi/review`
+   (ruleset 18857412); the legs behind the two aggregators (`test-unit (n)`,
+   `test-e2e (n)`, `studio`, `race-shard (n)`) are deliberately **not** required and
+   are where the work is. Queued, cancelled, missing **or skipped** is not
+   success: a job skipped by a job-level `if:` reports SUCCESS, so a required
+   check that never ran satisfies the gate
+   ([tests.yml](../.github/workflows/tests.yml) says so of the Homebrew-tap
+   skip, which five required checks carry).
+2. **A local adversarial loop, and the trailer says which kind.** At the bar
+   [the loop](agents/workflow/adversarial-review-loop.md) states — a round on
+   the diff, each finding AND its proposed fix verified independently, a
+   bounded closing round on the corrections — it carries the gate's own weight
+   (operator arbitration, 2026-11-11), and nothing is being traded away.
+   **Below the bar it stands in with a measured residual**: of 8 logged gate
+   verdicts, 4 found a class the converged internal rounds had skirted, and
+   those rounds were below it. That residual is assumed explicitly in the
+   merge, and it is **not assumable on a wide diff** — there, reach the bar,
+   wait for the window, or lend a credential, as the incident lane scopes
+   itself the same way ("reckless when it is a wide refactor", below).
+3. **The checks belong to the head AND to the base being merged.** A commit
+   pushed after they ran invalidates them. Less obvious and more dangerous:
+   `strict_required_status_checks_policy` is **false** on this ruleset, so a
+   green set computed against an older `main` stays green and GitHub neither
+   re-runs nor flags it. Re-pushing refreshes the merge ref, but it does not
+   converge here: `main` advances every 20–40 minutes on a busy day — the release
+   bot pushes with no PR at all — so a CI cycle finishes behind the tip it was
+   chasing, and the queue, which would settle it, is the thing the parked gate
+   closed. So **build the integrated tree locally and run the gate on it**: a
+   fresh worktree on `origin/main`, `git merge --no-ff` each branch going in, then
+   the gate members the diffs touch. That tests the merge ref, which the non-strict
+   policy never does. Measured on 2026-11-10 with four branches: `main` had
+   re-pinned `docs/merge-gate.md` in the reading golden and one branch changed the
+   **adjacent** line (`docs/merge-policy.md`), so the hunks overlapped — green
+   apart, conflicting combined. Resolve a golden conflict by regenerating it
+   (`git checkout --ours`, then `corpus-reading --write`, then check only your own
+   files moved), never by picking a side; and note `rerere` will offer a replay
+   from the train merge that is not valid for a rebase.
+4. **The trailers, greppable** — `Adversarial-Rounds:` / `Adversarial-Model:`
+   (the reviewer marked **self** when the loop was a self-review), plus
+   `Gate-Bypass: revi/review parked (quota) — #<pr>` in the squash body, since
+   an ungreppable bypass is a bypass that did not happen.
+5. **Verify what landed, and stop a reviver.** As for any admin merge:
+   `git diff --stat` the landed tree against what you reviewed, and check
+   `iterion remote runs list` for a parked review run that a redelivery
+   re-claimed after the close
+   ([the known gap](merge-gate.md#a-paused-review-says-so-on-the-pr)).
+
+**What this bypass gives up, stated plainly.** The required set ran on real CI,
+on the merge ref as of its run — that is its strength over a locally reproduced
+gate. What it does not have is the queue's one unique guarantee: the rebuild
+against **current** `main` and against the entries ahead of it, which is what
+closes the semantic inter-PR conflict class (two PRs each green against
+`main`-at-branch-time that break `main` combined — regenerated artefacts such as
+the reading golden being the most frequent shape). On that axis this bypass is
+weaker than both the queue and the direct-landing lane's train.
+
+**What it does not license**: merging while another required check is red,
+skipped or unresolved; skipping the loop because the diff looks small; or
+reading the pause as a verdict. And `bots/review-pr` is the gate the tenant
+repositories that require its context lean on — a parked gate is a reason to
+lend it a credential, never to quietly lower what it guards.
+
 ### The fast lane for an incident fix, and its exact procedure
 
 The queue is a single writer with one lane: a green incident fix waits behind
@@ -215,7 +339,7 @@ invocations do the wrong thing:
 # 1. `gh pr merge <n> --squash` WITHOUT --admin does NOT merge: it enqueues.
 # 2. `--admin` on a PR already in the queue answers "already queued".
 # So: dequeue first, then merge with --admin.
-gh api graphql -f query='mutation($id:ID!){ dequeuePullRequest(input:{pullRequestId:$id}){ clientMutationId } }' \
+gh api graphql -f query='mutation($id:ID!){ dequeuePullRequest(input:{id:$id}){ clientMutationId } }' \
   -f id="$(gh pr view <n> --repo <owner>/<repo> --json id --jq .id)"
 gh pr merge <n> --repo <owner>/<repo> --squash --admin
 ```
@@ -309,6 +433,33 @@ keeps a single pending run and silently replaces it with the next one: a merged
 pull request's run could replace a pending nightly or dispatch, then hold its
 release while the queue builds.
 
+## A rebuilt group's older runs are cancelled
+
+GitHub rebuilds a queue group whenever its base moves — a push to `main`, an
+entry ahead failing or leaving — and leaves the discarded group's runs to
+finish. They hold `arc-runners` pods for a verdict nobody reads, which is the
+churn half of the queue's cost: over 2026-10-21/22, 14 of 38 completed
+`merge_group` runs were red and the five pull requests involved were rebuilt
+repeatedly, each rebuild leaving a full Tests run behind it.
+
+[`.github/workflows/merge-queue-churn.yml`](../.github/workflows/merge-queue-churn.yml)
+cancels them, and only them. The branch of a queue entry is
+`gh-readonly-queue/<base>/pr-<n>-<base sha>`: the `pr-<n>` prefix survives a
+rebuild, the base sha is the generation. A run is cancelled when it carries
+the same prefix as the run doing the cancelling, on a different branch, is not
+completed, and was created strictly before it. So the newest generation kills
+the ones it replaced; every job of one generation shares its branch and cannot
+touch its siblings (the three `race` shards included); an equal timestamp
+cancels nothing, since a tie is not an order and the cost of guessing is a
+required check reported `cancelled` — a red entry.
+
+Required check NAMES are untouched: the janitor is its own workflow, nothing
+requires it, and the ruleset never waits for it. It runs on `ubuntu-latest` on
+purpose — queued behind the pod shortage it exists to relieve, it would arrive
+after the runs it was meant to kill — with `actions: write` as its only scope
+and no checkout. `internal/ciguard/queue_churn_test.go` runs the shipped jq
+filter against crafted run listings, in both list orders.
+
 ## Measuring the queue
 
 `devbox run -- task ci:queue-stats -- --since 2026-09-22 --until 2026-09-28`
@@ -324,18 +475,27 @@ window in UTC so two periods compare:
   queue that were not a merge (`failed_checks`, `merge_conflict`, `manual`),
   among the pull requests merged in the window;
 - **what the window paid for** — the Tests runs on `merge_group`, and for
-  every rebuild, its cause, read from the clock — a direct push to `main` (a
-  release, a direct merge, any other push) committed at most 90 seconds before
-  the rebuild, or the queue itself (an entry ahead failed or left, a dequeue
-  and a re-enqueue) — and the state of the build it replaced: for a push,
-  whether it was already green or still running when the push hit (the queue
-  does not cancel the run of a group it discards; a build that had already
-  finished red had ejected its pull request, so its rebuild is a re-enqueue,
-  counted as the queue's). **Queue
-  builds discarded by a direct push** is the line the release hold above
-  exists to shrink. Runs are read day by day and checked against the count the
-  API announces: a query answers at most 1000 runs, and paging has returned a
-  run twice;
+  every rebuild, its cause, read from the new group's **base** — the sha
+  `gh-readonly-queue/main/pr-<n>-<base sha>` carries: a base that moved to a
+  direct push to `main` (a release, a direct merge, any other push) IS that
+  push, whatever the delay, while an unchanged base, a queue merge or a
+  speculative queue branch is the queue itself (an entry ahead failed or left,
+  a dequeue and a re-enqueue) — and the state of the build it replaced: for a
+  push, whether it was already green or still running when the push hit
+  (GitHub does not cancel the run of a group it discards — the janitor below
+  does, so a discarded build now reads as `cancelled` rather than as a full
+  run nobody waited for; a build that had already finished red had ejected its
+  pull request, so its rebuild is a re-enqueue, counted as the queue's).
+  **Queue builds discarded by a direct push** is the line the release hold
+  above exists to shrink. The attribution is
+  [`queue-rebuild-cause.awk`](../scripts/diagnostics/queue-rebuild-cause.awk),
+  its own program so a harness can run it:
+  `internal/ciguard/queue_stats_test.go` holds each of its rules to a crafted
+  table — the previous rule blamed a push only within 90 seconds of the
+  rebuild, and GitHub rebuilt #1967's group 114 seconds after v3.217.0's
+  commit, so the discarded build was counted as the queue's own churn. Runs
+  are read day by day and checked against the count the API announces: a query
+  answers at most 1000 runs, and paging has returned a run twice;
 - **what failed the queue** — for each failed build, the failing jobs and
   steps and, unless `--no-logs`, the `--- FAIL:` tests in their logs, ranked.
   A build is named after the pull request at the tail of its group, so a
@@ -429,6 +589,8 @@ contract — the exhaustive local gate, the converged adversarial loop, the
 post-hoc CI witness, the red-`main` priority, and the duty to warn sessions
 with queued PRs or unpushed branches — lives in
 [the review-and-merge page](agents/workflow/review-and-merge.md#the-operator-direct-landing-lane-decided-2026-10-22).
-Every existing PR keeps the queue and its `revi/review` blocking gate; the
+Every existing PR keeps the queue and its `revi/review` blocking gate — save
+where [a parked gate](#a-parked-gate-decided-2026-11-10) opens the narrower
+admin merge; the
 lane is the admin bypass generalised from hotfixes to reviewed chantier work,
 and its bypass is greppable in the trailers by design.

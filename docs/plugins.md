@@ -22,7 +22,7 @@ A manifest's `contributes:` block lists one or more typed extension points:
 | `mcp_servers` | MCP servers (e.g. a knowledge-graph explorer)             | the workflow MCP catalog — ambient, workflow-wide, like a project `.mcp.json` entry |
 | `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start, in BOTH the directory form `<name>/SKILL.md` (what claude_code's Skill tool discovers — Agent Skills spec) and the flat alias `<name>.md` (what prompt Reads by path resolve) |
 | `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/<name>.md`; a prompt opening with `/<name>` resolves to that file's body on claude_code **and** claw ([capability matrix](backends.md#workspace-slash-commands)) |
-| `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/<name>.md` (claude_code discovers via `--setting-sources project`) |
+| `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/<name>.md` (claude_code discovers via `--setting-sources project`; claw resolves the same files in-process — `pkg/backend/model/workspace_agents.go`, see the parity table) |
 | `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`; claw fires a subset — see the parity table) |
 | `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
 
@@ -414,7 +414,10 @@ The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
 CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
 `claw`. Pi also consumes the resolved plugin skills through an explicit
 `--skill` directory in both transports, and the MCP catalog through its embedded
-RPC extension. The remaining work is claw-side discovery of named agents.
+RPC extension. Named agents resolve on claw too — what remains there is
+frontmatter `model:` (#1717); the live e2e exists
+(`task test:live:claw-workspace-agents`, #1714), its last verdict in the
+ledger.
 Kimi, Grok, and Codex do not consume these
 plugin contribution surfaces:
 
@@ -422,19 +425,25 @@ plugin contribution surfaces:
 |--------------------|--------------|-------------|
 | skills             | `skills` ✅ shipped      | claude_code native lookup, claw's `skill` tool, and pi's explicit `--skill` path consume `.claude/skills/` |
 | MCP servers        | `mcp_servers` ✅ shipped | `claude_code`, claw, and pi RPC consume the resolved MCP catalog |
-| slash commands     | `commands` ✅ shipped | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`, claw resolves the same files in-process (claw-code-go `pkg/api/commands`). A prompt opening with `/<name>` becomes that file's body on either backend — see the [capability matrix](backends.md#workspace-slash-commands) for the four measured differences — **frontmatter beyond `description:` is ignored on claw, so a command that narrows itself with `allowed-tools:` keeps the node's full tool set there — the runtime warns and names #1717**, plus workspace-only scope, one-based `$1`, and the unevaluated `` !`cmd` ``/`@path`/`$0` forms |
-| subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool and the `SubagentRunner` seam, but no iterion run wires a runner into it (`ClawDefaults.Subagent` stays nil) — so `agent` typed-refuses there (C159, #1940) — and no named-agent file loader → claw-side follow-on |
+| slash commands     | `commands` ✅ shipped | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`, claw resolves the same files in-process (claw-code-go `pkg/api/commands`). A prompt opening with `/<name>` becomes that file's body on either backend — see the [capability matrix](backends.md#workspace-slash-commands) for the measured differences — **`allowed-tools:` is honoured on claw since #1717 (it narrows, never widens); the frontmatter that stays ignored is `model:` and its siblings — the runtime warns and names them**, plus workspace-only scope, one-based `$1`, and the unevaluated `` !`cmd` ``/`@path`/`$0` forms |
+| subagents          | `agents` ✅ shipped (claude_code) · ✅ resolved (claw) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`, claw serves the `agent` tool — both hosts wire `ClawDefaults.Subagent`, and the child runs within the node's tools, policy and budget (#1940) — and resolves the same `<name>.md` in-process when the tool's `subagent_type` names it (iterion-side resolver `pkg/backend/model/workspace_agents.go`, read through `os.Root` at the workspace — ARB-83: the consumer of a spawn is iterion's `SubagentRunner`, not claw's own loop). The file's body is the child's system prompt; `tools:` INTERSECTS the node's effective set (never widens it; Claude spellings fold — `Read` is `read_file`); `model:` REFUSES the delegation, naming #1717 — a contributed file does not re-route the node's spend. Live e2e: `task test:live:claw-workspace-agents` (#1714); last verdict: see the ledger |
 | hooks              | `hooks` ✅ shipped (claude_code) · ✅ bridged (claw) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw bridges the same document (`registerSettingsHooks`, `pkg/backend/model/settings_hooks.go`) and runs the **`command`**-type entries of every event claw-code-go exports — `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `UserPromptSubmit` / `PreCompact` / `PostCompact` / `Stop` — on the in-process path AND the sandboxed one (the launcher ships the parsed document over the wire; the in-container runner registers it). Matcher semantics follow claude_code: a regex on the tool name for tool events, ignored (always fires) on `UserPromptSubmit`/`Stop`, and the compaction source on `PreCompact`/`PostCompact` — `"auto"` matches, `"manual"` never does (claw compacts only at the threshold). `UserPromptSubmit` fires once per operator prompt: the harness's nudge/recovery re-asks and resumed tool_result turns do not re-fire, and a blocked prompt fires no `Stop`. A hook payload is truncated at 100 KiB with an explicit marker (the kernel's per-arg limit would otherwise fail the exec — a silent fail-open on a screening hook). Two known edges, both deliberate: operator-chatbox messages injected mid-loop (the inbox drain) are NOT re-screened by `UserPromptSubmit` — only the node's own prompt is, a hook arming prompt-injection screening should know the channel exists; and a matcher left on `Stop`/`UserPromptSubmit` sees its hook ARMED where a strict regex reading would have killed it — the matcher is ignored (with a warning), never applied. `prompt`-type entries, events claw does not export (`SessionStart`, …), meaningless matchers and invalid regexes are all skipped **with a warning naming them**; a hook exiting non-zero (≠ 2), timing out or failing to exec is logged and continues; the forced context-overflow compaction fires no `PreCompact` by design |
 
 The principle: where claude_code has a native surface and claw does not (or they
-diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw
-source) so a plugin behaves identically on either backend, rather than papered
-over with a claude_code-only adapter. Adaptation bridges are acceptable as an
+diverge), the gap is closed in **`pkg/claw`** (claw's source, maintained in this
+tree) so a plugin behaves identically on either backend, rather than papered
+over with a claude_code-only adapter — **unless iterion is the capability's
+only real consumer**: the named-subagent resolver lives iterion-side
+(`pkg/backend/model/workspace_agents.go`, ARB-83), because iterion's
+`SubagentRunner` executes every spawn a workflow drives and claw's own loop
+serves none of them. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
-The `commands`, `agents`, and `hooks` manifest kinds are shipped today.
-`commands` and `hooks` reach claw as well as claude_code (see the rows above);
-named subagents stay claude_code-only.
+The `commands`, `agents`, and `hooks` manifest kinds are shipped today and all
+three reach claw as well as claude_code (see the rows above); on claw the
+named-subagent row's live witness is `task test:live:claw-workspace-agents`
+(#1714) — its last verdict lives in the ledger, and until a run records one
+the row reads `never`, not proven.
 
 ## Public skill libraries (shipped)
 

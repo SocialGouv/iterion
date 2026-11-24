@@ -567,8 +567,8 @@ func (s *Server) relaunchStillRunning(ctx context.Context, runID string) (bool, 
 		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
 		return true, string(run.Status)
 	}
-	if runAwaitsArmedRetry(run) {
-		return true, "parked on an armed retry"
+	if runWillResume(run, false, time.Now().UTC()) {
+		return true, "parked on an armed retry or its usage window"
 	}
 	// A run whose verdict waits on its grant to be posted is not dead: the
 	// reconciler posts the verdict once the wait is over.

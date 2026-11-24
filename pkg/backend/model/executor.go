@@ -12,10 +12,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
-	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
+	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
@@ -27,9 +28,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -54,6 +57,11 @@ type ClawExecutor struct {
 	// (ADR-098). Nil means no catalog is wired, and an action node then fails
 	// EXPLICITLY rather than reporting a success it never performed.
 	connectors ConnectorResolver
+	// actionTransports are the registered NATIVE action transports (ADR-151):
+	// one per connector id they own. A `board.*` action resolves and executes
+	// through its registration instead of the HTTP path below — registration
+	// IS the seam (G110), so this map, never an `if` on the id.
+	actionTransports map[string]ActionTransport
 	// connectorClient is the guarded HTTP client every connector call goes
 	// through. A connector reaches hosts a tenant chose, so an unguarded
 	// client here would be a way to a metadata endpoint; nil is refused by
@@ -64,20 +72,66 @@ type ClawExecutor struct {
 	cursors         map[string]*ir.CursorDef
 	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
 	vars            map[string]any
+	// varTypes are the declared types of the workflow's vars, the ones a
+	// launch value is read at before the engine's own reading arrives
+	// (SetLaunchVars). A name absent here is no var of the workflow.
+	varTypes map[string]ir.VarType
 	// wfShapes are the workflow's declarations that do not depend on which
 	// node renders — the `vars:` block and every node's `output:` schema —
 	// kept for their TYPES: a `json` value and a `string[]` one reach a tool
 	// body as the same []any, and only the declaration separates the
 	// document from the argv list (see value_shape.go). Read-only after
 	// construction; each node layers its own `input:` schema on top.
-	wfShapes       *Shapes
-	presetPrompt   string   // selected preset's "## Focus" bias, {{vars}}-templated per node
-	presetSkills   []string // selected preset's relevant-skill hint names
-	hooks          EventHooks
-	retry          RetryPolicy
-	logger         *iterlog.Logger
-	workDir        string // working directory for backend subprocesses
-	repoRoot       string // source-of-truth repo path (project-rooted memory uses this)
+	wfShapes     *Shapes
+	presetPrompt string   // selected preset's "## Focus" bias, {{vars}}-templated per node
+	presetSkills []string // selected preset's relevant-skill hint names
+	hooks        EventHooks
+	retry        RetryPolicy
+	logger       *iterlog.Logger
+	// workDir is the working directory for backend subprocesses and tool
+	// node shell exec. Atomic because it is read LIVE during Execute: the
+	// workspace provider every workspace-scoped tool consults (and the
+	// prompt path) calls WorkDir on every bash/read/write/glob/grep call,
+	// while the engine may still push a per-run worktree via SetWorkDir
+	// (#2897). Access goes through WorkDir/SetWorkDir only.
+	workDir atomic.Pointer[string]
+	// repoRoot is the run's source-of-truth repository path; project-rooted
+	// memory resolves its scope under it. The engine pushes it at run
+	// start, before the first node — the first task's value is every
+	// task's value (auto_memory resolves and caches its space on the first
+	// buildTask) — while buildTask reads it live on every node, the same
+	// pushed-field/live-reader shape as workDir. Atomic so a future
+	// mid-run push cannot resurrect the torn-read race the workDir fix
+	// closed (#2897): a read resolves against the previous or the new
+	// root, never a torn or empty one. Access goes through
+	// RepoRoot/SetRepoRoot only.
+	repoRoot atomic.Pointer[string]
+	// workspaceTrust is who wrote the code in the run's workspace, pushed by
+	// the engine beside workDir (SetWorkspaceTrust) and stamped on every task
+	// that names the workspace (stampWorkspace). Nil is the trusted zero
+	// value. Atomic for the reason workDir is: it is read live per task.
+	// Access goes through WorkspaceTrust/SetWorkspaceTrust only.
+	workspaceTrust atomic.Pointer[store.RunTrust]
+	// injectedHooks is iterion's own plugin-contributed hook groups, pushed
+	// by the engine once per mirror pass (pushInjectedHooks) and stamped on
+	// every task beside the trust. Nil means none. Atomic for the reason
+	// workspaceTrust is: it is read live per task. Access goes through
+	// InjectedHooks/SetInjectedHooks only.
+	injectedHooks atomic.Pointer[map[string][]any]
+	// readScope is the claw read tools' scope, shared with the registry
+	// the host built (runview hands the same instance to both). The
+	// engine's SetScratchDirs push attaches the run's scratch read roots
+	// to it (#2650, narrowed by #2869); nil leaves reads workspace-only.
+	readScope *tool.ReadScope
+	// scratchRoots records the engine's SetScratchDirs push (#2869): the
+	// project scratch the run subtree lies beneath, the run family's
+	// subtree, and whether the project scratch itself is a root. The
+	// sandbox crossing narrows the in-container runner's read roots to
+	// these (runnerIOTask reads them off the task buildTask stamps). ONE
+	// atomic pointer for the push: buildTask reads it live on every node,
+	// so a mid-run push must land whole or not at all — the data-race
+	// class #2897 closed on workDir.
+	scratchRoots   atomic.Pointer[scratchPush]
 	defaultBackend string // workflow-level default backend (empty = use "claw")
 	// modelOverrides are launch-time per-node/-group backend+model+provider
 	// overrides (studio Launch dropdowns, CLI --model/--backend). They sit at
@@ -85,6 +139,27 @@ type ClawExecutor struct {
 	// so a run can re-target the bot without editing the .bot. Empty applies
 	// nothing (backward-compatible). See model_override.go.
 	modelOverrides ModelOverrides
+	// launchOverrides are the launch's OWN rows among modelOverrides, before
+	// the routing policy's cells folded in; nil when the path that built the
+	// executor did not say. They only tell a reader which of the two layers
+	// asked for an effort (requestedEffort): resolution reads modelOverrides.
+	launchOverrides *ModelOverrides
+	// rerouteWarned dedupes the gateway auto-selection redirect warn
+	// (gatewayCapableDetection): the seams ask resolveBackendName several
+	// times for one node, and one redirect is one fact. Guarded because
+	// parallel branches share the executor.
+	rerouteWarnMu sync.Mutex
+	rerouteWarned map[string]bool
+	// teamGateway is the run's frozen content boundary (ADR-131 §4,
+	// store.RunContentBoundary.TeamGateway): under it a node whose own
+	// route goes to the team's gateway walks no policy-ladder rung
+	// (resolveChainUnder) — the dispatch-side belt of the ladder screen,
+	// which reads the run's vars before this executor holds the ones
+	// dispatch resolves (a resume restores them after the screen ran).
+	teamGateway bool
+	// boundaryWarned dedupes that drop's warn, one per node; guarded
+	// by rerouteWarnMu.
+	boundaryWarned map[string]bool
 	// allowedProviders is the run's provider allowlist (ADR-129 §5) the
 	// dispatch enforces: a chain element whose resolved provider is outside
 	// it is dropped before dispatch, so a forbidden rescue route burns no
@@ -110,6 +185,19 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+	// skillAllowlist is the pinned name → path set the `skill` tool serves
+	// when the run's workspace is untrusted (SetSkillAllowlist, #1719): a
+	// non-nil pointer — empty map included — arms the pinned mode, nil
+	// keeps the workspace walk. Atomic because the engine arms it at run
+	// start while a node may already be executing (same doctrine as
+	// SetWorkDir, #2897). Paths are ABSOLUTE host paths into the run's
+	// engine-owned skill channel root.
+	skillAllowlist atomic.Pointer[map[string]string]
+	// skillChannelRoot is the engine-owned directory that re-carries the
+	// run's owned skills in the .claude/skills layout for the backends that
+	// discover skills by directory (claude_code's --add-dir), set by
+	// SetSkillChannelRoot on an untrusted run; empty = no channel.
+	skillChannelRoot atomic.Value // string
 
 	// slashWarnedOnce keeps a workspace-command divergence notice to one
 	// line per command file per run, across nodes and parallel branches.
@@ -138,9 +226,14 @@ type ClawExecutor struct {
 	// (precedence: override > node DSL > workflow DSL > env). chain is the
 	// ordered set of enabled rewriters (rtk by default), wired from the plugin
 	// registry; nil when no rewriter plugin is enabled (compression off).
+	// rewriteSandboxEnv is ITERION_REWRITE_SANDBOX, also read once at
+	// construction: the #2007 placement knob sandboxSkipsRewrite consults
+	// before a sandboxed tool node's command would be rewritten host-side —
+	// its default is to stand the chain down, "host" restores the chain.
 	wfCompress         string
 	compressOverride   string
 	compressEnvDefault string
+	rewriteSandboxEnv  string
 	chain              *rewrite.Chain
 
 	// Backend auto-memory (MEMORY.md). Same precedence shape as compression:
@@ -157,7 +250,17 @@ type ClawExecutor struct {
 	// Ambient context (ADR-119): what a node inherits besides its prompt. Same
 	// precedence shape: run override (CLI --ambient-context / launch API) >
 	// node DSL > workflow DSL > ITERION_AMBIENT_CONTEXT > workspace.
-	wfAmbientContext         string
+	wfAmbientContext string
+	// Codemode (ADR-165): whether a node is handed the script host's tool.
+	// The precedence is run override (CLI --codemode / launch API) > node DSL
+	// > workflow DSL > off, and there is deliberately no environment rung —
+	// ADR-132 §1 forbids the environment as a source for what a node is
+	// configured with.
+	wfCodemode               string
+	wfCodemodeDefer          string
+	wfCodemodeBounds         *ir.CodemodeBounds
+	codemodeOverride         string
+	codemodeBoundsOverride   *ir.CodemodeBounds
 	ambientContextOverride   string
 	ambientContextEnvDefault string
 	// The space, its materialisation directory and the state-root guards are
@@ -257,10 +360,27 @@ type ClawExecutor struct {
 	// the server path; nil on CLI runs (sandboxed board-emit then stays
 	// disabled).
 	boardRegister func(caps []string, sourceIssueID string) string
+	// boardRevoke ends the grant boardRegister minted, at the moment the
+	// node that holds it is done. Set via WithBoardRevoke beside the
+	// minter; nil leaves the registry's TTL as the only reaper.
+	//
+	// The registry's own contract is "Register at the start of every run and
+	// Revoke at the end", and nothing revoked: a token stayed live for the
+	// TTL (24 h) after its node returned. It authenticates the connector
+	// facade since #2758, so what outlived the node was the right to spend
+	// the tenant's credentials — on an argv-visible string, for a day.
+	boardRevoke func(token string)
 	// boardEndpoint is the per-run gateway-reachable board MCP URL pushed
 	// in by the engine after the sandbox starts (SetBoardEndpoint). Empty
 	// disables sandboxed board-emit wiring (C082).
 	boardEndpoint string
+	// connectorEndpoint is the connector facade's URL on the same listener,
+	// pushed separately (SetConnectorEndpoint) because a host may serve
+	// board/runs WITHOUT the facade: the cloud runner pod's mux does not
+	// (#2632), and empty there keeps the documented degradation — the
+	// delegate's loud warning, connector tools disabled — instead of an
+	// AlwaysLoad MCP server that 404s at every call.
+	connectorEndpoint string
 	// askUserEndpoint / askUserToken are the per-run gateway-reachable
 	// ask-user MCP HTTP endpoint + bearer token pushed in by the engine
 	// after the sandbox starts (SetAskUserEndpoint) — ADR-082 Phase 3.
@@ -309,7 +429,8 @@ type ClawExecutor struct {
 	// Close(). Without this each BuildExecutor call leaks one watcher — acute
 	// under parallel subbot fan-out, which builds one executor per child and
 	// can march toward fs.inotify.max_user_instances.
-	extraClosers []io.Closer
+	extraClosers  []io.Closer
+	runFilesGrant store.RunFilesGrant
 
 	// hostSecretOnce fires ensureHostSecretFiles exactly once per executor:
 	// on the first Execute call of a HOST (non-sandbox) run it materialises
@@ -456,6 +577,17 @@ func (e *ClawExecutor) SetBoardEndpoint(endpoint string) {
 	e.boardEndpoint = endpoint
 }
 
+// SetConnectorEndpoint installs the connector facade's URL on the per-run
+// host MCP listener (#2758) so the executor can wire
+// Task.ConnectorHTTPEndpoint for sandboxed `connectors`-cap nodes. Called
+// by the engine after the sandbox starts, and only when the listener's mux
+// actually serves the facade: the cloud runner pod's does not (#2632), so
+// a cloud sandboxed node keeps the endpoint empty and degrades with the
+// delegate's warning rather than an endpoint that 404s at every call.
+func (e *ClawExecutor) SetConnectorEndpoint(endpoint string) {
+	e.connectorEndpoint = endpoint
+}
+
 // SetAskUserEndpoint installs the per-run gateway-reachable ask-user
 // MCP URL + token (started with the sandbox) so the executor can wire
 // Task.AskUserHTTPEndpoint/AskUserRunToken for sandboxed interactive
@@ -479,6 +611,18 @@ func WithBoardRegister(fn func(caps []string, sourceIssueID string) string) Claw
 	return func(e *ClawExecutor) { e.boardRegister = fn }
 }
 
+// WithBoardRevoke installs the counterpart of WithBoardRegister: the closure
+// that ends a minted grant. Called once per node that minted one, as the node
+// returns, whatever the outcome.
+//
+// Paired with the minter at every wiring site rather than left to the
+// registry's TTL, because the TTL is the backstop for a process that died, not
+// the lifetime of a grant: a node's token authenticates the connector facade,
+// and a facade call spends the tenant's credential.
+func WithBoardRevoke(fn func(token string)) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.boardRevoke = fn }
+}
+
 // WithSourceIssueID stamps the ticket that owns this run so board.create
 // can auto-link spawned children (parent_id / spawned_from).
 func WithSourceIssueID(issueID string) ClawExecutorOption {
@@ -493,6 +637,13 @@ func WithEventHooks(h EventHooks) ClawExecutorOption {
 // WithToolRegistry sets the unified tool registry on the executor.
 func WithToolRegistry(tr *tool.Registry) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.toolRegistry = tr }
+}
+
+// WithClawReadScope hands the executor the read scope the host registered
+// the claw read tools against, so the engine's SetScratchDirs push widens
+// THOSE tools (#2650). Without it the push is a recorded no-op.
+func WithClawReadScope(scope *tool.ReadScope) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.readScope = scope }
 }
 
 // WithMCPManager sets the generic MCP manager used to lazily discover MCP tools.
@@ -569,7 +720,7 @@ func WithBackendRegistry(dr *delegate.Registry) ClawExecutorOption {
 // WithWorkDir sets the working directory for backend subprocesses.
 // When set, backend nodes will run their CLI in this directory.
 func WithWorkDir(dir string) ClawExecutorOption {
-	return func(e *ClawExecutor) { e.workDir = dir }
+	return func(e *ClawExecutor) { e.workDir.Store(&dir) }
 }
 
 // WithDefaultBackend sets the workflow-level default backend.
@@ -584,6 +735,16 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.modelOverrides = o }
 }
 
+// WithLaunchModelOverrides names, among the overrides WithModelOverrides set,
+// the rows the launch itself carried — the folded list mixes them with the
+// routing policy's cells and cannot say which wrote what. The executor reads
+// them to name who asked for a node's effort (EffortSourceLaunch or
+// EffortSourceCell); an executor built without them names the folded list
+// (EffortSourceOverride). Empty rows are a statement: the launch carried none.
+func WithLaunchModelOverrides(o ModelOverrides) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.launchOverrides = &o }
+}
+
 // ModelOverrides returns the launch-time overrides this executor applies.
 //
 // Read-only, and exported for the paths that REBUILD an executor for an
@@ -592,12 +753,31 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 // is what keeps that from coming back.
 func (e *ClawExecutor) ModelOverrides() ModelOverrides { return e.modelOverrides }
 
+// LaunchModelOverrides returns the launch's own rows this executor was told
+// of (WithLaunchModelOverrides), and whether it was told. Read-only, for the
+// same assertion ModelOverrides serves: a path that builds an executor
+// without them reports every override effort as the run's overrides.
+func (e *ClawExecutor) LaunchModelOverrides() (ModelOverrides, bool) {
+	if e.launchOverrides == nil {
+		return ModelOverrides{}, false
+	}
+	return *e.launchOverrides, true
+}
+
 // WithAllowedProviders sets the run's provider allowlist (ADR-129 §5) the
 // dispatch enforces: a chain element whose resolved provider is outside it
 // is dropped before dispatch, so a forbidden rescue route burns no retry
 // budget on a call the tenant does not allow. Empty/nil = no allowlist.
 func WithAllowedProviders(providers []string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.allowedProviders = AllowedProviderSet(providers) }
+}
+
+// WithContentBoundary sets the run's frozen content boundary (ADR-131 §4,
+// queue.RunMessage.ContentBoundary): under team_gateway a node whose own
+// route goes to the team's gateway never walks a policy-ladder rung. Nil
+// (an unstamped run) and own_keys hold nothing.
+func WithContentBoundary(b *store.RunContentBoundary) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.teamGateway = b.TeamGateway() }
 }
 
 // WithCompressOverride sets the run-level compression override (CLI --compress
@@ -619,6 +799,25 @@ func WithAutoMemoryOverride(mode string) ClawExecutorOption {
 // "unset, defer to DSL/env". Highest-priority input to ambient.ResolveSourced.
 func WithAmbientContextOverride(policy string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.ambientContextOverride = policy }
+}
+
+// WithCodemodeOverride sets the run-level codemode override (CLI --codemode /
+// launch API): on|off, or "" for "unset, defer to DSL". Highest-priority rung
+// of ir.ResolveCodemode, and it wins in BOTH directions: an operator may keep
+// a declared capability off for this run, and may ask for it on a node whose
+// author stayed silent — with the default bounds, since the author set none.
+func WithCodemodeOverride(mode string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.codemodeOverride = mode }
+}
+
+// WithCodemodeBoundsOverride sets the run-level bounds override (CLI
+// --codemode-* flags / launch API). Field by field, the same rule as the
+// authored rungs: a zero field means "nobody chose" and the authored value —
+// or the default, through Limits.Clamp — stands. The values still pass
+// through Limits.Clamp at spawn, so a launch asking above scripthost.Ceiling
+// is served the ceiling and told so by OnClamp.
+func WithCodemodeBoundsOverride(b *ir.CodemodeBounds) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.codemodeBoundsOverride = b }
 }
 
 // WithAutoMemoryStore injects the knowledge store the auto-memory mirror
@@ -719,11 +918,11 @@ func (e *ClawExecutor) ScrubOutput(output map[string]any) map[string]any {
 }
 
 // secretMaterializer returns the placeholder→value substitution used to
-// populate Task.MaterializeSecrets. Returns nil when no registered secret is
-// materialisable (secretguard.Guard.Materializes) so backends skip the work
-// entirely.
+// populate Task.MaterializeSecrets — the `agent` sink: what a MODEL emits in
+// its own tool input. Returns nil when no registered secret resolves there
+// (secretguard.Guard.MaterializesFor) so backends skip the work entirely.
 func (e *ClawExecutor) secretMaterializer() func(string) string {
-	if !e.secretGuard.Materializes() {
+	if !e.secretGuard.MaterializesFor(secretsink.Agent) {
 		return nil
 	}
 	return e.secretGuard.Materialize
@@ -738,11 +937,31 @@ func (e *ClawExecutor) secretRedactor() func(string) string {
 	return e.secretGuard.Redact
 }
 
+// redactDisplay is secretRedactor applied nil-safe: the eager pass for
+// display text a helper then CUTS (a header hint, a result preview) —
+// a secret the cut splits is one no matcher recognises.
+func (e *ClawExecutor) redactDisplay(s string) string {
+	if red := e.secretRedactor(); red != nil {
+		return red(s)
+	}
+	return s
+}
+
 func (e *ClawExecutor) secretUnmaterializer() func(string) string {
 	if e.secretGuard == nil {
 		return nil
 	}
 	return e.secretGuard.Unmaterialize
+}
+
+// secretNamer answers delegate.Task.NamesSecret: whether a text carries the
+// placeholder of a secret that resolves at some sink, whatever the grants.
+// Nil when nothing resolves anywhere.
+func (e *ClawExecutor) secretNamer() func(string) bool {
+	if !e.secretGuard.Materializes() {
+		return nil
+	}
+	return e.secretGuard.NamesMaterializableSecret
 }
 
 func (e *ClawExecutor) secretFileHints() []delegate.SecretFileHint {
@@ -786,6 +1005,13 @@ func (e *ClawExecutor) ExfiltratesTo(s, host string) bool {
 // protect.
 func (e *ClawExecutor) SecretsInspectActive() bool {
 	return e.secretGuard != nil && e.secretGuard.HasKnownSecrets()
+}
+
+// HoldsSecret reports whether the declared secret resolved to something this
+// run carries — the launch gate behind `sinks:` reads it to leave an absent
+// optional secret alone (runtime.secretHolder).
+func (e *ClawExecutor) HoldsSecret(name string) bool {
+	return e.secretGuard.Holds(name)
 }
 
 // WithExecutorInbox installs the operator-chatbox binder on the
@@ -931,24 +1157,23 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 	// corruption observed in whole_improve_loop where scope_notes
 	// (default "") leaked the placeholder into every reviewer call.
 	var seed map[string]any
+	var varTypes map[string]ir.VarType
 	if len(wf.Vars) > 0 {
 		seed = make(map[string]any, len(wf.Vars))
+		varTypes = make(map[string]ir.VarType, len(wf.Vars))
 		for name, vr := range wf.Vars {
+			if vr == nil {
+				continue
+			}
+			varTypes[name] = vr.Type
 			if !vr.HasDefault {
 				continue
 			}
 			// The same reading the engine gives an override, so a var a host
 			// never overrides does not start the run as the compiler's raw
 			// text while the same var supplied on the command line starts it
-			// as a list (#1285). The engine's own lookup (${PROJECT_DIR},
-			// ${BUNDLE_DIR}) is not reachable from here; SetVars overwrites
-			// this seed with the engine's reading before Execute.
-			resolved, err := ir.ResolveVarText(vr.Default, vr.Type, nil)
-			if err != nil {
-				seed[name] = vr.Default
-				continue
-			}
-			seed[name] = resolved
+			// as a list (#1285).
+			seed[name] = seedVarReading(vr.Default, vr.Type)
 		}
 	}
 	e := &ClawExecutor{
@@ -961,27 +1186,32 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		imageAttachs:       imageAttachmentNames(wf),
 		defaultBackend:     wf.DefaultBackend,
 		wfCompress:         wf.Compress,
-		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
+		compressEnvDefault: envGetenv(context.Background(), rewrite.ModeEnv),
+		rewriteSandboxEnv:  envGetenv(context.Background(), rewrite.SandboxEnv),
 
 		wfAutoMemory:             wf.AutoMemory,
-		autoMemoryEnvDefault:     os.Getenv(automemory.ModeEnv),
+		autoMemoryEnvDefault:     envGetenv(context.Background(), automemory.ModeEnv),
 		wfAmbientContext:         wf.AmbientContext,
-		ambientContextEnvDefault: os.Getenv(ambient.PolicyEnv),
+		wfCodemode:               wf.Codemode,
+		wfCodemodeDefer:          wf.CodemodeDefer,
+		wfCodemodeBounds:         wf.CodemodeBounds,
+		ambientContextEnvDefault: envGetenv(context.Background(), ambient.PolicyEnv),
 		wfPermission:             wf.Permission,
 		wfPermAllow:              wf.PermissionAllow,
 		wfPermAsk:                wf.PermissionAsk,
 		wfPermDeny:               wf.PermissionDeny,
-		permEnvDefault:           os.Getenv("ITERION_PERMISSION"),
+		permEnvDefault:           envGetenv(context.Background(), "ITERION_PERMISSION"),
 		wfCompaction:             wf.Compaction,
 		wfCapabilities:           wf.Capabilities,
 		wfSkills:                 wf.Skills,
 		wfMCP:                    wf.MCP,
 		botID:                    wf.Name,
 		routeCooldowns: routeCooldownLedger{
-			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
+			disabled: routeCooldownDisabled(envGetenv(context.Background(), routeCooldownModeEnv)),
 		},
 		sessions: newNodeSessionStore(),
 		vars:     seed,
+		varTypes: varTypes,
 		detector: detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
@@ -995,68 +1225,12 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		e.logger.Warn("%s=%q is not one of %s: ignored, nodes fall back to their DSL or the workspace default",
 			ambient.PolicyEnv, e.ambientContextEnvDefault, strings.Join(ambient.Values, ", "))
 	}
-	warnCollidingSessionSlots(e.wfNodes, e.logger)
+	if rewrite.InvalidSandboxEnv(e.rewriteSandboxEnv) && e.logger != nil {
+		e.logger.Warn("%s=%q is not one of %s: ignored, the rewriter chain stands down for sandboxed tasks (the default)",
+			rewrite.SandboxEnv, e.rewriteSandboxEnv, strings.Join(rewrite.SandboxValues, ", "))
+	}
 
 	return e
-}
-
-// warnCollidingSessionSlots names every `session_slot:` that addresses a key
-// another node of the workflow writes on its own.
-//
-// A slot is a NAME in the same flat keyspace a node without one addresses by
-// its node id (see [nodeSessionKey] and [sessionKey]), so a slot named after
-// another node makes the two ONE conversation: the slot's nodes are replayed
-// that node's turns — in-process and, since the pre-spawn seed reads the same
-// key, inside a sandboxed crossing — its retries compact them, and its
-// success evicts them. Where that other node declares the slot itself —
-// naming its own id as its `session_slot:` — the sharing is its own
-// declaration; where it only happens to be named, the slot has silently
-// inherited a conversation nobody meant to share, most visibly a failed
-// node's transcript (an unsuccessful node's session is deliberately
-// preserved for the recovery dispatcher to compact). `session: persist` says
-// where a conversation is kept, never with whom, so a persisted node that
-// declared no slot of its own is named like any other.
-//
-// Named, not refused: a node id is a legal slot name and the compiler accepts
-// it, so an operator's explicit choice stands — and this is the one place
-// that holds both the slot and the whole node table. Ordered by node id so a
-// run log is comparable between runs.
-func warnCollidingSessionSlots(nodes map[string]ir.Node, logger *iterlog.Logger) {
-	if logger == nil || len(nodes) == 0 {
-		return
-	}
-	ids := make([]string, 0, len(nodes))
-	for id := range nodes {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	for _, id := range ids {
-		llm, ok := nodes[id].(ir.LLMNode)
-		if !ok {
-			continue
-		}
-		slot := llm.GetSessionSlot()
-		if slot == "" || slot == id {
-			continue
-		}
-		other, ok := nodes[slot]
-		if !ok {
-			continue
-		}
-		// Two nodes collide only where the named one WRITES that key: a
-		// node holding a slot of its own keys its conversation on that slot,
-		// so its id addresses nothing. Where it writes the key because it
-		// NAMED that key itself, the sharing is its own declaration; where
-		// it writes it as a plain node id — persisted or not — nothing in
-		// the workflow says it was meant to be joined.
-		if otherLLM, isLLM := other.(ir.LLMNode); !isLLM ||
-			nodeSessionKey(other) != slot ||
-			otherLLM.GetSessionSlot() == slot {
-			continue
-		}
-		logger.Warn("node %q declares session_slot %q, which is also the id of node %q — and a node without a slot of its own keys its conversation on its id: the two address ONE session, so %q is replayed %q's turns (its failed ones included) and compacts them on retry. Rename the slot if that is not intended.",
-			id, slot, slot, id, slot)
-	}
 }
 
 // MCPHealthCheck verifies that the listed MCP servers are reachable by
@@ -1068,6 +1242,14 @@ func (e *ClawExecutor) MCPHealthCheck(ctx context.Context, servers []string) err
 	}
 	return e.mcpManager.HealthCheck(ctx, servers)
 }
+
+// WithRunFilesGrant transfers the invocation-owned grant to the executor.
+func WithRunFilesGrant(grant store.RunFilesGrant) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.runFilesGrant = grant }
+}
+
+// RunFilesGrant lends the directory capability; the executor retains ownership.
+func (e *ClawExecutor) RunFilesGrant() store.RunFilesGrant { return e.runFilesGrant }
 
 // Close releases resources held by the executor, including MCP server
 // connections and the per-run host secret-file tempdir (host runs only —
@@ -1086,6 +1268,10 @@ func (e *ClawExecutor) Close() error {
 	if e.handoff != nil {
 		e.handoff.Cleanup()
 	}
+	if e.runFilesGrant != nil {
+		errs = append(errs, e.runFilesGrant.Close())
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -1137,6 +1323,14 @@ func (e *ClawExecutor) ensureHostSecretFiles() error {
 // vars map. Keys present in vars override the matching default seeded
 // from wf.Vars at construction time; keys absent from vars retain
 // their default. Must be called before Execute.
+//
+// The values are READ ones — the engine's resolveVars output, already
+// expanded and narrowed to each var's declared type — and are stored as
+// given. A host holding a launch's TEXT (`--var` values, an HTTP payload, a
+// resumed run's stored inputs) seeds it through SetLaunchVars instead:
+// reading a read value again is not neutral (a `json` var's string
+// document would be decoded a second time, a `$` in an expanded string
+// expanded again).
 func (e *ClawExecutor) SetVars(vars map[string]any) {
 	if e.vars == nil {
 		e.vars = make(map[string]any, len(vars))
@@ -1146,12 +1340,58 @@ func (e *ClawExecutor) SetVars(vars map[string]any) {
 	}
 }
 
+// SetLaunchVars seeds the executor with a launch's RAW values, read the way
+// the engine reads the same text: each value of a declared var through
+// ir.ResolveVarText at the var's declared type, so `--var labels=a,b` on a
+// `string[]` var is the list ["a","b"] here as it is in the run, and a `json`
+// var's text is its document. A name that is no var of the workflow is
+// dropped — resolveVars' rule (ir.DeclaredVarsOnly), held here so every seam
+// that seeds launch text inherits it.
+//
+// This is the seed a reader sees BEFORE the engine pushes its own reading
+// (runtime pushExecutorVars): the engine's pre-run admissions resolve routing
+// fields through the executor ahead of that push, and a host that runs a node
+// without an engine sees nothing else. Text seeded as text is a `string[]`
+// var read as a string — a whole-value `{{vars.labels}}` reaching an `array`
+// action param as text, and refused (#2991) — and a dotted
+// `{{vars.cfg.backend}}` into a `json` var drilling into a string.
+//
+// The engine's expansion (${PROJECT_DIR}, ${BUNDLE_DIR}) is not reachable
+// from here; its push replaces this seed with the engine's reading before
+// any node runs. Must be called before Execute.
+func (e *ClawExecutor) SetLaunchVars(vars map[string]any) {
+	for name, raw := range vars {
+		vt, declared := e.varTypes[name]
+		if !declared {
+			continue
+		}
+		if e.vars == nil {
+			e.vars = make(map[string]any, len(vars))
+		}
+		e.vars[name] = seedVarReading(raw, vt)
+	}
+}
+
+// seedVarReading is the executor's reading of a var's text ahead of the
+// engine: ir.ResolveVarText with the process environment. A text whose
+// reading fails is kept as written, which is what resolveVars keeps for the
+// same text — the engine re-reads it, names the failure in its warning and
+// pushes that value over this one.
+func seedVarReading(raw any, vt ir.VarType) any {
+	resolved, err := ir.ResolveVarText(raw, vt, nil)
+	if err != nil {
+		return raw
+	}
+	return resolved
+}
+
 // SetPresetFocus records the selected launch-time preset's prompt bias and
 // relevant-skill hints. The engine calls this at run start (and on resume)
-// for the `--preset <name>` selection; every LLM node then renders a
-// "## Focus" section in its system prompt (see executeBackend). The prompt
-// is stored raw and {{vars.X}}-resolved per node. Empty args clear the
-// focus. Must be called before Execute; not safe to call concurrently.
+// for the `--preset <name>` selection; every model task the run builds then
+// renders a "## Focus" section in its system prompt (applyPresetFragment,
+// from buildTask). The prompt is stored raw and {{vars.X}}-resolved per
+// node. Empty args clear the focus. Must be called before Execute; not safe
+// to call concurrently.
 func (e *ClawExecutor) SetPresetFocus(prompt string, skills []string) {
 	e.presetPrompt = prompt
 	e.presetSkills = skills
@@ -1180,13 +1420,140 @@ func (e *ClawExecutor) SetMirroredSkills(paths []string) {
 	e.mirroredSkills = paths
 }
 
+// SetSkillAllowlist arms the pinned skill mode (#1719): a non-nil map —
+// empty included — makes the `skill` tool serve exactly those name → path
+// entries and refuse everything else; nil disarms it and restores the
+// workspace walk. The engine arms it for a run whose workspace is
+// untrusted, once the mirror pass has decided which skills the run owns.
+// Safe to call before Execute and concurrently with in-flight Execute: the
+// field is atomic, read per tool call.
+func (e *ClawExecutor) SetSkillAllowlist(allowed map[string]string) {
+	if allowed == nil {
+		e.skillAllowlist.Store(nil)
+		return
+	}
+	e.skillAllowlist.Store(&allowed)
+}
+
+// SkillAllowlist is the provider shape the tool registry consults per
+// `skill` call: (set, armed).
+func (e *ClawExecutor) SkillAllowlist() (map[string]string, bool) {
+	if m := e.skillAllowlist.Load(); m != nil {
+		return *m, true
+	}
+	return nil, false
+}
+
+// SetSkillChannelRoot records the engine-owned directory the run's owned
+// skills were re-carried into (the .claude/skills layout) for the backends
+// that discover skills by directory. Empty clears it.
+func (e *ClawExecutor) SetSkillChannelRoot(dir string) {
+	e.skillChannelRoot.Store(dir)
+}
+
+// SkillChannelRoot reports the armed skill channel root, "" when none.
+func (e *ClawExecutor) SkillChannelRoot() string {
+	if v := e.skillChannelRoot.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
 // SetWorkDir updates the working directory for backend subprocesses
 // (claude_code, codex) and tool node shell exec. The engine calls this
 // at run start when `worktree: auto` produces a per-run worktree path
 // that wasn't known at executor construction time. Safe to call before
-// Execute; not safe to call concurrently with an in-flight Execute.
+// Execute, and safe concurrently with in-flight Execute: the field is
+// atomic because the workspace provider reads it live on every
+// workspace tool call (#2897). A call in flight resolves against either
+// the previous or the new directory, never a torn one.
 func (e *ClawExecutor) SetWorkDir(dir string) {
-	e.workDir = dir
+	e.workDir.Store(&dir)
+}
+
+// WorkDir reports the executor's current working directory — the value
+// SetWorkDir last pushed, or the construction-time WithWorkDir. It is the
+// live reading the prompt path resolves workspace slash commands against;
+// hosts registering the workspace-scoped tools (`command`/`skill` lookups,
+// and the bash/write_file/read builtins through their provider-backed
+// scope) bind their workspace provider to it (runview does) so every
+// surface follows the same per-run worktree (#2870, #2889). Empty until
+// the engine's first SetWorkDir when the executor was built without
+// WithWorkDir.
+func (e *ClawExecutor) WorkDir() string {
+	if dir := e.workDir.Load(); dir != nil {
+		return *dir
+	}
+	return ""
+}
+
+// SetWorkspaceTrust records who wrote the code in the run's workspace. The
+// engine pushes it at the seam it pushes the workspace through (SetWorkDir),
+// at run start and on every resume, before any node.
+func (e *ClawExecutor) SetWorkspaceTrust(trust store.RunTrust) {
+	e.workspaceTrust.Store(&trust)
+}
+
+// WorkspaceTrust reports the trust SetWorkspaceTrust last pushed, or the
+// trusted zero value when the engine never pushed one.
+func (e *ClawExecutor) WorkspaceTrust() store.RunTrust {
+	if t := e.workspaceTrust.Load(); t != nil {
+		return *t
+	}
+	return store.RunTrustDefault
+}
+
+// SetInjectedHooks records the plugin-contributed hook groups ITERION merged
+// into the workspace's settings.json this pass. The engine pushes them once
+// per mirror pass (pushInjectedHooks), after the merge computed them.
+//
+// On a trusted workspace the settings.json file is their carrier and this
+// record is not consulted. On a workspace the tenant did not write, the
+// merge wrote nothing and this record is the ONLY hooks a node may run:
+// the file is the checkout's, so it is neither their authority nor allowed
+// to veto them — a fork switching off the operator's guards by committing a
+// settings.json that does not parse was the failure this field exists to
+// close.
+func (e *ClawExecutor) SetInjectedHooks(blob map[string][]any) {
+	if blob == nil {
+		e.injectedHooks.Store(nil)
+		return
+	}
+	e.injectedHooks.Store(&blob)
+}
+
+// InjectedHooks reports the groups SetInjectedHooks last pushed, or nil when
+// the engine never pushed any (no hooks plugin enabled, or a direct backend
+// use no engine drove).
+func (e *ClawExecutor) InjectedHooks() map[string][]any {
+	if h := e.injectedHooks.Load(); h != nil {
+		return *h
+	}
+	return nil
+}
+
+// stampWorkspace writes onto a task the facts that describe the run's
+// workspace: where it is, who wrote it, and the hook groups iterion itself
+// injected this pass (the in-memory record an untrusted workspace cannot
+// carry — see SetInjectedHooks). Every task that names the
+// workspace takes it from here — the agent task, the router's, the session
+// packer's — so a task assembler added later cannot set the directory and
+// leave the trusted zero value beside it.
+//
+// A task of an untrusted run also carries the trust in its process
+// environment (RunTrustEnv), appended after the assembler's own entries so
+// every process the delegate starts inherits it; a trusted task's environment
+// is left as the assembler built it.
+func (e *ClawExecutor) stampWorkspace(t *delegate.Task) {
+	if t == nil {
+		return
+	}
+	t.WorkDir = e.WorkDir()
+	t.WorkspaceTrust = e.WorkspaceTrust()
+	t.InjectedHooks = e.InjectedHooks()
+	if entry, ok := RunTrustEnvEntry(t.WorkspaceTrust); ok {
+		t.ExtraEnv = append(slices.Clip(t.ExtraEnv), entry)
+	}
 }
 
 // SetRepoRoot updates the source-of-truth repository root. The engine
@@ -1195,8 +1562,91 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 // main repo even when the run executes from a worktree or dispatcher
 // workspace. Empty string means "no project root captured" — memory
 // specs that require it will fall back to WorkDir's encoded key.
+//
+// The run-start push happens before the first node, and the first task's
+// value is every task's value: auto_memory resolves and caches its space
+// off that first buildTask, so a mid-run push changes the tasks' reported
+// root without moving the cached space. The field is atomic anyway —
+// buildTask reads it live on every node, so a mid-run push of a plain
+// string would be the data race class #2897 closed on workDir.
 func (e *ClawExecutor) SetRepoRoot(dir string) {
-	e.repoRoot = dir
+	e.repoRoot.Store(&dir)
+}
+
+// RepoRoot reports the repository root SetRepoRoot last pushed, or ""
+// when the engine never captured one.
+func (e *ClawExecutor) RepoRoot() string {
+	if dir := e.repoRoot.Load(); dir != nil {
+		return *dir
+	}
+	return ""
+}
+
+// SetScratchDirs records the run's scratch READ ROOTS and attaches them
+// to the claw read tools' scope (#2650, narrowed by #2869):
+//
+//   - base is the project-wide ${PROJECT_SCRATCH_DIR}, the anchor the run
+//     subtree lies beneath;
+//   - run is the run family's own subtree (${RUN_SCRATCH_DIR} —
+//     <project scratch>/runs/<family root>), always attached, and attached
+//     BENEATH base (tool.ReadScope.AddExtraRootBeneath): sandboxed runs
+//     write the shared scratch through their bind, so a link planted at
+//     runs/<id> must contain nothing rather than become the root. A
+//     sub-bot child and its parent share one subtree, so the fan-in the
+//     shared scratch carried survives the narrowing;
+//   - shared reports that base itself is a root: true while the workflow
+//     still references ${PROJECT_SCRATCH_DIR}, false when no resolved var
+//     names it — the run then reads no other run's leftovers.
+//
+// The engine calls it from its single run-level push, once the repo root
+// and the sandbox decision pinned the values down — the scratch dir is
+// keyed on the repo root, and a sandboxed run's is the fixed container
+// path, not the host one. The recorded values also feed the sandbox
+// crossing: runnerIOTask narrows the in-container runner's read roots to
+// what was pushed here. Empty values are skipped; no read scope wired
+// (WithClawReadScope) skips the attachment but still records, so the
+// crossing narrows even without a host-side scope. A run that is not
+// beneath base is refused unattached, with a warning.
+// Only the READ tools take the roots; the write tools' contract is
+// untouched. Safe before Execute and concurrently with an in-flight
+// Execute (#2897): the pair rides one atomic pointer and the scope is
+// RWMutex-guarded, so a push lands whole or not at all — never a torn
+// view mid-update.
+func (e *ClawExecutor) SetScratchDirs(base, run string, shared bool) {
+	e.scratchRoots.Store(&scratchPush{base: base, run: run, shared: shared})
+	if e.readScope == nil {
+		return
+	}
+	if err := e.readScope.AddExtraRootBeneath(base, run); err != nil && e.logger != nil {
+		e.logger.Warn("claw: the run scratch read root is not attached: %v", err)
+	}
+	if shared {
+		e.readScope.AddExtraRoot(base)
+	}
+}
+
+// scratchPush is the atomic payload of one SetScratchDirs push.
+type scratchPush struct {
+	base, run string
+	shared    bool
+}
+
+// scratchScope reports the pushed scratch scope from ONE load of the push:
+// the anchor the roots lie beneath, and the roots in narrowing order — the
+// run's subtree first, then the shared project scratch when the workflow
+// still references it. Zero values when no push happened yet.
+func (e *ClawExecutor) scratchScope() (anchor string, roots []string) {
+	push := e.scratchRoots.Load()
+	if push == nil {
+		return "", nil
+	}
+	if push.run != "" {
+		roots = append(roots, push.run)
+	}
+	if push.shared && push.base != "" && push.base != push.run {
+		roots = append(roots, push.base)
+	}
+	return push.base, roots
 }
 
 // clawToolHint extracts a short human-readable hint from a tool's
@@ -1240,10 +1690,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				// LogBlock (not Info) so a long/multi-line input folds under the
 				// truncated header as an expandable "▸" block — parity with
 				// claude_code. clawToolHint keeps the one-line header; BlockBody
-				// supplies the full body when it had to clip.
+				// supplies the full body when it had to clip. The run's pass
+				// crosses the input BEFORE those cuts (the hint keeps 57
+				// bytes): a secret the cut splits is one no matcher
+				// recognises (iterion#2822). The event keeps the raw input —
+				// the redacting emitter scrubs it.
+				shown := secretguard.RedactJSON(input, e.secretRedactor())
 				e.logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
-					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(input)),
-					tooldisplay.BlockBody(toolName, input))
+					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(shown)),
+					tooldisplay.BlockBody(toolName, shown))
 			}
 			if fn != nil {
 				fn(nodeID, LLMToolStartedInfo{
@@ -1263,12 +1718,16 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				// Log the tool RESULT as an expandable block (📤 success, ❌
 				// error): truncated preview in the header, full (bounded) output
 				// folded underneath — symmetric with the input above and
-				// identical to claude_code via tooldisplay.ResultDisplay.
+				// identical to claude_code via tooldisplay.ResultDisplay. The
+				// run's pass crosses the output BEFORE those cuts (a 100-byte
+				// header preview, a 4096-byte body): a secret the cut splits
+				// is one no matcher recognises (iterion#2822). The event keeps
+				// the raw output — the redacting emitter scrubs it.
 				glyph := "📤"
 				if isError {
 					glyph = "❌"
 				}
-				header, body := tooldisplay.ResultDisplay(output)
+				header, body := tooldisplay.ResultDisplay(e.redactDisplay(output))
 				if header == "" {
 					header = fmt.Sprintf("(%d bytes)", len(output))
 				}
@@ -1445,6 +1904,7 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 
 // Execute implements runtime.NodeExecutor.
 func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	ctx = WithOutputCorrectionPolicy(ctx, outputCorrectionPolicy(ctx))
 	// Host runs (no sandbox) materialise `as: file` workflow secrets to a
 	// tempdir on the first call so {{secrets.X.path}} resolves to a real
 	// host file for tool nodes AND for agent/judge prompts. Cheap
@@ -1461,6 +1921,14 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		ctx = withRuntimeContext(ctx, runID, e.sessions)
 	}
 
+	// The host-capability grant rides the context of THIS node's execution,
+	// whichever route reaches a host tool — an agent's tool loop, a tool
+	// node's `command:`, a subagent, the sandboxed runner's proxy. This is
+	// the one entry every node execution crosses, so no route starts
+	// without it.
+	held, withdrawn := e.nodeHostCapabilities(node)
+	ctx = tool.WithHostCapabilities(ctx, held, withdrawn)
+
 	output, err := e.executeNode(ctx, node, input)
 	if err != nil {
 		// The engine persists, logs and posts a node's error: a tool's output
@@ -1469,27 +1937,7 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		err = e.scrubNodeError(err)
 	}
 	if err == nil {
-		// Successful node completion: drop any session messages so
-		// the store doesn't grow without bound across long runs.
-		// Sessions are preserved on error so the recovery dispatcher
-		// has something to compact for the next attempt.
-		if e.sessions != nil && runID != "" {
-			key := nodeSessionKey(node)
-			llm, isLLM := node.(ir.LLMNode)
-			persist := isLLM && llm.GetSession() == ir.SessionPersist
-			if persist && output != nil {
-				sid, _ := output[delegate.SessionIDKey].(string)
-				fingerprint, _ := output[delegate.SessionFingerprintKey].(string)
-				if blob := e.packClawSession(runID, key, sid, fingerprint); len(blob) > 0 {
-					output[delegate.SessionStateBlobKey] = blob
-				}
-			} else {
-				e.sessions.evict(runID, key)
-			}
-		}
-		if output != nil && e.hooks.OnNodeFinished != nil {
-			e.hooks.OnNodeFinished(node.NodeID(), output)
-		}
+		e.finalizeNodeOutput(ctx, node, output)
 	}
 	return output, err
 }

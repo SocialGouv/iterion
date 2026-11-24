@@ -29,7 +29,7 @@ func (c *compiler) validateSandboxOptOut(w *Workflow) {
 	for _, n := range w.Nodes {
 		spec := nodeSandboxSpec(n)
 		if spec != nil && spec.Mode == "none" {
-			c.emit(SeverityWarning, DiagSandboxOptOut, n.NodeID(), "", ast.Span{},
+			c.emit(SeverityWarning, DiagSandboxOptOut, n.NodeID(), "", ast.Span{}, "",
 				"Drop the node-level `sandbox: none`: it is not honoured. To run on the host, set `sandbox: none` on the workflow or launch with `--sandbox none`.",
 				"node declares sandbox: none, but a node-level sandbox is not honoured at run time: this node runs in the workflow's sandbox")
 		}

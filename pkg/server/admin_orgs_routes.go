@@ -92,7 +92,10 @@ type teamSummaryView struct {
 	// LLMFallback is the team's credential-fallback policy — the same
 	// boundary class: read back to confirm and audit the write.
 	LLMFallback string `json:"llm_fallback,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
+	// RunVisibility is the run sharing axis (ADR-148) — read back to
+	// confirm and audit the write.
+	RunVisibility string `json:"run_visibility,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
 }
 
 func toTeamSummaryView(t identity.Team) teamSummaryView {
@@ -107,6 +110,7 @@ func toTeamSummaryView(t identity.Team) teamSummaryView {
 		LaunchRatePerMin:  t.LaunchRatePerMin,
 		RunnerPool:        t.RunnerPool,
 		LLMFallback:       t.LLMFallback,
+		RunVisibility:     t.RunVisibility,
 		CreatedAt:         t.CreatedAt.Format(time.RFC3339),
 	}
 }
@@ -160,6 +164,12 @@ type updateOrgReq struct {
 	MonthlyRunQuota   *int     `json:"monthly_run_quota,omitempty"`
 	MemoryQuotaBytes  *int64   `json:"memory_quota_bytes,omitempty"`
 	MonthlyCostCapUSD *float64 `json:"monthly_cost_cap_usd,omitempty"`
+	// ForkAuthorRunQuota / ForkAuthorCostCapUSD: the fork review lane's
+	// per-contributor bound. A NEGATIVE value (-1) is the explicit
+	// `unbounded` escape hatch; 0 inherits the platform default; positive
+	// is the cap. See applyForkAuthorBound.
+	ForkAuthorRunQuota   *int     `json:"fork_author_run_quota,omitempty"`
+	ForkAuthorCostCapUSD *float64 `json:"fork_author_cost_cap_usd,omitempty"`
 }
 
 type setOrgStatusReq struct {
@@ -217,6 +227,38 @@ func applyNonNegative[T int | int64 | float64](w http.ResponseWriter, p *T, dst 
 	}
 	*dst = *p
 	return true
+}
+
+// applyForkAuthorBound is applyNonNegative's fork-lane sibling: the bound's
+// ladder reads a NEGATIVE value as the explicit `unbounded` escape hatch
+// (ADR-162 Q4), so it accepts -1 (normalising any negative to -1) where the
+// org's own quotas reject every negative. 0 keeps its inherit-the-default
+// meaning on both.
+func applyForkAuthorBound[T int | float64](w http.ResponseWriter, p *T, dst *T, field string) bool {
+	if p == nil {
+		return true
+	}
+	if *p < 0 {
+		*dst = -1
+		return true
+	}
+	*dst = *p
+	return true
+}
+
+// applyForkAuthorCostCap is applyForkAuthorBound for the dollar cap, which
+// also refuses — 400, nothing written — a positive value the counter cannot
+// enforce as a cap (orgusage.CostCapMillis): one that rounds to no
+// millidollar, or one past int64 millidollars, reaches AllowRun as "no cap",
+// a second spelling of the `unbounded` hatch the operator did not write.
+func applyForkAuthorCostCap(w http.ResponseWriter, p *float64, dst *float64, field string) bool {
+	if p != nil && *p > 0 {
+		if _, ok := orgusage.CostCapMillis(*p); !ok {
+			httpError(w, http.StatusBadRequest, "%s %v is not a cap the usage counter can enforce (it rounds to no millidollar, or past what it holds) — set at least 0.001, 0 to inherit the platform default, or -1 for unbounded", field, *p)
+			return false
+		}
+	}
+	return applyForkAuthorBound(w, p, dst, field)
 }
 
 // ---- handlers ----
@@ -352,6 +394,17 @@ func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
 	if !applyNonNegative(w, req.MonthlyCostCapUSD, &o.MonthlyCostCapUSD, "monthly_cost_cap_usd") {
 		return
 	}
+	// The fork review lane's per-contributor bound (ADR-162 Q4). Unlike the
+	// rows above it accepts NEGATIVE values: -1 is the explicit
+	// `unbounded` escape hatch, distinct from 0, which inherits the
+	// platform default — the bound is a perimeter against an outside
+	// party, so "unset" can never mean "open".
+	if !applyForkAuthorBound(w, req.ForkAuthorRunQuota, &o.ForkAuthorRunQuota, "fork_author_run_quota") {
+		return
+	}
+	if !applyForkAuthorCostCap(w, req.ForkAuthorCostCapUSD, &o.ForkAuthorCostCapUSD, "fork_author_cost_cap_usd") {
+		return
+	}
 	o.UpdatedAt = time.Now().UTC()
 	if err := store.UpdateOrg(r.Context(), o); err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
@@ -363,17 +416,23 @@ func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
 	if req.MemoryQuotaBytes != nil {
 		if setter, ok := s.memoryStore().(tenantMemoryQuotaSetter); ok {
 			quota := effectiveOrgMemoryQuota(o)
-			teams, _ := store.ListTeamsByOrg(r.Context(), o.ID)
+			teams, err := store.ListTeamsByOrg(r.Context(), o.ID)
+			if err != nil {
+				s.httpErrorFor(w, r, http.StatusInternalServerError, "admin: list teams to propagate memory quota for org %s: %v", o.ID, err)
+				return
+			}
 			for _, t := range teams {
-				if err := setter.SetTenantQuota(r.Context(), t.ID, quota); err != nil && s.logger != nil {
-					s.logger.Warn("admin: propagate memory quota for org %s team %s: %v", o.ID, t.ID, err)
+				if err := setter.SetTenantQuota(r.Context(), t.ID, quota); err != nil {
+					s.httpErrorFor(w, r, http.StatusInternalServerError, "admin: propagate memory quota for org %s team %s: %v", o.ID, t.ID, err)
+					return
 				}
 			}
 		}
 	}
 	s.auditPlatform(r, o.ID, "org.updated", "org", o.ID, map[string]any{
 		"monthly_run_quota": o.MonthlyRunQuota, "memory_quota_bytes": o.MemoryQuotaBytes,
-		"monthly_cost_cap_usd": o.MonthlyCostCapUSD,
+		"monthly_cost_cap_usd":  o.MonthlyCostCapUSD,
+		"fork_author_run_quota": o.ForkAuthorRunQuota, "fork_author_cost_cap_usd": o.ForkAuthorCostCapUSD,
 	})
 	writeJSON(w, toOrgView(o))
 }

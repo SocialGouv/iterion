@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -436,12 +437,15 @@ func New() (sandbox.Driver, error) {
 	// named is the loud path; `iterion sandbox doctor` reads the same
 	// error through SchedulingPolicy.
 	sched, schedErr := schedulingFromEnv(os.Getenv)
+	transport, transportErr := loadExecTransportConfig()
 	return &Driver{
-		kubectl:   binPath,
-		namespace: namespace,
-		logger:    iterlog.New(iterlog.LevelInfo, io.Discard),
-		sched:     sched,
-		schedErr:  schedErr,
+		kubectl:      binPath,
+		namespace:    namespace,
+		logger:       iterlog.New(iterlog.LevelInfo, io.Discard),
+		sched:        sched,
+		schedErr:     schedErr,
+		transport:    transport,
+		transportErr: transportErr,
 	}, nil
 }
 
@@ -456,7 +460,7 @@ func Constructor() (sandbox.Driver, error) { return New() }
 // State is intentionally minimal: kubectl path, namespace, logger.
 // Per-run state lives on the [Run] handle returned by [Driver.Start].
 type Driver struct {
-	kubectl   string
+	kubectl   Kubectl
 	namespace string
 	logger    *iterlog.Logger
 
@@ -465,6 +469,12 @@ type Driver struct {
 	// failure it carries, surfaced by Start on every run.
 	sched    podScheduling
 	schedErr error
+
+	// The required Env transport is configured once, but a configuration error
+	// does not make the factory select a different driver: Env-empty commands
+	// remain usable. Env-required commands surface transportErr on their Cmd.
+	transport    execTransportConfig
+	transportErr error
 }
 
 // WithLogger returns a copy of the driver bound to a real logger.
@@ -527,6 +537,8 @@ func (d *Driver) Capabilities() sandbox.Capabilities {
 		SupportsBuild:          false, // local-only feature; cloud users build via CI + sandbox.image:
 		SupportsMounts:         true,  // V2-7 — type=pvc / type=configmap / type=secret
 		SupportsHostBindMounts: false, // pods have no host filesystem — type=bind is rejected; the iterion/rtk binaries are baked into the sandbox image
+		SupportsHostDirCopy:    true,  // a directory streams into the pod the way the workspace does (RunInfo.SeedDirs → an emptyDir per seed + tar over kubectl exec)
+		SupportsReadBackDrain:  true,  // a declared read-back path is an emptyDir the pod keeps, drained at teardown (RunInfo.ReadBackDirs → Run.ExportRunFiles, ADR-143)
 		SupportsNetworkPolicy:  true,  // V2-5 — synthesised per-run; CNI must enforce
 		SupportsPostCreate:     true,
 		SupportsRemoteUser:     true,
@@ -623,7 +635,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
+		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
 			return nil, fmt.Errorf("kubernetes: apply file secrets secret: %w", err)
 		}
 	}
@@ -637,13 +649,13 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		caSecret, err := BuildCASecret(d.namespace, caSecretName, info.RunID, info.FriendlyName, info.ProxyCACert, owner)
 		if err != nil {
 			if secretFilesSecretName != "" {
-				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+				_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
 			return nil, fmt.Errorf("kubernetes: build CA secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
+		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
 			if secretFilesSecretName != "" {
-				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+				_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
 			return nil, fmt.Errorf("kubernetes: apply CA secret: %w", err)
 		}
@@ -656,7 +668,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		FriendlyName:          info.FriendlyName,
 		Spec:                  p.spec,
 		WorkspaceMount:        p.workspace,
+		SeedMounts:            seedMountTargets(info.SeedDirs),
 		ProxyEndpoint:         info.ProxyEndpoint,
+		HostGatewayAlias:      info.HostGatewayAlias,
+		RunnerPodIP:           os.Getenv(PodIPEnvVar),
 		CASecretName:          caSecretName,
 		SecretFilesSecretName: secretFilesSecretName,
 		Owner:                 owner,
@@ -666,10 +681,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	})
 	if err != nil {
 		if caSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", caSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
 		if secretFilesSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 		}
 		return nil, fmt.Errorf("kubernetes: build manifest: %w", err)
 	}
@@ -682,14 +697,14 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// Goes through deleteResource so it inherits that helper's bound: it is
 	// one apiserver call in the middle of the setup sequence, and an
 	// unbounded one hangs the run before the first bounded phase.
-	_ = deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
+	_ = d.kubectl.deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
 
-	if err := applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
+	if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
 		if caSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", caSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
 		if secretFilesSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 		}
 		return nil, fmt.Errorf("kubernetes: apply pod: %w", err)
 	}
@@ -707,12 +722,13 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 
 	// V2-5: synthesise a per-run NetworkPolicy when the proxy is
 	// active. The policy locks the sibling pod's egress to the runner
-	// pod (proxy) + kube-dns. Skipped silently when the proxy isn't
-	// in play (network mode=open) or the runner can't introspect its
-	// own IP. Enforcement requires a NetworkPolicy-aware CNI (Calico,
+	// pod (proxy) + kube-dns. Skipped when the proxy isn't in play (an
+	// open policy with no Layer 2 rewriter and no gateway credential);
+	// a proxied run whose runner can't introspect its own IP is refused
+	// below. Enforcement requires a NetworkPolicy-aware CNI (Calico,
 	// Cilium, ...) — see docs/sandbox.md § cloud.
+	runnerIP := os.Getenv(PodIPEnvVar)
 	if info.ProxyEndpoint != "" {
-		runnerIP := os.Getenv(PodIPEnvVar)
 		if runnerIP == "" {
 			// Fail-closed: the workflow requested isolated network
 			// (sandbox.network with an allowlist), the proxy alone
@@ -732,13 +748,15 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			RunID:        info.RunID,
 			FriendlyName: info.FriendlyName,
 			RunnerPodIP:  runnerIP,
+			Untrusted:    info.UntrustedRun,
+			EgressPorts:  info.RunnerEgressPorts,
 			Owner:        owner,
 		})
 		if err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
 		}
-		if err := applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
+		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
 		}
@@ -752,9 +770,22 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		return nil, fmt.Errorf("kubernetes: pod ready timeout is unset (%s) — the driver was not built by New()", d.sched.readyTimeout)
 	}
 	readySecs := int((d.sched.readyTimeout + time.Second - 1) / time.Second) // rounded up: never shorter than configured
-	if err := waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
+	if err := d.kubectl.waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
+	}
+
+	// ADR-162 decision 7 — the untrusted run's start proves its floor
+	// BEFORE the first spawn: the probe exec'd above dials, proxy env
+	// ignored, the roads the policy just closed (cluster API, the
+	// credential's host, the runner's metrics port) and every dial must
+	// fail. A non-enforcing CNI applies the policy as a no-op and only
+	// this probe sees it — the run is refused typed, pod cleaned up.
+	if r.networkPolicyApplied && info.UntrustedRun {
+		if err := r.probeNetworkFloor(ctx, networkFloorProbeTargets(info, runnerIP)); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, err
+		}
 	}
 
 	// Phase 5 V2: the kubernetes driver has no host filesystem to
@@ -770,8 +801,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// max_duration fires. resolveWorkspaceCopyTimeout is the budget
 	// (DefaultWorkspaceCopyTimeout; ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT
 	// overrides).
+	copyTimeout := resolveWorkspaceCopyTimeout()
 	if info.WorkspacePath != "" {
-		copyTimeout := resolveWorkspaceCopyTimeout()
 		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "workspace copy", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
 			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
 		}); err != nil {
@@ -783,6 +814,17 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
+		}
+	}
+	// The seeds the runtime could not bind — the run's attachments — land
+	// the same way the workspace does, each in the emptyDir the manifest
+	// declared for it, under the same bounded phase.
+	for _, seed := range info.SeedDirs {
+		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "seed copy "+seed.ContainerPath, workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
+			return r.seedDir(ctx, seed)
+		}); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, fmt.Errorf("kubernetes: seed %s: %w", seed.ContainerPath, err)
 		}
 	}
 
@@ -868,7 +910,7 @@ func (r *Run) RefreshSecretFile(ctx context.Context, name string, value []byte) 
 	if err != nil {
 		return err
 	}
-	if err := applyManifest(ctx, r.driver.logger, r.namespace, "refresh file-secret", manifest); err != nil {
+	if err := r.driver.kubectl.applyManifest(ctx, r.driver.logger, r.namespace, "refresh file-secret", manifest); err != nil {
 		return fmt.Errorf("kubernetes: refresh file secret %s: apply: %w", name, err)
 	}
 	return nil
@@ -910,25 +952,18 @@ func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
 	return manifest, nil
 }
 
-// Command returns an *exec.Cmd that, when started, runs cmd inside
-// the sandbox pod via `kubectl exec`. Stdin/Stdout/Stderr on the
-// returned cmd are forwarded transparently by kubectl.
-//
-// Cwd defaults to the prepared workspace; [ExecOpts.WorkDir]
-// overrides per-call. Env vars are passed via env-prefixed argv
-// (`env KEY=val cmd ...`) because `kubectl exec` doesn't expose a
-// `--env` flag — the sandbox env established at pod creation time
-// is the base, and per-call envs are layered on top via the env
-// command.
-//
-// A payload too large to survive the kernel's MAX_ARG_STRLEN cap on a
-// single argv element (32 pages = 128 KiB, no ulimit raises it) is
-// streamed through stdin as `kubectl exec --stdin … -- <shell> -s`
-// instead. Both exec shapes below can take that route, but they cross
-// the cap for different reasons — see [resolveStreamPayload].
+// Command returns an *exec.Cmd that runs cmd inside the workload container.
+// Env-empty calls preserve the historical kubectl command. Calls with overrides
+// use the image's native environment capsule and the host relay; no workload
+// value becomes an argv entry or an environment setting of the kubectl client.
+// Native custom cwd/PWD semantics apply only to that required transport.
+// A caller owning stdin (including KeepStdinOpen) never loses it to a script.
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		return exec.CommandContext(ctx, "")
+	}
+	if len(opts.Env) != 0 {
+		return r.execEnvCommand(ctx, cmd, opts)
 	}
 
 	// Per-call cwd is realised by `cd <dir> && exec ...` — kubectl
@@ -982,7 +1017,9 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 	default:
 		args = append(args, "sh", "-c", wrapped)
 	}
-	return r.cmdContext(ctx, args, streamPayload, opts)
+	c := r.cmdContext(ctx, args, streamPayload, opts)
+	proc.TerminateGroupOnCancel(c)
+	return c
 }
 
 // resolveStreamPayload returns the exact bytes to feed the in-pod shell
@@ -1050,18 +1087,13 @@ func resolveStreamPayload(cmd []string, wrapped string, customWorkDir bool, opts
 // same value — kubectl drops an unannounced stdin silently — which is
 // why [Run.Command] decides both from one expression.
 func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload string, opts sandbox.ExecOpts) *exec.Cmd {
-	c := exec.CommandContext(ctx, r.driver.kubectl, args...)
+	c := r.driver.kubectl.command(ctx, args...)
 	switch {
 	case opts.Stdin != nil:
 		c.Stdin = opts.Stdin
 	case streamPayload != "":
 		c.Stdin = strings.NewReader(streamPayload)
 	}
-	proc.DetachProcessGroup(c)
-	// A cancelled context kills kubectl, not a child it spawned (the process
-	// group is detached): a credential plugin still holding the pipes would
-	// keep Wait blocked past the caller's deadline (kubectlCmdContext).
-	c.WaitDelay = 2 * time.Second
 	return c
 }
 
@@ -1093,23 +1125,23 @@ func (r *Run) Cleanup(_ context.Context) error {
 
 	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := deleteResource(deleteCtx, r.namespace, "pod", r.podName); err != nil {
+	if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "pod", r.podName); err != nil {
 		// Surface to the logger at debug level — most failures are
 		// "AlreadyDeleted" or transient API hiccups.
 		r.driver.logger.Debug("sandbox: kubernetes cleanup of %s/%s reported: %v", r.namespace, r.podName, err)
 	}
 	if r.networkPolicyApplied {
-		if err := deleteResource(deleteCtx, r.namespace, "networkpolicy", r.podName); err != nil {
+		if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "networkpolicy", r.podName); err != nil {
 			r.driver.logger.Debug("sandbox: kubernetes netpolicy cleanup of %s/%s reported: %v", r.namespace, r.podName, err)
 		}
 	}
 	if r.caSecretName != "" {
-		if err := deleteResource(deleteCtx, r.namespace, "secret", r.caSecretName); err != nil {
+		if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "secret", r.caSecretName); err != nil {
 			r.driver.logger.Debug("sandbox: kubernetes CA secret cleanup of %s/%s reported: %v", r.namespace, r.caSecretName, err)
 		}
 	}
 	if r.secretFilesSecretName != "" {
-		if err := deleteResource(deleteCtx, r.namespace, "secret", r.secretFilesSecretName); err != nil {
+		if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "secret", r.secretFilesSecretName); err != nil {
 			r.driver.logger.Debug("sandbox: kubernetes file secrets cleanup of %s/%s reported: %v", r.namespace, r.secretFilesSecretName, err)
 		}
 	}
@@ -1148,10 +1180,64 @@ func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 // (objects + the `origin` remote), so the sandboxed bot can commit and
 // push (finalize_mr) against the real remote. The clone's checkout is the
 // same base commit as the worktree.
+//
+// An UNTRUSTED run's copy crosses the working tree only, never `.git`
+// (ADR-162 U5, the same floor the docker driver's addWorktreeGitMount
+// enforces by not binding the tree): the git-private half of the clone is
+// where the runner's rotated credential store (.git/iterion-credentials),
+// the repo config and its hooks live — a copy is a mount by other means,
+// and no state location of the container makes it safe to hand over. An
+// in-pod git command then fails `fatal: not a git repository`, which is
+// the isolation working, not a defect.
 func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) error {
 	src := resolveCloneRoot(ctx, hostSrc)
+	skip := []string(nil)
+	if r.info.UntrustedRun {
+		skip = []string{".git"}
+	}
 	r.driver.logger.Info("sandbox: copying workspace %s into pod %s:%s", src, r.podName, podDst)
+	return r.streamDirIntoPod(ctx, src, podDst, skip...)
+}
 
+// seedMountTargets is the container path of every seed: the manifest
+// declares an emptyDir there so the copy lands on a volume the sandbox user
+// can write into (the image's own directories are root-owned).
+func seedMountTargets(seeds []sandbox.SeedDir) []string {
+	out := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		out = append(out, s.ContainerPath)
+	}
+	return out
+}
+
+// seedDir copies one seed into the pod and, when the seed is read-only,
+// takes the write bit off every copied file. The directory itself is the
+// emptyDir — root-owned, group-writable through fsGroup — and its mode is
+// not the sandbox user's to change, so read-only is per file here. A
+// chmod that fails leaves the files writable and says so; the copy stands.
+func (r *Run) seedDir(ctx context.Context, seed sandbox.SeedDir) error {
+	r.driver.logger.Info("sandbox: copying %s into pod %s:%s", seed.HostDir, r.podName, seed.ContainerPath)
+	if err := r.streamDirIntoPod(ctx, seed.HostDir, seed.ContainerPath); err != nil {
+		return err
+	}
+	if !seed.ReadOnly {
+		return nil
+	}
+	chmod := r.driver.kubectl.cmdContext(ctx, "--namespace", r.namespace,
+		"exec", r.podName, "--", "find", seed.ContainerPath, "-type", "f", "-exec", "chmod", "a-w", "{}", "+")
+	if out, err := chmod.CombinedOutput(); err != nil {
+		r.driver.logger.Warn("sandbox: the files copied under %s stay writable — chmod in pod %s: %v\n%s", seed.ContainerPath, r.podName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// streamDirIntoPod archives the CONTENTS of src on the host and extracts
+// them into podDst in the pod: one tar pipeline over kubectl exec, nothing
+// staged on either side. skipTop names top-level entries that never cross
+// — the untrusted run's `.git` (populateWorkspace); the exclusion is by
+// ENTRY NAME at the listing, so nothing under the skipped tree is archived
+// at all, rather than filtered by pattern later in the stream.
+func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string, skipTop ...string) error {
 	// Archive the worktree CONTENTS by name, never the "." root entry. A "./"
 	// archive member makes the in-pod tar restore the source dir's mode+mtime
 	// onto podDst itself — the pod's /workspace emptyDir, which is root-owned
@@ -1163,16 +1249,26 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 	if err != nil {
 		return fmt.Errorf("read workspace source %s: %w", src, err)
 	}
-	if len(entries) == 0 {
-		return nil // nothing to copy
-	}
-	tarArgs := []string{"-C", src, "-cf", "-"}
+	// The entry names are OPERANDS, fenced off the option parser with "--":
+	// a name that starts with "--" (a repository file, an attachment name a
+	// launch request chose) is otherwise an option to GNU tar, and
+	// `--checkpoint-action=exec=…` runs a command on the HOST, the trusted
+	// side of this pipe.
+	tarArgs := []string{"-C", src, "-cf", "-", "--"}
+	copied := 0
 	for _, e := range entries {
+		if slices.Contains(skipTop, e.Name()) {
+			continue
+		}
 		tarArgs = append(tarArgs, e.Name())
+		copied++
+	}
+	if copied == 0 {
+		return nil // nothing to copy
 	}
 	hostTar := exec.CommandContext(ctx, "tar", tarArgs...)
 	// --no-overwrite-dir stays as defence in depth for any pre-existing subdir.
-	podTar := kubectlCmdContext(ctx, "--namespace", r.namespace,
+	podTar := r.driver.kubectl.cmdContext(ctx, "--namespace", r.namespace,
 		"exec", "-i", r.podName, "--", "tar", "-C", podDst, "--no-overwrite-dir", "-xf", "-")
 
 	pipe, err := hostTar.StdoutPipe()
@@ -1188,7 +1284,26 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 		return fmt.Errorf("start in-pod tar: %w", err)
 	}
 	if err := hostTar.Run(); err != nil {
-		_ = podTar.Wait()
+		// The phase deadline kills both legs of the pipe together, and which
+		// death this function reads first is the scheduler's order. When the
+		// cut struck, the wedged IN-POD tar is the cause the operator needs —
+		// the local tar died of the same cut through the pipe — so the far
+		// side's death leads whenever the phase's context is already done.
+		podWaitErr := podTar.Wait()
+		if ctx.Err() != nil && podWaitErr != nil {
+			// Both deaths travel: the host leg's stderr can name an
+			// independent cause ("file changed as we read it") printed before
+			// the cut reached it — the wedged far side leads, the host tail
+			// follows.
+			podTail := strings.TrimSpace(podErr.String())
+			if hostTail := strings.TrimSpace(hostErr.String()); hostTail != "" {
+				if podTail != "" {
+					podTail += "\n"
+				}
+				podTail += "host tar: " + hostTail
+			}
+			return fmt.Errorf("in-pod tar extract: %w\n%s", podWaitErr, podTail)
+		}
 		return fmt.Errorf("host tar %s: %w\n%s", src, err, strings.TrimSpace(hostErr.String()))
 	}
 	if err := podTar.Wait(); err != nil {
@@ -1243,7 +1358,7 @@ func (r *Run) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 // bandwidth: the archiver runs in the sandbox, on an image the workflow
 // chooses, so a list enforced there alone is a list the exported side asks
 // the pod to respect. What the host must not receive, the host drops.
-var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials", "./.git/hooks"}
+var exportExcludes = []string{"./.git/config", "./.git/" + gitlib.CredentialStoreFile, "./.git/hooks"}
 
 // tarExcludeArgs renders exportExcludes as tar flags.
 func tarExcludeArgs() []string {
@@ -1330,24 +1445,41 @@ func (r *Run) ExportWorkspace(ctx context.Context) error {
 	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
 	attempts, pause := exportRetrySettings(r.driver.logger)
 	hostGit := filepath.Join(hostDst, ".git")
-	before, err := gitDirFiles(hostGit)
-	if err != nil {
-		return fmt.Errorf("list host .git before export: %w", err)
+	// An UNTRUSTED run's export never touches the host's git-private tree
+	// (ADR-162 U5): the pod was populated without `.git` and no member may
+	// land under it (exportTarget), so there is nothing to clear the host's
+	// loose refs FOR — clearing them anyway would delete refs nothing
+	// arrives to replace — and no raced-leftover walk either: its premise
+	// ("only a raced archive can have written under .git") is false when
+	// .git members are categorically dropped. The pod's tree crosses as
+	// working-tree files only.
+	untrusted := r.info.UntrustedRun
+	var before map[string]bool
+	if !untrusted {
+		snapshot, err := gitDirFiles(hostGit)
+		if err != nil {
+			return fmt.Errorf("list host .git before export: %w", err)
+		}
+		before = snapshot
 	}
 	var last error
 	for attempt := 1; attempt <= attempts; attempt++ {
 		// Cleared before EVERY attempt: a pod-side gc between two attempts
 		// may pack a ref the previous extract wrote loose, and a stale loose
 		// file would shadow the packed value this attempt brings.
-		if err := clearHostLooseRefs(hostGit); err != nil {
-			return fmt.Errorf("clear host loose refs before export extract: %w", err)
+		if !untrusted {
+			if err := clearHostLooseRefs(hostGit); err != nil {
+				return fmt.Errorf("clear host loose refs before export extract: %w", err)
+			}
 		}
 		retryable, extracted, err := r.exportOnce(ctx, hostDst)
 		if err == nil {
 			if attempt > 1 {
 				r.driver.logger.Warn("sandbox: workspace export succeeded on attempt %d/%d, after tar saw the tree change mid-archive", attempt, attempts)
-				if err := r.dropRacedGitLeftovers(hostGit, before, extracted); err != nil {
-					return err
+				if !untrusted {
+					if err := r.dropRacedGitLeftovers(hostGit, before, extracted); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
@@ -1380,8 +1512,10 @@ const (
 // exportRetrySettings reads the retry bounds, overridable by
 // ITERION_SANDBOX_EXPORT_ATTEMPTS (an integer >= 1) and
 // ITERION_SANDBOX_EXPORT_RETRY_PAUSE (a positive Go duration, the first
-// pause; each next one doubles). An unusable value is reported and the default
-// kept — the export is not the place to fail on a knob.
+// pause; each next one doubles). The workspace export and the run-files
+// drain — the same teardown window, the same race — read the same bounds.
+// An unusable value is reported and the default
+// kept — neither is the place to fail on a knob.
 func exportRetrySettings(logger *iterlog.Logger) (attempts int, pause time.Duration) {
 	attempts, pause = defaultExportAttempts, defaultExportRetryPause
 	if raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_EXPORT_ATTEMPTS")); raw != "" {
@@ -1473,7 +1607,11 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 		"env", "LC_ALL=" + sandbox.TarLocale, "tar", "-C", r.prepared.workspace}
 	kubectlArgs = append(kubectlArgs, tarExcludeArgs()...)
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
-	podTar := kubectlCmdContext(ctx, kubectlArgs...)
+	// The archiver's own cancel: an extract that stops reading stops it
+	// (stopPodArchiver).
+	archiverCtx, stopArchiver := context.WithCancel(ctx)
+	defer stopArchiver()
+	podTar := r.driver.kubectl.cmdContext(archiverCtx, kubectlArgs...)
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
@@ -1490,17 +1628,51 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 	// the sandbox.
 	extracted, xerr := r.extractExport(pipe, hostDst)
 	if xerr != nil {
-		// Drain, so the pod's archiver sees its reader go away rather than
-		// block on a full pipe, then report the extraction error.
-		_, _ = io.Copy(io.Discard, pipe)
-		_ = podTar.Wait()
+		// The extract is done reading: the archiver is stopped, never read
+		// to its end for nothing, then the extraction error is reported.
+		stopPodArchiver(stopArchiver, podTar)
 		return false, nil, fmt.Errorf("extract the export into %s: %w", hostDst, xerr)
+	}
+	if err := readArchiveTail(pipe); err != nil {
+		stopPodArchiver(stopArchiver, podTar)
+		return false, nil, fmt.Errorf("read the pod's archive past its end: %w", err)
 	}
 	if err := podTar.Wait(); err != nil {
 		stderr := strings.TrimSpace(podErr.String())
 		return onlyTarRaceWarnings(err, stderr), nil, fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
 	}
 	return false, extracted, nil
+}
+
+// stopPodArchiver ends a pod archiver whose stream the host stopped reading:
+// an extract that failed lands nothing more of the archive, and reading the
+// rest only to throw it away would stream every byte a tool left behind —
+// past the run-files cap, tens of gigabytes — through the teardown until
+// its deadline killed kubectl. stop cancels the context the archiver was
+// started under (Kubectl.cmdContext), which kills kubectl and closes the
+// exec stream, so the pod's tar loses its reader. Wait reaps kubectl, its
+// wait on pipes a credential plugin may still hold bounded by the command's
+// WaitDelay; its error is the stop's own, the caller reports the extract's.
+// The workspace export and the run-files drain both end an extract here.
+func stopPodArchiver(stop context.CancelFunc, archiver *exec.Cmd) {
+	stop()
+	_ = archiver.Wait()
+}
+
+// readArchiveTail reads what the pod's archiver still sends once an
+// extract met the archive's end-of-archive marker, so its exit can be
+// waited for: tar pads its last record past the marker, and an archiver
+// whose output nobody reads blocks on that write and never exits — Wait
+// would never return, and the race warning its exit carries would never
+// be read. Whether that write fits the pipe is the kernel's call, not the
+// archive's: a pipe holds what its buffer holds, smaller on a host short of
+// pipe pages. The tail is read to its end and thrown away; its length is
+// the archiver's, bounded like the whole stream by the context the
+// archiver was started under. The workspace export and the run-files drain
+// both read it before they wait.
+func readArchiveTail(archive io.Reader) error {
+	_, err := io.Copy(io.Discard, archive)
+	return err
 }
 
 // fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on
@@ -1534,8 +1706,18 @@ if [ -d "$ws/.git" ]; then
 fi`
 
 // fixupWorkspaceGit runs [fixupWorkspaceGitScript] inside the pod right
-// after populateWorkspace. No-op for non-git workspaces.
+// after populateWorkspace. No-op for non-git workspaces — and for an
+// UNTRUSTED run, skipped outright (ADR-162 U5): the fixup's whole job is
+// wiring the copied clone's plumbing, the credential.helper re-point above
+// all, and an untrusted run's copy crossed no `.git` to wire. Skipping
+// rather than relying on the script's own `-d "$ws/.git"` guard keeps the
+// floor at the composition site: a later change that re-added the git tree
+// to the copy would find nothing here willing to re-point a credential
+// into an untrusted container.
 func (r *Run) fixupWorkspaceGit(ctx context.Context, podWorkspace string) error {
+	if r.info.UntrustedRun {
+		return nil
+	}
 	res, err := r.Exec(ctx, []string{"sh", "-c", fixupWorkspaceGitScript, "sh", podWorkspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err
@@ -1621,3 +1803,6 @@ func podNameFor(runID string) string {
 	}
 	return n
 }
+
+// OwnsCommandCancellation covers both the native relay and plain kubectl.
+func (*Run) OwnsCommandCancellation() bool { return true }

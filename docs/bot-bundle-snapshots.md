@@ -32,6 +32,15 @@ self-contained, so the runner compiles it without the files beside the source.
 An inline source with an include and no bundle to resolve it from is refused at
 publish rather than queued to die on the runner.
 
+The snapshot's required file is the launched **entry** (`Snapshot.Entry`), not
+the literal `main.bot`: the root's main.bot, a promoted root-level sibling of
+it, or a loose catalogue file (a `bots/smoke/board_smoke.bot` with no main.bot
+beside it). A loose entry freezes ALONE with the `lib/` fragments its imports
+reach — its parent directory is no bundle, so nothing else it holds (an `.env`,
+a `devbox.json`, an unrelated `skills/`) crosses or is mirrored on the runner
+(#1896). The runner opens the materialized root with the entry as its main
+(`bundle.OpenDirEntry`), never a main.bot it assumes.
+
 An explicit or automatic resume re-resolves and freezes the current collection,
 following the existing resume contract for stored bots. An inline source supplied
 on resume determines the child graph to capture. The existing workflow hash and
@@ -71,6 +80,13 @@ database collection is introduced.
   child even when the runner image could supply one.
 - `TestSnapshotOffloadIsImmutableAcrossResume`: large snapshots fit the queue
   through object references without overwriting the preceding attempt's bytes.
+- `TestSnapshotLooseEntryFreezesTheUnitAlone` (pkg/bundle) and
+  `TestSnapshotLooseCatalogEntryFreezesTheUnitAlone` (pkg/server): a loose
+  catalogue entry freezes as its file plus its `lib/` fragments, keyed on the
+  entry; the parent directory's `.env`/`devbox.json`/unrelated files never
+  cross, and the frozen collection opens with the entry as its main.
+- `TestSnapshotRunnerOpensALooseEntry` (pkg/runner): the runner materializes
+  and opens a main.bot-less snapshot for its entry.
 
 These are deterministic tests; a coordinated live server/runner rollout remains
 the operational verification for a release carrying the schema bump.

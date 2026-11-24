@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -8,12 +9,43 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+func TestValidateOutput_JSONNull(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		typ     ir.FieldType
+		input   string
+		wantErr string
+	}{
+		{"json accepts null", ir.FieldTypeJSON, `{"payload":null}`, ""},
+		{"string rejects null", ir.FieldTypeString, `{"payload":null}`, `field "payload" is null`},
+		{"json remains required", ir.FieldTypeJSON, `{}`, `missing required field "payload"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output map[string]any
+			if err := json.Unmarshal([]byte(tc.input), &output); err != nil {
+				t.Fatal(err)
+			}
+			schema := &ir.Schema{Fields: []*ir.SchemaField{{Name: "payload", Type: tc.typ}}}
+			err := ValidateOutput(output, schema)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("valid JSON null rejected: %v", err)
+				}
+			} else if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("ValidateOutput = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestValidateOutput_StringArrayEnumEnforced guards the data-integrity
 // fix that pushed the string[] [enum: ...] check into ValidateOutput.
 // Before the fix, the generated JSON schema advertised the constraint
 // to the LLM but server-side validation accepted any string value, so
 // a stray entry flowed downstream unchecked.
 func TestValidateOutput_StringArrayEnumEnforced(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{
 		Name: "out",
 		Fields: []*ir.SchemaField{
@@ -71,6 +103,7 @@ func TestValidateOutput_StringArrayEnumEnforced(t *testing.T) {
 // the field named: the same rule ValidateOutput applies to an LLM's output,
 // never a silent float under an `int` label.
 func TestConformComputeOutput(t *testing.T) {
+	t.Parallel()
 	schemaOf := func(typ ir.FieldType) *ir.Schema {
 		return &ir.Schema{Name: "gauge", Fields: []*ir.SchemaField{{Name: "used_pct", Type: typ}}}
 	}
@@ -130,6 +163,7 @@ func TestConformComputeOutput(t *testing.T) {
 // expression produced, is the ABSENCE class, not a type mismatch; the rule
 // conforms the values that are present and leaves those alone.
 func TestConformComputeOutput_LeavesAbsentAndNilAlone(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{Name: "s", Fields: []*ir.SchemaField{
 		{Name: "a", Type: ir.FieldTypeInt},
 		{Name: "b", Type: ir.FieldTypeString},
@@ -151,6 +185,7 @@ func TestConformComputeOutput_LeavesAbsentAndNilAlone(t *testing.T) {
 // a type error — ValidateOutput used to accept float64 alone, the JSON
 // decoder's shape, and reject the int64 a compute or a subbot produces.
 func TestValidateOutput_NumericKindsAgreeWithCompute(t *testing.T) {
+	t.Parallel()
 	intSchema := &ir.Schema{Name: "s", Fields: []*ir.SchemaField{{Name: "n", Type: ir.FieldTypeInt}}}
 	for _, v := range []any{int64(3), 3, 3.0} {
 		if err := ValidateOutput(map[string]any{"n": v}, intSchema); err != nil {

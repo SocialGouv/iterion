@@ -64,11 +64,13 @@ no probe ever pulled (one closer than the probe floor, or a deployment with
 most `max_attempts` of them, the behaviour that shipped before the wall
 existed.
 
-One observer of a usage park does NOT key on the wall: the run-completion
-callback a launch may ask for (`callback_url`, `pkg/notify`) POSTs
-`failed_resumable` once per park, because its predicate is the terminal-status
-set and a parked run is in it. An API consumer polling or listening there sees
-one delivery per park and per probe re-park.
+The run-completion callback a launch may ask for (`callback_url`,
+`pkg/notify`) keys on the wall too: a parked run is terminal for polling
+but not done, so the park delivers nothing, and the run delivers once at
+settlement — resumed and finished, or its retry retired (the sweeper's
+abandonment fires the callback the executing lanes never will). A row from
+before the wall was persisted keeps the per-transition behaviour, like
+every reader above.
 
 ## Configuration
 
@@ -448,15 +450,21 @@ it is only this guard that ignores it.
 is judged on the credential IT spends, not on the run's default — a run can
 hold a Claude forfait on the wire beside a z.ai key a shared tier sealed for
 its GLM routes, and a closed forfait says nothing about those routes. The
-route is read the way the executor will run it
-([`model.AnthropicWireRoutes`](../pkg/backend/model/wire_reach.go): the node's
-backend under the launch's overrides, the FIRST element of its provider
-chain), and its credential is asked of the delegate itself: a claude_code
+routes are the run's primary call sites
+([`model.CallSites`](../pkg/backend/model/call_sites.go), the enumeration the
+launch's credential admission judges too: agent and judge nodes, an `llm`
+router, a human node's LLM half, a Verified Action's rungs), each read the
+way the executor will run it
+([`model.AnthropicWireRoutes`](../pkg/backend/model/wire_reach.go): the
+backend under the launch's overrides, the chain its dispatch walks), and its
+credential is asked of the call's own resolver: a claw route of the
+credential resolver (ADR-161), on the first leg it funds — a claw node naming
+no model on the detector's pick, as its dispatch builds it; a claude_code
 route through `delegate.AnthropicRouteSource` — the composition the session
 will run, under the hint `model.RouteProviderHint` hands it (a GLM id goes to
-z.ai) — so the pre-flight reads the ledger the session will write; claw and
-pi routes as the spend ledger books them; kimi and grok routes not at all
-(their own config pays), an opencode route on the pod's ambient meter. A route the walk cannot read (a
+z.ai) — so the pre-flight reads the ledger the session will write; a pi route
+on pi's own credential order; kimi and grok routes not at all (their own
+config pays), an opencode route on the pod's ambient meter. A route the walk cannot read (a
 `{{vars.…}}` backend, hint or model) keeps the run's default credential; a
 route the delegate refuses before spawning (a facade hint with no key) spends
 nothing and is not the cap's to park; a store read that fails is headroom for
@@ -490,16 +498,16 @@ capped branch is on every execution):
   nothing; and neither does one whose every WATCHED node this run's launch
   excluded — a coordinator evaluates only while a watched node is active
   (`supervise.Coordinator.armed`), so its model is never called. That last
-  reading is what lets a bi-model bot give each family its own supervisor:
-  `review-pr`'s `pacer` watches the claude reviewer and `pacer_gpt` the gpt
-  one, and a mono run is metered for the family it takes alone. An EMPTY
-  `watches:` is the whole run and is always judged.
+  reading is what lets a bot give each role its own supervisor:
+  `review-pr`'s `pacer` watches `reviewer_alternate` and `pacer_gpt` watches
+  `reviewer`, and a single review is metered for the reviewer it takes
+  alone. An EMPTY `watches:` is the whole run and is always judged.
 
-**The paths are this run's, not the graph's.** A launch that pins a family has
-already excluded branches the graph still carries, and a capped route on one
-of them can spend nothing: `review-pr` launched with `--var mono_family=gpt`
-takes `topology -> reviewer_gpt`, never the unconditional `topology ->
-reviewer_claude` beside it. So both walks read this run's topology through
+**The paths are this run's, not the graph's.** A `single` review has already
+excluded branches the graph still carries, and a capped route on one of them
+can spend nothing: `review-pr` launched with `--var review_mode=single`
+takes `topology -> reviewer`, never the `paired` fan-out to
+`reviewer_alternate` beside it. So both walks read this run's topology through
 [`ir.Workflow.LaunchVarEdgeFilter`](../pkg/dsl/ir/launch_var_edges.go), over
 the run's effective vars — the workflow's declared defaults under the launch's
 own values, the two layers `resolveVars` stacks. An edge is dropped only where
@@ -554,42 +562,36 @@ start**: on alternative branches the first hard-capped route to reopen is
 enough, in sequence the run needs the last. The decision does not depend on
 the order the routes were read in.
 
-### A bot whose family a launch pins — the deployment half
+### A bot whose roles a launch chooses — the deployment half
 
 The prune only stops a cap from parking a run for routes the run cannot take;
-it changes nothing about routes it does take. So a bot whose launch pins a
-family owes the OTHER routes of that family too — not only its reviewers.
-`review-pr` carries four per family: three on edges the same launch-vars
-prune decides, and the pacer supervisor by its WATCH set — a supervisor has
-no edge, and a coordinator arms only while one of its watched nodes is
-active:
+it changes nothing about routes it does take. A `review-pr` run carries
+routes on both sides of the `single`/`paired` choice, and the launch-vars
+prune decides three of them per run — the pacer supervisor is decided by its
+WATCH set instead (a supervisor has no edge, and a coordinator arms only
+while one of its watched nodes is active):
 
-- the reviewer — `reviewer_gpt` on claw, behind
-  `vars.mono_family == 'gpt'`, pre-empting the unconditional claude edge;
-- its **glance twin** — `reviewer_gpt_glance`, behind that guard ANDed with
-  `vars.review_tier == 'glance'`: a route of its own, which is why the
-  pre-flight's witness names all three claude NODES it prunes
-  (`reviewer_claude`, `reviewer_claude_glance`, `converge`) and not two;
-- the **merge step** — `converge_gpt`, claw + `openai/gpt-6-sol`, behind the
-  same guard. On every path that reviews anything, which is why its claude
-  twin used to park a mono-GPT run under a SOFT cap (a HARD one parks
-  nothing there: the bot's empty-diff short-circuit reaches `done` without
-  it, and the mid-run guard stops the call if the run goes that way);
-- the **pacer supervisor** — `pacer_gpt`, `openai/gpt-6-sol`, watching
-  `reviewer_gpt` alone, so the claude `pacer` beside it arms on no execution
-  of this run and is not metered.
+- `reviewer` — `claw` + `openai/gpt-6-astra`, taken by `single` (and by
+  `glance`, through `reviewer_glance`);
+- `reviewer_alternate` — `claude_code` + opus 5.5 + `anthropic`, taken only
+  by a `paired` fan-out, so a `single` run never meters it;
+- `converge` — `claw` + `openai/gpt-6-sol`, on every path that reviews
+  anything; a `single` run therefore parks on ITS backend's cap and not on
+  the alternate reviewer's;
+- the **pacer supervisors** — `pacer` watching `reviewer_alternate` and
+  `pacer_gpt` watching `reviewer`: only the one whose watched node this run
+  reaches arms.
 
-A mono-GPT review therefore starts under a spent Anthropic window, soft cap
-or hard, **with no dial set at all**
-(`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot`, `pkg/runner`). The dials
-stay the escape hatch in both directions: pointing the merge twin's three
-(`ITERION_VIBE_{BACKEND,MODEL,PROVIDER}_EMIT_GPT`) back at `claude_code` +
-`claude-opus-5-5` + `anthropic` parks the run again, which is the operator's
-explicit choice honoured rather than replaced. What this verdict reads is the
+A `single` review therefore starts under a spent Anthropic window, soft cap
+or hard, **on its literal routes, with no cell written**
+(`TestUsageCapPreflight_SingleReviewOnTheReviewPrBot`, `pkg/runner`). A
+routing cell is the escape hatch in both directions: one pointing `converge`
+back at `claude_code` + `claude-opus-5-5` + `anthropic` parks the run again,
+which is the operator's explicit choice honoured rather than replaced. What this verdict reads is the
 backend and the model — a claw route is metered on the credential its model
 resolves — so a leftover `anthropic` hint on a claw node does not park the
 run; clearing it is the node's own instruction, for the credential walk
-([the bot's own dials](../bots/review-pr/README.md#running-mono-gpt-the-family-of-the-whole-review)).
+([the bot's own routes](../bots/review-pr/README.md#roles-routes-and-the-merge-step)).
 
 ## Cloud
 

@@ -1,20 +1,24 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
-	"github.com/SocialGouv/claw-code-go/pkg/apikit"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/apikit"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -117,19 +121,38 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 	toolMap := buildToolMap(opts.Tools)
 
+	// The command narrowing (#1717): one CommandScope per NODE EXECUTION,
+	// pinned by the backend (ClawBackend.Execute) so the re-asks that share
+	// this context — the tool-use nudge, a retryLoop attempt — keep the
+	// bound the interrupted attempt set (review MED-2). A direct caller
+	// (the subagent runner, a test) that pinned none gets a fresh one: no
+	// generation runs scopeless, and none invents its own mid-loop.
+	if tool.CommandScopeFrom(ctx) == nil {
+		ctx = tool.WithCommandScope(ctx, &tool.CommandScope{})
+	}
+
 	// Copy messages to avoid mutating caller's slice.
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
+
+	// A retry whose replay starts from the bare prompt, a resume whose
+	// checkpoint compaction summarised the invocation away, or a delegated
+	// child's fresh conversation leaves this generation bounded by a command
+	// its conversation never invoked — re-state the bound, or the next
+	// refusal names a command the model cannot place (#2905). No-op when
+	// the notice already rides the conversation.
+	messages = tool.EnsureNarrowingNotice(ctx, messages)
 
 	// Always-thinking models reject tool_choice:any. Keep the grounding
 	// contract in the executor: an announced, malformed or denied call is
 	// not an executed tool. Chain the observer rather than replacing it.
 	requireExecutedTool := opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model)
-	executedTool := false
+	observerless := opts.OnToolStarted == nil && opts.OnToolCall == nil
+	var executedTool atomic.Bool
 	if requireExecutedTool {
 		observer := opts.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {
-			executedTool = true
+			executedTool.Store(true)
 			if observer != nil {
 				observer(info)
 			}
@@ -211,12 +234,14 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = append(messages, assistantToolUseMessage(agg.text, agg.toolUses))
 
 		// Execute tools and append tool_result message.
-		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
-		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets)
+		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission, opts.toolObserversAudited || (requireExecutedTool && observerless))
+		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets, opts.NamesSecret)
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
-			stashPauseConversation(toolErr, messages, opts)
+			if err := stashPauseConversation(ctx, toolErr, messages, opts); err != nil {
+				return result(), err
+			}
 			return result(), toolErr
 		}
 		messages = append(messages, api.Message{
@@ -229,7 +254,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = drainOperatorInbox(ctx, messages, opts)
 	}
 
-	if requireExecutedTool && !executedTool {
+	if requireExecutedTool && !executedTool.Load() {
 		return result(), fmt.Errorf("model %s returned before executing a required initial tool", opts.Model)
 	}
 	return result(), nil
@@ -274,13 +299,14 @@ func requiresAdaptiveThinking(model string) bool {
 // recorded on the step list and delivered to OnStepFinish.
 func buildStepResult(step int, agg *aggregatedResponse) StepResult {
 	return StepResult{
-		Number:       step,
-		Text:         agg.text,
-		ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-		FinishReason: mapStopReason(agg.stopReason),
-		Usage:        agg.usage,
-		Thinking:     agg.thinkingText,
-		MaxTokens:    agg.maxTokens,
+		Number:          step,
+		Text:            agg.text,
+		ToolCalls:       toolCallsFromBlocks(agg.toolUses),
+		FinishReason:    mapStopReason(agg.stopReason),
+		Usage:           agg.usage,
+		Thinking:        agg.thinkingText,
+		MaxTokens:       agg.maxTokens,
+		ReasoningEffort: agg.effort,
 	}
 }
 
@@ -336,14 +362,39 @@ func captureToolRoundTurn(opts GenerationOptions, messages []api.Message, step i
 // pending tool_use stays in the preserved-recent window (default 4) so its
 // ID remains addressable at resume time. Non-ask errors (and marshal
 // failures) leave the error untouched.
-func stashPauseConversation(toolErr error, messages []api.Message, opts GenerationOptions) {
+func stashPauseConversation(ctx context.Context, toolErr error, messages []api.Message, opts GenerationOptions) error {
 	var askErr *delegate.ErrAskUser
 	if !errors.As(toolErr, &askErr) {
-		return
+		return nil
 	}
-	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
+	if convBytes, mErr := json.Marshal(maybeCompactPause(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
 		askErr.Conversation = convBytes
 	}
+	if len(askErr.PermissionInput) != 0 {
+		// An inconsistent transcript must not fall back to a legacy approval.
+		pending, err := pendingClawApproval(askErr.Conversation, askErr.PendingToolUseID)
+		toolName, _ := askErr.PermissionMarker["tool"].(string)
+		if err != nil || pending.Name != toolName || !bytes.Equal(pending.Input, askErr.PermissionInput) {
+			return errors.New("claw: cannot request approval for an inconsistent pending tool call")
+		} else if opts.screenModelText()(string(pending.Input)) != string(pending.Input) ||
+			(opts.RedactApprovalText != nil && opts.RedactApprovalText(string(pending.Input)) != string(pending.Input)) {
+			// An approval cannot bind exact arguments that cannot safely be shown.
+			return errors.New("claw: cannot request approval for arguments that cannot safely be displayed")
+		} else {
+			// Keep exact JSON as text through the UI's JSON decoder, which
+			// would otherwise round large numbers before displaying them.
+			askErr.PermissionMarker["exact_input_json"] = string(pending.Input)
+			askErr.Question = fmt.Sprintf("%s approve `%s` with these exact arguments?\n\n%s\n\nReply `allow`, `allow always`, or `deny`.", permission.AskPromptPrefix, pending.Name, pending.Input)
+		}
+	}
+	// The narrowing rides the pause (#1717, review MED-1): the resumed
+	// generation re-pins it, so the bound the interrupted loop held
+	// survives — the operator's answer approved one call, not the
+	// restriction's lifting.
+	if scope := tool.CommandScopeFrom(ctx); scope != nil {
+		askErr.CommandNarrowing = scope.Snapshot()
+	}
+	return nil
 }
 
 // compactBetweenIterations compacts the running history before the next
@@ -361,7 +412,7 @@ func stashPauseConversation(toolErr error, messages []api.Message, opts Generati
 // from a context-window rejection — deliberately does not fire them: a
 // Block there could only turn a recoverable overflow into a failed node.
 func compactBetweenIterations(ctx context.Context, messages []api.Message, opts GenerationOptions) []api.Message {
-	compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
+	compacted, info, ok := maybeCompact(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
 	if !ok {
 		return messages
 	}
@@ -371,13 +422,18 @@ func compactBetweenIterations(ctx context.Context, messages []api.Message, opts 
 			return messages
 		}
 	}
+	// The turn a hook injects is text the loop composed for ITSELF, which
+	// the request chokepoint never sees: the summariser folds it in before
+	// any request carries it. It takes the model boundary's pass here, the
+	// one point every injector crosses (screenedInjector).
+	opts.OnBeforeCompact = screenedInjector(opts.OnBeforeCompact, opts.screenModelText())
 	// Compaction is about to fire: give OnBeforeCompact a chance to
 	// inject content (e.g. a session-memory user turn) so the summary
 	// preserves it. The injected slice feeds the summariser only; the
 	// live history keeps the originals.
 	if opts.OnBeforeCompact != nil {
 		if modified := opts.OnBeforeCompact(messages); modified != nil {
-			if reCompacted, reInfo, reOk := maybeCompact(modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
+			if reCompacted, reInfo, reOk := maybeCompact(ctx, modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
 				compacted, info = reCompacted, reInfo
 			}
 		}
@@ -503,8 +559,12 @@ func assistantToolUseMessage(text string, toolUses []toolUseBlock) api.Message {
 		// against truncation) so we don't bubble it up — the
 		// corresponding tool_result already carries the failure.
 		inputMap := map[string]any{}
-		if tu.PartialJSON != "" {
-			_ = json.Unmarshal([]byte(tu.PartialJSON), &inputMap)
+		if json.Valid([]byte(tu.PartialJSON)) {
+			decoder := json.NewDecoder(strings.NewReader(tu.PartialJSON))
+			decoder.UseNumber()
+			if err := decoder.Decode(&inputMap); err != nil || inputMap == nil {
+				inputMap = map[string]any{}
+			}
 		}
 		content = append(content, api.ContentBlock{
 			Type:  "tool_use",
@@ -563,6 +623,14 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		}()
 	}
 
+	// claw repairs a received schema on its way to the wire; an output
+	// schema the node declared is refused here instead, before a repair
+	// could drop the shape the node promised.
+	if msg := explicitSchemaShapeError(opts.ExplicitSchema); msg != "" {
+		return nil, fmt.Errorf("parse ExplicitSchema: %w", &delegate.ErrSchemaUnusable{
+			Schema: schemaName, Detail: msg,
+		})
+	}
 	var inputSchema api.InputSchema
 	if err := json.Unmarshal(opts.ExplicitSchema, &inputSchema); err != nil {
 		// Typed AND worded: this call is made in-process by the executor
@@ -596,8 +664,9 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	// request return beside their error — the same contract
 	// GenerateTextDirect's result() has, and for the same reason: the
 	// provider billed every turn made, and this is the only place that
-	// figure exists. Consult `err` first; Object is the zero value and only
-	// TotalUsage is meaningful.
+	// figure exists. Consult `err` first; Object is the zero value.
+	// Text and Messages retain the model text and request conversation for
+	// a schema correction, without replaying malformed synthetic tool calls.
 	//
 	// The exits it serves are the expensive ones — a stream that died
 	// mid-answer, a truncated tool_use, JSON the model malformed, a re-ask
@@ -608,7 +677,11 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	var steps []StepResult
 	partial := func() *ObjectResult[T] {
 		var zero T
-		return &ObjectResult[T]{Object: zero, TotalUsage: totalUsage}
+		out := &ObjectResult[T]{Object: zero, TotalUsage: totalUsage, Messages: append([]api.Message(nil), messages...)}
+		if len(steps) > 0 {
+			out.Text = steps[len(steps)-1].Text
+		}
+		return out
 	}
 
 	// turn makes one structured request. A turn is anchored like a text
@@ -616,39 +689,76 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	// GenerateTextDirect once left every `output:`-bearing node — most of
 	// them in iterion — without a timeline and impossible to fork).
 	// served is false when the stream never opened: nothing was billed.
-	turn := func(o GenerationOptions, msgs []api.Message, tc *api.ToolChoice, number int) (agg *aggregatedResponse, step StepResult, served bool, err error) {
+	// The returned slice is the conversation the request actually carried:
+	// after a reactive compaction it is NOT the slice passed in, and the
+	// caller adopts it so answer, partial, the re-ask and the session
+	// persistence all ride the compacted history.
+	turn := func(o GenerationOptions, msgs []api.Message, tc *api.ToolChoice, number int) (agg *aggregatedResponse, step StepResult, used []api.Message, served bool, err error) {
+		used = msgs
 		reqOpts := o
 		// Request-only overlay: buildRequest then carries the synthetic tool
 		// alone, through extraTools.
 		reqOpts.Tools = nil
 		req, err := buildRequest(reqOpts, msgs, []api.Tool{syntheticTool}, tc)
 		if err != nil {
-			return nil, StepResult{}, false, err
+			return nil, StepResult{}, used, false, err
 		}
 		fireOnRequest(o, len(msgs))
 		agg, err = callAndAggregate(ctx, client, req, o)
+		// Reactive context-window recovery at parity with the text loop's
+		// callWithContextRetry: a structured turn can carry the same
+		// oversized session history. The overflow arrives either as the
+		// aggregate's error (the stream opened, then an error event) or as
+		// the DIRECT error of a request refused before its stream opened —
+		// agg nil, so only a normalized read of both sees it; the decision
+		// reads them exactly as callWithContextRetry does.
+		for attempt := 0; attempt < maxContextCompactRetries; attempt++ {
+			e := err
+			if e == nil && agg != nil {
+				e = agg.err
+			}
+			if e == nil || !isContextWindowError(e) {
+				break
+			}
+			compacted, _, ok := forceCompactLadder(msgs, o.CompactPreserveRecent)
+			if !ok {
+				break
+			}
+			msgs = compacted
+			used = compacted
+			if o.OnContextCompactRetry != nil {
+				o.OnContextCompactRetry(attempt+1, e, len(compacted), 0)
+			}
+			req, err = buildRequest(reqOpts, msgs, []api.Tool{syntheticTool}, tc)
+			if err != nil {
+				return nil, StepResult{}, used, false, err
+			}
+			fireOnRequest(o, len(msgs))
+			agg, err = callAndAggregate(ctx, client, req, o)
+		}
 		if err != nil {
-			return nil, StepResult{}, false, err
+			return nil, StepResult{}, used, false, err
 		}
 		accumulateUsage(&totalUsage, agg.usage)
 		if agg.err != nil {
-			return agg, StepResult{}, true, agg.err
+			return agg, StepResult{}, used, true, agg.err
 		}
 		step = StepResult{
-			Number:       number,
-			Text:         agg.text,
-			ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-			FinishReason: mapStopReason(agg.stopReason),
-			Usage:        agg.usage,
-			Thinking:     agg.thinkingText,
-			MaxTokens:    agg.maxTokens,
+			Number:          number,
+			Text:            agg.text,
+			ToolCalls:       toolCallsFromBlocks(agg.toolUses),
+			FinishReason:    mapStopReason(agg.stopReason),
+			Usage:           agg.usage,
+			Thinking:        agg.thinkingText,
+			MaxTokens:       agg.maxTokens,
+			ReasoningEffort: agg.effort,
 		}
 		steps = append(steps, step)
 		if o.OnStepFinish != nil {
 			o.OnStepFinish(step)
 		}
 		captureFinalTurn(o, msgs, number, step)
-		return agg, step, true, nil
+		return agg, step, used, true, nil
 	}
 
 	// answer is the success shape: the object, and the replay-safe
@@ -718,7 +828,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	if toolChoice == nil {
 		firstLabel = schemaName + " (instructed, not forced)"
 	}
-	agg, step, served, err := turn(opts, messages, toolChoice, 1)
+	agg, step, messages, served, err := turn(opts, messages, toolChoice, 1)
 	if err != nil {
 		if !served {
 			// The stream never opened — nothing was served, nothing is owed.
@@ -741,7 +851,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	reaskOpts := opts
 	if step.FinishReason == FinishLength {
 		skip := ""
-		lowered, _, canLower := effortAfterCut(opts)
+		lowered, _, canLower := effortAfterCut(ctx, opts)
 		switch {
 		case !spentOnReasoning(step):
 			skip = "the turn above was cut by the length of its own answer, which a lower reasoning effort cannot shorten"
@@ -755,7 +865,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		reaskOpts = lowered
 	}
 	reaskMessages := withTrailingUserText(messages, unforcedReaskInstruction(schemaName))
-	agg2, step2, _, err2 := turn(reaskOpts, reaskMessages, nil, 2)
+	agg2, step2, reaskMessages, _, err2 := turn(reaskOpts, reaskMessages, nil, 2)
 	if err2 != nil {
 		if isContextEnd(err2) && ctx.Err() != nil {
 			// The run's own cancellation or deadline stays what it is.
@@ -783,17 +893,21 @@ var clawRawTools = regexp.MustCompile(`^(read_file|bash|repl|grep|workspace_grep
 
 // unmaterializeEchoingResults turns the known secret values an echoing
 // tool's result quotes back into their placeholders, in place.
-func unmaterializeEchoingResults(results []api.ContentBlock, uses []toolUseBlock, materialize, unmaterialize func(string) string) {
+func unmaterializeEchoingResults(results []api.ContentBlock, uses []toolUseBlock, materialize, unmaterialize func(string) string, namesSecret func(string) bool) {
 	if unmaterialize == nil {
 		return
 	}
 	// A workspace reader keeps what the workspace holds — unless its call
 	// carried a secret (a grep's pattern, an image's URL): it may quote it.
+	// Carried is read grant-agnostically first: a placeholder the proxy
+	// resolves on the wire is a secret the call carried as much as one the
+	// agent's materialiser resolved.
 	names := make(map[string]string, len(uses))
 	given := make(map[string]bool, len(uses))
 	for _, tu := range uses {
 		names[tu.ID] = tu.Name
-		given[tu.ID] = materialize != nil && string(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize)) != tu.PartialJSON
+		given[tu.ID] = (namesSecret != nil && namesSecret(tu.PartialJSON)) ||
+			(materialize != nil && string(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize)) != tu.PartialJSON)
 	}
 	for i := range results {
 		if clawRawTools.MatchString(names[results[i].ToolUseID]) && !given[results[i].ToolUseID] {

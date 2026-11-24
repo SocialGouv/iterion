@@ -15,6 +15,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// pipelineBoardLaunchActor is the machine actor the board lanes stamp as the
+// run's store identity — never the clicking operator: the run is the lane's
+// work, and a human's user id in the owner slot would make their PERSONAL
+// credentials spendable by a run they did not fund (the credential walk's
+// user tier reads the owner). Same shape as the other card lanes' actors
+// (boardDispatcherActor, scheduledLaunchActor, triggerSpineActor).
+const pipelineBoardLaunchActor = "pipeline-board"
+
 // pipelineAdmissionInterval is the backstop cadence of the ready-ticket
 // launch loop. It is not latency-critical (a couple of seconds to pick up a
 // freshly-readied ticket is fine), so it stays lazy.
@@ -424,7 +432,7 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 	// The loop is local-only (pipelineAdmissionEnabled refuses cloud), so
 	// the board it drives carries no tenant: the bot resolves
 	// platform-over-baked with an empty team, and there is none to invent.
-	if _, err := s.launchTicketNow(context.Background(), "", runs, board, iss); err != nil {
+	if _, err := s.launchTicketNow(context.Background(), "", systemLaunch(pipelineAdmissionActor), runs, board, iss); err != nil {
 		// launchTicketNow already logged the specifics; the loop is
 		// best-effort and simply retries on the next tick.
 		return
@@ -658,7 +666,7 @@ func (s *Server) refuseLiveClaim(id string, cur *native.Issue, board native.Boar
 	return fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", id, cur.Claim)
 }
 
-func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
+func (s *Server) launchTicketNow(ctx context.Context, teamID string, from launchOrigin, runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
 	// A ticket held under a LIVE claim already has a launcher — the
 	// dispatcher wins with the CLAIM, and its move out of Ready is
 	// offloaded, so the state alone cannot say the ticket is free. This is
@@ -772,15 +780,28 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, err)
 		return "", fmt.Errorf("ticket %s: %w", iss.ID, err)
 	}
-	routeLayers, retryLayers, policyErr := s.cardLaunchPolicyLayers(ctx, teamID, lc)
+	routeLayers, retryLayers, integration, policyErr := s.cardLaunchPolicyLayers(ctx, teamID, lc)
 	if policyErr != nil {
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, policyErr)
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, policyErr)
+	}
+	// The integration's var layers around the card's bot_args, the operator's
+	// names trusted — the board dispatcher's composition (#2665 item 1).
+	var trustedVars []string
+	if integration != nil {
+		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, func(format string, args ...any) {
+			s.logger.Warn("pipeline admission: ticket "+iss.ID+": "+format, args...)
+		})
 	}
 	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, teamID, bot.Launch.BotID, routeLayers...)
 	if routeErr != nil {
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, routeErr)
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, routeErr)
+	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, teamID, bot.Launch.BotID, cardPoolLayers(integration, bot.Launch.BotID)...)
+	if poolErr != nil {
+		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, poolErr)
+		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, poolErr)
 	}
 	retryPolicy := s.resolveRunRetryPolicy(ctx, teamID, bot.Launch.BotID, retryLayers...)
 	// The board dispatcher's composition (processBoardCard): the grant a card
@@ -849,11 +870,13 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		}
 	}
 	spec := runview.LaunchSpec{
-		Vars: launchVars,
+		Vars:            launchVars,
+		TrustedVarNames: trustedVars,
 		// The dispatcher's shipped contract: an unknown bot_arg is warned
 		// about (pkg/dispatcher/loop.go) and the launch proceeds — the
 		// #1757 refusal would turn a typo'd card into a failed launch.
-		AllowUnknownInputs: true,
+		AllowUnknownInputs:           true,
+		RefuseUndecidedRoutingFields: true,
 		// Stamp the ticket onto the run IMMEDIATELY. Without this the run is
 		// undiscoverable from its ticket until SetLastRun lands below — and
 		// between the SetState above and that stamp sit compileForLaunch,
@@ -874,12 +897,28 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		PipelineTicketID: iss.ID,
 		RetryPolicy:      retryPolicy,
 		LLMRoutePolicy:   routePolicy,
+		PoolAttachment:   poolAttachment,
 	}
 	// The resolved bundle carries the source, the compile dir, the runner
 	// ref and the tier that served it — so a run says which tier it came
 	// from here exactly as on the other launch surfaces.
 	bot.Launch.Stamp(&spec)
-	res, err := runs.Launch(context.Background(), spec)
+	// The launch must not ride a bare Background: with no store tenant
+	// stamp the cloud run doc inherits an empty tenant
+	// (cloudpublisher reads store.TenantFromContext) and every team-keyed
+	// launch-time materialisation — the operator-bound contexts of
+	// ADR-147 — silently skips. Detach cancellation instead (a client
+	// disconnect must not abort the run; the runs_launch.go precedent)
+	// while keeping the request's values, and stamp the identity of the
+	// team this launch is FOR: the board's own, carried by the teamID
+	// parameter — the admission loop passes "" on a local board, where
+	// the stamp correctly no-ops. The actor is the lane's MACHINE one,
+	// never the clicking operator: their user id in the owner slot would
+	// make their personal credentials spendable by a run they did not
+	// fund — the very tier this lane never consulted before (Background
+	// carries no owner).
+	launchCtx := store.WithIdentity(context.WithoutCancel(ctx), teamID, pipelineBoardLaunchActor)
+	res, err := s.launchRunWith(launchCtx, runs, from, spec)
 	if err != nil {
 		if !runview.RunMayHaveStarted(err) {
 			s.revokeUnlaunchedGrant(minted)

@@ -100,14 +100,16 @@ func TestPingContextWithStub(t *testing.T) {
 
 	old := runKubectlProbe
 	defer func() { runKubectlProbe = old }()
-	runKubectlProbe = func(ctx context.Context, args ...string) ([]byte, error) {
+	var probed Kubectl
+	runKubectlProbe = func(ctx context.Context, kubectl Kubectl, args ...string) ([]byte, error) {
+		probed = kubectl
 		if len(args) >= 2 && args[0] == "config" && args[1] == "current-context" {
 			return []byte("kind-iterion\n"), nil
 		}
 		return []byte("Kubernetes control plane is running\n"), nil
 	}
 
-	kctx, _, err := PingContext(context.Background())
+	kubectl, kctx, _, err := PingContext(context.Background())
 	if err != nil {
 		// kubectl absent → LookPath guard fires before the stub. Accept
 		// that as an environment skip rather than a failure.
@@ -115,5 +117,11 @@ func TestPingContextWithStub(t *testing.T) {
 	}
 	if kctx != "kind-iterion" {
 		t.Errorf("PingContext context = %q, want kind-iterion", kctx)
+	}
+	// The ping resolves the binary ONCE and hands it on: the probe it drives
+	// runs that one, and so does the doctor's node listing after it. Red when
+	// the probe re-resolves the bare name instead of taking what it is given.
+	if probed != kubectl || kubectl == "" || kubectl == kubeBinaryName {
+		t.Errorf("the probe ran %q while PingContext resolved %q — a lookup answered twice is a lookup the live PATH can answer differently the second time", probed, kubectl)
 	}
 }

@@ -168,6 +168,7 @@ func (q *fakeDLQQueue) snapshot() ([]string, []uint64, int) {
 // run's status from, the live HTTP server, and a super-admin plus a
 // plain-member bearer.
 type dlqWorld struct {
+	logs  *lockedBuffer
 	q     *fakeDLQQueue
 	audit audit.Store
 	runs  store.RunStore
@@ -236,6 +237,7 @@ func newDLQAdminServerWith(t *testing.T, wrap func(store.RunStore) store.RunStor
 	if wrap != nil {
 		runs = wrap(fs)
 	}
+	logs := &lockedBuffer{}
 	q := newFakeDLQQueue()
 	auditStore := audit.NewMemoryStore()
 	s := New(Config{
@@ -246,7 +248,7 @@ func newDLQAdminServerWith(t *testing.T, wrap func(store.RunStore) store.RunStor
 		Audit:                   auditStore,
 		Store:                   runs,
 		Queue:                   q,
-	}, iterlog.New(iterlog.LevelError, nil))
+	}, iterlog.New(iterlog.LevelError, logs))
 
 	seedPlatformAdmin(t, s.authStore(), "root")
 	adminTok, _, err := signer.IssueAccess(auth.Identity{UserID: "root", IsSuperAdmin: true})
@@ -259,7 +261,7 @@ func newDLQAdminServerWith(t *testing.T, wrap func(store.RunStore) store.RunStor
 	}
 	hs := httptest.NewServer(s.handler)
 	t.Cleanup(hs.Close)
-	return &dlqWorld{q: q, audit: auditStore, runs: fs, hs: hs, admin: adminTok, user: userTok}
+	return &dlqWorld{logs: logs, q: q, audit: auditStore, runs: fs, hs: hs, admin: adminTok, user: userTok}
 }
 
 func dlqDo(t *testing.T, hs *httptest.Server, method, path, token string) (int, []byte) {
@@ -584,7 +586,7 @@ func TestDLQAdmin_ReplayWithAnUnreadableStoreFailsClosed(t *testing.T) {
 	if code != http.StatusBadGateway {
 		t.Fatalf("replay with an unreadable store: status=%d want 502 body=%s", code, body)
 	}
-	if !strings.Contains(string(body), "connection reset") {
+	if !strings.Contains(correlatedFailureLog(t, body, "", w.logs.String()), "connection reset") {
 		t.Fatalf("the refusal must carry the store's reason, got %s", body)
 	}
 	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {

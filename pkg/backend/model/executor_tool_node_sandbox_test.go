@@ -52,6 +52,7 @@ func recordingRegistry(t *testing.T, names ...string) (*tool.Registry, map[strin
 // Reddens on the mutation that deletes the placement check in
 // executeToolNodeRecipe.
 func TestExecuteToolNodeRecipe_SandboxRefusesARegistryToolThatBelongsInTheContainer(t *testing.T) {
+	t.Parallel()
 	reg, ran := recordingRegistry(t, "bash", "read_file", "web_fetch", "lsp")
 	e := &ClawExecutor{logger: iterlog.Nop(), toolRegistry: reg, sandbox: fakeSandboxRun{}}
 
@@ -79,6 +80,7 @@ func TestExecuteToolNodeRecipe_SandboxRefusesARegistryToolThatBelongsInTheContai
 // Reddens on the mutation that folds the setup error back into runErr in
 // runVerifiedRecipe.
 func TestVerifiedAction_RegistryRecipeSandboxRefusalFailsTheNode(t *testing.T) {
+	t.Parallel()
 	reg, ran := recordingRegistry(t, "bash")
 	ex := vaExecutor(t, t.TempDir(), WithToolRegistry(reg))
 	// Every sandboxed command exits 1: the postcondition is unmet before the
@@ -110,6 +112,7 @@ func TestVerifiedAction_RegistryRecipeSandboxRefusalFailsTheNode(t *testing.T) {
 // Reddens on the mutation that turns every pre-run failure into a setup
 // error, and on the one that drops the recipe-failure log line.
 func TestVerifiedAction_OtherRegistryRecipeFailuresStayRecipeRuns(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	ex := vaExecutor(t, t.TempDir(), WithToolRegistry(tool.NewRegistry()), WithLogger(iterlog.New(iterlog.LevelInfo, &logged)))
 
@@ -137,6 +140,7 @@ func TestVerifiedAction_OtherRegistryRecipeFailuresStayRecipeRuns(t *testing.T) 
 //
 // Reddens on the mutation that classifies the raw `command:` string.
 func TestExecuteToolNodeRecipe_SandboxClassifiesTheResolvedTool(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	ran := false
 	if err := reg.RegisterMCP("github", "create_issue", "", nil, func(context.Context, json.RawMessage) (string, error) {
@@ -159,6 +163,7 @@ func TestExecuteToolNodeRecipe_SandboxClassifiesTheResolvedTool(t *testing.T) {
 // The mirror: a launcher-placed registry tool keeps working in a sandboxed
 // run, and without a sandbox every registry tool runs as before.
 func TestExecuteToolNodeRecipe_LauncherToolsAndUnsandboxedRunsAreUnchanged(t *testing.T) {
+	t.Parallel()
 	reg, ran := recordingRegistry(t, "todo_write", "bash")
 	sandboxed := &ClawExecutor{logger: iterlog.Nop(), toolRegistry: reg, sandbox: fakeSandboxRun{}}
 	if _, err := sandboxed.executeToolNodeRecipe(context.Background(),

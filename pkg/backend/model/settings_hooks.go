@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -135,6 +135,47 @@ func registerSettingsHooksJSON(r *hooks.Runner, doc json.RawMessage, logger *ite
 	for name, event := range settingsHookEvents {
 		groups := hooksDoc[name]
 		if len(groups) == 0 {
+			continue
+		}
+		r.Register(event, settingsHookHandler(name, groups, logger))
+		wired++
+	}
+	return wired
+}
+
+// registerInjectedHooks wires iterion's OWN plugin-contributed hook groups on
+// a workspace its tenant did not write — straight from the record the runtime
+// handed over in memory (delegate.Task.InjectedHooks), without opening the
+// checkout's settings.json at all. Returns the number of events wired.
+//
+// The file is the checkout's, so it is neither the authority for these groups
+// nor allowed to veto them. Admitting a group because the file still holds a
+// copy of it would let a fork switch off the operator's own hooks — a guard
+// among them — by committing a settings.json that does not parse, or a
+// directory in its place. The checkout's own groups are never registered
+// here: nothing it writes reaches this function.
+func registerInjectedHooks(r *hooks.Runner, injected map[string][]any, logger *iterlog.Logger) int {
+	if r == nil || len(injected) == 0 {
+		return 0
+	}
+	wired := 0
+	for name, event := range settingsHookEvents {
+		raw := injected[name]
+		if len(raw) == 0 {
+			continue
+		}
+		b, err := json.Marshal(raw)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("model: %s: iterion's own hook groups do not encode: %v — not registered", name, err)
+			}
+			continue
+		}
+		var groups []settingsHookGroup
+		if err := json.Unmarshal(b, &groups); err != nil || len(groups) == 0 {
+			if logger != nil {
+				logger.Warn("model: %s: iterion's own hook groups do not decode (%v) — not registered", name, err)
+			}
 			continue
 		}
 		r.Register(event, settingsHookHandler(name, groups, logger))
@@ -333,7 +374,7 @@ func runCommandHook(ctx context.Context, event string, hctx hooks.Context, h set
 	}
 	// A hook is the node's: what it starts carries the node's session and ends
 	// with the node (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
-	c.Env = append(append(os.Environ(), proc.NodeSessionEnvFrom(ctx)...),
+	c.Env = append(append(envEnviron(ctx), proc.NodeSessionEnvFrom(ctx)...),
 		"HOOK_EVENT="+event,
 		"HOOK_TOOL_NAME="+hctx.ToolName,
 		"HOOK_TOOL_INPUT="+truncateHookEnvValue(string(inputJSON)),

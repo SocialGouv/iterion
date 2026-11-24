@@ -76,6 +76,7 @@ func assertGrandchildStopped(t *testing.T, path string) {
 // survives. Asserting only that Execute returned would prove we stopped
 // waiting, not that we stopped the work.
 func TestToolNodeCancelStopsTheGrandchild(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
 
@@ -110,6 +111,7 @@ func TestToolNodeCancelStopsTheGrandchild(t *testing.T) {
 // `script:` recipe path, which builds its *exec.Cmd through a different
 // constructor (toolNodeScriptCommand) and would otherwise drift.
 func TestToolNodeScriptCancelStopsTheGrandchild(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
 
@@ -146,6 +148,7 @@ func TestToolNodeScriptCancelStopsTheGrandchild(t *testing.T) {
 // kills a process group behind its back. Without it, "no descendant
 // survives" would also be satisfied by killing every tool node.
 func TestToolNodeUncancelledRunIsUnaffected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker")
 

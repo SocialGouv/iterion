@@ -21,7 +21,7 @@ func TestRunImport_WritesDraft(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	p := &Printer{W: &buf, Format: OutputHuman}
-	if err := RunImport(ImportOptions{File: js}, p); err != nil {
+	if err := RunImport(t.Context(), ImportOptions{File: js}, p); err != nil {
 		t.Fatalf("RunImport: %v", err)
 	}
 	out := filepath.Join(dir, "tiny_flow.bot")
@@ -36,7 +36,7 @@ func TestRunImport_WritesDraft(t *testing.T) {
 	}
 
 	// Second run must refuse to overwrite.
-	if err := RunImport(ImportOptions{File: js}, p); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+	if err := RunImport(t.Context(), ImportOptions{File: js}, p); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("expected overwrite refusal, got %v", err)
 	}
 }
@@ -49,7 +49,7 @@ func TestRunImport_DryRunAndGates(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	p := &Printer{W: &buf, Format: OutputHuman}
-	if err := RunImport(ImportOptions{File: js, DryRun: true}, p); err != nil {
+	if err := RunImport(t.Context(), ImportOptions{File: js, DryRun: true}, p); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
 	if !strings.Contains(buf.String(), "workflow tiny_flow:") {
@@ -60,7 +60,7 @@ func TestRunImport_DryRunAndGates(t *testing.T) {
 	}
 
 	// Wrong extension is a clear user error, not a JS parse error.
-	if err := RunImport(ImportOptions{File: filepath.Join(dir, "x.bot")}, p); err == nil || !strings.Contains(err.Error(), "expects a workflow script") {
+	if err := RunImport(t.Context(), ImportOptions{File: filepath.Join(dir, "x.bot")}, p); err == nil || !strings.Contains(err.Error(), "expects a workflow script") {
 		t.Fatalf("expected extension gate, got %v", err)
 	}
 }

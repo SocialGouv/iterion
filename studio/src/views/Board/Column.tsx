@@ -149,7 +149,7 @@ export function Column({
         <span className="flex items-center gap-2 min-w-0">
           {manageable && onReorderColumn && (
             <GripVertical
-              className="h-3.5 w-3.5 shrink-0 text-fg-subtle cursor-grab"
+              className="h-3.5 w-3.5 shrink-0 text-fg-muted cursor-grab"
               aria-hidden="true"
             />
           )}
@@ -179,8 +179,18 @@ export function Column({
             <span className="text-accent-text font-medium">{selCount} sel ·</span>
           )}
           {issues.length}
-          {eligible && <span className="ml-1 text-success">●</span>}
-          {terminal && <span className="ml-1 text-fg-muted">✓</span>}
+          {eligible && (
+            <>
+              <span aria-hidden="true" className="ml-1 text-success">●</span>
+              <span className="sr-only">dispatch eligible</span>
+            </>
+          )}
+          {terminal && (
+            <>
+              <span aria-hidden="true" className="ml-1 text-fg-muted">✓</span>
+              <span className="sr-only">terminal column</span>
+            </>
+          )}
           {manageable && (onEditColumn || onDeleteColumn || onMoveColumn) && (
             <Popover
               align="end"
@@ -275,7 +285,7 @@ export function Column({
           (dragOver ? (
             <div className="text-xs text-accent-text text-center py-4">Drop here</div>
           ) : (
-            <div className="text-xs text-fg-subtle text-center py-4">No issues</div>
+            <div className="text-xs text-fg-muted text-center py-4">No issues</div>
           ))}
       </div>
     </div>

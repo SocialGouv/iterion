@@ -143,6 +143,10 @@ type Entry struct {
 	// legacy flat entry (none of them set) behaves exactly as before:
 	// public, approved, git-sourced. Local single-tenant mode leaves them
 	// empty; only cloud handlers populate them.
+	//
+	// SubmittedBy, ReviewedBy, ReviewedAt and RejectReason reach the
+	// browse routes only for the submitter and super-admins (ForViewer);
+	// the moderation queue returns them whole to its moderators.
 
 	// Scope controls browse visibility once approved (see EffectiveScope).
 	Scope Scope `json:"scope,omitempty" bson:"scope,omitempty"`
@@ -248,8 +252,54 @@ func Visible(e Entry, v ViewerContext) bool {
 	}
 }
 
+// ForViewer returns the wire projection of entry e for viewer v: a copy
+// with the moderation metadata (SubmittedBy, ReviewedBy, ReviewedAt,
+// RejectReason) cleared unless the viewer is entitled to it. Those four
+// fields carry account ids and moderation internals; a public catalogue
+// read must not expose them (data minimisation). The entry is kept whole
+// when:
+//   - v.Enforce is false (local single-tenant mode: the sole operator
+//     owns every entry);
+//   - v is the submitter (v.UserID == e.SubmittedBy): the reject reason
+//     is addressed to them;
+//   - v.IsSuperAdmin.
+//
+// An org-admin moderating an org-scoped entry is not a super-admin and
+// so reads the public projection through the browse routes; the
+// moderation queue (ListForModeration and its handler) is their screen
+// and stays whole on purpose. The original is never mutated: e is a
+// value and the returned copy is the only thing touched.
+func ForViewer(e Entry, v ViewerContext) Entry {
+	if !v.Enforce || v.IsSuperAdmin {
+		return e
+	}
+	if v.Authenticated && v.UserID != "" && e.SubmittedBy == v.UserID {
+		return e
+	}
+	e.SubmittedBy = ""
+	e.ReviewedBy = ""
+	e.ReviewedAt = ""
+	e.RejectReason = ""
+	return e
+}
+
+// ForViewerAll maps ForViewer over a listing, returning a new slice so a
+// store that hands out its own backing array is never written through.
+// A nil input yields nil.
+func ForViewerAll(entries []Entry, v ViewerContext) []Entry {
+	if entries == nil {
+		return nil
+	}
+	out := make([]Entry, len(entries))
+	for i := range entries {
+		out[i] = ForViewer(entries[i], v)
+	}
+	return out
+}
+
 // ViewerContext describes the principal browsing the registry, used to
-// filter entries by scope + moderation status. The zero value (Enforce
+// filter entries by scope + moderation status and to project them for
+// the wire (ForViewer). The zero value (Enforce
 // false) means "local single-tenant operator" — no filtering at all.
 type ViewerContext struct {
 	// Enforce turns scope/status filtering on. Cloud handlers set it

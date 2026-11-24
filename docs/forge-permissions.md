@@ -48,9 +48,10 @@ reused** for forge writes ([pkg/auth/oidc/github.go](../pkg/auth/oidc/github.go)
 
 ### Plane 2 — the forge connection (what a bot does on the repo)
 
-A `forge.Connection` ([pkg/forge/types.go](../pkg/forge/types.go)) is a
+A `forge.Connection` — the record lives in pkg/connection since #2760
+([pkg/connection/forge_connection.go](../pkg/connection/forge_connection.go)) — is a
 **team-scoped service credential**. Its sealed token is opened
-(`AdminTokenFor`, [pkg/forge/connection_sealer.go](../pkg/forge/connection_sealer.go))
+(`ForgeAdminToken`, [pkg/connection/forge_credential.go](../pkg/connection/forge_credential.go))
 and re-packaged as a managed generic secret, created once per
 connection (`ensureManagedSecret`, [pkg/forge/orchestrator.go](../pkg/forge/orchestrator.go)),
 injected into trusted runs — through a bound bot's binding or a launch that pins the connection, for example — at the bot's `forge.secret` name, `forge_token` when it sets none. The bot's

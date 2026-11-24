@@ -22,6 +22,24 @@ func TestBotRolesValidate(t *testing.T) {
 	}
 }
 
+// The override bypasses the chart's render guard, so a reference that is not
+// repo@sha256:<64 hex> is accepted and named, never refused; unset and a
+// pinned reference stay silent.
+func TestSandboxDigestWarning(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, quiet := range []*Sandbox{nil, {}, {DefaultImage: strp("ghcr.io/x/y@" + digest)}, {DefaultImage: strp("  ghcr.io/x/y@" + digest + " ")}} {
+		if got := quiet.DigestWarning(); got != "" {
+			t.Fatalf("DigestWarning(%+v) = %q, want none", quiet, got)
+		}
+	}
+	for _, moving := range []string{"ghcr.io/x/y:edge", "ghcr.io/x/y:" + digest, "@" + digest, "ghcr.io/x/y@sha256:abc"} {
+		got := (&Sandbox{DefaultImage: strp(moving)}).DigestWarning()
+		if !strings.Contains(got, moving) || !strings.Contains(got, "not a digest reference") {
+			t.Fatalf("DigestWarning(%q) = %q, want the reference named as not a digest", moving, got)
+		}
+	}
+}
+
 func TestSandboxValidate(t *testing.T) {
 	if err := (Sandbox{DefaultImage: strp("ghcr.io/x/y@sha256:abc")}).Validate(); err != nil {
 		t.Fatalf("valid image: %v", err)

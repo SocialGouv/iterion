@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -60,11 +63,49 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		Auth:      req.Keys.Auth,
 		UserAgent: r.UserAgent(),
 	}
+	// An access token outlives its account's deactivation or erasure by up
+	// to its TTL: the subscription — endpoint, keys, user agent — is read
+	// against the account's standing before the write, and again after it,
+	// so one that lands behind an erasure's deletion of the subscriptions is
+	// taken back rather than kept under the pseudonym.
+	if refused, err := s.accountRefusesSignIn(r.Context(), id.UserID); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "read the account's standing: %v", err)
+		return
+	} else if refused {
+		s.httpErrorFor(w, r, http.StatusForbidden, "this account is deactivated or erased")
+		return
+	}
 	if err := s.cfg.PushSubscriptions.Upsert(r.Context(), sub); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "store subscription: %v", err)
 		return
 	}
+	if refused, err := s.accountRefusesSignIn(r.Context(), id.UserID); err != nil || refused {
+		if derr := s.cfg.PushSubscriptions.DeleteByEndpoint(r.Context(), id.UserID, sub.Endpoint); derr != nil {
+			err = errors.Join(err, fmt.Errorf("take back the subscription just written: %w", derr))
+		}
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "re-read the account's standing after the write: %v", err)
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusForbidden, "this account is deactivated or erased")
+		return
+	}
 	s.writeJSONFor(w, r, map[string]any{"ok": true})
+}
+
+// accountRefusesSignIn reports whether userID's account refuses sign-ins
+// (deactivated or erased). No identity store (local mode) holds no account
+// to refuse.
+func (s *Server) accountRefusesSignIn(ctx context.Context, userID string) (bool, error) {
+	st := s.authStore()
+	if st == nil || userID == "" {
+		return false, nil
+	}
+	u, err := st.GetUser(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("read account %s: %w", userID, err)
+	}
+	return u.Status.SignInRefused(), nil
 }
 
 func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {

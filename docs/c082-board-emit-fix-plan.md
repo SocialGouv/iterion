@@ -1,6 +1,7 @@
 # C082 board-emit fix — implementation plan
 
-Status: **RESOLVED + live-validated end-to-end (2026-06-14).** A sandboxed
+Status: **RESOLVED + live-validated end-to-end (2026-06-14), cloud half
+landed 2026-11 (#2632 (b)).** A sandboxed
 `claude_code` agent now reaches the per-run board MCP listener over HTTP and
 its `create_issue` call lands on the operator's board (validated: board count
 0→1, real native id, fetchable, `run finished`). Branch: `c082-board-emit`
@@ -9,6 +10,15 @@ cause — it was **not** any of the hypotheses in the design below (https-only /
 tool-search deferral / session-id), but a **missing `serverInfo.version`** field
 in the handler's `initialize` response that made claude-code's MCP client
 Zod-reject the whole connection.
+
+Cloud follow-up (#2632 (b), 2026-11): the transport moved to the neutral
+`pkg/hostmcp` (tenant-pinning resolver per grant), and the **runner pod**
+wires the same seams (`Config.BoardFor` → mux + in-pod registry →
+`runtime.WithBoardMCP` + `ExecutorSpec.BoardRegister/BoardRevoke`), so a
+sandboxed cloud run writes the tenant's Mongo board through the runner's
+per-run gateway listener. `pkg/server` keeps thin wrappers
+(`RegisterBoardMCPRoutes`, `BoardMCPTokenRegistry`, the Valkey cross-replica
+store).
 
 ## Symptom
 

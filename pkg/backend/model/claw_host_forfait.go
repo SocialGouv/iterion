@@ -49,13 +49,16 @@ const removeHostCodexForfaitScript = `rm -f -- "$1/auth.json" "$1"/auth.json.tmp
 // spends, but does not speak for the operator: the forfait stays home, and
 // refused says why.
 func hostCodexForfait(ctx context.Context, model string) (payload []byte, refused string) {
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") != "1" || !openAIOAuthAllowed() {
+	if envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") != "1" || !openAIOAuthAllowed(ctx) {
 		return nil, ""
 	}
 	if provider, _, err := ParseModelSpec(model); err != nil || provider != "openai" {
 		return nil, ""
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
+	if creds.AmbientRefused {
+		return nil, "the run refuses the ambient environment — the host's ChatGPT login is the pod's instrument, not this run's"
+	}
 	if creds.APIKeyForRoute(secrets.ProviderOpenAI) != "" || OpenAIForfaitServes(creds) {
 		return nil, ""
 	}

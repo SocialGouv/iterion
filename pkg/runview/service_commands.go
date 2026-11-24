@@ -176,6 +176,13 @@ func (s *Service) RaiseBudgetCtx(ctx context.Context, runID string, req RaiseBud
 // pause, so the correct primitive is the existing Resume with answers —
 // this is its convenience wrapper (the run's own FilePath, no force).
 func (s *Service) AnswerHumanCtx(ctx context.Context, runID string, answers map[string]any) (*LaunchResult, error) {
+	return s.AnswerHumanExpecting(ctx, runID, answers, ActionOrigin{})
+}
+
+// AnswerHumanExpecting is AnswerHumanCtx for a checked surface: the resume
+// carries origin (ResumeSpec.ExpectOrigin), whose verification decides which
+// run is re-entered — nothing is written before it.
+func (s *Service) AnswerHumanExpecting(ctx context.Context, runID string, answers map[string]any, origin ActionOrigin) (*LaunchResult, error) {
 	r, err := s.LoadRunCtx(ctx, runID)
 	if err != nil {
 		return nil, err
@@ -183,7 +190,7 @@ func (s *Service) AnswerHumanCtx(ctx context.Context, runID string, answers map[
 	if r.Status != store.RunStatusPausedWaitingHuman {
 		return nil, fmt.Errorf("%w: run is %s, want %s", ErrNotAwaitingHuman, r.Status, store.RunStatusPausedWaitingHuman)
 	}
-	return s.Resume(ctx, ResumeSpec{RunID: runID, FilePath: r.FilePath, Answers: answers})
+	return s.Resume(ctx, ResumeSpec{RunID: runID, FilePath: r.FilePath, Answers: answers, ExpectOrigin: origin})
 }
 
 // ErrNotAwaitingHuman reports answer_human on a run that is not paused

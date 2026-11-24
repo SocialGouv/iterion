@@ -311,6 +311,14 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", abs)
 	}
+	// The switch holds the bot tree's lock on the root it leaves until the
+	// new root is in place: a writer holding it resolved and writes in that
+	// root, and keeps it until it lets go (holdBotTreeWrites).
+	releaseTree, err := s.holdBotTreeWrites(ctx, botTreeWriterProjectSwitch)
+	if err != nil {
+		return err
+	}
+	defer releaseTree()
 
 	// Build the new run-console service first; if construction fails
 	// we abort before touching any live state.
@@ -339,7 +347,7 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 			runview.WithWorkDir(abs),
 			runview.WithMaxConcurrentPipelines(s.cfg.MaxConcurrentPipelines),
 			// Sandbox-by-default (same resolution as `iterion run`).
-			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault(s.logger)),
 		}
 		if mcpStore, openErr := store.New(storeDir); openErr != nil {
 			s.logger.Warn("projects: open runs MCP store for %q: %v — sandboxed runs.read disabled", abs, openErr)
@@ -356,9 +364,13 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 		if localSecretsEnabled {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(newLocalSecrets, s.sealer))
 		}
+		if r := s.botContextResolver(); r != nil {
+			svcOpts = append(svcOpts, runview.WithBotContextResolver(r))
+		}
 		if s.usageCapSource != nil {
 			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
 		}
+		svcOpts = append(svcOpts, runview.WithRepositoryWrites(s.holdRunMergeRepository))
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {
 			return fmt.Errorf("runview service: %w", svcErr)
@@ -425,6 +437,7 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 		watchCoordinator.setRuntime(s.runs, s.assistantWatches, s.effectivePathsFor(abs))
 	}
 	s.stateMu.Unlock()
+	releaseTree()
 	watchCoordinator.nudge()
 	var prevMissionDone <-chan struct{}
 	if newAssistantMissions != nil {

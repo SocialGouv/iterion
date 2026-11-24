@@ -45,6 +45,14 @@ export default function AppearanceTab() {
   const chatRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const currentThemeIndex = OPTIONS.findIndex((o) => o.mode === mode);
   const currentChatIndex = chatEnterSubmits ? 0 : 1;
+  const motionReduced = useUIStore((s) => s.motionReduced);
+  const setMotionReduced = useUIStore((s) => s.setMotionReduced);
+  const motionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const currentMotionIndex = motionReduced ? 1 : 0;
+  const singleKeyShortcuts = useUIStore((s) => s.singleKeyShortcuts);
+  const setSingleKeyShortcuts = useUIStore((s) => s.setSingleKeyShortcuts);
+  const shortcutsRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const currentShortcutsIndex = singleKeyShortcuts ? 0 : 1;
   return (
     <div className="flex flex-col gap-6 p-4 text-sm">
       <section className="flex flex-col gap-3">
@@ -90,7 +98,7 @@ export default function AppearanceTab() {
                   <Icon className="w-4 h-4" />
                   {label}
                 </span>
-                <span className="text-xs text-fg-subtle">{description}</span>
+                <span className="text-xs text-fg-muted">{description}</span>
               </button>
             );
           })}
@@ -131,7 +139,7 @@ export default function AppearanceTab() {
             }`}
           >
             <span className="text-fg-default font-medium">Enter submits</span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Enter sends the message. Shift+Enter inserts a newline.
             </span>
           </button>
@@ -158,9 +166,141 @@ export default function AppearanceTab() {
             <span className="text-fg-default font-medium">
               Cmd/Ctrl+Enter submits
             </span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Enter inserts a newline. Cmd/Ctrl+Enter sends the message
               (legacy behavior).
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <div>
+          <div className="font-medium text-fg-default mb-1">Animations</div>
+          <p className="text-xs text-fg-subtle">
+            Infinite animations (pulses, the loop dash-flow, the landing
+            marquee, the caret). The OS reduced-motion preference still
+            applies on its own.
+          </p>
+        </div>
+        <div
+          className="grid grid-cols-2 gap-2"
+          role="radiogroup"
+          aria-label="Animations"
+        >
+          <button
+            ref={(el) => {
+              motionRefs.current[0] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={!motionReduced}
+            tabIndex={!motionReduced ? 0 : -1}
+            onClick={() => setMotionReduced(false)}
+            onKeyDown={(e) =>
+              moveRadioFocus(e, motionRefs.current, currentMotionIndex, (next) =>
+                setMotionReduced(next === 1),
+              )
+            }
+            className={`flex flex-col items-start gap-1 rounded border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+              !motionReduced
+                ? "border-accent bg-accent-soft/30 ring-1 ring-accent/40"
+                : "border-border-default bg-surface-1 hover:bg-surface-2"
+            }`}
+          >
+            <span className="text-fg-default font-medium">Full motion</span>
+            <span className="text-xs text-fg-muted">
+              Animations run. The default.
+            </span>
+          </button>
+          <button
+            ref={(el) => {
+              motionRefs.current[1] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={motionReduced}
+            tabIndex={motionReduced ? 0 : -1}
+            onClick={() => setMotionReduced(true)}
+            onKeyDown={(e) =>
+              moveRadioFocus(e, motionRefs.current, currentMotionIndex, (next) =>
+                setMotionReduced(next === 1),
+              )
+            }
+            className={`flex flex-col items-start gap-1 rounded border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+              motionReduced
+                ? "border-accent bg-accent-soft/30 ring-1 ring-accent/40"
+                : "border-border-default bg-surface-1 hover:bg-surface-2"
+            }`}
+          >
+            <span className="text-fg-default font-medium">Reduced</span>
+            <span className="text-xs text-fg-muted">
+              Infinite animations stop; transitions stay.
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <div>
+          <div className="font-medium text-fg-default mb-1">Single-key shortcuts</div>
+          <p className="text-xs text-fg-subtle">
+            Bare keypresses (?, /, v, h, j, k, g-chords) trigger app-wide
+            shortcuts. Off, they answer nothing; modifier combos keep
+            working (RGAA 12.10).
+          </p>
+        </div>
+        <div
+          className="grid grid-cols-2 gap-2"
+          role="radiogroup"
+          aria-label="Single-key shortcuts"
+        >
+          <button
+            ref={(el) => {
+              shortcutsRefs.current[0] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={singleKeyShortcuts}
+            tabIndex={singleKeyShortcuts ? 0 : -1}
+            onClick={() => setSingleKeyShortcuts(true)}
+            onKeyDown={(e) =>
+              moveRadioFocus(e, shortcutsRefs.current, currentShortcutsIndex, (next) =>
+                setSingleKeyShortcuts(next === 0),
+              )
+            }
+            className={`flex flex-col items-start gap-1 rounded border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+              singleKeyShortcuts
+                ? "border-accent bg-accent-soft/30 ring-1 ring-accent/40"
+                : "border-border-default bg-surface-1 hover:bg-surface-2"
+            }`}
+          >
+            <span className="text-fg-default font-medium">On</span>
+            <span className="text-xs text-fg-muted">Shortcuts answer bare keys. The default.</span>
+          </button>
+          <button
+            ref={(el) => {
+              shortcutsRefs.current[1] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={!singleKeyShortcuts}
+            tabIndex={!singleKeyShortcuts ? 0 : -1}
+            onClick={() => setSingleKeyShortcuts(false)}
+            onKeyDown={(e) =>
+              moveRadioFocus(e, shortcutsRefs.current, currentShortcutsIndex, (next) =>
+                setSingleKeyShortcuts(next === 0),
+              )
+            }
+            className={`flex flex-col items-start gap-1 rounded border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+              !singleKeyShortcuts
+                ? "border-accent bg-accent-soft/30 ring-1 ring-accent/40"
+                : "border-border-default bg-surface-1 hover:bg-surface-2"
+            }`}
+          >
+            <span className="text-fg-default font-medium">Off</span>
+            <span className="text-xs text-fg-muted">
+              Bare keys reach the focused control only.
             </span>
           </button>
         </div>

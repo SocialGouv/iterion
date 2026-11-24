@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
@@ -193,8 +195,9 @@ func TestSubbotRunnerRunsChildOnPod(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	out, err := run(context.Background(), runtime.SubbotRequest{
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID,
@@ -227,8 +230,9 @@ func TestSubbotRunnerProjectsAContractedChildsOutput(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestContractChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	out, err := run(context.Background(), runtime.SubbotRequest{
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})
@@ -260,7 +264,7 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 	dir := t.TempDir()
 	parentPath := writeSubbotFixture(t, dir, "main.bot", subbotTestParent)
 	writeSubbotFixture(t, dir, "child.bot", subbotTestChild)
-	wf, hash, err := runview.CompileWorkflowWithHash(parentPath)
+	wf, hash, err := runview.CompileWorkflowWithHash(parentPath, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("compile parent: %v", err)
 	}
@@ -269,7 +273,9 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 
 	newEngine := func(t *testing.T, runID string, wired bool) *runtime.Engine {
 		t.Helper()
-		exec, usage, err := r.buildExecutor(ctx, msg, wf, dir, iterlog.Nop(), nil)
+		attempt := *msg
+		attempt.RunID = runID
+		exec, usage, err := r.buildExecutor(preparedRunnerFixture(t, ctx, r, attempt.RunID), &attempt, wf, dir, iterlog.Nop(), nil, nil)
 		if err != nil {
 			t.Fatalf("buildExecutor: %v", err)
 		}
@@ -342,10 +348,11 @@ func testSubbotRunnerParksOnHumanGate(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	done := make(chan error, 1)
 	go func() {
-		_, err := run(ctx, runtime.SubbotRequest{
+		_, err := run(boundLegacySubbotFixture(t, ctx, msg.RunID), runtime.SubbotRequest{
 			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 		})
 		done <- err
@@ -424,8 +431,9 @@ func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
 		writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
 		writeSubbotFixture(t, parentDir, "child.bot", subbotTestTwoNodeChild)
 		msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+		storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 		run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-		out, err := run(context.Background(), runtime.SubbotRequest{
+		out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 		})
 		idCtx := store.WithIdentity(context.Background(), "t1", "u1")
@@ -521,8 +529,9 @@ func TestSubbotRunnerRunsTheChildInTheParentSandbox(t *testing.T) {
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 	fake := &parentSandboxFake{}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	out, err := run(context.Background(), runtime.SubbotRequest{
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-3"},
 		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 		ParentSandbox: &runtime.SharedSandbox{Run: fake, WorkspaceFolder: dir},
@@ -728,8 +737,9 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent", RunnerPool: "honorabilite"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	if _, err := run(context.Background(), runtime.SubbotRequest{
+	if _, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID,
@@ -738,11 +748,11 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subbot runner: %v", err)
 	}
-	// The child run id is minted inside the closure; the only run in this
-	// fresh store is the child (the parent message is never persisted).
+	// The child run id is minted inside the closure; the only other run in
+	// this fresh store is the parent the child was created under.
 	var raw []byte
 	werr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "run.json" {
+		if err != nil || d.IsDir() || d.Name() != "run.json" || filepath.Base(filepath.Dir(path)) == msg.RunID {
 			return err
 		}
 		raw, err = os.ReadFile(path)
@@ -770,5 +780,103 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 	}
 	if doc.RunnerPool != "honorabilite" {
 		t.Fatalf("the child document lost the frozen pool stamp: %+v", doc)
+	}
+}
+
+// #1959 — the subbot inherits the source tier: the child's run DOCUMENT
+// must carry the parent's BotSourceTier, or the floor reads the child as
+// the operator's own and a team-authored parent's `sandbox: none` text —
+// copied into the child's message by the struct copy — is rehabilitated
+// one level down.
+func TestSubbotChildInheritsTheBotSourceTier(t *testing.T) {
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
+	msg := &queue.RunMessage{
+		RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent",
+		BotSourceTier: store.BotSourceTierTeam,
+	}
+
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	if _, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
+		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
+		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	}); err != nil {
+		t.Fatalf("subbot runner: %v", err)
+	}
+	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+	ids, err := st.ListRuns(idCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var children int
+	for _, id := range ids {
+		child, cerr := st.LoadRun(idCtx, id)
+		if cerr != nil || child.ParentRunID != msg.RunID {
+			continue
+		}
+		children++
+		if child.BotSourceTier != store.BotSourceTierTeam {
+			t.Errorf("child %s BotSourceTier = %q, want %q — inherited from the parent's message", id, child.BotSourceTier, store.BotSourceTierTeam)
+		}
+	}
+	if children != 1 {
+		t.Fatalf("children of the parent = %d, want exactly one", children)
+	}
+}
+
+// TestSubbotRunnerRefusesALandingIntentAWorktreeNoneChildCannotActOn: a
+// child that declares `worktree: none` owns no finalization, and no bank
+// ever writes a subbot child's branch — the armed intent would sit on the
+// run doc unfired forever, declined in silence on every router sweep. The
+// launch refuses it BEFORE any child run is recorded: the error names the
+// contradictory declaration, and the store proves no dead-intent doc.
+func TestSubbotRunnerRefusesALandingIntentAWorktreeNoneChildCannotActOn(t *testing.T) {
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", `tool noop:
+  command: "echo landing"
+
+workflow child:
+  worktree: none
+  sandbox: none
+  entry: noop
+  noop -> done
+`)
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	_, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
+		Source:        "child.bot",
+		ParentRunID:   msg.RunID,
+		NodeID:        "run_ticket",
+		ReattachKey:   "run_ticket",
+		Isolated:      true,
+		AutoMerge:     true,
+		MergeInto:     "main",
+		MergeStrategy: "merge",
+	})
+	if err == nil {
+		t.Fatal("subbot runner = nil error, want a refusal: a worktree:none child cannot land the armed intent")
+	}
+	if !strings.Contains(err.Error(), "worktree: none") {
+		t.Fatalf("refusal %q does not name the declaration that disarms the intent", err)
+	}
+	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+	ids, lerr := st.ListRuns(idCtx)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	// The parent the child would have been created under is the one run
+	// this store may hold.
+	ids = slices.DeleteFunc(ids, func(id string) bool { return id == msg.RunID })
+	if len(ids) != 0 {
+		t.Fatalf("the refused launch left %d child run doc(s) behind (%v) — the dead intent is on the record", len(ids), ids)
 	}
 }

@@ -12,6 +12,7 @@ import (
 // persisted under another backend's name — a lie in a durable field, and the
 // one fork.go decides its claw-conversation branch on.
 func TestDelegateHooks_TurnCarriesTheResolvedBackend(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{
 		delegate.BackendClaudeCode,
 		delegate.BackendPi,

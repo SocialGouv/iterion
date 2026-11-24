@@ -3,14 +3,13 @@ package runview
 import (
 	"go/parser"
 	"go/token"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -90,48 +89,16 @@ func executorSpecSitesMissing(t *testing.T, q sweepQuestion, exempt map[string]s
 }
 
 // sweepGoFiles calls visit for every Go file of this repository, by the one
-// set of rules every sweep over this tree reads: no vendored or generated
-// tree, no nested checkout, and `_test.go` included — the sibling sweep in
-// pkg/backend/mcp parses tests too, precisely because two of the sites it
-// guards are `live` e2e tests no CI job runs, and skipping them here hid two
-// e2e sites that build an executor for real. Two walks with their own copies
-// of these rules would drift, and no reader could tell which one was right.
+// set of rules every sweep over this tree reads: internal/sweepwalk. This
+// package reaches the repository root two levels up. The walk reaches test
+// files too — the sibling sweep in pkg/backend/mcp parses tests precisely
+// because two of the sites it guards are `live` e2e tests no CI job runs,
+// and skipping them hid two e2e sites that build an executor for real —
+// whether a file is judged is the predicates' policy below, never the
+// walk's.
 func sweepGoFiles(t *testing.T, visit func(rel, path string)) {
 	t.Helper()
-	repoRoot := filepath.Join("..", "..")
-	err := filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			// testdata is skipped because the toolchain skips it: a .go file
-			// there is never compiled.
-			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
-				return filepath.SkipDir
-			}
-			// A directory carrying its own .git is a NESTED CHECKOUT — a git
-			// worktree or a sibling clone an operator keeps on disk. Its files
-			// belong to another tree (none are tracked here), and its older
-			// copies would report as offenders of a rule they predate. Detect
-			// them by that marker rather than by directory name: where someone
-			// parks their checkouts is their business, not this test's.
-			if path != repoRoot {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		visit(filepath.ToSlash(strings.TrimPrefix(path, repoRoot+string(filepath.Separator))), path)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
+	sweepwalk.GoFiles(t, filepath.Join("..", ".."), visit)
 }
 
 // Whether a run is sandboxed decides where its MCP servers may be started: in
