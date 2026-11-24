@@ -30,6 +30,11 @@ import (
 // FILES rather than its output map, on a run with no git worktree.
 func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
 	t.Parallel()
+	reliabilityRewindWorkspace(t)
+}
+
+func reliabilityRewindWorkspace(t *testing.T) {
+	t.Helper()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	dir := t.TempDir()

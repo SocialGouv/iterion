@@ -41,7 +41,13 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
+	invocation, err := store.PrepareRunInvocation(t.Context(), s, store.ExistingRunInvocation{ID: runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+		Ctx:      invocation.Context,
 		Workflow: wf,
 		Store:    s,
 		RunID:    runID,
@@ -64,12 +70,14 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 
+	t.Cleanup(func() { _ = exec.Close() })
+
 	const rawEmail = "alice@example.com"
 	const rawToken = "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
 	rawText := "Contact " + rawEmail + " or use token " + rawToken
 
 	eng := newEngine(t, wf, s, exec)
-	if err := eng.Run(context.Background(), runID, map[string]any{
+	if err := eng.Run(invocation.Context, runID, map[string]any{
 		"text": rawText,
 	}); err != nil {
 		t.Fatalf("Run: %v", err)

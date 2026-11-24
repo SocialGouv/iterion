@@ -270,6 +270,13 @@ func promiseRefusal(what string) error {
 }
 
 func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
+	return encodeJSONValue(vm, v, false)
+}
+
+func encodeJSONValue(vm *goja.Runtime, v goja.Value, strict bool) (string, error) {
+	if strict && (v == nil || goja.IsUndefined(v)) {
+		return "", errors.New("value has no JSON representation")
+	}
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return "null", nil
 	}
@@ -362,6 +369,9 @@ func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 	// itself. The script returned something unrepresentable, which is a value
 	// of null rather than an error — the same answer the browsers give.
 	if out == nil || goja.IsUndefined(out) {
+		if strict {
+			return "", errors.New("value has no JSON representation")
+		}
 		return "null", nil
 	}
 	return out.String(), nil

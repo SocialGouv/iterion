@@ -42,7 +42,13 @@ func (s *Service) ObserveRun(ctx context.Context, runID string) (<-chan *store.E
 	var releaseSrc func()
 	if !s.Active(runID) {
 		// Bridge events.jsonl -> broker for runs not produced in-process.
-		releaseSrc = s.ensureEventSource(runID)
+		// A capture failure of the alert registration fails the observe
+		// (typed): alerts disabled honestly, never a legacy degradation.
+		rel, err := s.ensureEventSource(ctx, runID)
+		if err != nil {
+			return nil, nil, err
+		}
+		releaseSrc = rel
 	}
 	sub := s.broker.Subscribe(runID)
 

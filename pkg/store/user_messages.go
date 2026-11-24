@@ -94,22 +94,20 @@ func (s *FilesystemRunStore) AppendQueuedMessage(ctx context.Context, runID stri
 	if err := NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return err
 	}
-	if err := s.guardNotDeleted(runID); err != nil {
-		return err
-	}
-	path, err := s.userMessagesPath(runID)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
-		return fmt.Errorf("store: mkdir user_messages: %w", err)
+	defer unlock()
+	path, err := s.openRunPayloadFile(ctx, runID, "user_messages.jsonl", true)
+	if err != nil {
+		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer path.Close()
 	if err := appendJSONL(path, msg); err != nil {
 		return err
 	}
-	s.bumpInboxVersion(runID)
+	s.bumpInboxVersion(path.key)
 	return nil
 }
 
@@ -121,31 +119,16 @@ func (s *FilesystemRunStore) AppendQueuedMessageOnce(ctx context.Context, runID 
 	if err := NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return false, err
 	}
-	if err := s.guardNotDeleted(runID); err != nil {
-		return false, err
-	}
-	path, err := s.userMessagesPath(runID)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
-		return false, fmt.Errorf("store: mkdir user_messages: %w", err)
-	}
-	// s.mu protects one handle only. Supervisors may run in separate
-	// processes against the same local store, so the existence check and append
-	// also need a short cross-process critical section. This is intentionally
-	// not the run's execution lock: the engine holds that for the whole run.
-	lock, err := acquireFileLockRetry(
-		filepath.Join(filepath.Dir(path), ".user_messages_insert_once.lock"),
-		fmt.Sprintf("insert-once inbox of run %s", runID),
-		2*time.Second,
-	)
+	defer unlock()
+	path, err := s.openRunPayloadFile(ctx, runID, "user_messages.jsonl", true)
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = lock.Unlock() }()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer path.Close()
 	latest, err := loadLatestQueuedMessages(path)
 	if err != nil {
 		return false, err
@@ -156,7 +139,7 @@ func (s *FilesystemRunStore) AppendQueuedMessageOnce(ctx context.Context, runID 
 	if err := appendJSONL(path, msg); err != nil {
 		return false, err
 	}
-	s.bumpInboxVersion(runID)
+	s.bumpInboxVersion(path.key)
 	return true, nil
 }
 
@@ -170,12 +153,16 @@ func (s *FilesystemRunStore) UpdateQueuedMessageStatus(ctx context.Context, runI
 	if msgID == "" {
 		return fmt.Errorf("store: queued message ID required")
 	}
-	path, err := s.userMessagesPath(runID)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer unlock()
+	path, err := s.openRunPayloadFile(ctx, runID, "user_messages.jsonl", false)
+	if err != nil {
+		return err
+	}
+	defer path.Close()
 	latest, err := loadLatestQueuedMessages(path)
 	if err != nil {
 		return err
@@ -191,7 +178,7 @@ func (s *FilesystemRunStore) UpdateQueuedMessageStatus(ctx context.Context, runI
 	if err := appendJSONL(path, cur); err != nil {
 		return err
 	}
-	s.bumpInboxVersion(runID)
+	s.bumpInboxVersion(path.key)
 	return nil
 }
 
@@ -212,10 +199,11 @@ func statusMatches(cur QueuedMessageStatus, expectedFrom []QueuedMessageStatus) 
 // error) when the file does not exist (no messages have ever been
 // queued for this run).
 func (s *FilesystemRunStore) LoadPendingQueuedMessages(ctx context.Context, runID string) ([]QueuedUserMessage, error) {
-	path, err := s.userMessagesPath(runID)
+	path, err := s.openRunPayloadFile(ctx, runID, "user_messages.jsonl", false)
 	if err != nil {
 		return nil, err
 	}
+	defer path.Close()
 	latest, err := loadLatestQueuedMessages(path)
 	if err != nil {
 		return nil, err
@@ -236,10 +224,11 @@ func (s *FilesystemRunStore) LoadPendingQueuedMessages(ctx context.Context, runI
 // FIFO order by QueuedAt, with their CURRENT (latest) status. Used
 // by the studio for initial inbox hydration alongside the snapshot.
 func (s *FilesystemRunStore) ListQueuedMessages(ctx context.Context, runID string) ([]QueuedUserMessage, error) {
-	path, err := s.userMessagesPath(runID)
+	path, err := s.openRunPayloadFile(ctx, runID, "user_messages.jsonl", false)
 	if err != nil {
 		return nil, err
 	}
+	defer path.Close()
 	latest, err := loadLatestQueuedMessages(path)
 	if err != nil {
 		return nil, err
@@ -258,7 +247,7 @@ func (s *FilesystemRunStore) ListQueuedMessages(ctx context.Context, runID strin
 // JSONL helpers
 // ---------------------------------------------------------------------------
 
-func appendJSONL(path string, v any) error {
+func appendJSONL(path *runPayloadFile, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("store: marshal user_message: %w", err)
@@ -269,7 +258,7 @@ func appendJSONL(path string, v any) error {
 	// become unparseable — loadLatestQueuedMessages then skips the fused line,
 	// losing a status transition and re-delivering an already-handled message.
 	// Insert a separator first, mirroring AppendEvent's torn-tail repair.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, filePerm)
+	f, err := path.OpenFile(os.O_APPEND|os.O_CREATE|os.O_RDWR, filePerm)
 	if err != nil {
 		return fmt.Errorf("store: open user_messages: %w", err)
 	}
@@ -291,7 +280,7 @@ func appendJSONL(path string, v any) error {
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("store: fsync user_messages: %w", err)
 	}
-	return nil
+	return path.syncParent()
 }
 
 // NormalizeQueuedForAppend mutates msg into the canonical shape for
@@ -344,6 +333,12 @@ func StampQueuedTransition(msg *QueuedUserMessage, status QueuedMessageStatus, n
 // for liveness and need not implement this.
 type QueuedInboxVersioner interface {
 	QueuedInboxVersion(runID string) uint64
+}
+
+// ScopedQueuedInboxVersioner retains the caller's original run identity and
+// reports a refusal instead of converting stale or unreadable data into quiet.
+type ScopedQueuedInboxVersioner interface {
+	QueuedInboxVersionContext(context.Context, string) (uint64, error)
 }
 
 // QueuedMessageInsertOnceStore is the optional atomic idempotency capability
@@ -520,27 +515,41 @@ func MarkConsumed(ctx context.Context, s RunStore, publish func(Event), runID st
 // doorbell. Returning 0 for an unseen run is correct: any future write
 // advances it.
 func (s *FilesystemRunStore) QueuedInboxVersion(runID string) uint64 {
-	s.mu.Lock()
-	v := s.inboxVersion[runID]
-	s.mu.Unlock()
-	if path, err := s.userMessagesPath(runID); err == nil {
-		if info, statErr := os.Stat(path); statErr == nil {
-			v += uint64(info.Size())
-		}
-	}
+	v, _ := s.QueuedInboxVersionContext(context.Background(), runID)
 	return v
 }
 
+// QueuedInboxVersionContext keys the process-local counter and the cross-handle
+// file-size doorbell by the same selected physical inbox as the append paths.
+func (s *FilesystemRunStore) QueuedInboxVersionContext(ctx context.Context, runID string) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.openRunPayloadFile(ctx, runID, "user_messages.jsonl", false)
+	if err != nil {
+		return 0, err
+	}
+	defer path.Close()
+	v := s.inboxVersion[path.key]
+	info, err := path.Stat()
+	if os.IsNotExist(err) {
+		return v, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return v + uint64(info.Size()), nil
+}
+
 // bumpInboxVersion is called by the write paths while holding s.mu.
-func (s *FilesystemRunStore) bumpInboxVersion(runID string) {
-	s.inboxVersion[runID]++
+func (s *FilesystemRunStore) bumpInboxVersion(path string) {
+	s.inboxVersion[path]++
 }
 
 // loadLatestQueuedMessages folds the JSONL log into a "latest status
 // per ID" map. Order within the file is the authoritative tie-breaker
 // for same-ID rows.
-func loadLatestQueuedMessages(path string) (map[string]QueuedUserMessage, error) {
-	f, err := os.Open(path)
+func loadLatestQueuedMessages(path *runPayloadFile) (map[string]QueuedUserMessage, error) {
+	f, err := path.Open()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]QueuedUserMessage{}, nil

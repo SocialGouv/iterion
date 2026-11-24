@@ -622,7 +622,7 @@ func TestCredSlotAdmission_APoolLentKeyIsNotedAgainstItsOwnCap(t *testing.T) {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai", keyID), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "xai", KeyID: keyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
 	}); err != nil {

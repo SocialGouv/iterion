@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -195,72 +196,76 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 		Backend:      t.Backend,
 		Model:        t.Model,
 		FinishReason: t.FinishReason,
-		ToolCalls:    t.ToolCalls,
+		ToolCalls:    slices.Clone(t.ToolCalls),
 		TextDigest:   t.TextDigest,
 		Usage:        t.Usage,
 		SessionID:    t.SessionID,
 		MessagesRef:  t.MessagesRef,
-		Messages:     t.Messages,
+		Messages:     slices.Clone(t.Messages),
 		GitRef:       t.GitRef,
 		WrittenAt:    t.WrittenAt,
 
-		TerminatedBackground: t.TerminatedBackground,
+		TerminatedBackground: slices.Clone(t.TerminatedBackground),
 	}
-	filter := turnKeyFilter(ctx, t.RunID, t.NodeID, t.LoopIter, t.TurnIndex)
-	// The read-supersede-replace below is a read-modify-write with no
-	// transaction: two writers racing one coordinate could each read the
-	// pre-write document and one's supersede would be lost (the canonical
-	// record itself is last-writer-wins either way). Accepted, and narrow:
-	// a coordinate is written by one execution of one node, and a retried
-	// or resumed attempt is sequential by construction — the cross-process
-	// case the fs twin answers with its file lock has no concurrent writer
-	// here (revi on #2806: documented, not closed).
-	var stored runTurnDoc
-	findErr := s.runTurns.FindOne(ctx, filter).Decode(&stored)
-	switch {
-	case findErr == mongo.ErrNoDocuments:
-		if doc.Attempt < 1 {
-			doc.Attempt = 1
-		}
-	case findErr != nil:
-		return fmt.Errorf("store/mongo: read turn %s/%s/%d/%d: %w", t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, findErr)
-	case sameTurnAttempt(stored, doc):
-		// Same attempt written twice: keep the incumbent's numbering —
-		// and its conversation when the redelivery carries none (the
-		// fs twin's sidecar survives an identical rewrite the same way).
-		doc.Attempt = stored.Attempt
-		if doc.Attempt < 1 {
-			doc.Attempt = 1
-		}
-		doc.Prior = stored.Prior
-		doc.PriorDropped = stored.PriorDropped
-		if len(doc.Messages) == 0 {
-			doc.Messages = stored.Messages
-		}
-	default:
-		priors := append(stored.Prior, stored.priorAttempt())
-		dropped := stored.PriorDropped
-		if len(priors) > maxRetainedTurnAttempts {
-			// The oldest superseded attempt falls off — never the
-			// canonical record — and the cut is counted, so a baseline
-			// summed from ListTurns reads as partial rather than
-			// silently exact.
-			cut := len(priors) - maxRetainedTurnAttempts
-			priors = priors[cut:]
-			dropped += cut
-			if s.logger != nil {
-				s.logger.Warn("store/mongo: turn %s/%s/%d/%d: retained superseded attempts past the bound (%d) — dropped the oldest %d (%d dropped in all)",
-					t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, maxRetainedTurnAttempts, cut, dropped)
+	input := doc
+	finalAttempt, droppedNow, droppedTotal := 0, 0, 0
+	err := s.withRunMetadataWrite(ctx, t.RunID, func(sc context.Context, _ *store.Run) error {
+		// Every retry starts from the immutable caller input and the newly
+		// committed incumbent; no prior list from an aborted attempt survives.
+		doc := input
+		finalAttempt, droppedNow, droppedTotal = 0, 0, 0
+		filter := turnKeyFilter(sc, input.RunID, input.NodeID, input.LoopIter, input.TurnIndex)
+		var stored runTurnDoc
+		findErr := s.runTurns.FindOne(sc, filter).Decode(&stored)
+		switch {
+		case findErr == mongo.ErrNoDocuments:
+			if doc.Attempt < 1 {
+				doc.Attempt = 1
 			}
+		case findErr != nil:
+			return fmt.Errorf("store/mongo: read turn %s/%s/%d/%d: %w", t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, findErr)
+		case sameTurnAttempt(stored, doc):
+			// Same attempt written twice: keep the incumbent's numbering —
+			// and its conversation when the redelivery carries none (the
+			// fs twin's sidecar survives an identical rewrite the same way).
+			doc.Attempt = stored.Attempt
+			if doc.Attempt < 1 {
+				doc.Attempt = 1
+			}
+			doc.Prior = stored.Prior
+			doc.PriorDropped = stored.PriorDropped
+			if len(doc.Messages) == 0 {
+				doc.Messages = stored.Messages
+			}
+		default:
+			priors := append(stored.Prior, stored.priorAttempt())
+			dropped := stored.PriorDropped
+			if len(priors) > maxRetainedTurnAttempts {
+				// The oldest superseded attempt falls off — never the
+				// canonical record — and the cut is counted, so a baseline
+				// summed from ListTurns reads as partial rather than
+				// silently exact.
+				cut := len(priors) - maxRetainedTurnAttempts
+				priors = priors[cut:]
+				dropped += cut
+				droppedNow, droppedTotal = cut, dropped
+			}
+			doc.Prior = priors
+			doc.PriorDropped = dropped
+			doc.Attempt = stored.priorAttempt().Attempt + 1
 		}
-		doc.Prior = priors
-		doc.PriorDropped = dropped
-		doc.Attempt = stored.priorAttempt().Attempt + 1
+		if _, err := s.runTurns.ReplaceOne(sc, filter, doc, options.Replace().SetUpsert(true)); err != nil {
+			return fmt.Errorf("store/mongo: write turn %s/%s/%d/%d: %w", t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, err)
+		}
+		finalAttempt = doc.Attempt
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	t.Attempt = doc.Attempt
-	t.Superseded = false
-	if _, err := s.runTurns.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("store/mongo: write turn %s/%s/%d/%d: %w", t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, err)
+	t.Attempt, t.Superseded = finalAttempt, false
+	if droppedNow > 0 && s.logger != nil {
+		s.logger.Warn("store/mongo: turn %s/%s/%d/%d: retained superseded attempts past the bound (%d) — dropped the oldest %d (%d dropped in all)", input.RunID, input.NodeID, input.LoopIter, input.TurnIndex, maxRetainedTurnAttempts, droppedNow, droppedTotal)
 	}
 	return nil
 }

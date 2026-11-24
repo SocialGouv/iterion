@@ -100,7 +100,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
 | `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` \| `moonshot` \| `openai_compatible` ([`Provider`](../pkg/secrets/byok.go)) — `openai_compatible` is a tenant-owned gateway (ADR-131): the record carries its base URL, and the credential walk seals the key with it for a run that may ride a gateway route (ADR-131 §5); a webhook pin on one is exclusive ([§6](#per-webhook-key-override)) |
 | `base_url` | gateway root of an `openai_compatible` key (https only, input and stored value each at most 2048 bytes; canonical at write: host lower-cased and in punycode, no default port, no trailing `/v1`, path of ASCII letters, digits and `-._~:@/`; literal non-public addresses, a host written as a number in any base, single-label hosts, reserved and container names — judged after the host is converted — whitespace, non-printable characters and percent-escapes refused; refused on every other provider — on update even blank, on create an empty value is the absent field); not secret, but the seal binds it: a row repointed in the store opens nowhere, and a `base_url` change through the API is a rotation — the secret is re-sent and sealed under the new URL; the stored secret is never re-sealed for a host its holder did not prove it for |
-| `repos` | repository audience: the forge's full path of one repository per entry (`owner/repo`, `group/sub/project`; lower-cased, `.git` dropped; a URL, a host, a glob, an empty or dot segment is refused — such an entry would silently fund nothing); empty admits every repository; checked in `Resolve` before the pin exemption, from the repository the launch stamps on the walk (`WithLaunchRepo`), and a launch that names no repository cannot spend a restricted key. **Where it stops:** the webhook lane, the HTTP repo-targeted launch, the trigger spine (`repo` of the event, asserted by its emitter), resume and fork name a repository; the scheduled, board and pipeline lanes do not yet (#2005 PR-R), so they never spend a restricted key, and a personal-source preview names none; a pledged key is served by the pledge's own rules, as for `bots`; the forfait tiers are not gated. A host prefix (`github.com/o/r`) is not told apart from a sub-group path and funds nothing until fixed — the preview shows it withheld. Operator intent, not an authorisation boundary: the generic webhook's caller asserts `project_path`, the trigger emitter asserts `repo` |
+| `repos` | repository audience: the forge's full path of one repository per entry (`owner/repo`, `group/sub/project`; lower-cased, `.git` dropped; a URL, a host, a glob, an empty or dot segment is refused — such an entry would silently fund nothing); empty admits every repository; checked in `Resolve` before the pin exemption, from the repository the launch stamps on the walk (`WithLaunchRepo`), and a launch that names no repository cannot spend a restricted key. **Where it stops:** the webhook lane, the HTTP repo-targeted launch, the trigger spine (`repo` of the event, asserted by its emitter), the board lane (the card's clone URL read against its integration's forge base), the scheduled lane (the bound integration's repository, else the slug of the schedule's `repo_url`), resume and fork name a repository; the pipeline lane does not (it deliberately applies neither the repository nor the pins of a webhook-materialised card, an open arbitration), so it never spends a restricted key, and a personal-source preview names none; a pledged key is served by the pledge's own rules, as for `bots`; the forfait tiers are not gated. A host prefix (`github.com/o/r`) is not told apart from a sub-group path and funds nothing until fixed — the preview shows it withheld. Operator intent, not an authorisation boundary: the generic webhook's caller asserts `project_path`, the trigger emitter asserts `repo` |
 | `name` | human label |
 | `last4` / `fingerprint` | shown in UI; the key itself is never returned. `fingerprint` is `APIKeyFingerprint(provider, plaintext, base_url)` — `sha256(plaintext)[:8]` for every vendor key, the base URL folded in for a gateway key (one token on two gateways is two identities) — the audit identity the run document, the GRANTED log line and the metering bump all key on; indexed (sparse) by `EnsureSchema` |
 | `sealed_secret` | the ciphertext (`SealAPIKeyFor(sealer, key, plaintext)` — AAD = the id, plus the base URL for a gateway key); JSON-hidden (`json:"-"`) |
@@ -393,15 +393,25 @@ the stored id on the document (a startup scrub is the doctrinal answer and
 does not exist yet).
 
 **The practical consequence, before you scope a key.** A launch that names no
-bot is refused by any non-empty audience — and the studio's main launch form
-uploads the bundle's bytes as inline `source` without a `bot_id`
-(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`), so that is the
-designed shape of a studio launch. Scoping a key makes it invisible to those
-launches, whatever bot they run, and the wire is filled by the org tier, the
-pool or the platform key instead. Scope keys on teams whose runs are launched
-by `bot_id` — webhooks, triggers, schedules, and the CLI's `--bot` form (a
-CLI file launch names no bot: the CLI refuses `--bot` beside a workflow
-file, so its file runs are unnamed work on the server too).
+bot is refused by any non-empty audience. In cloud the studio launches a bot
+BY NAME — its page's Launch and Test, `/runs/new?bot=<slug>`, the editor's Run
+on a bot's entry file: the form reads the program the server resolves
+(`GET /api/v1/bots/{name}/launch-source`) and posts `bot_id` beside
+`expect_source_sha256`, the identity that read issued, and no source — so the
+run is that bot, and the server refuses the launch (`409 bot_source_changed`)
+if the program changed under the form: its entry, its fragments, its prompts
+and the files they include, its preset files. A child bot's program and the
+skills are outside that identity
+([the pinned launch](cloud-rest-api.md#the-pinned-launch) lists both sides). Two studio launches still name no bot, by
+design: a `?file=` launch and the editor's unsaved buffer, which upload their
+text as inline `source`
+(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`). Scoping a key
+makes it invisible to those, whatever they run, and the wire is filled by the
+org tier, the pool or the platform key instead. Scope keys on teams whose runs
+are launched by `bot_id` — webhooks, triggers, schedules, the studio's named
+launch, and the CLI's `--bot` form (a CLI file launch names no bot: the CLI
+refuses `--bot` beside a workflow file, so its file runs are unnamed work on
+the server too).
 
 An audience narrows WHICH key serves, never whether the walk continues: the
 next key of that provider, then the next tier, still get their turn.
@@ -589,6 +599,26 @@ that pins, and any edit but `enabled` of a subscription that holds a pin
 spent on), takes `canManageTeam`
 ([REST surface](cloud-rest-api.md#triggers-event-driven-runs)).
 
+A cloud schedule is the third home: `key_overrides` on
+`POST /api/teams/{id}/schedules` and `PATCH /api/teams/{id}/schedules/{sid}`
+(team admin, like every schedule write) lands on
+`cloudsched.ScheduledBot.KeyOverrides`. The write validates through the
+same `validateKeyOverrides`, against `scheduler:<bot_id>` — the identity
+the schedule's tick resolves credentials under: it judges the pin's
+visibility (the team's key, of that provider, visible to that identity),
+not the key's `bots` and `repos` audiences, which the tick judges. On a
+PATCH, an absent field
+keeps the stored pins, `null` or `{}` clears them, an object replaces them,
+and an edit echoing the stored pins back writes and judges nothing. At the
+tick, a schedule bound to a repo integration inherits that integration's
+pins, read live from its webhook config under a tenant check (an
+integration naming a config that cannot be read, or one of another team,
+refuses the tick); the schedule's own pins win over them provider by
+provider. A slot held by maintenance and replayed launches with the
+schedule's current pins, not the ones its slot snapshotted. That is how two
+gateway keys of one team serving the same bot and repository split between
+schedules: each group of schedules pins its key.
+
 **A pin does not outlive its subject.** Deleting a pinned api key or stored
 secret sweeps every pin that names it — webhook configs and trigger
 subscriptions of the same tenant — at the delete route, instead of leaving
@@ -651,6 +681,22 @@ Mongo clears rewrite that pin map's subdocument under a version CAS
 instead of `unset`-ing a path that would match nothing, so a legacy name
 cannot leave a dead pin standing behind a silent 204 either.
 
+A schedule's own pins are the exception, deliberately: the sweep does not
+visit schedule rows, whose store replaces the whole row on an edit and
+whose integration rebuild recreates it, with no version to fence either —
+a swept pin could be written back unseen. The tick judges them instead
+(`judgeScheduleKeyPins`), by the write's own rule and by the key's
+audiences: its `bots` must admit the bot the tick launches (read as the
+walk reads it, botregistry-normalised) and its `repos` the repository the
+tick names — the two fields the key `PATCH` can still narrow, and a pin
+does not lift an audience, so for a vendor provider the walk would spend
+the team's next key. A pin whose key was deleted, or no longer passes
+either judgment, refuses the tick by name — the schedule's `last_error`
+names the provider and the key — and no other key is spent in its place
+until the operator repins or clears it or widens the key. A schedule bound to an
+integration reads that integration's pins live from the webhook config the
+sweep does clear.
+
 **A pin is honoured or refused, never ignored.** One shape would be
 honoured by nobody: a key the launching identity cannot see (a user-scoped
 key under a machine lane's synthetic actor). It is refused where it is
@@ -679,9 +725,10 @@ whose walk consults no tier once the pinned key is out of sight — is held to
 it too. A run that rides no gateway route leaves the pin idle. A vendor pin
 keeps its warn-only contract (`warnRefusedPins`): a withheld or dropped one
 is said, and the run spends the walk's next key. The rule holds wherever a
-pin reaches the walk — the webhook lane, the trigger spine and a resume; the
-scheduled and board lanes rebuilding the pin from the integration's webhook
-are #2005 PR-R's.
+pin reaches the walk — the webhook lane, the trigger spine, the scheduled
+lane (a schedule's own pin, or its integration's read live at the tick) and
+a resume; the board lane's card carries a frozen copy of its integration's
+pins (#3240).
 
 **A pin bypasses the refusal skip, and says so.** The evidence predicate is
 consulted in Pass 2 only: an operator who names a key gets that key, even

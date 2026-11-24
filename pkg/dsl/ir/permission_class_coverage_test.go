@@ -70,11 +70,25 @@ func TestDenyClassShellCoversEverythingStaysSilent(t *testing.T) {
 	expectNoDiag(t, r, DiagPermissionClassRisk)
 }
 
-// TestAmbientClawNodeWithPartialDenyWarns: no tools: declaration on claw is
-// the registry's full built-in set; a partial deny leaves repl uncovered.
-func TestAmbientClawNodeWithPartialDenyWarns(t *testing.T) {
-	r := compileCoverage(t, `deny: ["Bash"]`, "NONE", "")
-	expectDiag(t, r, DiagPermissionClassRisk)
+// TestUndeclaredClawSurfaceHoldsNoShell: on claw the tools: list IS the
+// surface, so a node that declares none can call no shell at all — a partial
+// deny leaves nothing uncovered, and "can still call repl" would describe a
+// roster claw does not serve. The node's rules are C351's subject instead:
+// they bound nothing, which is what that warning says.
+func TestUndeclaredClawSurfaceHoldsNoShell(t *testing.T) {
+	// The node's own deny, and the same row inherited from the workflow.
+	for _, tc := range []struct{ name, nodeRules, workflowRules string }{
+		{"node_rules", `deny: ["Bash"]`, ""},
+		{"workflow_rules", "", `deny: ["Bash"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := compileCoverage(t, tc.nodeRules, "NONE", tc.workflowRules)
+			expectNoDiag(t, r, DiagPermissionClassRisk)
+		})
+	}
+	// The witness that the cell still reads the list: the same deny beside
+	// a declared repl fires.
+	r := compileCoverage(t, `deny: ["Bash"]`, `"repl"`, "")
 	expectDiagMessage(t, r, DiagPermissionClassRisk, `"repl"`)
 }
 
@@ -341,9 +355,11 @@ workflow w:
 // rows has no incomplete bound to name (the mode default already bounds
 // every unmatched tool, and C111 owns the "no lists at all" verdict). The
 // shape the docs recommend; the mutant that drops this arm warns on every
-// node of every such workflow.
+// node of every such workflow. The node declares its shells: with no list a
+// claw node holds none, and the surface — not this arm — would be what kept
+// the cell silent.
 func TestNoBoundsClawNodeStaysSilent(t *testing.T) {
-	r := compileCoverage(t, "", "NONE", "")
+	r := compileCoverage(t, "", `"bash", "repl"`, "")
 	expectNoDiag(t, r, DiagPermissionClassRisk)
 }
 
@@ -393,14 +409,16 @@ func TestRecoveryAgentReadsItsDeclaredTools(t *testing.T) {
 	expectDiag(t, r, DiagPermissionClassRisk)
 	expectDiagMessage(t, r, DiagPermissionClassRisk, `"repl"`)
 
-	// No agent_tools key at all is the ambient surface — every member.
+	// No agent_tools key at all: the list is the agent's whole surface on
+	// claw, so it holds no shell the deny row could leave uncovered. What
+	// that agent IS — one served no tool — is C352's to say.
 	r = recoveryWorkflowNoTools(t)
-	expectDiag(t, r, DiagPermissionClassRisk)
-	expectDiagMessage(t, r, DiagPermissionClassRisk, `"repl"`)
+	expectNoDiag(t, r, DiagPermissionClassRisk)
+	expectDiag(t, r, DiagRecoveryAgentNoTools)
 }
 
 // recoveryWorkflowNoTools is recoveryWorkflow without the agent_tools key:
-// the rung-4 agent runs the registry's ambient built-in set.
+// the rung-4 agent is dispatched on claw with no tool list at all.
 func recoveryWorkflowNoTools(t *testing.T) *CompileResult {
 	t.Helper()
 	src := `

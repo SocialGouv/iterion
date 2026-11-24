@@ -1655,6 +1655,12 @@ type shareRecordRefused struct {
 	cancel      context.CancelFunc
 }
 
+// This fault wrapper owns AppendEvent; expose only the explicit birth port,
+// without making unrelated capabilities of its delegate visible.
+func (s *shareRecordRefused) CreateRunWithValueFormat(ctx context.Context, spec store.RunCreateSpec) (*store.Run, error) {
+	return store.CreateRunWithValueFormat(ctx, s.RunStore, spec)
+}
+
 func (s *shareRecordRefused) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
 	s.mu.Lock()
 	refuse := evt.Type == store.EventSandboxShared && (s.times < 0 || s.refused < s.times)

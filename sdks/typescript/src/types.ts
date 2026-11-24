@@ -59,6 +59,11 @@ export interface Checkpoint {
   backend_conversation?: unknown;
   backend_pending_tool_use_id?: string;
   node_attempts?: Record<string, Record<string, number>>;
+  /**
+   * Per tool node, the last failure of its command (a salted digest, never
+   * its output) and how many executions in a row ended on it.
+   */
+  node_failure_streaks?: Record<string, { fingerprint: string; count: number }>;
 }
 
 /** Versioned per-node output, persisted under artifacts/<node>/<version>.json. */

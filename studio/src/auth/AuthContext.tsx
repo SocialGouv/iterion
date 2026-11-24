@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { apiBase } from "@/lib/scope";
+import { clearLaunchNotices, forgetLaunches } from "@/lib/sendLaunch";
 import {
   beforeSignIn,
   cancelScheduledRefresh,
@@ -395,6 +396,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // did to the cookie since.
   useEffect(() => {
     publishExplicitTeam(state.status === "authenticated" ? state.activeTeamID || null : null);
+    clearLaunchNotices();
   }, [state.status, state.activeTeamID]);
 
   // The machine's record, re-read on every change of it — this tab's writes
@@ -540,8 +542,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const nextID = res.user?.id ?? null;
     if (scopedToUserID.current !== null && nextID !== null && scopedToUserID.current !== nextID) {
       // Drop the repo-first context so a different account on this browser
-      // never inherits the previous user's active repo.
+      // never inherits the previous user's active repo — nor its launches in
+      // flight and their notices.
       useActiveRepoStore.getState().reset();
+      forgetLaunches();
     }
     // An empty response rescopes nothing; keep the identity the stores hold.
     if (nextID !== null) {
@@ -649,6 +653,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // sign-in has nothing to displace.
   const finishSignOut = useCallback(() => {
     useActiveRepoStore.getState().reset();
+    // A launch in flight and its notice are the account's that sent it.
+    forgetLaunches();
     scopedToUserID.current = null;
     // Whether a warning stands is the machine record's answer, derived — an
     // unconfirmed sign-out left it standing, a confirmed one cleared it.
@@ -856,6 +862,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     abortSwitches();
     cancelScheduledRefresh();
     useActiveRepoStore.getState().reset();
+    forgetLaunches();
     scopedToUserID.current = null;
     setState({ ...initial, status: "anonymous", signedOutNotice: notice });
   }, [abortSwitches, beginIdentityChange]);

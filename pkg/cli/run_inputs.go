@@ -50,7 +50,7 @@ func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string, 
 	// (--allow-unknown-inputs): the keys ride, said — forwarding an
 	// undeclared payload key to a subbot through {{input.*}} is their
 	// legitimate use (C149). The engine-injected names are carved out
-	// (#2416): an env-shaped bot-var dial (a provision's ITERION_VIBE_*)
+	// (#2416): an env-shaped bot-var dial (a provision's stamped ITERION_* name)
 	// names no var and is none the less a real input — and this CLI is
 	// also the detached runner's subprocess, so refusing here would kill a
 	// launch the server already admitted.

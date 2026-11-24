@@ -9,6 +9,8 @@ import {
   type RunHeader,
 } from "@/api/runs";
 import type { TodoItem } from "@/components/Runs/toolFormatters";
+import { noteRunBirth, snapshotStoreOf } from "@/lib/lostRuns";
+import { pageStoreOf } from "@/lib/storeOverride";
 
 // NoEventsSeq mirrors runview.NoEventsSeq on the Go side. Disambiguates
 // "no events have been applied" from "the most recent event has seq 0".
@@ -30,7 +32,10 @@ import {
   sameQueuedMessages,
 } from "./run/reducer";
 
-export type WsState = "idle" | "connecting" | "open" | "reconnecting" | "closed";
+// "lost": the server closed the socket scope_lost — the run it was opened
+// on was replaced or deleted, or the caller's scope no longer holds. The
+// hook does not reconnect from this state; only a reload starts over.
+export type WsState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "lost";
 
 export interface PendingHumanInput {
   interaction_id?: string;
@@ -448,13 +453,36 @@ export function createRunStore() {
   setWsState: (state) => set({ wsState: state }),
   setSelectedAttemptID: (id) => set({ selectedAttemptID: id }),
   setFollowTail: (follow) => set({ followTail: follow }),
+  // A lost socket (scope_lost) is never redialed from this view: its
+  // cursors belong to the original run, and a redial would attach them to
+  // whatever run holds the ID now. The refusal lives here so every caller —
+  // Resume, answer, merge, steering, a request still in flight when the
+  // close landed — is covered at once.
   requestWsReconnect: () =>
-    set((s) => ({ wsReconnectToken: s.wsReconnectToken + 1 })),
+    set((s) =>
+      s.wsState === "lost" ? s : { wsReconnectToken: s.wsReconnectToken + 1 },
+    ),
   requestOpenEventLog: () =>
     set((s) => ({ uiOpenEventLogToken: s.uiOpenEventLogToken + 1 })),
 
   applySnapshot: (snap) => {
+    // The page adopts the first birth it learns for a run (a row it was
+    // opened from, or this snapshot); a snapshot of another birth is the
+    // successor under the same ID — the run is marked lost (@/lib/lostRuns)
+    // and the snapshot dropped. Keyed by the store the snapshot was read
+    // from (the request's or the socket dial's ?store=, tagged when it was
+    // sent), else the store the page shows the run from; a foreign store's
+    // snapshot teaches no birth.
+    const store = snapshotStoreOf(snap) ?? pageStoreOf(snap.run.id);
+    if (!noteRunBirth(store, snap.run.id, snap.run.birth_id)) {
+      set((state) => (state.wsState === "lost" ? state : { wsState: "lost" }));
+      return;
+    }
     set((state) => {
+      // Once lost, the view keeps the original run's data: a same-ID REST
+      // snapshot — the status poll, a refresh, a response already in
+      // flight — may describe the successor and is dropped.
+      if (state.wsState === "lost") return state;
       // Stale-snapshot guard: REST `getRun` and the WS "snapshot"
       // envelope are TWO concurrent sources of the same data. If the
       // REST round-trip is slower and resolves AFTER the WS already
@@ -542,13 +570,15 @@ export function createRunStore() {
     });
   },
 
+  // Same rule as applySnapshot: once lost, REST event hydration (history,
+  // post-resume resync) may read the successor's log and is dropped.
   applyEvent: (evt) => {
-    set((state) => reduceEvents(state, [evt]));
+    set((state) => (state.wsState === "lost" ? state : reduceEvents(state, [evt])));
   },
 
   applyEventsBatch: (evts) => {
     if (evts.length === 0) return;
-    set((state) => reduceEvents(state, evts));
+    set((state) => (state.wsState === "lost" ? state : reduceEvents(state, evts)));
   },
 
   resyncEventsAfterResume: (runId) => {
@@ -611,7 +641,9 @@ export function createRunStore() {
 
   setRunStatus: (status) => {
     set((state) => {
-      if (!state.snapshot) return state;
+      // An action that completes after the socket was lost acted on the run
+      // that holds the ID now; the original's status stays as shown.
+      if (!state.snapshot || state.wsState === "lost") return state;
       const current = state.snapshot.run.status;
       if (current === status) return state;
       // Flipping back to "running" implies a fresh execution pass: clear

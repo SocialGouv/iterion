@@ -32,6 +32,7 @@ var ebnfProductions = map[string]string{
 	"subbot":             "subbot_prop",
 	"workflow":           "workflow_member",
 	"budget":             "budget_prop",
+	"business_store":     "business_store_prop",
 	"compaction":         "compaction_prop",
 	"memory":             "memory_prop",
 	"mcp":                "mcp_config_prop",

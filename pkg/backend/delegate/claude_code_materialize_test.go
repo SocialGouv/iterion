@@ -252,20 +252,38 @@ func TestTheRunLogCutsAHugeValueRedactedPastTheCut(t *testing.T) {
 	}
 }
 
-// Redacting a whole multi-megabyte tool result (a base64 image) costs
-// seconds on the stream loop: the run log redacts what it can show.
-func TestTheRunLogRedactsAHugeResultInBoundedTime(t *testing.T) {
+// Both tool inputs and results redact only the display window plus the
+// secret-recognition margin. Count bytes entering the real redactor: a
+// wall-clock ceiling measures runner load as well as this work (#3412).
+// Assistant TextBlocks are deliberately unbounded and are not this class.
+func TestTheRunLogRedactsOnlyABoundedWindowOfHugeToolValues(t *testing.T) {
 	g := secretguard.New([]secretguard.Secret{{Name: "DEPLOY_TOKEN", Value: "s3cr3t-VALUE-7f6e5d4c3b2a"}}, secretguard.DefaultConfig())
 	raw := make([]byte, 3<<20)
 	for i := range raw {
 		raw[i] = byte(i*7919 + i>>7)
 	}
 	result := base64.StdEncoding.EncodeToString(raw)
-	start := time.Now()
-	logAssistantContent(iterlog.New(iterlog.LevelInfo, io.Discard), "node", 1, []claudesdk.ContentBlock{
-		&claudesdk.ToolResultBlock{ToolUseID: "t1", Content: result}}, g.Redact, g.LongestLiteral())
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("logging a %d-byte result took %s", len(result), d)
+	for _, tc := range []struct {
+		name  string
+		block claudesdk.ContentBlock
+	}{
+		{"tool input", &claudesdk.ToolUseBlock{ID: "t1", Name: "Bash", Input: map[string]any{"command": result}}},
+		{"tool result", &claudesdk.ToolResultBlock{ToolUseID: "t1", Content: result}},
+		{"tool error", &claudesdk.ToolResultBlock{ToolUseID: "t1", Content: result, IsError: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var scanned int
+			redact := func(s string) string {
+				scanned += len(s)
+				return g.Redact(s)
+			}
+			logAssistantContent(iterlog.New(iterlog.LevelInfo, io.Discard), "node", 1,
+				[]claudesdk.ContentBlock{tc.block}, redact, g.LongestLiteral())
+			limit := runLogShowMax + max(runLogRedactMargin, g.LongestLiteral())
+			if scanned == 0 || scanned > limit {
+				t.Fatalf("logging a %d-byte tool value redacted %d bytes, want nonzero work bounded by %d", len(result), scanned, limit)
+			}
+		})
 	}
 }
 

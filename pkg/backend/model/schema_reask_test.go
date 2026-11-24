@@ -12,6 +12,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -168,6 +170,73 @@ func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
 	}
 	if got, _ := output["_tokens"].(int); got != 110 {
 		t.Errorf("_tokens = %v, want 110 — both turns on the node's bill", output["_tokens"])
+	}
+}
+
+// The re-ask of a CAPABILITY-GRANTING node takes the same continuation, and
+// its tool-less retry task must not trip the claw inert-grant refusal
+// (#3283): planSchemaReask nils ToolDefs and AllowedTools while KEEPING the
+// node's capabilities, and the refusal — non-retryable, unmatched by
+// fallback classification — would turn every granted node's standard
+// in-place recovery into a node failure after its first turns had already
+// spent. The shipped re-ask tests judge nodes without grants, which is why
+// the hole reached CI: the shape needs a granted node whose captured
+// conversation drives the ContinueConversation arm, exactly this one.
+func TestSchemaReask_AGrantedNodeStillContinuesTheCompletedConversation(t *testing.T) {
+	t.Parallel()
+	// The node declares a surface, so its first answer ends the loop on
+	// TEXT (a tool-loop turn with tools on the wire), and the re-ask — the
+	// tool-less continuation — answers through the schema-forced call, as
+	// the listless twin above does.
+	mock := newMockClient(
+		textEvents(`{"verdict":true}`, 50, 20),
+		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
+	)
+	reg := NewRegistry()
+	reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+	tools := tool.NewRegistry()
+	if err := tools.RegisterBuiltin("read_file", "read_file", nil, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.RegisterClawTodo(tools); err != nil {
+		t.Fatal(err)
+	}
+	// The grant's append names the host board tools; the run's registry
+	// serves them from the native store, as a run's does.
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = board.Close() })
+	if err := tool.RegisterClawBoardTools(tools, &tool.BoardConfig{Store: board, Capabilities: boardops.AllCapabilities()}); err != nil {
+		t.Fatal(err)
+	}
+	exec := newTestClawExecutor(reg, verdictWorkflow(), WithToolRegistry(tools))
+	judge := verdictJudge("")
+	// The grant the gate weighs: a declared tool surface (the merge-twins'
+	// shape) beside a board capability, so the FIRST dispatch serves whole
+	// and the retry task's nilled surface is the only thing the gate sees.
+	judge.Tools = []string{"read_file"}
+	judge.Capabilities = []string{"board.read", "board.create"}
+	output, err := exec.Execute(WithRunID(context.Background(), "run-reask-granted"), judge, map[string]any{})
+	if err != nil {
+		t.Fatalf("the granted node's re-ask was refused instead of served: %v", err)
+	}
+	if output["reason"] != "because" {
+		t.Fatalf("output = %v, want the re-asked answer", output)
+	}
+	calls := mock.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected the answer and one re-ask, got %d provider calls", len(calls))
+	}
+	last := lastUserText(t, calls[1].Messages)
+	if !strings.Contains(last, schemaRetryFeedbackMarker) || !strings.Contains(last, "reason") {
+		t.Errorf("the re-ask's user turn does not carry the validation error: %q", last)
+	}
+	if len(calls[1].Tools) != 1 || calls[1].Tools[0].Name != "structured_output" {
+		t.Errorf("the re-ask offers tools beyond the schema's: %+v", calls[1].Tools)
 	}
 }
 

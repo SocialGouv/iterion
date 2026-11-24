@@ -85,7 +85,8 @@ func NewReadScope(workspace string) *ReadScope {
 // Contract: the provider runs while the scope's lock is HELD — every
 // resolve answers workspace and extra roots under one lock read. A
 // provider that re-enters the scope (AddExtraRoot, ExtraRoots) deadlocks
-// on that lock; it must answer from state it owns. The host closure
+// on that lock. Concurrent readers can call it together, so it must answer
+// from concurrency-safe state it owns. The host closure
 // runview wires reads the executor's workDir (an atomic field, #2897) and
 // nothing else.
 func NewReadScopeWithProvider(workspace func() string) *ReadScope {

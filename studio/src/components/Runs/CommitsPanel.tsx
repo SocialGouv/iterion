@@ -12,6 +12,7 @@ import {
   Tooltip,
 } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import { useRunCommits } from "@/hooks/useRunCommits";
 import {
   commitAndFinalizeRun,
@@ -52,6 +53,9 @@ export default function CommitsPanel({
   // the dialog clears the selection through onClose, which collapses
   // the modal back to nothing.
   const [selectedCommit, setSelectedCommit] = useState<RunCommit | null>(null);
+  // The merge and commit footers act on the run: a reader, or a view whose
+  // run was lost (scope_lost), gets none.
+  const canAct = useRunCanAct();
 
   const commitCount = data?.commits.length ?? 0;
   const defaultSquashMessage = data?.default_squash_message ?? "";
@@ -109,7 +113,7 @@ export default function CommitsPanel({
           </ul>
         )}
       </div>
-      {run && (
+      {run && canAct && (
         <MergeFooter
           runId={runId}
           run={run}

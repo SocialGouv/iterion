@@ -49,12 +49,14 @@ func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.C
 	// ONE guard. `policy.Declared()` stood here too and could never fire:
 	// the only rung answering "not declared" is the default, and the default
 	// is OFF. The compiler's half carries the same single guard and
-	// ir.TestOnImpliesDeclared pins the invariant both rely on.
-	policy := ir.ResolveCodemode(f.codemode, e.wfCodemode)
+	// ir.TestOnImpliesDeclared pins the invariant both rely on. The run rung
+	// is nearest: an operator's launch choice decides before anything the
+	// source wrote, in both directions.
+	policy := ir.ResolveCodemode(e.codemodeOverride, f.codemode, e.wfCodemode)
 	if !policy.On {
 		return policy, nil, nil
 	}
-	bounds := ir.ResolveCodemodeBounds(f.codemodeBounds, e.wfCodemodeBounds)
+	bounds := ir.ResolveCodemodeBounds(e.codemodeBoundsOverride, f.codemodeBounds, e.wfCodemodeBounds)
 	// The POSITIVE question, not the compiler's. Here the backend name is
 	// RESOLVED, and the only loop that installs the tool is the one whose
 	// cell says shipped — so a name the registry does not carry (a custom
@@ -69,4 +71,18 @@ func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.C
 		Capability: policy.String(),
 		Remedy:     ir.CodemodeRemedy(backendName),
 	}
+}
+
+// codemodeDeferOn resolves the node's defer state (ir.ResolveCodemodeDefer)
+// beside codemodePolicy, over the same node/workflow rungs. There is no run
+// rung to read: no launch surface carries the value (no queue field, no CLI
+// flag), so the run parameter is "" here as it is in the compiler — the
+// resolver keeps the rung for the day a launch override exists.
+//
+// It is read only where the policy is ON — the build site answers
+// policy.On && deferOn, because a deferral without the catalogue it defers
+// to bounds nothing and demoting tools on a codemode-off node would strand
+// them behind a program the model has no way to run.
+func (e *ClawExecutor) codemodeDeferOn(f backendFields) bool {
+	return ir.ResolveCodemodeDefer("", f.codemodeDefer, e.wfCodemodeDefer) == "on"
 }

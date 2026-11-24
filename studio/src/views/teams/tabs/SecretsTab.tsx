@@ -24,6 +24,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
+import { SecretNameField } from "@/components/shared/SecretNameField";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
 
@@ -107,7 +108,11 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         </InlineBanner>
       )}
 
-      <p className="text-caption text-fg-subtle -mb-2">
+      {/* No margin utility on this caption: under space-y the gap below a child
+          IS its bottom margin, so a margin class here replaces that gap
+          instead of trimming it — a negative one pulls the section heading
+          up over the text. */}
+      <p className="text-caption text-fg-subtle">
         Values injected into bots via{" "}
         <button
           type="button"
@@ -361,19 +366,7 @@ function CreateSecretDialog({
         </InlineBanner>
       )}
       <div className="space-y-3 text-sm">
-        <label className="block">
-          <div className="text-xs text-fg-muted mb-1">Name</div>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            error={name !== "" && !v.ok}
-            placeholder="GITLAB_TOKEN"
-            autoFocus
-          />
-          <div className={`text-xs mt-1 ${v.ok ? "text-fg-muted" : "text-danger"}`}>
-            {v.ok ? "OK" : v.error ?? "—"}
-          </div>
-        </label>
+        <SecretNameField value={name} onChange={setName} placeholder="GITLAB_TOKEN" />
         <label className="block">
           <div className="text-xs text-fg-muted mb-1">Secret value</div>
           <Input
@@ -381,6 +374,9 @@ function CreateSecretDialog({
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder="paste here — never shown again"
+            // "new-password", not "off": a browser ignores "off" on a password
+            // input and fills the saved login's password into it.
+            autoComplete="new-password"
           />
         </label>
       </div>
@@ -444,6 +440,9 @@ function RotateSecretDialog({
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
           placeholder="paste new value"
+          // "new-password", not "off": a browser ignores "off" on a password
+          // input and fills the saved login's password into it.
+          autoComplete="new-password"
           autoFocus
         />
       </label>

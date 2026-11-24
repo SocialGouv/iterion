@@ -35,8 +35,8 @@ func TestGitLabConverseLane_ProvesTheHeadProjectBeforeLaunching(t *testing.T) {
 		t.Helper()
 		s := newWebhookTestServer(t)
 		s.cfg.Bots.Paths = []string{botsDirAbs(t)}
-		s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
-			return true, true, "@revi (you, the bot):\nthe fix pins the host.", "reply", nil
+		s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, webhooks.ThreadAnchor, error) {
+			return true, true, "@revi (you, the bot):\nthe fix pins the host.", "reply", webhooks.ThreadAnchor{}, nil
 		}
 		return s
 	}

@@ -121,13 +121,13 @@ func TestSubmitLaunchJudgesTheValueTheTopologyInjected(t *testing.T) {
 		logger:     testLogger(),
 	}
 	wf := &ir.Workflow{Name: "w", Vars: map[string]*ir.Var{
-		"review_mode": {Name: "review_mode", Type: ir.VarString, EnumValues: []string{"auto", "mono", "dual"}},
+		"review_mode": {Name: "review_mode", Type: ir.VarString, EnumValues: []string{"auto", "single", "paired"}},
 	}}
 	msg, err := submitWithVars(t, p, wf, "run-topo-gate", runview.LaunchSpec{Vars: map[string]string{"review_mode": "both"}})
 	if err != nil {
 		t.Fatalf("a value the injection replaced was judged: %v", err)
 	}
-	if got := msg.Vars["review_mode"]; got != "mono" && got != "dual" {
+	if got := msg.Vars["review_mode"]; got != "single" && got != "paired" {
 		t.Fatalf("RunMessage Vars[review_mode] = %v, want the injected topology", got)
 	}
 }

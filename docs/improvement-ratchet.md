@@ -35,7 +35,7 @@ and [ADR-058](adr/058-minimal-framing-lean-on-the-agent.md) collapsed the fixer
 half into a single `campaign` agent committing in stride behind a deterministic
 gate. Cross-family review left the campaign loop *as its mechanism*: ADR-058
 leaves it available as an optional amplification, and the two catalog bots that still ship one
-(`review-pr`, `evolve`) gate it behind `--var review_mode=dual`, mono being the
+(`review-pr`, `evolve`) gate it behind `--var review_mode=paired`, single being the
 default. What some campaign bots keep in-loop instead (`feature-dev`,
 `branch-improve-loop`, `app-dev`) is a single readonly review pass over the
 run's — or, for `branch-improve-loop`, the branch's — own diff, run by a fresh

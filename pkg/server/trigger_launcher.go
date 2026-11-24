@@ -50,6 +50,10 @@ type serviceLauncher struct {
 	// REQUIRED: a direct launch that skipped it would be the one cloud
 	// launch nobody metered.
 	gate func(ctx context.Context, subj launchSubject) (*launchAdmission, *launchDenial)
+	// answer reads a keyed launch's run before the gate
+	// (runview.Service.AnswerSubmission): a run its key already handed on is
+	// that launch's answer, and the gate is not charged for it again.
+	answer func(ctx context.Context, spec *runview.LaunchSpec) (*runview.LaunchResult, error)
 }
 
 // triggerSpineActor is the identity the trigger spine launches under: the
@@ -70,6 +74,7 @@ func (s *Server) triggerLauncher() *serviceLauncher {
 		resolvePoolAttachment: s.resolveRunPoolAttachment,
 		resolveBot:            s.resolveBotSource,
 		gate:                  s.gateLaunch,
+		answer:                s.answerTriggeredSubmission,
 	}
 }
 
@@ -116,6 +121,19 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	// store identity scopes the run and seals its credentials, and the auth
 	// identity is what the gate reads to find the caps to apply.
 	ctx = store.WithIdentity(ctx, plan.TenantID, triggerSpineActor)
+	if plan.SubmissionKey != "" {
+		if l.answer == nil {
+			return "", errors.New("trigger: no submission reader wired for a keyed launch")
+		}
+		spec.SubmissionKey = plan.SubmissionKey
+		res, err := l.answer(ctx, &spec)
+		if err != nil {
+			return "", err
+		}
+		if res != nil {
+			return res.RunID, nil
+		}
+	}
 	lb, err := l.resolveBot(ctx, plan.TenantID, plan.BotID)
 	if err != nil {
 		return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)

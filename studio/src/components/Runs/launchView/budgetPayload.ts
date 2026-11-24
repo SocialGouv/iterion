@@ -34,6 +34,18 @@ function positiveNumber(s: string): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+// positiveInteger is positiveNumber for the dimensions the wire carries as
+// integers (tokens, iterations, parallel branches). The floor happens
+// BEFORE the positivity test, so a "0.5" cannot floor to the 0 this module
+// promises never to send — the defect the codemode twin carried, found by
+// the revi gate on #3354. Cost stays fractional: it is dollars, not a count.
+function positiveInteger(s: string): number | undefined {
+  const n = positiveNumber(s);
+  if (n === undefined) return undefined;
+  const floored = Math.floor(n);
+  return floored > 0 ? floored : undefined;
+}
+
 // buildBudgetPayload maps the form fields to the request's budget
 // object. Integer dimensions are floored; max_duration is passed
 // through verbatim (the server validates the Go duration syntax and
@@ -45,13 +57,13 @@ export function buildBudgetPayload(
   const out: RunBudget = {};
   const cost = positiveNumber(fields.maxCostUsd);
   if (cost !== undefined) out.max_cost_usd = cost;
-  const tokens = positiveNumber(fields.maxTokens);
-  if (tokens !== undefined) out.max_tokens = Math.floor(tokens);
+  const tokens = positiveInteger(fields.maxTokens);
+  if (tokens !== undefined) out.max_tokens = tokens;
   const duration = fields.maxDuration.trim();
   if (duration) out.max_duration = duration;
-  const iterations = positiveNumber(fields.maxIterations);
-  if (iterations !== undefined) out.max_iterations = Math.floor(iterations);
-  const parallel = positiveNumber(fields.maxParallelBranches);
-  if (parallel !== undefined) out.max_parallel_branches = Math.floor(parallel);
+  const iterations = positiveInteger(fields.maxIterations);
+  if (iterations !== undefined) out.max_iterations = iterations;
+  const parallel = positiveInteger(fields.maxParallelBranches);
+  if (parallel !== undefined) out.max_parallel_branches = parallel;
   return Object.keys(out).length > 0 ? out : undefined;
 }

@@ -1,0 +1,47 @@
+{
+  "headers": {
+    "X-Atlassian-Webhook-Identifier": "0b4d3e2a-9f1c-4a8e-8d7b-2c6f5a1e9d30",
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "timestamp": 1731600000000,
+    "webhookEvent": "jira:issue_created",
+    "issue_event_type_name": "issue_created",
+    "user": {
+      "self": "https://acme.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+      "accountId": "5b10ac8d82e05b22cc7d4ef5",
+      "accountType": "atlassian",
+      "displayName": "Alice Martin",
+      "active": true,
+      "timeZone": "Europe/Paris"
+    },
+    "issue": {
+      "id": "10062",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10062",
+      "key": "OPS-128",
+      "fields": {
+        "summary": "Webhook drops a delivery whose signature header repeats",
+        "issuetype": { "id": "10004", "name": "Bug", "subtask": false },
+        "project": {
+          "self": "https://acme.atlassian.net/rest/api/3/project/10000",
+          "id": "10000",
+          "key": "OPS",
+          "name": "Operations",
+          "projectTypeKey": "software",
+          "simplified": false
+        },
+        "status": {
+          "self": "https://acme.atlassian.net/rest/api/3/status/10000",
+          "name": "To Do",
+          "statusCategory": { "key": "new", "name": "To Do" }
+        },
+        "priority": { "id": "2", "name": "High" },
+        "labels": ["sources", "webhooks"],
+        "reporter": { "accountId": "5b10ac8d82e05b22cc7d4ef5" },
+        "assignee": null,
+        "created": "2026-11-17T09:12:41.000+0000",
+        "updated": "2026-11-17T09:12:41.000+0000"
+      }
+    }
+  }
+}

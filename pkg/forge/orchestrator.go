@@ -1508,6 +1508,11 @@ func (o *Orchestrator) syncSchedulesWithPool(ctx context.Context, tenantID, inte
 			if inv.Kind != bundle.InvocationKindSchedule || inv.Schedule == nil {
 				continue
 			}
+			// A mode no lane honours (deliver until #3136) schedules nothing:
+			// a cloud schedule fires a launch, never what the mode asked.
+			if _, err := inv.EffectiveMode(); err != nil {
+				continue
+			}
 			// Operator's chosen cron overrides the manifest suggested_cron.
 			// The suggestion is kept beside the resolved cron: it is the
 			// invocation's lane identity, and the carry below pairs on it
@@ -1589,6 +1594,11 @@ func (o *Orchestrator) syncSchedulesWithPool(ctx context.Context, tenantID, inte
 				// is re-projected below.
 				sb.Pool = prev.Pool
 				sb.PoolFromIntegration = prev.PoolFromIntegration
+				// The row's key pins are the schedule PATCH's voice alone
+				// (the integration's pins are read live at the tick, never
+				// projected here), so they carry as they stand: a rebuild
+				// that dropped them would spend another key in silence.
+				sb.KeyOverrides = maps.Clone(prev.KeyOverrides)
 				sb.CreatedBy = prev.CreatedBy
 				sb.CreatedAt = prev.CreatedAt
 			}
@@ -2008,12 +2018,18 @@ func buildBotRules(bots []string, frByBot map[string]*bundle.ForgeRequirements, 
 			if inv.Kind != bundle.InvocationKindForge || inv.Forge == nil {
 				continue
 			}
+			// A mode no lane honours (deliver until #3136) provisions no
+			// rule: refused here, it can never be dispatched as a launch.
+			mode, err := inv.EffectiveMode()
+			if err != nil {
+				continue
+			}
 			eventSet[inv.Forge.Event] = true
 			for _, a := range inv.Forge.Actions {
 				actionSet[a] = true
 			}
 			if rule.Mode == "" {
-				rule.Mode = string(inv.EffectiveMode())
+				rule.Mode = string(mode)
 			}
 			if inv.Board != nil {
 				rule.LabelAllowlist = dedupSorted(append(rule.LabelAllowlist, inv.Board.AllLabels...))
@@ -2283,9 +2299,15 @@ func (o *Orchestrator) buildCommandMap(ctx context.Context, teamID string, bots 
 			if inv.Kind != bundle.InvocationKindCommand || inv.Command == nil {
 				continue
 			}
+			mode, err := inv.EffectiveMode()
+			if err != nil {
+				// Refused typed (ResolveMode): the command routes nowhere
+				// rather than default to a launch.
+				continue
+			}
 			route := webhooks.CommandRoute{
 				BotID:          b,
-				Mode:           string(inv.EffectiveMode()),
+				Mode:           string(mode),
 				ArgsVar:        inv.ArgsVar,
 				ContextVars:    inv.ContextVars,
 				Scope:          inv.Command.Scope,

@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -138,6 +139,67 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	// paused or cancelled it in the meantime must win.
 	if len(rs.gotFrom) == 0 {
 		t.Error("the flip must be conditional on the run still being claimed")
+	}
+}
+
+func TestUsageAdmissionRefusesUnappliedQuotaInsteadOfArmingQuotaFreeRetry(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	ctx := store.WithIdentity(t.Context(), "team", "owner")
+	caps := usagecap.NewMemStore()
+	now := time.Now().UTC()
+	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""), usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Utilization: 0.92, Status: usagecap.StatusWarning, ResetsAt: now.Add(time.Hour), ObservedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, prior := range []store.RunStatus{store.RunStatusFailedResumable, store.RunStatusPausedWaitingHuman} {
+		t.Run(string(prior), func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			const id = "quota-at-wall"
+			armed := now.Add(time.Minute)
+			if err := st.SaveRun(ctx, &store.Run{ID: id, TenantID: "team", OwnerID: "owner", Status: prior,
+				Checkpoint: &store.Checkpoint{NodeID: "think", InteractionID: "waiting-answer"},
+				RetryState: &store.RunRetryState{RetryAfter: &armed}, CodemodeBoundsOverride: &scripthost.Limits{StoreBytes: 500}}); err != nil {
+				t.Fatal(err)
+			}
+			flip, ok, err := st.FlipToQueued(ctx, id, prior, now)
+			if err != nil || !ok {
+				t.Fatalf("queue attempt: changed=%t err=%v", ok, err)
+			}
+			msg := &queue.RunMessage{RunID: id, TenantID: "team", OwnerID: "owner", PublishedAtRFC: store.PublishAt(now, flip.At).Format(time.RFC3339Nano),
+				Resume: &queue.ResumeSpec{PriorStatus: prior, CodemodeQuota: &queue.CodemodeQuotaPatch{QueuedAt: flip.At, Bytes: 800}}}
+			r := capRunner(capTestPolicy(), caps, st)
+			if err := r.spendResumeIntent(ctx, msg, iterlog.Nop()); err != nil || msg.Resume.CodemodeQuotaSpent {
+				t.Fatalf("present quota intent must be unspent: err=%v", err)
+			}
+			var refusal *unappliedQuotaUsageRefusal
+			if err := r.admitAttempt(ctx, capLLMWorkflow(), msg); !errors.As(err, &refusal) {
+				t.Fatalf("usage admission returned %v, want explicit refusal without retryable provider error", err)
+			}
+			queued, err := st.LoadRun(ctx, id)
+			if err != nil || queued.Status != store.RunStatusQueued {
+				t.Fatalf("preflight must leave the queued attempt to the exact release: run=%+v err=%v", queued, err)
+			}
+			var delivery fakeDelivery
+			if status, interim := r.finishUnappliedQuotaUsageRefusal(ctx, msg, refusal, &delivery, iterlog.Nop()); status != "quota_not_applied" || interim || delivery.acks != 1 || delivery.naks != 0 {
+				t.Fatalf("status=%s interim=%t delivery=%+v; want ack only after release", status, interim, delivery)
+			}
+			after, err := st.LoadRun(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != prior || !strings.Contains(after.Error, "codemode quota change was not applied") || !strings.Contains(after.Error, "submit a new resume") ||
+				after.CodemodeBoundsOverride == nil || after.CodemodeBoundsOverride.StoreBytes != 500 || after.CodemodeQuotaClaimedAt != nil ||
+				after.RetryState == nil || after.RetryState.RetryAfter != nil || after.ContinuationState != store.ContinuationFinal {
+				t.Fatalf("unapplied refusal did not restore prior=%s with no scheduled retry: status=%s continuation=%s error=%q bounds=%+v retry=%+v", prior, after.Status, after.ContinuationState, after.Error, after.CodemodeBoundsOverride, after.RetryState)
+			}
+			if prior.RequiresResumeAnswers() && (after.Checkpoint == nil || after.Checkpoint.InteractionID != "waiting-answer") {
+				t.Fatalf("release lost the pending human answer: %+v", after.Checkpoint)
+			}
+		})
 	}
 }
 

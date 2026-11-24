@@ -73,11 +73,13 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// store before the LLM loop starts. Anything else before the task
 	// envelope is a protocol error.
 	var (
-		ioTask          delegate.IOTask
-		replaySnapshots [][]byte
-		policyCfg       *permission.PolicyConfig
-		sawGateway      bool
-		announcedTrust  *store.RunTrust
+		ioTask             delegate.IOTask
+		replaySnapshots    [][]byte
+		policyCfg          *permission.PolicyConfig
+		sawGateway         bool
+		sawApprovalChannel bool
+		sawCodemodeState   bool
+		announcedTrust     *store.RunTrust
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -97,11 +99,35 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
 			continue
 		}
+		if env.Type == delegate.EnvelopeApprovalChannel {
+			// The launcher serves permission pauses for this crossing. The
+			// version rides the payload so a future revision fails closed
+			// on the version check instead of misparsing: anything that is
+			// not [delegate.ApprovalChannelV1] is a version skew, fatal
+			// before any model call.
+			var payload delegate.ApprovalChannelData
+			if uerr := json.Unmarshal(env.Data, &payload); uerr != nil {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("decode approval_channel envelope: %w", uerr))
+			}
+			if payload.Version != delegate.ApprovalChannelV1 {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("approval channel version %d, this runner speaks v%d — upgrade the host or the runner", payload.Version, delegate.ApprovalChannelV1))
+			}
+			sawApprovalChannel = true
+			continue
+		}
 		if env.Type == delegate.EnvelopeGatewayV1 {
 			// Empty capability marker: this host knows the gateway
 			// factory. Values never ride this envelope — the forwarded
 			// env carries them.
 			sawGateway = true
+			continue
+		}
+		if env.Type == delegate.EnvelopeCodemodeStateV1 {
+			if sawCodemodeState || env.ID != "" || len(env.Data) != 0 {
+				return emitFatal(dispatcher, stderr, errors.New("invalid codemode state v1 capability marker"))
+			}
+			sawCodemodeState = true
+			dispatcher.reader.OmitDecodePayload()
 			continue
 		}
 		if env.Type == delegate.EnvelopeWorkspaceTrust {
@@ -136,6 +162,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// failure would be an opaque unknown-provider. Name the skew instead.
 	if modelroute.Parse(ioTask.Model).Gateway() && !sawGateway {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("gateway task %q received without the gateway capability marker — the host binary predates gateway support; upgrade the host", ioTask.Model))
+	}
+
+	if sawCodemodeState != ioTask.CodemodeState || (sawCodemodeState && !ioTask.Codemode) {
+		return emitFatal(dispatcher, stderr, errors.New("codemode state v1 capability marker and task disagree — upgrade launcher and runner together"))
+	}
+	if sawCodemodeState {
+		ctx = model.WithCodemodeState(ctx, runnerCodemodeState{dispatcher})
+	} else {
+		ctx = model.WithCodemodeState(ctx, nil)
 	}
 
 	// start() must run AFTER the synchronous bootstrap loop above:
@@ -177,6 +212,19 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			return emitFatal(dispatcher, stderr, fmt.Errorf("rebuild permission policy: %w", perr))
 		}
 		task.Permission = pol
+		// The runner-side twin of the fail-closed position: an ask-capable
+		// policy that arrives WITHOUT the approval-channel announcement
+		// means the launcher will not serve pauses for this crossing — a
+		// host that predates the channel, or one that deliberately does not
+		// serve it (container-local asks stay refused). Running the node
+		// with every ask degraded to a denial is exactly the silent
+		// downgrade C136 refuses, so the bootstrap fails here, before any
+		// model call, and names the skew.
+		if pol.CanAsk() && !sawApprovalChannel {
+			return emitFatal(dispatcher, stderr, fmt.Errorf(
+				"node %q declares a permission policy that can produce an Ask decision (mode %s) but the host did not announce the approval channel — the host binary predates sandbox approvals, or declines to serve them; upgrade the host, drop the ask rules, or run the node unsandboxed",
+				ioTask.NodeID, pol.Mode))
+		}
 	}
 	// Every tool that starts a process, reaches a filesystem or opens a
 	// model-supplied URL executes LOCALLY inside the runner, so its effects
@@ -250,6 +298,20 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	}
 	captureSink := &dispatcherCaptureSink{dispatcher: dispatcher, stderr: stderr}
 	ctx = model.WithSandboxRunnerSession(ctx, sandboxRunnerSessionID, sessionStore, captureSink)
+	// The approval channel: with the announcement served, the permission
+	// gate forwards Asks across the IPC instead of pausing in-process —
+	// the runner blocks on the correlated decision, which carries the real
+	// tool result on allow (the launcher consumed the approval and
+	// executed the call host-side). The forwarder is installed only under
+	// the announcement: without it the gate keeps the in-process
+	// ErrAskUser raise, which inside this process surfaces as an opaque
+	// error — but that case never runs, because the bootstrap twin
+	// refused the ask-capable policy without the announcement.
+	if sawApprovalChannel {
+		ctx = model.WithSandboxApprovalForwarder(ctx, func(ctx context.Context, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+			return runApprovalRoundTrip(ctx, dispatcher, ask)
+		})
+	}
 	if ioTask.LauncherEndsNodeSession {
 		ctx = model.WithLauncherEndedNodeSession(ctx)
 	}
@@ -360,6 +422,7 @@ func oversizedResultFallback(result delegate.IOResult, writeErr error) delegate.
 	fallback.Stderr = ""
 	fallback.PendingConversation = nil
 	fallback.PendingToolUseID = ""
+	fallback.PendingPermissionInput = nil
 	fallback.Error = oversizedResultError(result.Error, writeErr)
 	return boundOversizedResultFallback(fallback)
 }

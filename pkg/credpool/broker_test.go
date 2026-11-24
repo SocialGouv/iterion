@@ -80,7 +80,7 @@ func (h *harness) donor(t *testing.T, userID string, lim Limits, mutate ...func(
 		t.Fatalf("seed oauth: %v", err)
 	}
 	p := Pledge{
-		ID: PledgeID(userID, SourceOAuth, string(secrets.OAuthKindClaudeCode)), PoolID: "pool-1",
+		ID: PledgeID(userID, SourceOAuth, string(secrets.OAuthKindClaudeCode), ""), PoolID: "pool-1",
 		UserID: userID, Credential: Credential{Source: SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
 		Enabled: true, Health: HealthOK, Limits: lim,
 	}
@@ -192,7 +192,7 @@ func TestBroker_fairnessPrefersTheLeastConsumedDonor(t *testing.T) {
 	h.donor(t, "bob", Limits{MaxUSDPerDay: 10})
 
 	// Alice has already given $8 of her 10 today; Bob nothing.
-	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 8, 0, 0, 0); err != nil {
+	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now, 8, 0, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
@@ -214,8 +214,8 @@ func TestBroker_fairnessIsProportional(t *testing.T) {
 	h.donor(t, "modest", Limits{MaxUSDPerDay: 2})
 
 	// Generous gave $20 (20% of their offer); modest gave $1 (50%).
-	_ = h.ledger.AddSpend(ctx, PledgeID("generous", SourceOAuth, "claude_code"), h.now, 20, 0, 0, 0)
-	_ = h.ledger.AddSpend(ctx, PledgeID("modest", SourceOAuth, "claude_code"), h.now, 1, 0, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("generous", SourceOAuth, "claude_code", ""), h.now, 20, 0, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("modest", SourceOAuth, "claude_code", ""), h.now, 1, 0, 0, 0)
 
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
 	if err != nil {
@@ -232,7 +232,7 @@ func TestBroker_exhaustedDonorYieldsToTheNext(t *testing.T) {
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
 	h.donor(t, "bob", Limits{MaxUSDPerDay: 5})
 	// Alice is spent; she must be skipped, not fail the acquisition.
-	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now, 5, 0, 0, 0)
 
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
 	if err != nil {
@@ -247,14 +247,14 @@ func TestBroker_everyDonorExhausted(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
-	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now, 5, 0, 0, 0)
 
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); !errors.Is(err, ErrNoDonor) {
 		t.Errorf("Acquire = %v, want ErrNoDonor", err)
 	}
 	// A refused admission must not leave the donor's run counter inflated —
 	// otherwise a run-per-day cap would erode with every rejected launch.
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestBroker_reportChargesTheDonorAndClosesTheLease(t *testing.T) {
 		t.Fatalf("Report: %v", err)
 	}
 
-	day, week, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, week, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestBroker_reportIsIdempotent(t *testing.T) {
 			t.Fatalf("Report %d: %v", i, err)
 		}
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if day.CostUSD != 2 {
 		t.Errorf("cost = %v, want 2 — a redelivered report double-charged the donor", day.CostUSD)
 	}
@@ -394,12 +394,12 @@ func TestBroker_spendIsChargedToTheDayThatAdmittedTheRun(t *testing.T) {
 		t.Fatalf("Report: %v", err)
 	}
 
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), acquired)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), acquired)
 	if day.CostUSD != 4 {
 		t.Errorf("spend landed on the wrong day: %s shows %v, want 4 — a run admitted under yesterday's allowance must debit yesterday",
 			dayKey(acquired), day.CostUSD)
 	}
-	next, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	next, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if next.CostUSD != 0 {
 		t.Errorf("%s shows %v, want 0", dayKey(h.now), next.CostUSD)
 	}
@@ -440,7 +440,7 @@ func TestBroker_usageWindowWithoutAResetUsesABoundedWait(t *testing.T) {
 	if err := h.broker.Report(ctx, "run-1", Outcome{Condition: ConditionUsageWindow}); err != nil {
 		t.Fatalf("Report: %v", err)
 	}
-	p, _ := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code"))
+	p, _ := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""))
 	if p.CooldownUntil == nil || !p.CooldownUntil.After(h.now) {
 		t.Fatalf("cooldown = %v, want a bounded future instant", p.CooldownUntil)
 	}
@@ -457,7 +457,7 @@ func TestBroker_repeatedAuthFailuresParkTheDonor(t *testing.T) {
 	// Drive the reported condition through the public path for the first
 	// failure, then the transition directly — what matters here is the
 	// threshold, not which donor the ranking happened to pick.
-	id := PledgeID("alice", SourceOAuth, "claude_code")
+	id := PledgeID("alice", SourceOAuth, "claude_code", "")
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestBroker_successResetsTheAuthFailureStreak(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{})
-	id := PledgeID("alice", SourceOAuth, "claude_code")
+	id := PledgeID("alice", SourceOAuth, "claude_code", "")
 
 	h.broker.noteAuthFailure(ctx, id)
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
@@ -519,12 +519,12 @@ func TestBroker_disconnectedCredentialParksThePledge(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); !errors.Is(err, ErrNoDonor) {
 		t.Errorf("Acquire = %v, want ErrNoDonor", err)
 	}
-	p, _ := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code"))
+	p, _ := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""))
 	if p.Health != HealthTokenExpired {
 		t.Errorf("health = %s, want token_expired — re-discovering this on every launch is wasted work", p.Health)
 	}
 	// And the reservation must have been given back.
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if day.Runs != 0 {
 		t.Errorf("day runs = %d, want 0 — the reserved unit leaked", day.Runs)
 	}
@@ -543,7 +543,7 @@ func TestBroker_expiredNonRefreshableCredentialIsParked(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); !errors.Is(err, ErrNoDonor) {
 		t.Errorf("Acquire = %v, want ErrNoDonor", err)
 	}
-	p, _ := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code"))
+	p, _ := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""))
 	if p.Health != HealthTokenExpired {
 		t.Errorf("health = %s, want token_expired", p.Health)
 	}
@@ -602,7 +602,7 @@ func TestBroker_resumeReplacesTheLeaseInsteadOfStacking(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("re-Acquire on resume: %v", err)
 	}
-	live, _, err := h.leases.LiveCommitment(ctx, PledgeID("alice", SourceOAuth, "claude_code"), "", h.now)
+	live, _, err := h.leases.LiveCommitment(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), "", h.now)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestBroker_reciprocityAdmitsAForeignDonor(t *testing.T) {
 
 	// Reciprocity is earned by an ACTIVE contribution: pausing your own
 	// sharing stops your borrowing too.
-	carol, _ := h.pledges.Get(ctx, PledgeID("carol", SourceOAuth, "claude_code"))
+	carol, _ := h.pledges.Get(ctx, PledgeID("carol", SourceOAuth, "claude_code", ""))
 	carol.Enabled = false
 	_ = h.pledges.Upsert(ctx, carol)
 	req.RunID = "run-2"
@@ -843,7 +843,7 @@ func TestBroker_AbstentionSkipsNameEachPledgeStatus(t *testing.T) {
 	t.Run("paused", func(t *testing.T) {
 		h := newHarness(t)
 		h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Enabled = false })
-		if got := skipOf(t, h, "r"); got.Status != StatusPaused || got.PledgeID != PledgeID("alice", SourceOAuth, "claude_code") {
+		if got := skipOf(t, h, "r"); got.Status != StatusPaused || got.PledgeID != PledgeID("alice", SourceOAuth, "claude_code", "") {
 			t.Errorf("skip = %+v, want alice paused", got)
 		}
 	})
@@ -943,7 +943,7 @@ func TestBroker_AbstentionCountsMeanOneThingEach(t *testing.T) {
 	// One matching donor, paused; one codex pledge the request never asks for.
 	h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Enabled = false })
 	if err := h.pledges.Upsert(ctx, Pledge{
-		ID: PledgeID("bob", SourceOAuth, string(secrets.OAuthKindCodex)), PoolID: "pool-1",
+		ID: PledgeID("bob", SourceOAuth, string(secrets.OAuthKindCodex), ""), PoolID: "pool-1",
 		UserID: "bob", Credential: Credential{Source: SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
 		Enabled: true, Health: HealthOK,
 	}); err != nil {
@@ -964,7 +964,7 @@ func TestBroker_AbstentionCountsMeanOneThingEach(t *testing.T) {
 	if nd.PledgesConsidered != 1 {
 		t.Errorf("pledges_considered = %d, want 1 (bob's codex pledge is not a wanted kind)", nd.PledgesConsidered)
 	}
-	if len(nd.Skips) != 1 || nd.Skips[0].PledgeID != PledgeID("alice", SourceOAuth, "claude_code") {
+	if len(nd.Skips) != 1 || nd.Skips[0].PledgeID != PledgeID("alice", SourceOAuth, "claude_code", "") {
 		t.Errorf("skips = %+v, want alice only", nd.Skips)
 	}
 	if !strings.Contains(nd.Error(), "pools_enabled=2") || !strings.Contains(nd.Error(), "pools_admitted=1") {
@@ -981,7 +981,7 @@ func TestBroker_AbstentionDoesNotCountTheRequestersOwnPledge(t *testing.T) {
 	h := newHarness(t)
 	// The ONLY matching pledge belongs to the requester.
 	if err := h.pledges.Upsert(ctx, Pledge{
-		ID: PledgeID("requester", SourceOAuth, string(secrets.OAuthKindClaudeCode)), PoolID: "pool-1",
+		ID: PledgeID("requester", SourceOAuth, string(secrets.OAuthKindClaudeCode), ""), PoolID: "pool-1",
 		UserID: "requester", Credential: Credential{Source: SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
 		Enabled: true, Health: HealthOK,
 	}); err != nil {

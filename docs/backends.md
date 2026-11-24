@@ -732,7 +732,7 @@ that drives it, and how hard it is asked to think.
   on *inherit* to keep the DSL default.
 - **CLI** — repeatable `--model` / `--backend` / `--effort-for`, each a
   `selector=value` (or a bare `value` for every LLM node). A selector matches
-  by exact node id (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or
+  by exact node id (`reviewer_alternate`), id glob (`reviewer_*`, `fix_*`), or
   node kind (`agent`|`judge`). Most specific match wins; resolution is
   per-field so the three compose:
 
@@ -761,9 +761,9 @@ already sit at the top of the chain. A bot that escalates effort per branch is
 therefore flattened by a run-wide `*` override — which is what asking for one
 means. See [ADR-090](adr/090-model-registry-and-operator-model-choice.md).
 
-This composes with the mono/dual `--review-mode` topology (ADR-052): the
-review mode chooses *which family* runs (one or two), the override chooses
-*which model/backend* each running node uses. A run launched through the studio / HTTP
+This composes with the `--review-mode` topology (ADR-052, amended by
+ADR-169): the review mode chooses *how many* reviewers run (one or two), the
+override chooses *which model/backend* each running node uses. A run launched through the studio / HTTP
 API re-applies its launch-time model/backend rules on resume (they are read
 back off the run document) — on every launch surface, `iterion run` included,
 so the flags do not have to be repeated on `iterion resume`. `--compress` remains
@@ -1262,13 +1262,20 @@ validation succeed as before with their output. COMPUTE conformance remains
 mandatory (#792): integral floats become integers; fractional integers and
 wrong field types fail with `SCHEMA_VALIDATION`, including in advisory mode.
 LLM outputs retain executor validation and bounded correction.
+One shape is refused in that default: a tool node's `command:` / `script:`
+that declares `output:` and prints non-empty stdout that is not a JSON object
+fails its node with `TOOL_FAILED_PERMANENT`, naming the schema and never the
+output ([the output contract](dsl.md#tool)).
 `WithOutputValidation(true)` selects strict rejection (`SCHEMA_VALIDATION`,
 or deterministic `TOOL_FAILED_PERMANENT` for tools to prevent cloud redelivery
 from repeating side effects). `ITERION_STRICT_OUTPUT_VALIDATION=1` (also `true`,
 `yes`, `y`, `on`, `enabled`, case-insensitive) selects the same strict default
-for run, resume, subbot, studio, runner and dispatcher. An explicit engine option
+for run, resume, subbot, studio, runner and dispatcher. The dial has a third
+position: written out as off (`0`, `false`, `no`, `n`, `off`, `disabled`, or
+`WithOutputValidation(false)`), it also restores the `{"result": "<text>"}`
+wrapper for that non-JSON stdout — unset is not off. An explicit engine option
 overrides the environment; unknown values warn with `OUTPUT_VALIDATION_INVALID`
-and retain advisory validation. Raising the correction budget on resume reopens
+and read as unset. Raising the correction budget on resume reopens
 an exhausted or unchanged episode without resetting spent attempts. Correction
 deadlines apply to corrective calls only;
 expiration of
@@ -1389,24 +1396,30 @@ CLI contract that structurally cannot return an error, so no typed
 trigger can fire for them; Codex is not included in the v1 fallback lane. A sandboxed `claw` route
 works — the trigger comes from the failing route, which `claude_code`
 types correctly — but its own failure is always unclassifiable, and it
-**cannot serve a node whose permission policy can produce an Ask
-decision** (mode `ask`, or any explicit `ask:` rule — which outranks
-mode `deny`).
+**cannot serve an ask that reaches a container-executed tool** (mode
+`ask`, or an explicit `ask:` rule naming one — which outranks mode
+`deny`).
 
-> **Sandboxed `claw` enforces the permission gate for deny-shaped
-> policies.** The policy crosses the IPC as a pre-task
-> `permission_policy` envelope (`permission.PolicyConfig`, re-parsed
-> in-container by the same parser), and the `__claw-runner`'s own tool
-> loop applies it before every tool — local builtins and proxied tools
-> alike. The pre-task position is the mixed-fleet guarantee: a runner
-> binary too old to know the envelope fatals on "unexpected envelope
-> before task" instead of running the gated node with an empty policy,
-> so the combination fails CLOSED, never open. What cannot cross is an
-> **Ask decision** — nothing inside the container can pause the parent
-> run — so an ask-capable policy is refused loudly at dispatch (and
-> C136 warns at compile time). Run the workflow unsandboxed
-> (`sandbox: none` / `--sandbox none` — a node-level `sandbox:` is not
-> honoured at run time), or route the node to `claude_code`.
+> **Sandboxed `claw` enforces the permission gate and serves Ask
+> decisions through the approval channel (#3513).** The policy crosses
+> the IPC as a pre-task `permission_policy` envelope
+> (`permission.PolicyConfig`, re-parsed in-container by the same
+> parser), and the `__claw-runner`'s own tool loop applies it before
+> every tool — local builtins and proxied tools alike. The pre-task
+> position is the mixed-fleet guarantee: a runner binary too old to
+> know the envelope fatals on "unexpected envelope before task"
+> instead of running the gated node with an empty policy, so the
+> combination fails CLOSED, never open. The served scope is
+> **launcher-placed tools** (MCP, in-memory registries): an Ask
+> crosses back as `permission_ask`, the launcher binds the exact call,
+> consumes the approval and executes it itself, and a run-level pause
+> suspends for a human — the container's own words never reach the
+> operator. An ask that can reach a **container-executed tool** (bash,
+> the file tools) refuses the node loudly at dispatch (and C136 warns
+> at compile time): the launcher cannot certify an execution inside
+> the container. Run the workflow unsandboxed (`sandbox: none` /
+> `--sandbox none` — a node-level `sandbox:` is not honoured at run
+> time), or route the node to `claude_code`.
 
 > **A sandboxed `claw` node also refuses a tool the container cannot
 > execute.** Tools the runner does not run locally are proxied back and
@@ -1578,11 +1591,13 @@ one:
 
 On the team's policy, a restricted key's cell would also route launches the
 key cannot fund onto the gateway — the team's other repositories or bots,
-and for a repository restriction the scheduled, board and pipeline lanes,
-which name no repository (ADR-131 §3) — and under `llm_fallback=none` such a
-launch is refused (§5). Until PR-R stamps the scheduled lane with its
-integration's repository, an integration's own schedules cannot spend a
-repository-restricted key either.
+and for a repository restriction the pipeline lane, which names no
+repository (ADR-131 §3) — and under `llm_fallback=none` such a launch is
+refused (§5). The scheduled lane names its integration's repository (or its
+`repo_url`'s), so an integration's own schedules spend a key restricted to
+that repository; when two gateway keys of the team serve the same bot and
+repository, a schedule's `key_overrides` picks the one it spends
+([byok.md](byok.md#per-webhook-key-override)).
 
 The cell re-targets the `model:` of every LLM node the record reaches — not
 its `backend:` or `provider:`. A node whose backend resolves to claw (named,
@@ -1664,7 +1679,7 @@ or the launch's own `llm_routing` writes, leaving each site to the team's,
 org's and platform's cells. A launch's own row
 wins a cell on the same selector, and a launch `*` row overrides its fields
 in every node cell; a cell on a more specific node selector than a launch
-row other than `*` still wins the fields both pin (a `reviewer_claude` cell
+row other than `*` still wins the fields both pin (a `reviewer_alternate` cell
 beats a `reviewer_*` launch row).
 
 A cell reaches more than a node's own route
@@ -1721,7 +1736,7 @@ selector := [ <bot> "/" ] <target>
   and the cloud runner warns on the parent's run log, naming the pinned
   sites. Teaching the walk a child's sites is a follow-up.
 - `<node id>#<route>` names an authored `fallbacks:` route by the key the
-  walk records it under: its name (`reviewer_claude#glm`), or its index when
+  walk records it under: its name (`reviewer_alternate#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
   `provider`, which replace the route's own; `effort` is refused (a route
   runs at its node's). Its `provider` is one literal hint: dispatch sends a
@@ -1767,18 +1782,13 @@ on the forge integration (or the team's policy):
 
 ```json
 {"overrides": [
-  {"selector": "review-pr/converge",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/converge_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_gpt_glance",    "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/converge#glm",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude#glm",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/supervisor:pacer",     "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "revi-converse/converse_agent",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/converge",              "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_glance",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer",       "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer_gpt",   "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
 ]}
 ```
@@ -2083,7 +2093,31 @@ without guessing a numeric equivalent for a name. Executor adjustments emit
 that listed the efforts) and `reason` — and a warning. The requested effort
 itself is the node's `reasoning_effort:`, an edge mapping, the launch
 override or a routing cell's `effort`; accepted efforts are a fact of the
-gateway, seated at the platform, org and team levels only. Gateway routes
+gateway, seated at the platform, org and team levels only. The node's output
+records what the call sent: `_reasoning_effort_applied` is the level the first
+model request carried — the claw backend reports it from its requests, after
+the model's accepted set and the client's own rule (an Anthropic Messages
+client sends no effort for a model outside its matrix; bedrock and vertex
+send none), claude_code reports the level its CLI sends for the model,
+read from the id the spawn hands the CLI — slot prefixes stripped, alias
+and snapshot date resolved (`claude-opus-5-5-20260101` is opus 5.5): none
+for the measured no-effort ids (the haiku line, sonnet-4-5,
+claude-3-5-sonnet), a clamp onto the model's accepted set otherwise
+(sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards every level), a
+Claude id with neither an accepted set nor a measurement as handed (what
+the CLI would send is not known), and "" when the call never reached the
+model — one that fails mid-stream may already have carried a request the
+record cannot name — and for the other backends it is the level the
+executor handed them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
+cell), `launch` (the launch's own row), `override` (either, when the executor
+was not told which rows the launch carried), `node`, `dial:<VAR>` (an operator
+set the node's `${VAR:-default}`), `edge`, the list's source when the mapping
+replaced the level, or `backend` when the backend sent another level, none or
+its default. `_reasoning_effort_requested` is the level asked for, written only
+when the mapping or the backend replaced it, and `_reasoning_effort_lowered`
+the lower level of a later request — a claw re-ask after a cut turn or its
+recovery pass — whose answer the output is. A report prints the effort the run
+used rather than a dial (`bots/review-pr`'s run table). Gateway routes
 run on `claw` alone (C186 above): a CLI backend refuses a gateway route at
 dispatch, so it never reaches this mapping.
 
@@ -2462,8 +2496,9 @@ ask_user/board servers. The operator's personal user-scope servers
 undeclared tools reaching the agent, an `npx`/server boot per node visit
 (a CPU spike per iteration on loop-heavy bots), and personal API keys on the
 subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
-restores host-config inheritance. Settings remain inherited independently
-(`--setting-sources`, above).
+restores host-config inheritance; it does not reach a node whose `mcp:` block
+says `inherit: false`, which keeps `--strict-mcp-config`. Settings remain
+inherited independently (`--setting-sources`, above).
 
 **Unnamed servers degrade per-server, on every backend.** A server whose
 tools the node does not name that fails to boot costs its OWN tools, never

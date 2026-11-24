@@ -3,6 +3,7 @@ package runstream
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -12,32 +13,50 @@ import (
 // paginated event replay, the reconnect-with-backoff pump, and the
 // offset-deduped log-chunk shipper.
 
-// ReplayEvents pages the persisted backlog (seq >= fromSeq) into pipe
-// in MaxEventsPerPage batches. Returns the highest shipped seq
-// (fromSeq-1 when nothing shipped) and the first load error — the
-// caller decides whether that error is fatal (store.ErrEventsCorrupted
-// on the primary store) or just ends the replay early; pages loaded
-// before the error are already shipped either way.
+// ReplayEvents preserves the historical highest-sequence result. With no rows
+// at MinInt64 there is no representable predecessor: the integer result is
+// nonauthoritative and ErrReplayProgressUnrepresentable preserves any load error.
+// New callers should use ReplayEventsCursor for total int64 cursor semantics.
 func ReplayEvents(ctx context.Context, st store.RunStore, runID string, fromSeq int64, pipe EventPipe) (int64, error) {
-	maxReplayed := fromSeq - 1
-	next := fromSeq
+	p, err := ReplayEventsCursor(ctx, st, runID, EventCursor{Seq: fromSeq}, pipe)
+	if p.Found {
+		return p.LastSeq, err
+	}
+	if fromSeq == math.MinInt64 {
+		return 0, errors.Join(ErrReplayProgressUnrepresentable, err)
+	}
+	return fromSeq - 1, err
+}
+
+// ReplayEventsCursor pages persisted rows and advances only after successful
+// delivery. After-Max ends this finite replay, not its source's live tail.
+func ReplayEventsCursor(ctx context.Context, st store.RunStore, runID string, cursor EventCursor, pipe EventPipe) (EventReplayProgress, error) {
+	progress := EventReplayProgress{Cursor: cursor}
 	for {
-		page, err := st.LoadEventsRange(ctx, runID, next, 0, MaxEventsPerPage())
+		if err := ctx.Err(); err != nil {
+			return progress, err
+		}
+		from := progress.Cursor.Seq
+		if progress.Cursor.After {
+			if from == math.MaxInt64 {
+				return progress, nil
+			}
+			from++
+		}
+		page, err := st.LoadEventsRange(ctx, runID, from, 0, MaxEventsPerPage())
 		if len(page) > 0 {
 			if !pipe.Ship(ctx, page) {
-				return maxReplayed, ctx.Err()
+				return progress, ctx.Err()
 			}
-			if last := page[len(page)-1].Seq; last > maxReplayed {
-				maxReplayed = last
-			}
+			last := page[len(page)-1].Seq
+			progress = EventReplayProgress{Cursor: EventCursor{Seq: last, After: true}, LastSeq: last, Found: true}
 		}
 		if err != nil {
-			return maxReplayed, err
+			return progress, err
 		}
 		if len(page) < MaxEventsPerPage() {
-			return maxReplayed, nil
+			return progress, nil
 		}
-		next = maxReplayed + 1
 	}
 }
 

@@ -6,138 +6,22 @@ import {
   type ReactNode,
 } from "react";
 
-import type { RunEvent } from "@/api/runs";
+import type { CodemodeReport, RunEvent } from "@/api/runs";
 import { fetchToolBlob } from "@/api/runs";
 import { formatBytes, formatMs } from "@/lib/format";
 import { errorMessage } from "@/lib/errorHints";
-import { CopyButton, StatusBadge } from "@/components/ui";
+import { CopyButton, StatusBadge, Table, TBody, Td, Th, THead, Tr } from "@/components/ui";
 
 import { formatToolCall, type ToolField, type TodoItem } from "../toolFormatters";
+
+import { groupToolCalls, isRecord, nestedItems, type ToolCall } from "./toolCallModel";
 
 // ---------------------------------------------------------------------------
 // Tools tab
 // ---------------------------------------------------------------------------
 
-interface ToolCall {
-  seq: number;
-  toolName: string;
-  isError: boolean;
-  duration?: number;
-  rawData: Record<string, unknown> | undefined;
-  // input/output: present when the call fit inline OR carries a head
-  // preview from the sidecar blob. Always renderable as the initial
-  // payload view.
-  input?: string;
-  output?: string;
-  // {input,output}Ref: when set, the full body lives in a sidecar blob
-  // addressable via fetchToolBlob(runId, ref, kind). The studio renders
-  // a "Load more" affordance below the preview that paginates through
-  // the rest of the bytes (infinite scroll).
-  inputRef?: string;
-  outputRef?: string;
-  // {input,output}Size: total byte size of the original body. Used to
-  // size progress affordances and decide whether to offer Load more.
-  inputSize?: number;
-  outputSize?: number;
-  errorMsg?: string;
-}
-
-// pickInlinePayload returns whatever string form of the tool call's
-// `kind` payload is available on the merged event data: the full inline
-// body if the call fit under the threshold, otherwise the 4 KB head
-// preview the backend included alongside the sidecar blob ref. Returns
-// undefined when neither is set (e.g. an empty input/output).
-export function pickInlinePayload(
-  data: Record<string, unknown>,
-  kind: "input" | "output",
-): string | undefined {
-  const inline = data[kind];
-  if (typeof inline === "string") return inline;
-  if (inline !== undefined) return safeJSON(inline);
-  const preview = data[`${kind}_preview`];
-  if (typeof preview === "string") return preview;
-  return undefined;
-}
-
-// pickRef returns the sidecar blob ref (= tool_use_id) when present.
-// The presence of a ref tells the studio "there's more to fetch beyond
-// the preview" — render the Load more affordance.
-export function pickRef(
-  data: Record<string, unknown>,
-  kind: "input" | "output",
-): string | undefined {
-  const ref = data[`${kind}_ref`];
-  return typeof ref === "string" && ref !== "" ? ref : undefined;
-}
-
-// pickSize returns the total byte size of the original tool payload as
-// declared on the event (`{kind}_size`). Used to size Load more progress
-// affordances. Returns undefined when the event predates this plumbing.
-export function pickSize(
-  data: Record<string, unknown>,
-  kind: "input" | "output",
-): number | undefined {
-  const size = data[`${kind}_size`];
-  return typeof size === "number" ? size : undefined;
-}
-
-// useToolCalls merges `tool_started` (carrying the JSON input) with
-// `tool_called` / `tool_error` (carrying duration, error, and the tool's
-// output result) by `tool_use_id`, so the per-node Tools tab can render
-// in+out side-by-side for every tool call.
-//
-// Falls back to no-merge when `tool_use_id` is absent on either side (legacy
-// events from runs that predate this plumbing). The
-// `tool_called`/`tool_error` event remains the entry's identity (its seq is
-// used as the key), so already-rendered cards don't disappear from older
-// runs and the in-flight state is not surfaced here (a separate concern).
 export function useToolCalls(matching: RunEvent[]): ToolCall[] {
-  return useMemo<ToolCall[]>(() => {
-    const startedByID = new Map<string, RunEvent>();
-    for (const e of matching) {
-      if (e.type !== "tool_started") continue;
-      const id = e.data?.["tool_use_id"];
-      if (typeof id === "string" && id !== "") {
-        startedByID.set(id, e);
-      }
-    }
-    return matching
-      .filter((e) => e.type === "tool_called" || e.type === "tool_error")
-      .map((e) => {
-        const data = e.data ?? {};
-        const toolUseID = data["tool_use_id"];
-        const startedData =
-          typeof toolUseID === "string" && toolUseID !== ""
-            ? startedByID.get(toolUseID)?.data ?? {}
-            : {};
-        // Merge: post-execution event wins for duration/error; pre-execution
-        // event provides the input payload for structured rendering. Use
-        // Object.assign to keep the merged object as a fresh map.
-        const merged: Record<string, unknown> = { ...startedData, ...data };
-        const toolName =
-          (merged["tool_name"] as string) ?? (merged["tool"] as string) ?? "unknown";
-        const isError = e.type === "tool_error";
-        return {
-          seq: e.seq,
-          toolName,
-          isError,
-          duration:
-            typeof merged["duration_ms"] === "number"
-              ? (merged["duration_ms"] as number)
-              : undefined,
-          rawData: merged,
-          input: pickInlinePayload(merged, "input"),
-          output: pickInlinePayload(merged, "output"),
-          inputRef: pickRef(merged, "input"),
-          outputRef: pickRef(merged, "output"),
-          inputSize: pickSize(merged, "input"),
-          outputSize: pickSize(merged, "output"),
-          errorMsg: isError
-            ? (merged["error"] as string) ?? (merged["message"] as string)
-            : undefined,
-        };
-      });
-  }, [matching]);
+  return useMemo(() => groupToolCalls(matching), [matching]);
 }
 
 export function ToolCallList({ calls, runId }: { calls: ToolCall[]; runId: string }) {
@@ -414,12 +298,199 @@ function ToolFieldList({ fields }: { fields: ToolField[] }) {
   );
 }
 
+// The codemode tool's name (pkg/backend/model ScriptHostToolName).
+const CODEMODE_TOOL = "codemode";
+
+// The marker object the sandbox relay sends in place of an input over its
+// 1 MiB field budget (pkg/backend/model relayClampJSON).
+const RELAY_OMITTED_KEY = "_iterion_sandbox_relay_omitted_bytes";
+
+type ProgramPayload =
+  | { kind: "source"; text: string }
+  | { kind: "omitted"; bytes: number }
+  | { kind: "raw" };
+
+// programOf reads a codemode call's input — the program — for display. A
+// whole inline input yields the source text; the relay's omitted marker
+// yields its size; a 4 KB head preview of a larger input is not a JSON
+// document, and is shown as it is stored, with load more.
+function programOf(call: ToolCall): ProgramPayload | undefined {
+  const raw = call.rawData?.["input"];
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Not a whole JSON document: the stored preview, shown raw.
+      return call.input ? { kind: "raw" } : undefined;
+    }
+  }
+  if (isRecord(parsed)) {
+    const src = parsed["source"];
+    if (typeof src === "string") return { kind: "source", text: src };
+    const omitted = parsed[RELAY_OMITTED_KEY];
+    if (typeof omitted === "number") return { kind: "omitted", bytes: omitted };
+  }
+  return call.input ? { kind: "raw" } : undefined;
+}
+
+// formatLimit renders a codemode bound by its wire name's unit.
+function formatLimit(field: string, v: number): string {
+  if (field.endsWith("_ns")) return formatMs(v / 1e6);
+  if (field.endsWith("_bytes")) return formatBytes(v);
+  return String(v);
+}
+
+// formatEnforced renders a value the child reported it enforced.
+function formatEnforced(field: string, v: number | boolean): string {
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (field.endsWith("_bytes")) return formatBytes(v);
+  if (field === "cpu_seconds") return `${v}s`;
+  return String(v);
+}
+
+// CodemodeReportView is what a program's completion says about the run it
+// had: how it ended, how many calls it spent of its budget, the bounds the
+// host asked for after the clamp (each one the clamp moved shown as
+// declared → clamped), and what the child's kernel actually enforced, which
+// a deployment's stricter limit or a whole-second CPU rounding can tighten.
+function CodemodeReportView({ report, source }: { report: CodemodeReport; source: string }) {
+  const adjusted = new Map((report.adjusted ?? []).map((a) => [a.field, a]));
+  const callLimit = report.limits["tool_calls"];
+  const fields = Object.keys(report.limits).sort();
+  const enforced = report.confinement ? Object.entries(report.confinement).sort(([a], [b]) => a.localeCompare(b)) : [];
+  return (
+    <div className="mb-1.5 text-caption">
+      {report.refusal && (
+        <div className="mb-0.5">
+          <span className="font-medium text-danger-fg">refused: </span>
+          <span className="font-mono text-danger-fg">{report.refusal}</span>
+        </div>
+      )}
+      <div className="mb-0.5 text-fg-muted">
+        calls {report.calls}
+        {callLimit !== undefined && ` / ${callLimit}`}
+        {report.budget_refused ? ` · ${report.budget_refused} refused on budget` : ""}
+        {report.state_calls ? ` · ${report.state_calls} run-state` : ""}
+        {` · ${formatBytes(report.source_bytes)} of source`}
+      </div>
+      {report.effective_wall_ns !== undefined && (
+        <div className="mb-0.5 text-warning-fg">
+          wall cut to {formatMs(report.effective_wall_ns / 1e6)} by the node&apos;s deadline
+        </div>
+      )}
+      <details className="mb-1">
+        <summary className="cursor-pointer text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2">
+          limits requested{adjusted.size > 0 && ` (${adjusted.size} adjusted)`}
+        </summary>
+        <Table caption={`limits requested for ${source}`} density="sm" className="mt-1">
+          <THead>
+            <Th>bound</Th>
+            <Th>requested, after the clamp</Th>
+          </THead>
+          <TBody>
+            {fields.map((field) => {
+              const a = adjusted.get(field);
+              return (
+                <Tr key={field} hover={false}>
+                  <Th scope="row" className="font-mono font-normal text-fg-default">
+                    {field}
+                  </Th>
+                  <Td className="font-mono text-fg-default">
+                    {a ? (
+                      <>
+                        {formatLimit(field, a.requested)} → {formatLimit(field, a.applied)}{" "}
+                        <span className="text-warning-fg">(adjusted)</span>
+                      </>
+                    ) : (
+                      formatLimit(field, report.limits[field] ?? 0)
+                    )}
+                  </Td>
+                </Tr>
+              );
+            })}
+          </TBody>
+        </Table>
+      </details>
+      {enforced.length > 0 && (
+        <details className="mb-1">
+          <summary className="cursor-pointer text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2">
+            enforced by the child
+          </summary>
+          <Table caption={`limits enforced for ${source}`} density="sm" className="mt-1">
+            <THead>
+              <Th>bound</Th>
+              <Th>enforced</Th>
+            </THead>
+            <TBody>
+              {enforced.map(([field, v]) => (
+                <Tr key={field} hover={false}>
+                  <Th scope="row" className="font-mono font-normal text-fg-default">
+                    {field}
+                  </Th>
+                  <Td className="font-mono text-fg-default">{formatEnforced(field, v)}</Td>
+                </Tr>
+              ))}
+            </TBody>
+          </Table>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// NestedCalls lists the calls a program made inside its card — collapsible
+// per program, the way the trace collapses a step — with each
+// `call.parallel` batch kept together in its batch order.
+function NestedCalls({ calls, source, runId }: { calls: ToolCall[]; source: string; runId: string }) {
+  const [open, setOpen] = useState(true);
+  const items = useMemo(() => nestedItems(calls), [calls]);
+  const label = `nested calls (${calls.length})`;
+  return (
+    <div className="mb-1 rounded border border-border-default">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label={`${label} of ${source}`}
+        className="w-full flex items-center gap-2 px-2 py-1 text-left hover:bg-surface-2 rounded-t"
+      >
+        <span className="text-caption text-fg-muted">{label}</span>
+        <span aria-hidden className="ml-auto text-fg-subtle text-caption">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <ul className="border-t border-border-default p-2 space-y-2">
+          {items.map((item) =>
+            item.kind === "call" ? (
+              <ToolCallCard key={item.call.seq} call={item.call} runId={runId} />
+            ) : (
+              <li key={`batch-${item.first}`} className="rounded border border-dashed border-border-default p-1.5">
+                <div className="mb-1 text-caption font-mono text-fg-subtle">
+                  call.parallel × {item.size}
+                </div>
+                <ul className="space-y-2">
+                  {item.calls.map((c) => (
+                    <ToolCallCard key={c.seq} call={c} runId={runId} />
+                  ))}
+                </ul>
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
   const [showRaw, setShowRaw] = useState(false);
   // What the card's repeated controls name themselves after: the tool and
   // the sequence number the card already shows, so two Bash calls in a row
   // are two distinct buttons to a screen reader.
   const source = `${call.toolName} seq ${call.seq}`;
+  const program = call.toolName === CODEMODE_TOOL ? programOf(call) : undefined;
   // The tool input lives on event.data.input — already on the
   // ToolCall via `input` (stringified). Parsers expect a parsable
   // shape, so we feed them the raw object from rawData first and
@@ -437,10 +508,13 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
       <div className="flex items-center gap-2 mb-1">
         <span className="font-medium text-micro">{call.toolName}</span>
         <StatusBadge
-          status={call.isError ? "failed" : "finished"}
-          label={call.isError ? "error" : "ok"}
+          status={call.running ? "running" : call.unpaired ? "none" : call.isError ? "failed" : "finished"}
+          label={call.running ? "running" : call.unpaired ? "start, unpaired" : call.isError ? "error" : "ok"}
           showGlyph={false}
         />
+        {call.emittedBy && (
+          <span className="text-caption text-fg-muted">reported by the {call.emittedBy}</span>
+        )}
         {call.duration !== undefined && (
           <span className="text-caption text-fg-muted">
             {formatMs(call.duration)}
@@ -468,7 +542,27 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
           </div>
         </div>
       )}
-      {call.input && (
+      {call.codemode && <CodemodeReportView report={call.codemode} source={source} />}
+      {program?.kind === "source" && (
+        <ToolPayloadBlock label="program" source={source} value={program.text} runId={runId} kind="input" />
+      )}
+      {program?.kind === "omitted" && (
+        <div className="mb-1 px-1 text-caption text-fg-muted">
+          program not carried across the sandbox relay ({formatBytes(program.bytes)} in the container)
+        </div>
+      )}
+      {program?.kind === "raw" && call.input && (
+        <ToolPayloadBlock
+          label="program"
+          source={source}
+          value={call.input}
+          runId={runId}
+          toolUseID={call.inputRef}
+          kind="input"
+          totalSize={call.inputSize}
+        />
+      )}
+      {!program && call.input && (
         <ToolPayloadBlock
           label="raw input"
           source={source}
@@ -489,6 +583,9 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
           kind="output"
           totalSize={call.outputSize}
         />
+      )}
+      {call.nested && call.nested.length > 0 && (
+        <NestedCalls calls={call.nested} source={source} runId={runId} />
       )}
       <div className="flex items-center gap-2">
         <button
@@ -514,12 +611,4 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
       )}
     </li>
   );
-}
-
-function safeJSON(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
 }

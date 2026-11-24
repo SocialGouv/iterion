@@ -180,6 +180,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/bots/upload` | session | yes |
 | `GET` | `/api/v1/bots/{name}` | session | yes |
 | `PUT` | `/api/v1/bots/{name}` | session | yes |
+| `GET` | `/api/v1/bots/{name}/launch-source` | session | yes |
 | `PUT` | `/api/v1/bots/{name}/overlay` | session | yes |
 | `POST` | `/api/v1/bots/{name}/triggers/from-invocation` | session + write rung | yes |
 
@@ -190,6 +191,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `GET` | `/api/config-share/{id}/config` | open | yes |
 | `PATCH` | `/api/config-share/{id}/config` | open | yes |
 | `GET` | `/api/config-share/{id}/meta` | open | yes |
+
+## `/api/connectors` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/connectors/{id}/icon` | session | yes |
 
 ## `/api/effort-capabilities` family
 
@@ -231,6 +238,14 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/forge/dispatch-workflow` | open | no |
 | `POST` | `/api/v1/forge/publish-review` | open | no |
 | `GET` | `/api/v1/forge/pull-request` | open | no |
+
+## `/api/intakes` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/intakes` | session + write rung | yes |
+| `GET` | `/api/v1/intakes/{id}` | session + write rung | yes |
+| `POST` | `/api/v1/intakes/{id}/replay` | session + write rung | yes |
 
 ## `/api/legal` family
 
@@ -292,6 +307,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/me/oauth/{kind}/refresh` | session | yes |
 | `POST` | `/api/me/password` | session | yes |
 | `GET` | `/api/me/pool` | session | yes |
+| `DELETE` | `/api/me/pool/entries/{pledge}` | session | yes |
 | `GET` | `/api/me/pool/history` | session | yes |
 | `DELETE` | `/api/me/pool/{source}/{ref}` | session | yes |
 | `PUT` | `/api/me/pool/{source}/{ref}` | session | yes |
@@ -414,6 +430,13 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/orgs/{id}/teams` | session | yes |
 | `PATCH` | `/api/orgs/{id}/teams/{team_id}/caps` | session | yes |
 | `GET` | `/api/orgs/{id}/usage` | session | yes |
+
+## `/api/pairs` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/pairs` | session + write rung | yes |
+| `POST` | `/api/v1/pairs/{id}/replay` | session + write rung | yes |
 
 ## `/api/parse` family
 
@@ -590,6 +613,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 |---|---|---|---|
 | `GET` | `/api/server/info` | open | yes |
 
+## `/api/sources` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/sources` | session | yes |
+
 ## `/api/teams` family
 
 | Method | Path | Auth | Spec |
@@ -621,6 +650,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `DELETE` | `/api/teams/{id}/bots/{bot}/pool-attachment` | session | yes |
 | `GET` | `/api/teams/{id}/bots/{bot}/pool-attachment` | session | yes |
 | `PUT` | `/api/teams/{id}/bots/{bot}/pool-attachment` | session | yes |
+| `POST` | `/api/teams/{id}/bots/{name}/triggers/from-invocation` | session | yes |
 | `GET` | `/api/teams/{id}/config-editor/shares` | session | yes |
 | `GET` | `/api/teams/{id}/config-editor/shares/{sid}/config` | session | yes |
 | `PATCH` | `/api/teams/{id}/config-editor/shares/{sid}/config` | session | yes |
@@ -662,6 +692,9 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `PATCH` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | session | yes |
 | `GET` | `/api/teams/{id}/forge/repos` | session | yes |
 | `POST` | `/api/teams/{id}/forge/repos` | session | yes |
+| `GET` | `/api/teams/{id}/intakes` | session | yes |
+| `GET` | `/api/teams/{id}/intakes/{sub}` | session | yes |
+| `POST` | `/api/teams/{id}/intakes/{sub}/replay` | session | yes |
 | `GET` | `/api/teams/{id}/invitations` | session | yes |
 | `POST` | `/api/teams/{id}/invitations` | session | yes |
 | `DELETE` | `/api/teams/{id}/invitations/{invite_id}` | session | yes |
@@ -676,6 +709,8 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/teams/{id}/oauth/{kind}/authorize/start` | session | yes |
 | `POST` | `/api/teams/{id}/oauth/{kind}/credentials` | session | yes |
 | `POST` | `/api/teams/{id}/oauth/{kind}/refresh` | session | yes |
+| `GET` | `/api/teams/{id}/pairs` | session | yes |
+| `POST` | `/api/teams/{id}/pairs/{sub}/replay` | session | yes |
 | `GET` | `/api/teams/{id}/plugin-sources` | session | yes |
 | `POST` | `/api/teams/{id}/plugin-sources` | session | yes |
 | `DELETE` | `/api/teams/{id}/plugin-sources/{source_id}` | session | yes |
@@ -701,7 +736,14 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/teams/{id}/secrets` | session | yes |
 | `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | session | yes |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | session | yes |
+| `GET` | `/api/teams/{id}/sources` | session | yes |
 | `POST` | `/api/teams/{id}/status` | session | yes |
+| `GET` | `/api/teams/{id}/triggers` | session | yes |
+| `POST` | `/api/teams/{id}/triggers` | session | yes |
+| `POST` | `/api/teams/{id}/triggers/preview` | session | yes |
+| `DELETE` | `/api/teams/{id}/triggers/{sub}` | session | yes |
+| `GET` | `/api/teams/{id}/triggers/{sub}` | session | yes |
+| `PUT` | `/api/teams/{id}/triggers/{sub}` | session | yes |
 | `GET` | `/api/teams/{id}/webhooks` | session | yes |
 | `POST` | `/api/teams/{id}/webhooks` | session | yes |
 | `DELETE` | `/api/teams/{id}/webhooks/{webhook_id}` | session | yes |
@@ -718,6 +760,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/triggers` | session + write rung | yes |
 | `POST` | `/api/v1/triggers/emit` | session + write rung | yes |
 | `GET` | `/api/v1/triggers/health` | session + write rung | yes |
+| `POST` | `/api/v1/triggers/preview` | session + write rung | yes |
 | `DELETE` | `/api/v1/triggers/{id}` | session + write rung | yes |
 | `GET` | `/api/v1/triggers/{id}` | session + write rung | yes |
 | `PUT` | `/api/v1/triggers/{id}` | session + write rung | yes |

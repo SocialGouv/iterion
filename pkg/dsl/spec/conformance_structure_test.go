@@ -30,6 +30,7 @@ var entryProbes = map[string]string{
 	"attachments":       "attachments:\n  %s\n",
 	"secrets":           "secrets:\n  %s\n",
 	"resources":         "workflow w:\n  resources:\n    %s\n",
+	"business_stores":   "workflow w:\n  business_stores:\n    %s\n",
 	"expr":              "compute c:\n  expr:\n    %s\n",
 	"params":            "tool t:\n  params:\n    %s\n",
 	"cursors":           "agent a:\n  cursors:\n    %s\n",
@@ -187,6 +188,14 @@ var entryWitnesses = map[string]struct {
 		},
 		refused: []string{"zz_k: 1", "zz_k: paid", "zz_k"},
 	},
+	"business_stores": {
+		accepted: []entryWitness{
+			{"zz_k:\n  kind: postgres", nil, []string{"zz_k", "postgres"}},
+			{"\"zz/k\":\n  namespace: \"org/accounting\"\n  required: false", nil, []string{"zz/k", "org/accounting", "false"}},
+			{"zz_k:", nil, []string{"zz_k"}},
+		},
+		refused: []string{"zz_k: 1", "zz_k: postgres", "zz_k", "1:\n  kind: postgres"},
+	},
 	"fallbacks": {
 		accepted: []entryWitness{
 			{"zz_k:\n  backend: claw", nil, []string{"zz_k", "claw"}},
@@ -323,6 +332,7 @@ func TestEntriesKeysAreWhatTheParserNames(t *testing.T) {
 		"attachments":       `"zz-k": file`,
 		"secrets":           `"zz-k": "v"`,
 		"resources":         `"zz-k": 1`,
+		"business_stores":   `"zz-k":`,
 		"expr":              `"zz-k": "1"`,
 		"params":            `"zz-k": "v"`,
 		"cursors":           `"zz-k": 1`,

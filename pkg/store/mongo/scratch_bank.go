@@ -15,27 +15,35 @@ var _ store.ScratchBankStore = (*Store)(nil)
 
 // scratchBanker is the blob client's streaming surface, or an error naming
 // a client that has none.
-func (s *Store) scratchBanker() (blob.ScratchBanker, error) {
-	b, ok := s.blob.(blob.ScratchBanker)
+func scratchBanker(objects blob.RunObjects) (blob.ScratchBanker, error) {
+	b, ok := objects.(blob.ScratchBanker)
 	if !ok {
-		return nil, fmt.Errorf("store/mongo: the blob client (%T) keeps no scratch bank", s.blob)
+		return nil, fmt.Errorf("store/mongo: the blob view (%T) keeps no scratch bank", objects)
 	}
 	return b, nil
 }
 
 func (s *Store) PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error {
-	b, err := s.scratchBanker()
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return err
+	}
+	b, err := scratchBanker(objects)
 	if err != nil {
 		return err
 	}
 	if err := b.PutScratchBank(ctx, runID, body, size); err != nil {
 		return fmt.Errorf("store/mongo: put scratch bank %s: %w", runID, err)
 	}
-	return nil
+	return s.checkRunObjects(ctx, runID)
 }
 
 func (s *Store) OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error) {
-	b, err := s.scratchBanker()
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return nil, runObjectsReadError(err)
+	}
+	b, err := scratchBanker(objects)
 	if err != nil {
 		return nil, err
 	}
@@ -50,12 +58,16 @@ func (s *Store) OpenScratchBank(ctx context.Context, runID string) (io.ReadClose
 }
 
 func (s *Store) DeleteScratchBank(ctx context.Context, runID string) error {
-	b, err := s.scratchBanker()
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return err
+	}
+	b, err := scratchBanker(objects)
 	if err != nil {
 		return err
 	}
 	if err := b.DeleteScratchBank(ctx, runID); err != nil {
 		return fmt.Errorf("store/mongo: delete scratch bank %s: %w", runID, err)
 	}
-	return nil
+	return s.checkRunObjects(ctx, runID)
 }

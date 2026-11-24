@@ -2,10 +2,13 @@ package delegate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
@@ -34,6 +37,42 @@ func codexConfig(task Task, webSearch string) map[string]string {
 	cfg := map[string]string{"web_search": webSearch}
 	maps.Copy(cfg, codexAmbientConfig(task))
 	return cfg
+}
+
+// codexConfiguredMCPServers lists the enabled MCP servers codex's own
+// configuration gives a spawn: the CLI's `mcp list --json` under the spawn's
+// environment (its CODEX_HOME) and in its working directory (a trusted
+// project's `.codex/config.toml`), so every layer codex reads is read by
+// codex.
+func codexConfiguredMCPServers(ctx context.Context, cli string, env map[string]string, workDir string) ([]string, error) {
+	listCtx, cancel := context.WithTimeout(ctx, codexWebSearchVersionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(listCtx, cli, "mcp", "list", "--json")
+	cmd.Dir = workDir
+	cmd.Env = os.Environ()
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		cmd.Env = append(cmd.Env, k+"="+env[k])
+	}
+	proc.SetWaitDelay(cmd, codexVersionDrainBound)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("delegate: codex: list the MCP servers its configuration starts (`%s mcp list --json`): %w", cli, err)
+	}
+	var servers []struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(out, &servers); err != nil {
+		return nil, fmt.Errorf("delegate: codex: read `mcp list --json`: %w", err)
+	}
+	var names []string
+	for _, s := range servers {
+		if s.Enabled {
+			names = append(names, s.Name)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
 // codexSpawnEnv is the environment of a node's codex spawns: the credential

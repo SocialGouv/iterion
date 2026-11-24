@@ -180,7 +180,7 @@ follow-up remains open.
 
 ## Addendum (2026-07-07) — v2 campaign scenarios are hand-authored by design
 
-The ADR-058 fleet rollout retired the `reviewer_gpt` nodes the
+The ADR-058 fleet rollout retired the `reviewer` nodes the
 feature-dev and docs-refresh scenarios pointed at. Both scenarios were
 swapped in the same commits as the bot conversions (atomic — the
 goldens gate never went red) to the surviving `campaign` node's
@@ -196,5 +196,5 @@ changes. This is the same provenance tier as the original 2026-05-29
 seeds (all four were hand-authored; see the deviation note above), so
 the gate's value is unchanged: schema drift on the contract the ENGINE
 converges on breaks the fixture loudly. `TestVerifySchema_RealBot`
-retargeted from `reviewer_gpt`/verdict_output to
+retargeted from `reviewer`/verdict_output to
 `campaign`/campaign_output in the same change.

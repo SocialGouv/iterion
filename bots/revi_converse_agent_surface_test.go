@@ -2,12 +2,16 @@ package bots
 
 import (
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 )
 
 // reviConverseAgent is revi-converse's converse_agent as the compiler reads
@@ -43,17 +47,55 @@ func TestReviConverseAgentHoldsTheShellAndTheFileReader(t *testing.T) {
 	}
 }
 
-// One answer is a loop of several tool calls: name the changed files, read
-// the diff, read the sources it cites, read the thread when the transcript
-// is missing. claw bounds an unnumbered tool loop at
-// model.DefaultClawToolMaxSteps, which a question needing a few source reads
-// outruns, so the node must name a bound that outlives it; 20 leaves room
-// for the reads a long question takes. Running short costs the answer some
-// grounding, not its publication: the draft is posted by the node after.
+// One answer is a loop of several tool calls — reads the SCOPE block
+// (converse_scope, the entry node) does not cover: surrounding code, the
+// sources a claim cites, the thread when the transcript is missing. claw
+// bounds an unnumbered tool loop at model.DefaultClawToolMaxSteps, which a
+// question needing a few source reads outruns, so the node names its own
+// bound: 20, the measured converse shape with the scope precomputed (M2a:
+// 13-14 steps on a small thread, 49-61 on a question the scope now answers
+// up front), kept inside the [20,24] window the cost plan re-cuts within —
+// a raise past 24 quietly re-inflates the per-question cost the bound
+// exists to cap. Running short costs the answer some grounding, never its
+// publication: the draft is posted by the node after, and whatever the
+// bound cut short rides converse_output.unchecked into the thread.
 func TestReviConverseAgentToolLoopOutlivesTheClawDefault(t *testing.T) {
-	const floor = 20
-	if got := reviConverseAgent(t).ToolMaxSteps; got < floor {
-		t.Errorf("converse_agent's tool_max_steps = %d, want >= %d — on claw the loop stops at %d steps, before the reply is verified", got, floor, model.DefaultClawToolMaxSteps)
+	const floor, ceiling = 20, 24
+	if got := reviConverseAgent(t).ToolMaxSteps; got < floor || got > ceiling {
+		t.Errorf("converse_agent's tool_max_steps = %d, want within [%d,%d] — below %d the reads outrun the loop (claw's default is %d), above %d the per-question cost cap quietly inflates", got, floor, ceiling, floor, model.DefaultClawToolMaxSteps, ceiling)
+	}
+}
+
+// The system prompt is the byte-stable half of the cross-run prefix (#3283
+// S3): the provider's prefix cache serves the next run from this one's
+// bytes, which cut at the first run-specific byte — a {{vars.*}} in the
+// system prompt IS that byte, on every run. The workspace path, the base
+// ref and every per-run fact live in the user message; the system prompt
+// carries the mission only. (The assembled-request byte comparison runs in
+// pkg/backend/model; this guard reads the template the way the author
+// wrote it, so a var that sneaks back in is named at its source.)
+func TestReviConverseSystemPromptCarriesNoRunSpecificText(t *testing.T) {
+	u := unittest.Whole(unit.LoadDir(filepath.Join(botsDir(t), "revi-converse", "main.bot")))
+	var systemBody string
+	for _, f := range u.Files {
+		if m := regexp.MustCompile(`(?s)prompt converse_system:
+(.*?)
+
+prompt `).FindSubmatch(f.Source); m != nil {
+			systemBody = string(m[1])
+			break
+		}
+	}
+	if systemBody == "" {
+		t.Fatal("converse_system not found in the bundle source")
+	}
+	if hits := regexp.MustCompile(`\{\{[^}]*\}\}`).FindAllString(systemBody, -1); len(hits) > 0 {
+		for _, hit := range hits {
+			t.Errorf("converse_system carries the template %s — run-specific bytes cut the cross-run prefix cache; move it to the user message", hit)
+		}
+	}
+	if !strings.Contains(systemBody, "SCOPE") {
+		t.Error("converse_system no longer teaches the precomputed SCOPE block")
 	}
 }
 

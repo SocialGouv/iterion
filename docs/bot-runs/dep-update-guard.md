@@ -7,6 +7,28 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-11-16 — 2.12.3: a mis-transcribed commit id no longer holds a good alignment red (buildkit-operator#65, live)
+
+- Status: **fixed, live pending.** On buildkit-operator#65 the `/vetty` run
+  `01a1e07f` ended `hold_lost_alignment` on a push git itself certified: the
+  commit agent dropped two hex digits of the pushed sha (40 hex became 38),
+  and `commit_probe` refused every id that does not resolve to the workspace
+  head ("the commit report names …, which is not the workspace head"). The
+  synchronize relaunch reread git and caught it, but a PR without that
+  relaunch stays red until a manual `/vetty`.
+- Class: the refusal decided from a value the LLM transcribed. An id that
+  cannot be a commit id in any repository — not 40 hex for sha-1, not 64 for
+  sha-256 — is a transcription, not a fact: `commit_probe` now sets it aside
+  like a report without a commit id, and the parents check + `git ls-remote`
+  remain the evidence. A full-width id the workspace cannot resolve names a
+  commit the workspace does not hold, and still refuses — the foreign-report
+  tripwire keeps its red.
+- Proof: three set-aside cases (the live 38-hex shape, 39 and 20 hex) and two
+  refusal cases (40 and 64 hex naming no commit the workspace holds) in the
+  commit_probe suite; the mutation restoring the strict refusal turns exactly
+  the three set-aside cases red with the live message, the bot file restored
+  byte-identical.
+
 ## 2026-11-15 — 2.12.2: the baseline in a repository that ignores the mirror (buildkit-operator#65, live)
 
 - Status: **fixed, live pending.** 2.12.1 was rolled to iterion.cloud (v7.1.0)

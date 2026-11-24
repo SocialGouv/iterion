@@ -107,6 +107,19 @@ func (s *scriptedHolderLeases) Holder(context.Context, string) (lease.Holding, b
 	return s.holding, s.held, s.err
 }
 
+// cancelingHolderLeases abandons the request at the lease read, after the
+// context-aware run store has admitted it. This isolates the no-false-alarm
+// assertion from a correctly refused, already-canceled run lookup.
+type cancelingHolderLeases struct {
+	lease.Store
+	cancel context.CancelFunc
+}
+
+func (s *cancelingHolderLeases) Holder(ctx context.Context, _ string) (lease.Holding, bool, error) {
+	s.cancel()
+	return lease.Holding{}, false, ctx.Err()
+}
+
 // A lease past its expiry is a holder nobody replaced: the sweep is dead for
 // the whole fleet, and the answer says so wherever it is read — not only on
 // the replica that used to hold it.
@@ -179,11 +192,14 @@ func TestAssistantWatchHealth_AnUnreadableOrMissingStoreIsSaid(t *testing.T) {
 		t.Fatalf("the missing store was not logged: %q", olog.String())
 	}
 
-	quiet, qrs, qlog := electedWorker(t, lease.NewMemoryStore(), "quiet")
-	seedHealthRun(t, qrs, "run-1")
 	gone, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
+	quiet, qrs, qlog := electedWorker(t, &cancelingHolderLeases{Store: lease.NewMemoryStore(), cancel: cancel}, "quiet")
+	seedHealthRun(t, qrs, "run-1")
 	out = watchHealthWith(t, quiet, "run-1", gone)
+	if !errors.Is(gone.Err(), context.Canceled) {
+		t.Fatal("lease read did not cancel the request")
+	}
 	if out.Coordinator.HolderState != assistantWatchHolderUnreadable {
 		t.Fatalf("answer on an abandoned request = %+v; want holder_state unreadable", out.Coordinator)
 	}

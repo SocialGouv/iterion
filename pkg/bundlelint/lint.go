@@ -78,6 +78,16 @@ const (
 	// deliver, which is exactly the inert-declared-gate class the fallback
 	// chain refuses under C176.
 	DiagChatHostEventModeMismatch Code = "C212"
+	// DiagConnectorVarUnknown: an invocation connector.vars key is not a
+	// declared workflow var, so the value the binding computes for it is
+	// dropped at launch.
+	DiagConnectorVarUnknown Code = "C214"
+	// DiagInvocationModeUnsupported: an invocation's mode parses but no
+	// effect honours it (bundle.ResolveMode) — `deliver` before #3136, `board`
+	// on a connector invocation — so every path refuses the invocation
+	// instead of launching it. A warning: the manifest stays valid for the
+	// build that will honour the mode.
+	DiagInvocationModeUnsupported Code = "C215"
 
 	// DiagForgeSecretUnknown: the forge secret name the bot expects to be
 	// bound has no matching declaration in the main.bot secrets: block.
@@ -350,6 +360,7 @@ func CheckConsistency(in Input) []Diag {
 	if m != nil {
 		checkContractManifest(&diags, m, in.Workflow)
 		checkVarMaps(&diags, m, in.Workflow)
+		checkInvocationModes(&diags, m)
 		checkChatSurface(&diags, m, in.Workflow)
 		checkForgeSecret(&diags, m, in.Workflow)
 		checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
@@ -536,6 +547,9 @@ func checkVarMaps(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow) {
 		if inv.Schedule != nil {
 			checkVarMap(diags, w, inv.Schedule.DefaultVars, DiagScheduleDefaultVarUnknown, base+".schedule.default_vars")
 		}
+		if inv.Connector != nil {
+			checkVarMap(diags, w, inv.Connector.Vars, DiagConnectorVarUnknown, base+".connector.vars")
+		}
 		if inv.ArgsVar != "" && !varDeclared(w, inv.ArgsVar) {
 			*diags = append(*diags, Diag{
 				Code:     DiagArgsVarUnknown,
@@ -543,6 +557,22 @@ func checkVarMaps(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow) {
 				Field:    base + ".args_var",
 				Message:  fmt.Sprintf("args_var %q is not a declared workflow var; the trigger payload will be dropped at runtime", inv.ArgsVar),
 				Hint:     "declare it in the workflow vars: block or fix the name",
+			})
+		}
+	}
+}
+
+// checkInvocationModes warns on each invocation whose mode no effect
+// honours, read through bundle.ResolveMode like every path that acts on it.
+func checkInvocationModes(diags *[]Diag, m *bundle.Manifest) {
+	for i, inv := range m.Invocations {
+		if _, err := inv.EffectiveMode(); err != nil {
+			*diags = append(*diags, Diag{
+				Code:     DiagInvocationModeUnsupported,
+				Severity: SeverityWarning,
+				Field:    fmt.Sprintf("invocations[%d].mode", i),
+				Message:  fmt.Sprintf("%v; every trigger path refuses this invocation instead of launching it", err),
+				Hint:     "use mode: direct (or board where the kind allows it) until this build honours the mode",
 			})
 		}
 	}

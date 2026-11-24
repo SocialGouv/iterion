@@ -167,7 +167,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
 | `session_slot` | ident | Named durable session slot; requires session: persist; must not be named like another node (C314) |
-| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
+| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
@@ -187,7 +187,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
 | `codemode` | one of `on`, `off`, or a block → [codemode](dsl-properties.md#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
-| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
+| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
 | `deny` | string list | Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
@@ -349,6 +349,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](dsl-properties.md#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](dsl-properties.md#attachments) | Workflow-scoped attachments |
+| `business_stores` | block → [business_stores](dsl-properties.md#business_stores) | Expected business-store identities, normalized at launch and inherited by children |
 | `budget` | block → [budget](dsl-properties.md#budget) | Run caps, each overridable by the matching run flag |
 | `resources` | block → [resources](dsl-properties.md#resources) | Named semaphores and pools nodes lease with needs: |
 | `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the run |

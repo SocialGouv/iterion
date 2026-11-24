@@ -106,7 +106,7 @@ queued → running → paused_waiting_human | paused_operator
 | `running` | executing | — | no |
 | `paused_waiting_human` | parked on a human node or an `ask_user` | **yes**, with answers | host-stamped |
 | `paused_operator` | parked by the operator | **yes** | host-stamped |
-| `failed_resumable` | transient/recoverable failure, checkpoint kept | **yes** | host-stamped |
+| `failed_resumable` | a failure with its checkpoint kept — transient or not: the `failure_code` says which | **yes** | host-stamped |
 | `failed` | reached a `fail` node, or bootstrap died before a checkpoint | no | **yes only when `rewindable:true`** |
 | `cancelled` | interrupted; the checkpoint is preserved | **yes** | host-stamped |
 | `finished` | reached `done` | no | no |
@@ -177,6 +177,7 @@ explicit operator decision first.
 | Signature | What it is | Continuation |
 |---|---|---|
 | rate limit, timeout, context cancelled, `server drained` | transient | resume, unchanged |
+| `TOOL_FAILED_PERMANENT` after a `node_recovery` with `strategy: identical_tool_failure` | a tool node's command failed the same way several executions in a row (same exit status, same output): nothing re-runs it automatically | read the command's output in the event; a resume re-executes the node ONCE — propose it only when what it failed on is settled (the command or its inputs fixed, or the outside cause gone) |
 | the run reached a `fail` node | the workflow DECIDED to stop | read why it routed there; a resume replays the same decision |
 | a node's script fails on a missing input | the producer upstream did not write it | rewind to the producing node, then resume |
 | a node fails on the code it runs | a real defect | repair through the active authoring perimeter when available; delegate only across a real capability boundary; then recover the root |
@@ -309,8 +310,9 @@ the raw document from transformed intermediate values in the diagnosis.
 ## Runtime error codes
 
 `NODE_NOT_FOUND` · `NO_OUTGOING_EDGE` · `LOOP_EXHAUSTED` ·
-`BUDGET_EXCEEDED` · `EXECUTION_FAILED` · `WORKSPACE_SAFETY` · `TIMEOUT` ·
-`CANCELLED` · `JOIN_FAILED` · `RESUME_INVALID`
+`BUDGET_EXCEEDED` · `EXECUTION_FAILED` · `TOOL_FAILED_PERMANENT` ·
+`WORKSPACE_SAFETY` · `TIMEOUT` · `CANCELLED` · `JOIN_FAILED` ·
+`RESUME_INVALID`
 
 Each carries a `NodeID` and usually a `Hint` — read the hint before
 theorising.

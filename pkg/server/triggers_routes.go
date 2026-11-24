@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -154,6 +155,7 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("PUT /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleUpdateTrigger)))
 	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleDeleteTrigger)))
 	s.mux.Handle("POST /api/v1/triggers/emit", s.triggerWriteAuth(http.HandlerFunc(s.handleEmitTrigger)))
+	s.mux.Handle("POST /api/v1/triggers/preview", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggerPreview)))
 	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
 	s.mux.Handle("GET /api/v1/triggers/health", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggersHealth)))
 }
@@ -174,6 +176,9 @@ func (s *Server) handleTriggersHealth(w http.ResponseWriter, r *http.Request) {
 // JWT's active team in cloud mode, "" in the local single-host scope (where
 // the identity carries no team).
 func (s *Server) triggerTenant(r *http.Request) string {
+	if team, ok := teamScopedTenant(r.Context()); ok {
+		return team
+	}
 	id, _ := auth.FromContext(r.Context())
 	return id.TeamID
 }
@@ -184,6 +189,9 @@ func (s *Server) triggerTenant(r *http.Request) string {
 type triggerFromInvocationReq struct {
 	Index int    `json:"index"`
 	Cron  string `json:"cron,omitempty"`
+	// ConnectionID is the connection a kind=connector invocation is bound
+	// to: the manifest suggests, the operator binds (ADR-168 §6).
+	ConnectionID string `json:"connection_id,omitempty"`
 }
 
 // handleTriggerFromInvocation is the bot home's one-click "enable this
@@ -241,8 +249,17 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		inv.Schedule = &schedule
 	}
 
+	// A mode no effect honours is refused typed before anything is built
+	// (bundle.ResolveMode) — the builders below derive nothing from it.
+	if _, err := inv.EffectiveMode(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	now := time.Now().UTC()
-	id := uuid.NewString()
+	// The id is the invocation's own (trigger.DerivedSubscriptionID): the
+	// row a local reconciliation derives from the same invocation is this
+	// one, and two enables of one invocation meet on it.
+	id := trigger.DerivedSubscriptionID(tenant, entry.Name, inv.Kind, trigger.DerivedInvocationKey(entry.Invocations, req.Index), "")
 	var (
 		sub     trigger.Subscription
 		derived bool
@@ -268,6 +285,37 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 				errors.New("keepalive invocation has no valid interval — check the keepalive: block"))
 			return
 		}
+	case bundle.InvocationKindConnector:
+		if inv.Connector == nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("a connector invocation declares its connector: block"))
+			return
+		}
+		// One connector invocation, one connection: the id is theirs.
+		sub = trigger.Subscription{
+			ID:           trigger.DerivedSubscriptionID(tenant, entry.Name, inv.Kind, trigger.DerivedInvocationKey(entry.Invocations, req.Index), req.ConnectionID),
+			TenantID:     tenant,
+			BotID:        entry.Name,
+			Invocation:   inv.Kind,
+			Mode:         inv.Mode,
+			Origin:       botHomeTriggerOrigin,
+			Enabled:      true,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			ConnectionID: req.ConnectionID,
+			TriggerID:    inv.Connector.Trigger,
+			Filters:      copyFilterValues(inv.Connector.Filters),
+			VarMap:       maps.Clone(inv.Connector.Vars),
+		}
+		judged, status, err := s.validateConnectorSubscription(r.Context(), tenant, sub)
+		if err != nil {
+			dispatcher.WriteErr(w, status, err)
+			return
+		}
+		sub = judged
+		if status, err := s.activatePolledSubscription(r.Context(), tenant, nil, &sub); err != nil {
+			dispatcher.WriteErr(w, status, err)
+			return
+		}
 	default:
 		dispatcher.WriteErr(w, http.StatusBadRequest,
 			fmt.Errorf("invocation kind %q is not enabled from here — wire it through the forge integration flow", inv.Kind))
@@ -280,25 +328,45 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	for _, e := range existing {
-		if e.Origin == botHomeTriggerOrigin && e.Invocation == sub.Invocation {
-			dispatcher.WriteJSON(w, http.StatusConflict, map[string]any{
-				"error":           fmt.Sprintf("a %s trigger from this bot's manifest already exists", sub.Invocation),
-				"subscription_id": e.ID,
-			})
+		// A row enabled before ids were derived holds a random id: it still
+		// answers for its kind.
+		if e.Origin == botHomeTriggerOrigin && e.Invocation == sub.Invocation && !trigger.IsDerivedID(e.ID) {
+			writeTriggerExists(w, sub.Invocation, e.ID)
 			return
 		}
 	}
-	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
+	// Enabling is the operator's explicit gesture: it lifts the tombstone an
+	// earlier delete of this invocation's row left.
+	if err := s.cfg.TriggerStore.ClearTombstone(r.Context(), tenant, sub.ID); err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	created, err := s.cfg.TriggerStore.EnsureDerived(r.Context(), sub)
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !created {
+		writeTriggerExists(w, sub.Invocation, sub.ID)
+		return
+	}
+	s.wakePolledSubscription(r.Context(), tenant, nil, sub)
 	dispatcher.WriteJSON(w, http.StatusCreated, sub)
+}
+
+// writeTriggerExists is the 409 of an invocation already enabled, naming
+// the row that answers for it.
+func writeTriggerExists(w http.ResponseWriter, kind bundle.InvocationKind, id string) {
+	dispatcher.WriteJSON(w, http.StatusConflict, map[string]any{
+		"error":           fmt.Sprintf("a %s trigger from this bot's manifest already exists", kind),
+		"subscription_id": id,
+	})
 }
 
 // botHomeTriggerOrigin marks subscriptions created by the bot home's
 // one-click invocation enablement — the dedup key distinguishing them
 // from hand-authored ("operator") subscriptions.
-const botHomeTriggerOrigin = "bot-home"
+const botHomeTriggerOrigin = trigger.BotHomeOrigin
 
 // maxEmitVarsBytes caps the cumulative size of the custom-emit Vars map.
 // The endpoint is authenticated, but a buggy/abusive integration could
@@ -455,6 +523,23 @@ type triggerSubscriptionReq struct {
 	Guard        *string `json:"guard,omitempty"`
 	GuardTimeout *string `json:"guard_timeout,omitempty"`
 	GuardVar     *string `json:"guard_var,omitempty"`
+
+	// The connector binding (invocation "connector", ADR-168 §6), validated
+	// at save against the connection, its package and the bot. The match a
+	// connector subscription listens on is the server's, never the request's.
+	ConnectionID string `json:"connection_id,omitempty"`
+	TriggerID    string `json:"trigger_id,omitempty"`
+	// Poller is derived from the query (PollQuery): a request may send
+	// back the one a read answered, and is refused naming another.
+	Poller string `json:"poller,omitempty"`
+	// PollQuery is a polled trigger's query values; Backfill how many of
+	// its poller's past items the subscription receives at activation.
+	PollQuery map[string]string   `json:"poll_query,omitempty"`
+	Backfill  int                 `json:"backfill,omitempty"`
+	Filters   map[string][]string `json:"filters,omitempty"`
+	When      string              `json:"when,omitempty"`
+	VarMap    map[string]string   `json:"var_map,omitempty"`
+	NoLiveRun string              `json:"no_live_run,omitempty"`
 }
 
 // guardOf returns the guard this request asks for, and whether it says
@@ -543,6 +628,22 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, req)
+	// A mode no effect honours (bundle.ResolveMode) never lands: every
+	// firing of such a row would be refused.
+	if _, err := sub.EffectiveMode(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
+	judged, status, err := s.judgeConnectorEdit(r.Context(), tenant, nil, sub)
+	if err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
+	sub = judged
+	if err := checkRequestedPoller(req.Poller, sub); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// Who may pin before what may be pinned: a create that pins anything is
 	// a team admin's credential decision.
 	if !s.authorizeTriggerCredentials(w, r, tenant, nil, sub) {
@@ -569,10 +670,24 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
+	// Last, once nothing else refuses the save: the poller it ensures is
+	// written only for a subscription that lands (or meets a duplicate,
+	// whose poller is the same one).
+	if status, err := s.activatePolledSubscription(r.Context(), tenant, nil, &sub); err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
 	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
+		// A duplicate connector binding is the request's, not the server's:
+		// one bot listening to one trigger on one connection fires once.
+		if errors.Is(err, trigger.ErrDuplicateConnectorBinding) {
+			dispatcher.WriteErr(w, http.StatusConflict, err)
+			return
+		}
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, nil, sub)
 	// The pins just landed; close the born-mid-delete window before the
 	// answer — reconcileLandedPins sweeps a record revoked between this
 	// write's validation and its landing, the row the delete's sweep never
@@ -628,6 +743,27 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := applyTriggerReq(cur, req)
+	// A mode the edit CHANGES is judged, not one it carries back: the studio
+	// builds its payload from the stored row, so a row stored with a mode no
+	// effect honours must still be pausable and mendable.
+	if next.Mode != cur.Mode || next.Invocation != cur.Invocation {
+		if _, err := next.EffectiveMode(); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	// A connector binding the edit changes is judged again; a pause or a
+	// pin is not (judgeConnectorEdit).
+	judged, status, err := s.judgeConnectorEdit(r.Context(), tenant, &cur, next)
+	if err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
+	next = judged
+	if err := checkRequestedPoller(req.Poller, next); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// Who may pin before what may be pinned, judged on the row the edit
 	// would store against the row it read: changing a pin, or what a pinned
 	// subscription launches, is a team admin's credential decision; pausing
@@ -660,6 +796,10 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if status, err := s.activatePolledSubscription(r.Context(), tenant, &cur, &next); err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
 	next.UpdatedAt = time.Now().UTC()
 	// Update commits against the version this request read. A write that
 	// landed in between — a pin sweep's clear most importantly: a swept pin
@@ -674,6 +814,7 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, &cur, next)
 	// Same closure as the create route: the landed pins are re-checked
 	// against their records — a pin that validated while its record lived
 	// but landed after the record's delete sweep listed would otherwise
@@ -706,6 +847,13 @@ func (s *Server) handleDeleteTrigger(w http.ResponseWriter, r *http.Request) {
 	if err == nil && cur.TenantID != s.triggerTenant(r) {
 		err = trigger.ErrSubscriptionNotFound
 	}
+	// An operator deleting a row derived from a manifest invocation means
+	// it: the tombstone, written before the delete, keeps every later
+	// reconciliation from deriving it again until the operator re-enables
+	// the invocation.
+	if err == nil && trigger.IsDerivedID(cur.ID) {
+		err = s.cfg.TriggerStore.Tombstone(r.Context(), trigger.Tombstone{ID: cur.ID, TenantID: cur.TenantID, DeletedAt: time.Now().UTC()})
+	}
 	if err == nil {
 		err = s.cfg.TriggerStore.Delete(r.Context(), r.PathValue("id"))
 	}
@@ -731,6 +879,14 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	}
 	base.Mode = bundle.ExecutionMode(req.Mode)
 	base.Match = req.Match
+	base.ConnectionID = req.ConnectionID
+	base.TriggerID = req.TriggerID
+	base.PollQuery = req.PollQuery
+	base.Backfill = req.Backfill
+	base.Filters = req.Filters
+	base.When = req.When
+	base.VarMap = req.VarMap
+	base.NoLiveRun = req.NoLiveRun
 	base.Vars = req.Vars
 	base.ArgsVar = req.ArgsVar
 	base.Cron = req.Cron

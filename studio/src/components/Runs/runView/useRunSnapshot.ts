@@ -140,6 +140,10 @@ export function useRunSnapshot(runId: string | null): RunSnapshotHandle {
       // Only a run we still expect to produce events; a settled run
       // (terminal, paused, resumable) has nothing to correct here.
       if (status !== "running") return;
+      // A lost socket's view keeps the original run: the ID may now name
+      // its successor, so there is nothing to poll (the store drops a
+      // same-ID snapshot in that state anyway).
+      if (st.wsState === "lost") return;
       const evs = st.events;
       const lastTs = evs.length
         ? Date.parse(evs[evs.length - 1]!.timestamp)

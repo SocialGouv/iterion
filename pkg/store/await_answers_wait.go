@@ -26,16 +26,15 @@ func ValidateAwaitAnswersWait(token string, wait *AwaitAnswersWait) error {
 	return nil
 }
 
-func (s *FilesystemRunStore) SetAwaitAnswersWait(_ context.Context, runID, token string, wait *AwaitAnswersWait) error {
+func (s *FilesystemRunStore) SetAwaitAnswersWait(ctx context.Context, runID, token string, wait *AwaitAnswersWait) error {
 	if err := ValidateAwaitAnswersWait(token, wait); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	run, err := s.loadRunRaw(runID)
+	run, unlock, err := s.lockExistingRunMetadata(ctx, runID)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	if wait != nil {
 		if run.Status != RunStatusRunning {
 			return fmt.Errorf("cannot park await_answers on run %s in state %s", runID, run.Status)
@@ -48,5 +47,5 @@ func (s *FilesystemRunStore) SetAwaitAnswersWait(_ context.Context, runID, token
 		delete(run.AwaitAnswersWaits, token)
 	}
 	run.UpdatedAt = time.Now().UTC()
-	return s.writeRun(run)
+	return s.writeRunLockedContext(ctx, run, false, nil)
 }

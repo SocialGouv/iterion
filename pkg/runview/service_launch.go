@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
@@ -183,6 +184,17 @@ var ErrInProcessCannotDescribe = errors.New("runview: refusing a launch the in-p
 // queued cloud run whose submission the publisher completes. A store that
 // cannot answer is an error, never "no run" — read as absence, it would launch
 // a second run beside one it could not see.
+// AnswerSubmission answers a keyed launch from the run its key already
+// derived, when that run was handed on (ClassifySubmission): the caller
+// returns that run instead of spending a launch gate on it again. nil, nil
+// means the key's launch is still owed. spec.RunID is set to the key's run id.
+func (s *Service) AnswerSubmission(parent context.Context, spec *LaunchSpec) (*LaunchResult, error) {
+	if spec.SubmissionKey == "" {
+		return nil, errors.New("runview: AnswerSubmission needs a submission key")
+	}
+	return s.answerSubmission(parent, spec)
+}
+
 func (s *Service) answerSubmission(parent context.Context, spec *LaunchSpec) (*LaunchResult, error) {
 	tenantID, _ := store.TenantFromContext(parent)
 	runID := SubmissionRunID(tenantID, spec.SubmissionKey)
@@ -279,6 +291,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
 		return nil, fmt.Errorf("%w (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", ErrInProcessCannotDescribe, string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
 	}
+	// A pin rides the same refusal: only the publisher lane runs the program
+	// its compile read (ErrLaunchPinUnsupported says why), and this is the one
+	// place every other lane — detached, parked behind the pipeline cap, in
+	// process — is still ahead, before a compile, a run document or a queue
+	// slot exists.
+	if spec.ExpectProgramHash != "" && s.publisher == nil {
+		return nil, ErrLaunchPinUnsupported
+	}
 	// The trust is settled: the launch is published under it only on an
 	// admission that judged it (ADR-162 decision 5). The one choke point every
 	// launch surface crosses, so a surface whose gate judged the request
@@ -308,6 +328,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
+	}
+	// Same pre-flight as the launch's other string overrides: a typo would
+	// read as "inherit" in-process while every other surface refuses it.
+	if !ir.ValidCodemode(spec.Codemode) {
+		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
+	}
+	if field := ir.CodemodeBoundsNegativeField(spec.CodemodeBounds); field != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: bound must be non-negative", field)
 	}
 	// A keyed submission's id was derived and its run judged by
 	// answerSubmission — no run, or a queued cloud run this launch
@@ -348,6 +376,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// the launch surface's answer for the pre-flight checks (#1800).
 		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
 		if err != nil {
+			return nil, err
+		}
+		if err := checkPinnedProgram(spec, cs); err != nil {
 			return nil, err
 		}
 		// Fail before persisting/publishing a queued run. The runner repeats
@@ -423,6 +454,16 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// queued doc (surfaced on the board's TODO lane) and started later by
 	// the scheduler when a slot frees.
 	if spec.ParentRunID == "" && s.pipelineQueue != nil {
+		// A queued document is already a launch commitment. Resolve before
+		// admitting it; the scheduler revalidates the source when it starts.
+		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
+		if err != nil {
+			return nil, err
+		}
+		spec.ExecutionContext, err = s.resolveExecutionContext(parent, runID, spec, wf, cs.Hash)
+		if err != nil {
+			return nil, err
+		}
 		admitted, pos := s.pipelineQueue.admitOrEnqueue(runID, spec)
 		if !admitted {
 			return s.enqueuePipeline(parent, runID, spec, pos)
@@ -544,18 +585,6 @@ func (s *Service) launchSourceFacts(ctx context.Context, parentRunID, delegation
 	return out, pool, nil
 }
 
-// hookEventObservers builds ExecutorSpec.EventObservers for every
-// in-process execution (launch AND resume): the caller's extra observers
-// plus the broker. Backend-hook events (assistant_text, tool_*, llm_*)
-// never fire the engine's observer, so without the broker here a
-// declared supervisor observing via ObserveRun — and any live broker
-// subscriber of an in-process run — is blind to the agent's own words.
-// Subscribers dedup by Seq, and the two event sets are disjoint, so
-// nothing arrives twice.
-func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Event) {
-	return append(append([]func(store.Event){}, extra...), s.broker.Publish)
-}
-
 // foldAndScreen folds the resolved routing policy's override cells under
 // the launch's own rows, refuses the (backend, provider) pair the
 // per-field composition can assemble from two entries (#2637) and the
@@ -623,7 +652,49 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 		return nil, err
 	}
 	warnings = append(warnings, screenWarnings...)
+	warnings = append(warnings, codemodeLaunchWarnings(wf, spec.Codemode, spec.CodemodeBounds)...)
 	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
+}
+
+// codemodeLaunchWarnings is the launch-time half of the two compile
+// diagnostics the authored surface already carries: C348 (bounds beside an
+// off) and C347 (bounds above the ceiling). The launch rung can produce both
+// shapes, the launch is where the operator is looking, and both warn rather
+// than refuse — philosophy 1 — because the runtime still enforces the truth:
+// an off installs no tool, and Clamp serves the ceiling with an OnClamp
+// report.
+// firstNonEmpty is the resume's re-state-over-replay rule for the codemode
+// MODE: what the caller expressed, else what the doc carries.
+func firstNonEmpty(restated, replayed string) string {
+	if restated != "" {
+		return restated
+	}
+	return replayed
+}
+
+func codemodeLaunchWarnings(wf *ir.Workflow, codemode string, bounds *ir.CodemodeBounds) []string {
+	var out []string
+	// The EFFECTIVE mode decides both warnings, resolved through the same
+	// resolver the dispatch reads so the spellings cannot drift ("OFF",
+	// " off " warn exactly like "off"): the launch's choice where it made
+	// one, else the authored ladder over the whole workflow. Bounds are
+	// inert when no program can ever run — whether the off came from the
+	// launch or from the author — and a ceiling warning about bounds no
+	// child will ever carry is noise, so it stays behind the same gate.
+	effectiveOn := false
+	switch norm := ir.ResolveCodemode(codemode, "", ""); norm.Source {
+	case ir.CodemodeFromRun:
+		effectiveOn = norm.On
+	default:
+		effectiveOn = ir.CodemodeOnSomewhere(wf)
+	}
+	if ir.CodemodeBoundsSet(bounds) && !effectiveOn {
+		out = append(out, "codemode: the launch set bounds but no program runs — the mode is off (launch or authored), so the bounds are inert (C348 is the compile-time twin)")
+	}
+	if over := ir.CodemodeBoundsAboveCeiling(bounds); len(over) > 0 && effectiveOn {
+		out = append(out, fmt.Sprintf("codemode: the launch's bounds exceed the platform ceiling (%s) — where a program runs, it runs at the ceiling and the clamp report says so (C347 is the compile-time twin)", strings.Join(over, "; ")))
+	}
+	return out
 }
 
 // foldAndScreenLaunch is foldAndScreen for a launch of its own rows — the
@@ -647,7 +718,7 @@ func foldAndScreenLaunch(wf *ir.Workflow, spec *LaunchSpec, runBackend string) (
 // fresh running doc (the normal launch path); false starts against an
 // existing queued doc (the engine's runResolveDoc transitions it
 // queued→running), used when the concurrency gate deferred the launch.
-func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
+func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (result *LaunchResult, returnErr error) {
 	// The in-process engine roots at the effective workdir (the launch's
 	// override, else the service root) — the same directory the plugin
 	// `{{workspace}}` placeholders resolve against at compile time,
@@ -694,83 +765,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		return nil, err
 	}
 
-	_, runLogger := s.prepareRunLog(runID)
-
-	// The connector catalog an `action:` node resolves through, on the same
-	// terms as the CLI: without it the same `.bot` runs from `iterion run` and
-	// fails here at its first action node.
-	//
-	// The launch's own trust decides what those nodes may do: the refusal
-	// above keeps an untrusted launch off this path entirely while nothing
-	// persists the marker, and the resolver refuses a mutating action for one
-	// that ever reaches it (#1802).
-	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir, connection.TrustOfRun(spec.Trust))
-	if err != nil {
-		s.dropRunLog(runID)
-		return nil, err
+	ctxContract, contextErr := s.resolveExecutionContext(parent, runID, spec, wf, hash)
+	if contextErr != nil {
+		return nil, contextErr
 	}
-
-	// LaunchSpec.ExtraObservers (ADR-046) reach the run through TWO
-	// disjoint seams — WITHOUT wrapping the store (a wrapper would shadow
-	// the concrete FilesystemRunStore's optional capabilities against the
-	// PlanWriter / RunFilesStore / … type-probes the executor + sandbox
-	// run). Backend-hook events (the high-frequency tool stream) fire the
-	// observers via ExecutorSpec.EventObservers; engine events fire them
-	// via runtime.WithEventObserver (wired in engineOptions from
-	// launchExtras.observers). The raw store keeps every capability.
-	executor, err := BuildExecutor(ExecutorSpec{
-		// The launch's identity, detached from its cancellation: the
-		// executor's store calls outlive the request and are tenant-scoped,
-		// and on the Mongo store a tenantless one panics (see spawnRun).
-		Ctx:            context.WithoutCancel(parent),
-		Workflow:       wf,
-		Vars:           spec.Vars,
-		Store:          s.store,
-		EventObservers: s.hookEventObservers(spec.ExtraObservers),
-		RunID:          runID,
-		Logger:         runLogger,
-		StoreDir:       s.storeDir,
-		WorkDir:        workDir,
-		Inbox:          s.inboxBinder(),
-		AsyncAsk:       s.asyncAskBinder(),
-		Backend:        spec.Backend,
-		// The engine of a LAUNCH receives this default and no
-		// CLI-strength override (ex.sandboxOverride is set on the resume
-		// path only), so these are its exact tiers.
-		SandboxDefault:    s.sandboxDefault,
-		SandboxTiersKnown: true,
-		// The tier the launch resolver served (#1959): the MCP start
-		// prediction and the fallback screen must judge the floored
-		// workflow, or a team bot's `sandbox: none` would start its
-		// MCP servers beside the launcher for a run that sandboxes.
-		BotSourceTier:  spec.BotSourceTier,
-		ModelOverrides: toModelOverrides(spec.ModelOverrides),
-		RunFallback:    toRunFallback(spec.Fallback),
-		LLMProviders:   spec.LLMRoutePolicy.ProviderAllowlist(),
-		// Resolved, not taken raw: spec.BotID is empty whenever the caller
-		// launched by path (the studio's own file picker), and the executor
-		// would then fall back to the workflow name — while a RESUME of that
-		// same run derives the id from the path and lands on a different
-		// memory space. Same rule on both sides, so the two cannot diverge.
-		BotID:           ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
-		BoardRegister:   s.boardRegister,
-		BoardRevoke:     s.boardRevoke,
-		Compress:        spec.Compress,
-		AutoMemory:      spec.AutoMemory,
-		AmbientContext:  spec.AmbientContext,
-		Permission:      spec.Permission,
-		LocalSecrets:    s.localSecrets,
-		LocalSealer:     s.localSealer,
-		Connectors:      connectors,
-		ConnectorClient: connectorClient,
-		UsageCapSource:  s.usageCapSource,
-	})
-	if err != nil {
-		s.dropRunLog(runID)
-		return nil, err
-	}
-	executor.SetRunExtraEnv(s.runEnv)
-
 	// Fold the bundle's file-based presets (presets/<name>.md) into wf so a
 	// studio `--preset <name>` selection resolves a file-based sous-bot — not
 	// just an in-source presets: entry — and its var overrides apply below.
@@ -778,14 +776,13 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// bias + skill hints into every model task it builds ("## Focus"). The
 	// bundle is the one the compile used — one open, one truth.
 	if launchBundle != nil {
-		runtime.MergeBundlePresets(wf, launchBundle, spec.Preset, runLogger)
+		runtime.MergeBundlePresets(wf, launchBundle, spec.Preset, s.runLoggerFor(runID))
 	}
 
 	inputs := make(map[string]any, len(spec.Vars))
 	if spec.Preset != "" {
 		preset, ok := wf.Presets[spec.Preset]
 		if !ok {
-			s.dropRunLog(runID)
 			available := make([]string, 0, len(wf.Presets))
 			for name := range wf.Presets {
 				available = append(available, name)
@@ -824,25 +821,21 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	if unknown := ir.UnknownInputNames(wf, spec.Vars); len(unknown) > 0 {
 		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
 			if !spec.AllowUnknownInputs {
-				s.dropRunLog(runID)
 				return nil, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
 					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 			}
-			runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
+			s.logger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
 				strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 		}
 	}
 
-	// Resolve the credential-derived topology vars (review_mode +
-	// mono_family, plan_review, llm_families; no-op unless the workflow
-	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
-	// launches auto-detect providers too. The spec override (studio toggle)
-	// wins over a --var review_mode; both win over auto.
-	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
-		s.dropRunLog(runID)
-		return nil, fmt.Errorf("refusing to launch: %w", err)
-	} else if inj.Summary() != "" {
-		runLogger.Info("%s", inj.Summary())
+	// Resolve the credential-derived topology vars (review_mode,
+	// plan_review, llm_families; no-op unless the workflow declares the
+	// matching var). Mirrors the CLI so studio/API/dispatcher launches
+	// resolve the same way. The spec override (studio toggle) wins over a
+	// --var review_mode; both win over auto.
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
+		s.logger.Info("%s", inj.Summary())
 	}
 
 	// The var constraints, on the values the engine will start with, before
@@ -850,9 +843,127 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// refuses them, rather than by the engine a moment after the launch was
 	// accepted. The engine judges them again.
 	if err := GateLaunchVars(wf, inputs); err != nil {
-		s.dropRunLog(runID)
 		return nil, err
 	}
+
+	var preparation store.RunInvocationPreparation = store.ExistingRunInvocation{ID: runID}
+	if precreate {
+		preparation = store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: runID, WorkflowName: wf.Name, ParentRunID: spec.ParentRunID, Inputs: inputs}}
+	}
+	invocation, err := store.PrepareRunInvocation(parent, s.store, preparation)
+	if err != nil {
+		if invocation.Context != nil {
+			err = runtime.AbortPreparedRun(invocation.Context, s.store, invocation, err)
+		}
+		if invocation.OwnedBirth && !store.IsValueFormatRefusal(err) {
+			return nil, &RunPersistedError{RunID: runID, Err: err}
+		}
+		return nil, err
+	}
+	parent = invocation.Context
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		var persisted *RunPersistedError
+		if runtime.PreparedCancellation(parent, returnErr) {
+			// A cancelled launch retires its birth against the original.
+			returnErr = runtime.AbortPreparedRun(parent, s.store, invocation, returnErr)
+		} else if invocation.OwnedBirth && !store.IsValueFormatRefusal(returnErr) && !errors.As(returnErr, &persisted) {
+			// Any other failure before the engine starts ends the run this
+			// launch made as never having left its launch path, written under
+			// the birth's binding: a submission key's next attempt then reads
+			// it spent, never handed on. spawnRun ends the run of each failure
+			// it reports as a RunPersistedError.
+			returnErr = s.endCreatedRun(context.WithoutCancel(parent), runID, returnErr)
+			return
+		}
+		if returnErr != nil && invocation.OwnedBirth && !store.IsValueFormatRefusal(returnErr) && !errors.As(returnErr, &persisted) {
+			returnErr = &RunPersistedError{RunID: runID, Err: returnErr}
+		}
+	}()
+
+	runLog, runLogger := s.prepareRunLog(parent, runID)
+	// The bail stays the launcher's until spawnRun hands the run to its
+	// goroutine: an error before that releases it and classifies the run.
+	logOwner := s.ownRunLog(parent, runID, runLog, logMemoryOnly)
+	defer logOwner.Abandon()
+
+	// The connector catalog an `action:` node resolves through, on the same
+	// terms as the CLI: without it the same `.bot` runs from `iterion run` and
+	// fails here at its first action node.
+	//
+	// The launch's own trust decides what those nodes may do: the refusal
+	// above keeps an untrusted launch off this path entirely while nothing
+	// persists the marker, and the resolver refuses a mutating action for one
+	// that ever reaches it (#1802).
+	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir, connection.TrustOfRun(spec.Trust))
+	if err != nil {
+		// logOwner.Abandon (deferred) returns the bail and classifies the run.
+		return nil, err
+	}
+
+	// LaunchSpec.ExtraObservers (ADR-046) reach the run through TWO
+	// disjoint seams — WITHOUT wrapping the store (a wrapper would shadow
+	// the concrete FilesystemRunStore's optional capabilities against the
+	// PlanWriter / RunFilesStore / … type-probes the executor + sandbox
+	// run). Backend-hook events (the high-frequency tool stream) fire the
+	// observers via ExecutorSpec.EventObservers; engine events fire them
+	// via runtime.WithEventObserver (wired in engineOptions from
+	// launchExtras.observers). The raw store keeps every capability.
+	executor, err := BuildExecutor(ExecutorSpec{
+		Ctx:            context.WithoutCancel(parent),
+		Workflow:       wf,
+		Vars:           spec.Vars,
+		Store:          s.store,
+		EventObservers: spec.ExtraObservers,
+		EventBroker:    s.broker,
+		RunID:          runID,
+		Logger:         runLogger,
+		StoreDir:       s.storeDir,
+		WorkDir:        workDir,
+		Inbox:          s.inboxBinder(),
+		AsyncAsk:       s.asyncAskBinder(),
+		Backend:        spec.Backend,
+		// The engine of a LAUNCH receives this default and no
+		// CLI-strength override (ex.sandboxOverride is set on the resume
+		// path only), so these are its exact tiers.
+		SandboxDefault:    s.sandboxDefault,
+		SandboxTiersKnown: true,
+		// The tier the launch resolver served (#1959): the MCP start
+		// prediction and the fallback screen must judge the floored
+		// workflow, or a team bot's `sandbox: none` would start its
+		// MCP servers beside the launcher for a run that sandboxes.
+		BotSourceTier:  spec.BotSourceTier,
+		ModelOverrides: toModelOverrides(spec.ModelOverrides),
+		// The fold above kept the launch's own rows apart (foldAndScreen).
+		LaunchModelOverrides: knownLaunchOverrides(toModelOverrides(spec.LaunchModelOverrides)),
+		RunFallback:          toRunFallback(spec.Fallback),
+		LLMProviders:         spec.LLMRoutePolicy.ProviderAllowlist(),
+		// Resolved, not taken raw: spec.BotID is empty whenever the caller
+		// launched by path (the studio's own file picker), and the executor
+		// would then fall back to the workflow name — while a RESUME of that
+		// same run derives the id from the path and lands on a different
+		// memory space. Same rule on both sides, so the two cannot diverge.
+		BotID:           ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
+		BoardRegister:   s.boardRegister,
+		BoardRevoke:     s.boardRevoke,
+		Compress:        spec.Compress,
+		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
+		Codemode:        spec.Codemode,
+		CodemodeBounds:  spec.CodemodeBounds,
+		Permission:      spec.Permission,
+		LocalSecrets:    s.localSecrets,
+		LocalSealer:     s.localSealer,
+		Connectors:      connectors,
+		ConnectorClient: connectorClient,
+		UsageCapSource:  s.usageCapSource,
+	})
+	if err != nil {
+		return nil, err
+	}
+	executor.SetRunExtraEnv(s.runEnv)
 
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
 	fin := finalizationOpts{
@@ -866,22 +977,15 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		token:      spec.CallbackToken,
 		answerNode: spec.CallbackAnswerNode,
 	}
-	ctxContract := s.resolveExecutionContext(parent, runID, spec, wf, hash)
 
-	precreateInputs := inputs
-	if !precreate {
-		// The queued doc already exists; let the engine claim it
-		// (queued→running via runResolveDoc) instead of re-creating.
-		precreateInputs = nil
-	}
-	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, spec.Timeout, false,
+	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, runLog, logOwner, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
-		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, launchRows: RunModelOverrides(spec.LaunchModelOverrides), poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
+		invocation.OwnedBirth,
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, launchRows: RunModelOverrides(spec.LaunchModelOverrides), poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, codemode: spec.Codemode, codemodeBounds: spec.CodemodeBounds, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
 		func(ctx, _ context.Context, eng *runtime.Engine) error {
-			return eng.Run(ctx, runID, inputs)
+			return eng.RunPrepared(ctx, runID, inputs, invocation)
 		})
 }
 
@@ -940,13 +1044,16 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if spec.FilePath == "" {
 		return errors.New("runview: file_path is required")
 	}
-	r, err := s.store.LoadRun(parent, spec.RunID)
+	parent, r, err := store.LoadRunWithValueFormat(parent, s.store, spec.RunID)
 	if err != nil {
 		return err
 	}
 	// Resume's own choke point, answered here too: the preflight exists so
 	// a resume Resume would refuse never consumes what the caller staged.
 	if err := CheckResumeAdmitted(r, spec.Admitted); err != nil {
+		return err
+	}
+	if err := runtime.CheckApprovalReplay(r); err != nil && !spec.Force {
 		return err
 	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
@@ -1016,6 +1123,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
+	// The launch's pre-flight, restated: a typo on resume would read as
+	// "inherit" in-process while the CLI refuses it at parse time.
+	if !ir.ValidCodemode(spec.Codemode) {
+		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
+	}
+	if field := ir.CodemodeBoundsNegativeField(spec.CodemodeBounds); field != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: bound must be non-negative", field)
+	}
 	// E3 (part of #652 review round 1): validate the resume budget
 	// ask synchronously — a malformed max_duration ("4 hours") would
 	// otherwise ride RunMessage.Budget through the cloud queue, fail
@@ -1040,8 +1155,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// Propagate parent so the mongo backend's tenant filter applies:
 	// a cross-tenant Resume must resolve to not-found, not panic on a
 	// missing tenant_id in ctx (which Background carries).
-	r, err := s.store.LoadRun(parent, spec.RunID)
+	parent, r, err := store.LoadRunWithValueFormat(parent, s.store, spec.RunID)
 	if err != nil {
+		return nil, err
+	}
+	// A checked resume re-enters the run its surface admitted or nothing:
+	// compared before the admission and the reconcile below, which would
+	// otherwise judge and move a successor recreated under the ID.
+	if err := spec.ExpectOrigin.Verify(r); err != nil {
 		return nil, err
 	}
 	// The one choke point every resume surface crosses, judged on the
@@ -1057,16 +1178,22 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// restart, abrupt goroutine exit) into a resumable status
 		// before validating, so the user doesn't have to wait for
 		// the next NewService call to clean it up.
-		reconciled, didReconcile, rcErr := s.reconcileRun(spec.RunID)
+		reconciled, didReconcile, rcErr := s.reconcileRun(parent, spec.RunID)
 		if rcErr != nil {
 			return nil, rcErr
 		}
 		if didReconcile {
+			if _, err := store.BindRunValueFormat(parent, reconciled); err != nil {
+				return nil, err
+			}
 			r = reconciled
 		}
 	}
 	if spec.ExpectedStatus != "" && r.Status != spec.ExpectedStatus {
 		return nil, fmt.Errorf("runview: run %q status changed: got %s, expected %s", r.ID, r.Status, spec.ExpectedStatus)
+	}
+	if err := runtime.CheckApprovalReplay(r); err != nil && !spec.Force {
+		return nil, err
 	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return nil, err
@@ -1108,6 +1235,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// source/status change between this point and execution still fails closed.
 	spec.BundleDir = resumeBundleDir(r, spec)
 	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+	if err == nil {
+		// The launch's codemode warnings, restated — judged on the EFFECTIVE
+		// values (the re-state coalesced over the doc's replay, exactly what
+		// the executor will carry): bounds beside an off warn inert,
+		// above-ceiling bounds warn the ceiling, silence otherwise.
+		for _, w := range codemodeLaunchWarnings(wf, firstNonEmpty(spec.Codemode, r.CodemodeOverride), ir.ReplayCodemodeBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)) {
+			s.logger.Warn("runview: resume %s: %s", spec.RunID, w)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1141,8 +1277,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		validateArtifacts = runtime.ValidateResumeArtifacts
 	}
 	// A legacy digest waives the revision the run's artifacts were published
-	// under, exactly as --force would: nothing else changed.
-	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
+	// under, exactly as --force would: nothing else changed. A checked
+	// resume's pass reads and reports on the run it verified: bound to its
+	// origin, a successor recreated under the ID since refuses its reads and
+	// the violation event it reports.
+	artifactCtx, err := spec.ExpectOrigin.Bind(parent, s.store)
+	if err != nil {
+		return nil, err
+	}
+	artifactPreflight, err := validateArtifacts(artifactCtx, s.store, r, wf, hash, spec.Force || legacy)
 	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
 		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
 	}
@@ -1185,20 +1328,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
 	}
 
-	// The review family this run froze at launch, judged against THIS host's
-	// credentials — the same reading its launch took (InjectAll above, from
-	// detect.Detect), applied at the one other moment that can still refuse.
-	// Read-only: the run's inputs stay the launch's, byte for byte.
-	//
-	// Below the cloud branch on purpose. A queued run's credentials are the
-	// ones its bundle sealed, not this server's environment, so SubmitResume
-	// judges its own there; certifying a cloud resume against a host
-	// detection report would certify the wrong set entirely. And above every
-	// local write below, so a refused resume persists nothing.
-	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.InventoryFromReport(detect.Detect(parent))); err != nil {
-		return nil, fmt.Errorf("refusing to resume: %w", err)
-	}
-
 	// Local paths (detached subprocess, in-process): a raised cap is
 	// persisted here twice over, the way SubmitResume does it on the
 	// cloud path — the MERGED ask as the replay source (so the next
@@ -1210,15 +1339,35 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// granular on purpose: a whole-doc SaveRun from the
 	// copy loaded at the top of this method would revert any transition
 	// that landed since (a cancel, a finish). Best-effort: a store blip
-	// here does not fail the resume.
+	// here does not fail the resume. A checked resume writes the run it
+	// verified: both writes are bound to its origin, and a write refused
+	// because the run behind the ID is no longer that origin refuses the
+	// resume — in every local mode, before a detached subprocess that would
+	// re-read the run by ID is spawned.
 	if raised {
+		bctx, berr := spec.ExpectOrigin.Bind(parent, s.store)
+		if berr != nil {
+			return nil, berr
+		}
+		failed := func(what string, err error) error {
+			if err == nil {
+				return nil
+			}
+			if spec.ExpectOrigin.Checked() && originRefused(err) {
+				return fmt.Errorf("runview: resume: %s on %s: %w", what, spec.RunID, err)
+			}
+			if s.logger != nil {
+				s.logger.Warn("runview: resume: %s on %s: %v", what, spec.RunID, err)
+			}
+			return nil
+		}
 		merged := runtime.MergeResumeBudgetAsk(spec.Budget, r.BudgetOverrides)
-		if perr := s.store.SetRunBudgetOverrides(parent, spec.RunID, runtime.RunBudgetOverridesOf(merged)); perr != nil && s.logger != nil {
-			s.logger.Warn("runview: resume: persist merged budget ask on %s: %v", spec.RunID, perr)
+		if err := failed("persist merged budget ask", s.store.SetRunBudgetOverrides(bctx, spec.RunID, runtime.RunBudgetOverridesOf(merged))); err != nil {
+			return nil, err
 		}
 		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
-			if serr := s.store.SetRunBudgetSnapshot(parent, spec.RunID, snap); serr != nil && s.logger != nil {
-				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
+			if err := failed("refresh budget snapshot", s.store.SetRunBudgetSnapshot(bctx, spec.RunID, snap)); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1228,17 +1377,23 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if detachedEnabled() {
 		spec.Budget = rawBudget
-		// The permission gate is replayed from the run doc, exactly as
-		// resumeExecutorSpec does for the in-process path. ResumeSpec
-		// carries no Permission of its own and `iterion resume` never
-		// reads the persisted override, so without this the subprocess
-		// re-resolves the gate from the workflow — usually `off` — and an
-		// operator's launch-time "deny" quietly stops applying at the
-		// first resume.
 		return s.resumeDetached(parent, spec, r.PermissionOverride)
 	}
 
-	_, runLogger := s.prepareRunLog(spec.RunID)
+	// The steps below are the first to touch the run's directory: the log
+	// opened for append, the files directory, the lock file. A checked
+	// resume verifies the run behind the ID again right before them, so a
+	// successor recreated since the check at the top gains no entry of a
+	// resume refused later (the check under the spawn lock, the engine's).
+	if err := s.verifyOrigin(parent, spec.RunID, spec.ExpectOrigin); err != nil {
+		return nil, err
+	}
+	runLog, runLogger := s.prepareRunLog(parent, spec.RunID)
+	// Armed until spawnRun hands the run over: an error before that releases
+	// the bail and classifies the run (a failed resume of a paused run keeps
+	// logEndPaused, it does not read as a terminal finish).
+	logOwner := s.ownRunLog(parent, spec.RunID, runLog, logMemoryOnly)
+	defer logOwner.Abandon()
 
 	// A resume rebuilds the executor from scratch, so it needs the catalog
 	// too: without it a run that launched fine dies at the first action node
@@ -1250,7 +1405,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// arriving through a different surface.
 	connectors, connectorClient, err := s.localConnectors(wf, "", connection.TrustOfRun(r.Trust))
 	if err != nil {
-		s.dropRunLog(spec.RunID)
 		return nil, err
 	}
 
@@ -1259,10 +1413,19 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// executor carries it (startInProcess).
 	executorSpec.Ctx = context.WithoutCancel(parent)
 	executorSpec.AmbientContext = spec.AmbientContext
+	// A re-stating resume wins over the run doc's replay (resumeExecutorSpec
+	// already filled the replayed values); an empty re-state keeps the
+	// replayed launch decision — the fail-open direction the replay exists
+	// to close.
+	if spec.Codemode != "" {
+		executorSpec.Codemode = spec.Codemode
+	}
+	if spec.CodemodeBounds != nil {
+		executorSpec.CodemodeBounds = ir.ReplayCodemodeBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)
+	}
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {
-		s.dropRunLog(spec.RunID)
 		return nil, err
 	}
 	executor.SetRunExtraEnv(s.runEnv)
@@ -1297,10 +1460,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		autoMerge:     r.AutoMerge,
 	}
 	claim := newResumeClaim()
-	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
+	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, runLog, logOwner, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
 		r.ParentRunID,
-		nil,
+		false,
 		// r.ExtraSkills, re-read from the run record, is what makes an
 		// operator-added skill survive the SECOND turn of a conversation:
 		// the dock drives one resume per message.
@@ -1313,8 +1476,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
 			artifactResumePreflight: artifactPreflight,
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
+			expectOrigin:            spec.ExpectOrigin,
 			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
+			// Execution bounds replay the doc, but a quota patch only comes
+			// from the resume request. Replayed dimensions are not writes.
+			codemode:            executorSpec.Codemode,
+			codemodeBounds:      executorSpec.CodemodeBounds,
+			resumeCodemodeQuota: CodemodeResumeQuota(spec.CodemodeBounds),
 			// The launch's sandbox choices, replayed off the record so
 			// the studio's in-process resume respects `--sandbox none`
 			// the same way the CLI resume now does (#1435).
@@ -1328,12 +1497,18 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			// guard against a concurrent resume / state change), under the
 			// resume's identity: on the Mongo store a tenantless read here
 			// panics, and nothing recovers in the run goroutine.
-			r2, err := s.store.LoadRun(sctx, spec.RunID)
+			_, r2, err := store.LoadRunWithValueFormat(sctx, s.store, spec.RunID)
 			if err != nil {
+				return err
+			}
+			if err := spec.ExpectOrigin.Verify(r2); err != nil {
 				return err
 			}
 			if spec.ExpectedStatus != "" && r2.Status != spec.ExpectedStatus {
 				return fmt.Errorf("runview: run %q status changed: got %s, expected %s", r2.ID, r2.Status, spec.ExpectedStatus)
+			}
+			if err := runtime.CheckApprovalReplay(r2); err != nil && !spec.Force {
+				return err
 			}
 			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err
@@ -1511,7 +1686,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.
-		EventObservers: s.hookEventObservers(nil),
+		EventBroker:    s.broker,
 		AutoMemory:     autoMemory,
 		BoardRegister:  s.boardRegister,
 		BoardRevoke:    s.boardRevoke,
@@ -1531,7 +1706,14 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 	if r != nil {
 		spec.RunID = r.ID
 		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
+		spec.LaunchModelOverrides = knownLaunchOverrides(LaunchOverridesOfRun(r))
 		spec.Permission = r.PermissionOverride
+		// The codemode launch choice replays from the run doc — the doc is
+		// the only carrier a resume surface that cannot re-state an
+		// override (the studio's answers, the retry sweeper) has. A
+		// re-stating caller overwrites both below.
+		spec.Codemode = r.CodemodeOverride
+		spec.CodemodeBounds = r.CodemodeBoundsOverride
 		spec.LLMProviders = r.LLMRoutePolicy.ProviderAllowlist()
 	}
 	return spec
@@ -1590,17 +1772,34 @@ func (s *Service) spawnRun(
 	cb callbackOpts,
 	executor *model.ClawExecutor,
 	runLogger *iterlog.Logger,
+	runLog *RunLogBuffer,
+	logOwner *runLogOwner,
 	timeout time.Duration,
 	force bool,
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
 	modelOverrides []store.RunModelOverride,
 	parentRunID string,
-	precreateInputs map[string]any,
+	startedRun bool,
 	ex launchExtras,
 	emitStore store.RunStore,
 	body func(ctx, sctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
+	executorClosed := false
+	closeExecutor := func() {
+		if executorClosed {
+			return
+		}
+		executorClosed = true
+		_ = executor.Close()
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			closeExecutor()
+		}
+	}()
+
 	// emitStore is the store the engine writes events through. It is the
 	// raw s.store — ADR-046 ExtraObservers ride the WithEventObserver /
 	// ExecutorSpec.EventObservers seams (see startInProcess), not a store
@@ -1617,72 +1816,41 @@ func (s *Service) spawnRun(
 	// provenance, so a parented launch would reach that panic on its first
 	// write. WithoutCancel drops only the cancellation and the deadline.
 	sctx := context.WithoutCancel(parent)
+	if _, _, err := store.LoadRunWithValueFormat(sctx, s.store, runID); err != nil {
+		// The bail was armed before this call: a refusal here returns it, so
+		// no lane is left with a producer that never started.
+		logOwner.Abandon()
+		return nil, err
+	}
 	lock, err := s.store.LockRun(sctx, runID)
 	if err != nil {
-		s.dropRunLog(runID)
+		logOwner.Abandon()
 		return nil, fmt.Errorf("runview: lock run: %w", err)
 	}
 
 	ctx, regErr := s.manager.Register(parent, runID)
 	if regErr != nil {
-		_ = lock.Unlock()
-		s.dropRunLog(runID)
+		func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
+		logOwner.Abandon()
 		return nil, regErr
 	}
-
-	// startedRun records the one fact a caller cannot reconstruct: whether
-	// THIS call brought a run into being. Written from what each write
-	// returned, never re-read from the store — see RunPersistedError.
-	startedRun := false
-
-	// Launch path only (nil on resume, whose doc already exists): persist
-	// the run doc BEFORE returning, so a GET /api/runs/{id} issued right
-	// after the launch response never 404s on the engine goroutine still
-	// being scheduled. The engine's runResolveDoc sees the running doc and
-	// claims it instead of re-creating.
-	if precreateInputs != nil {
-		// ParentRunID is part of the launch identity, so persist it in the
-		// SAME create write when the store supports it (ParentedRunCreator).
-		// Otherwise a running child doc would exist between CreateRun and the
-		// follow-up SaveRun — if that second write failed, the doc stayed
-		// `running` with no goroutine until the orphan reconciler caught it
-		// (PR #193 M3). The engine option below remains the authoritative path
-		// for direct/non-precreated runs.
-		var createErr error
-		if parentRunID != "" {
-			if pc := store.AsParentedRunCreator(s.store); pc != nil {
-				_, createErr = pc.CreateChildRun(sctx, runID, wf.Name, parentRunID, precreateInputs)
-				startedRun = createErr == nil
-			} else {
-				var created *store.Run
-				created, createErr = s.store.CreateRun(sctx, runID, wf.Name, precreateInputs)
-				if createErr == nil {
-					// THIS call made the document. Recorded here, from what
-					// the call returned, and never re-read from the store: a
-					// launch whose client-supplied run_id already exists
-					// creates nothing (CreateRun is an exclusive create) and
-					// a store probe would find someone else's run and charge
-					// for it, once per attempt.
-					startedRun = true
-					created.ParentRunID = parentRunID
-					createErr = s.store.SaveRun(sctx, created)
-				}
-			}
-		} else {
-			_, createErr = s.store.CreateRun(sctx, runID, wf.Name, precreateInputs)
-			startedRun = createErr == nil
+	// The alert registration joins the lifecycle registration: the run's
+	// observation is captured and adopted BEFORE any engine event exists,
+	// so every alert of this episode carries the birth's truth. releaseAlerts
+	// rolls it back on the abort paths below; the normal termination
+	// releases through closeRunAndReleaseAlerts (the spawnRun defer). A
+	// failure keeps the launch (its event bridging is unaffected) and turns
+	// alerting off for the run — honest degradation, never a by-ID route.
+	releaseAlerts, alertErr := s.registerRunAlertOrigin(ctx, runID)
+	if alertErr != nil {
+		if s.logger != nil {
+			s.logger.Warn("runview: alert registration of %s: %v — alerts stay off for this run", runID, alertErr)
 		}
-		if createErr != nil {
-			s.manager.Deregister(runID)
-			_ = lock.Unlock()
-			s.dropRunLog(runID)
-			err := fmt.Errorf("runview: create run: %w", createErr)
-			if startedRun {
-				return nil, s.endCreatedRun(sctx, runID, err)
-			}
-			return nil, err
-		}
+		releaseAlerts = func() {}
 	}
+
+	// Birth (if any) completed before the executor was built. startedRun is
+	// supplied only by the exclusive preparation response, never a reload.
 
 	// Persist the launch's resolved routing policy on the run document, as
 	// the cloud publisher stamps its own (#2665 item 7): a local resume
@@ -1690,16 +1858,17 @@ func (s *Service) spawnRun(
 	// way the cloud runner replays RunMessage.LLMProviders. Nil on a resume
 	// and on a CLI launch, which resolved none: nothing to stamp.
 	if ex.routePolicy != nil {
-		doc, stampErr := s.store.LoadRun(sctx, runID)
+		_, doc, stampErr := store.LoadRunWithValueFormat(sctx, s.store, runID)
 		if stampErr == nil {
 			lp := *ex.routePolicy // copy: never share the caller's pointer
 			doc.LLMRoutePolicy = &lp
 			stampErr = s.store.SaveRun(sctx, doc)
 		}
 		if stampErr != nil {
+			releaseAlerts()
 			s.manager.Deregister(runID)
-			_ = lock.Unlock()
-			s.dropRunLog(runID)
+			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
+			logOwner.Abandon()
 			err := fmt.Errorf("runview: persist routing policy: %w", stampErr)
 			if startedRun {
 				return nil, s.endCreatedRun(sctx, runID, err)
@@ -1722,9 +1891,10 @@ func (s *Service) spawnRun(
 			stampErr = s.store.SaveRun(sctx, doc)
 		}
 		if stampErr != nil {
+			releaseAlerts()
 			s.manager.Deregister(runID)
-			_ = lock.Unlock()
-			s.dropRunLog(runID)
+			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
+			logOwner.Abandon()
 			err := fmt.Errorf("runview: persist pool attachment: %w", stampErr)
 			if startedRun {
 				return nil, s.endCreatedRun(sctx, runID, err)
@@ -1739,24 +1909,32 @@ func (s *Service) spawnRun(
 	// activation would enforce correctly for one turn and then disappear on the
 	// next HTTP/WS/watch-driven resume. SaveRun is a full-document replacement,
 	// hence doing it here rather than in the HTTP handler is the race-safe seam.
+	// A checked resume's write is bound to the origin its surface admitted:
+	// a successor recreated under the ID since its check refuses it, and the
+	// resume with it, before anything executes.
 	if ex.budgetOverrides != nil {
 		var saveErr error
-		if patcher := store.AsRunBudgetOverridesPatcher(s.store); patcher != nil {
-			saveErr = patcher.PatchRunBudgetOverrides(sctx, runID, ex.budgetOverrides)
-		} else {
-			r, loadErr := s.store.LoadRun(sctx, runID)
+		pctx, bindErr := ex.expectOrigin.Bind(sctx, s.store)
+		switch patcher := store.AsRunBudgetOverridesPatcher(s.store); {
+		case bindErr != nil:
+			saveErr = bindErr
+		case patcher != nil:
+			saveErr = patcher.PatchRunBudgetOverrides(pctx, runID, ex.budgetOverrides)
+		default:
+			_, r, loadErr := store.LoadRunWithValueFormat(pctx, s.store, runID)
 			if loadErr != nil {
 				saveErr = loadErr
 			} else {
 				copy := *ex.budgetOverrides
 				r.BudgetOverrides = &copy
-				saveErr = s.store.SaveRun(sctx, r)
+				saveErr = s.store.SaveRun(pctx, r)
 			}
 		}
 		if saveErr != nil {
+			releaseAlerts()
 			s.manager.Deregister(runID)
-			_ = lock.Unlock()
-			s.dropRunLog(runID)
+			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
+			logOwner.Abandon()
 			err := fmt.Errorf("runview: persist budget override: %w", saveErr)
 			// Only when THIS call made the run. On a resume the document
 			// existed all along and nothing has been published yet, so
@@ -1786,6 +1964,14 @@ func (s *Service) spawnRun(
 	}
 	if ex.acceptScratchLoss {
 		opts = append(opts, runtime.WithAcceptScratchLoss(true))
+	}
+	// A checked resume's engine checks the run it loads against the origin
+	// its surface admitted: the run lock does not hold a successor off, so
+	// one recreated after the check under it is refused by the engine,
+	// before its claim. The check reads the document; it binds nothing the
+	// execution keeps.
+	if ex.expectOrigin.Checked() {
+		opts = append(opts, runtime.WithResumeRunCheck(ex.expectOrigin.Verify))
 	}
 	if ex.onResumeAdmitted != nil {
 		opts = append(opts, runtime.WithOnResumeAdmitted(ex.onResumeAdmitted))
@@ -1850,6 +2036,11 @@ func (s *Service) spawnRun(
 	s.registerRunEngine(runID, eng, steerCh)
 
 	done := make(chan struct{})
+	// The bail changes hands HERE, synchronously before the goroutine exists:
+	// a launcher's deferred Abandon that runs after this point is a no-op, so
+	// it can never release the log lane of a run that is alive.
+	logOwner.Transfer()
+	transferred = true
 	go func() {
 		var paused bool
 		defer close(done)
@@ -1865,17 +2056,29 @@ func (s *Service) spawnRun(
 		// than the "already registered" it replaced, because it is silent.
 		defer s.manager.Deregister(runID)
 		defer s.unregisterRunEngine(runID)
-		defer s.dropRunLog(runID)
+		defer s.dropRunLog(runID, runLog)
 		// Keep WS subscribers across a pause: the goroutine exits on
 		// ErrRunPaused(Operator) like on any outcome, but the run is only
 		// dormant — the resume's goroutine publishes to the same broker
 		// runID, and dropping subscribers here loses the very events that
 		// announce the pause/resume (the human-gate form then lags until a
-		// reload). Terminal outcomes still close the stream.
+		// reload). Terminal outcomes still close the stream — and release
+		// the alert registration with it: the epoch ends with the episode.
 		defer func() {
 			if !paused {
-				s.broker.CloseRun(runID)
+				s.closeRunAndReleaseAlerts(runID)
+				return
 			}
+			// A pause keeps the broker (subscribers must see the resume),
+			// but the PRODUCER's bail ends here: the resume takes a fresh
+			// one, and a bail outliving its producer would orphan the
+			// epoch (H5 / codex-F1).
+			//
+			// The log epoch ends PAUSED, not terminal: a dormant run is not a
+			// finished one, and the retained value says so before dropRunLog
+			// releases the bail (this defer runs first, LIFO).
+			runLog.setLogEnd(logEndPaused)
+			releaseAlerts()
 		}()
 		// Release this root's pipeline-concurrency slot. A no-op for run IDs
 		// that never held a slot (children, resumes, or when the cap is
@@ -1891,6 +2094,7 @@ func (s *Service) spawnRun(
 		// the terminal status (the engine wrote it before body() returned).
 		defer s.invalidatePipelineReserved()
 		defer func() { _ = lock.Unlock() }()
+		defer closeExecutor()
 		if cancelTimeout != nil {
 			defer cancelTimeout()
 		}
@@ -1904,9 +2108,23 @@ func (s *Service) spawnRun(
 		// pipeline-launched run) would otherwise resolve a supervisor
 		// model pin against the defaults alone, diverging from the nodes
 		// it watches.
-		spawnVars := precreateInputs
-		if run, err := s.store.LoadRun(sctx, runID); err == nil && run.Inputs != nil {
-			spawnVars = run.Inputs
+		var spawnVars map[string]any
+		_, spawnRun, spawnErr := store.LoadRunWithValueFormat(sctx, s.store, runID)
+		if store.IsValueFormatRefusal(spawnErr) {
+			// A refused original invocation cannot start auxiliaries for the
+			// successor now stored at this ID. Preserve the outcome channel,
+			// but emit no completion or trigger for work that never started.
+			s.manager.MarkLeaving(runID)
+			// The producer never started: its epoch is LOST, not a run that
+			// finished (the sibling Abandon classifies the same way).
+			runLog.setLogEnd(logEndLost)
+			if ex.onOutcome != nil {
+				ex.onOutcome(spawnErr)
+			}
+			return
+		}
+		if spawnErr == nil && spawnRun.Inputs != nil {
+			spawnVars = spawnRun.Inputs
 		}
 		// The supervisors and the session board below read the overrides
 		// the executor dispatches with — on a resume, the run document's
@@ -1936,6 +2154,12 @@ func (s *Service) spawnRun(
 		// would have. No-op for fire-and-forget launches.
 		if ex.onOutcome != nil {
 			ex.onOutcome(bodyErr)
+		}
+		// A rejected original invocation did not finish the successor now at
+		// this ID. Return its error to the launcher, but publish no completion,
+		// trigger or recovery based on a new unbound read of that successor.
+		if store.IsValueFormatRefusal(bodyErr) || errors.Is(bodyErr, runtime.ErrAdmissionStopped) || (startedRun && errors.Is(bodyErr, store.ErrRunConflict)) {
+			return
 		}
 		// Fire the run-completion webhook (no-op unless the run carries a
 		// callback URL). Uses the detached launch context, not the run ctx,
@@ -1967,7 +2191,7 @@ func (s *Service) spawnRun(
 			// is a system-level recovery operation, not a
 			// tenant-discovery lookup.
 			fctx := store.WithoutTenantFilter(sctx)
-			if r, loadErr := s.store.LoadRun(fctx, runID); loadErr == nil {
+			if _, r, loadErr := store.LoadRunWithValueFormat(fctx, s.store, runID); loadErr == nil {
 				// This run's logger, not the service's: RecoverFinalize logs
 				// the worktree's git output on the handle it is given, and
 				// only this one carries the run's secret matcher
@@ -2009,6 +2233,11 @@ type launchExtras struct {
 	// acceptScratchLoss is a resume's consent to go on although the run's
 	// scratch does not travel (ResumeSpec.AcceptScratchLoss).
 	acceptScratchLoss bool
+	// expectOrigin is a checked resume's admitted origin
+	// (ResumeSpec.ExpectOrigin): the write spawnRun makes before the
+	// execution starts is bound to it, and the engine checks the run it
+	// loads against it (runtime.WithResumeRunCheck). Zero on every launch.
+	expectOrigin ActionOrigin
 	// compiled is what the launch's compile read — the unit's files — so
 	// the run records them from the same read as its identity: a studio
 	// run's FilePath is the store's copy of its main, beside which no
@@ -2079,6 +2308,14 @@ type launchExtras struct {
 	// permission is the strongest-precedence run-level gate choice. It is
 	// supplied on launch and replayed from the run document on resume.
 	permission string
+	// codemode is the strongest-precedence run-level codemode choice
+	// (ADR-165), supplied on launch and replayed from the run document on
+	// resume — the run doc stamp (engine_run.go) is what makes the replay
+	// possible for the surfaces that cannot re-state an override (the
+	// studio's answers, the retry sweeper).
+	codemode            string
+	codemodeBounds      *scripthost.Limits
+	resumeCodemodeQuota store.CodemodeScratchLimits
 	// sandboxOverride, sandboxDefaultImage, sandboxHostStateOverride are
 	// the launch-time --sandbox / --sandbox-default-image /
 	// --sandbox-host-state choices, persisted on the run at launch
@@ -2160,6 +2397,12 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.permission != "" {
 		opts = append(opts, runtime.WithPermissionOverride(ex.permission))
+	}
+	if ex.codemode != "" || ex.codemodeBounds != nil {
+		opts = append(opts, runtime.WithCodemodeOverride(ex.codemode, ex.codemodeBounds))
+	}
+	if ex.resumeCodemodeQuota != (store.CodemodeScratchLimits{}) {
+		opts = append(opts, runtime.WithResumeCodemodeQuota(ex.resumeCodemodeQuota))
 	}
 	if ex.budgetOverrides != nil {
 		opts = append(opts, runtime.WithBudgetOverrides(ex.budgetOverrides))

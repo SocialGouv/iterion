@@ -65,3 +65,25 @@ func TestSchedulerNoLauncherIsNoop(t *testing.T) {
 	// Must not panic.
 	sch.tick(context.Background(), time.Now())
 }
+
+// A stored mode no effect honours (a row written before the routes refused
+// such modes) fires nothing: the timer reads the mode through
+// bundle.ResolveMode like every launcher, never as a direct launch.
+func TestSchedulerFiresNoModeNoEffectHonours(t *testing.T) {
+	st := NewMemorySubscriptionStore()
+	if err := st.Create(context.Background(), Subscription{
+		ID: "legacy", BotID: "parked-bot", Invocation: "schedule", Mode: "deliver",
+		Enabled: true, Cron: "* * * * *",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fl := &fakeLauncher{}
+	clk := time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC)
+	sch := NewScheduler(st, fl, WithSchedulerClock(func() time.Time { return clk }))
+	sch.tick(context.Background(), clk)
+	clk = clk.Add(2 * time.Minute)
+	sch.tick(context.Background(), clk)
+	if len(fl.plans) != 0 {
+		t.Fatalf("a deliver-mode schedule row fired: %+v", fl.plans)
+	}
+}

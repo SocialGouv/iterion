@@ -98,16 +98,9 @@ func (r *Run) ExportRunFiles(ctx context.Context) error {
 // full, named up to sandbox.ReadBackDeclinedListed, and warned in the
 // run's log up to the same bound (drainMemberLines).
 func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) error {
-	if err := os.MkdirAll(dir.HostDir, 0o775); err != nil {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("kubernetes: drain %s: create host dir %s: %w", dir.ContainerPath, dir.HostDir, err))
-	}
-	root, err := drainRoot(dir.HostDir)
+	t, err := openReadBackDrainTree(ctx, dir)
 	if err != nil {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("kubernetes: drain %s: resolve host dir %s: %w", dir.ContainerPath, dir.HostDir, err))
-	}
-	t, err := openDrainTree(root)
-	if err != nil {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("kubernetes: drain %s: open host dir %s: %w", dir.ContainerPath, dir.HostDir, err))
+		return lost(sandbox.ReadBackRefused, fmt.Errorf("kubernetes: drain %s: %w", dir.ContainerPath, err))
 	}
 	defer t.close()
 	s := newDrainState(dir.Cap())

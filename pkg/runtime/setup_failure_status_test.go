@@ -148,29 +148,45 @@ func TestSetupErr_KeepsTheInterruptionMarker(t *testing.T) {
 // resumable in the STORE and return an error the runner will nak.
 func TestEngineRun_SetupDrainLeavesTheRunResumable(t *testing.T) {
 	s := tmpStore(t)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	const runID = "run-drained-in-setup"
+	entered := false
 	eng := New(devboxTestWorkflow(), s, newStubExecutor(),
 		WithWorkDir(t.TempDir()),
 		WithSandboxOverride("none"),
 		WithLogger(iterlog.Nop()),
+		WithAttachmentPromote(func(setupCtx context.Context, id string) error {
+			// Drain an invocation that has actually entered setup. A context
+			// cancelled before Engine.Run has no authority to create a run.
+			if id != runID || setupCtx.Err() != nil {
+				t.Fatalf("SETUP_NOT_ENTERED id=%q err=%v", id, setupCtx.Err())
+			}
+			if err := store.RequireRunValueFormat(setupCtx, id); err != nil {
+				t.Fatalf("SETUP_HAS_NO_INVOCATION: %v", err)
+			}
+			if run, err := s.LoadRun(setupCtx, id); err != nil || run.Status != store.RunStatusRunning {
+				t.Fatalf("SETUP_HAS_NO_RUNNING_RUN: run=%+v err=%v", run, err)
+			}
+			entered = true
+			cancel(ErrRunInterrupted)
+			return setupCtx.Err()
+		}),
 	)
 
-	ctx, cancel := context.WithCancelCause(context.Background())
-	cancel(ErrRunInterrupted)
-
-	const runID = "run-drained-in-setup"
 	err := eng.Run(ctx, runID, nil)
-	if err == nil {
-		t.Fatal("a drained run must not report success")
+	if !entered {
+		t.Fatalf("SETUP_NOT_ENTERED: %v", err)
 	}
 	if !errors.Is(err, ErrRunInterrupted) {
 		t.Fatalf("the runner naks on ErrRunInterrupted; got %v", err)
 	}
-	run, lerr := s.LoadRun(context.Background(), runID)
+	run, lerr := s.LoadRun(t.Context(), runID)
 	if lerr != nil {
 		t.Fatalf("load run: %v", lerr)
 	}
-	if run.Status != store.RunStatusFailedResumable {
-		t.Fatalf("status = %q, want failed_resumable (a drain is not a workflow failure)", run.Status)
+	if run.Status != store.RunStatusFailedResumable || run.FailureCode != store.FailureInterrupted {
+		t.Fatalf("status = %q / %q, want failed_resumable / INTERRUPTED", run.Status, run.FailureCode)
 	}
 }
 
@@ -215,7 +231,11 @@ func TestMarkFailedBestEffort_ReturnsTheRecordedDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(devboxTestWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
-	st, code := e.markFailedBestEffort(ctx, runID, "sandbox start", capacityStartError())
+	setupCause := capacityStartError()
+	st, code, reportedCause := e.markFailedBestEffort(ctx, runID, "sandbox start", setupCause)
+	if reportedCause != setupCause {
+		t.Fatalf("ordinary cause changed: %v", reportedCause)
+	}
 	if st != store.RunStatusFailedResumable || code != store.FailureSandboxCapacity {
 		t.Fatalf("decision = %s / %s, want failed_resumable / %s", st, code, store.FailureSandboxCapacity)
 	}
@@ -250,7 +270,11 @@ func TestMarkFailedBestEffort_ResumableWriteLosesToAPublishersCancel(t *testing.
 	e := New(devboxTestWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
 	// The launch-side read happened under a live ctx: failed_resumable +
 	// SANDBOX_CAPACITY was this attempt's decision — and it lost.
-	st, code := e.markFailedBestEffort(ctx, runID, "sandbox start", capacityStartError())
+	setupCause := capacityStartError()
+	st, code, reportedCause := e.markFailedBestEffort(ctx, runID, "sandbox start", setupCause)
+	if reportedCause != setupCause {
+		t.Fatalf("ordinary cause changed: %v", reportedCause)
+	}
 	if st != store.RunStatusCancelled || code != store.FailureCancelled {
 		t.Fatalf("decision = %s / %s, want the document's cancelled", st, code)
 	}

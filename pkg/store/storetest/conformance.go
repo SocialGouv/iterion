@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -55,7 +56,9 @@ type Opts struct {
 // RunWithOpts executes the full conformance suite with backend-
 // specific overrides.
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
+	t.Run("ExecutionCorrection", func(t *testing.T) { RunExecutionCorrectionConformance(t, factory) })
 	t.Run("AttemptSnapshots", func(t *testing.T) { AttemptSnapshots(t, factory(t)) })
+	t.Run("BirthIdentity", func(t *testing.T) { testBirthIdentity(t, factory(t)) })
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })
@@ -66,12 +69,17 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("SessionLedgerSurvivesTheFailureCheckpoint", func(t *testing.T) { testSessionLedgerSurvivesTheFailureCheckpoint(t, factory(t)) })
+	t.Run("NodeFailureStreaksFollowTheCheckpoint", func(t *testing.T) { testNodeFailureStreaksFollowTheCheckpoint(t, factory(t)) })
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
 	t.Run("QueuedAttemptClaim", func(t *testing.T) { testQueuedAttemptClaim(t, factory(t)) })
+	t.Run("CodemodeQuotaResumeClaim", func(t *testing.T) { testCodemodeQuotaResumeClaim(t, factory(t)) })
+	t.Run("ResumePauseHandoff", func(t *testing.T) { testResumePauseHandoff(t, factory(t)) })
 	t.Run("QueuedFlipRevert", func(t *testing.T) { testQueuedFlipRevert(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("MergeExitExpectedBirth", func(t *testing.T) { testMergeExitExpectedBirth(t, factory(t)) })
+	t.Run("MergeClaimExpectedBirth", func(t *testing.T) { testMergeClaimExpectedBirth(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
@@ -83,6 +91,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("FinalContinuationDisarmsRetry", func(t *testing.T) { testFinalContinuationDisarmsRetry(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
 	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
+	t.Run("ToolApprovalSpend", func(t *testing.T) { testToolApprovalSpend(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -110,6 +119,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("OutputCorrectionStore", func(t *testing.T) { testOutputCorrectionStore(t, factory(t)) })
 	t.Run("WatcherCursorStore", func(t *testing.T) { testWatcherCursorStore(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
+	t.Run("BoundDeleteRefusesASuccessor", func(t *testing.T) { testBoundDeleteRefusesASuccessor(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
@@ -794,6 +804,160 @@ func testQueuedAttemptClaim(t *testing.T, s store.RunStore) {
 	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
 	if err != nil || changed {
 		t.Fatalf("a second claim of the same attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+}
+
+func testCodemodeQuotaResumeClaim(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	claimer := store.AsCodemodeQuotaResumeClaimer(s)
+	if claimer == nil {
+		t.Fatal("backend does not implement CodemodeQuotaResumeClaimer")
+	}
+	const id = "run-codemode-quota-claim"
+	r, err := s.CreateRun(ctx, id, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := scripthost.Limits{StoreEntries: 3, StoreBytes: 60, ToolCalls: 17}
+	r.CodemodeBoundsOverride = &prior
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	const pointer = "pause-1"
+	if err := s.PauseRun(ctx, id, &store.Checkpoint{NodeID: "gate", InteractionID: pointer}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.UpdateRunStatusIf(ctx, id, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queue pause: changed=%v err=%v", ok, err)
+	}
+	before, err := s.LoadRun(ctx, id)
+	if err != nil || before.QueuedAt == nil {
+		t.Fatalf("read queued attempt: run=%+v err=%v", before, err)
+	}
+	claim := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusQueued, QueuedAt: *before.QueuedAt}
+	quota := store.CodemodeScratchLimits{Bytes: 100}
+	for _, marker := range []time.Time{before.QueuedAt.Add(-time.Millisecond), before.QueuedAt.Add(time.Millisecond)} {
+		stale := claim
+		stale.QueuedAt = marker
+		if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, stale, quota); err != nil || got != nil {
+			t.Fatalf("different marker %s: bounds=%+v err=%v", marker, got, err)
+		}
+	}
+	for _, bad := range []store.CodemodeScratchLimits{{}, {Bytes: -1}, {Entries: -1, Bytes: 100}} {
+		if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, claim, bad); err == nil || got != nil {
+			t.Fatalf("invalid quota %+v: bounds=%+v err=%v", bad, got, err)
+		}
+	}
+	for _, marker := range []time.Time{{}, before.QueuedAt.Add(time.Nanosecond)} {
+		invalid := claim
+		invalid.QueuedAt = marker
+		if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, invalid, quota); err == nil || got != nil {
+			t.Fatalf("invalid exact marker %s: bounds=%+v err=%v", marker, got, err)
+		}
+	}
+	staleMeta := store.RunOutcomeMeta{Code: store.FailureDLQParked, ExactQueuedAt: before.QueuedAt.Add(-time.Millisecond)}
+	published := before.QueuedAt.Add(time.Second)
+	if changed, err := s.UpdateRunOutcome(ctx, id, store.RunStatusFailedResumable, "stale DLQ", staleMeta, []store.RunStatus{store.RunStatusQueued}); err != nil || changed {
+		t.Fatalf("DLQ verdict for different marker: changed=%v err=%v", changed, err)
+	}
+	if rel := store.AsQueuedResumeReleaser(s); rel != nil {
+		if changed, err := rel.ReleaseQueuedRunIfAttempt(ctx, id, store.RunStatusPausedWaitingHuman, "stale refusal", published, staleMeta); err != nil || changed {
+			t.Fatalf("release for different marker: changed=%v err=%v", changed, err)
+		}
+	}
+	if recorder, ok := s.(store.PreEngineRefusalRecorder); ok {
+		if result, err := recorder.RecordPreEngineRefusal(ctx, id, store.PreEngineRefusalRequest{
+			Phase: "usage_cap", Code: store.FailureUsageLimitBlocked, Message: "stale refusal",
+			Disposition: store.PreEngineUsagePark, PublishedAt: published, ExactQueuedAt: staleMeta.ExactQueuedAt,
+		}); err != nil || result.Changed {
+			t.Fatalf("pre-engine refusal for different marker: %+v err=%v", result, err)
+		}
+	}
+	queued, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Status != store.RunStatusQueued || queued.Checkpoint == nil || queued.Checkpoint.InteractionID != pointer || queued.CASVersion != before.CASVersion ||
+		queued.CodemodeBoundsOverride == nil || *queued.CodemodeBoundsOverride != prior {
+		t.Fatalf("losing delivery changed queued run: status=%s checkpoint=%+v version=%d bounds=%+v", queued.Status, queued.Checkpoint, queued.CASVersion, queued.CodemodeBoundsOverride)
+	}
+	want := prior
+	want.StoreBytes = 100
+	got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, claim, quota)
+	if err != nil || got == nil || *got != want {
+		t.Fatalf("winning claim bounds=%+v, want %+v; err=%v", got, want, err)
+	}
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, claim, store.CodemodeScratchLimits{Entries: 99}); err != nil || got != nil {
+		t.Fatalf("duplicate delivery: bounds=%+v err=%v", got, err)
+	}
+	claimed, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Status != store.RunStatusRunning || claimed.Checkpoint == nil || claimed.Checkpoint.NodeID != "gate" || claimed.Checkpoint.InteractionID != "" ||
+		claimed.CASVersion != before.CASVersion+1 || claimed.CodemodeQuotaClaimedAt == nil || !claimed.CodemodeQuotaClaimedAt.Equal(claim.QueuedAt) || claimed.CodemodeBoundsOverride == nil || *claimed.CodemodeBoundsOverride != want {
+		t.Fatalf("claim was not one durable transition: status=%s checkpoint=%+v version=%d bounds=%+v", claimed.Status, claimed.Checkpoint, claimed.CASVersion, claimed.CodemodeBoundsOverride)
+	}
+	if err := s.UpdateRunStatus(ctx, id, store.RunStatusFailedResumable, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := store.CodemodeQuotaResumeClaim{ExpectedStatus: parked.Status, ExpectedVersion: parked.CASVersion}
+	if changed, err := s.UpdateRunStatusIf(ctx, id, store.RunStatusQueued, "", []store.RunStatus{observed.ExpectedStatus}); err != nil || !changed {
+		t.Fatalf("concurrently queue direct resume: changed=%v err=%v", changed, err)
+	}
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, observed, quota); err != nil || got != nil {
+		t.Fatalf("direct claim crossed into queued: bounds=%+v err=%v", got, err)
+	}
+	if err := s.UpdateRunStatus(ctx, id, store.RunStatusFailedResumable, "ABA"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, observed, quota); err != nil || got != nil {
+		t.Fatalf("direct claim crossed a same-status ABA: bounds=%+v err=%v", got, err)
+	}
+	wrongReplay := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusFailedResumable, QueuedAt: claim.QueuedAt}
+	afterABA, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongReplay.ExpectedVersion = afterABA.CASVersion
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, wrongReplay, store.CodemodeScratchLimits{}); err != nil || got != nil {
+		t.Fatalf("spent retry for previous exact marker: bounds=%+v err=%v", got, err)
+	}
+	if afterABA.QueuedAt == nil {
+		t.Fatal("ABA attempt has no marker")
+	}
+	wrongReplay.QueuedAt = *afterABA.QueuedAt
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, wrongReplay, store.CodemodeScratchLimits{}); err != nil || got != nil {
+		t.Fatalf("retry for matching but unclaimed marker: bounds=%+v err=%v", got, err)
+	}
+	parked, err = s.LoadRun(ctx, id)
+	if err != nil || parked.CodemodeBoundsOverride == nil || *parked.CodemodeBoundsOverride != want || parked.Error != "ABA" {
+		t.Fatalf("stale claims changed parked run: run=%+v err=%v", parked, err)
+	}
+	observed.ExpectedVersion = parked.CASVersion
+	want.StoreEntries = 4
+	got, err = claimer.ClaimResumeWithCodemodeQuota(ctx, id, observed, store.CodemodeScratchLimits{Entries: 4})
+	if err != nil || got == nil || *got != want {
+		t.Fatalf("direct claim of observed row: bounds=%+v, want %+v; err=%v", got, want, err)
+	}
+	const withoutPrior = "run-codemode-quota-no-prior"
+	if _, err := s.CreateRun(ctx, withoutPrior, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(ctx, withoutPrior, store.RunStatusFailedResumable, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	withoutBounds, err := s.LoadRun(ctx, withoutPrior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = claimer.ClaimResumeWithCodemodeQuota(ctx, withoutPrior, store.CodemodeQuotaResumeClaim{ExpectedStatus: withoutBounds.Status, ExpectedVersion: withoutBounds.CASVersion}, quota)
+	if err != nil || got == nil || *got != (scripthost.Limits{StoreBytes: 100}) {
+		t.Fatalf("claim without prior bounds: bounds=%+v err=%v", got, err)
 	}
 }
 
@@ -3401,7 +3565,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	notStale := time.Now().Add(-15 * time.Minute)
 
 	// Entry: an unset merge_status is claimable, prior comes back "".
-	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || !claimed || prior != "" {
 		t.Fatalf("first claim = (%t, %q, %v), want (true, \"\", nil)", claimed, prior, err)
 	}
@@ -3409,7 +3573,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		t.Fatal("claim must return its token")
 	}
 	// A held (fresh) claim refuses the second claimant.
-	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || claimed || prior != store.MergeStatusMerging {
 		t.Fatalf("second claim = (%t, %q, %v), want (false, merging, nil)", claimed, prior, err)
 	}
@@ -3445,7 +3609,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		t.Fatalf("merged record damaged: %+v", got)
 	}
 	// And "merged" is terminal for the claim too.
-	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || claimed || prior != store.MergeStatusMerged {
 		t.Fatalf("claim on merged = (%t, %q, %v), want (false, merged, nil)", claimed, prior, err)
 	}
@@ -3459,14 +3623,14 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	if _, err := s.CreateRun(ctx, runID2, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale)
+	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale, store.ExpectedBirth{})
 	if err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
-	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || claimed {
+	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale, store.ExpectedBirth{}); err != nil || claimed {
 		t.Fatalf("fresh claim must hold, got steal (%t, %v)", claimed, err)
 	}
-	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second))
+	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second), store.ExpectedBirth{})
 	if err != nil || !claimed || prior != store.MergeStatusMerging {
 		t.Fatalf("stale steal = (%t, %q, %v), want (true, merging, nil)", claimed, prior, err)
 	}
@@ -3494,7 +3658,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		[]store.MergeStatus{""}); err != nil || !changed {
 		t.Fatalf("seed stampless merging = (%t, %v)", changed, err)
 	}
-	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale)
+	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale, store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("stampless merging must be claimable = (%t, %v)", claimed, err)
 	}
@@ -3510,7 +3674,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: st}, []store.MergeStatus{""}); err != nil || !changed {
 			t.Fatalf("seed %s = (%t, %v)", st, changed, err)
 		}
-		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale)
+		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale, store.ExpectedBirth{})
 		if err != nil || !claimed || prior != st {
 			t.Fatalf("claim on %s = (%t, %q, %v), want (true, %s, nil)", st, claimed, prior, err, st)
 		}
@@ -3553,7 +3717,7 @@ func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC())
+	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC(), store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
@@ -3695,6 +3859,62 @@ func testSessionLedgerSurvivesTheFailureCheckpoint(t *testing.T, s store.RunStor
 	}
 	if r.Checkpoint == nil || !reflect.DeepEqual(r.Checkpoint.SessionLedger, want) {
 		t.Fatalf("session ledger = %+v, want %+v", r.Checkpoint, want)
+	}
+}
+
+// testNodeFailureStreaksFollowTheCheckpoint: the streak of identical failures
+// a tool node's command left is what makes a resumed run — on any replica —
+// read the next identical failure as a repeat rather than as a first one. It
+// rides the checkpoint a resumable failure persists, so every backend must
+// hand it back as written; and the checkpoint written after it replaces it
+// whole, so a node that then succeeded leaves no count behind.
+func testNodeFailureStreaksFollowTheCheckpoint(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-failure-streaks"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	streaks := func() map[string]store.NodeFailureStreak {
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		if r.Checkpoint == nil {
+			t.Fatal("the run lost its checkpoint")
+		}
+		return r.Checkpoint.NodeFailureStreaks
+	}
+	want := map[string]store.NodeFailureStreak{
+		"merge":  {Fingerprint: "sha256:5f0c1f1b8a4a4d5f8b7b6f5a3c2e1d0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b", Count: 1},
+		"verify": {Fingerprint: "sha256:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9", Count: 4},
+	}
+	cp := &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: want}
+	if err := s.FailRunResumable(ctx, runID, cp, "the runner went away", store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	if got := streaks(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("failure streaks after a resumable failure = %+v, want %+v", got, want)
+	}
+
+	// The next checkpoint carries the count the engine reached, not a merge
+	// of the two.
+	next := map[string]store.NodeFailureStreak{"merge": {Fingerprint: want["merge"].Fingerprint, Count: 2}}
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: next},
+		"node \"merge\" execution failed", store.FailureToolFailedPermanent); err != nil {
+		t.Fatalf("FailRunResumable (second): %v", err)
+	}
+	if got := streaks(); !reflect.DeepEqual(got, next) {
+		t.Fatalf("failure streaks after the second failure = %+v, want %+v", got, next)
+	}
+
+	// And a checkpoint with none leaves none: a node's success ends its streak
+	// durably.
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "done"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if got := streaks(); len(got) != 0 {
+		t.Fatalf("failure streaks survived a checkpoint that carries none: %+v", got)
 	}
 }
 

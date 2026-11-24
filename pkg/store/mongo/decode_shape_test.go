@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -163,6 +164,37 @@ func TestCheckpointOutputsDecodeShape(t *testing.T) {
 	}
 	if _, ok := detail["nested"].(map[string]any); !ok {
 		t.Fatalf("detail.nested decoded as %T, want map[string]any", detail["nested"])
+	}
+}
+
+// TestNodeFailureStreaksBSONRoundTrip pins the wire shape of the streak a
+// resumed run reads its identical-repeat count from: the map and both fields
+// come back as written through the driver's encode and the cursor's decode,
+// and a document written before the field existed decodes to no streak.
+func TestNodeFailureStreaksBSONRoundTrip(t *testing.T) {
+	want := map[string]store.NodeFailureStreak{
+		"merge": {Fingerprint: "sha256:5f0c1f1b8a4a4d5f8b7b6f5a3c2e1d0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b", Count: 2},
+	}
+	in := store.Run{ID: "r-streaks", Status: store.RunStatusFailedResumable, FailureCode: store.FailureInterrupted,
+		Checkpoint: &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: want}}
+	var out store.Run
+	decodeLikeCursor(t, in, &out)
+	if out.Checkpoint == nil || !reflect.DeepEqual(out.Checkpoint.NodeFailureStreaks, want) {
+		t.Fatalf("failure streaks after the BSON round trip = %+v, want %+v", out.Checkpoint, want)
+	}
+
+	raw, err := bson.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("node_failure_streaks")) {
+		t.Error("the document does not carry the field under node_failure_streaks — the name the JSON store and the API schema use")
+	}
+
+	var legacy store.Run
+	decodeLikeCursor(t, store.Run{ID: "r-legacy", Checkpoint: &store.Checkpoint{NodeID: "merge"}}, &legacy)
+	if legacy.Checkpoint == nil || legacy.Checkpoint.NodeFailureStreaks != nil {
+		t.Fatalf("a checkpoint with no streak decodes to %+v, want none", legacy.Checkpoint)
 	}
 }
 

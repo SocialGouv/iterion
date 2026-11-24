@@ -32,6 +32,12 @@ var ModelTokenLimitForModel = apikit.ModelTokenLimitForModel
 // documentation; see internal/apikit/effort.go for sources.
 var EffortCapabilities = apikit.EffortCapabilities
 
+// NormalizeModelName resolves an exact registered name or alias, then removes
+// one trailing eight-digit date, without resolving again: "opus-20260101"
+// becomes "opus". This is lexical normalization, not a canonical registry
+// lookup. Unknown spellings retain their case; surrounding space is trimmed.
+var NormalizeModelName = apikit.NormalizeModelName
+
 // AnthropicWireProfile describes the Messages API requirements of a model.
 type AnthropicWireProfile = apikit.AnthropicWireProfile
 

@@ -58,8 +58,8 @@ green.
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
   `nats-conformance` once an admin adds it to ruleset 18857412.
   `test` and `race` are AGGREGATOR CONTEXTS, not test-running jobs: the work
-  lives in the gated legs (`test-unit`, the `test-e2e` matrix, `studio`, the
-  `race-shard` matrix) that run in the queue behind them, and each aggregator
+  lives in the gated legs (the `test-unit` matrix, the `test-e2e` matrix,
+  `studio`, the `race-shard` matrix) that run in the queue behind them, and each aggregator
   re-verifies every leg's conclusion under `if: ${{ !cancelled() && <tap skip> }}`
   — the run-state clause combined with the one verified skip
   ([below](#the-one-verified-skip-the-homebrew-tap-update)), so an aggregator
@@ -260,8 +260,8 @@ gate.** What it owes:
 1. **The other six required checks green, read as a SET** — `gh pr checks`, not
    the one you are waiting on. The required set is exactly `test`, `race`,
    `vendor-check`, `mongo-conformance`, `golangci`, `brand` and `revi/review`
-   (ruleset 18857412); the legs behind the two aggregators (`test-unit`,
-   `test-e2e`, `studio`, `race-shard (n)`) are deliberately **not** required and
+   (ruleset 18857412); the legs behind the two aggregators (`test-unit (n)`,
+   `test-e2e (n)`, `studio`, `race-shard (n)`) are deliberately **not** required and
    are where the work is. Queued, cancelled, missing **or skipped** is not
    success: a job skipped by a job-level `if:` reports SUCCESS, so a required
    check that never ran satisfies the gate

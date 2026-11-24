@@ -51,13 +51,13 @@ func TestBuildExecutor_TheContentBoundaryRefusesAVendorClassifier(t *testing.T) 
 			agent.Backend = "claw"
 			agent.Model = "openai_compatible/scaleway/glm-5.3"
 			agent.Tools = []string{}
-			_, err = BuildExecutor(ExecutorSpec{
+			_, err = BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 				Ctx:             secrets.WithCredentials(context.Background(), mixed),
 				Store:           st,
 				RunID:           "run-classifier-boundary",
 				Workflow:        &ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"gw": agent}},
 				ContentBoundary: row.boundary,
-			})
+			}))
 			if !row.refused {
 				if err != nil {
 					t.Fatalf("BuildExecutor: %v", err)

@@ -120,10 +120,15 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 			// command keeps the script's variable reads, so it runs with the
 			// same delivery.
 			lastStdout, lastStderr, lastCmd, data := res.stdout, res.stderr, res.repair, res.repairData
+			previousFingerprint := ""
 			for i := 0; i < node.Recovery.MaxRepairAttempts; i++ {
-				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd, data)
+				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd, data, &previousFingerprint)
 				if rerr != nil {
-					e.logVA(node.ID, fmt.Sprintf("self-repair attempt %d aborted: %v", i+1, rerr))
+					if errors.Is(rerr, errSelfRepairUnchanged) {
+						e.logVA(node.ID, fmt.Sprintf("self-repair stopped at attempt %d: proposal and failure evidence unchanged; duplicate command not executed", i+1))
+					} else {
+						e.logVA(node.ID, fmt.Sprintf("self-repair attempt %d aborted: %v", i+1, rerr))
+					}
 					break
 				}
 				if ambiguousEnd(repairRes.runErr) {
@@ -184,6 +189,16 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 
 	// required / recover: fail (resumable). The recipe's stderr is the most
 	// useful diagnostic; surface it alongside the unmet-postcondition reason.
+	//
+	// A recipe that itself failed stays in the chain: the postcondition is
+	// what judges the node, and the recipe's own end — the process's exit
+	// status, or the sandbox's word that its end was never proven — is still
+	// a fact a reader of the chain asks for (errors.As), which a recipe that
+	// exited 0 on an unmet goal does not carry.
+	if res.runErr != nil {
+		return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s; the recipe failed: %w\nstdout: %s\nstderr: %s",
+			node.ID, policy, lastRung, res.runErr, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
+	}
 	return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s\nstdout: %s\nstderr: %s",
 		node.ID, policy, lastRung, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
 }
@@ -269,6 +284,13 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 		return body.shown()
 	}
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
+		// Before the check runs: an output field its producer declared and
+		// did not supply is refused, as in the node's own command — an
+		// oracle that compares against the reference's text answers about
+		// nothing.
+		if err := e.owedOutputRefs(ctx, "postcondition", node.PostcondRefs); err != nil {
+			return toolCommand{}, nil, err
+		}
 		// A postcondition is the AUTHOR's text, like the node's command: its
 		// own references resolve — the env-only class by environment — and
 		// a placeholder that arrived through data stays text.
@@ -312,7 +334,7 @@ func ambiguousEnd(err error) bool {
 // aware, secret-materialised). The resolved corrected command is emitted as
 // a tool_called event — the model fixes the recipe, it never does the side
 // effect blind. Returns the corrected command + its run result.
-func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string, data repairData) (string, recipeResult, error) {
+func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string, data repairData, previousFingerprint *string) (string, recipeResult, error) {
 	modelSpec := e.recoveryModel(node)
 	if modelSpec == defaultVerifiedActionModel && anthropicFunding(ctx) == "" {
 		return "", recipeResult{}, fmt.Errorf("the recovery model is the default (%s) and no anthropic credential serves it — set recovery.model or ITERION_VERIFIED_ACTION_MODEL", defaultVerifiedActionModel)
@@ -368,6 +390,16 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 	corrected = strings.TrimSpace(corrected)
 	if corrected == "" {
 		return "", recipeResult{}, fmt.Errorf("self-repair returned an empty command")
+	}
+
+	// Compare before execution: a repeated answer is not permission to repeat
+	// the effect. Full evidence participates even when the prompt clips it.
+	fingerprint := selfRepairFingerprint(corrected, stdout, stderr, lastCmd)
+	if previousFingerprint != nil {
+		if *previousFingerprint == fingerprint {
+			return corrected, recipeResult{}, errSelfRepairUnchanged
+		}
+		*previousFingerprint = fingerprint
 	}
 
 	// Run the corrected command deterministically as a shell command. The

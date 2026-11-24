@@ -35,7 +35,7 @@ import (
 // refuses to let slide: an unbaked package is one a published binary cannot
 // resolve, with nothing on the resolution path saying why.
 //
-//go:embed all:forgejo
+//go:embed all:alertmanager all:forgejo all:jira all:linear all:mattermost all:rss all:sentry all:slack
 var files embed.FS
 
 // FS is the baked packages, rooted so that a connector id is a directory in

@@ -1,0 +1,86 @@
+schema_version: 1
+connector: jira
+domain: issues
+# Written by hand from Jira Cloud's REST v3 reference — the enhanced JQL search,
+# operationId searchAndReconsileIssuesUsingJql in
+# https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json
+# (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/#api-rest-api-3-search-jql-get).
+# The older GET /rest/api/3/search (startAt/total) is marked deprecated there,
+# "currently being removed" (https://developer.atlassian.com/changelog/#CHANGE-2046).
+operations:
+- id: jira.issue.search
+  source_operation_id: searchAndReconsileIssuesUsingJql
+  summary: Search issues with JQL, page by page through nextPageToken.
+  description: >-
+    Jira Cloud's enhanced search. The JQL must be bounded (a search
+    restriction, not only an ORDER BY), and its ORDER BY may name at most seven
+    fields. Recent updates may not be visible in the results yet: the search
+    index is eventually consistent. A 3LO token needs the classic scope
+    read:jira-work.
+  resource: issue
+  verb: search
+  tags: [issues]
+  http:
+    method: GET
+    path: /search/jql
+  params:
+  - key: jql
+    name: jql
+    in: query
+    type: string
+    required: true
+    description: >-
+      The JQL. Jira refuses an unbounded query, so this package requires one.
+      A quoted date is read in the searching user's profile time zone, an
+      unquoted number as epoch milliseconds.
+  - key: fields
+    name: fields
+    in: query
+    type: string
+    description: >-
+      A comma-separated list of the fields to return per issue (`*all`,
+      `*navigable`, a field id, `-field` to exclude). Jira returns only `id`
+      when it is omitted.
+  - key: maxResults
+    name: maxResults
+    in: query
+    type: integer
+    description: >-
+      The page size Jira tries to honour (50 by default); it may answer fewer
+      issues per page when many fields are asked for.
+  - key: nextPageToken
+    name: nextPageToken
+    in: query
+    type: string
+    description: >-
+      The previous page's nextPageToken. Jira omits it on the last page, and a
+      token expires after seven days.
+  - key: expand
+    name: expand
+    in: query
+    type: string
+    description: A comma-separated list of expansions (renderedFields, names, changelog, …).
+  pagination:
+    # nextPageToken is absent on the last page (the reference's own words), so
+    # the walk ends there; `isLast` says the same and is not read.
+    style: cursor
+    cursor_param: nextPageToken
+    cursor_field: nextPageToken
+    items_field: issues
+    size_param: maxResults
+    default_size: 100
+    # A scan stops here and reports itself incomplete rather than spending the
+    # site's rate limit on an unbounded result.
+    max_pages: 20
+  results:
+  - status: 200
+    description: A page of issues under `issues`, with `nextPageToken` and `isLast`.
+  errors:
+  - status: 400
+    class: bad_request
+    description: The JQL is invalid or unbounded.
+  - status: 401
+    class: unauthorized
+    description: The credential is missing or rejected.
+  effect: read
+  deterministic: true

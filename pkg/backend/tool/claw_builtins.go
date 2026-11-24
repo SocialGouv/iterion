@@ -115,7 +115,7 @@ func RegisterClawBuiltinsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv
 		{tool: clawtools.WriteFileTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace(), "path"))
 		}},
-		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+		{tool: workspaceGlobTool(), concurrentSafe: true, exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceGlob(ctx, input, scope)
 		}},
 		{tool: clawtools.GrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
@@ -171,7 +171,7 @@ func RegisterClawWorkspaceDiagnosticsWithScope(reg *Registry, scope *ReadScope, 
 		return executeWorkspaceBash(ctx, input, workspace(), bashExtraEnv)
 	}
 	return registerClawSpecs(reg, []clawBuiltinSpec{
-		{tool: workspaceGrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+		{tool: workspaceGrepTool(), concurrentSafe: true, exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceGrep(ctx, input, scope)
 		}},
 		{tool: diagnosticShellTool(), exec: bashExec},
@@ -223,7 +223,7 @@ func executeWorkspaceBash(ctx context.Context, input map[string]any, workspace s
 // extraction.
 func registerClawSpecs(reg *Registry, specs []clawBuiltinSpec) error {
 	for _, s := range specs {
-		if err := RegisterClawTool(reg, s.tool, s.exec); err != nil {
+		if err := registerClawTool(reg, s); err != nil {
 			return fmt.Errorf("register %q: %w", s.tool.Name, err)
 		}
 	}
@@ -336,7 +336,11 @@ func clawComputerUseAdapter(fn func(context.Context, map[string]any) (clawtools.
 // registry. Use this to add specialised tools that RegisterClawBuiltins
 // does not include by default.
 func RegisterClawTool(reg *Registry, t api.Tool, exec func(ctx context.Context, input map[string]any) (string, error)) error {
-	schemaJSON, err := json.Marshal(t.InputSchema)
+	return registerClawTool(reg, clawBuiltinSpec{tool: t, exec: exec})
+}
+
+func registerClawTool(reg *Registry, spec clawBuiltinSpec) error {
+	schemaJSON, err := json.Marshal(spec.tool.InputSchema)
 	if err != nil {
 		return fmt.Errorf("marshal schema: %w", err)
 	}
@@ -350,14 +354,15 @@ func RegisterClawTool(reg *Registry, t api.Tool, exec func(ctx context.Context, 
 		if args == nil {
 			args = map[string]any{}
 		}
-		return exec(ctx, args)
+		return spec.exec(ctx, args)
 	}
-	return reg.RegisterBuiltin(t.Name, t.Description, schemaJSON, wrapped)
+	return reg.registerBuiltin(spec.tool.Name, spec.tool.Description, schemaJSON, wrapped, spec.concurrentSafe)
 }
 
 type clawBuiltinSpec struct {
-	tool api.Tool
-	exec func(ctx context.Context, input map[string]any) (string, error)
+	tool           api.Tool
+	exec           func(ctx context.Context, input map[string]any) (string, error)
+	concurrentSafe bool
 }
 
 // RegisterClawSimple registers the no-dependency claw tools that don't
@@ -571,7 +576,8 @@ func RegisterClawToolSearch(reg *Registry, snapshot ToolSnapshot) error {
 			return "", err
 		}
 		if executable, ok := NodeExecutableToolsFrom(ctx); ok {
-			return enrichToolSearchResult(raw, tools, executable)
+			catalogueOnly, deferred := CatalogueOnlyToolsFrom(ctx)
+			return enrichToolSearchResult(raw, tools, executable, catalogueOnly, deferred)
 		}
 		return raw, nil
 	}

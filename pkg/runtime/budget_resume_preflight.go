@@ -14,7 +14,7 @@ import (
 // and before restoreRunEnv/startSandbox. A redelivery that cannot start its
 // next node therefore reaches the normal budget_exceeded + run_failed
 // disposition without provisioning a sandbox merely to rediscover the cap.
-func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) error {
+func (e *Engine) resumeBudget(r *store.Run) *SharedBudget {
 	if e == nil || e.workflow == nil || r == nil || r.Checkpoint == nil {
 		return nil
 	}
@@ -34,35 +34,33 @@ func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) 
 		})
 	}
 
+	return b
+}
+
+func (e *Engine) resumeBudgetStop(r *store.Run) (*budgetCheckResult, bool) {
+	b := e.resumeBudget(r)
+	if b == nil {
+		return nil, false
+	}
 	checks := b.Check()
 	if exc := findExceeded(checks); exc != nil {
-		// A run already inside its bounded exit allowance must take the same
-		// path as an uninterrupted run. Let resume rebuild its state and reach
-		// checkBudgetBeforeExec, which grants and audits the grace while the
-		// loop guard prevents another iteration from starting.
 		if _, ok := e.withinSharedBudgetGrace(b); ok {
-			return nil
+			return nil, false
 		}
-		// The pause policy parks the run again instead of ending it: a
-		// resume without the raise is the operator's first reflex, and
-		// converting the park into a failure there would make the policy
-		// worse than the fail it replaced.
-		if e.budgetPausePolicy() {
-			return e.pauseSpentBudgetBeforeResume(ctx, r, exc, false)
-		}
-		return e.finalizeSpentBudgetBeforeResume(ctx, r, exc, false)
+		return exc, false
 	}
-	// The in-run pre-exec gate refuses a new node at 90% to reserve room for
-	// concurrent overage. Reproduce that decision here too: provisioning a
-	// sandbox cannot change the accounting and would immediately hit the same
-	// hard-limit branch.
-	if hard := findHardLimited(checks); hard != nil {
-		if e.budgetPausePolicy() {
-			return e.pauseSpentBudgetBeforeResume(ctx, r, hard, true)
-		}
-		return e.finalizeSpentBudgetBeforeResume(ctx, r, hard, true)
+	return findHardLimited(checks), true
+}
+
+func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) error {
+	check, hard := e.resumeBudgetStop(r)
+	if check == nil {
+		return nil
 	}
-	return nil
+	if e.budgetPausePolicy() {
+		return e.pauseSpentBudgetBeforeResume(ctx, r, check, hard)
+	}
+	return e.finalizeSpentBudgetBeforeResume(ctx, r, check, hard)
 }
 
 // pauseSpentBudgetBeforeResume re-parks a policy-pause run whose budget is

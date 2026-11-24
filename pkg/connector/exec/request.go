@@ -58,7 +58,11 @@ func (e *Executor) buildRequest(ctx context.Context, pkg *spec.Package, op spec.
 		req.Header.Set("Content-Type", contentType)
 	}
 	accept := op.HTTP.Accept
-	if accept == "" {
+	switch {
+	case accept != "":
+	case op.HTTP.ResponseFormat == spec.ResponseFeed:
+		accept = feedAccept
+	default:
 		accept = "application/json"
 	}
 	req.Header.Set("Accept", accept)
@@ -257,6 +261,17 @@ func (e *Executor) resolveURL(pkg *spec.Package, op spec.Operation, byKey map[st
 			Class:   spec.ErrBadRequest,
 			Message: fmt.Sprintf("connector %q is operator-supplied and the connection names no instance URL", pkg.Connector.ID),
 		}
+	}
+	if op.HTTP.AtBaseURL {
+		// The operator's URL is the resource: sent as written — its path,
+		// its trailing slash, its query — with nothing joined to it. The
+		// package's validation keeps a prefix and path or query parameters
+		// off such an operation.
+		u, err := url.Parse(base)
+		if err != nil {
+			return nil, &Error{Class: spec.ErrBadRequest, Message: fmt.Sprintf("instance URL %q does not parse: %v", base, err)}
+		}
+		return u, nil
 	}
 	u, err := url.Parse(strings.TrimRight(base, "/"))
 	if err != nil {
@@ -684,6 +699,8 @@ func applyCredential(req *http.Request, pkg *spec.Package, op spec.Operation, cr
 		}
 	}
 	switch scheme.Kind {
+	case spec.AuthNone:
+		return nil
 	case spec.AuthBasic:
 		if cred.Username == "" {
 			return &Error{Class: spec.ErrUnauthorized, Message: "basic auth needs a username"}
@@ -715,6 +732,18 @@ func applyCredential(req *http.Request, pkg *spec.Package, op spec.Operation, cr
 		case "header":
 			req.Header.Set(scheme.Name, value)
 		case "query":
+			if op.HTTP.AtBaseURL {
+				// The operator's query is sent as written: the key is
+				// appended, never re-encoded with it — a re-parse drops a
+				// pair Go's parser refuses (`a=1;c=3`) and reorders the rest.
+				pair := url.QueryEscape(scheme.Name) + "=" + url.QueryEscape(value)
+				if req.URL.RawQuery == "" {
+					req.URL.RawQuery = pair
+				} else {
+					req.URL.RawQuery += "&" + pair
+				}
+				break
+			}
 			q := req.URL.Query()
 			q.Set(scheme.Name, value)
 			req.URL.RawQuery = q.Encode()

@@ -712,7 +712,7 @@ before doing work. Raising it to 60 was the mechanical requirement to continue.
 - **Cost note:** $8.40 for a 23-line mechanical fix. Doki's opus review loop is
   expensive; for pure mechanical drift a manual edit is ~free. Reserve Doki for
   genuine doc-vs-code mismatches that need judgment, not trivial find-replace.
-- Engine health clean: no `StructuredOutput` error; reviewer_gpt (claw/forfait)
+- Engine health clean: no `StructuredOutput` error; reviewer (claw/forfait)
   fine; the `fix_claude` Read-before-Edit + grep-exit-2 errors were transient
   self-corrections, not failures.
 
@@ -782,7 +782,7 @@ internal links/anchors are a universal doc-drift class, not iterion-specific.
   fix sets `WithOutputFormat` in Pass-1 even with tools, returns Pass-1's
   structured output directly when valid, and keeps the two-pass `formatOutput`
   as a fallback (max-turns / sandbox edge cases). Validated on run `019ec727`:
-  both `reviewer_claude` (reader) and `prepare_commit` (writer) →
+  both `reviewer_alternate` (reader) and `prepare_commit` (writer) →
   `formatting_pass_used=false`, no error, valid output; converged; A/B vs the
   pre-change binary shows no regression. Saves one LLM round-trip per
   schema+tools claude_code node across all bots.
@@ -817,7 +817,7 @@ the real-board run above — kept for the C082 proof + the gitignore finding.)
   `code_scope_globs=pkg/store/**/*.go,pkg/runtime/**/*.go,pkg/dsl/ir/**/*.go`,
   `merge_into=none`. claude_code/opus + claw `gpt-5.5` forfait.
 - Result: **converged in ~2 rounds to a cross-family double-approval**, no
-  oscillation. reviewer_gpt audited 18 symbol refs in `docs/resume.md`,
+  oscillation. reviewer audited 18 symbol refs in `docs/resume.md`,
   confirmed them in the Go code, and concluded "No documentation changes
   needed" → `commit_changes` a correct no-op. Correct verification, no
   hallucinated drift.

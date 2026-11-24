@@ -237,13 +237,17 @@ codemode_mode = "on" | "off" ;
 codemode_decl = "codemode" ":" codemode_mode NEWLINE
               | "codemode" ":" NEWLINE [ INDENT { codemode_prop } DEDENT ] ;
 codemode_prop = "mode" ":" codemode_mode NEWLINE
+              | "defer" ":" codemode_mode NEWLINE
               | "tool_calls" ":" INT_LIT NEWLINE
+              | "concurrent_tool_calls" ":" INT_LIT NEWLINE
               | "wall" ":" str_value NEWLINE
               | "cpu" ":" str_value NEWLINE
               | "memory" ":" INT_LIT NEWLINE
               | "script_bytes" ":" INT_LIT NEWLINE
               | "result_bytes" ":" INT_LIT NEWLINE
-              | "tool_result_bytes" ":" INT_LIT NEWLINE ;
+              | "tool_result_bytes" ":" INT_LIT NEWLINE
+              | "store_entries" ":" INT_LIT NEWLINE
+              | "store_bytes" ":" INT_LIT NEWLINE ;
 loop_budget_guard_mode = "off" | "on" ;
 repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;
@@ -428,7 +432,7 @@ use_decl = "use" IDENT "as" IDENT [ with_block ] NEWLINE ;
 workflow_decl = "workflow" IDENT ":" NEWLINE [ INDENT
                   { workflow_member }
                 DEDENT ] ;
-workflow_member = vars_decl | attachments_decl | mcp_config_block
+workflow_member = vars_decl | attachments_decl | mcp_config_block | business_stores_block
                 | "entry" ":" node_ref NEWLINE
                 | "contract" ":" IDENT NEWLINE
                 | "default_backend" ":" str_value NEWLINE
@@ -450,6 +454,13 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "ask" ":" string_list NEWLINE
                 | "deny" ":" string_list NEWLINE
                 | sandbox_decl | edge ;
+
+business_stores_block = "business_stores" ":" NEWLINE [ INDENT
+                         { business_store_entry } DEDENT ] ;
+business_store_entry = str_value ":" NEWLINE [ INDENT { business_store_prop } DEDENT ] ;
+business_store_prop = "kind" ":" str_value NEWLINE
+                    | "namespace" ":" str_value NEWLINE
+                    | "required" ":" BOOL_LIT NEWLINE ;
 
 worktree_mode = "auto" | "none" ;
 

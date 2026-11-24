@@ -171,6 +171,33 @@ describe("runChat messagesFromEvents", () => {
     }
   });
 
+  it("counts the calls the model made, not a program's nested calls", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer" }),
+        evt("tool_started", {
+          node_id: "explorer",
+          data: { tool: "codemode", tool_use_id: "toolu_1", input: { source: "1" } },
+        }),
+        evt("tool_started", {
+          node_id: "explorer",
+          data: { tool: "read_file", tool_use_id: "codemode_X_1", parent_tool_use_id: "toolu_1", input: { file_path: "a.md" } },
+        }),
+        evt("tool_started", {
+          node_id: "explorer",
+          data: { tool: "grep", tool_use_id: "codemode_X_2", parent_tool_use_id: "toolu_1", input: { pattern: "x" } },
+        }),
+      ],
+      snapshot: null,
+    });
+    const banner = out[0];
+    if (banner?.kind !== "banner") throw new Error("expected banner");
+    expect(banner.progress?.toolCount).toBe(1);
+    expect(banner.progress?.latestTool).toBe("codemode");
+  });
+
   it("re-orders tool_started arriving before node_started by seq", () => {
     nextSeq = 1;
     // seq order: node_started=2, tool_started=1 — tool arrives first

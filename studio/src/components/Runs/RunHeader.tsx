@@ -18,6 +18,7 @@ import {
 import WSStatusDot from "@/components/shared/WSStatusDot";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
+import { runCanAct } from "@/hooks/useRunCanAct";
 import { formatCredentialFingerprint, formatDateTime, formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -43,6 +44,7 @@ import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import AssistantWatchBadge from "./runHeader/AssistantWatchBadge";
+import RunOriginLostBanner from "./runHeader/RunOriginLostBanner";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
 import { isDeletable, isResumable } from "./runStatusActions";
@@ -81,8 +83,9 @@ export default function RunHeader({ run, active, wsState, viewer, onResetLayout,
   // (ADR-148): a viewer — a team viewer, an org-admin-lineage reader, an
   // org-shared reader — reads but never acts, so every action affordance
   // below is gated on it instead of proposing commands the ladder will
-  // 403. Undefined on auth-less local servers: today's affordances.
-  const canAct = viewer ? viewer.role !== "viewer" : true;
+  // 403. Undefined on auth-less local servers: today's affordances. A lost
+  // socket (scope_lost) acts on nothing: the ID may name another run now.
+  const canAct = runCanAct(viewer, wsState);
 
   // canCancel covers every state where a cancel actually does something
   // distinct from Resume:
@@ -506,6 +509,9 @@ export default function RunHeader({ run, active, wsState, viewer, onResetLayout,
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
+      {/* Whatever the run's status: a socket closed scope_lost never
+          reconnects, so the view says its data is the original run's. */}
+      <RunOriginLostBanner state={wsState} />
       {/* Headline result-links (opened PR, live deploy, declared
           deliverable) and the files the run left behind — the run's
           "what did it produce" at a glance, like a CI run's summary,

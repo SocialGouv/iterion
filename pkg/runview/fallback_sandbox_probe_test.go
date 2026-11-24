@@ -84,7 +84,7 @@ func buildWithCodexFallback(t *testing.T, drivers map[string]sandbox.DriverConst
 		RunFallback:    []ir.Fallback{{Backend: "codex", Model: "gpt-5.4"}},
 		SandboxDrivers: drivers,
 	}
-	if _, err := BuildExecutor(spec); err != nil {
+	if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 	evts, err := st.LoadEvents(context.Background(), spec.RunID)

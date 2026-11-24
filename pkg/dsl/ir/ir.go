@@ -37,6 +37,7 @@ type Workflow struct {
 	Secrets         map[string]*Secret     // secret name → resolved secret declaration
 	Presets         map[string]Preset      // preset name → resolved preset values (var name → typed value)
 	Attachments     map[string]*Attachment // attachment name → resolved attachment
+	BusinessStores  []BusinessStore        // expected stores, normalized by the launch authority
 	Loops           map[string]*Loop       // loop name → loop definition
 	Foreaches       map[string]*Foreach    // foreach name → sequential-iteration definition
 	Budget          *Budget                // workflow budget (nil if not set)
@@ -59,6 +60,15 @@ type Workflow struct {
 	AutoMemory     string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	AmbientContext string // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset)
 	Codemode       string // codemode tool loop default for agent/judge nodes: on|off, lowercased and trimmed at the carry ("" = unset → off; no environment rung, ADR-132)
+	// CodemodeDefer is the workflow-level default for deferring a node's own
+	// `tools:` list to the codemode catalogue: on|off, normalized like
+	// Codemode ("" = unset → off). A node that turns codemode on itself
+	// inherits it, the way it inherits the workflow's bounds. ADDITIVE on the
+	// compiled form: a consumer built before the field existed reads nothing
+	// here and serves today's declared-tools behaviour, which is the safe
+	// fallback — deferral is an optimization over the same tool set, never a
+	// capability a stale reader would lose.
+	CodemodeDefer string
 	// CodemodeBounds is the workflow-level DEFAULT bound set its agent and
 	// judge nodes inherit field by field (ResolveCodemodeBounds). nil = none
 	// declared, which leaves every field to scripthost.DefaultLimits.
@@ -123,6 +133,14 @@ type MCPPreparation struct {
 type WithdrawnMCPServer struct {
 	Name   string
 	Source string
+}
+
+// BusinessStore is a workflow declaration, independent of a storage backend.
+type BusinessStore struct {
+	ID        string
+	Kind      string
+	Namespace string
+	Required  bool
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +301,13 @@ type AgentNode struct {
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
+	// CodemodeDefer defers this node's own `tools:` list to the codemode
+	// catalogue: on|off, normalized like Codemode ("" = inherit workflow).
+	// ADDITIVE on the compiled form: a consumer built before the field
+	// existed reads nothing here and serves today's declared-tools
+	// behaviour, which is the safe fallback — deferral is an optimization
+	// over the same tool set, never a capability a stale reader loses.
+	CodemodeDefer string
 	// CodemodeBounds is this node's declared bound set; nil inherits the
 	// workflow's, field by field. Clamped to scripthost.Ceiling in the
 	// parent at spawn, with C347 at compile where a value is above it.
@@ -333,6 +358,13 @@ type JudgeNode struct {
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
+	// CodemodeDefer defers this node's own `tools:` list to the codemode
+	// catalogue: on|off, normalized like Codemode ("" = inherit workflow).
+	// ADDITIVE on the compiled form: a consumer built before the field
+	// existed reads nothing here and serves today's declared-tools
+	// behaviour, which is the safe fallback — deferral is an optimization
+	// over the same tool set, never a capability a stale reader loses.
+	CodemodeDefer string
 	// CodemodeBounds is this node's declared bound set; nil inherits the
 	// workflow's, field by field. Clamped to scripthost.Ceiling in the
 	// parent at spawn, with C347 at compile where a value is above it.
@@ -545,8 +577,8 @@ const (
 type RecoverySpec struct {
 	MaxRepairAttempts int      // rung 3 (self-repair) bound
 	MaxAgentAttempts  int      // rung 4 (agent recovery) bound; 0 = OFF
-	Model             string   // recovery LLM spec (empty = node/workflow default)
-	AgentTools        []string // rung-4 toolset (empty = node capabilities)
+	Model             string   // recovery LLM spec (empty = ITERION_VERIFIED_ACTION_MODEL, else the engine's default)
+	AgentTools        []string // rung-4 toolset, handed verbatim as the synthetic recovery agent's `tools:` (empty = on claw no tool at all, or `codemode` alone under the workflow's `codemode: on`, C352; the backend's own roster elsewhere)
 }
 
 // SubbotNode runs another .bot as a nested run. The runtime resolves With into

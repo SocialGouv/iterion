@@ -193,7 +193,7 @@ func TestWriteAttachmentReservedIterionNameFailsClean(t *testing.T) {
 
 	// No residue: neither the bytes file nor a record under
 	// attachments/bad/.
-	badDir := s.attachmentDir("run-res", "bad")
+	badDir := filepath.Join(s.runDir("run-res"), "attachments", "bad")
 	if _, lerr := os.Lstat(filepath.Join(badDir, ".iterion")); !os.IsNotExist(lerr) {
 		t.Errorf("bytes residue at %s: lstat err = %v", filepath.Join(badDir, ".iterion"), lerr)
 	}
@@ -226,7 +226,7 @@ func TestListAttachmentsSkipsIterionFileResidue(t *testing.T) {
 		t.Fatalf("WriteAttachment good: %v", err)
 	}
 
-	badDir := s.attachmentDir("run-res2", "bad")
+	badDir := filepath.Join(s.runDir("run-res2"), "attachments", "bad")
 	if err := os.MkdirAll(badDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

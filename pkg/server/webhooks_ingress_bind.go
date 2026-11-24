@@ -89,8 +89,10 @@ func (s *Server) ingressPackage(ctx context.Context, teamID string, cfg *webhook
 	if pkg.Ingress == nil {
 		return nil, "", "", fmt.Errorf("%w: the %s package declares no ingress (triggers.yaml `ingress:`): it receives no delivery", errIngressRequest, conn.Connector)
 	}
-	if len(pkg.Triggers) == 0 {
-		return nil, "", "", fmt.Errorf("%w: the %s package declares no trigger: every delivery would be filtered", errIngressRequest, conn.Connector)
+	if len(pkg.IngressTriggers()) == 0 {
+		// A polled trigger is fed by its poller, so a package whose only
+		// triggers are polled would filter every delivery this ingress takes.
+		return nil, "", "", fmt.Errorf("%w: the %s package declares no trigger a delivery can reach (a polled trigger is fed by its poller): every delivery would be filtered", errIngressRequest, conn.Connector)
 	}
 	digest, err := spec.IngressDigest(pkg.Ingress)
 	if err != nil {

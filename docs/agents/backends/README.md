@@ -13,8 +13,10 @@ native harness. Leaves, one line each:
 | [facade-substitution.md](facade-substitution.md) | GLM/Kimi served under a claude/gpt label, or a base URL the substitution verdict ignores. |
 | [metering.md](metering.md) | Trusted delegate counters, reserved output metadata, interaction spend and recovery retry accounting. |
 | [plugins-compression.md](plugins-compression.md) | Output compression (rtk), secret substitution, or a plugin changing what a node sees. |
-| [codemode.md](codemode.md) | The model's code calling the node's own tools: the dispatcher door and its context contract, why confinement is kernel-side, and what is NOT built yet (ADR-165). |
-| [codemode-confinement.md](codemode-confinement.md) | The script host's ten bounds, the kernel mechanism behind each, the witness that was seen to fail without it, and the three statements measurement refuted. |
+| [codemode.md](codemode.md) | Script dispatch, context ownership and kernel confinement (ADR-165). |
+| [codemode-discovery.md](codemode-discovery.md) | How a model learns a program's callable tools: the byte-stable index in the description, `call.describe`/`call.search`, the catalogue bounds (CM-3). |
+| [Batches](codemode-concurrency.md) / [run state](codemode-state.md) / [events](codemode-events.md) | Parallel calls, JSON bank, program events. |
+| [codemode-confinement.md](codemode-confinement.md) | The script host's ten bounds, the kernel mechanism behind each, the witness seen failing without it, the three statements measurement refuted. |
 | [clawfold.md](clawfold.md) | Folding claw-code-go into `pkg/claw`: the computed membership, the per-file blob and inverse proofs, the slices and their floor, the switch and its residuals. |
 | [sandbox.md](sandbox.md) | `SANDBOX_*` and `ATTACHMENT*` failures, host binds dropped or carried, changing what a node may execute. |
 | [exec-environment.md](exec-environment.md) | Kubernetes per-call environment transport, native image pair, operator controls and qualification. |

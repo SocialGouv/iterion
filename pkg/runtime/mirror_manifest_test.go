@@ -484,7 +484,11 @@ func TestChildInPlaceRestoreResyncsTheManifest(t *testing.T) {
 		eng := New(wf, st, ex, WithWorkDir(work), WithBundle(bundles[name]), WithParentRunID(parent), WithSandboxOverride("none"), WithSubbotRunner(func(ctx context.Context, req SubbotRequest) (map[string]any, error) {
 			return map[string]any{}, launch(ctx, req.Source, req.ParentRunID)
 		}))
-		return eng.Run(ctx, name, nil)
+		inv, err := prepareResourceInvocation(ctx, st, name, parent)
+		if err != nil {
+			return err
+		}
+		return eng.Run(inv.Context, name, nil)
 	}
 	if err := launch(context.Background(), "parent", ""); err != nil {
 		t.Fatal(err)

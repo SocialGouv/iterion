@@ -32,7 +32,7 @@ const gatewayOnlyBot = "agent draft:\n  model: \"openai_compatible/glm-5.3\"\n  
 // gateway route: not env-funded, so only the gateway arm can see it.
 const gatewayBesideVendorBot = "agent draft:\n  model: \"anthropic/claude-opus-5\"\n  backend: \"claw\"\n\nagent second:\n  model: \"openai_compatible/glm-5.3\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> second\n  second -> done\n"
 
-// envDialBot reads its model from a routing dial, review-pr's shape: this
+// envDialBot reads its model from a routing dial (a third-party bot's shape): this
 // process expands it to a vendor route the team's key funds, while a fork
 // pool's runner expands it with the pool's own env block.
 const envDialBot = "agent draft:\n  model: \"${ITERION_FORK_FUNDING_PROBE_MODEL:-anthropic/claude-opus-5}\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> done\n"

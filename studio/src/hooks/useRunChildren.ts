@@ -2,6 +2,9 @@ import { errorMessage } from "@/lib/errorHints";
 import { useQuery } from "@tanstack/react-query";
 
 import { getRunChildren, type RunSummary } from "@/api/runs";
+import { useRunBirthsVersion } from "@/hooks/useRunBirthsVersion";
+import { knownRunBirth } from "@/lib/lostRuns";
+import { pageStoreOf } from "@/lib/storeOverride";
 import { isSettledRunStatus } from "@/lib/subRuns";
 
 // Optional polling mode for callers that need to notice children as
@@ -55,4 +58,21 @@ export function useRunChildren(
     loading: query.isLoading,
     error: query.error ? errorMessage(query.error) : null,
   };
+}
+
+// useViewedRunChildren is the children poll of the run a view shows. It
+// waits until the page knows the run's birth — from the row the view was
+// opened from, or the view's first snapshot — so every poll carries it as
+// its expected birth (a run shown from a foreign store, which carries none,
+// waits for its snapshot); and a lost run (its ID may name a successor) is
+// not polled at all.
+export function useViewedRunChildren(
+  runId: string | null,
+  view: { snapshotLoaded: boolean; lost: boolean },
+  options?: UseRunChildrenOptions,
+): ReturnType<typeof useRunChildren> {
+  useRunBirthsVersion();
+  const birthKnown =
+    view.snapshotLoaded || (!!runId && knownRunBirth(pageStoreOf(runId), runId) !== undefined);
+  return useRunChildren(runId, !view.lost && birthKnown, options);
 }

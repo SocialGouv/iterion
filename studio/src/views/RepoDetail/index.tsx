@@ -37,7 +37,7 @@ import { humanizeCron } from "@/lib/humanizeCron";
 import { mergeGateEnabled } from "@/lib/mergeGate";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
-import { botLaunchFile } from "@/views/Bots/botPaths";
+import BotLaunchLink from "@/views/Bots/BotLaunchLink";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { formatNextFire } from "@/views/Triggers/scheduleModel";
 import TriggerList from "@/views/Triggers/TriggerList";
@@ -433,7 +433,6 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
           <ul className="divide-y divide-border-subtle">
             {repo.bot_ids.map((id) => {
               const entry = botEntryFor(id);
-              const file = entry ? botLaunchFile(entry) : null;
               return (
                 <li
                   key={id}
@@ -445,13 +444,7 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
                     className="min-w-0 flex-1"
                   />
                   <div className="flex shrink-0 items-center gap-1.5">
-                    {file && (
-                      <Link href={`/runs/new?file=${encodeURIComponent(file)}`}>
-                        <Button variant="secondary" size="sm">
-                          Launch
-                        </Button>
-                      </Link>
-                    )}
+                    <BotLaunchLink entry={entry} size="sm" />
                     <Link href={`/bots/${encodeURIComponent(id)}`}>
                       <Button variant="ghost" size="sm">
                         Open bot

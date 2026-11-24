@@ -593,12 +593,13 @@ var remoteAdminVarsCmd = &cobra.Command{
 	Use:   "vars [set NAME VALUE | rm NAME]",
 	Short: "Bot-var overrides: resolve ${ITERION_X:-default} from the DB before the pod env — re-tune a bot without a rollout",
 	Long: `Platform bot vars — DB-backed overrides for the ` + "`${ITERION_X:-default}`" + ` .bot
-expansions (model pins, reasoning effort, tunables). Precedence:
-setting > pod env var > the .bot's own default.
+expansions (tunables: a bound, a threshold, a flag). Precedence:
+setting > pod env var > the .bot's own default. A route (model, backend,
+provider, reasoning effort) is an llmroute override cell instead (ADR-169).
 
   iterion remote admin vars                                  # stored + origin
-  iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
-  iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE   # back to env/default
+  iterion remote admin vars set ITERION_RGAA_MAX_DURATION 4h
+  iterion remote admin vars rm  ITERION_RGAA_MAX_DURATION    # back to env/default
 
 A bot var tunes how runs behave. The names the platform keeps for itself are
 refused at write time — those that lift or weaken a guard (security, spend

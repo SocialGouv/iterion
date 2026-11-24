@@ -223,9 +223,10 @@ func WithLogger(w io.Writer) Option {
 // Runner orchestrates registration and dispatch of programmatic hooks.
 // The zero value is NOT ready to use; construct one via NewRunner.
 type Runner struct {
-	mu       sync.RWMutex
-	handlers map[Event][]Handler
-	log      io.Writer
+	mu                 sync.RWMutex
+	handlers           map[Event][]Handler
+	unsafeToolHandlers bool
+	log                io.Writer
 }
 
 // NewRunner returns an empty Runner. Use Register to attach handlers.
@@ -246,12 +247,50 @@ func NewRunner(opts ...Option) *Runner {
 //
 // A nil handler is silently ignored.
 func (r *Runner) Register(event Event, h Handler) {
+	r.register(event, h, false)
+}
+
+// RegisterConcurrentSafe attaches an audited handler. The caller attests
+// that separate invocations with disjoint inputs may overlap.
+func (r *Runner) RegisterConcurrentSafe(event Event, h Handler) {
+	r.register(event, h, true)
+}
+
+func (r *Runner) register(event Event, h Handler, concurrentSafe bool) {
 	if r == nil || h == nil {
 		return
 	}
 	r.mu.Lock()
 	r.handlers[event] = append(r.handlers[event], h)
+	switch event {
+	case PreToolUse, PostToolUse, PostToolUseFailure:
+		r.unsafeToolHandlers = r.unsafeToolHandlers || !concurrentSafe
+	}
 	r.mu.Unlock()
+}
+
+// ConcurrentToolSnapshot freezes the exact tool lifecycle handlers suitable
+// for parallel dispatch. A later Register cannot change the admitted set.
+// Non-tool events are not part of the snapshot.
+func (r *Runner) ConcurrentToolSnapshot() (*Runner, bool) {
+	if r == nil {
+		return nil, true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.unsafeToolHandlers {
+		return nil, false
+	}
+	// Only the default concurrent-safe logger is currently attested.
+	// Do not compare writer interfaces (some implementations are not comparable).
+	if f, ok := r.log.(*os.File); !ok || f != os.Stderr {
+		return nil, false
+	}
+	snapshot := &Runner{handlers: make(map[Event][]Handler), log: r.log}
+	for _, event := range [...]Event{PreToolUse, PostToolUse, PostToolUseFailure} {
+		snapshot.handlers[event] = append([]Handler(nil), r.handlers[event]...)
+	}
+	return snapshot, true
 }
 
 // Fire dispatches the given context to all handlers registered for

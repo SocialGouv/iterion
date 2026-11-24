@@ -335,6 +335,11 @@ func validateBaseURL(id, baseURL string) error {
 	if u.Host == "" {
 		return fmt.Errorf("connection %q: instance URL %q names no host", id, trimmed)
 	}
+	if u.User != nil {
+		// The record's URL is plaintext and readable by every member: a
+		// credential belongs in the sealed payload, under a basic scheme.
+		return fmt.Errorf("connection %q: instance URL names a user and password — a credential goes in the sealed payload (a basic scheme), never in the URL", id)
+	}
 	return nil
 }
 

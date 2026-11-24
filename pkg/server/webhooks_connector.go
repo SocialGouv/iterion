@@ -118,8 +118,14 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 	// first argument, so a config naming another tenant's connection is a
 	// not-found here — the check cannot be forgotten at this call site.
 	conn, err := s.connectionStore.Get(ctx, cfg.TenantID, cfg.ConnectorConnectionID)
-	if err != nil {
+	switch {
+	case errors.Is(err, connection.ErrNotFound):
 		filter(fmt.Sprintf("the connection this webhook is bound to (%s) no longer exists — re-bind or recreate it", cfg.ConnectorConnectionID))
+		return
+	case err != nil:
+		// An outage is no verdict: a filtered answer is terminal, and the
+		// forge never redelivers it. The cause stays in the log.
+		s.connectorLaneUnavailable(w, cfg, err)
 		return
 	}
 	// 2. The connection may be believed, and for THIS connector: a webhook
@@ -152,16 +158,17 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 	// The package is the TENANT's resolution — a team override of the
 	// connector declares the events its deliveries are believed for.
 	pkg, tier, err := s.connectorCatalogFor(cfg.TenantID).Package(conn.Connector)
-	if err != nil {
+	switch {
+	case connection.IsCatalogUnavailable(err):
+		s.connectorLaneUnavailable(w, cfg, err)
+		return
+	case err != nil:
 		filter(fmt.Sprintf("the %s cannot serve the bound connector %q: %v", tier, conn.Connector, err))
 		return
 	}
 	var triggerID string
-	for _, t := range pkg.Triggers {
-		if t.Event == event {
-			triggerID = t.ID
-			break
-		}
+	if t, ok := spec.WebhookTrigger(pkg.Triggers, event); ok {
+		triggerID = t.ID
 	}
 	if triggerID == "" {
 		filter(fmt.Sprintf("the %s package declares no %q event — it declares %s, and an engine may believe only what the package declares",
@@ -252,6 +259,16 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, pl.Repository.CloneURL, "", payloadHash, srcIP, launchProvenance{})
 }
 
+// connectorLaneUnavailable answers a delivery the connector lane could not
+// judge because a store did not answer: 503 with a fixed text, the cause in
+// the log, no delivery record — the forge sees a failure it can redeliver.
+func (s *Server) connectorLaneUnavailable(w http.ResponseWriter, cfg webhooks.Config, err error) {
+	if s.logger != nil {
+		s.logger.Warn("webhooks: connector delivery for %s: a store is unavailable: %s", cfg.ID, boundedText(err.Error(), maxIngressErrorText))
+	}
+	httpError(w, http.StatusServiceUnavailable, "the webhook's connection plane is unavailable; retry")
+}
+
 // validateConnectorBinding is the WRITE half of the lane's contract: a
 // webhook may bind only a connection it could be believed through, checked
 // when the operator entrusts the binding rather than discovered per
@@ -297,7 +314,13 @@ func triggerEventNames(triggers []spec.Trigger) string {
 	}
 	names := make([]string, 0, len(triggers))
 	for _, t := range triggers {
-		names = append(names, t.Event)
+		// A polled trigger names no event a delivery could carry.
+		if !t.Polled() {
+			names = append(names, t.Event)
+		}
+	}
+	if len(names) == 0 {
+		return "no event a delivery can carry"
 	}
 	return strings.Join(names, ", ")
 }

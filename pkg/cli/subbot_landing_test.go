@@ -52,7 +52,7 @@ workflow child:
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 	storetest.SeedParentRun(t, s, "landing-parent")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
-	if _, err := runner(context.Background(), runtime.SubbotRequest{
+	if _, err := runner(boundLegacySubbotFixture(t, context.Background(), "landing-parent"), runtime.SubbotRequest{
 		Source:        "child.bot",
 		ParentRunID:   "landing-parent",
 		NodeID:        "lot",
@@ -128,7 +128,7 @@ workflow child:
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 	storetest.SeedParentRun(t, s, "landing-parent")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
-	_, err = runner(context.Background(), runtime.SubbotRequest{
+	_, err = runner(boundLegacySubbotFixture(t, context.Background(), "landing-parent"), runtime.SubbotRequest{
 		Source:        "child.bot",
 		ParentRunID:   "landing-parent",
 		NodeID:        "lot",

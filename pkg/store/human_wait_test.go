@@ -20,7 +20,7 @@ func (s unreadableHumanWaitStore) LoadRun(ctx context.Context, id string) (*Run,
 }
 
 func TestHasBlockingHumanWait(t *testing.T) {
-	for _, mode := range []string{"pending-question", "root-wait", "expired-wait", "paused-child", "paused-grandchild", "terminal-child", "terminal-root", "cycle", "unreadable", "invalid-marker"} {
+	for _, mode := range []string{"pending-question", "root-wait", "expired-wait", "paused-child", "paused-root", "paused-grandchild", "terminal-child", "terminal-root", "cycle", "unreadable", "invalid-marker"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			s := newTestStore(t)
@@ -59,6 +59,12 @@ func TestHasBlockingHumanWait(t *testing.T) {
 				if err := s.SetAwaitAnswersWait(ctx, "root", "execution", &AwaitAnswersWait{NodeID: "sync", Until: until}); err != nil {
 					t.Fatal(err)
 				}
+			case "paused-root":
+				// The ROOT's own pause is deliberately NOT an exemption: it
+				// returns from the engine and finishRun's pause arm parks it
+				// (codex-F6: reading it as a blocking wait suppressed the
+				// stall of a root that had gone silent).
+				state("root", RunStatusPausedWaitingHuman)
 			case "paused-child", "terminal-root", "unreadable":
 				link("root", "subbot", "child")
 				state("child", RunStatusPausedWaitingHuman)

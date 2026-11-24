@@ -13,12 +13,27 @@ function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // Source classifies where a trigger event originates (mirrors trigger.Source).
-export type TriggerSource = "forge" | "schedule" | "board" | "run" | "manual" | "custom";
+export type TriggerSource =
+  | "forge"
+  | "schedule"
+  | "board"
+  | "run"
+  | "manual"
+  | "custom"
+  | "connector";
 
 // InvocationKind mirrors bundle.InvocationKind.
-export type TriggerInvocation = "forge" | "command" | "schedule" | "board";
+export type TriggerInvocation =
+  | "forge"
+  | "command"
+  | "schedule"
+  | "board"
+  | "keepalive"
+  | "connector";
 
-export type TriggerMode = "direct" | "board" | "";
+// ExecutionMode mirrors bundle.ExecutionMode. "deliver" is accepted in a
+// manifest but refused by every effect until #3136 (bundle.ResolveMode).
+export type TriggerMode = "direct" | "board" | "deliver" | "";
 
 // Matcher mirrors trigger.Matcher: empty slice = match-any per dimension,
 // labels = match-all.
@@ -41,6 +56,26 @@ export interface TriggerSubscription {
   invocation: TriggerInvocation;
   mode?: TriggerMode;
   match: TriggerMatcher;
+  // Connector binding (invocation "connector", ADR-168 §6): which
+  // connection's which declared trigger the subscription listens to.
+  // connector_key is derived server-side from the two, never sent.
+  connection_id?: string;
+  trigger_id?: string;
+  connector_key?: string;
+  // A polled trigger's binding (ADR-168 §7): poll_query is what the
+  // operator typed for its query fields, backfill how many of the poller's
+  // past items the subscription receives once at activation. poller,
+  // poller_since and backfill_done are server-managed: the poller is derived
+  // from (connection, trigger, poll_query), never sent.
+  poller?: string;
+  poll_query?: Record<string, string>;
+  poller_since?: number;
+  backfill?: number;
+  backfill_done?: boolean;
+  filters?: Record<string, string[]>;
+  when?: string;
+  var_map?: Record<string, string>;
+  no_live_run?: "" | "launch" | "drop";
   vars?: Record<string, string>;
   args_var?: string;
   cron?: string;
@@ -79,6 +114,19 @@ export interface SubscriptionInput {
   invocation?: TriggerInvocation;
   mode?: TriggerMode;
   match: TriggerMatcher;
+  // Connector binding (invocation "connector"): validated at save against
+  // the connection, its package's trigger and the bot; the server owns the
+  // match and the connector_key.
+  connection_id?: string;
+  trigger_id?: string;
+  // A polled trigger's query values and backfill (≥ 0). No poller: the
+  // server derives it and refuses a request that names one.
+  poll_query?: Record<string, string>;
+  backfill?: number;
+  filters?: Record<string, string[]>;
+  when?: string;
+  var_map?: Record<string, string>;
+  no_live_run?: "" | "launch" | "drop";
   vars?: Record<string, string>;
   args_var?: string;
   cron?: string;
@@ -93,7 +141,8 @@ export interface SubscriptionInput {
 // toSubscriptionInput projects a subscription onto the full update payload.
 // PUT replaces every request field (only id/origin/timestamps are preserved
 // server-side), so partial edits must start from this projection or they
-// silently clear vars / schedgate policy.
+// silently clear vars / schedgate policy. Server-managed fields stay out:
+// a request naming a poller is refused, the query names it.
 export function toSubscriptionInput(sub: TriggerSubscription): SubscriptionInput {
   return {
     repo: sub.repo,
@@ -101,6 +150,14 @@ export function toSubscriptionInput(sub: TriggerSubscription): SubscriptionInput
     invocation: sub.invocation,
     mode: sub.mode,
     match: sub.match,
+    connection_id: sub.connection_id,
+    trigger_id: sub.trigger_id,
+    poll_query: sub.poll_query,
+    backfill: sub.backfill,
+    filters: sub.filters,
+    when: sub.when,
+    var_map: sub.var_map,
+    no_live_run: sub.no_live_run,
     vars: sub.vars,
     args_var: sub.args_var,
     cron: sub.cron,
@@ -152,7 +209,7 @@ export function deleteTrigger(id: string): Promise<void> {
 // createTriggerFromInvocation is the bot home's one-click "enable this
 // trigger": POST /api/v1/bots/{name}/triggers/from-invocation derives a
 // subscription server-side from the bot's manifest invocation at `index`
-// (schedule or board kinds only). `cron` optionally overrides a schedule
+// (schedule, board or keepalive kinds). `cron` optionally overrides a schedule
 // invocation's suggested_cron. Errors surface as ApiError: 409 = a
 // bot-home subscription for that kind already exists (body carries
 // `subscription_id`), 400 = explicit reason (command/forge kinds must be
@@ -176,4 +233,42 @@ export function createTriggerFromInvocation(
 // preserving the rest of the subscription.
 export function setTriggerEnabled(sub: TriggerSubscription, enabled: boolean): Promise<TriggerSubscription> {
   return updateTrigger(sub.id, { ...toSubscriptionInput(sub), enabled });
+}
+
+// TriggerPreview mirrors the server's triggerPreview: what the lane would
+// decide and the bot would receive, for a pasted delivery or the trigger's
+// own sample. Writes and launches nothing.
+export interface TriggerPreviewResult {
+  sample?: boolean;
+  filtered?: string;
+  matched: boolean;
+  reason?: string;
+  refusal?: string;
+  vars?: Record<string, string>;
+  event?: unknown;
+}
+
+// triggerPreviewReq mirrors triggerPreviewReq (pkg/server/triggers_connector.go).
+export interface TriggerPreviewInput {
+  bot_id?: string;
+  connection_id?: string;
+  trigger_id?: string;
+  filters?: Record<string, string[]>;
+  when?: string;
+  var_map?: Record<string, string>;
+  vars?: Record<string, string>;
+  // A polled trigger's query values, as the subscription would carry them.
+  poll_query?: Record<string, string>;
+  // An OBJECT (the server decodes into a map) — a JSON string is a 400. For
+  // a polled trigger it is ONE ITEM of the operation's answer, not a
+  // delivery, and headers are ignored.
+  payload?: unknown;
+  headers?: Record<string, string>;
+}
+
+export async function previewTrigger(input: TriggerPreviewInput): Promise<TriggerPreviewResult> {
+  return apiRequest<TriggerPreviewResult>(`${BASE}/preview`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }

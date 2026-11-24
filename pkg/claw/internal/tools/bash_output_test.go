@@ -11,7 +11,7 @@ import (
 )
 
 func TestBashOutputRetainsOnlyBoundedPrefix(t *testing.T) {
-	var output bashOutput
+	output := newBashOutput(maxOutputSize)
 	chunk := []byte(strings.Repeat("x", 4096))
 	for range 4096 { // drain 16 MiB without retaining it
 		n, err := output.Write(chunk)
@@ -29,7 +29,7 @@ func TestBashOutputRetainsOnlyBoundedPrefix(t *testing.T) {
 }
 
 func TestBashOutputExactLimitIsNotTruncated(t *testing.T) {
-	var output bashOutput
+	output := newBashOutput(maxOutputSize)
 	want := strings.Repeat("x", maxOutputSize)
 	_, _ = output.Write([]byte(want))
 	_, _ = output.Write(nil)

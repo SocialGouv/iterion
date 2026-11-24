@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getRunTags, setRunTags } from "@/api/runs";
 import { TagInput } from "@/components/ui";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import { errorMessage } from "@/lib/errorHints";
 
 // Mirror the server-side caps (store.MaxTagLen / store.MaxTagsPerRun) so the
@@ -31,8 +32,11 @@ export default function RunTagsRow({ runId }: { runId: string }) {
   });
   const tags = tagsQuery.data ?? [];
   const [error, setError] = useState<string | null>(null);
+  // A reader, or a view whose run was lost (scope_lost), edits no tag.
+  const canAct = useRunCanAct();
 
   const onChange = (next: string[]) => {
+    if (!canAct) return;
     if (next.length > MAX_TAGS) {
       setError(`At most ${MAX_TAGS} tags per run.`);
       return;
@@ -63,6 +67,7 @@ export default function RunTagsRow({ runId }: { runId: string }) {
           id="run-tags-input"
           value={tags}
           onChange={onChange}
+          disabled={!canAct}
           placeholder="Add tag (release, flaky, customer-x…)"
           maxTagLength={MAX_TAG_LENGTH}
         />

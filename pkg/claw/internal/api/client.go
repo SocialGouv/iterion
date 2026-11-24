@@ -517,6 +517,23 @@ func thinkingDisplayLevel() string {
 	}
 }
 
+// WireReasoningEffort is the effort an Anthropic Messages request for model
+// carries as output_config.effort (EffortWire): level when the model's
+// matrix accepts it, "" otherwise — a model outside the registry (a GLM id
+// served on this wire) gets none.
+func (c *Client) WireReasoningEffort(model, level string) string {
+	return anthropicWireEffort(model, level)
+}
+
+// anthropicWireEffort is the one rule marshalAnthropicRequest and
+// WireReasoningEffort share.
+func anthropicWireEffort(model, level string) string {
+	if level != "" && apikit.AnthropicProfile(model).AcceptsEffort(level) {
+		return level
+	}
+	return ""
+}
+
 func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 	if err := RefuseOpenAIOnlyRequestOptions("anthropic-compatible wire", req); err != nil {
 		return nil, err
@@ -556,8 +573,8 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 	// on/off/stream reasoning *mode* that shares the ReasoningEffort field in
 	// the interactive loop — never reaches the wire.
 	var outputConfig *OutputConfig
-	if req.ReasoningEffort != "" && profile.AcceptsEffort(req.ReasoningEffort) {
-		outputConfig = &OutputConfig{Effort: req.ReasoningEffort}
+	if wire := anthropicWireEffort(req.Model, req.ReasoningEffort); wire != "" {
+		outputConfig = &OutputConfig{Effort: wire}
 	}
 
 	// Thinking: explicit request wins; otherwise apply the model default.

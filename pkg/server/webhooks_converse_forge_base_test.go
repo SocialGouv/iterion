@@ -124,8 +124,8 @@ func gitlabQuestionLane(t *testing.T, s *Server, base string) map[string]string 
 }
 
 func gitlabReplyLane(t *testing.T, s *Server, base string) map[string]string {
-	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
-		return true, true, "@revi (you, the bot):\nThe SSRF fix pins the host.", "reply", nil
+	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, webhooks.ThreadAnchor, error) {
+		return true, true, "@revi (you, the bot):\nThe SSRF fix pins the host.", "reply", webhooks.ThreadAnchor{}, nil
 	}
 	launched := captureLaunch(t, s)
 	cfg := glConfig()

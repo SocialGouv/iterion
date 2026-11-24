@@ -144,16 +144,9 @@ func TestToolDispatcher_CarriesTheNodesFactsItWasBuiltFrom(t *testing.T) {
 	}
 }
 
-// TestToolDispatcher_ThePinnedSetFollowsTheToolMap turns the pin's property
-// into a gate instead of a sentence.
-//
-// An earlier revision cached the set at construction and asserted in a comment
-// that the tool map never changes over a dispatcher's life. Nothing enforced
-// that: a mutant recomputing the set per call was green across the whole
-// package, so the cache and the derivation were indistinguishable and a future
-// writer would have made the pin silently disagree with the lookup. This test
-// is what fails against the cache.
-func TestToolDispatcher_ThePinnedSetFollowsTheToolMap(t *testing.T) {
+// The pin and dispatch both read a frozen definition table, even if the
+// generation caller changes the original map or its entries after setup.
+func TestToolDispatcher_FreezesTheServedDefinitions(t *testing.T) {
 	t.Parallel()
 	var seen []string
 	var pinned bool
@@ -191,13 +184,12 @@ func TestToolDispatcher_ThePinnedSetFollowsTheToolMap(t *testing.T) {
 
 	dispatchAndRead(t, []string{"probe"})
 
-	// A tool appears in the map the dispatcher resolves against. The pin is
-	// derived from that same map, so it must have gained it too.
 	toolMap["Write"] = &GenerationTool{Name: "Write", Execute: probe}
-	dispatchAndRead(t, []string{"Write", "probe"})
-
-	// And it must lose what the map lost — a pin that only ever grows would
-	// name a tool the lookup can no longer resolve.
-	delete(toolMap, "Write")
+	toolMap["probe"].Execute = func(context.Context, json.RawMessage) (string, error) {
+		t.Fatal("dispatch ran a replacement definition after its table was frozen")
+		return "", nil
+	}
+	dispatchAndRead(t, []string{"probe"})
+	delete(toolMap, "probe")
 	dispatchAndRead(t, []string{"probe"})
 }

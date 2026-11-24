@@ -425,6 +425,7 @@ func (c *Conn) EnsureSchema(ctx context.Context) error {
 }
 
 type schemaManager interface {
+	CreateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error)
 	CreateOrUpdateStream(context.Context, jetstream.StreamConfig) (jetstream.Stream, error)
 	CreateOrUpdateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error)
 }
@@ -466,13 +467,18 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaReso
 // shared EnsureSchema and the pool-scoped Connect path need exactly
 // these; the streams differ between the two, the buckets do not.
 func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+	// Never rewrite the shared lease TTL beneath existing holders. A changed
+	// configuration requires draining holders and coordinating bucket migration.
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   cfg.KVBucket,
 		TTL:      cfg.LockTTL,
 		History:  1,
 		Replicas: cfg.StreamReplicas,
 	})
 	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketExists) {
+			return schemaResources{}, fmt.Errorf("queue/nats: lease bucket %s conflicts with configured TTL %s or storage configuration; drain holders and align bucket configuration before restarting: %w", cfg.KVBucket, cfg.LockTTL, err)
+		}
 		return schemaResources{}, fmt.Errorf("queue/nats: kv %s: %w", cfg.KVBucket, err)
 	}
 

@@ -28,10 +28,10 @@ witness that was seen to fail without it are in
 statements measurement refuted, three of them in this page.
 
 **And the binding between them**: descriptors 3 and 4, newline-delimited JSON,
-one call in flight. The child writes a call, the parent dispatches it through
-`d.dispatch` and writes the result back; a script sees one host function,
-`call(name, input)`, blocking, because a bare `goja.Runtime` pumps no job queue
-and a promise it returned would never settle. `scriptToolServer` lives in
+one global, `call(name, input)`, with discovery, [batches and structured
+results](codemode-concurrency.md) and [run state](codemode-state.md).
+The parent dispatches through `d.dispatch`. Both forms block in JavaScript:
+the VM does not pump an event loop. `scriptToolServer` lives in
 `pkg/backend/model` because it must: the dispatcher, its context key and its
 fields are unexported, so a broker outside would need the funnel widened —
 which is giving the funnel a second door.
@@ -52,8 +52,8 @@ so), a typed `ErrCapabilityUnsupported` at dispatch where it is not. That
 refusal ENDS the node — no `fallbacks:` route is tried, as ambient's does not
 either. C338 is retired.
 
-**Not there yet** (claiming it is false): no run-level override, no studio
-form.
+**Discovery** (CM-3): an index in the description, `call.describe`
+and `call.search` in the program — [codemode-discovery](codemode-discovery.md).
 #3155's bench holds; what it still owes is named in
 [posture bench](../testing/deployment-posture-bench.md). Epic
 [#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,
@@ -119,7 +119,7 @@ goja cannot bound itself. ADR-098 F19 closed on the measurement:
 *"goja's interrupt does not preempt native calls and bounds no heap"*. A native
 regex bomb hangs the runner, not the script. So the host is a **child process**
 and the limits are applied before the interpreter exists — `RLIMIT_AS` /
-`RLIMIT_DATA` for a real memory cap, `RLIMIT_CPU`, `no-new-privs`,
+`RLIMIT_DATA` for a real memory cap (room above the child's own segment), `RLIMIT_CPU`, `no-new-privs`,
 non-dumpable, a parent-death signal, and Landlock in deny-all where the kernel
 offers it.
 
@@ -141,11 +141,9 @@ node that **already** holds a `class:shell` tool, and is otherwise refused as
 `codemode_unavailable`. Two corrections to the reasoning that wrote that rule:
 Landlock costs nothing to adopt — `golang.org/x/sys/unix` is already a direct,
 vendored dependency carrying the syscalls and every constant, no cgo — and it
-is **not filesystem-only**. ABI 4's `LANDLOCK_ACCESS_NET_CONNECT_TCP`, also
-already vendored, lets the child deny its own TCP connect unprivileged. So
-where Landlock is present a script holds a network guarantee a shell tool does
-not, and where it is absent it loses one: the fallback is re-argued against the
-bench's numbers, not against the shell comparison alone. And nothing in this
+its network rights are TCP-only from ABI 4 — so the child's network wall is a
+seccomp filter denying socket creation, on every kernel (ADR-165, 2026-11-18):
+a script holds a network guarantee a shell tool does not, Landlock or not. And nothing in this
 repository mentions gVisor or `runsc` — no part of the confinement comes from a
 runtime class here.
 
@@ -193,7 +191,7 @@ which clamps a workflow's budget to a ceiling the bundle cannot lift.
 
 The axes: wall clock, CPU time, address space, bytes returned to the model,
 tool calls per script, concurrent tool calls, nested children per invocation
-and per node, and `store()` entries and bytes per run. Seven carry an
+and per node, and `store()` entries and bytes per run. Ten carry an
 author surface, the `codemode:` block:
 [codemode-confinement](codemode-confinement.md#the-authors-surface). Each
 ships a witness on **both** arms — refused above the bound, allowed below —

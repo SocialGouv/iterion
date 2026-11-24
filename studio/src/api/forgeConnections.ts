@@ -52,6 +52,11 @@ export interface ForgeIntegration {
    *  alike. Hand-typed: the repo-bots routes carry no request/response
    *  schema in openapi.json, so this field regenerates nothing. */
   routing?: Record<string, unknown> | null;
+  /** The repo's issue-label filter (pkg/forge.RepoIntegration.LabelAllowlist):
+   *  only these freshly applied issue labels dispatch the repo's bots. Absent
+   *  when the repo narrows nothing — the server omits an empty list. Read it
+   *  through lib/labelFilter. Hand-typed for the same reason as `routing`. */
+  label_allowlist?: string[];
   /** The per-repository bot iterion minted for this repo (a GitLab project
    *  access token) on a connection that posts as project bots: its login,
    *  its token's expiry and the last rotation refusal. Absent otherwise. */
@@ -387,6 +392,13 @@ export async function previewForgeEnable(
 // already pins, so a caller only passes one for a repo it is integrating for
 // the first time; an already-integrated repo changes its pins through
 // updateForgeRepoBots, over its whole launch_vars map.
+//
+// labelAllowlist, when passed, states the repo's issue-label filter
+// (pkg/server forgeEnableReq.LabelAllowlist): a non-empty list narrows the
+// issue-labeled lane to those labels, and an EMPTY list clears a stored
+// filter — every freshly applied label dispatches again. UNDEFINED omits
+// `label_allowlist`, which keeps the stored list: a caller passes one only
+// for a list the operator changed (lib/labelFilter.labelFilterChange).
 export async function enableForgeRepoBots(
   teamID: string,
   connID: string,
@@ -394,6 +406,7 @@ export async function enableForgeRepoBots(
   botIDs: string[],
   scheduleCrons?: Record<string, string>,
   launchVars?: Record<string, string>,
+  labelAllowlist?: string[],
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots`, {
     method: "POST",
@@ -404,6 +417,9 @@ export async function enableForgeRepoBots(
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
       launch_vars: launchVars,
+      // JSON.stringify drops an undefined key and keeps an empty array —
+      // the server's "keep" and "clear", in that order.
+      label_allowlist: labelAllowlist,
     }),
   });
 }

@@ -83,6 +83,41 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err != nil {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, err
 	}
+	// Keep credential setup in one helper: structured-output formatting starts a
+	// second CLI process and must use the exact same per-run auth source.
+	// The same environment carries the ambient-context policy's CODEX_HOME
+	// (codexSpawnEnv), computed once so both passes see the same home and the
+	// formatting pass resumes the session the work pass wrote.
+	spawnEnv, releaseHome, err := codexSpawnEnv(ctx, task)
+	if err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
+	defer func() {
+		if rerr := releaseHome(); rerr != nil {
+			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
+		}
+	}()
+	// A node that opted out of the ambient MCP set must get none of the
+	// servers codex's own configuration starts (CODEX_HOME's config.toml, a
+	// trusted project's .codex/config.toml). codex can disable one only
+	// through a boolean (`mcp_servers.<name>.enabled = false`), and the
+	// pinned SDK hands the app-server its config overrides as strings, which
+	// codex 0.156.1 refuses for a boolean at thread start (measured). So such
+	// a node is refused, typed, when codex's configuration lists a server —
+	// its fallbacks get their turn; one that lists none runs.
+	if task.MCPInheritDisabled {
+		servers, lerr := codexConfiguredMCPServers(ctx, codexCLIPath, spawnEnv, task.WorkDir)
+		if lerr != nil {
+			return Result{ExitCode: -1, BackendName: BackendCodex}, lerr
+		}
+		if len(servers) > 0 {
+			return Result{ExitCode: -1, BackendName: BackendCodex}, &ErrCapabilityUnsupported{
+				NodeID: task.NodeID, Backend: BackendCodex,
+				Capability: "`mcp: inherit: false` (codex's own configuration starts MCP server(s) " + strings.Join(servers, ", ") + ")",
+				Remedy:     "the pinned codex SDK cannot pass the boolean that disables them; route the node to claw or claude_code, or remove those servers from codex's configuration",
+			}
+		}
+	}
 
 	var opts []codexsdk.Option
 
@@ -138,20 +173,6 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	// Stream stderr for live observability and capture for diagnostics.
 	var stderrCapture codexStderrCapture
-	// Keep credential setup in one helper: structured-output formatting starts a
-	// second CLI process and must use the exact same per-run auth source.
-	// The same environment carries the ambient-context policy's CODEX_HOME
-	// (codexSpawnEnv), computed once so both passes see the same home and the
-	// formatting pass resumes the session the work pass wrote.
-	spawnEnv, releaseHome, err := codexSpawnEnv(ctx, task)
-	if err != nil {
-		return Result{ExitCode: -1, BackendName: BackendCodex}, err
-	}
-	defer func() {
-		if rerr := releaseHome(); rerr != nil {
-			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
-		}
-	}()
 	// What either pass starts carries the node session and ends with this run
 	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md), before the
 	// home it works in is released.

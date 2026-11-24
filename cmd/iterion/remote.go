@@ -412,35 +412,19 @@ var remoteLogoutCmd = &cobra.Command{
 
 var remoteStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show the logged-in instance + account",
-	Args:  cobra.NoArgs,
+	Short: "Show the logged-in instance + account, and the server's and this client's versions",
+	Long: "Show the logged-in instance and account, the version and commit the\n" +
+		"instance runs (GET /api/server/info) and this client's own version.\n" +
+		"An instance that does not tell its version leaves it unknown, with the\n" +
+		"reason; the status still succeeds. --json prints the whole answer (orgs\n" +
+		"and teams included), the same one the operator MCP's remote_status gives.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := cli.NewRemoteClient()
 		if err != nil {
 			return err
 		}
-		code, body, err := client.API(cmd.Context(), "GET", "/api/auth/me", nil)
-		if err != nil {
-			return err
-		}
-		if code/100 != 2 {
-			return &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)}
-		}
-		var me struct {
-			User struct {
-				Email        string `json:"email"`
-				IsSuperAdmin bool   `json:"is_super_admin"`
-			} `json:"user"`
-		}
-		_ = json.Unmarshal(body, &me)
-		role := ""
-		if me.User.IsSuperAdmin {
-			role = " (super-admin)"
-		}
-		out := cli.NewPrinter(cli.OutputHuman)
-		out.Line("Instance: %s", client.BaseURL())
-		out.Line("Account:  %s%s", me.User.Email, role)
-		return nil
+		return cli.RemoteStatusPrint(cmd.Context(), client, newPrinter())
 	},
 }
 

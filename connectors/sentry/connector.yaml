@@ -1,0 +1,40 @@
+schema_version: 1
+id: sentry
+display_name: Sentry
+description: >-
+  Sentry — issue alerts and metric alerts, delivered by an internal
+  integration's webhook.
+version: 0.1.0
+
+# Hand-authored from Sentry's webhook documentation — the shared signature and
+# payload contract (https://docs.sentry.io/organization/integrations/integration-platform/webhooks/)
+# and the issue and metric-alert payload pages beside it. No operation is
+# derived from Sentry's API description: the package is facts we cite and prose
+# we wrote, so there is nothing vendor-derived to withhold.
+provenance:
+  spec_url: https://docs.sentry.io/organization/integrations/integration-platform/webhooks/
+  spec_license: FSL-1.1-Apache-2.0
+  redistributable: true
+  generated_at: "2026-11-17T00:00:00Z"
+  generated_by: iterion dev
+
+base_url:
+  # sentry.io is the SaaS origin; self-hosted installs declare their own.
+  default: https://sentry.io/api
+  operator_supplied: true
+
+auth:
+  - id: token
+    kind: bearer
+    display_name: Internal integration token
+    description: >-
+      The token of the internal integration (Settings → Developer Settings →
+      the integration → Tokens). Sentry sends the API the Authorization header
+      with a bearer credential.
+maturity: experimental
+category: monitoring
+brand_color: "#362D59"
+icon: icon.svg
+default_security:
+  - terms:
+      - scheme: token

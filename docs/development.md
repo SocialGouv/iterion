@@ -115,7 +115,8 @@ listed tree green in 95 s.
 # mongod listens on 27018 INSIDE the container too (--port), so the member
 # it advertises resolves to itself; 27017 is left to a studio's own Mongo.
 docker run --rm -d --name iterion-mongo-conf --ulimit nofile=131072:131072 \
-  -p 27018:27018 mongo:8.0 --replSet rs0 --bind_ip_all --port 27018
+  -p 127.0.0.1:27018:27018 mongo:8.0 --replSet rs0 --bind_ip_all --port 27018 \
+  --setParameter enableTestCommands=1
 docker exec iterion-mongo-conf mongosh --port 27018 --quiet \
   --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27018" }] })'
 # wait for the election — a single status read is not a wait:
@@ -131,6 +132,10 @@ ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
   devbox run -- go test -count=1 $pkgs
 docker rm -f iterion-mongo-conf
 ```
+
+The owned test containers enable Mongo test commands for the commit-failure
+probe, which filters its failpoint by a unique client application name. Keep
+this setting on test fixtures only; the ordinary development stack is unchanged.
 
 Three details that each cost a session: `-p 27018:27017` with a member
 advertised as `localhost:27018` never initiates (docker's port mapping is
@@ -149,6 +154,25 @@ goes straight to `running`, the cloud store to `queued`
 compares-and-sets from a status it did not set itself passes on one twin by
 accident and can never match on the other; state the status the row tests
 from.
+
+## Testing child leases with Mongo and NATS
+
+`TestSubbotLeaseMongoNATS` exercises child birth, lease renewal, release and TTL
+configuration refusal through the real Mongo/NATS seam. Start disposable Mongo
+(replica set, with the file-descriptor limit above) and NATS (JetStream), then
+provide both endpoints:
+
+```bash
+ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
+ITERION_TEST_NATS_URI='nats://localhost:4222' \
+  devbox run -- go test -mod=vendor -count=1 -v ./pkg/store/mongo \
+    -run '^TestSubbotLeaseMongoNATS$'
+```
+
+The dedicated `mongo-conformance` step supplies both services. A local skip is
+not proof. The test removes its own unique database, pool streams and KV buckets;
+it does not exercise object-storage bodies. Mongo service provenance tests use
+real local filesystem locks separately from this distributed-lease witness.
 
 ## The same replica set from an agent's Bash sandbox
 
@@ -180,7 +204,7 @@ sockdir=${TMPDIR:-/tmp}/$name              # outside the repo; mongod creates th
 mkdir -p "$sockdir" && chmod 0777 "$sockdir"   # the image's mongod is not your uid
 docker run --rm -d --name "$name" --ulimit nofile=131072:131072 \
   -v "$sockdir":/sock mongo:8.0 --replSet rs0 \
-  --unixSocketPrefix /sock --filePermissions 0777
+  --unixSocketPrefix /sock --filePermissions 0777 --setParameter enableTestCommands=1
 # mongod answers a few seconds after the container exists — initiating before
 # that is ECONNREFUSED, and the set then stays unconfigured for good:
 for i in $(seq 1 30); do

@@ -402,7 +402,7 @@ func TestAcquire_marginSkipServesTheNextCandidate(t *testing.T) {
 	}
 	found := false
 	for _, s := range nd.Skips {
-		if s.Status == StatusNearLimit && s.PledgeID == PledgeID("near", SourceOAuth, string(secrets.OAuthKindClaudeCode)) && s.ReopenAt.Equal(h.now.Add(2*time.Hour)) {
+		if s.Status == StatusNearLimit && s.PledgeID == PledgeID("near", SourceOAuth, string(secrets.OAuthKindClaudeCode), "") && s.ReopenAt.Equal(h.now.Add(2*time.Hour)) {
 			found = true
 		}
 	}
@@ -483,7 +483,7 @@ func newHarnessWithAttachments(t *testing.T) *harness {
 // mustPledge fetches a pledge and mutates it.
 func mustPledge(t *testing.T, h *harness, userID string, mutate func(*Pledge)) Pledge {
 	t.Helper()
-	id := PledgeID(userID, SourceOAuth, string(secrets.OAuthKindClaudeCode))
+	id := PledgeID(userID, SourceOAuth, string(secrets.OAuthKindClaudeCode), "")
 	p, err := h.pledges.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("get pledge %s: %v", id, err)

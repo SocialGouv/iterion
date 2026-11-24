@@ -63,10 +63,18 @@ import (
 // surface, which takes no ctx — a breaking signature change for two test
 // files, refused here and recorded on #2789.
 var serialFamily = map[string]string{
-	"codemode_sandbox_crossing_test.go": "Setenv",
-	"sandbox_transport_env_test.go":     "Setenv",
+	"codemode_sandbox_crossing_test.go":     "Setenv",
+	"sandbox_transport_env_test.go":         "Setenv",
+	"output_correction_composition_test.go": "Setenv",
+	"output_correction_control_test.go":     "Setenv",
+	"structured_extraction_test.go":         "SetCredentialsLookup, Setenv",
+	"usage_projection_v2_test.go":           "Setenv",
+	"codemode_state_test.go":                "Setenv",
+
 	"gateway_feed_test.go":              "Setenv",
 	"feed_effort_test.go":               "Setenv",
+	"effort_provenance_test.go":         "Setenv",
+	"effort_wire_report_test.go":        "Setenv",
 	"hooks_usage_progress_feed_test.go": "via unsetGatewayTables() in feed_effort_test.go",
 	"adverse_schema_test.go":            "Setenv",
 	"correction_budget_warning_test.go": "Setenv",
@@ -178,6 +186,8 @@ var serialFamily = map[string]string{
 	"resolve_chain_pool_pins_test.go":          "Setenv",
 	"resolve_chain_test.go":                    "Setenv",
 	"review_merge_mcp_test.go":                 "Setenv",
+	"revi_converse_mcp_test.go":                "Setenv",
+	"review_pr_mcp_test.go":                    "Setenv",
 	"route_view_dispatch_test.go":              "Setenv",
 	"route_sites_test.go":                      "Setenv",
 	"route_view_test.go":                       "Setenv",

@@ -1,0 +1,37 @@
+{
+  "response": {
+    "items": [
+      {
+        "author": "Camille Durand",
+        "categories": [
+          "sources",
+          "pollers"
+        ],
+        "content": "<p>Un poller lit une source à intervalle régulier, et ne livre que ce qu’il <em>observe</em>.</p>",
+        "id": "tag:example.org,2026:blog/pollers",
+        "link": "https://example.org/blog/2026/11/pollers",
+        "published": "2026-11-17T09:00:00Z",
+        "summary": "Un poller lit une source à intervalle régulier.",
+        "title": "Des sources qu’on interroge",
+        "updated": "2026-11-18T08:30:00Z",
+        "version": "sha256:f89adbe837cb21aa38971c307448466d08e8b335ce34a0da55b81d1f6c8da05e"
+      },
+      {
+        "author": "Équipe plateforme",
+        "categories": [
+          "feeds"
+        ],
+        "id": "tag:example.org,2026:blog/feeds-are-bounded",
+        "link": "https://example.org/blog/2026/11/feeds-are-bounded",
+        "published": "2026-11-16T07:15:00Z",
+        "summary": "Dix mille entrées, deux cent cinquante-six niveaux.",
+        "title": "Un flux a des bornes",
+        "updated": "2026-11-16T07:15:00Z",
+        "version": "sha256:2f581b53fc1af5a87173cb25decb52c180fd0057e8c68febeec817977974c8e9"
+      }
+    ],
+    "link": "https://example.org/blog/",
+    "title": "Journal de l’équipe plateforme",
+    "updated": "2026-11-18T08:30:00Z"
+  }
+}

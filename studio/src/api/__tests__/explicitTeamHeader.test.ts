@@ -6,6 +6,18 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { apiRequest, publishExplicitTeam } from "@/api/client";
 
+it("does not renew or replay a request refused after leaving its team", async () => {
+  publishExplicitTeam("team-a");
+  let reply!: (response: Response) => void;
+  const fetchMock = vi.mocked(fetch);
+  fetchMock.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }));
+  const request = apiRequest("/api/runs", { method: "POST" });
+  publishExplicitTeam("team-b");
+  reply(new Response(null, { status: 401 }));
+  await expect(request).rejects.toMatchObject({ status: 401 });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 let seen: { path: string; team: string }[] = [];
 
 beforeEach(() => {

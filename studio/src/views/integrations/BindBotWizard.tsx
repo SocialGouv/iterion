@@ -29,7 +29,7 @@ import { hookBaseProblem, hookDeliveryAddress } from "@/lib/hookBase";
 import { isRepoCapable } from "@/lib/triggers";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
-import { botLaunchFile } from "@/views/Bots/botPaths";
+import BotLaunchLink from "@/views/Bots/BotLaunchLink";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
 import {
@@ -701,7 +701,6 @@ function DoneStep({
   pendingApproval: boolean;
 }) {
   const label = botEntry?.display_name?.trim() || botName;
-  const launchFile = botEntry ? botLaunchFile(botEntry) : null;
   const scheduleHref = `/triggers?tab=schedules&repo=${encodeURIComponent(repo.repo_full_name)}`;
   if (pendingApproval) {
     return (
@@ -756,14 +755,7 @@ function DoneStep({
         <Button variant="secondary" onClick={() => navigate(scheduleHref)}>
           Add a schedule
         </Button>
-        {launchFile && (
-          <Button
-            variant="secondary"
-            onClick={() => navigate(`/runs/new?file=${encodeURIComponent(launchFile)}`)}
-          >
-            Launch now
-          </Button>
-        )}
+        <BotLaunchLink entry={botEntry} label="Launch now" />
         {returnTo && (
           <Button variant="ghost" onClick={() => navigate(returnTo)}>
             Back to where you came from
