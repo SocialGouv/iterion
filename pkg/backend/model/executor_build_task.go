@@ -1705,6 +1705,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// facts once the node is going to run on THIS route, and the last thing
 	// that can take that away is several statements below.
 	var degraded []mcpDegradeReport
+	// The grant families a prompt command's `allowed-tools:` left with no
+	// tool, reported once the task is built (see the Warn at the end).
+	var grantsNarrowedAway []string
 	if len(effectiveTools) > 0 && backendName == delegate.BackendClaw {
 		clawTools := effectiveTools
 		// Ambient plugin-MCP parity with claude_code (the claude_code branch
@@ -1830,6 +1833,8 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		if sess != nil && sess.commandNarrowing != nil {
 			narrowed := tool.CommandNarrowedSet(sess.commandNarrowing)
 			declared := len(toolDefs)
+			// Cloned: the filter below reuses toolDefs' backing array.
+			before := slices.Clone(toolDefs)
 			kept := toolDefs[:0]
 			for _, td := range toolDefs {
 				if narrowed(td.Name) {
@@ -1841,6 +1846,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 				e.logger.Info("[%s#%d/claw] /%s allowed-tools narrows this node's tools to %d of %d",
 					f.id, LoopIterationFromContext(ctx), sess.commandNarrowingBy, len(toolDefs), declared)
 			}
+			grantsNarrowedAway = grantFamiliesNarrowedAway(before, toolDefs, effectiveCaps)
 		}
 		task.ToolDefs = toolDefs
 		// Carried, not raised. A build error aborts the node before its
@@ -1938,6 +1944,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// is never replaced in silence.
 	if codemodeDefer && task.Sandbox != nil && e.logger != nil && sess.claimWithdrawal("codemode-defer") {
 		e.logger.Warn("[%s] codemode: `defer: on` is not applied on this route — the node runs in a sandbox, and the sandboxed runner declares every tool to the model; the deferral applies only to unsandboxed execution", f.id)
+	}
+	// A capability grant whose every tool the prompt command's
+	// `allowed-tools:` narrowed away runs inert: the node keeps the grant
+	// and the model is offered none of its tools. The narrowing is the
+	// command author's explicit choice and stands; the Warn names it, once
+	// per node execution, taken here so a build that fails above does not
+	// spend it.
+	if len(grantsNarrowedAway) > 0 && e.logger != nil && sess.claimWithdrawal("grant-narrowed") {
+		e.logger.Warn("[%s#%d/claw] /%s allowed-tools narrows away every tool of the node's %s grant — the grant is held and none of its tools is offered; name them in the command's allowed-tools (mcp__iterion_board__* / mcp__iterion_runs__*) to serve it",
+			f.id, LoopIterationFromContext(ctx), sess.commandNarrowingBy, strings.Join(grantsNarrowedAway, " and "))
 	}
 	return task, nil
 }

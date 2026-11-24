@@ -398,25 +398,23 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// run read — it answers as if the grant were absent, which is exactly
 	// the silent shape review-pr's merge shipped as on its gateway route
 	// (F4: `converge` tool-less on claw, no report, no board issue). The
-	// gate reads the surface the dispatch would serve (ToolDefs and
-	// AllowedTools, both empty), never the nilness of the declaration:
-	// ToolsDeclared is nilness, and the two disagree exactly on `tools: []`
-	// — the shape this arm exists to catch when a node reaches claw through
-	// a route no catalog test names (a team routing cell, a bare-host
-	// fallback). `interaction:` is the one append that fires before the
-	// gate — an interaction node's union is never empty here — so its
-	// grants are served and stay out of this refusal. And the executor's
-	// own schema re-ask stays out of it too: planSchemaReask's claw
-	// continuation REMOVES the surface deliberately (ToolDefs and
-	// AllowedTools nilled, "tools off: the model is asked for the answer it
-	// already has") while keeping the node's capabilities — a task whose
-	// emptiness is the executor's decision, not an author's omission; a
-	// tool-less continuation needs no grant served by design. Without that
-	// exemption every granted node's standard in-place recovery refused
-	// (the refusal is non-retryable and no fallback class matches it). A
-	// non-empty surface (the way review-pr's merge twins declare theirs) is
-	// the remedy, not a route change.
-	if len(task.ToolDefs) == 0 && len(task.AllowedTools) == 0 && len(task.ContinueConversation) == 0 && !task.InteractionEnabled &&
+	// gate reads clawServesToolDefs, the predicate the Tools block below
+	// reads to build the request's tool list: AllowedTools is the CLI
+	// backends' allowlist and a claw task holding it without ToolDefs is
+	// just as tool-less, and ToolsDeclared is the declaration's nilness,
+	// which disagrees with the surface exactly on `tools: []`. An
+	// `interaction:` node passes on its surface itself: its ask_user rides
+	// its ToolDefs. The executor's own schema re-ask stays out of the
+	// refusal: planSchemaReask's claw continuation REMOVES the surface
+	// deliberately (ToolDefs and AllowedTools nilled, "tools off: the model
+	// is asked for the answer it already has") while keeping the node's
+	// capabilities — a task whose emptiness is the executor's decision, not
+	// an author's omission; a tool-less continuation needs no grant served
+	// by design, and refusing it (non-retryable, unmatched by fallback
+	// classification) would turn every granted node's in-place recovery
+	// into a failure. A non-empty surface (the way review-pr's merge twins
+	// declare theirs) is the remedy, not a route change.
+	if !clawServesToolDefs(task) && len(task.ContinueConversation) == 0 &&
 		(delegate.HasBoardCapability(task.Capabilities) || delegate.HasRunsReadCapability(task.Capabilities)) {
 		grants := "board"
 		if !delegate.HasBoardCapability(task.Capabilities) {
@@ -756,7 +754,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	}
 
 	// Tools.
-	if len(task.ToolDefs) > 0 {
+	if clawServesToolDefs(task) {
 		opts.Tools = toolDefsToGeneration(task.ToolDefs)
 		applyAsyncAskExecs(task, opts.Tools)
 		maxSteps := task.ToolMaxSteps
