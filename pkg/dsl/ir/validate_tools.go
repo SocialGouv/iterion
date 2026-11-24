@@ -105,16 +105,22 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 // registry does NOT hold, this one a name it does. The two never fire together
 // on the same entry.
 //
-// A warning, not an error: the node still runs — the refusal arrives as a tool
-// error the model can act on, not as a dead node. Philosophy #1: warn rather
-// than reject, and never silently replace an author's explicit choice. The
+// A warning, not an error: on an agent/judge node or a recovery agent the node
+// still runs — the refusal arrives as a tool error the model can act on, not
+// as a dead node — and on a tool node it is the author's explicit recipe.
+// Philosophy #1: warn rather than reject, and never silently replace an
+// author's explicit choice. The
 // refusal itself is certain: registerClawTool refuses a listed name whatever
 // the host wires, so no message hedges on a host that serves it.
 //
-// Scope is every list the AUTHOR writes that reaches claw's registry — an
-// agent/judge node's `tools:`, its claw `fallbacks:` routes, and a Verified
+// Scope is every name the AUTHOR writes that reaches claw's registry — an
+// agent/judge node's `tools:`, its claw `fallbacks:` routes, a Verified
 // Action's rung-4 `recovery: agent_tools:` (the two lists C135 covers, same
-// reach). The tools the ENGINE appends are out of it: ultracode grants `agent`
+// reach), and a tool node's registry recipe, its bare `command:`. That fourth
+// site is read whatever the backend: ClawExecutor runs every tool node
+// through the registry RegisterClawAll builds, and with no model to read the
+// refusal the node fails, so the warning there names a failure, not a tool
+// error. The tools the ENGINE appends are out of it: ultracode grants `agent`
 // to every claw node that restricts its list
 // (executor_build_task.clawOrchestrationTool), and a warning on a line
 // the author never wrote would report an engine choice as an authoring
@@ -123,6 +129,14 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 func (c *compiler) validateRefusedClawTools(w *Workflow) {
 	for _, n := range w.Nodes {
 		if tn, ok := n.(*ToolNode); ok {
+			if ToolRecipeKindOf(tn) == ToolRecipeRegistry {
+				name := strings.TrimSpace(tn.Command)
+				if r, refused := toolcatalog.ClawRefusesBuiltin(name); refused {
+					c.warnfAt(DiagToolRefusedOnClaw, tn.ID, "",
+						"tool %q: command: names %q, which the tool-node registry holds but cannot serve — %s, so the recipe FAILS at run time on every host (a tool node has no model to read the refusal). %s",
+						tn.ID, name, r.Reason, r.Remedy)
+				}
+			}
 			c.validateRefusedRecoveryAgentTools(w, tn)
 			continue
 		}
