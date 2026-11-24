@@ -872,18 +872,14 @@
         "required": null
       }
     },
-    "want": {
-      "propertyNames": {}
-    }
+    "want": {}
   },
   {
     "name": "null-propertyNames",
     "input": {
       "propertyNames": null
     },
-    "want": {
-      "propertyNames": {}
-    }
+    "want": {}
   },
   {
     "name": "wrong-kind-propertyNames-scalar",

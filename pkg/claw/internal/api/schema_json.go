@@ -212,6 +212,10 @@ func (c *schemaCleaner) clean(v any, path, resource *schemaPath, legacyRefs bool
 			changed = true
 		}
 	}
+	if names, ok := m["propertyNames"]; ok && vacuousPropertyNames(names) {
+		delete(m, "propertyNames")
+		changed = true
+	}
 	// Only surviving keywords matter; removed ones must not defer the tail
 	// until a second normalization of the emitted document.
 	if _, exists := m["unevaluatedItems"]; exists {
@@ -225,6 +229,47 @@ func (c *schemaCleaner) clean(v any, path, resource *schemaPath, legacyRefs bool
 		}
 	}
 	return m, changed
+}
+
+// vacuousPropertyNames reports whether a propertyNames schema admits every
+// object key: true, {}, or a type that includes "string" with annotations
+// only. An object key is always a string, so dropping such a schema keeps the
+// schema's meaning — and a grammar engine that does not implement the keyword
+// (vLLM's xgrammar refuses it, failing every request that forces a tool call)
+// never sees it. zod v4 emits {"type":"string"} for every z.record.
+func vacuousPropertyNames(v any) bool {
+	switch s := v.(type) {
+	case bool:
+		return s
+	case map[string]any:
+		for key, value := range s {
+			switch key {
+			case "title", "description", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly":
+			case "type":
+				if !typeAdmitsString(value) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func typeAdmitsString(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return t == "string"
+	case []any:
+		for _, item := range t {
+			if item == "string" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *schemaCleaner) addItemTails() bool {
