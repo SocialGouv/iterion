@@ -266,13 +266,13 @@ func TestBuildExecutorServesABoardActionFromTheLocalStore(t *testing.T) {
 
 	node := &ir.ToolNode{Action: "board.issue.list", Capabilities: []string{"board.read"}}
 	node.ID = "plan"
-	exec, err := BuildExecutor(ExecutorSpec{
+	exec, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Ctx:      context.Background(),
 		Store:    st,
 		RunID:    "run-native-board",
 		StoreDir: storeDir,
 		Workflow: &ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"plan": node}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v — the fs default must serve a board action on a local surface", err)
 	}

@@ -30,11 +30,15 @@ func DefaultOutputCorrectionBudget() int {
 // OutputSchemaError marks exhausted corrections or an unchanged invalid answer.
 // Generic execution recovery must not repeat the business task.
 type OutputSchemaError struct {
+	Stopped   bool
 	Unchanged bool
 	Cause     error
 }
 
 func (e *OutputSchemaError) Error() string {
+	if e.Stopped {
+		return fmt.Sprintf("structured output correction stopped: %v", e.Cause)
+	}
 	if e.Unchanged {
 		return fmt.Sprintf("structured output invalid: correction returned an unchanged answer: %v", e.Cause)
 	}

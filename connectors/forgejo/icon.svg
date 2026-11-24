@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>forgejo</title>
+  <path d="M10 5a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm12 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM10 19a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" fill="#2b303b"/>
+  <path d="M10 13v6" stroke="#2b303b" stroke-width="2.5" fill="none"/>
+  <path d="M22 15c0 5-4.5 4.5-8 6.5" stroke="#ff9e1b" stroke-width="2.5" fill="none"/>
+  <path d="M22 15V9" stroke="#ff9e1b" stroke-width="2.5" fill="none"/>
+</svg>

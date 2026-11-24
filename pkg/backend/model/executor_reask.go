@@ -91,6 +91,10 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 			// nothing, and a reader of the retry task would see a node asking
 			// for a budget it cannot spend.
 			retryTask.CodemodeBounds = nil
+			// And the deferral: it means nothing without the capability it
+			// defers to, and a retry task reading defer-on would describe a
+			// split no loop of this turn performs.
+			retryTask.CodemodeDefer = false
 			retryTask.ToolMaxSteps = 0
 			retryTask.Sandbox = nil
 			return schemaReask{task: retryTask, mode: ReaskContinueConversation}
@@ -171,6 +175,9 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 // call's own answer is that turn, and two consecutive assistant turns is
 // not a conversation a provider accepts.
 func (e *ClawExecutor) completedClawConversation(ctx context.Context, task *delegate.Task, result delegate.Result) json.RawMessage {
+	if frozen, ok := ctx.Value(correctionConversationKey{}).(json.RawMessage); ok {
+		return append(json.RawMessage(nil), frozen...)
+	}
 	runID, sessions := runtimeContextFrom(ctx)
 	var messages []api.Message
 	if runID != "" && sessions != nil {

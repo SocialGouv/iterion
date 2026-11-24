@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func envDialNames(r *CompileResult) []string {
 // forever.
 //
 // Mutation that reddens it: narrow the predicate to the `ITERION_` family —
-// in bracedEnvNames, `if !strings.HasPrefix(r.Name, "ITERION_") { continue }`
+// in routeEnvNames' lookup, record a name only when it has the `ITERION_` prefix
 // — and every row but the ITERION one goes silent while the guard still
 // reports something, which is the failure a count-only assertion would miss.
 func TestEnvDialIsNamedWhateverItsPrefix(t *testing.T) {
@@ -119,13 +120,84 @@ func TestEnvDialIsNamedWhateverItsPrefix(t *testing.T) {
 	}
 }
 
-// TestEnvDialSilentWhereThereIsNoEnvRead: the reader is the engine's own
-// segmentation, and the pass is silent on every form the expansion does not
+// TestEnvDialNamesWhatDispatchReads: C315 names every env name the runtime's
+// own expansion consults, on every surface the runtime expands — so a dial
+// cannot hide from the guard behind a shape the guard reads differently from
+// dispatch.
+//
+//   - A nested default resolves inside-out and consults BOTH names
+//     (ExpandWithDefault), including behind an empty outer name.
+//   - A bare `$NAME` in a route field is expanded at dispatch
+//     (ResolveRoutingFieldWith runs the full policy).
+//   - A supervisor's model is a route the runtime expands before it spawns
+//     the supervisor (supervise.ResolveModel), though no node carries it.
+//   - A cursor setting is a knob the runtime expands before it renders the
+//     calibration (model.resolveCursorFragments).
+//   - The workflow budget's max_duration is a knob the runtime expands
+//     (runtime.newSharedBudget).
+//
+// Mutations that redden it, one per row: name route reads with
+// BracedEnvReads again (nested and bare rows), drop the supervisor loop from
+// routeSites (supervisor row), drop the cursor walk (cursor row), drop the
+// budget walk (budget row).
+func TestEnvDialNamesWhatDispatchReads(t *testing.T) {
+	for name, tc := range map[string]struct {
+		src  string
+		want []string
+		said string
+	}{
+		"a nested default reads both names": {
+			src:  "prompt p:\n  hi\n\nagent emit:\n  model: \"m\"\n  reasoning_effort: \"${OUTER_EFFORT:-${INNER_EFFORT:-medium}}\"\n  user: p\n\nworkflow w:\n  entry: emit\n  emit -> done\n",
+			want: []string{"INNER_EFFORT", "OUTER_EFFORT"},
+			said: "reasoning_effort:",
+		},
+		"a nested default behind an empty outer name": {
+			src:  "prompt p:\n  hi\n\nagent emit:\n  model: \"${:-${HIDDEN_MODEL:-claude-opus-5-5}}\"\n  user: p\n\nworkflow w:\n  entry: emit\n  emit -> done\n",
+			want: []string{"HIDDEN_MODEL"},
+			said: "model:",
+		},
+		"a bare name in a route field": {
+			src:  "prompt p:\n  hi\n\nagent emit:\n  model: \"$BARE_MODEL\"\n  user: p\n\nworkflow w:\n  entry: emit\n  emit -> done\n",
+			want: []string{"BARE_MODEL"},
+			said: "model:",
+		},
+		"a supervisor's model": {
+			src:  "prompt p:\n  hi\n\nprompt policy:\n  watch\n\nagent emit:\n  model: \"m\"\n  user: p\n\nsupervisor pacer:\n  watches: [emit]\n  model: \"${PACER_MODEL:-anthropic/claude-opus-5-5}\"\n  system: policy\n\nworkflow w:\n  entry: emit\n  emit -> done\n",
+			want: []string{"PACER_MODEL"},
+			said: `supervisor "pacer"`,
+		},
+		"a cursor setting": {
+			src:  "prompt p:\n  hi\n\ncursor ambition:\n  values:\n    cautious: \"stay cautious\"\n    ambitious: \"be ambitious\"\n\nagent emit:\n  model: \"m\"\n  user: p\n  cursors:\n    enabled: true\n    ambition: \"${AMBITION_DIAL:-cautious}\"\n\nworkflow w:\n  entry: emit\n  emit -> done\n",
+			want: []string{"AMBITION_DIAL"},
+			said: `cursor "ambition"`,
+		},
+		"the workflow budget's max_duration": {
+			src:  "prompt p:\n  hi\n\nagent emit:\n  model: \"m\"\n  user: p\n\nworkflow w:\n  entry: emit\n  budget:\n    max_duration: \"${WALL_CLOCK:-3h}\"\n  emit -> done\n",
+			want: []string{"WALL_CLOCK"},
+			said: "max_duration",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, tc.src)
+			if got := envDialNames(r); !slices.Equal(got, tc.want) {
+				t.Fatalf("C315 names %v, want %v", got, tc.want)
+			}
+			for _, d := range envDialDiags(r) {
+				if !strings.Contains(d.Message, tc.said) {
+					t.Errorf("message %q does not name %q, the site the author has to edit", d.Message, tc.said)
+				}
+			}
+		})
+	}
+}
+
+// TestEnvDialSilentWhereThereIsNoEnvRead: the reader is dispatch's own
+// expansion, and the pass is silent on every form the expansion does not
 // answer — a literal route, a `{{vars.x}}` reference (decided by the launch,
 // not by the environment), and the parameter-expansion forms
 // looksLikeEnvRef refuses.
 //
-// Mutation that reddens it: replace bracedEnvNames' BracedEnvReads walk with
+// Mutation that reddens it: replace routeEnvNames' expander walk with
 // a `strings.Contains(value, "$")` test and report the whole field — the
 // literal row stays silent but the `{{vars.x}}` and `${X#y}` rows fire, and
 // a guard that fires on a value the engine never reads from the environment

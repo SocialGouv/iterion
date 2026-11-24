@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
@@ -1063,20 +1065,27 @@ func (s *RunRetryState) ProbeInFlight(now time.Time) bool {
 // raises the run budget; it does not consume another correction attempt by
 // itself.
 type OutputCorrectionEpisode struct {
-	EpisodeID                string     `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
-	InvocationID             string     `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
-	NodeID                   string     `json:"node_id,omitempty" bson:"node_id,omitempty"`
-	Budget                   int        `json:"budget,omitempty" bson:"budget,omitempty"`
-	Attempts                 int        `json:"attempts,omitempty" bson:"attempts,omitempty"`
-	Status                   string     `json:"status,omitempty" bson:"status,omitempty"`
-	InputFingerprint         string     `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
-	LastOutputFingerprint    string     `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
-	LastViolationFingerprint string     `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
-	LastError                string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
-	StartedAt                time.Time  `json:"started_at,omitempty" bson:"started_at,omitempty"`
-	UpdatedAt                time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
-	RetiredAt                *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
-	RetiredReason            string     `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
+	Generation               string                        `json:"generation,omitempty" bson:"generation,omitempty"`
+	Revision                 int64                         `json:"revision,omitempty" bson:"revision,omitempty"`
+	LedgerKey                string                        `json:"ledger_key,omitempty" bson:"ledger_key,omitempty"`
+	Reservations             []OutputCorrectionReservation `json:"reservations,omitempty" bson:"reservations,omitempty"`
+	Usage                    OutputCorrectionUsage         `json:"usage,omitempty" bson:"usage,omitempty"`
+	TerminalKind             string                        `json:"terminal_kind,omitempty" bson:"terminal_kind,omitempty"`
+	Cause                    *OutputCorrectionCause        `json:"cause,omitempty" bson:"cause,omitempty"`
+	EpisodeID                string                        `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string                        `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
+	NodeID                   string                        `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int                           `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int                           `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string                        `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string                        `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string                        `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string                        `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string                        `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time                     `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time                     `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	RetiredAt                *time.Time                    `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
+	RetiredReason            string                        `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
 }
 
 // WatcherCursor is the durable anti-loop cursor for a supervisor/watch
@@ -1174,8 +1183,25 @@ const (
 )
 
 type Run struct {
-	FormatVersion int    `json:"format_version" bson:"format_version"`
-	ID            string `json:"id" bson:"_id"`
+	InitialUsageReservations map[string]OutputCorrectionReservation `json:"initial_usage_reservations,omitempty" bson:"initial_usage_reservations,omitempty"`
+	UsageSessionMarks        map[string]float64                     `json:"usage_session_marks,omitempty" bson:"usage_session_marks,omitempty"`
+
+	// BirthID identifies one durable birth, independently of execution claims.
+	// The store assigns it once; metadata and pause/resume preserve it. Empty
+	// means a historical row without an established birth identity.
+	BirthID string `json:"birth_id,omitempty" bson:"birth_id,omitempty"`
+
+	// DataProtocol selects payload ownership independently of numeric format.
+	// Zero is historical; incarnation storage remains unavailable until all
+	// backend payload domains have qualified the new protocol.
+	DataProtocol RunDataProtocol `json:"data_protocol,omitempty" bson:"data_protocol,omitempty"`
+
+	// ExecutionEpoch is store-owned and assigned at birth. Empty is legacy,
+	// never a grant. Claims, status changes and queue publications renew it;
+	// metadata preserves it, including an existing legacy absence.
+	ExecutionEpoch string `json:"execution_epoch,omitempty" bson:"execution_epoch,omitempty"`
+	FormatVersion  int    `json:"format_version" bson:"format_version"`
+	ID             string `json:"id" bson:"_id"`
 	// ExecutionContext is the versioned launch contract. It is optional so
 	// runs written before the reliability contract remain readable and keep
 	// their legacy behaviour on resume.
@@ -1391,6 +1417,20 @@ type Run struct {
 	// separately because it outranks node and workflow declarations and must
 	// be replayed verbatim on every local or cloud resume.
 	PermissionOverride string `json:"permission_override,omitempty" bson:"permission_override,omitempty"`
+	// CodemodeOverride is the operator's launch-time codemode choice
+	// (ADR-165, CM-5e) — the same doctrine as PermissionOverride: the
+	// override is authoritative run intent, stamped at launch and replayed
+	// by every resume that does not re-state it. A resume that said nothing
+	// would otherwise fall back to the authored DSL and RE-ARM a capability
+	// the operator killed at launch. CodemodeBoundsOverride carries the
+	// launch's field-by-field raise; nil, and zero fields inside it, mean
+	// the launch did not choose.
+	CodemodeOverride       string             `json:"codemode_override,omitempty" bson:"codemode_override,omitempty"`
+	CodemodeBoundsOverride *scripthost.Limits `json:"codemode_bounds_override,omitempty" bson:"codemode_bounds_override,omitempty"`
+	// CodemodeQuotaClaimedAt is the publication whose queued quota claim won.
+	// A parked delivery with the same QueuedAt may not have claimed at all.
+	CodemodeQuotaClaimedAt *time.Time          `json:"codemode_quota_claimed_at,omitempty" bson:"codemode_quota_claimed_at,omitempty"`
+	ResumePauseHandoff     *ResumePauseHandoff `json:"resume_pause_handoff,omitempty" bson:"resume_pause_handoff,omitempty"`
 	// SandboxOverride is the operator's launch-time --sandbox choice
 	// ("none", "auto", explicit driver name). Persisted verbatim so
 	// resume/rewind replay the isolation decision the launch took: a run
@@ -1488,6 +1528,15 @@ type Run struct {
 	// `permission: deny` made the gate a hard block, so an approval given
 	// on a permissive node would silently unlock a strict one.
 	PermissionGrants map[string][]string `json:"permission_grants,omitempty" bson:"permission_grants,omitempty"`
+
+	// SpentToolApprovals records interaction IDs consumed before dispatch.
+	// Only SpendToolApproval can append; metadata saves preserve the ledger.
+	SpentToolApprovals []string `json:"spent_tool_approvals,omitempty" bson:"spent_tool_approvals,omitempty"`
+	// ToolApprovalClaim binds one paused interaction to its active resume.
+	ToolApprovalClaim *ToolApprovalClaim `json:"tool_approval_claim,omitempty" bson:"tool_approval_claim,omitempty"`
+	// UnresolvedToolApproval survives attempt loss until a durable continuation
+	// proves the approved invocation does not need to be replayed.
+	UnresolvedToolApproval string `json:"unresolved_tool_approval,omitempty" bson:"unresolved_tool_approval,omitempty"`
 	// RetryPolicy is the retry contract RESOLVED AT LAUNCH from every
 	// layer that can own one (per-run override → launch surface → bot
 	// manifest → machine default, then clamped by the platform ceiling).
@@ -2057,6 +2106,10 @@ const (
 	// learns a new word; what the typed form adds is DeliveryID, the
 	// run->delivery back-reference the run-outcome spine needs.
 	RunSourceKindWebhook = "webhook"
+	// RunSourceKindConnector is a connector event's matched pair (ADR-168
+	// §8): ScheduleID names the subscription (the back-reference the
+	// run-outcome spine stamps), PairID and IntakeID the pair and the event.
+	RunSourceKindConnector = "connector"
 )
 
 // RunSource captures who originated this run. Populated by the
@@ -2102,6 +2155,10 @@ type RunSource struct {
 	// the terminal run, then asks each record kind "is this yours"). One
 	// direction of provenance, never a second way to find a record.
 	DeliveryID string `json:"delivery_id,omitempty" bson:"delivery_id,omitempty"`
+	// PairID and IntakeID name the connector pair a RunSourceKindConnector
+	// run launched for, and the stored event it was matched from.
+	PairID   string `json:"pair_id,omitempty" bson:"pair_id,omitempty"`
+	IntakeID string `json:"intake_id,omitempty" bson:"intake_id,omitempty"`
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's
@@ -2231,8 +2288,11 @@ const (
 // persist code only (continuation stays unknown until the runner
 // promotes it at the actual NAK / retry-arm / park).
 type RunOutcomeMeta struct {
-	Code         FailureCode
-	Continuation ContinuationState
+	// ExactQueuedAt optionally fences the transition to a publication's
+	// marker (also on statuses past queued). It is not outcome data.
+	ExactQueuedAt time.Time
+	Code          FailureCode
+	Continuation  ContinuationState
 	// EndReason is the typed WHY the run ended. It follows the FailureCode
 	// discipline exactly — persisted only on the statuses that carry an
 	// outcome (RunStatus.CarriesFailureCode), cleared by every transition
@@ -2290,6 +2350,34 @@ type RunMergeUpdate struct {
 	// took over. Zero skips the check (exits from non-merging states,
 	// which carry no claim).
 	ExpectClaimedAt time.Time
+	// ExpectBirth anchors the exit to the run its caller loaded: a
+	// successor recreated under the same ID answers
+	// ErrRunDataIdentityChanged instead of receiving the original's
+	// outcome. Zero skips the check.
+	ExpectBirth ExpectedBirth
+}
+
+// ExpectedBirth is the birth a merge compare-and-set expects to find. When
+// Check, the CAS also requires the stored birth to equal ID — "" is the
+// historical empty birth, not "unset"; a different birth answers
+// ErrRunDataIdentityChanged. The zero value skips the check.
+type ExpectedBirth struct {
+	ID    string
+	Check bool
+}
+
+// ExpectBirthOf is the expectation of r's own birth; r must be non-nil.
+func ExpectBirthOf(r *Run) ExpectedBirth {
+	return ExpectedBirth{ID: r.BirthID, Check: true}
+}
+
+// Verify answers ErrRunDataIdentityChanged when e checks and the birth
+// stored under runID differs from the expected one.
+func (e ExpectedBirth) Verify(runID, stored string) error {
+	if !e.Check || stored == e.ID {
+		return nil
+	}
+	return fmt.Errorf("store: run %s holds birth %q, expected %q: %w", runID, stored, e.ID, ErrRunDataIdentityChanged)
 }
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
@@ -2307,6 +2395,17 @@ type NodeSessionSlot struct {
 type SessionLedgerEntry struct {
 	SessionID string   `json:"session_id" bson:"session_id"`
 	Tasks     []string `json:"tasks" bson:"tasks"`
+}
+
+// NodeFailureStreak is one node's entry of Checkpoint.NodeFailureStreaks.
+//
+// Fingerprint is a digest, never the failure's text: a checkpoint holds no
+// command output. It is salted with the run and the node, so two runs that
+// failed alike do not carry the same value.
+type NodeFailureStreak struct {
+	Fingerprint string `json:"fingerprint" bson:"fingerprint"`
+	// Count is how many executions in a row ended on Fingerprint.
+	Count int `json:"count" bson:"count"`
 }
 
 // Checkpoint captures the runtime state at a pause point (human node or
@@ -2426,6 +2525,8 @@ type Checkpoint struct {
 	// and appends a tool_result block answering BackendPendingToolUseID,
 	// avoiding a stateless restart from system+user prompts.
 	BackendConversation json.RawMessage `json:"backend_conversation,omitempty" bson:"backend_conversation,omitempty"`
+	// BackendPermissionInput carries the validated argument object from the gate.
+	BackendPermissionInput json.RawMessage `json:"backend_permission_input,omitempty" bson:"backend_permission_input,omitempty"`
 	// BackendPendingToolUseID is the ID of the tool_use block awaiting
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.
@@ -2457,6 +2558,16 @@ type Checkpoint struct {
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).
 	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty" bson:"node_attempts,omitempty"`
+	// NodeFailureStreaks records, per tool node, the last failure of its
+	// command and how many executions in a row ended on it, so the count a
+	// permanent verdict is taken on (TOOL_FAILED_PERMANENT on an identical
+	// repeat) survives the engine that started it: a resume on another
+	// replica continues it. Keyed by node ID. A node's entry leaves with its
+	// success, with a failure of another kind, and with a rewind that replays
+	// it. Absent on checkpoints written before the field existed, and on
+	// those of an engine whose limit is off: no streak, the pre-field
+	// behaviour.
+	NodeFailureStreaks map[string]NodeFailureStreak `json:"node_failure_streaks,omitempty" bson:"node_failure_streaks,omitempty"`
 	// RecoveryPause marks a pause written by the recovery dispatcher
 	// (RecoveryPauseForHuman) for a node whose execution FAILED. The node
 	// still owes its work: the answer that resumes the run is the
@@ -2476,8 +2587,9 @@ type Checkpoint struct {
 	// failure) could spend an unbounded multiple of its declared budget, and
 	// the max_iterations runaway-loop guard would reset on every resume.
 	// Zero/omitted on legacy checkpoints (a fresh budget — the prior behaviour).
-	BudgetTokensUsed int     `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
-	BudgetCostUSD    float64 `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
+	ResumePauseCostReadings []ResumePauseCostReading `json:"resume_pause_cost_readings,omitempty" bson:"resume_pause_cost_readings,omitempty"`
+	BudgetTokensUsed        int                      `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
+	BudgetCostUSD           float64                  `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
 	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
 	// axis could not price. Absent from checkpoints written before they
 	// existed, which restores as zero — the prior behaviour.
@@ -2494,7 +2606,8 @@ type Checkpoint struct {
 	// the per-run cumulative) keeps climbing after a resume instead of
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
-	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	CostUSDTotal         float64               `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	CorrectionAccounting *CorrectionAccounting `json:"correction_accounting,omitempty" bson:"correction_accounting,omitempty"`
 	// FiredEvents is the sticky run-scoped emit/wait registry. Persisting it
 	// prevents a resumed branch from waiting forever on an event emitted by a
 	// sibling whose durable cursor is already Completed and will not replay.

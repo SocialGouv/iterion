@@ -27,8 +27,12 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	if rec.Name == "" {
 		return errors.New("store/mongo: attachment name required")
 	}
-	if err := s.guardNotDeleted(ctx, runID); err != nil {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
 		return err
+	}
+	if body == nil {
+		return fmt.Errorf("store/mongo: nil attachment body")
 	}
 	filename := rec.OriginalFilename
 	if filename == "" {
@@ -60,13 +64,17 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
-	ref, err := blob.AttachmentKey(runID, rec.Name, rec.OriginalFilename)
+	format, err := store.ValueFormatForWrite(ctx, runID)
+	if err != nil {
+		return err
+	}
+	ref, err := blob.AttachmentKeyForFormat(int(format), runID, rec.Name, rec.OriginalFilename)
 	if err != nil {
 		return fmt.Errorf("store/mongo: attachment key: %w", err)
 	}
 	rec.StorageRef = ref
 
-	if err := s.blob.PutAttachment(ctx, runID, rec.Name, rec.OriginalFilename, rec.MIME, buf); err != nil {
+	if err := objects.PutAttachment(ctx, runID, rec.Name, rec.OriginalFilename, rec.MIME, buf); err != nil {
 		return fmt.Errorf("store/mongo: blob put attachment: %w", err)
 	}
 
@@ -75,10 +83,14 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	// race — through $setField, because the name is a map KEY, not a path:
 	// a $set on "attachments.<name>" reads the dot of a gate attachment's
 	// name (<node>.<field>) as nesting, and the entry reads back nameless.
-	_, err = s.runs.UpdateOne(ctx,
-		withTenantFilter(ctx, bson.M{"_id": runID}),
-		versionRunUpdate(attachmentFieldUpdate(rec.Name, bson.M{"$literal": rec})),
-	)
+	update := attachmentFieldUpdate(rec.Name, bson.M{"$literal": rec})
+	err = s.withRunMetadataWrite(ctx, runID, func(sc context.Context, parent *store.Run) error {
+		if parent == nil {
+			return errValuePublicationNoop
+		}
+		_, e := s.runs.UpdateOne(sc, withTenantFilter(sc, bson.M{"_id": runID}), update)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("store/mongo: index attachment in run: %w", err)
 	}
@@ -90,11 +102,15 @@ func (s *Store) OpenAttachment(ctx context.Context, runID, name string) (io.Read
 	if err != nil {
 		return nil, store.AttachmentRecord{}, err
 	}
+	ctx, objects, err := s.runObjectsFromRun(ctx, r)
+	if err != nil {
+		return nil, store.AttachmentRecord{}, err
+	}
 	rec, ok := r.Attachments[name]
 	if !ok {
 		return nil, store.AttachmentRecord{}, store.ErrAttachmentNotFound
 	}
-	rc, _, err := s.blob.GetAttachment(ctx, runID, name, rec.OriginalFilename)
+	rc, _, err := objects.GetAttachment(ctx, runID, name, rec.OriginalFilename)
 	if err != nil {
 		return nil, rec, fmt.Errorf("store/mongo: blob get attachment: %w", err)
 	}
@@ -118,17 +134,25 @@ func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error 
 	if err != nil {
 		return err
 	}
+	ctx, objects, err := s.runObjectsFromRun(ctx, r)
+	if err != nil {
+		return err
+	}
 	rec, ok := r.Attachments[name]
 	if !ok {
 		return nil
 	}
-	if err := s.blob.DeleteAttachment(ctx, runID, name, rec.OriginalFilename); err != nil {
+	if err := objects.DeleteAttachment(ctx, runID, name, rec.OriginalFilename); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachment %s/%s: %w", runID, name, err)
 	}
-	_, err = s.runs.UpdateOne(ctx,
-		withTenantFilter(ctx, bson.M{"_id": runID}),
-		versionRunUpdate(attachmentFieldUpdate(name, "$$REMOVE")),
-	)
+	update := attachmentFieldUpdate(name, "$$REMOVE")
+	err = s.withRunMetadataWrite(ctx, runID, func(sc context.Context, parent *store.Run) error {
+		if parent == nil {
+			return errValuePublicationNoop
+		}
+		_, e := s.runs.UpdateOne(sc, withTenantFilter(sc, bson.M{"_id": runID}), update)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("store/mongo: clear attachment %s/%s: %w", runID, name, err)
 	}
@@ -136,13 +160,21 @@ func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error 
 }
 
 func (s *Store) DeleteRunAttachments(ctx context.Context, runID string) error {
-	if err := s.blob.DeleteRunAttachments(ctx, runID); err != nil {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if err = objects.DeleteRunAttachments(ctx, runID); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachments: %w", err)
 	}
-	_, err := s.runs.UpdateOne(ctx,
-		withTenantFilter(ctx, bson.M{"_id": runID}),
-		versionRunUpdate(bson.M{"$unset": bson.M{"attachments": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}}),
-	)
+	update := bson.M{"$unset": bson.M{"attachments": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}}
+	err = s.withRunMetadataWrite(ctx, runID, func(sc context.Context, parent *store.Run) error {
+		if parent == nil {
+			return errValuePublicationNoop
+		}
+		_, e := s.runs.UpdateOne(sc, withTenantFilter(sc, bson.M{"_id": runID}), update)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("store/mongo: clear attachments index: %w", err)
 	}
@@ -154,11 +186,15 @@ func (s *Store) PresignAttachment(ctx context.Context, runID, name string, ttl t
 	if err != nil {
 		return "", err
 	}
+	ctx, objects, err := s.runObjectsFromRun(ctx, r)
+	if err != nil {
+		return "", err
+	}
 	rec, ok := r.Attachments[name]
 	if !ok {
 		return "", store.ErrAttachmentNotFound
 	}
-	return s.blob.PresignAttachment(ctx, runID, name, rec.OriginalFilename, ttl)
+	return objects.PresignAttachment(ctx, runID, name, rec.OriginalFilename, ttl)
 }
 
 // attachmentFieldUpdate is the pipeline update that writes one entry of

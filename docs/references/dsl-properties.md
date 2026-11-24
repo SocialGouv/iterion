@@ -257,7 +257,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
 | `session_slot` | ident | Named durable session slot; requires session: persist; must not be named like another node (C314) |
-| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
+| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
@@ -277,7 +277,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
 | `codemode` | one of `on`, `off`, or a block → [codemode](#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
-| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
+| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
 | `deny` | string list | Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
@@ -310,7 +310,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
 | `session_slot` | ident | Named durable session slot; requires session: persist; must not be named like another node (C314) |
-| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
+| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. On claw the list IS the tool surface, so an undeclared one serves no tool there either (C351 where the node declares permission rules beside it); it restricts claw by name (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
@@ -330,7 +330,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
 | `codemode` | one of `on`, `off`, or a block → [codemode](#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
-| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
+| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list, C351 when a claw route serves the node no tool — a rule approves a call to a tool the node holds, it grants none) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
 | `deny` | string list | Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
@@ -445,7 +445,7 @@ A block opened by `recovery:` inside `tool`.
 | `max_repair_attempts` | int | Self-repair rungs before the agent rung |
 | `max_agent_attempts` | int | Agent rungs before the policy decides |
 | `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `agent_tools` | tool list | Tools the recovery agent may call |
+| `agent_tools` | tool list | Tools the recovery agent may call — its whole tool list, handed verbatim; on claw none declared is none served (C352) |
 
 ### compute
 
@@ -551,6 +551,7 @@ A top-level declaration: `workflow <name>:`.
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
+| `business_stores` | block → [business_stores](#business_stores) | Expected business-store identities, normalized at launch and inherited by children |
 | `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
 | `resources` | block → [resources](#resources) | Named semaphores and pools nodes lease with needs: |
 | `mcp` | block → [mcp](#mcp) | MCP servers active for the run |
@@ -573,6 +574,26 @@ A top-level declaration: `workflow <name>:`.
 | `capabilities` | tool list | Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none |
 | `skills` | skill list | Run-wide skill-library skills |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | Default interaction mode for the run's nodes that set none |
+
+### business_stores
+
+Declared business stores; no inference from accessed files. A bare block declares none.
+
+A block opened by `business_stores:` inside `workflow`.
+
+Entries: `<id>:` — One store per entry; the same id may name stores in different namespaces; an entry's sub-block is a [business_store](#business_store).
+
+### business_store
+
+Expected store identity; launch refuses missing id/kind and duplicate kind/namespace/id declarations.
+
+An entry opened by `business_stores:` inside `business_stores`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `kind` | string\|ident | Store kind |
+| `namespace` | string\|ident | Logical namespace |
+| `required` | bool | The declared store is required (default false); does not itself add an admission gate |
 
 ### budget
 
@@ -648,13 +669,17 @@ A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
 | Property | Value | Meaning |
 |---|---|---|
 | `mode` | ident — `on`, `off` | on or off — the short form's value, written out (C337 on another word) |
+| `defer` | ident — `on`, `off` | Defer this node's own `tools:` list to the codemode catalogue: on or off, off the default (C354 on another word). On, the author's tools are not declared to the model on the wire — the program discovers them with call.search, reads a declaration with call.describe and calls one by name — while the runtime's own appends (interaction, board, runs, agent, todo_write, memory) and the withheld classes stay declared, as does any tool the node's permission policy can ask about or the catalogue bound does not keep whole. Applied only to unsandboxed execution: a sandboxed runner declares every tool, and the build warns. Inert as written beside `mode: off` (C355). A block holding only `defer:` still implies `mode: on`, like any block |
 | `tool_calls` | int | How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal |
+| `concurrent_tool_calls` | int | How many nested tool calls ONE program may run at once (default 1, ceiling 4; 0 means inherit). This does not change the total tool_calls budget |
 | `wall` | string | How long the child may live, e.g. "60s" (default "30s", ceiling "10m") — the parent's backstop, including for a child that never starts |
 | `cpu` | string | The child's CPU-seconds ceiling, e.g. "30s" (default "10s", ceiling "5m"); RLIMIT_CPU's unit is seconds, so the value is rounded UP |
-| `memory` | int | Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290 |
+| `memory` | int | Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement |
 | `script_bytes` | int | Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn |
 | `result_bytes` | int | Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced |
 | `tool_result_bytes` | int | Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports |
+| `store_entries` | int | Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit) |
+| `store_bytes` | int | Workflow scope only: total UTF-8 key and stored JSON bytes in the run's codemode bank (default 131072, ceiling 524288; 0 means inherit) |
 
 ### sandbox
 

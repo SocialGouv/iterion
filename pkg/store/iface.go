@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // Capabilities expose les caractéristiques optionnelles d'un backend
@@ -292,14 +295,18 @@ type RunStore interface {
 	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
 	// every exit so a stolen claim cannot consume its successor's), and
 	// claimed=false (with the current status) when someone else holds a
-	// fresh claim or the run is already merged.
-	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
+	// fresh claim or the run is already merged. expect anchors the claim
+	// to the run its caller loaded: a successor recreated under the same
+	// ID is never claimed — (false, "", zero, ErrRunDataIdentityChanged).
+	// A zero expect skips the check.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect ExpectedBirth) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
 	// UpdateRunMergeIf is the compare-and-set exit from the merge state
 	// machine: it persists upd's merge fields iff the current
 	// MergeStatus is in expectedFrom (empty string matches an unset
 	// field). Returns changed=false when the state drifted — the caller
 	// lost its claim or raced another writer — in which case nothing
-	// was written.
+	// was written. A checked upd.ExpectBirth that differs from the stored
+	// birth answers ErrRunDataIdentityChanged and writes nothing.
 	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
@@ -481,6 +488,12 @@ func NextQueuedAt(at time.Time, prior *time.Time) time.Time {
 	return m
 }
 
+// MatchesExactQueuedAt tests an optional exact attempt fence. The precision
+// check keeps sub-millisecond inputs from matching only on Mongo.
+func MatchesExactQueuedAt(stored *time.Time, exact time.Time) bool {
+	return exact.IsZero() || (exact.Equal(QueuedFlipAt(exact)) && stored != nil && stored.Equal(exact))
+}
+
 // PublishAt is a message's published_at for an attempt whose identity
 // instant is notBefore — the run's marker, or the instant the lease its
 // grant opened was acquired: now, but never inside notBefore's
@@ -516,6 +529,21 @@ type QueuedFlipper interface {
 	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
 }
 
+// RevisionQueuedFlipper binds a queue transition to the exact run revision
+// whose pending interaction the publisher validated.
+type RevisionQueuedFlipper interface {
+	QueuedFlipper
+	FlipRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error)
+	// FlipAcknowledgedRevisionToQueued is the forced-resume variant: the
+	// operator has acknowledged an unresolved approved dispatch, so the
+	// stale marker does not hold the flip. The revision CAS still does.
+	FlipAcknowledgedRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error)
+}
+
+func AsRevisionQueuedFlipper(s RunStore) RevisionQueuedFlipper {
+	return capability[RevisionQueuedFlipper](s)
+}
+
 // AsQueuedFlipper returns the flip capability, or nil for a store that has
 // none.
 func AsQueuedFlipper(s RunStore) QueuedFlipper {
@@ -539,6 +567,50 @@ func AsQueuedAttemptClaimer(s RunStore) QueuedAttemptClaimer {
 	return capability[QueuedAttemptClaimer](s)
 }
 
+// CodemodeQuotaResumeClaim pins a direct resume to its observed row or a
+// queued resume to the publication's exact attempt marker.
+type CodemodeQuotaResumeClaim struct {
+	ExpectedStatus  RunStatus
+	ExpectedVersion int64
+	QueuedAt        time.Time
+	PauseHandoff    *ResumePauseHandoff
+}
+
+func (c CodemodeQuotaResumeClaim) Validate(quota CodemodeScratchLimits) error {
+	replay := quota == (CodemodeScratchLimits{})
+	if quota.Entries < 0 || quota.Bytes < 0 {
+		return fmt.Errorf("invalid codemode resume quota (entries=%d, bytes=%d)", quota.Entries, quota.Bytes)
+	}
+	if c.ExpectedStatus == RunStatusQueued || replay {
+		if c.QueuedAt.IsZero() || !c.QueuedAt.Equal(QueuedFlipAt(c.QueuedAt)) {
+			return fmt.Errorf("queued codemode resume requires an exact queue marker at millisecond precision")
+		}
+	} else if !c.QueuedAt.IsZero() {
+		return fmt.Errorf("direct codemode resume claim must not carry a queue marker")
+	}
+	if c.ExpectedStatus == RunStatusQueued {
+		if replay {
+			return fmt.Errorf("queued codemode resume requires at least one positive quota dimension")
+		}
+	} else if !c.ExpectedStatus.CanOperatorResume() || c.ExpectedVersion < 0 {
+		return fmt.Errorf("invalid codemode resume claim (status=%q, version=%d)", c.ExpectedStatus, c.ExpectedVersion)
+	}
+	return nil
+}
+
+// CodemodeQuotaResumeClaimer restates the nonzero quota dimensions in the
+// same CAS that claims the run and consumes any persisted pause pointer.
+// A nil result and nil error means the claim lost without changing the row.
+// A winning claim returns the merged durable bounds.
+type CodemodeQuotaResumeClaimer interface {
+	ClaimResumeWithCodemodeQuota(ctx context.Context, id string, claim CodemodeQuotaResumeClaim, quota CodemodeScratchLimits) (*scripthost.Limits, error)
+}
+
+// AsCodemodeQuotaResumeClaimer finds the atomic quota claim through decorators.
+func AsCodemodeQuotaResumeClaimer(s RunStore) CodemodeQuotaResumeClaimer {
+	return capability[CodemodeQuotaResumeClaimer](s)
+}
+
 // PIDStore is an optional interface implemented only by
 // FilesystemRunStore (Capabilities.PIDFile == true). Cloud (Mongo)
 // stores deliberately do not implement it: detached/reattach is a
@@ -556,6 +628,23 @@ type PIDStore interface {
 // dereferencing — local stores satisfy it, cloud stores do not.
 func AsPIDStore(s RunStore) PIDStore {
 	return capability[PIDStore](s)
+}
+
+// ContextPIDStore supplies PID operations for an existing bound invocation.
+// Every method requires its original format in ctx and compares it under the
+// metadata lock. It does not grant execution authority. Legacy PIDStore remains
+// available for historical orphan-sidecar callers. Cloud stores have neither.
+type ContextPIDStore interface {
+	WritePIDFileContext(context.Context, string, int) error
+	ReadPIDFileContext(context.Context, string) (int, error)
+	RemovePIDFileContext(context.Context, string) error
+	RemovePIDFileIfContext(context.Context, string, int) (bool, error)
+}
+
+// AsContextPIDStore discovers the contextual capability through decorators.
+// A bound invocation must not fall back to PIDStore when it is absent.
+func AsContextPIDStore(s RunStore) ContextPIDStore {
+	return capability[ContextPIDStore](s)
 }
 
 // QueuedRunCreator is the optional interface for stores that can persist

@@ -77,3 +77,29 @@ re-reading the code.
   whatever the child holds. Measured: mutating the constructor to
   `cmd.Env = os.Environ()` left such a leg green 8/8. That guarantee belongs
   to `TestTheChildIsBuiltWithNoEnvironment`.
+
+## WebSocket fixture shutdown
+
+[#3013](https://github.com/SocialGouv/iterion/issues/3013): original ack witness fails cleanup 5/100 under race; removing the fixture join reproduces it.
+
+Test server owns stream subscriptions: stop admission, cancel, then join event/chunk producers before directory cleanup. An unsubscribe ack alone does not join them. Ack assertions and production behavior unchanged; corrected ack100 and family3 pass.
+
+Re-check: 2026-11-13; stream fixture lifecycle changes.
+
+
+## Mongo conformance deadline
+
+Measured 2026-11-12 over eight consecutive runs: success at 12:31, 13:46, 14:05, 14:33, 14:48 and cancellation at 15:18, 15:19 against `timeout-minutes: 15` — the job runs at **92-99 % of its budget** and tips over on a slow runner.
+
+Infrastructure, **no test verdict** — a cancelled required check is not a pass. Nothing in the suite failed in either cancelled run. The cure is capacity, not an assertion: the store harness runs alone with its own `-timeout 15m` (its transactions and change streams saturate a shared mongod) and the job cap is `timeout-minutes: 55`, the sum of its budgets under the queue's 60. Rerun the job alone rather than the whole run
+
+Re-check: At the next cancellation, with the durations above.
+
+
+## Fan-out admission deadline
+
+[#2852](https://github.com/SocialGouv/iterion/issues/2852), [#3013](https://github.com/SocialGouv/iterion/issues/3013): the 2 s guard re-flaked before run creation; a 2.2 s pre-entry delay reproduces it.
+
+Each scenario uses synctest with the real 2 s context deadline and unchanged 25 ms grace. The outer test owns scratch and grace restoration until every bubble goroutine joins. Deadline Err/Cause, outcome and event assertions remain; cause-only, omitted classification, abandoned-result and producer-release mutations fail.
+
+Re-check: 2026-11-13; fan-out lifecycle changes.

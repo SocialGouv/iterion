@@ -73,8 +73,9 @@ fs.writeFileSync(
 // the operator's keychain entry.
 const secretsKey = Buffer.alloc(32, 7).toString("base64");
 
-const childEnv = {
-  ...process.env,
+// The isolation every iterion process of the suite runs under — the server
+// and the CLI calls, these seeds and a spec's own (state.json `cli`).
+const isolationEnv = {
   HOME: home,
   ITERION_HOME: home,
   ITERION_SECRETS_KEY: secretsKey,
@@ -89,6 +90,11 @@ const childEnv = {
   // neither the network nor an operator's cached prices may change a spec.
   ITERION_MODEL_SPECS: "off",
   CLAW_DISABLE_LIVE_REGISTRY: "1",
+};
+
+const childEnv = {
+  ...process.env,
+  ...isolationEnv,
   ...(copiDemoEnabled
     ? {
         // The demo's generated bot exercises the real Claw/OpenAI adapter
@@ -202,6 +208,9 @@ fs.writeFileSync(
       // Mirrors the --max-concurrent-pipelines the studio boots with; the
       // pipelines spec asserts the UI renders exactly this cap.
       maxConcurrentPipelines: 2,
+      // How a spec runs the CLI against the same store, isolated as the
+      // seeds above are (the spec adds its own process environment).
+      cli: { bin, env: isolationEnv },
     },
     null,
     2,

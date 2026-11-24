@@ -7,7 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// bots/evolve's gpt reviewer must hold NO tools: its model sits near a
+// bots/evolve's alternate reviewer must hold NO tools: its model sits near a
 // ChatGPT-forfait context window and one or two read_file results pushed the
 // second request over it (context_length_exceeded, 2026-06-24 dogfood).
 //
@@ -26,18 +26,18 @@ func TestEvolveGPTReviewerDeclaresNoTools(t *testing.T) {
 	if cr.Workflow == nil {
 		t.Fatal("bots/evolve/main.bot does not compile")
 	}
-	n, ok := cr.Workflow.Nodes["review_gpt"].(ir.LLMNode)
+	n, ok := cr.Workflow.Nodes["reviewer_alternate"].(ir.LLMNode)
 	if !ok {
-		t.Fatal("evolve has no review_gpt LLM node")
+		t.Fatal("evolve has no reviewer_alternate LLM node")
 	}
 	tools := n.GetTools()
 	if !toolcatalog.ToolsDeclared(tools) {
-		t.Fatal("review_gpt declares no tools: list — an undeclared surface is the backend's FULL toolset, which is what the node's own comment forbids; write `tools: []`")
+		t.Fatal("reviewer_alternate declares no tools: list — an undeclared surface is the backend's FULL toolset, which is what the node's own comment forbids; write `tools: []`")
 	}
 	if len(tools) != 0 {
-		t.Fatalf("review_gpt holds %v — the node judges the vision on its textual merits; adding a tool needs the comment above it rewritten first", tools)
+		t.Fatalf("reviewer_alternate holds %v — the node judges the vision on its textual merits; adding a tool needs the comment above it rewritten first", tools)
 	}
 	if backend := n.GetLLMFields().Backend; backend != "claw" {
-		t.Fatalf("review_gpt runs on %q; the empty declaration is only enforced on a backend that receives the list", backend)
+		t.Fatalf("reviewer_alternate runs on %q; the empty declaration is only enforced on a backend that receives the list", backend)
 	}
 }

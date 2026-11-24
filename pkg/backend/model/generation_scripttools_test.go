@@ -6,11 +6,22 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
+
+// programCall is the context the script host's pump hands a server for the
+// program's call with frame ID id: a server called outside a program has no
+// frame, and refuses.
+func programCall(id int64) context.Context {
+	return scripthost.WithCallFrame(context.Background(), scripthost.CallFrame{ID: id})
+}
 
 // The claim of CM-1b is that a call a SCRIPT makes is the same call the model
 // would have made. These tests drive the two paths against one dispatcher and
@@ -55,7 +66,7 @@ func TestAScriptsCallMeetsTheSameGateVerdictAsTheModels(t *testing.T) {
 				t.Fatalf("building the server from the node's own ctx: %v", err)
 			}
 			_ = nd // the server holds it, taken from the ctx
-			out, abort := srv.CallTool(context.Background(),
+			out, abort := srv.CallTool(programCall(1),
 				"Bash", json.RawMessage(`{"command":`+quote(tc.command)+`}`))
 			if abort != nil {
 				t.Fatalf("nested: unexpected abort: %v", abort)
@@ -107,7 +118,7 @@ func TestAServerCannotBeBuiltWithoutTheNodesOwnDoor(t *testing.T) {
 	_, ctxB := newToolDispatcher(context.Background(), bashTool(&ran), nil, nil, nil, nil, allowAllPolicy(t))
 	srv.ctx = ctxB // what a cached server across model steps would amount to
 
-	out, abort := srv.CallTool(context.Background(), "Bash", json.RawMessage(`{"command":"go test ./..."}`))
+	out, abort := srv.CallTool(programCall(1), "Bash", json.RawMessage(`{"command":"go test ./..."}`))
 	if abort != nil {
 		t.Fatalf("unexpected abort: %v", abort)
 	}
@@ -144,7 +155,7 @@ func TestTheWithheldClassCannotBeWalkedAroundBySpelling(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			out, abort := srv.CallTool(context.Background(), name, nil)
+			out, abort := srv.CallTool(programCall(1), name, nil)
 			if abort != nil {
 				t.Fatalf("a withheld tool aborted the script instead of refusing: %v", abort)
 			}
@@ -247,7 +258,7 @@ func TestDiscoveryAnswersWithTheSetTheScriptWillBeServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, abort := srv.CallTool(context.Background(), "Bash", json.RawMessage(`{"command":"go test ./..."}`)); abort != nil {
+	if out, abort := srv.CallTool(programCall(1), "Bash", json.RawMessage(`{"command":"go test ./..."}`)); abort != nil {
 		t.Fatalf("nested: %v", abort)
 	} else if out.IsError {
 		t.Fatalf("nested: %+v", out)
@@ -265,3 +276,115 @@ func TestDiscoveryAnswersWithTheSetTheScriptWillBeServed(t *testing.T) {
 }
 
 var errNoPin = errors.New("no executable-tool pin on the context the door handed this tool")
+
+func TestScriptCallCarriesTrustedValuesAndWorkerCancellation(t *testing.T) {
+	t.Parallel()
+	type key struct{}
+	type observed struct {
+		value    any
+		deadline time.Time
+		ok       bool
+	}
+	entered := make(chan observed, 1)
+	left := make(chan error, 1)
+	tools := map[string]*GenerationTool{"wait": {Name: "wait", Execute: func(ctx context.Context, _ json.RawMessage) (string, error) {
+		deadline, ok := ctx.Deadline()
+		entered <- observed{ctx.Value(key{}), deadline, ok}
+		<-ctx.Done()
+		left <- context.Cause(ctx)
+		return "", ctx.Err()
+	}}}
+	_, trusted := newToolDispatcher(context.WithValue(context.Background(), key{}, "trusted"), tools, nil, nil, nil, nil, nil)
+	srv, err := newScriptToolServer(trusted, ScriptHostToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	timed, stop := context.WithDeadline(context.WithValue(context.Background(), key{}, "untrusted"), deadline)
+	defer stop()
+	worker, cancel := context.WithCancelCause(timed)
+	defer cancel(nil)
+	returned := make(chan error, 1)
+	go func() {
+		_, err := srv.CallTool(scripthost.WithCallFrame(worker, scripthost.CallFrame{ID: 1}), "wait", nil)
+		returned <- err
+	}()
+	select {
+	case info := <-entered:
+		if info.value != "trusted" || !info.ok || !info.deadline.Equal(deadline) {
+			t.Fatalf("execution saw value/deadline %+v, want trusted and %v", info, deadline)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tool never began")
+	}
+	cause := errors.New("script stopped")
+	cancel(cause)
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) || !errors.Is(<-left, cause) {
+			t.Fatalf("tool return = %v, want worker cancellation with propagated cause", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker cancellation did not stop the tool")
+	}
+}
+
+func TestScriptEligibilityUsesActualDefinitionAndHooks(t *testing.T) {
+	t.Parallel()
+	registry := tool.NewRegistry()
+	if err := registry.RegisterBuiltin("glob", "same name, different implementation", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	lookalike, err := registry.Resolve("glob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lookalike.ToDelegateDef().ConcurrentSafe {
+		t.Fatal("unreviewed builtin inherited capability from its name")
+	}
+	runner := NewDefaultLifecycleHooks(EventHooks{})
+	var hooked, ran int
+	tools := map[string]*GenerationTool{"glob": {Name: "glob", concurrentSafe: true, Execute: func(context.Context, json.RawMessage) (string, error) {
+		ran++
+		return "result", nil
+	}}}
+	_, before := newToolDispatcher(context.Background(), tools, nil, nil, runner, nil, nil)
+	runner.Register(hooks.PostToolUse, func(context.Context, hooks.Context) (hooks.Decision, error) {
+		hooked++
+		return hooks.Decision{}, nil
+	})
+	_, after := newToolDispatcher(context.Background(), tools, nil, nil, runner, nil, nil)
+	for _, tc := range []struct {
+		ctx                   context.Context
+		wantSafe, wantRefusal bool
+		wantRan, wantHooked   int
+	}{
+		{before, true, false, 1, 0}, {after, false, false, 2, 1},
+		{tool.WithExecutableToolFilter(before, func(string) bool { return false }), false, true, 2, 1},
+	} {
+		srv, err := newScriptToolServer(tc.ctx, ScriptHostToolName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := srv.ConcurrentSafe("glob"); got != tc.wantSafe {
+			t.Errorf("ConcurrentSafe(glob) = %t, want %t", got, tc.wantSafe)
+		}
+		out, err := srv.CallTool(programCall(1), "glob", nil)
+		if err != nil || out.IsError != tc.wantRefusal || ran != tc.wantRan || hooked != tc.wantHooked {
+			t.Fatalf("call = %+v, %v (tool=%d hooks=%d), want refusal=%t tool=%d hooks=%d", out, err, ran, hooked, tc.wantRefusal, tc.wantRan, tc.wantHooked)
+		}
+	}
+}
+
+func TestUnauditedToolObserverDisablesParallelDispatch(t *testing.T) {
+	t.Parallel()
+	tools := map[string]*GenerationTool{"glob": {Name: "glob", concurrentSafe: true}}
+	_, ctx := newToolDispatcher(context.Background(), tools, func(ToolCallInfo) {}, nil, nil, nil, nil)
+	srv, err := newScriptToolServer(ctx, ScriptHostToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.ConcurrentSafe("glob") {
+		t.Fatal("unaudited callback admitted concurrent dispatch")
+	}
+}

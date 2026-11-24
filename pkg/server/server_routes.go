@@ -30,7 +30,7 @@ func (s *Server) routes() {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+expectedBirthHeader)
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -81,6 +81,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)
 	s.mux.HandleFunc("POST /api/v1/bots/import", s.handleBotImport)
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
+	// The program a launch naming this bot runs, with the digest a launch
+	// form pins its launch to (expect_source_sha256).
+	s.mux.HandleFunc("GET /api/v1/bots/{name}/launch-source", s.handleBotLaunchSource)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}", s.handleBotsPut)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}/overlay", s.handleBotOverlay)
 	// Pipeline Boards are a bot-bound execution projection layered alongside
@@ -447,6 +450,19 @@ func (s *Server) routes() {
 	// Automations view. No-op without a TriggerStore.
 	if s.cfg.TriggerStore != nil {
 		s.registerTriggerRoutes()
+		// The connector intake's dead-letter view and replays: a re-judged
+		// pair reads its subscription from the trigger store.
+		if s.connectorIntakes != nil {
+			s.registerConnectorDeadLetterRoutes()
+		}
+		s.registerTeamTriggerRoutes()
+	}
+	// The catalog's icon route, and the source catalog read model: any
+	// deployment that resolves connector packages (the static catalog or
+	// the durable tiers) can serve both.
+	if s.connectorCatalog != nil || s.connectorPackages != nil {
+		s.registerConnectorIconRoutes()
+		s.registerSourcesRoutes()
 	}
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).

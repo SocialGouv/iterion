@@ -24,6 +24,9 @@ func TestLifecyclePredicateMatrix(t *testing.T) {
 		want map[RunStatus]bool
 	}
 	rows := []row{
+		{"CanStartExecution", RunStatus.CanStartExecution, map[RunStatus]bool{
+			RunStatusRunning: true, RunStatusQueued: true,
+		}},
 		{"IsTerminal", RunStatus.IsTerminal, map[RunStatus]bool{
 			RunStatusFinished: true, RunStatusFailed: true,
 			RunStatusFailedResumable: true, RunStatusCancelled: true,

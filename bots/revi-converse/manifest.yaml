@@ -1,7 +1,64 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.9
+version: 0.2.0
+## 0.2.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
+## effort from the process environment are gone, each replaced by the
+## default it carried, so a run with no pin set routes exactly as before. A
+## deployment that pinned one (pod env, `ITERION_BOT_VARS_ENV_PINS`, a
+## bot-var override) re-expresses it as a routing cell, an `llmroute`
+## override at the platform, org, team, binding or launch level: the pin
+## alone no longer moves the bot.
+## 0.1.11 — precomputed scope + a 20-step bound + a byte-stable system
+## prompt (#3283). The workflow OPENS with converse_scope, a deterministic
+## tool node: the reviewed head, the merge-base with a best-effort
+## refreshed base_ref (a failed fetch says base_is_current: false in the
+## block), workspace anomalies, the changed files with their stat, and the
+## hunk the thread's anchor names — capped at 48000 characters with a
+## visible marker. Its facts repeat review-pr's diff_precheck machinery
+## (the bots suite runs both scripts on the same fixture repos and
+## compares the common ones), and the sentinel survives: changed_files -1
+## means "the scope is unknown", never "no files". converse_agent then
+## reads that block instead of spending steps re-deriving it, and its tool
+## loop is bounded at 20 steps (was 60; [20,24] is the re-cut window): the
+## loop reads what the block lacks, and running out costs grounding, never
+## the publication — whatever the bound cut short rides the new
+## converse_output.unchecked field, and publish_reply renders it in the
+## thread as a "Lecture partielle" note. It is an admission the operator
+## reads, not a claim: converse_health reads nothing of it, and the runs
+## stopped by the bound are counted in the measurement (delegate_finished's
+## formatting_pass_used), not by the gates. The system prompt lost its
+## {{vars.*}} — the workspace path, the base ref and every per-run fact
+## moved to the user message (scope, thread, question, path, in that
+## order) — so the provider's prefix cache serves the next run from this
+## one's bytes; the workspace is named in the user message as the working
+## directory the shell starts in (claw guarantees the cwd), so plain git
+## replaces git -C. New launch vars thread_anchor_* (hidden): the thread
+## ROOT's diff position — path, old path (a rename), the current line and
+## its side ("new"/"old"), the PRE-IMAGE hint the forge keeps (GitHub's
+## original_line, GitLab's paired old_line — never a current line), and
+## the commit the anchor was taken on — set by the webhook lanes on both
+## GitLab entries (a plain reply and a command inside a thread) and the
+## GitHub/Forgejo review-thread reply, from the forges' position payloads.
+## The scope tool isolates the anchored hunk only when that commit is the
+## head under review; stale, removed-side or line-less it shows the
+## file's whole diff and says so.
+## 0.1.10 — converse_agent inherits no MCP server (`mcp: inherit: false`): it
+## answers from the diff and the repository through its four declared tools.
+## The ambient set — every enabled plugin's servers, the repository's
+## `.mcp.json` — put their tools in every request of the loop: on the team
+## gateway's claw lane 31 tool schemas where the node declares 4, and a code
+## question sent to a web search (#3283). On claude_code the `--mcp-config`
+## the CLI gets names none of those servers, and `--strict-mcp-config` stays
+## on for this node even where ITERION_CLAUDE_CODE_STRICT_MCP=0 lifts it, so
+## the CLI's own scopes (~/.claude.json, the repository's .mcp.json) add none;
+## codex, whose own configuration (CODEX_HOME's config.toml, a trusted
+## project's .codex/config.toml) the engine cannot switch off through the
+## pinned SDK, refuses the node, typed, when that configuration lists a
+## server, so a route can take over. No native web tool replaces them. What the workflow-wide resolution and its pre-run health
+## check do with the ambient servers is unchanged — the opt-out takes the
+## tools off this node, not the servers off the run.
 ## 0.1.9 — evaluation mode: `publish_mode: off` (a hidden launch var:
 ## operators set it — --var, bot_args, a remote launch, an integration's
 ## pinned launch vars — and so can a bot holding board.create, through a
@@ -129,7 +186,7 @@ invocations:
 ## reply.
 launch:
   primary: [converse_question, pr_url]
-  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url, publish_mode]
+  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url, publish_mode, thread_anchor_path, thread_anchor_old_path, thread_anchor_line, thread_anchor_old_line, thread_anchor_side, thread_anchor_commit]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot) needs 3.225.0, and the
 ## `sinks:` grant on forge_token needs 4.7.0, the release that reads it (the

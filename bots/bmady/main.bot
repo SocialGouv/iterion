@@ -597,9 +597,11 @@ human final_review:
 ## Deterministic commit — no LLM. Stages the whole dirty tree but the
 ## `.claude/` scaffold iterion lays there (skills, plugin files): under
 ## worktree: auto everything else IS this run's work. Guarded so an
-## empty diff doesn't error.
+## empty diff doesn't error. The node declares `output: commit_result`,
+## so its stdout is that ONE JSON object: git's own summary goes to
+## stderr, and the answer names the commit by its sha.
 tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -A -- ':/' $ITERION_TREE_NOISE && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.message}})"
+  command: "git -C {{input.workspace_dir}} add -A -- ':/' $ITERION_TREE_NOISE >&2 && if git -C {{input.workspace_dir}} diff --cached --quiet; then printf '{\"success\": true, \"output\": \"nothing to commit\"}'; else git -C {{input.workspace_dir}} commit -m {{input.message}} >&2 && SHA=$(git -C {{input.workspace_dir}} rev-parse HEAD) && printf '{\"success\": true, \"output\": \"committed %s\"}' \"$SHA\"; fi"
   input: commit_tool_input
   output: commit_result
 

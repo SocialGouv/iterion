@@ -292,6 +292,8 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			// filled-slot gate (law 1), same margin predicate constructor
 			// (law 4's parity).
 			if spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" {
+				// The preview asks exactly the wants the launch's attached
+				// walk will ask (ADR-164 parity).
 				attachedWants := append(append([]credpool.Credential{}, wants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
 				// Law 1's gate, exactly as the live walk: a slot tiers 1–4
 				// sealed (or the whitelist holds out) is not asked of the

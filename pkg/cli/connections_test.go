@@ -350,7 +350,7 @@ func TestConnectionsAddRefusesAConnectionNoCallCouldUse(t *testing.T) {
 		{"self-hosted connector with no instance", "token", "", "--base-url"},
 		{"a URL with no scheme", "token", "git.example.com", "http or https"},
 		{"a URL with no host", "token", "https://", "no host"},
-		{"basic auth, which this command cannot seal", "basic", "https://git.example.com", "token only"},
+		{"basic auth without its username", "basic", "https://git.example.com", "needs --username"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := connectionsWorkspace(t)
@@ -528,5 +528,34 @@ func TestAnAgentGrantIsNoLongerReportedAsInertOnAddOrOnList(t *testing.T) {
 	}
 	if n := strings.Count(listBoth.String(), "inert"); n != 0 {
 		t.Errorf("no honoured grant is flagged, got %d warnings in:\n%s", n, listBoth.String())
+	}
+}
+
+// An HTTP basic scheme is connected with its username as a flag and its
+// password from the environment, like a token: the credential never passes
+// through an argument.
+func TestConnectionsAddSealsABasicScheme(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	var add bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Alias: "basic", Scheme: "basic", BaseURL: "https://git.example.com",
+		Username: "jo", TokenEnv: "FORGE_TEST_TOKEN", StoreDir: filepath.Join(ws, ".iterion"),
+	}, &add); err != nil {
+		t.Fatalf("add a basic connection: %v", err)
+	}
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(filepath.Join(ws, ".iterion"), &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(list.String(), "basic") {
+		t.Fatalf("the basic connection is not listed:\n%s", list.String())
+	}
+	// --username belongs to basic alone.
+	err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Alias: "tok", Scheme: "token", BaseURL: "https://git.example.com",
+		Username: "jo", TokenEnv: "FORGE_TEST_TOKEN", StoreDir: filepath.Join(ws, ".iterion"),
+	}, &add)
+	if err == nil || !strings.Contains(err.Error(), "--username is HTTP basic's") {
+		t.Fatalf("a username for a token scheme = %v, want a refusal", err)
 	}
 }

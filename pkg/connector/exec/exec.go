@@ -26,6 +26,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -84,6 +85,12 @@ type Executor struct {
 	UserAgent string
 	// Now is injectable so a test can pin a Retry-After deadline.
 	Now func() time.Time
+	// PreciseNumbers decodes a JSON answer's numbers as json.Number, so an
+	// id past 2^53 reaches the caller as its literal instead of the float64
+	// nearest to it. A poller sets it: two ids that round to one float are
+	// one item to its seen set. Off for the paths whose consumers read
+	// float64.
+	PreciseNumbers bool
 }
 
 // Result is one call's outcome.
@@ -998,12 +1005,7 @@ func authorPaged(op spec.Operation, p *spec.Pagination, params map[string]any) b
 // a caller writes, since an overlay may have renamed it. Falls back to the
 // wire name, which is the key whenever nothing was renamed.
 func keyForWireName(op spec.Operation, wire string) string {
-	for _, p := range op.Params {
-		if p.Name == wire {
-			return p.Key
-		}
-	}
-	return wire
+	return spec.ParamKeyForWire(op, wire)
 }
 
 // pageItems extracts a page's collection: the named field, or the body itself
@@ -1066,7 +1068,7 @@ func jsonShape(data any) string {
 		return "a string"
 	case bool:
 		return "a boolean"
-	case float64:
+	case float64, json.Number:
 		return "a number"
 	default:
 		return fmt.Sprintf("%T", data)
@@ -1077,8 +1079,16 @@ func stringField(data any, field string) string {
 	if field == "" {
 		return ""
 	}
-	s, _ := descend(data, field).(string)
-	return s
+	switch v := descend(data, field).(type) {
+	case string:
+		return v
+	case json.Number:
+		// A vendor whose next-page cursor is a number: read as decoded with
+		// PreciseNumbers, its literal — a walk that read nothing here would
+		// stop after one page and call itself complete.
+		return v.String()
+	}
+	return ""
 }
 
 // descend walks a dotted path into a decoded JSON value.
@@ -1101,6 +1111,48 @@ func asError(err error, out **Error) bool {
 		*out = e
 	}
 	return ok
+}
+
+// decodeAnswer decodes a body the way its operation declares: a feed
+// operation's SUCCESSFUL answer through decodeFeed, under the charset its
+// Content-Type names; anything else — an error body included, which feeds
+// serve as HTML or JSON and which a feed decode would only spend memory on —
+// as JSON, whose failure on a non-2xx is not read.
+func decodeAnswer(op spec.Operation, resp *http.Response, body []byte, precise bool) (any, error) {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed && resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		len(strings.TrimSpace(string(body))) > 0 {
+		return decodeFeed(body, resp.Header.Get("Content-Type"))
+	}
+	if precise {
+		return decodePreciseJSON(body)
+	}
+	return decodeJSON(body)
+}
+
+// decodePreciseJSON is decodeJSON keeping every number as its literal
+// (json.Number), with the same refusal of anything after the value.
+func decodePreciseJSON(body []byte) (any, error) {
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var out any
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid character after top-level value")
+	}
+	return out, nil
+}
+
+// answerFormat names what an operation's body was expected to be.
+func answerFormat(op spec.Operation) string {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed {
+		return "an RSS 2.0 or Atom 1.0 feed"
+	}
+	return "JSON"
 }
 
 // decodeJSON decodes a body, tolerating an empty one.

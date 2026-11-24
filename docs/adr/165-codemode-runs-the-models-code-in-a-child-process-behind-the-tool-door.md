@@ -1,6 +1,6 @@
 # ADR-165 — Codemode: the model's code runs in a credential-less child process whose only capability is the node's own tool door
 
-- **Status**: Accepted — the operator decided the mandate on 2026-11-10 (codemode in iterion; cloud before local, web and desktop; claw as the reference harness; the fold as library-only). CM-2 built (`d13f6391e`, #3154): the tool dispatcher and the context contract. This record is CM-0. CM-1 (the script host), CM-3 (declarations and discovery), CM-4 (the loop binding) and CM-5 (the DSL switch) to come.
+- **Status**: Accepted — the operator decided the mandate on 2026-11-10 (codemode in iterion; cloud before local, web and desktop; claw as the reference harness; the fold as library-only). CM-2 built (`d13f6391e`, #3154): the tool dispatcher and the context contract. This record is CM-0. CM-1 (the script host), CM-3 (declarations and discovery), CM-4 (the loop binding) and CM-5 (the DSL switch) were to come when this record was written; the amendments below say what landed.
 - **Date**: 2026-11-10
 - **Deciders**: jo (the mandate and its four arbitrations), Claude (exploration, design, the five corrected facts)
 - **Extends**: [ADR-029](029-sandboxed-claw-via-hidden-claw-runner-ndjson-ipc.md) — a hidden subcommand reached over NDJSON IPC is already how this tree runs a contained child; codemode adds a second such child with a narrower capability than claw's runner.
@@ -473,3 +473,216 @@ a spread it refuses to conclude under, **and a reliability precondition** —
 the task must be one the model completes exactly, measured before the run,
 or the measurement keeps billing for the model. Spend: **$10.67** for this
 run, on top of the first measurement's $1.37.
+
+## Amendment — 2026-11-16 (bis): CM-17 measured on a synthetic corpus; the default stays opt-in
+
+The 11-15 amendment demanded a reliability precondition before any further
+measurement; the operator decided the direction the same day: measure the
+MECHANISM on a synthetic corpus, where the counting task's answer is exact by
+construction and the model's competence stops being the confound.
+
+**The corpus**: 98 directories × 42 files × 5 functions = 20 580 declarations,
+generated deterministically — every property the scale measurement relied on
+holds: a whole-corpus grep is **744 KiB against the 64 KiB per-result bound**,
+no single directory overflows it, and the mechanical strategy costs ~100
+calls — above the default 64, below 256.
+
+**Three arms, interleaved, the headline pair differing by one declaration**
+(B: codemode at the default bounds; C: `tool_calls: 256`):
+
+- **All six runs EXACT** — 20 580 total, 98 directories, per the manifest.
+  The reliability precondition is met by construction; the competence
+  confound is gone.
+- **The bound's bite, clean**: budget refusals — 3 runs × 1 in B, **0 in C**.
+  C: **−21 % turns, −31 % mean cost (1.09 vs 1.57 $), −22 % wall**, at equal
+  mean tokens (527 k vs 766 k — the spreads overlap).
+- Arm A (no codemode, n=1, context only): answered **1 050** — it covered 5
+  of 98 directories after its whole-corpus grep hit the truncation bound,
+  and said so in `method` while leaving `bound_hit` empty.
+- Side lesson from #3327's first CI attempt, recorded for the next witness
+  author: a real-child witness that resolves the INSTALLED binary fails in
+  CI ("exec: no command"); re-execute the test binary (childHost) and assert
+  what the seam owes — Clamp fires OnClamp before any spawn attempt.
+
+**The decision**: codemode's default **stays opt-in**. The mechanism is
+proven — the raised bound removes the wall and every budget refusal while
+every run lands exact — but the win axes are refusals/wall/cost, **not
+turns** (−21 % only), and the 11-13 abandonment criterion was written on the
+turn axis. That criterion stays AS WRITTEN with this caveat now recorded:
+the turn axis was refuted as codemode's win axis on BOTH corpora, so it will
+never fire a flip; a flip, if ever, would be decided on the measured axes
+per workload. An operator reading this record decides per workload; the
+measurement is the base. Total measurement spend across the three runs of
+records: **$1.37 + $10.67 + ~$8**.
+
+## Amendment — 2026-11-17: the launch gets a rung above the DSL (CM-5e)
+
+The bounds an author declares are static per `.bot`; the CM-17 measurement
+recorded the failure shape that makes a LAUNCH-time rung necessary: a run
+stops at *"the script has spent its budget of 64 tool calls … ask the
+operator to raise the bound"* — and the operator had nothing to raise. The
+launch request now carries the override, the strongest rung of both ladders:
+
+- **Mode**: `--codemode on|off` / API `codemode`. It wins over node and
+  workflow DSL in BOTH directions — an operator may keep a declared
+  capability off for one run, and may arm it on a node whose author stayed
+  silent (with the default bounds, since the author set none; a backend that
+  serves no codemode tool refuses at dispatch, and the launch preview screens
+  that under `route_refusals` before the run). An explicit launch choice is a
+  declaration in the `Declared()` sense — the terminal refusal applies to it
+  exactly as to an authored one.
+- **Bounds**: `--codemode-tool-calls` and its six siblings / API
+  `codemode_bounds`, field by field with the ONE rule the authored rungs
+  already follow: a field the launch set wins, a field it left at zero keeps
+  the authored value. `ResolveCodemodeBounds` walks three rungs with the same
+  `pick` closure — "one rule applied three times rather than three rules that
+  happen to meet". The platform ceiling and the 64 MiB memory floor still
+  apply behind it: the launch can WARN above the ceiling (the compile-time
+  twin C347 named in the warning) but never bypass a bound by asking.
+- **No environment rung**, again and deliberately (ADR-132 §1): the launch
+  request and the queue message (schema v33 — the `off` direction fails open
+  on a stale runner, the v21 class) are the only carriers above the DSL.
+- **Persisted and replayed**, the direction `docs/resume.md` names for
+  ADR-based work: the launch stamps its choice on the run doc
+  (`CodemodeOverride` / `CodemodeBoundsOverride`), and every resume that
+  does not re-state it replays that decision — CLI, studio, cloud runner,
+  retry sweeper. The sibling knobs (ambient, auto-memory) carry the
+  recompute-on-purpose caveat because nothing persists them; codemode's
+  launch choice is authoritative run intent for the same reason the
+  permission gate's is, and a resume that said nothing must not re-arm a
+  capability the operator killed at launch. An explicit resume re-state
+  still wins.
+- **Launch warnings**, not refusals, for the two shapes the compiler already
+  warns about (C347 above ceiling, C348 bounds beside an off): the runtime
+  still enforces the truth, so the launch names the compile-time twin in its
+  warning instead of refusing — philosophy 1, a bound with two owners is the
+  defect, not a warning.
+
+## Amendment — 2026-11-18: the network wall is seccomp, not Landlock (#3371)
+
+The 2026-11-10 reasoning that "Landlock is not filesystem-only" overstated what
+it gives: Landlock has exactly two network rights, `BIND_TCP` and
+`CONNECT_TCP`, from ABI 4. Measured with the real `Confine`, a confined child
+could therefore send **UDP on every kernel**, and on the production nodes
+(kernel 6.1, ABI 2, #3299) **open TCP as well**. `codemode-confinement.md`
+already recorded the UDP residual as "not this slice"; the production kernel
+made it the whole network.
+
+**Decision (Jo):** the child denies itself socket **creation** with a seccomp
+filter installed by `Confine` after the Landlock domain — `socket`,
+`socketpair` and the `io_uring` trio answer `EACCES`, on every thread
+(`SECCOMP_FILTER_FLAG_TSYNC`), and a syscall under another architecture or the
+x32 ABI kills the process. The child needs no socket: its channel to the parent
+is two pipes, and it refuses to run with an inherited socket, which would walk
+around a creation-only filter. A socket can also be **borrowed** from another
+process: `pidfd_getfd` duplicates one out of the runner, and `ptrace` or
+`process_vm_writev` make the runner act. Landlock's ptrace scoping refuses all
+of them from ABI 1, but the ABI-0 posture has only Yama, a host setting; so the
+same filter denies those four calls too (found by revi on #3374). The filter
+needs no privilege and holds on any
+kernel with seccomp, ABI 0 included; it was measured to install and refuse all
+of the above under docker's and containerd's default profiles with every
+capability dropped. amd64 and arm64 carry rows; any other architecture fails
+the confinement rather than run without the wall, and `confinementVerdict`
+offers no allowance for a posture without it.
+
+Rejected, each measured: a **network namespace per child** — the tighter wall,
+refused `EPERM` under `RuntimeDefault` (`CLONE_NEWUSER` needs `CAP_SYS_ADMIN`
+there; `unshare` from a running Go process is `EINVAL` anyway), so it would
+cost the runner pod's own posture; a **kernel upgrade** alone — ABI 4 still
+leaves UDP open; a **NetworkPolicy** — the child shares the runner's network
+namespace, so a policy cannot tell them apart. The escape suite's network arms
+no longer depend on the ABI and run on every lane, which retires the CI record
+`ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET`.
+
+## Amendment — 2026-11-18 (bis): the memory bound is room, not a total (#3383)
+
+`Limits.Memory` was applied as an absolute `RLIMIT_DATA`. The shipped script
+host holds ~86 MiB of data segment before the interpreter exists, because the
+Go 1.26 runtime maps a 64 MiB heap arena read-write and only ~9 MiB of it is
+resident. So at the 64 MiB floor the child started **above** its own bound.
+Every mapping the runtime then needed was refused: a GC span-queue buffer, a
+memory-profile bucket, an arena. A script pushing 10 000 strings died of a
+SIGSEGV in the garbage collector 5 runs out of 5 (`script_host_died`), while
+128 MiB passed.
+
+The same class turned up as three CI flakes on 18/11. A test-binary child at
+the floor died 2 runs out of 60 on `1+1`, and a test helper that lowered its
+own limit to 32 MiB died 3 runs out of 40, whenever the profiler's random
+sample asked for a chunk. It also explains the 768 MiB race floor the tests
+carried.
+
+**Decision (Jo):** `memory:` is the program's **growth** budget. `Confine`
+reads its own `VmData`, which is `mm->data_vm`, the very counter the limit is
+compared with, before the deny-all ruleset closes `/proc`. It then sets
+`RLIMIT_DATA = base + Memory`, and reports the base as
+`Applied.MemoryBaseBytes`. This is the meaning the parent's resident-set probe
+already had (growth from a baseline, #3299). The floor, default and ceiling
+keep their numbers and now mean room, whatever the binary weighs. Measured on
+the shipped binary at the floor: the 10 000-push script completes, and a memory
+bomb dies with the runtime's own `out of memory`, the typed `memory_exceeded`.
+The race floor is retired: the race suite passes at 64 MiB of room, three runs
+out of three.
+
+Consequence for sizing: a child can hold its base plus `memory:`, ~86 + 256 MiB
+under the default. The base is mostly reserved, not resident, so a pod budget
+should count the resident base (~9 MiB) plus the room per concurrent child.
+`Ceiling().Memory` still caps the room a tenant may ask for.
+
+## Amendment — 2026-11-20: discovery is an index in the description, and two methods on `call` (CM-3, #3443)
+
+The consequence above promised "one tool plus a discovery index". CM-3 builds
+it.
+
+**What the model reads.** The codemode tool's description is a constant
+preamble plus the node's **index**: one line per tool a program can call,
+sorted by name, giving its top-level parameters and the first sentence of its
+description. The description sits in the cached prefix, so it is a pure
+function of the node's script-callable tools and holds nothing per turn.
+
+**What a program asks for.** `call.describe(name)` returns the tool's
+TypeScript declaration (an overload of `call`). `call.search(query, limit)`
+ranks the tools by BM25 and returns `{name, summary, declaration}` for each
+hit. Both are methods of the one global, as CM-1b's binding requires. The
+child answers them from a catalogue the parent sends with the request, so
+neither is a tool call. The catalogue is bounded by `toolindex.Bound`, applied
+inside `Host.Run`, and `MaxRequestBytes` reserves room for it. `Proto` moves
+to 2.
+
+**One predicate, one snapshot.** The index, the catalogue and the dispatch pin
+all read `scriptWithheld`, over the `opts.Tools` snapshot taken at install. A
+tool the door refuses therefore cannot appear in the index.
+
+**Decision (operator, 2026-11-20)** — chosen over two alternatives:
+
+- inlining every declaration in the description: it grows with tool count ×
+  schema size, contradicts the declaration budget above, and leaves CM-14
+  nothing to defer;
+- a second model-facing search tool: a second tool in the budget, and a
+  duplicate of claw's `tool_search`.
+
+The details, the bounds table and the 11 mutants seen red are in
+[codemode-discovery](../agents/backends/codemode-discovery.md).
+
+## Amendment — 2026-11-21: explicit, bounded tool batches (CM-9/CM-10)
+
+`call.parallel` is a synchronous join over a short batch, not a new global or
+an event loop. The parent reserves the call budget before dispatch and runs
+only explicitly audited tools concurrently. The zero-value tool capability
+is exclusive; `concurrent_tool_calls` defaults to one and is clamped to four.
+Batches preserve input order even when work completes out of order. The same
+node dispatcher still applies scope, permission and lifecycle hooks.
+
+The launcher keeps reading events and session captures while tools run, with
+bounded admission and reply queues. Placement and policy remain its decisions;
+the runner does not attest concurrency eligibility. This does not certify
+codemode's sandbox crossing (CM-6). See [the batch contract](../agents/backends/codemode-concurrency.md).
+
+## Amendment — 2026-11-21: durable run state (CM-11/CM-12)
+
+`call.store` and `call.load` address one bounded JSON bank per run, not the
+workspace, a backend session, or a checkpoint. Acknowledged writes survive
+same-run resume and rewind; a new run starts empty. Both operations spend the
+script's existing call budget. The launcher binds the run and tenant and
+applies quotas atomically with writes. Filesystem and Mongo both remove the
+bank on run deletion. See [the state contract](../agents/backends/codemode-state.md).

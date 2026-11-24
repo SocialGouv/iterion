@@ -722,6 +722,10 @@
           "backend_pending_tool_use_id": {
             "type": "string"
           },
+          "backend_permission_input": {
+            "format": "byte",
+            "type": "string"
+          },
           "backend_session_fingerprint": {
             "type": "string"
           },
@@ -754,6 +758,9 @@
           },
           "budget_unreported_calls": {
             "type": "integer"
+          },
+          "correction_accounting": {
+            "$ref": "#/components/schemas/CorrectionAccounting"
           },
           "cost_usd_total": {
             "type": "number"
@@ -819,6 +826,12 @@
             },
             "type": "object"
           },
+          "node_failure_streaks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeFailureStreak"
+            },
+            "type": "object"
+          },
           "node_id": {
             "type": "string"
           },
@@ -843,6 +856,12 @@
           },
           "recovery_pause": {
             "type": "boolean"
+          },
+          "resume_pause_cost_readings": {
+            "items": {
+              "$ref": "#/components/schemas/ResumePauseCostReading"
+            },
+            "type": "array"
           },
           "round_robin_counters": {
             "additionalProperties": {
@@ -887,6 +906,41 @@
           "artifact_versions",
           "vars"
         ],
+        "type": "object"
+      },
+      "CodemodeBoundsRequest": {
+        "properties": {
+          "concurrent_tool_calls": {
+            "type": "integer"
+          },
+          "cpu": {
+            "type": "string"
+          },
+          "memory": {
+            "type": "integer"
+          },
+          "result_bytes": {
+            "type": "integer"
+          },
+          "script_bytes": {
+            "type": "integer"
+          },
+          "store_bytes": {
+            "type": "integer"
+          },
+          "store_entries": {
+            "type": "integer"
+          },
+          "tool_calls": {
+            "type": "integer"
+          },
+          "tool_result_bytes": {
+            "type": "integer"
+          },
+          "wall": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "Comment": {
@@ -955,6 +1009,53 @@
           "git_url",
           "ref",
           "path"
+        ],
+        "type": "object"
+      },
+      "CorrectionAccounting": {
+        "properties": {
+          "daily_marks": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "daily_scope_cost_usd": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "iteration_marks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "unpriced_marks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "unpriced_node_marks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "usage_marks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutputCorrectionUsage"
+            },
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
         ],
         "type": "object"
       },
@@ -1145,10 +1246,19 @@
           "bot_id": {
             "type": "string"
           },
+          "codemode": {
+            "type": "string"
+          },
+          "codemode_bounds": {
+            "$ref": "#/components/schemas/CodemodeBoundsRequest"
+          },
           "llm_routing": {
             "$ref": "#/components/schemas/Policy"
           },
           "permission": {
+            "type": "string"
+          },
+          "review_mode": {
             "type": "string"
           },
           "source": {
@@ -2053,6 +2163,35 @@
         ],
         "type": "object"
       },
+      "InvocationUsageRoute": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reported_model": {
+            "type": "string"
+          },
+          "requested_model": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session_fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
       "Issue": {
         "properties": {
           "assignee": {
@@ -2243,6 +2382,29 @@
         },
         "type": "object"
       },
+      "Literal": {
+        "properties": {
+          "bool_val": {
+            "type": "boolean"
+          },
+          "float_val": {
+            "type": "number"
+          },
+          "int_val": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "str_val": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Maintenance": {
         "properties": {
           "fence_launches": {
@@ -2339,6 +2501,21 @@
         ],
         "type": "object"
       },
+      "NodeFailureStreak": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "count"
+        ],
+        "type": "object"
+      },
       "NodeServed": {
         "properties": {
           "backend": {
@@ -2427,6 +2604,40 @@
         ],
         "type": "object"
       },
+      "OutputCorrectionCause": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reset_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "self_imposed": {
+            "type": "boolean"
+          },
+          "timeout_nanos": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "window_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "kind"
+        ],
+        "type": "object"
+      },
       "OutputCorrectionEpisode": {
         "properties": {
           "attempts": {
@@ -2435,7 +2646,13 @@
           "budget": {
             "type": "integer"
           },
+          "cause": {
+            "$ref": "#/components/schemas/OutputCorrectionCause"
+          },
           "episode_id": {
+            "type": "string"
+          },
+          "generation": {
             "type": "string"
           },
           "input_fingerprint": {
@@ -2453,8 +2670,17 @@
           "last_violation_fingerprint": {
             "type": "string"
           },
+          "ledger_key": {
+            "type": "string"
+          },
           "node_id": {
             "type": "string"
+          },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/OutputCorrectionReservation"
+            },
+            "type": "array"
           },
           "retired_at": {
             "format": "date-time",
@@ -2463,6 +2689,9 @@
           "retired_reason": {
             "type": "string"
           },
+          "revision": {
+            "type": "integer"
+          },
           "started_at": {
             "format": "date-time",
             "type": "string"
@@ -2470,9 +2699,82 @@
           "status": {
             "type": "string"
           },
+          "terminal_kind": {
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OutputCorrectionUsage"
+          }
+        },
+        "type": "object"
+      },
+      "OutputCorrectionReceipt": {
+        "properties": {
+          "observation": {
+            "$ref": "#/components/schemas/UsageObservation"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/UsageProjection"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OutputCorrectionUsage"
+          }
+        },
+        "required": [
+          "usage"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionReservation": {
+        "properties": {
+          "execution_epoch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "initial_usage_id": {
+            "type": "string"
+          },
+          "logical_invocation_id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/UsageOrigin"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/OutputCorrectionReceipt"
+          },
+          "scope_key": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "execution_epoch",
+          "scope_key",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionUsage": {
+        "properties": {
+          "cost_usd": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
           }
         },
         "type": "object"
@@ -3040,6 +3342,57 @@
         ],
         "type": "object"
       },
+      "Preset": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/PresetValue"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PresetValue": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Literal"
+          }
+        },
+        "type": "object"
+      },
+      "PresetsBlock": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/Preset"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "PricefeedEntry": {
         "properties": {
           "declared": {
@@ -3183,6 +3536,43 @@
         ],
         "type": "object"
       },
+      "ReportedEconomicSession": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "ResumePauseCostReading": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "usd": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "backend",
+          "session",
+          "usd"
+        ],
+        "type": "object"
+      },
       "RoutingPolicy": {
         "properties": {
           "allowed_actions": {
@@ -3291,6 +3681,9 @@
             "type": "array"
           },
           "bank_state": {
+            "type": "string"
+          },
+          "birth_id": {
             "type": "string"
           },
           "bot_source_tenant": {
@@ -3525,6 +3918,7 @@
         },
         "required": [
           "id",
+          "birth_id",
           "workflow_name",
           "status",
           "created_at",
@@ -3708,6 +4102,9 @@
           "delivery_id": {
             "type": "string"
           },
+          "intake_id": {
+            "type": "string"
+          },
           "issue_id": {
             "type": "string"
           },
@@ -3718,6 +4115,9 @@
             "type": "string"
           },
           "kind": {
+            "type": "string"
+          },
+          "pair_id": {
             "type": "string"
           },
           "schedule_id": {
@@ -3738,6 +4138,9 @@
             "type": "boolean"
           },
           "bank_state": {
+            "type": "string"
+          },
+          "birth_id": {
             "type": "string"
           },
           "bundle_display_name": {
@@ -3855,6 +4258,7 @@
         },
         "required": [
           "id",
+          "birth_id",
           "workflow_name",
           "status",
           "created_at",
@@ -3892,6 +4296,28 @@
         },
         "required": [
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionCostObservation": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "session_id",
+          "cost_usd"
         ],
         "type": "object"
       },
@@ -4009,7 +4435,19 @@
           "args_var": {
             "type": "string"
           },
+          "backfill": {
+            "type": "integer"
+          },
+          "backfill_done": {
+            "type": "boolean"
+          },
           "bot_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "connector_key": {
             "type": "string"
           },
           "consume_labels": {
@@ -4027,6 +4465,15 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "filters": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object"
           },
           "guard": {
             "type": "string"
@@ -4084,11 +4531,26 @@
           "mode": {
             "type": "string"
           },
+          "no_live_run": {
+            "type": "string"
+          },
           "origin": {
             "type": "string"
           },
           "overlap": {
             "type": "string"
+          },
+          "poll_query": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "poller": {
+            "type": "string"
+          },
+          "poller_since": {
+            "type": "integer"
           },
           "repo": {
             "type": "string"
@@ -4120,15 +4582,27 @@
           "tenant_id": {
             "type": "string"
           },
+          "trigger_id": {
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "var_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "vars": {
             "additionalProperties": {
               "type": "string"
             },
             "type": "object"
+          },
+          "when": {
+            "type": "string"
           }
         },
         "required": [
@@ -4236,6 +4710,227 @@
           "name",
           "token_last4",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "UsageComponent": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "cost_kind": {
+            "type": "string"
+          },
+          "cost_known": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reported_session": {
+            "$ref": "#/components/schemas/ReportedEconomicSession"
+          },
+          "route": {
+            "$ref": "#/components/schemas/InvocationUsageRoute"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_split": {
+            "$ref": "#/components/schemas/UsageTokenSplit"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal",
+          "source",
+          "tokens",
+          "unpriced_tokens",
+          "unreported_calls",
+          "cost_known",
+          "cost_kind",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
+      "UsageObservation": {
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/UsageComponent"
+            },
+            "type": "array"
+          },
+          "count_iteration": {
+            "type": "boolean"
+          },
+          "other_cost_usd": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionCostObservation"
+            },
+            "type": "array"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "UsageOrigin": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "pool_grantless": {
+            "type": "boolean"
+          },
+          "publication": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "run_id",
+          "publication",
+          "tenant_id"
+        ],
+        "type": "object"
+      },
+      "UsageProjection": {
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/UsageProjectionLine"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection_id",
+          "version",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "UsageProjectionLine": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "cost_known": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "previous_max_usd": {
+            "type": "number"
+          },
+          "reported_session": {
+            "$ref": "#/components/schemas/ReportedEconomicSession"
+          },
+          "route": {
+            "$ref": "#/components/schemas/InvocationUsageRoute"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionCostObservation"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_split": {
+            "$ref": "#/components/schemas/UsageTokenSplit"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "cost_known",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
+      "UsageTokenSplit": {
+        "properties": {
+          "cache_read": {
+            "type": "integer"
+          },
+          "cache_write": {
+            "type": "integer"
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "cache_read",
+          "cache_write"
         ],
         "type": "object"
       },
@@ -5068,6 +5763,50 @@
         },
         "type": "object"
       },
+      "botLaunchSourceResponse": {
+        "properties": {
+          "bindable": {
+            "type": "boolean"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "document": {},
+          "presets": {
+            "$ref": "#/components/schemas/PresetsBlock"
+          },
+          "read_refusal": {
+            "$ref": "#/components/schemas/readRefusalInfo"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "unit": {
+            "$ref": "#/components/schemas/unitInfo"
+          }
+        },
+        "required": [
+          "bot_id",
+          "tier",
+          "source",
+          "sha256",
+          "document",
+          "bindable"
+        ],
+        "type": "object"
+      },
       "botRolesSettingsView": {
         "properties": {
           "effective": {
@@ -5366,16 +6105,21 @@
           "display_name": {
             "type": "string"
           },
+          "password": {
+            "type": "string"
+          },
           "scheme_id": {
             "type": "string"
           },
           "token": {
             "type": "string"
+          },
+          "username": {
+            "type": "string"
           }
         },
         "required": [
-          "connector",
-          "token"
+          "connector"
         ],
         "type": "object"
       },
@@ -5422,6 +6166,9 @@
           "scheme_id": {
             "type": "string"
           },
+          "scheme_kind": {
+            "type": "string"
+          },
           "scopes_known": {
             "type": "boolean"
           },
@@ -5448,6 +6195,7 @@
           "alias",
           "base_url",
           "scheme_id",
+          "scheme_kind",
           "placement",
           "capabilities",
           "status",
@@ -5467,6 +6215,9 @@
           "display_name": {
             "type": "string"
           },
+          "password": {
+            "type": "string"
+          },
           "status": {
             "type": "string"
           },
@@ -5474,6 +6225,9 @@
             "type": "string"
           },
           "token": {
+            "type": "string"
+          },
+          "username": {
             "type": "string"
           }
         },
@@ -5989,6 +6743,26 @@
           "bot_ids",
           "sync_issues_enabled"
         ],
+        "type": "object"
+      },
+      "launchBudgetSpec": {
+        "properties": {
+          "max_cost_usd": {
+            "type": "number"
+          },
+          "max_duration": {
+            "type": "string"
+          },
+          "max_iterations": {
+            "type": "integer"
+          },
+          "max_parallel_branches": {
+            "type": "integer"
+          },
+          "max_tokens": {
+            "type": "integer"
+          }
+        },
         "type": "object"
       },
       "legalDocumentView": {
@@ -6796,6 +7570,72 @@
         },
         "type": "object"
       },
+      "previewCodemodeBounds": {
+        "properties": {
+          "concurrent_tool_calls": {
+            "type": "integer"
+          },
+          "cpu": {
+            "type": "string"
+          },
+          "memory": {
+            "type": "integer"
+          },
+          "result_bytes": {
+            "type": "integer"
+          },
+          "script_bytes": {
+            "type": "integer"
+          },
+          "store_bytes": {
+            "type": "integer"
+          },
+          "store_entries": {
+            "type": "integer"
+          },
+          "tool_calls": {
+            "type": "integer"
+          },
+          "tool_result_bytes": {
+            "type": "integer"
+          },
+          "wall": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_calls",
+          "concurrent_tool_calls",
+          "wall",
+          "cpu",
+          "memory",
+          "script_bytes",
+          "result_bytes",
+          "tool_result_bytes",
+          "store_entries",
+          "store_bytes"
+        ],
+        "type": "object"
+      },
+      "previewCodemodeLimits": {
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/previewCodemodeBounds"
+          },
+          "default": {
+            "$ref": "#/components/schemas/previewCodemodeBounds"
+          },
+          "memory_floor": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "default",
+          "ceiling",
+          "memory_floor"
+        ],
+        "type": "object"
+      },
       "previewCostNode": {
         "properties": {
           "cost_max_usd": {
@@ -6835,6 +7675,9 @@
       },
       "previewCostRequest": {
         "properties": {
+          "ambient_context": {
+            "type": "string"
+          },
           "backend": {
             "type": "string"
           },
@@ -6843,6 +7686,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "codemode": {
+            "type": "string"
           },
           "file_path": {
             "type": "string"
@@ -6867,6 +7713,9 @@
             },
             "type": "object"
           },
+          "codemode_limits": {
+            "$ref": "#/components/schemas/previewCodemodeLimits"
+          },
           "cost_max_usd": {
             "type": "number"
           },
@@ -6887,6 +7736,12 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "route_refusals": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "tokens_max": {
             "type": "integer"
@@ -7194,6 +8049,20 @@
         ],
         "type": "object"
       },
+      "readRefusalInfo": {
+        "properties": {
+          "hint": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
       "registerReq": {
         "properties": {
           "email": {
@@ -7213,6 +8082,53 @@
           "email",
           "password"
         ],
+        "type": "object"
+      },
+      "resumeCodemodeStoreRequest": {
+        "properties": {
+          "store_bytes": {
+            "type": "integer"
+          },
+          "store_entries": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "resumeRunRequest": {
+        "properties": {
+          "accept_scratch_loss": {
+            "type": "boolean"
+          },
+          "answers": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/launchBudgetSpec"
+          },
+          "codemode_store": {
+            "$ref": "#/components/schemas/resumeCodemodeStoreRequest"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "routingPolicyView": {
@@ -7344,6 +8260,76 @@
           "name",
           "slug",
           "status"
+        ],
+        "type": "object"
+      },
+      "unitFileInfo": {
+        "properties": {
+          "dependency": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "imports": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parse_error": {
+            "type": "string"
+          },
+          "parse_errors": {
+            "type": "integer"
+          },
+          "profile": {
+            "type": "integer"
+          },
+          "rel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rel"
+        ],
+        "type": "object"
+      },
+      "unitInfo": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/unitFileInfo"
+            },
+            "type": "array"
+          },
+          "load_error": {
+            "type": "string"
+          },
+          "load_errors": {
+            "type": "integer"
+          },
+          "main": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "unread": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "root",
+          "main",
+          "revision",
+          "files"
         ],
         "type": "object"
       },
@@ -10740,6 +11726,30 @@
           "me"
         ]
       }
+    },
+    "/api/me/pool/entries/{pledge}": {
+      "delete": {
+        "operationId": "deleteMePoolEntriesByPledge",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/pool/entries/{pledge}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "pledge",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/me/pool/history": {
       "get": {
@@ -14509,6 +15519,16 @@
       ],
       "post": {
         "operationId": "postRunsByIdResume",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/resumeRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response"
@@ -15657,6 +16677,38 @@
           }
         },
         "summary": "PUT /api/teams/{id}/bots/{bot}/pool-attachment",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/bots/{name}/triggers/from-invocation": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdBotsByNameTriggersFromInvocation",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/bots/{name}/triggers/from-invocation",
         "tags": [
           "teams"
         ]
@@ -16845,6 +17897,94 @@
         ]
       }
     },
+    "/api/teams/{id}/intakes": {
+      "get": {
+        "operationId": "getTeamsByIdIntakes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/intakes",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/intakes/{sub}": {
+      "get": {
+        "operationId": "getTeamsByIdIntakesBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/intakes/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/intakes/{sub}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdIntakesBySubReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/intakes/{sub}/replay",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/invitations": {
       "get": {
         "operationId": "getTeamsByIdInvitations",
@@ -17194,6 +18334,62 @@
           }
         },
         "summary": "POST /api/teams/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/pairs": {
+      "get": {
+        "operationId": "getTeamsByIdPairs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/pairs",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/pairs/{sub}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdPairsBySubReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/pairs/{sub}/replay",
         "tags": [
           "teams"
         ]
@@ -17711,6 +18907,30 @@
         ]
       }
     },
+    "/api/teams/{id}/sources": {
+      "get": {
+        "operationId": "getTeamsByIdSources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/sources",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/teams/{id}/status": {
       "parameters": [
         {
@@ -17730,6 +18950,122 @@
           }
         },
         "summary": "POST /api/teams/{id}/status",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers": {
+      "get": {
+        "operationId": "getTeamsByIdTriggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/triggers",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdTriggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/triggers",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers/preview": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdTriggersPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/triggers/preview",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers/{sub}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/triggers/{sub}",
         "tags": [
           "teams"
         ]
@@ -18141,6 +19477,53 @@
         ]
       }
     },
+    "/api/v1/bots/{name}/launch-source": {
+      "get": {
+        "description": "The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/\u003cname\u003e.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.",
+        "operationId": "getV1BotsByNameLaunchSource",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botLaunchSourceResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "403": {
+            "description": "a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected"
+          },
+          "404": {
+            "description": "the name resolves on no tier"
+          },
+          "422": {
+            "description": "the bot resolves but not to a launchable program — the refusal a launch of it would draw"
+          },
+          "500": {
+            "description": "the resolution or the reading itself failed"
+          },
+          "503": {
+            "description": "a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry"
+          }
+        },
+        "summary": "GET /api/v1/bots/{name}/launch-source",
+        "tags": [
+          "bots"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/v1/bots/{name}/overlay": {
       "parameters": [
         {
@@ -18186,6 +19569,92 @@
         "summary": "POST /api/v1/bots/{name}/triggers/from-invocation",
         "tags": [
           "bots"
+        ]
+      }
+    },
+    "/api/v1/connectors/{id}/icon": {
+      "get": {
+        "operationId": "getV1ConnectorsByIdIcon",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/connectors/{id}/icon",
+        "tags": [
+          "connectors"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/intakes": {
+      "get": {
+        "operationId": "getV1Intakes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/intakes",
+        "tags": [
+          "intakes"
+        ]
+      }
+    },
+    "/api/v1/intakes/{id}": {
+      "get": {
+        "operationId": "getV1IntakesById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/intakes/{id}",
+        "tags": [
+          "intakes"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/intakes/{id}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1IntakesByIdReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/intakes/{id}/replay",
+        "tags": [
+          "intakes"
         ]
       }
     },
@@ -18435,6 +19904,44 @@
           }
         }
       ]
+    },
+    "/api/v1/pairs": {
+      "get": {
+        "operationId": "getV1Pairs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/pairs",
+        "tags": [
+          "pairs"
+        ]
+      }
+    },
+    "/api/v1/pairs/{id}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PairsByIdReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pairs/{id}/replay",
+        "tags": [
+          "pairs"
+        ]
+      }
     },
     "/api/v1/pipeline-board": {
       "get": {
@@ -19102,6 +20609,20 @@
         ]
       }
     },
+    "/api/v1/sources": {
+      "get": {
+        "operationId": "getV1Sources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/sources",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
     "/api/v1/triggers": {
       "get": {
         "operationId": "getV1Triggers",
@@ -19169,6 +20690,20 @@
           }
         },
         "summary": "GET /api/v1/triggers/health",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/api/v1/triggers/preview": {
+      "post": {
+        "operationId": "postV1TriggersPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/triggers/preview",
         "tags": [
           "triggers"
         ]

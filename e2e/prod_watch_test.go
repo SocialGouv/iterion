@@ -3061,9 +3061,11 @@ func TestProdWatch_ResolveReleaseContract(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"ok","version":"abc1234","secret_marker":"CANARY-body-SUPERSECRET","status_text":"degraded but serving"}`))
 	}))
 	t.Cleanup(srv.Close)
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
-	deadURL := dead.URL
-	dead.Close()
+	// The unreachable source is port 1, outside the ephemeral range every
+	// httptest server binds in: nothing in the suite can listen there. A
+	// closed ephemeral port is free again, and a parallel test's server can
+	// take it and answer.
+	const deadURL = "http://127.0.0.1:1"
 	run := func(release map[string]any, allowPrivate bool) map[string]any {
 		t.Helper()
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "resolve_release").Script,

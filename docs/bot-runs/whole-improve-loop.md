@@ -293,8 +293,8 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
   target was too clean to exercise the fix→commit path.
 - **Run 019f275e** (scope `pkg/dispatcher/native/boardops,pkg/backend/forfait`,
   explicit code-quality axis): num_chunks=1. Flow:
-  `reviewer_claude(REJECT: "Dead exported code boardops.Tools()" + redundant
-  guard) → fix_claude(applies fix) → reviewer_gpt → reviewer_claude(APPROVE) →
+  `reviewer_alternate(REJECT: "Dead exported code boardops.Tools()" + redundant
+  guard) → fix_claude(applies fix) → reviewer → reviewer_alternate(APPROVE) →
   verify_build → verify_run → commit_changes → done`. **Landed commit
   `b3e4c174e`** on storage branch `iterion/run/pixel-blink-cryomantle-a741`:
   removed the dead `boardops.Tools()` + simplified `ToolsFor`/`Call` (−10 net
@@ -392,7 +392,7 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
   regen-catalog` and **rapatriated to main** @22e5aae03.
 - **Value**: proved the per-node/-group override
   (`pkg/backend/model.ModelOverrides`, studio dropdowns / CLI `--model`/`--backend`
-  / HTTP `model_overrides`). Log evidence: `Delegation started [reviewer_gpt]:
+  / HTTP `model_overrides`). Log evidence: `Delegation started [reviewer]:
   backend=claude_code` + `claude … --model claude-fable-5` (backend AND model
   override, by **kind selector** `judge=`/`agent=`, top-precedence over the
   node's DSL `backend: claw`/`model: openai/gpt-5.5`). Composes with `--review-mode`.
@@ -400,12 +400,12 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
   families from detected **provider** creds (API-key style), NOT from the
   `claude_code` forfait OAuth (a *backend* cred). With only codex ChatGPT-OAuth
   present, the sole detected family is **gpt**, so `--review-mode mono` (and
-  `auto`) route to `reviewer_gpt`/`fix_gpt` — and `InjectIfDeclared` clobbers any
+  `auto`) route to `reviewer`/`fix_gpt` — and `InjectIfDeclared` clobbers any
   explicit `--var mono_family=claude` with the resolver's pick. The per-node
   **backend override is exactly the escape hatch**: re-target the running (gpt-
   family) nodes onto `claude_code` to run claude models (fable/sonnet) on the
   forfait. (First attempt `--model judge=claude-fable-5` alone failed —
-  `reviewer_gpt`'s DSL backend stayed `claw`, which rejects a bare
+  `reviewer`'s DSL backend stayed `claw`, which rejects a bare
   `claude-fable-5`: claw needs `provider/model`. Fixed by also overriding the
   backend. Lesson: when overriding a claude model onto a claw-default node,
   override the backend too — or use the `anthropic/` prefix for claw.)
@@ -424,8 +424,8 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
   bug that made every `claw` (gpt-5.5) reviewer/fixer ungrounded. Fixed + validated;
   run resumed on GLM-5.2 to converge after the OpenAI forfait capped mid-sweep.
 - Versions: bot 0.5.0 · iterion `a2a20ab` + fix (this change)
-- Method: `claude_code` opus-4-8 (reviewer_claude + fixers) · `claw` `openai/gpt-5.5`
-  (reviewer_gpt) · **`--sandbox none`** (see caveat 1) · `--merge-into none` ·
+- Method: `claude_code` opus-4-8 (reviewer_alternate + fixers) · `claw` `openai/gpt-5.5`
+  (reviewer) · **`--sandbox none`** (see caveat 1) · `--merge-into none` ·
   store = operator `.iterion` (visible in studio) · `scope_globs` = the recently
   hardened `pkg/runtime` core (engine*/branch/convergence/fan_out*/events*/
   special_node/recovery_dispatch/workspace_safety/helpers) → **7 chunks**
@@ -433,12 +433,12 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
 
 ### The bug — claw+gpt-5.5 "explore-mode façade" (the headline finding)
 In explore mode the reviewer must READ the chunk files (source is not inlined) and
-report `files_reviewed`. reviewer_gpt (claw / gpt-5.5) made **zero tool calls**,
+report `files_reviewed`. reviewer (claw / gpt-5.5) made **zero tool calls**,
 fabricated a plausible verdict from priors, and self-reported `files_reviewed`
 paths it never opened — sailing through the engagement gate (which trusts the
-self-reported list). reviewer_claude (claude_code) read the files and behaved
+self-reported list). reviewer_alternate (claude_code) read the files and behaved
 correctly. So Willy's GPT half of the cross-family review was a **façade**, and the
-"no logs for reviewer_gpt in the studio" symptom was just its consequence (no tool
+"no logs for reviewer in the studio" symptom was just its consequence (no tool
 calls → nothing to stream).
 
 Root cause (verified with a 1-node probe + code trace): iterion always sent
@@ -458,7 +458,7 @@ agent/judge (`claw_backend.go`). The `/v1/responses` path maps "any"→"required
 the force reaches the ChatGPT-forfait endpoint.
 - Validated: the probe's gpt-5.5 now calls `read_file`; 2 new unit tests
   (`TestGenerateTextDirect_ForceInitialToolUse` + negative control); and in the real
-  Willy run **reviewer_gpt now reads both chunk files and emits `tool_started`/
+  Willy run **reviewer now reads both chunk files and emits `tool_started`/
   `tool_called` events** → activity is visible in the studio (original symptom
   fixed). Its verdict became specific + grounded (a real `max_duration`-after-
   resource-wait deadline gap in `engine_exec.go`), vs the earlier hand-wavy claim.
@@ -480,7 +480,7 @@ chunks were reviewed **CLEAN** with genuine cross-references (not a rubber-stamp
    to validate + deliver. To help the operator's *normal* (sandboxed) Willy runs,
    rebuild the sandbox image with the fixed iterion (or verify `addClawBinaryMount`
    mounts the fresh host binary and that `/usr/local/bin/iterion` wins on PATH).
-2. **OpenAI forfait cap.** reviewer_gpt hit a 429 usage-limit after ~13 passes ->
+2. **OpenAI forfait cap.** reviewer hit a 429 usage-limit after ~13 passes ->
    `recovery_pause`. Resumed with `--answer acknowledge_recovery=continue --force`
    and `ITERION_VIBE_MODEL_GPT=anthropic/glm-5.2` + ZAI mode (both reviewers on
    GLM-5.2 via z.ai) to converge. Cross-family diversity is paused in that fallback.
@@ -507,7 +507,7 @@ chunks were reviewed **CLEAN** with genuine cross-references (not a rubber-stamp
 
 - Status: **partial** (run 2 produced strong value, ended `failed_resumable` on a reviewer context overflow before convergence)
 - Versions: bot 0.3.0 · iterion `d665317` (run binary built from branch `feat/budget-override-flag` @ `5ae01478e`)
-- Method: `claude_code` opus-4-8 (reviewer_claude + both fixers) · `claw` `openai/gpt-5.5` (reviewer_gpt) · `worktree: auto` · sandbox `iterion-sandbox-full:edge` · **`--max-cost-usd 120 --max-duration 4h`** (via the new at-run budget-override flag — no `.bot` edit) · `--merge-into none` · store = operator `.iterion` (visible in studio) · whole repo (no `scope_globs`) → **28 chunks**.
+- Method: `claude_code` opus-4-8 (reviewer_alternate + both fixers) · `claw` `openai/gpt-5.5` (reviewer) · `worktree: auto` · sandbox `iterion-sandbox-full:edge` · **`--max-cost-usd 120 --max-duration 4h`** (via the new at-run budget-override flag — no `.bot` edit) · `--merge-into none` · store = operator `.iterion` (visible in studio) · whole repo (no `scope_globs`) → **28 chunks**.
 
 ### Run 1 (019ef545) — diagnostic: the axis was a no-op
 Willy approved **every** chunk (0 rejections, 0 fixes, ~$2) and cruised toward a
@@ -561,7 +561,7 @@ to branch `willy/iterion-code-quality-2026-06-23` (cleanups as one commit).
    subtree is now writable and devbox is first-class. `verify-build` skill
    updated to prefer `devbox run` again.
 4. **Reviewer context overflow on large repos → MITIGATED.** Run 2 ended
-   `failed_resumable` when `reviewer_gpt` (gpt-5.5 forfait) hit
+   `failed_resumable` when `reviewer` (gpt-5.5 forfait) hit
    `context_length_exceeded` at review_loop 11. Measured: the accumulated
    `cumulative_scanned_areas`+`prior_pushback` was only ~4 K tokens — **not** the
    cause; the dominant input is the inline `chunk_content` (was ≤ 30 K tokens) vs
@@ -795,8 +795,8 @@ cause and symptom.
   by design, see finding). Run on a clean iterion clone via the C082 worktree
   studio (non-watchexec, so no self-kill), `improvement_prompt` scoped to
   "pkg/log/ only", `merge_into=none`.
-- Machinery: **confirmed healthy.** `alt` round-robin → `reviewer_claude`/
-  `reviewer_gpt` → `streak_check` → `snapshot_chunk` turned correctly; reviewers
+- Machinery: **confirmed healthy.** `alt` round-robin → `reviewer_alternate`/
+  `reviewer` → `streak_check` → `snapshot_chunk` turned correctly; reviewers
   emitted clean cross-family verdicts and `streak_check` accumulated approvals (4
   chunks swept, `review_loop=2`). No oscillation, no crash (Willy has a python
   state node but it does NOT parse json arrays from env, so it's immune to the
@@ -831,7 +831,7 @@ cause and symptom.
   (other family). `sandbox-full:edge`. ~3.7 min, ~$1.15, ~18k tokens counted before
   the run was cancelled.
 - Result: `snapshot_chunk` (chunked iterion into **22 chunks / 1515 files / 5.8M
-  est tokens**) → `alt` → `reviewer_claude` (found a real blocker) → `streak_check`
+  est tokens**) → `alt` → `reviewer_alternate` (found a real blocker) → `streak_check`
   → `fix_claude` (applied a correct fix) → **cancelled by a watchexec-triggered
   studio restart** (`error: "server drained: studio process shutting down"`,
   `failed_resumable` at `fix_claude`, review_loop=1).

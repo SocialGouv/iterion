@@ -57,6 +57,15 @@ func ClassifyError(err error) ErrorCode {
 	if errors.Is(err, tool.ErrHostCapabilityNotHeld) {
 		return ErrCodeToolFailedPermanent
 	}
+	// A tool node refused for what its recipe printed or for what its body
+	// reads (model.ToolContractViolation): the same workflow on the same
+	// inputs is refused the same way, so it is permanent — before the generic
+	// tool-failure arm below, whose one retry would re-run a command that
+	// exited 0, or re-render the same hole.
+	var contract model.ToolContractViolation
+	if errors.As(err, &contract) {
+		return ErrCodeToolFailedPermanent
+	}
 	// A tool node's failure, checked by TYPE before any provider reading:
 	// its stderr is data, and an HTTP-looking line in it ("status code 400",
 	// "error 401") says nothing about the model provider. Every execution

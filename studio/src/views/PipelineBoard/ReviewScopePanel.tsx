@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRightIcon, DownloadIcon } from "@radix-ui/react-icons";
 
 import { getReviewScope, workspaceFileURL, type RunFile } from "@/api/runs";
+import { useRunBirthsVersion } from "@/hooks/useRunBirthsVersion";
 import FileDiffDialog from "@/components/Runs/FileDiffDialog";
 import { Dialog, InlineBanner, Spinner, VideoPreview } from "@/components/ui";
 
@@ -303,13 +304,18 @@ function WorkspaceMediaDialog({
   onClose: () => void;
 }) {
   const kind = classifyProducedFile(file.path);
+  // The media URLs carry the run's expected birth once the page knows it:
+  // rebuilt when it is learned.
+  const birthsVersion = useRunBirthsVersion();
   const src = useMemo(
     () => workspaceFileURL(runId, file.path, { gate }),
-    [runId, file.path, gate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runId, file.path, gate, birthsVersion],
   );
   const downloadHref = useMemo(
     () => workspaceFileURL(runId, file.path, { gate, download: true }),
-    [runId, file.path, gate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runId, file.path, gate, birthsVersion],
   );
   const [loadError, setLoadError] = useState<string | null>(null);
 

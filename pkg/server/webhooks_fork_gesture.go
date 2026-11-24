@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -152,7 +153,14 @@ func (s *Server) handleForkReviewGesture(
 		filtered(fmt.Sprintf(forkRefusalBotScope, route.BotID))
 		return
 	}
-	if route.Mode == "board" {
+	// The route's mode is read through bundle.ResolveMode like every other
+	// lane: a mode no effect honours is refused typed, board is refused
+	// here, and only direct reaches the launch below.
+	switch mode, err := bundle.ResolveMode(bundle.InvocationKindCommand, bundle.ExecutionMode(route.Mode), "fork gesture"); {
+	case err != nil:
+		filtered(err.Error())
+		return
+	case mode == bundle.ExecutionBoard:
 		filtered(forkRefusalBoardMode)
 		return
 	}

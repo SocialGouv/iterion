@@ -1,0 +1,47 @@
+schema_version: 1
+id: rss
+display_name: RSS / Atom feed
+description: Any RSS 2.0 or Atom 1.0 feed, polled for the entries it publishes and revises.
+version: 0.1.0
+
+# Authored from the RSS 2.0 specification (https://www.rssboard.org/rss-specification)
+# and RFC 4287 (Atom, https://www.rfc-editor.org/rfc/rfc4287); no vendor
+# description exists to generate from. The mark is drawn for this package — an
+# original glyph, not the common feed icon.
+provenance:
+  spec_url: https://www.rssboard.org/rss-specification
+  redistributable: true
+  generated_at: "2026-11-18T00:00:00Z"
+  generated_by: iterion dev
+
+base_url:
+  # The connection's instance URL IS the feed's URL, query string included
+  # (`https://example.org/blog/feed.xml?lang=fr`): the read operation is sent
+  # to that URL as written (`at_base_url`), its trailing slash included. One
+  # feed per connection; a second feed is a second connection.
+  operator_supplied: true
+
+# A public feed needs no credential; a protected one takes Basic auth. A
+# connection picks one of the two, and the read accepts either.
+auth:
+  - id: none
+    kind: none
+    display_name: No credential (public feed)
+    description: The feed answers anyone; nothing is sent with the request.
+  - id: basic
+    kind: basic
+    display_name: Username and password
+    description: >-
+      HTTP Basic credentials for a feed behind authentication on a public
+      address (a private planet); a private address is refused in cloud.
+
+maturity: experimental
+category: feeds
+brand_color: "#C2410C"
+icon: icon.svg
+
+default_security:
+  - terms:
+      - scheme: none
+  - terms:
+      - scheme: basic

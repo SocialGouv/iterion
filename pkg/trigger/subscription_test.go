@@ -1,6 +1,12 @@
 package trigger
 
-import "testing"
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
+)
 
 func TestMatcherMatch(t *testing.T) {
 	base := Event{
@@ -50,11 +56,59 @@ func TestMatcherMatch(t *testing.T) {
 	}
 }
 
+// A subscription's mode reads one way everywhere (bundle.ResolveMode): "" and
+// direct launch, board promotes a card; deliver, an unknown mode, and board on
+// a connector subscription are a typed refusal — none defaults to a launch.
 func TestSubscriptionEffectiveMode(t *testing.T) {
-	if got := (Subscription{}).EffectiveMode(); got != "direct" {
-		t.Fatalf("empty mode = %q, want direct", got)
+	for _, c := range []struct {
+		sub  Subscription
+		want bundle.ExecutionMode
+	}{
+		{Subscription{}, bundle.ExecutionDirect},
+		{Subscription{Mode: bundle.ExecutionDirect}, bundle.ExecutionDirect},
+		{Subscription{Mode: bundle.ExecutionBoard, Invocation: bundle.InvocationKindBoard}, bundle.ExecutionBoard},
+	} {
+		if got, err := c.sub.EffectiveMode(); err != nil || got != c.want {
+			t.Errorf("%+v = (%q, %v), want %q", c.sub.Mode, got, err, c.want)
+		}
 	}
-	if got := (Subscription{Mode: "board"}).EffectiveMode(); got != "board" {
-		t.Fatalf("board mode = %q, want board", got)
+	for name, sub := range map[string]Subscription{
+		"deliver":              {Mode: bundle.ExecutionDeliver, Invocation: bundle.InvocationKindBoard},
+		"an unknown mode":      {Mode: "launch-twice"},
+		"board on a connector": {Mode: bundle.ExecutionBoard, Invocation: bundle.InvocationKindConnector},
+	} {
+		if got, err := sub.EffectiveMode(); !errors.Is(err, bundle.ErrUnsupported) || got != "" {
+			t.Errorf("%s = (%q, %v), want a typed unsupported refusal", name, got, err)
+		}
+	}
+}
+
+// A deliver invocation derives no subscription from any builder: it is never
+// silently read as board (the board builder's default) or direct (the
+// schedule and keepalive builders' forced mode).
+func TestNoBuilderDerivesADeliverInvocation(t *testing.T) {
+	now := time.Now()
+	deliver := bundle.ExecutionDeliver
+	board := bundle.Invocation{Kind: bundle.InvocationKindBoard, Mode: deliver, Board: &bundle.InvocationBoard{On: []string{KindCardMoved}}}
+	schedule := bundle.Invocation{Kind: bundle.InvocationKindSchedule, Mode: deliver, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 * * * *"}}
+	keepalive := bundle.Invocation{Kind: bundle.InvocationKindKeepalive, Mode: deliver, Keepalive: &bundle.InvocationKeepalive{Interval: "1m"}}
+	if _, ok := FromBoardInvocation("id", "", "", "b", "o", board, now); ok {
+		t.Error("the board builder derived a deliver invocation")
+	}
+	if _, ok := FromScheduleInvocation("id", "", "", "b", "o", schedule, now); ok {
+		t.Error("the schedule builder derived a deliver invocation")
+	}
+	if _, ok := FromKeepaliveInvocation("id", "", "", "b", "o", keepalive, now); ok {
+		t.Error("the keepalive builder derived a deliver invocation")
+	}
+	board.Mode, schedule.Mode, keepalive.Mode = "", "", ""
+	if _, ok := FromBoardInvocation("id", "", "", "b", "o", board, now); !ok {
+		t.Error("the control board invocation derived nothing")
+	}
+	if _, ok := FromScheduleInvocation("id", "", "", "b", "o", schedule, now); !ok {
+		t.Error("the control schedule invocation derived nothing")
+	}
+	if _, ok := FromKeepaliveInvocation("id", "", "", "b", "o", keepalive, now); !ok {
+		t.Error("the control keepalive invocation derived nothing")
 	}
 }

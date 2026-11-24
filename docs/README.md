@@ -162,6 +162,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 |---|---|
 | [agents/](agents/) | **Working on iterion itself**: the doctrine tree every agent session and contributor follows — the required before-merge review loop, bot-authoring rules, testing and dogfood discipline, the operational runbook index. [AGENTS.md](../AGENTS.md), the instruction root every agent loads, routes to it. |
 | [architecture.md](architecture.md) | End-to-end compiler, runtime, backend, persistence, control-plane, automation, and extension architecture. |
+| [code-architecture.md](code-architecture.md) | For contributors, the shape of the code: one binary and its roles, the seams with their local and cloud adapters, composition roots, where state lives, the executable architecture guards, the style and its accepted deviations, the reference harness. |
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
 | [e2e-coverage-matrix.md](e2e-coverage-matrix.md) | Feature coverage inventory, Studio browser advisory lane, skip semantics and regression witnesses. |

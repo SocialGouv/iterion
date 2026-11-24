@@ -1,7 +1,90 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.23
+version: 0.11.0
+## 0.11.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
+## effort from the process environment are gone, each replaced by the
+## default it carried, so a run with no pin set routes exactly as before. A
+## deployment that pinned one (pod env, `ITERION_BOT_VARS_ENV_PINS`, a
+## bot-var override) re-expresses it as a routing cell, an `llmroute`
+## override at the platform, org, team, binding or launch level: the pin
+## alone no longer moves the bot.
+## The claw reviewers and the merge step carry no empty `provider:` hint
+## any more, and the run table's effort column drops the operator-dial
+## label no route of this bundle can produce.
+##
+## 0.10.0 — the nodes name ROLES, not vendors (ADR-169): `review_mode` is
+## `auto | single | paired` (the retired `mono`/`dual` spellings are still
+## read as `single`/`paired`), `mono_family` is gone, and the reviewer slots
+## are `reviewer` (claw + an `openai/…` model, the PRIMARY one),
+## `reviewer_alternate` (the claude slot, a `paired` run only) and
+## `reviewer_glance`. The merge is ONE step, `converge`, on claw: the
+## `converge_gpt` twin and the `mono_family` guard that picked it are gone,
+## and `merge_reviews` already folds whichever reviewers fired, so a single
+## review and a paired one reach the same merge. A routing cell that names a
+## node by its retired id decides nothing — migrate the integration's block
+## with `scripts/ops/revi-effort-cells.py migrate-ids` (see the README).
+##
+## 0.9.25 — the reviewers inherit no ambient MCP and the system prompts are
+## byte-stable across runs, so the cross-run prefix cache survives past the
+## first per-run byte (#3283). The four reviewer slots carry `mcp: inherit:
+## false`: the platform's plugin servers rode every tooled node by doctrine,
+## ~20k tokens of tool schemas per request — $0.19-0.44 a run on the
+## 2026-11-13 sample — for tools no reviewer step ever called. The merge
+## twins opt out too. `review_system` carries no template: the resolved base
+## sha, the workspace, the changed-file count, the workspace-anomaly list,
+## the review tier and the severity floor moved into the user message's
+## REVIEW SCOPE block (the git commands spelled in), on both reviewer lanes;
+## `emit_system` points at the values `emit_user` already carried
+## (threshold, cap, board flag, report path). Two runs of the same node in
+## two checkouts now send the same system bytes and tool schemas — proof on
+## the assembled request, first divergent byte reported
+## (TestReviewPrAssembledRequestIsByteStableAcrossWorkspaces). And the merge
+## step works on claw: `converge` declares the same three file tools as its
+## twin (`read_file`, `write_file`, `glob`, `tool_max_steps: 60`), so the
+## gateway routing cells that pin it to claw dispatch a merge that writes
+## its report and files its board issues — the pre-0.9.25 dispatch ran
+## tool_count 0 and published nothing there (prod F4, 7 of 18 sampled
+## mono-claude runs). A claw node that grants board or runs capabilities
+## over no declared `tools:` list is refused by type at dispatch: the grant
+## would be inert (the appends ride an already-restricted list), and
+## silently inert is the failure this refusal turns loud
+## (TestClawRefusesAnInertCapabilityGrant). The `_EMIT` backend dial may
+## therefore take claw; a pre-0.9.16 mono-GPT `_EMIT` profile pinning claw
+## is now merely redundant, not breaking.
+##
+## RELEASE COUPLING — update the bot WITH the engine; one release carries
+## both. This engine refuses (fail-terminal at the merge node: the refusal
+## is non-retryable and no fallback class matches it) a claw dispatch whose
+## tool surface resolves empty beside a board or runs capability; review-pr
+## <0.9.25 ships exactly that shape on its merge step, and the gateway
+## routing cells pin it to claw — so an integration serving the OLD bot
+## under the new engine flips its mono-claude reviews from the previous
+## SILENT no-op merge (no report, no board issue — prod F4) to a loud,
+## honest failure. This 0.9.25 bot is the other half of the pairing: its
+## merge declares its surface, so its dispatches serve whole, and its
+## schema re-ask — the executor's own tool-less continuation — is exempt
+## from the gate, recovering in place as before.
+## 0.9.24 — the run table's effort column prints the effort each node that
+## ran sent its model, and who decided it, instead of the
+## `ITERION_VIBE_EFFORT_*` dial it was written with. publish_review no longer
+## reads those dials: each row takes the engine's record from the node's
+## output (`_reasoning_effort_applied`, `_reasoning_effort_source`,
+## `_reasoning_effort_requested`, `_reasoning_effort_lowered`), the reviewers
+## straight from their outputs, the merge step through pr_gate whichever twin
+## merged. A routing cell's effort outranks the dial, a gateway's feed
+## replaces a level its route does not take, and the harness may send another
+## level, none, or a lower one on a recovery — the dial printed a level the
+## run did not use (#3283). The column reads `Effort (source)`: `(cellule)`,
+## `(lancement)`, `(surcharge)` when the run cannot tell those two apart,
+## `(nœud)` for the node's own setting, `(réglage d’exploitation)` for an
+## operator's dial, `(arête)` for an upstream edge's level, `high (feed pliage ;
+## demandé medium)` when the feed replaced the level asked for, `(harness)`
+## when the harness sent another level, `non envoyé` when it sent none, and
+## `· abaissé à low (récupération)` when the answer came from a request at a
+## lower effort. A runner whose engine records no effort leaves the cell
+## `indisponible`.
 ## 0.9.23 — evaluation mode: `publish_mode: off` (a hidden launch var:
 ## operators set it — --var, bot_args, a remote launch, an integration's
 ## pinned launch vars — and so can a bot holding board.create, through a
@@ -82,14 +165,11 @@ version: 0.9.23
 ## 'gpt'` takes a twin of the merge step on claw + openai/gpt-6-sol (its own
 ## three dials, `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT`, moving
 ## together), and the pacer is one supervisor per family
-## (`pacer` / `pacer_gpt`), each watching its own reviewer. The trade, named:
-## Opus 5.5 is no longer the default merger of a mono-GPT review — a
-## deployment that wants it back dials the twin or pins
-## `--var mono_family=claude`. The twin shares the merge prompts, output
-## schema, effort dial and capabilities BY NAME, and both twins feed
-## `pr_gate`, which now carries the merge's payload AND its engine telemetry
-## forward under one set of names, so no downstream reader — the published
-## run table included — has to know which twin ran. The twin declares the
+## (`pacer` / `pacer_gpt`), each watching its own reviewer. The merge is ONE
+## step (`converge`, on claw since ADR-169): it feeds `pr_gate`, which
+## carries its payload AND its engine telemetry forward under one set of
+## names, so no downstream reader — the published run table included — has
+## to know which node merged. It declares the
 ## three file tools the merge needs: on claw a `tools:` list IS the node's
 ## whole surface, so an undeclared one left the board capability and
 ## `tool_max_steps:` as silent no-ops — the merge could neither file its
@@ -207,7 +287,7 @@ version: 0.9.23
 ## ITERION_VIBE_MODEL_GPT_GLANCE — they return when the pin lifts; the
 ## effort dials and ITERION_VIBE_MODEL_CLAUDE_FALLBACK stay live.
 ## 0.9.5 — the claude slot has somewhere to go. Both its nodes
-## (reviewer_claude and its glance twin) declare a GLM fallback route,
+## (reviewer_alternate and its glance twin) declare a GLM fallback route,
 ## so an instance whose Anthropic credential is spent, expired or unable
 ## to serve the model still gets a claude-family review instead of a
 ## failed node. The route is a `provider: "zai"` hint carrying its own
@@ -238,7 +318,13 @@ version: 0.9.23
 ## that release is cut, when the release-floors hook writes its number
 ## (docs/agents/workflow/release.md).
 requires:
-  iterion: ">= 7.2.0"
+  ## The release that carries `review_mode: auto|single|paired` and the
+  ## retired-spelling mapping (ADR-169) — `next` until it is cut, when the
+  ## release-floors hook writes its number. Below it the engine's own
+  ## resolver writes `mono`/`dual` into the run's inputs, and this bot's enum
+  ## gate refuses every launch — an opaque refusal with no hint that the fix
+  ## is an engine upgrade.
+  iterion: ">= 7.15.0"
 ## 0.9.0 — ticket conformance now works with NO configuration on the
 ## forge's own issues. Since 0.6.0 the check only ran when an operator
 ## pinned `tracker_api_base` per repo, which meant that on 16 connected
@@ -398,7 +484,7 @@ requires:
 ## PR review summary body — so a 0-finding review shows WHAT was checked
 ## and WHERE residual risk hides, never a bare "trust me, nothing".
 ## Questions never become findings, never reach the board, never gate.
-## 0.3.1 — reviewer_gpt backend env-overridable (ITERION_VIBE_BACKEND_GPT)
+## 0.3.1 — reviewer backend env-overridable (ITERION_VIBE_BACKEND_GPT)
 ## so a Claude-forfait-only instance runs the second reviewer on
 ## claude_code (cross-model diversity) when OpenAI quota is unavailable.
 description: |
@@ -473,7 +559,7 @@ forge:
 produces:
   - kind: review
     # The merged, de-duplicated finding set + the merged open questions, read
-    # from the node BOTH merge twins feed: `mono_family` decides which of
+    # from the node the ONE merge step feeds (the twins are gone: ADR-169).
     # `converge` / `converge_gpt` merges, and pr_gate carries the payload of
     # whichever ran under the field names this resolver reads (findings,
     # questions, total_findings). Naming a twin here would hand a GPT-family
@@ -487,11 +573,12 @@ produces:
     # declared cost of the fallback and the digest says so ("threshold, cap
     # and cross-confirmation were not applied"); an un-merged set beats no
     # set at all. The de-dup is by anchor and keeps the FIRST copy, so
-    # `converge` leading is what gives a finding both families raised its
+    # `converge` leading is what gives a finding both reviewers raised its
     # merged form — its bumped severity and its cross-confirmed flag —
-    # rather than a reviewer's raw one. Both twins are listed because
-    # `mono_family` decides which of them merged.
-    fallback_nodes: [converge, converge_gpt, merge_reviews]
+    # rather than a reviewer's raw one. `merge_reviews` follows: when the
+    # merge step itself is what failed, the collector's per-role set is the
+    # un-merged truth worth handing off.
+    fallback_nodes: [converge, merge_reviews]
     # Carries reviewed_sha, so a consumer is told when the branch moved under
     # the findings instead of acting on stale line anchors.
     anchor_node: diff_precheck

@@ -1,7 +1,15 @@
 name: instrument
 display_name: Obsy
 icon: 📡
-version: 0.2.3
+version: 0.3.0
+## 0.3.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
+## effort from the process environment are gone, each replaced by the
+## default it carried, so a run with no pin set routes exactly as before. A
+## deployment that pinned one (pod env, `ITERION_BOT_VARS_ENV_PINS`, a
+## bot-var override) re-expresses it as a routing cell, an `llmroute`
+## override at the platform, org, team, binding or launch level: the pin
+## alone no longer moves the bot.
 ## 0.2.3 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)

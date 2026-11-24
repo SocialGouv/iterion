@@ -18,9 +18,10 @@ import (
 // (warnRefusedPins): the run spends the walk's next key and the line says so.
 // The rule lives in the walk, so every launch that carries the pin here obeys
 // it — the webhook lane, the trigger spine (whose subscription pins the same
-// write validator admits) and a resume replaying the run's pins; the
-// scheduled and board lanes rebuilding the pin from the integration's webhook
-// are PR-R's.
+// write validator admits), the scheduled lane (the schedule's own pins over
+// its integration's, read live at the tick) and a resume replaying the run's
+// pins; the board lane's card carries a frozen copy of its integration's pins
+// (#3240).
 //
 // The walk alone cannot keep the promise. secrets.Resolve emits no candidate
 // for a pinned key it cannot see (deleted, re-scoped) and gives up an
@@ -86,14 +87,14 @@ type GatewayPinRefusedError struct {
 }
 
 func (e *GatewayPinRefusedError) Error() string {
-	remedy := fmt.Sprintf("repair the key, or repin or clear the %s entry of key_overrides on the webhook or trigger subscription that launched the run", secrets.ProviderOpenAICompatible)
+	remedy := fmt.Sprintf("repair the key, or repin or clear the %s entry of key_overrides on the webhook, trigger subscription or schedule that launched the run", secrets.ProviderOpenAICompatible)
 	switch {
 	case e.ForkedFrom != "" && e.Cause == GatewayPinMissing:
-		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook or subscription edit reaches it: repair the key, or fork run %s again — a fork drops a key pin whose key no longer exists", e.ForkedFrom, e.ForkedFrom)
+		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook, subscription or schedule edit reaches it: repair the key, or fork run %s again — a fork drops a key pin whose key no longer exists", e.ForkedFrom, e.ForkedFrom)
 	case e.ForkedFrom != "":
-		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook or subscription edit reaches it: repair the key — the key exists, so a second fork of run %s inherits the same pin and is refused the same way", e.ForkedFrom, e.ForkedFrom)
+		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook, subscription or schedule edit reaches it: repair the key — the key exists, so a second fork of run %s inherits the same pin and is refused the same way", e.ForkedFrom, e.ForkedFrom)
 	case e.Replay:
-		remedy = "this run's own pin, frozen at its launch, is replayed by every resume and no webhook or subscription edit reaches it: repair the key, or relaunch the run, which takes the launching webhook's current pin"
+		remedy = "this run's own pin, frozen at its launch, is replayed by every resume and no webhook, subscription or schedule edit reaches it: repair the key, or relaunch the run, which takes the current pin of the webhook, subscription or schedule that launched it"
 	}
 	return fmt.Sprintf("cloudpublisher: tenant %s pins api key %s for the %s gateway, but %s — a pin on a gateway key is exclusive (ADR-131 §6): no other key, no shared tier and not the runner's environment serves the run's gateway routes in its place; %s",
 		e.Tenant, e.KeyID, secrets.ProviderOpenAICompatible, e.Detail, remedy)

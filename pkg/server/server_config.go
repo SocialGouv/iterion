@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
@@ -186,6 +187,11 @@ type Config struct {
 	// accepted delivery to (ADR-168 §8). Non-nil alongside WebhookConfigs →
 	// POST /api/webhooks/c/{id} is registered.
 	ConnectorIntakes intake.Store
+	// ConnectorPollers is the durable state of the connector pollers
+	// (ADR-168 §7): non-nil alongside ConnectorIntakes, the trigger store and
+	// the connection plane → the elected poller runs, and a subscription to
+	// a polled trigger may be saved.
+	ConnectorPollers poller.Store
 	// ConnectorIntakeRetention is how long an intake row is kept, its dedup
 	// window included (ITERION_CONNECTOR_INTAKE_RETENTION; 0 keeps rows).
 	ConnectorIntakeRetention time.Duration

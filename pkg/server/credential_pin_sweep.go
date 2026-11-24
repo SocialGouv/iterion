@@ -27,9 +27,16 @@ import (
 // the explicit clear, not a replacement — the launch falls back exactly as
 // an operator clearing the pin would have made it.
 //
-// The pins live in the two machine-lane homes and no third: webhook configs
-// and trigger subscriptions. Both write paths validate a pin against a
-// same-tenant record, so one tenant's sweep cannot miss a pin in another.
+// The sweep visits the two machine-lane homes whose rows carry a version:
+// webhook configs and trigger subscriptions. Both write paths validate a pin
+// against a same-tenant record, so one tenant's sweep cannot miss a pin in
+// another. A schedule row is the third home of a key pin, and the sweep
+// deliberately leaves it: its store replaces the whole row on an edit and the
+// integration rebuild recreates it, with no version to fence either, so a
+// swept pin could be written back unseen. Its tick judges the pin where it is
+// spent instead (judgeScheduleKeyPins) — a revoked key refuses the tick by
+// name — and a schedule bound to an integration reads that integration's pins
+// live from the webhook config this sweep clears.
 //
 // The listing below only PICKS the rows to visit. The removal itself is the
 // store's value-scoped clear, judged against the row as the store holds it

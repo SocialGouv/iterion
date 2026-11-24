@@ -45,7 +45,7 @@ func (s *Server) cloudScheduleGate(ctx context.Context, sb cloudsched.ScheduledB
 	// a nil store degrades to guard-only (Apply skips the overlap leg).
 	var lister schedgate.ScheduleRunLister
 	if s.cfg.Store != nil {
-		lister = tenantRunLister{s: s.cfg.Store, tenantID: sb.TenantID, actor: "scheduler:" + sb.BotID}
+		lister = tenantRunLister{s: s.cfg.Store, tenantID: sb.TenantID, actor: scheduledLaunchOwner(sb.BotID)}
 	}
 	out := schedgate.Apply(ctx, schedgate.GateInput{
 		Policy:     sb.Policy(),
@@ -93,7 +93,7 @@ func (s *Server) cloudScheduleAudit(rec schedgate.TickRecord) {
 	if rec.ScheduleID == "" {
 		return
 	}
-	s.auditSystem(rec.TenantID, "scheduler:"+rec.BotID,
+	s.auditSystem(rec.TenantID, scheduledLaunchOwner(rec.BotID),
 		"schedule.tick."+string(rec.Decision), "schedule", rec.ScheduleID, rec.ToAuditMeta())
 }
 

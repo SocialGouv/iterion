@@ -25,7 +25,10 @@ import (
 // Inactive runs are filtered out at scan time so the response stays
 // small even with thousands of historical runs on disk.
 type globalActiveRun struct {
-	ID                string          `json:"id"`
+	ID string `json:"id"`
+	// BirthID is the run's birth identity in its store (store_path): the
+	// view opened from this row expects it. "" is a historical run.
+	BirthID           string          `json:"birth_id"`
 	Name              string          `json:"name,omitempty"`
 	ParentRunID       string          `json:"parent_run_id,omitempty"`
 	WorkflowName      string          `json:"workflow_name"`
@@ -37,7 +40,10 @@ type globalActiveRun struct {
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 	StorePath         string          `json:"store_path"`
-	WorkspaceDir      string          `json:"workspace_dir,omitempty"`
+	// OwnStore is true when store_path is this server's own store
+	// (isOwnStore): a view of the run here names no `?store=`.
+	OwnStore     bool   `json:"own_store,omitempty"`
+	WorkspaceDir string `json:"workspace_dir,omitempty"`
 }
 
 // handleListGlobalActiveRuns serves GET /api/runs/global-active. It
@@ -73,6 +79,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 
 	out := make([]globalActiveRun, 0)
 	for _, root := range roots {
+		own := s.isOwnStore(root)
 		runsDir := filepath.Join(root, "runs")
 		entries, readErr := os.ReadDir(runsDir)
 		if readErr != nil {
@@ -124,6 +131,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 			}
 			out = append(out, globalActiveRun{
 				ID:                rec.ID,
+				BirthID:           rec.BirthID,
 				Name:              rec.Name,
 				ParentRunID:       rec.ParentRunID,
 				WorkflowName:      rec.WorkflowName,
@@ -135,6 +143,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 				CreatedAt:         rec.CreatedAt,
 				UpdatedAt:         rec.UpdatedAt,
 				StorePath:         root,
+				OwnStore:          own,
 				WorkspaceDir:      workspaceDirForGlobalRun(root, rec),
 			})
 		}
@@ -156,6 +165,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 // value here.
 type runJSONShape struct {
 	ID                string           `json:"id"`
+	BirthID           string           `json:"birth_id"`
 	Name              string           `json:"name"`
 	ParentRunID       string           `json:"parent_run_id"`
 	WorkflowName      string           `json:"workflow_name"`

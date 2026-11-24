@@ -83,6 +83,35 @@ func ExecutableToolFilterFrom(ctx context.Context) (func(string) bool, bool) {
 	return keep, ok && keep != nil
 }
 
+// ctxKeyCatalogueOnlyTools carries the names of the calling node's
+// CATALOGUE-ONLY tools — the deferral split (CM-14): tools the node's
+// generation loop withholds from the wire while the codemode catalogue, the
+// door and the index still serve them. Pinned by the dispatch path beside
+// the executable set, so tool_search's answer reads the SAME state the
+// visibility filter used — one source, two readers.
+type ctxKeyCatalogueOnlyTools struct{}
+
+// WithCatalogueOnlyTools pins the executing node's catalogue-only tool names
+// on the context a tool's Execute closure receives. tool_search reads it to
+// mark a match deferred and word its note for a deferring node. The second
+// value of [CatalogueOnlyToolsFrom] is false when no dispatch path pinned
+// one — a caller that cannot name the set must not guess it.
+func WithCatalogueOnlyTools(ctx context.Context, names []string) context.Context {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return context.WithValue(ctx, ctxKeyCatalogueOnlyTools{}, set)
+}
+
+// CatalogueOnlyToolsFrom reads the pinned catalogue-only set. ok is false
+// when no dispatch path pinned one, which means this node does not defer —
+// the note keeps its direct-call wording.
+func CatalogueOnlyToolsFrom(ctx context.Context) (map[string]bool, bool) {
+	set, ok := ctx.Value(ctxKeyCatalogueOnlyTools{}).(map[string]bool)
+	return set, ok
+}
+
 // toolSearchResult mirrors claw's ToolSearchResult wire shape (the vendor's
 // struct is internal); the enrichment parses it and re-emits it with the
 // per-node detail beside the fields a reader already knows.
@@ -98,9 +127,16 @@ type toolSearchResult struct {
 // for the tools the node may call, withheld from the ones it may not: handing
 // out the schema of a tool the dispatch will refuse is the very lie the
 // enrichment exists to remove.
+//
+// A catalogue-only match is a third verdict: available FROM THE PROGRAM, and
+// deliberately schema-less here — handing the schema back in the search
+// result would re-spend the bytes the deferral saved. The declaration is
+// what call.describe returns inside the program, where it is billed to the
+// script, not to the conversation.
 type toolSearchMatch struct {
 	Name        string          `json:"name"`
 	Available   bool            `json:"available"`
+	ProgramOnly bool            `json:"program_only,omitempty"`
 	CallName    string          `json:"call_name,omitempty"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
@@ -118,7 +154,10 @@ type toolSearchResultHonest struct {
 // execution: every match keeps its catalogue name and gains the node's
 // verdict. haystack is the same snapshot the search ran against, so the
 // descriptions and schemas it carries are the ones the match named.
-func enrichToolSearchResult(raw string, haystack []api.Tool, executable map[string]bool) (string, error) {
+// catalogueOnly is the deferral split the dispatch pinned beside the
+// executable set — ok false (no pin) keeps every verdict and the note in
+// today's direct-call wording.
+func enrichToolSearchResult(raw string, haystack []api.Tool, executable map[string]bool, catalogueOnly map[string]bool, deferred bool) (string, error) {
 	var res toolSearchResult
 	if err := json.Unmarshal([]byte(raw), &res); err != nil {
 		// The search's own output did not decode — hand it back untouched
@@ -129,11 +168,15 @@ func enrichToolSearchResult(raw string, haystack []api.Tool, executable map[stri
 	for _, t := range haystack {
 		byName[t.Name] = t
 	}
+	note := "available reports whether THIS node may execute the tool: a match outside the node's tools: list " +
+		"is part of the catalogue but cannot be called from here — selecting it does not grant it."
+	if deferred {
+		note += " A match marked program_only is deferred to the codemode catalogue: it is not declared to the model on this turn's tool list — reach it from a codemode program (call.search finds it, call.describe returns its declaration, call(name, input) runs it); that is why a program_only match carries no schema here."
+	}
 	out := toolSearchResultHonest{
 		toolSearchResult: res,
 		Tools:            make([]toolSearchMatch, 0, len(res.Matches)),
-		Note: "available reports whether THIS node may execute the tool: a match outside the node's tools: list " +
-			"is part of the catalogue but cannot be called from here — selecting it does not grant it.",
+		Note:             note,
 	}
 	for _, name := range res.Matches {
 		match := toolSearchMatch{Name: name}
@@ -149,7 +192,13 @@ func enrichToolSearchResult(raw string, haystack []api.Tool, executable map[stri
 		}
 		if executable[callName] {
 			match.Available = true
-			if t, ok := byName[name]; ok {
+			// A catalogue-only match stays available — the door runs it,
+			// from a program — but its schema is withheld HERE: the deferral
+			// exists to keep those bytes off the conversation, and the
+			// declaration is what call.describe returns inside the program.
+			if deferred && catalogueOnly[callName] {
+				match.ProgramOnly = true
+			} else if t, ok := byName[name]; ok {
 				if schema, err := json.Marshal(t.InputSchema); err == nil {
 					match.InputSchema = schema
 				}

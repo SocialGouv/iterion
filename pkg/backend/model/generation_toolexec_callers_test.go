@@ -47,6 +47,9 @@ var toolExecuteSites = map[string]string{
 	"claw_backend.go:multiplexerHandler": "RUNS. The launcher's handler for a call a SANDBOXED node forwarded over IPC. It cannot reuse the door — the runner already ran " +
 		"the in-process pipeline and what crosses is an envelope, not a tool_use block — so it re-derives the advertised-tool check, tool.SandboxPlacementOf, " +
 		"permission.Policy on the tool's identity, and the same node-set pin",
+	"claw_sandbox_approval.go:executeApprovedForwardedCall": "RUNS. The approval channel's dispatch path (#3513): the launcher executes the call ITSELF for an approved sandbox ask — " +
+		"the candidate was bound in servePermissionAsk just before (advertised tool, launcher placement, evaluateForwardedCall on the exact call, claim spend), so this " +
+		"site honours that same permission.Policy verdict and the same node-set pin its caller pinned; it adds no gate of its own",
 	"executor_tool.go:executeToolNodeRecipe": "RUNS. A DSL tool node's `command:` running a registry tool. Honours the AUTHORING allowlist (checkToolNodePolicy over tool.ToolChecker), " +
 		"not permission.Policy — a package executor_tool.go does not import. No node-set pin and no PreToolUse, because no model reads tool_search there: " +
 		"it is not a gate on a model's call, and naming it here is what stops a reader assuming it is",
@@ -185,11 +188,12 @@ func TestEverySiteRunningAnExecuteNamesItsGate(t *testing.T) {
 // form of what the doc comment promises: anything dispatching on a node's
 // behalf takes the door.
 var toolFunnelCallers = map[string]map[string]bool{
-	// The door. dispatch is the only way in, which is what makes the
-	// dispatcher's pipeline unavoidable rather than merely available.
-	"executeOneTool": {"dispatch": true},
-	// The last step before a tool's own closure runs.
-	"runToolExecution": {"executeOneTool": true},
+	// Ordinary dispatch and the saved-call resume share the dispatcher pin,
+	// lifecycle hooks, command narrowing and permission checks.
+	"dispatchWithApproval":       {"dispatch": true, "Execute": true},
+	"executeOneTool":             {}, // Direct entry for isolated tests only.
+	"executeOneToolWithApproval": {"dispatchWithApproval": true, "executeOneTool": true},
+	"runToolExecution":           {"executeOneToolWithApproval": true},
 }
 
 // TestTheToolFunnelIsReachedOnlyThroughTheDoor refuses a second dispatch path.

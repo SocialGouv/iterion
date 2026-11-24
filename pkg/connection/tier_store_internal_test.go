@@ -122,3 +122,19 @@ func TestAnUnreadableStoreTierIsAnOutageNotAVerdict(t *testing.T) {
 		t.Fatalf("an absent connector = %v, want no-such-connector", err)
 	}
 }
+
+// The cloud composition — every tier layered — still says "no such
+// connector" when no tier holds it, and keeps each tier's reason in its text.
+func TestTheLayeredCatalogKeepsTheNoSuchConnectorVerdict(t *testing.T) {
+	_, _, err := NewLayeredCatalog(CloudCatalogs(NewMemoryPackageStore(), "t1")...).Package("nosuchvendor")
+	if !IsNoSuchConnector(err) || IsCatalogUnavailable(err) {
+		t.Fatalf("a connector no tier holds = %v, want the no-such-connector verdict", err)
+	}
+	if !strings.Contains(err.Error(), "team") {
+		t.Fatalf("the verdict lost the tiers' reasons: %v", err)
+	}
+	_, _, err = NewLayeredCatalog(CloudCatalogs(unreadablePackages{NewMemoryPackageStore()}, "t1")...).Package("nosuchvendor")
+	if !IsCatalogUnavailable(err) {
+		t.Fatalf("an unreadable team tier through the composition = %v, want an outage", err)
+	}
+}

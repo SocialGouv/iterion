@@ -331,7 +331,7 @@ func (c *toolTurnsAnchorCarry) observe(res delegate.Result) {
 // named, which is why the fold asks the results too (see foldSameSession).
 func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), reask string, carryForward ...func(delegate.Result)) (delegate.Result, error) {
 	result, err := fn()
-	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
+	for attempt := 1; err != nil && exactClawApprovalFrom(ctx) == nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
 		if attempt >= maxAttempts {
 			break
@@ -1492,7 +1492,7 @@ func (e *ClawExecutor) dispatchChain(
 		// the session, and never written to the CACHED task.
 		turnsAnchor := newToolTurnsAnchorCarry(ctx, task)
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
-			res, err := e.executeDelegate(ctx, backend, turnsAnchor.attempt(*task))
+			res, err := e.executeDelegate(withExecutionUsageBackend(ctx, backendName), backend, turnsAnchor.attempt(*task))
 			turnsAnchor.observe(res)
 			return res, err
 		}, "", func(prev delegate.Result) {
@@ -1559,7 +1559,7 @@ func (e *ClawExecutor) dispatchChain(
 		// a provider outage and silently discard continuity for an
 		// unrelated cause (R1486ff).
 		sessionDegraded := false
-		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" &&
+		if err != nil && ctx.Err() == nil && exactClawApprovalFrom(ctx) == nil && task.SessionOptional && task.SessionID != "" &&
 			sessionResumeEligible(backendName) {
 			switch cat := delegate.ClassifyFallback(err, isDelegateRetryable(err)); cat {
 			case delegate.FallbackUnclassified:
@@ -1587,7 +1587,7 @@ func (e *ClawExecutor) dispatchChain(
 				ranFresh := fresh
 				lastTask = &ranFresh
 				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
-					return e.executeDelegate(ctx, backend, fresh)
+					return e.executeDelegate(withExecutionUsageBackend(ctx, backendName), backend, fresh)
 				}, "")
 				if freshErr == nil {
 					task = &fresh
@@ -1603,12 +1603,15 @@ func (e *ClawExecutor) dispatchChain(
 			// (`_tokens`, `_cost_usd`…) before the correction policy reads the
 			// spend it budgets from that output.
 			stampDelegateOutputMeta(result.Output, result, backendName)
-			before := result
-			result, err = e.validateAndRetry(ctx, backendFields{id: nodeID, inChain: true}, backendName, backend, task, result, schemas[0])
-			elemCorrCost = max(0, result.CostUSD-before.CostUSD)
-			elemCorrTokens = max(0, result.Tokens-before.Tokens)
-			correctionCost += elemCorrCost
-			correctionTokens += elemCorrTokens
+			// Durable ownership settles corrections after the serving route returns.
+			if _, owned := OutputCorrectionOwnershipFromContext(ctx); !owned {
+				before := result
+				result, err = e.validateAndRetry(ctx, backendFields{id: nodeID, inChain: true}, backendName, backend, task, result, schemas[0])
+				elemCorrCost = max(0, result.CostUSD-before.CostUSD)
+				elemCorrTokens = max(0, result.Tokens-before.Tokens)
+				correctionCost += elemCorrCost
+				correctionTokens += elemCorrTokens
+			}
 		}
 		if err == nil {
 			return itemised(chainOutcome{

@@ -15,6 +15,10 @@ const ChatGPTClientVersion = api.ChatGPTClientVersion
 // APIClient is the interface all provider clients must implement.
 type APIClient = api.APIClient
 
+// EffortWire is the optional client capability that answers the reasoning
+// effort a request carries on the wire (see internal/api.EffortWire).
+type EffortWire = api.EffortWire
+
 type GeneratedImage = api.GeneratedImage
 type ImageGenerator = api.ImageGenerator
 

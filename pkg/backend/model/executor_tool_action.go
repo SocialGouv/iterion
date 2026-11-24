@@ -450,6 +450,16 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 	}
 	td := TemplateDataFromContext(ctx)
 	runID := RunIDFromContext(ctx)
+	// Before any argument is rendered, let alone sent: an output field its
+	// producer declared and did not supply is refused, not delivered to the
+	// operation as `null` or as an empty stretch of text.
+	var refs []*ir.Ref
+	for _, p := range node.Params {
+		refs = append(refs, p.Refs...)
+	}
+	if err := e.owedOutputRefs(ctx, "params", refs); err != nil {
+		return nil, err
+	}
 	// A `{{secrets.NAME}}` ref renders to a MARKER of this rendering, never
 	// the placeholder — the placeholder is deterministic, so data spells it
 	// as well as the author does, and the materialiser could not tell the

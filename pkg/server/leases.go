@@ -22,6 +22,7 @@ const (
 	leaseOrgPurgeSweeper     = "org-purge-sweeper"
 	leasePriceFeedSync       = "price-feed-sync"
 	leasePoolSignalSync      = "pool-signal-sync"
+	leaseConnectorPollers    = "connector-pollers"
 )
 
 // leasedNets is every name above, with what runs on every replica while that
@@ -53,6 +54,7 @@ var leasedNets = []struct {
 	{leaseOrgPurgeSweeper, "the nightly org purge, whose every pass lists and deletes the S3 objects of each run of every org past its grace once per replica — the run batch bounds one replica's pass, not the deployment's", (*Server).orgPurgeStarts},
 	{leasePriceFeedSync, "the price-feed refresh sweep, whose every pass re-fetches every due feed's tariff table once per replica and last-write-wins the durable state (ADR-163)", (*Server).priceFeedSyncStarts},
 	{leasePoolSignalSync, "the pool-signal sweep, whose every pass probes each attached pool's OAuth entries' usage windows once per replica and last-write-wins the shared readings (ADR-164)", (*Server).poolSignalSyncStarts},
+	{leaseConnectorPollers, "the connector pollers, whose every pass calls each due poller's vendor once per replica — the generation fence keeps one tick's writes, but every replica spends the connection's rate limit", (*Server).connectorPollersStart},
 }
 
 // priceFeedSyncStarts is the price-feed sweep's start condition: both

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
 
 // Proto is the tool-channel protocol version the parent and the child must
@@ -25,7 +26,27 @@ import (
 // type and reports as a host error — fail-closed, but by the frame check
 // rather than by this number. Said here because it is the half a version
 // handshake does not cover.
-const Proto = 1
+//
+// 2: `call.describe` and `call.search`, answered from the request's catalogue
+// (CM-3). A version-1 child would run a program that uses them into "not a
+// function"; the handshake refuses it as a different build instead.
+// 3: `call.parallel` and the batch frame (CM-9).
+// 4: scoped run state requests and replies (CM-11/12).
+// 5: structured results on result frames (CM-7). A version-4 child decodes a
+// result carrying them fine — unknown JSON fields are ignored — but its
+// programs would read a tool's structured payload as undefined, a silent
+// wrong answer of exactly the kind the refusal exists to prevent.
+// 6: the child's confinement as a FIRST stdout document, written once it is
+// confined and before the script runs, so a child killed mid-script — a
+// deployment's stricter CPU bound, a cgroup kill — has still said what it
+// enforced (#3451). Not a tool-channel frame: the child writes it to a
+// parent whose Request carries Proto ≥ 6, whatever the channel, because a
+// version-5 parent decodes stdout's FIRST document as the verdict and would
+// read a confinement-only document as a host that died.
+const Proto = 6
+
+// MaxParallelBatch bounds a batch independently of its execution width.
+const MaxParallelBatch = 4
 
 // Tool-channel frame types. A frame whose type is none of these — including
 // the empty string an old child's bare Response unmarshals to — is a protocol
@@ -33,6 +54,8 @@ const Proto = 1
 const (
 	// FrameCall is the CHILD asking the parent to run one of the node's tools.
 	FrameCall = "call"
+	// FrameBatch carries a complete ordered group of calls.
+	FrameBatch = "batch"
 	// FrameResult is the PARENT answering one call.
 	FrameResult = "result"
 	// FrameBudget is the parent telling the child its call budget is spent, so
@@ -50,14 +73,14 @@ const (
 type Frame struct {
 	Type string `json:"type"`
 	// ID correlates a result with its call. The child mints it, strictly
-	// increasing from 1; the parent echoes it. v0 keeps ONE call in flight, so
-	// the id is a check rather than a demultiplexer — a result whose id is not
-	// the one awaited is a protocol error, not a queued message.
+	// increasing from 1; the parent echoes it. Batch results are correlated
+	// against exactly the IDs sent in that batch.
 	ID int64 `json:"id"`
 
 	// Name and Input are set on FrameCall.
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+	Calls []Frame         `json:"calls,omitempty"`
 
 	// Text and IsError are set on FrameResult. They are the tool_result the
 	// node's own loop would have received: the text the model sees, and
@@ -72,6 +95,26 @@ type Frame struct {
 	// cut result and returns a confident total is worse than one that knows.
 	Truncated bool `json:"truncated,omitempty"`
 
+	// Structured is the tool's structured result (CM-7), compact JSON the
+	// tool produced alongside its text, handed to the program as a value. It
+	// is set on a FrameResult only: a failed call throws and carries no
+	// structured payload, and a refused call never had one. An absent payload
+	// means one of three things — the tool sent none, the tool failed, or the
+	// payload did not fit the bound — and the next two fields say which.
+	Structured json.RawMessage `json:"structured,omitempty"`
+	// StructuredTruncated says the parent dropped Structured at the result
+	// bound. Explicit only when something was actually dropped: a payload
+	// that fits leaves the field unset, so a program reading it false knows
+	// the absence of Structured means the tool sent none.
+	StructuredTruncated bool `json:"structured_truncated,omitempty"`
+	// StructuredBytes is the size of the structured payload the parent
+	// dropped, set only alongside StructuredTruncated. A program that needs
+	// the whole payload can say by how much it was shorted rather than
+	// guessing from an empty value.
+	StructuredBytes int64 `json:"structured_bytes,omitempty"`
+
+	StateCode string `json:"state_code,omitempty"`
+
 	// Remaining is the call budget left after this result, set on FrameResult
 	// and FrameBudget. The child uses it to refuse locally; the parent's own
 	// count is what binds.
@@ -80,9 +123,19 @@ type Frame struct {
 
 // ToolOutcome is what serving one call produced: the tool_result text the
 // model would have seen, and whether the tool reported a failure.
+//
+// Structured carries the same result's structured payload, compact JSON, as
+// the tool reported it alongside its text — a server that has none leaves it
+// nil, and the parent clips what it delivered past the bound. The truncation
+// fields let a server report a payload IT already shortened; a server that
+// delivers whole payloads leaves them zero and the parent's clip fills them.
 type ToolOutcome struct {
 	Text    string
 	IsError bool
+
+	Structured          []byte
+	StructuredTruncated bool
+	StructuredBytes     int64
 }
 
 // ToolServer answers a script's tool call.
@@ -110,99 +163,175 @@ type ToolServer interface {
 // operator) is the caller's business and not the script's.
 var errScriptAborted = errors.New("scripthost: the tool server aborted the script")
 
-// serveToolCalls is the parent's half of the tool channel: it reads calls the
-// child writes, asks the server, and writes results back, one at a time.
+// serveToolCalls validates and reserves a whole batch before executing it.
+// The parent owns admission and reply writes, even when workers overlap.
 //
-// ONE call in flight is the v0 contract, and it is not a simplification to be
-// apologised for: the node's dispatcher re-derives its executable-tool pin on
-// every dispatch and the existing direct loop is serial too, so a concurrent
-// script would be the first caller to ask whether that pin is safe to share.
-// Concurrency is its own slice, and the frame carries an id so it does not
-// need a new wire.
-//
-// The PARENT counts the calls. The child counts too and refuses locally to
-// save a round trip, but a child is the thing being bounded and cannot be the
-// thing that bounds: a child that lied about its count would get the budget it
-// claimed. The count here is what binds.
-//
-// It returns when the child closes the channel (the ordinary end), when the
-// context ends, or on the first protocol error. A protocol error is a HOST
-// error: the two sides disagree about the wire, which is a deployment fault
-// and not something a script did.
-func serveToolCalls(ctx context.Context, calls io.Reader, replies io.Writer, srv ToolServer, limits Limits) (int64, error) {
+// The stats it returns are the parent's own count, which is what binds: the
+// child counts too, but a child is what is being bounded.
+func serveToolCalls(ctx context.Context, calls io.Reader, replies io.Writer, srv ToolServer, limits Limits) (CallStats, error) {
 	br := bufio.NewReaderSize(calls, 64<<10)
 	enc := json.NewEncoder(replies)
-	var served, wantID int64
-
-	for {
-		// A context that ended is NOT a channel failure and must not be
-		// reported as one: the wall bound firing is the ordinary way a script
-		// dies, and the verdict for it is decided from the child's death, not
-		// from here. Returning ctx.Err() made every wall-clock death look like
-		// a broken deployment.
-		if ctx.Err() != nil {
-			return served, nil
-		}
+	var stats CallStats
+	var wantID int64
+	for ctx.Err() == nil {
 		line, err := readFrameLine(br, callFrameCap())
-		switch {
-		case errors.Is(err, io.EOF):
-			// The child closed its end: the script finished, or it was killed.
-			// Either way the verdict is on stdout, not here.
-			return served, nil
-		case err != nil:
-			return served, fmt.Errorf("scripthost: reading the tool channel: %w", err)
+		if ctx.Err() != nil || errors.Is(err, io.EOF) {
+			return stats, nil
 		}
-
+		if err != nil {
+			return stats, fmt.Errorf("scripthost: reading the tool channel: %w", err)
+		}
 		var f Frame
 		if err := json.Unmarshal(line, &f); err != nil {
-			return served, fmt.Errorf("scripthost: decoding a tool-channel frame: %w", err)
+			return stats, fmt.Errorf("scripthost: decoding a tool-channel frame: %w", err)
 		}
-		if f.Type != FrameCall {
-			return served, fmt.Errorf(
-				"scripthost: the child sent a %q frame on the tool channel, which only carries %q",
-				f.Type, FrameCall)
-		}
-		wantID++
-		if f.ID != wantID {
-			return served, fmt.Errorf(
-				"scripthost: tool call id %d arrived where %d was expected: the channel is out of step",
-				f.ID, wantID)
-		}
-
-		// The budget is checked BEFORE the dispatch, so an over-budget call
-		// costs nothing: no hook fires, no permission verdict is computed, no
-		// event is written.
-		if served >= limits.ToolCalls {
-			reply := Frame{Type: FrameBudget, ID: f.ID, Remaining: 0,
-				IsError: true,
-				Text: fmt.Sprintf(
-					"the script has spent its budget of %d tool calls. Aggregate in the script, "+
-						"or ask the operator to raise the bound.", limits.ToolCalls)}
-			if err := enc.Encode(&reply); err != nil {
-				return served, fmt.Errorf("scripthost: answering an over-budget call: %w", err)
+		if f.Type == frameStateStore || f.Type == frameStateLoad {
+			wantID++
+			if f.ID != wantID || len(f.Calls) != 0 || len(line) > stateFrameCap {
+				return stats, fmt.Errorf("scripthost: invalid state frame sequence")
+			}
+			reply := budgetFrame(f.ID, limits.ToolCalls)
+			if stats.Served < limits.ToolCalls {
+				stats.Served++
+				stats.StateCalls++
+				reply, err = serveState(ctx, srv, f, limits.ToolCalls-stats.Served)
+				if ctx.Err() != nil {
+					return stats, nil
+				}
+				if err != nil {
+					return stats, err
+				}
+			} else {
+				stats.BudgetRefused++
+			}
+			if err := writeStateFrame(replies, reply); err != nil {
+				if ctx.Err() != nil {
+					return stats, nil
+				}
+				return stats, fmt.Errorf("scripthost: answering state request: %w", err)
 			}
 			continue
 		}
 
-		out, abort := srv.CallTool(ctx, f.Name, f.Input)
-		if abort != nil {
-			return served, fmt.Errorf("%w: %w", errScriptAborted, abort)
+		if f.Type != FrameCall && f.Type != FrameBatch {
+			return stats, fmt.Errorf("scripthost: tool channel only carries %q or %q from the child, got %q", FrameCall, FrameBatch, f.Type)
 		}
-		served++
-
-		text, cut := clipToolText(out.Text, limits.ToolResultBytes)
-		reply := Frame{
-			Type:      FrameResult,
-			ID:        f.ID,
-			Text:      text,
-			IsError:   out.IsError,
-			Truncated: cut,
-			Remaining: limits.ToolCalls - served,
+		batch := []Frame{f}
+		if f.Type == FrameBatch {
+			batch = f.Calls
+			if len(batch) == 0 || len(batch) > MaxParallelBatch {
+				return stats, fmt.Errorf("scripthost: invalid tool batch size %d", len(batch))
+			}
 		}
-		if err := enc.Encode(&reply); err != nil {
-			return served, fmt.Errorf("scripthost: answering tool call %d: %w", f.ID, err)
+		for _, item := range batch {
+			if item.Type != FrameCall || len(item.Calls) != 0 {
+				return stats, fmt.Errorf("scripthost: unexpected tool-channel frame %q", item.Type)
+			}
+			wantID++
+			if item.ID != wantID {
+				return stats, fmt.Errorf("scripthost: tool call id %d arrived where %d was expected: the channel is out of step", item.ID, wantID)
+			}
+			if len(item.Input) > MaxToolInputBytes {
+				return stats, fmt.Errorf("scripthost: input for call %d exceeds %d bytes", item.ID, MaxToolInputBytes)
+			}
+		}
+		group := callGroup{batch: f.Type == FrameBatch, first: batch[0].ID, size: len(batch)}
+		admitted := min(int64(len(batch)), max(0, limits.ToolCalls-stats.Served))
+		stats.Served += admitted
+		remaining := limits.ToolCalls - stats.Served
+		outcomes, err := dispatchBatch(ctx, srv, batch[:admitted], group, limits, remaining)
+		if err != nil {
+			return stats, err
+		}
+		if ctx.Err() != nil {
+			return stats, nil
+		}
+		observer, _ := srv.(BudgetRefusalObserver)
+		for i, item := range batch[admitted:] {
+			reply := budgetFrame(item.ID, limits.ToolCalls)
+			stats.BudgetRefused++
+			if observer != nil {
+				observer.RefusedOnBudget(group.frame(int(admitted)+i, item.ID), item.Name, item.Input, reply.Text)
+			}
+			outcomes = append(outcomes, reply)
+		}
+		for _, reply := range outcomes {
+			if err := enc.Encode(reply); err != nil {
+				if ctx.Err() != nil {
+					return stats, nil
+				}
+				return stats, fmt.Errorf("scripthost: answering tool call %d: %w", reply.ID, err)
+			}
 		}
 	}
+	return stats, nil
+}
+
+func budgetFrame(id, limit int64) Frame {
+	return Frame{Type: FrameBudget, ID: id, IsError: true, Text: fmt.Sprintf("the script has spent its budget of %d tool calls. Aggregate in the script, or ask the operator to raise the bound.", limit)}
+}
+
+// dispatchBatch executes exclusive tools between waves of explicitly safe
+// tools. Each wave joins before the next starts; workers own distinct slots.
+// Each call's server receives its [CallFrame] on its own worker context, so
+// the program order a reader needs travels with the call rather than being
+// rebuilt from the order workers finish in.
+func dispatchBatch(ctx context.Context, srv ToolServer, calls []Frame, group callGroup, limits Limits, remaining int64) ([]Frame, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	replies := make([]Frame, len(calls))
+	errs := make([]error, len(calls))
+	run := func(i int) {
+		if ctx.Err() != nil {
+			return
+		}
+		f := calls[i]
+		out, err := srv.CallTool(WithCallFrame(ctx, group.frame(i, f.ID)), f.Name, f.Input)
+		if err != nil {
+			if ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
+				errs[i] = err
+			}
+			cancel()
+			return
+		}
+		text, cut := clipToolText(out.Text, limits.ToolResultBytes)
+		frame := Frame{Type: FrameResult, ID: f.ID, Text: text, IsError: out.IsError, Truncated: cut, Remaining: remaining}
+		// A failed call throws on the child side and its thrown value carries
+		// no structured fields, so a payload here would be wire bytes no
+		// program could ever read. Dropped rather than sent.
+		if !out.IsError {
+			structured, dropped, original := clipToolStructured(out, limits.ToolResultBytes)
+			frame.Structured = structured
+			frame.StructuredTruncated = dropped
+			frame.StructuredBytes = original
+		}
+		replies[i] = frame
+	}
+	width := int(max(1, min(limits.ConcurrentToolCalls, MaxParallelBatch)))
+	eligibility, _ := srv.(interface{ ConcurrentSafe(string) bool })
+	safe := func(i int) bool { return width > 1 && eligibility != nil && eligibility.ConcurrentSafe(calls[i].Name) }
+	for i := 0; i < len(calls) && ctx.Err() == nil; {
+		j := i + 1
+		if safe(i) {
+			for j < len(calls) && j-i < width && safe(j) {
+				j++
+			}
+		}
+		if j == i+1 {
+			run(i)
+		} else {
+			var workers sync.WaitGroup
+			for k := i; k < j; k++ {
+				workers.Go(func() { run(k) })
+			}
+			workers.Wait()
+		}
+		if abort := errors.Join(errs[i:j]...); abort != nil {
+			return nil, fmt.Errorf("%w: %w", errScriptAborted, abort)
+		}
+		i = j
+	}
+	return replies, nil
 }
 
 // readFrameLine reads one newline-delimited frame, refusing a line longer than
@@ -259,6 +388,26 @@ func clipToolText(s string, max int64) (string, bool) {
 // continuation byte.
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
 
+// clipToolStructured cuts a tool result's structured payload at the bound,
+// the sibling of [clipToolText]. The two differ in what a cut means: text is
+// prose the model would have read, so it is cut on a rune boundary and the
+// cut is honest to read; structured JSON is cut ONLY ALL-OR-NOTHING — half a
+// JSON document is not a value a program can parse, so past the bound the
+// payload goes entirely, flagged, with the size it had.
+//
+// The payload arrives pre-encoded by the server (a sink of what the tool
+// reported), so the control characters inside it are already escaped in the
+// payload itself. It still shares text's wire worst case: the frame encoder
+// re-escapes <, > and & wherever it meets them, inside a RawMessage too, so
+// one payload byte can reach the wire as six — and [resultFrameCap] spends
+// the same factor on it.
+func clipToolStructured(out ToolOutcome, max int64) (structured []byte, dropped bool, original int64) {
+	if int64(len(out.Structured)) > max {
+		return nil, true, int64(len(out.Structured))
+	}
+	return out.Structured, out.StructuredTruncated, out.StructuredBytes
+}
+
 // callFrameCap bounds one CALL frame — the child-to-parent direction, whose
 // payload is an input the script composed and whose only bound is the child's
 // own [MaxToolInputBytes].
@@ -297,6 +446,16 @@ func callFrameCap() int64 {
 // deployment. The envelope (type, id, flags, the remaining count) is small
 // and fixed; 1 KiB covers it.
 //
+// Since CM-7 the frame may also carry the tool's structured payload, up to
+// ToolResultBytes of it ([clipToolStructured]). That payload is pre-encoded
+// JSON, but pre-encoded is not verbatim on the wire: the frame encoder
+// re-escapes <, > and & inside a RawMessage exactly as it does in the text,
+// six bytes for one, so the payload's own worst case is the same factor. A
+// first draft spent 1 on the structured half — "pre-encoded travels
+// verbatim" — and a probe of json.Encoder refuted it before it shipped; the
+// cap spends 6 on each, which is what a frame holding a full bound of both
+// actually measures.
+//
 // The CALL direction has [callFrameCap] above, for the same reason and since
 // the same commit: an operator's `script_bytes` described neither frame. The
 // draft of this comment that said the call direction "keeps
@@ -304,6 +463,7 @@ func callFrameCap() int64 {
 // shipped — the commit that wrote it moved that site too.
 func resultFrameCap(l Limits) int64 {
 	const jsonEscapeWorstCase = 6
+	const structuredWorstCase = 6
 	const envelope = 1 << 10
 	// No zero fallback, on purpose: limits arrive CLAMPED — Host.Run and
 	// RunChild clamp before use — so a caller that skips the clamp gets a
@@ -311,5 +471,5 @@ func resultFrameCap(l Limits) int64 {
 	// did not choose. The ticket this closes called the previous
 	// zero-branch the inconsistent half of a defence: it silently
 	// substituted the default while clipToolText returned unbounded.
-	return l.ToolResultBytes*jsonEscapeWorstCase + envelope
+	return l.ToolResultBytes*(jsonEscapeWorstCase+structuredWorstCase) + envelope
 }

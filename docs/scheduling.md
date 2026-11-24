@@ -795,16 +795,40 @@ you have accepted their loss.
   tick at clone (`Invalid username or token`) while manual launches keep
   working. If a schedule is stuck in that state, recreate it with the
   repo attached (or bind the bot to the connection's managed secret).
+- **A cloud schedule names its repository and can pin its keys.** Each
+  tick names the repository it serves: the bound integration's (or the
+  repository its `repo_url` names, when that is another one of the
+  integration's forge), or the slug of `repo_url` for a schedule bound to
+  none. A bound schedule whose
+  `repo_url` is not on its integration's forge refuses the tick by name
+  (`last_error`): the integration's forge token is aimed at that forge
+  only. A BYOK key restricted to the repository (`repos`) funds the
+  schedule, the repository's monthly quota binds the tick, and the spend
+  is charged to it. `key_overrides` (provider → api key id, on the
+  schedule's create or `PATCH`, `iterion remote schedules update <id>
+  --data '{"key_overrides": {…}}'`) picks the key a provider spends — over
+  the integration's own pins, read live at each tick; a slot held and
+  replayed launches with the schedule's current pins. The write judges a
+  pin's visibility (the team's key, of that provider, visible to
+  `scheduler:<bot_id>`); each tick judges it again and also judges the
+  key's `bots` and `repos` audiences against the bot it launches and the
+  repository it names. A pinned key deleted, or whose audience no longer
+  admits the schedule, refuses the tick by name (`last_error`) rather than
+  spending another key ([byok.md](byok.md#per-webhook-key-override)).
 - **A repo-bound schedule survives a re-provision.** Re-provisioning the
   repo integration (enabling another bot, `POST …/forge/repo-bots`)
   deletes the integration's schedule rows and rebuilds one per
   `kind: schedule` invocation carrying a cron, but each surviving bot's
   row keeps its id (runs and audit entries point at it), the vars the
   operator set — merged over the manifest's `schedule.default_vars`,
-  operator keys winning — its last fire, pause state, overlap/guard policy
-  and customised cron. It does **not** keep `stale_after`, the keepalive
-  interval, the pinned `repo_ref`, or the routing and retry overrides, and
-  its last-run and last-error fields start empty. A row whose bot declares no schedule
+  operator keys winning — its last fire, pause state, overlap/guard policy,
+  its cadence (a customised cron or the keepalive interval, with its next
+  fire — unless the enable request names a cron), `stale_after`, the
+  pinned `repo_ref`, the retry overrides, its own routing and pool blocks
+  (a block projected from the integration follows the integration
+  instead) and its `key_overrides`. Its `repo_url` is reset
+  to the integration's clone URL, and its last-run and last-error fields
+  start empty. A row whose bot declares no schedule
   invocation with a cron — an operator-created row that the integration
   adopted because its `repo_url` matched — is deleted and not recreated.
   A bot whose scheduled behaviour hinges on a var

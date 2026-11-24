@@ -562,3 +562,10 @@ func TestLaunch_ARunLaunchedFromAForkRunExecutesOnItsPool(t *testing.T) {
 		})
 	}
 }
+
+func (p *tenantProbeStore) CreateRunWithValueFormat(ctx context.Context, spec store.RunCreateSpec) (*store.Run, error) {
+	if spec.ParentRunID != "" {
+		p.note("CreateChildRun", ctx)
+	}
+	return store.CreateRunWithValueFormat(ctx, p.RunStore, spec)
+}

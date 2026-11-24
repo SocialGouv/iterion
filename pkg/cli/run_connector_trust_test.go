@@ -137,7 +137,10 @@ func TestBuildRunExecutor_ConnectorsResolveForTheRunsTrust(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			s, storeDir := connectorTrustFixture(t)
-			exec, err := buildRunExecutor(RunOptions{}, tiersMatchTheEngine, actionWorkflowFor(row.node), s,
+			if _, err := s.CreateRun(t.Context(), "run-1", "w", nil); err != nil {
+				t.Fatal(err)
+			}
+			exec, err := buildRunExecutor(boundLegacySubbotFixture(t, t.Context(), "run-1"), RunOptions{}, tiersMatchTheEngine, actionWorkflowFor(row.node), s,
 				lineage{runID: "run-1", trust: row.trust}, storeDir, iterlog.Nop(), "", nil, "w", nil)
 			if err != nil {
 				t.Fatalf("buildRunExecutor: %v", err)
@@ -159,7 +162,10 @@ func TestBuildResumeExecutor_ConnectorsResolveForTheRecordedTrust(t *testing.T) 
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			s, storeDir := connectorTrustFixture(t)
-			exec, err := buildResumeExecutor(ResumeOptions{RunID: "run-1"}, actionWorkflowFor(row.node), s, storeDir, iterlog.Nop(), row.run, nil)
+			if err := s.SaveRun(t.Context(), row.run); err != nil {
+				t.Fatal(err)
+			}
+			exec, err := buildResumeExecutor(boundLegacySubbotFixture(t, t.Context(), "run-1"), ResumeOptions{RunID: "run-1"}, actionWorkflowFor(row.node), s, storeDir, iterlog.Nop(), row.run, nil)
 			if err != nil {
 				t.Fatalf("buildResumeExecutor: %v", err)
 			}

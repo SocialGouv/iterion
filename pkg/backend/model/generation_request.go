@@ -272,6 +272,14 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 	}
 
 	for _, gt := range opts.Tools {
+		// The catalogue-only tools a deferring node holds stay out of the
+		// wire: this loop is the flag's ONLY visibility reader, so a tool
+		// demoted here is unknown to the model while every other reader —
+		// the tool map, the dispatch door, the codemode catalogue and its
+		// description index — still serves it by name.
+		if gt.catalogueOnly {
+			continue
+		}
 		var schema api.InputSchema
 		if len(gt.InputSchema) > 0 {
 			if err := json.Unmarshal(gt.InputSchema, &schema); err != nil {
@@ -370,7 +378,29 @@ func toolCallsFromBlocks(toolUses []toolUseBlock) []ToolCall {
 	return calls
 }
 
+// wireReasoningEffort is the reasoning effort req carries on the wire
+// through client: the client's own answer when it states one (api.EffortWire
+// — an Anthropic Messages client drops a level the model does not take), the
+// level as named otherwise.
+func wireReasoningEffort(client api.APIClient, req api.CreateMessageRequest) string {
+	if w, ok := client.(api.EffortWire); ok {
+		return w.WireReasoningEffort(req.Model, req.ReasoningEffort)
+	}
+	return req.ReasoningEffort
+}
+
 // fireOnRequest calls the OnRequest hook if set.
+//
+// tool_count counts the NODE's tools: opts.Tools less the catalogue-only
+// ones a deferring node keeps off the wire, and never the synthetic
+// structured-output tool, which is not one of the node's. On the tool loop's
+// requests that is exactly what the request declared. On GenerateObjectDirect's
+// structured request it is not: that request strips the node's tools and
+// carries the synthetic tool alone, and the count still reports the node's
+// tools — the same number as the loop's requests, so a node with no tools
+// reports 0 on every request, the forensic signature the review-pr bundle
+// names a tools-less dispatch by. The catalogue-only count sits beside it,
+// not inside it.
 func fireOnRequest(opts GenerationOptions, messageCount int) {
 	if opts.OnRequest != nil {
 		var reasoning string
@@ -380,14 +410,27 @@ func fireOnRequest(opts GenerationOptions, messageCount int) {
 			}
 		}
 		opts.OnRequest(RequestInfo{
-			Model:           opts.Model,
-			WireModel:       wireModelIfDistinct(opts.Model),
-			MessageCount:    messageCount,
-			ToolCount:       len(opts.Tools),
-			ReasoningEffort: reasoning,
-			Timestamp:       time.Now(),
+			Model:              opts.Model,
+			WireModel:          wireModelIfDistinct(opts.Model),
+			MessageCount:       messageCount,
+			ToolCount:          len(opts.Tools) - catalogueOnlyCount(opts.Tools),
+			CatalogueOnlyCount: catalogueOnlyCount(opts.Tools),
+			ReasoningEffort:    reasoning,
+			Timestamp:          time.Now(),
 		})
 	}
+}
+
+// catalogueOnlyCount is how many tools buildRequest keeps off the wire
+// because a deferring node demoted them.
+func catalogueOnlyCount(tools []GenerationTool) int {
+	n := 0
+	for _, t := range tools {
+		if t.catalogueOnly {
+			n++
+		}
+	}
+	return n
 }
 
 // wireModelIfDistinct is the wire id of a spec when it differs from the
@@ -465,6 +508,7 @@ func callAndAggregate(
 		streamIdle.Idle = coldTimeout
 	}
 	agg.maxTokens = req.MaxTokens
+	agg.effort = wireReasoningEffort(client, req)
 	adoptGatewayReasoning(&agg, capture)
 	markBudgetCut(&agg, req.MaxTokens, capture.FinishReason())
 	latency := time.Since(start)

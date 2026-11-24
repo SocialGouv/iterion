@@ -154,7 +154,7 @@ func TestClawRelay_PersistsNoRelayedTurnInClear(t *testing.T) {
 			for k, v := range s.put {
 				payload[k] = v
 			}
-			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 0}, sessionSeed{})
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 0}, sessionSeed{}, newCrossingApprovalState())
 			handler.OnEvent(relayTurnCaptureType, payload)
 
 			if _, err := st.LoadTurn(context.Background(), runID, "campaign", 0, 0); err != nil {

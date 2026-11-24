@@ -197,7 +197,7 @@ func TestSubbotRunnerRunsChildOnPod(t *testing.T) {
 
 	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	out, err := run(context.Background(), runtime.SubbotRequest{
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID,
@@ -232,7 +232,7 @@ func TestSubbotRunnerProjectsAContractedChildsOutput(t *testing.T) {
 
 	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	out, err := run(context.Background(), runtime.SubbotRequest{
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})
@@ -273,7 +273,9 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 
 	newEngine := func(t *testing.T, runID string, wired bool) *runtime.Engine {
 		t.Helper()
-		exec, usage, err := r.buildExecutor(ctx, msg, wf, dir, iterlog.Nop(), nil, nil)
+		attempt := *msg
+		attempt.RunID = runID
+		exec, usage, err := r.buildExecutor(preparedRunnerFixture(t, ctx, r, attempt.RunID), &attempt, wf, dir, iterlog.Nop(), nil, nil)
 		if err != nil {
 			t.Fatalf("buildExecutor: %v", err)
 		}
@@ -350,7 +352,7 @@ func testSubbotRunnerParksOnHumanGate(t *testing.T) {
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	done := make(chan error, 1)
 	go func() {
-		_, err := run(ctx, runtime.SubbotRequest{
+		_, err := run(boundLegacySubbotFixture(t, ctx, msg.RunID), runtime.SubbotRequest{
 			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 		})
 		done <- err
@@ -431,7 +433,7 @@ func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
 		msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 		storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 		run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-		out, err := run(context.Background(), runtime.SubbotRequest{
+		out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 		})
 		idCtx := store.WithIdentity(context.Background(), "t1", "u1")
@@ -529,7 +531,7 @@ func TestSubbotRunnerRunsTheChildInTheParentSandbox(t *testing.T) {
 
 	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	out, err := run(context.Background(), runtime.SubbotRequest{
+	out, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-3"},
 		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 		ParentSandbox: &runtime.SharedSandbox{Run: fake, WorkspaceFolder: dir},
@@ -737,7 +739,7 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 
 	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	if _, err := run(context.Background(), runtime.SubbotRequest{
+	if _, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID,
@@ -799,7 +801,7 @@ func TestSubbotChildInheritsTheBotSourceTier(t *testing.T) {
 
 	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	if _, err := run(context.Background(), runtime.SubbotRequest{
+	if _, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
 		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	}); err != nil {
@@ -850,7 +852,7 @@ workflow child:
 
 	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	_, err := run(context.Background(), runtime.SubbotRequest{
+	_, err := run(boundLegacySubbotFixture(t, context.Background(), msg.RunID), runtime.SubbotRequest{
 		Source:        "child.bot",
 		ParentRunID:   msg.RunID,
 		NodeID:        "run_ticket",

@@ -395,7 +395,7 @@ asymmetry: not listable there, still mutable there.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
+| `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys (a user-scoped personal key is not listed — see `/api/me/api-keys`) |
 | `POST` | `/api/teams/{id}/api-keys` | team admin | Create — `base_url` required for `openai_compatible` (https, canonical; literal non-public addresses and reserved names refused) and refused elsewhere; `repos` restricts the key to repositories (full forge paths, no URL or glob); unknown fields and a second JSON value are refused (strict) |
 | `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped), replace the `bots` or `repos` audience, move a gateway key's `base_url` — a rotation: `secret` is required in the same request and is sealed under the new URL, a move without it is `400` (the stored secret is never re-sealed for a host its holder did not prove it for), re-sending the stored URL is a no-op — and every rotation of a gateway key answers `409` when another writer rotated or moved the key between the read and the write; `base_url` on a vendor key is `400`, blank included (a create ignores an empty one as absent); unknown fields and a second JSON value are refused (strict) — an absent field is left alone, `"bots": []` clears it. The write is a `$set` of the named fields only, never a replace of the row. A row whose `provider` this server build does not know (written by a newer server during a rolling update, or left by a rollback) is refused with `409`, audited as `refused`: update it from a current server, or delete it |
 | `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete — `404` on a row that is absent or tenant-hidden, never a success receipt for a no-op revoke |
@@ -672,9 +672,10 @@ pool — full model in [credential-pool.md](credential-pool.md).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/me/pool` | member | Your pledges and what they have served |
-| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
-| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
+| `GET` | `/api/me/pool` | member | Your pledges and what they have served. Each entry carries its `id` (and `key_id` for an api_key pledge) |
+| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list). The body's `key_id` completes an api_key pledge's identity |
+| `DELETE` | `/api/me/pool/entries/{pledge}` | member | Withdraw one pledge by its own id — the only address that names one of two keys of one provider. A pledge of somebody else answers 404 |
+| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw, kept one release as a shim for the id route. Exact for an `oauth` pair; an api_key pair takes `?key_id=`, and without it a single match is withdrawn while several answer 400 |
 | `GET` | `/api/me/pool/history` | member | The runs your quota served |
 | `GET` | `/api/teams/{id}/pool` | team member | The pool's policy. The donor roster rides along only for an org admin/owner (`canManageOrg`) — who lends, and how much they have given, is the contributors' own business |
 | `PUT` | `/api/teams/{id}/pool` | org admin | Set the audience policy deciding who may draw. The pool document is keyed by ORG, so a team admin/owner who is not also an org admin/owner is refused `403` |
@@ -692,6 +693,13 @@ Recurring bots, the cloud counterpart of `iterion schedule` —
 | `POST` | `/api/teams/{id}/schedules` | team admin | Create a schedule |
 | `PATCH` | `/api/teams/{id}/schedules/{sid}` | team admin | Update one |
 | `DELETE` | `/api/teams/{id}/schedules/{sid}` | team admin | Remove one |
+
+`key_overrides` (provider → api key id) on the create and the `PATCH` pins
+the key a provider spends for the schedule's runs, over its integration's
+own pins; it is validated like a webhook's pin, against `scheduler:<bot_id>`
+— a personal key, another team's key or another provider's is a `400`. On
+the `PATCH`, an absent field keeps the stored pins and `null` or `{}`
+clears them ([byok.md](byok.md#per-webhook-key-override)).
 
 A `config_editor` reaches the same schedule store by another door:
 `PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule` edits the cron of
@@ -881,7 +889,8 @@ so a new id-addressed route cannot land unclassified:
 |---|---|---|---|
 | `GET` | `/api/runs` | authenticated (no role) — another team than the active one, through `?team_id=` or `X-Iterion-Team`, needs `canViewTeam` | List runs |
 | `GET` | `/api/runs/global-active` | authenticated (no role) | Active runs — running, queued, paused or `failed_resumable`; a `running` run quiet past 15 minutes reads as an orphan and is dropped — across the **local** stores on this machine — a desktop-daemon affordance walking the local iterion home. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
-| `POST` | `/api/runs` | member | Launch a workflow |
+| `POST` | `/api/runs` | member | Launch a workflow — by inline `source`, by `file_path`, or by `bot_id`, which the server resolves through its tiers (team > platform > baked) and which alone gives the run a bot identity: beside an inline `source` a `bot_id` is ignored. `expect_source_sha256` pins a cloud launch that resolves a bot to the program its caller read (`GET /api/v1/bots/{name}/launch-source`): the server runs that program or refuses `409` with `error_code: bot_source_changed`, and outside cloud refuses the pin itself (`400`, `error_code: launch_pin_unsupported`). The field, what it covers, its error codes and its refusals: [The pinned launch](#the-pinned-launch). Absent, nothing is compared. A stored bot tier that does not answer while the launch resolves its bot is a masked `503` (no `error_code`: rely on the status) |
+| `GET` | `/api/v1/bots/{name}/launch-source` | authenticated; every bundle the answer draws on must be readable by the caller | The program a launch naming this bot runs, as the caller's active team resolves it now: `bot_id` (canonical), `tier` (`team` / `platform` / `baked`), the entry `source`, `sha256` — the identity of the program a launch compiles, and in cloud the token of [the pinned launch](#the-pinned-launch), which says what that identity covers — the parsed `document` (with `diagnostics`, `unit`, `bindable`, `read_refusal`, as `/api/files/open` answers a file) and `presets`, the preset set the launch applies: the program's `presets:` block overlaid by the bundle's `presets/<name>.md`, a file winning on a name. It resolves and materializes the bot the way the launch does, so a form built on it and the launch it posts agree. Its access rule is one, for the bot named and for what it builds on. A platform override and the baked catalog are readable by any authenticated caller with an active team: they are what the platform serves every tenant (a credential scoped to no team is refused before the route). Nothing confidential belongs in a platform override. The exception is a platform or baked bot built on a team's own row: it is refused to a member who edits no bot of that team, as that row is. A team's own row takes the right to edit the team's bots, the gate of `GET /api/teams/{id}/bot-sources/{slug}`, and the same is asked of every team row a launch freezes with the bot in cloud — the producer of a fragment or of a skill, a child bot — including the ones whose text the answer does not carry (a child, a skill's producer): a member who edits no bot of the team is refused the read of a bot built on one. `403` names the team row the caller may not read, and is answered before anything of the row is weighed or read. What the refusal keeps from that caller is the `.bot` text — not its digest, which is the `workflow_hash` on the header of every run of the bot, nor what a run shows: they can still launch the bot by `bot_id` with no pin where the launch gate admits them, and the prompts a run renders reach its launcher and every viewer of that run. Of the baked catalog, `/api/examples/{name}` already serves every authenticated caller the recipes embedded in the binary and the first root of `ITERION_BOTS_PATH`, and this route serves the same callers a bot of every further root — mount under a further root only bots every user of the deployment may read. `404` when the name resolves on no tier; `422` when the bot resolves but not to a launchable program, with the refusal a launch of it would draw; `503` when a tier did not answer, or when the server's concurrent DSL readings are at their bound (`error_code: dsl_read_admission`, with `Retry-After`); `500` when the resolution or the reading itself fails |
 | `POST` | `/api/v1/pipeline-board/tasks/{id}/launch` | member | Launch the bot a pipeline-board task names, bypassing the ready-state ranking — the same `gateLaunch` admission as `POST /api/runs` |
 | `POST` | `/api/runs/preview-cost` | authenticated (no role) | Estimate cost before launch — of the whole program a launch of the same `file_path`/`source` compiles, so a bot in several files is priced across its unit, fragments included, with the bundle's `prompts/*.md` merged the way the launch merges them. A main handed over inline with no directory behind it carries `import` lines whose fragments did not travel: no price is answered and `notes` says `unit_not_loaded`. A program the launch would refuse — a load error (a fragment the import cannot read) or a compile error (C003 and friends) — is not priced either: `notes` says `workflow_errors`. |
 | `POST` | `/api/runs/uploads` | authenticated (no role) | Upload an attachment — staged through the run store's `StagingStore` seam (the `staged_uploads` collection + `uploads/<upload-id>/` in the bucket, under the caller's tenant; swept after an hour), then promoted by the launch that names the id |
@@ -1033,6 +1042,66 @@ envelope with `"error": "member_role_required"` and no `reset_at` —
 nothing resets, the caller's role does; a refused board or trigger write
 answers the same envelope without counting as a denied launch. Token list
 and HTTP semantics in [quotas-and-limits.md](quotas-and-limits.md).
+
+### The pinned launch
+
+`POST /api/runs` takes `expect_source_sha256` beside `bot_id`: the `sha256`
+that `GET /api/v1/bots/{name}/launch-source` answered for the bot. It is the
+identity of the program the launch compiles — the `workflow_hash` the run
+records — and the server refuses the launch (`409`,
+`error_code: bot_source_changed`) when the program it compiled for this launch
+has another identity. Absent, nothing is compared and the launch runs what the
+name resolves to.
+
+The pin is no secret, and nothing rests on it being one: it is the
+`workflow_hash` on the header of every run of the bot, read by whoever may view
+a run. The read's access rule protects the program's text, not its digest.
+
+**It is the cloud lane's guarantee.** In cloud a launch is published with the
+frozen collection its compile read, and the runner executes that collection:
+nothing is read again, so the program that was compared is the program that
+runs. Every other lane reads the bot's files again after it accepts the
+launch — the in-process engine merges the bundle's presets from disk, a
+detached runner (`ITERION_RUNS_DETACHED=1`) compiles its own copy, a launch
+parked behind the pipeline cap compiles when its slot frees — so a pin there
+would be compared and then outrun. Outside cloud a pin is refused by name
+(`400`, `error_code: launch_pin_unsupported`), whatever it says; the read
+still answers `sha256` there, as the identity a launch of the bot compiles.
+
+**What the identity covers, and what it does not.** A change to a part of the
+first column between the read and the launch is refused. A change to a part
+of the second is not: the launch runs, with that part as it is when the
+launch freezes it.
+
+| Covered — a change is a `409` | Not covered — the launch runs |
+|---|---|
+| the entry source | a child bot's program — a child is its own run, with its own `workflow_hash` |
+| the bundle's fragments (the files its `import`s read) | the bundle's own skills (`skills/`) |
+| the bundle's prompts (`prompts/*.md`) | a skill shared by another bundle |
+| the files its `{{include}}` markers read | the manifest (`manifest.yaml`) |
+| the bundle's preset files (`presets/*.md`) | every other file of the bundle (scripts, assets) |
+| a fragment shared by another bundle | |
+| another tier serving the name with another program | another tier serving the name with the same program — a team fork that changes only skills or scripts runs, as the team's row |
+
+| Answer | When |
+|---|---|
+| `409`, `error_code: bot_source_changed` | The program the server compiled is not the pinned one. Nothing is published and the admission is handed back; read the program again and launch what it answers |
+| `400`, `error_code: launch_pin_unsupported` | No lane of this server can hold a pin: it is not in cloud mode, or its run service publishes no frozen program. Nothing is compared, published or metered; launch without the pin |
+| `400` | The value is not a pin: a pin is 64 lowercase hex digits, as the read wrote it |
+| `400` | A pin beside an inline `source`: an inline source is its own program and names no bot — send one or the other |
+| `400` | A pin on a launch that resolves no bot (a `file_path` that names none): a pin nobody checks would be a false guarantee |
+| `403` | The caller may not make the read that issues a pin — a team's own row that serves the bot, or one it is frozen with, is not readable by them (only a team row is ever refused; a platform override and the baked catalog are every authenticated caller's). The answer names that row. The same launch with no pin is unaffected |
+| `503` | A stored tier did not answer while the launch resolved its bot — the bot's own, or that of a bundle it is frozen with. This is so with or without a pin. The body is masked and carries no `error_code`: rely on the status, and retry. The admission is handed back |
+
+The refusals the request alone decides — not a pin, beside a source, outside
+cloud — are judged with the payload, before the launch gate: they take no
+admission and count no denied launch. The others are answered after it, and
+hand the admission back.
+
+The studio's launch of a bot in cloud is this exchange: its form is rendered
+from the read — fields, presets and all — and posts `bot_id` with the read's
+`sha256`, never a source. Outside cloud the studio launches a bot by its
+workflow file, with no pin.
 
 ### `GET /api/orgs/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
 

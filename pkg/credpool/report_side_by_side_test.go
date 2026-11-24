@@ -57,8 +57,8 @@ func TestSideBySideReport_R1_lateReportOfASupersededSideBySideAttempt(t *testing
 			h := newHarness(t)
 			h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 100})
 			h.donorKey(t, "bob", "openai", Limits{MaxUSDPerDay: 100})
-			pa := PledgeID("alice", SourceAPIKey, "anthropic")
-			pb := PledgeID("bob", SourceAPIKey, "openai")
+			pa := keyPledgeID("alice", "anthropic")
+			pb := keyPledgeID("bob", "openai")
 			fpA := secrets.FingerprintSHA256("sk-real-alice")
 			fpB := secrets.FingerprintSHA256("sk-real-bob")
 			day := h.now
@@ -128,9 +128,9 @@ func rvaR1b(t *testing.T, takeover bool) {
 	h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 100}, func(p *Pledge) { p.Priority = 0 })
 	h.donorKey(t, "carol", "anthropic", Limits{MaxUSDPerDay: 100}, func(p *Pledge) { p.Priority = 1 })
 	h.donorKey(t, "bob", "openai", Limits{MaxUSDPerDay: 100})
-	pa := PledgeID("alice", SourceAPIKey, "anthropic")
-	pc := PledgeID("carol", SourceAPIKey, "anthropic")
-	pb := PledgeID("bob", SourceAPIKey, "openai")
+	pa := keyPledgeID("alice", "anthropic")
+	pc := keyPledgeID("carol", "anthropic")
+	pb := keyPledgeID("bob", "openai")
 	fpA := secrets.FingerprintSHA256("sk-real-alice")
 	fpB := secrets.FingerprintSHA256("sk-real-bob")
 	day := h.now
@@ -183,7 +183,7 @@ func TestSideBySideReport_R2_aReleasedLastSiblingSwallowsTheAttemptsReport(t *te
 	h := newHarness(t)
 	h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 100})
 	h.donorKey(t, "bob", "openai", Limits{MaxUSDPerDay: 100})
-	pa := PledgeID("alice", SourceAPIKey, "anthropic")
+	pa := keyPledgeID("alice", "anthropic")
 	day := h.now
 	a, err := h.broker.Acquire(ctx, rvaKeyReq("run-z", "anthropic", false))
 	if err != nil {
@@ -219,8 +219,8 @@ func TestSideBySideReport_R3_anInterimReportClosesTheSiblings(t *testing.T) {
 	h := newHarness(t)
 	h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 100, MaxConcurrentRuns: 1})
 	h.donorKey(t, "bob", "openai", Limits{MaxUSDPerDay: 100, MaxConcurrentRuns: 1})
-	pa := PledgeID("alice", SourceAPIKey, "anthropic")
-	pb := PledgeID("bob", SourceAPIKey, "openai")
+	pa := keyPledgeID("alice", "anthropic")
+	pb := keyPledgeID("bob", "openai")
 	fpA := secrets.FingerprintSHA256("sk-real-alice")
 	fpB := secrets.FingerprintSHA256("sk-real-bob")
 	day := h.now

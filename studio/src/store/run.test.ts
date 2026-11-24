@@ -437,6 +437,46 @@ describe("applyEventsBatch — tool lifecycle (in-flight tools)", () => {
     expect(runStore.getState().inFlightToolsByExec.get(execId)).toBeUndefined();
   });
 
+  it("keeps a running program in flight when one of its nested calls is refused without a start", () => {
+    const tool = (seq: number, type: "tool_started" | "tool_called" | "tool_error", data: Record<string, unknown>) =>
+      ({ seq, timestamp: ts(seq), type, run_id: "run_test", branch_id: "main", node_id: "implement", data }) as RunEvent;
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      tool(2, "tool_started", { tool: "codemode", tool_use_id: "toolu_prog", input: '{"source":"1"}' }),
+      // A withheld nested call: refused before dispatch, so no start.
+      tool(3, "tool_error", {
+        tool: "ask_user",
+        tool_use_id: "codemode_X_1",
+        parent_tool_use_id: "toolu_prog",
+        error: "pauses the run",
+      }),
+    ]);
+    let inFlight = runStore.getState().inFlightToolsByExec.get(execId);
+    expect(inFlight?.map((t) => t.toolUseID)).toEqual(["toolu_prog"]);
+
+    // A nested call that ran closes its own start and nothing else.
+    runStore.getState().applyEventsBatch([
+      tool(4, "tool_started", { tool: "glob", tool_use_id: "codemode_X_2", parent_tool_use_id: "toolu_prog" }),
+      tool(5, "tool_called", { tool: "glob", tool_use_id: "codemode_X_2", parent_tool_use_id: "toolu_prog" }),
+    ]);
+    inFlight = runStore.getState().inFlightToolsByExec.get(execId);
+    expect(inFlight?.map((t) => t.toolUseID)).toEqual(["toolu_prog"]);
+
+    runStore.getState().applyEventsBatch([tool(6, "tool_called", { tool: "codemode", tool_use_id: "toolu_prog" })]);
+    expect(runStore.getState().inFlightToolsByExec.get(execId)).toBeUndefined();
+  });
+
+  it("does not let the launcher's refusal close a start, whatever id it claims", () => {
+    const tool = (seq: number, type: "tool_started" | "tool_called" | "tool_error", data: Record<string, unknown>) =>
+      ({ seq, timestamp: ts(seq), type, run_id: "run_test", branch_id: "main", node_id: "implement", data }) as RunEvent;
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      tool(2, "tool_started", { tool: "glob", tool_use_id: "toolu_other" }),
+      tool(3, "tool_error", { tool: "mcp_github_delete_repo", tool_use_id: "toolu_other", emitted_by: "launcher", error: "denied" }),
+    ]);
+    expect(runStore.getState().inFlightToolsByExec.get(execId)?.map((t) => t.toolUseID)).toEqual(["toolu_other"]);
+  });
+
   it("clears in-flight entries for the exec on node_finished", () => {
     runStore.getState().applyEventsBatch([
       nodeStarted("implement", 1),

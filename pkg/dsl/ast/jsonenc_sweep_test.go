@@ -23,6 +23,7 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		{GroupDecl{}, jsonGroupDecl{}, nil},
 		{UseDecl{}, jsonUseDecl{}, nil},
 		{WorkflowDecl{}, jsonWorkflowDecl{}, nil},
+		{BusinessStoreDecl{}, jsonBusinessStoreDecl{}, nil},
 		{Edge{}, jsonEdge{}, nil},
 		{ForeachClause{}, jsonForeachClause{}, nil},
 		{LoopClause{}, jsonLoopClause{}, nil},

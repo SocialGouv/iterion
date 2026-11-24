@@ -72,7 +72,7 @@ commit         (agent)                commit + push the alignment onto the PR br
 commit_probe   (tool, deterministic) the workspace HEAD as ONE commit on the head
                                       prepare read, held by the repository pr_url
                                       names (ls-remote), and named by the report
-                                      when it names a commit
+                                      when it names a resolvable commit
 commit_check   (compute, GATE)        decides from commit_probe and align_probe's
                                       readings — never from the agents' summaries:
                                       committed | clean | hold_lost_alignment
@@ -97,8 +97,11 @@ ride on a verdict that never saw it — that the branch holds in the repository
 config cut off, the forge token in git's environment: the workspace's remote
 and the url rewrites are the agents' to write; only a local run with no
 `pr_url`, which publishes nothing, reads the workspace's `origin`); a report
-that names a commit id must name that same commit, and one that names none
-("pushed", "N/A") is set aside. The published verdict and auto-merge pin use
+that names a resolvable commit id must name that same commit, and one that
+names no commit id ("pushed", "N/A") or an id of no legal commit width (a
+mis-transcribed one — 40 hex for sha-1, 64 for sha-256) is set aside; a
+full-width id the workspace cannot resolve still refuses. The published
+verdict and auto-merge pin use
 that full id. The commit agent is told to make exactly one commit, and pushes
 with the token in git's environment (the skill's recipe), never in a URL or on
 a command line. A failed proof counts as no commit,

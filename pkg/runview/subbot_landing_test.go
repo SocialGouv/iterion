@@ -51,7 +51,7 @@ workflow child:
 
 	storetest.SeedParentRun(t, svc.store, "landing-parent")
 	run := svc.subbotRunnerFor(filepath.Join(botDir, "parent.bot"), iterlog.Nop())
-	if _, err := run(context.Background(), runtime.SubbotRequest{
+	if _, err := run(boundLegacySubbotFixture(t, context.Background(), "landing-parent"), runtime.SubbotRequest{
 		Source:        "child.bot",
 		ParentRunID:   "landing-parent",
 		NodeID:        "lot",
@@ -128,7 +128,7 @@ workflow child:
 
 	storetest.SeedParentRun(t, svc.store, "landing-parent")
 	run := svc.subbotRunnerFor(filepath.Join(botDir, "parent.bot"), iterlog.Nop())
-	_, err = run(context.Background(), runtime.SubbotRequest{
+	_, err = run(boundLegacySubbotFixture(t, context.Background(), "landing-parent"), runtime.SubbotRequest{
 		Source:        "child.bot",
 		ParentRunID:   "landing-parent",
 		NodeID:        "lot",

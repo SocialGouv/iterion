@@ -286,6 +286,8 @@ func (s *Server) ListenAndServe() error {
 	s.startGateAutofix()
 	s.startOutcomeRouter()
 	s.startRunOutcomeSpine()
+	s.startConnectorWorker()
+	s.startConnectorPollers()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to
 	// trigger the lazy eviction inside Take, so without this the

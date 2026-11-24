@@ -139,6 +139,11 @@ type ClawExecutor struct {
 	// so a run can re-target the bot without editing the .bot. Empty applies
 	// nothing (backward-compatible). See model_override.go.
 	modelOverrides ModelOverrides
+	// launchOverrides are the launch's OWN rows among modelOverrides, before
+	// the routing policy's cells folded in; nil when the path that built the
+	// executor did not say. They only tell a reader which of the two layers
+	// asked for an effort (requestedEffort): resolution reads modelOverrides.
+	launchOverrides *ModelOverrides
 	// rerouteWarned dedupes the gateway auto-selection redirect warn
 	// (gatewayCapableDetection): the seams ask resolveBackendName several
 	// times for one node, and one redirect is one fact. Guarded because
@@ -247,11 +252,15 @@ type ClawExecutor struct {
 	// node DSL > workflow DSL > ITERION_AMBIENT_CONTEXT > workspace.
 	wfAmbientContext string
 	// Codemode (ADR-165): whether a node is handed the script host's tool.
-	// The precedence is node DSL > workflow DSL > off, and there is
-	// deliberately no environment rung — ADR-132 §1 forbids the environment
-	// as a source for what a node is configured with.
+	// The precedence is run override (CLI --codemode / launch API) > node DSL
+	// > workflow DSL > off, and there is deliberately no environment rung —
+	// ADR-132 §1 forbids the environment as a source for what a node is
+	// configured with.
 	wfCodemode               string
+	wfCodemodeDefer          string
 	wfCodemodeBounds         *ir.CodemodeBounds
+	codemodeOverride         string
+	codemodeBoundsOverride   *ir.CodemodeBounds
 	ambientContextOverride   string
 	ambientContextEnvDefault string
 	// The space, its materialisation directory and the state-root guards are
@@ -420,7 +429,8 @@ type ClawExecutor struct {
 	// Close(). Without this each BuildExecutor call leaks one watcher — acute
 	// under parallel subbot fan-out, which builds one executor per child and
 	// can march toward fs.inotify.max_user_instances.
-	extraClosers []io.Closer
+	extraClosers  []io.Closer
+	runFilesGrant store.RunFilesGrant
 
 	// hostSecretOnce fires ensureHostSecretFiles exactly once per executor:
 	// on the first Execute call of a HOST (non-sandbox) run it materialises
@@ -725,6 +735,16 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.modelOverrides = o }
 }
 
+// WithLaunchModelOverrides names, among the overrides WithModelOverrides set,
+// the rows the launch itself carried — the folded list mixes them with the
+// routing policy's cells and cannot say which wrote what. The executor reads
+// them to name who asked for a node's effort (EffortSourceLaunch or
+// EffortSourceCell); an executor built without them names the folded list
+// (EffortSourceOverride). Empty rows are a statement: the launch carried none.
+func WithLaunchModelOverrides(o ModelOverrides) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.launchOverrides = &o }
+}
+
 // ModelOverrides returns the launch-time overrides this executor applies.
 //
 // Read-only, and exported for the paths that REBUILD an executor for an
@@ -732,6 +752,17 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 // dropped the operator's model choice once; being able to assert it survived
 // is what keeps that from coming back.
 func (e *ClawExecutor) ModelOverrides() ModelOverrides { return e.modelOverrides }
+
+// LaunchModelOverrides returns the launch's own rows this executor was told
+// of (WithLaunchModelOverrides), and whether it was told. Read-only, for the
+// same assertion ModelOverrides serves: a path that builds an executor
+// without them reports every override effort as the run's overrides.
+func (e *ClawExecutor) LaunchModelOverrides() (ModelOverrides, bool) {
+	if e.launchOverrides == nil {
+		return ModelOverrides{}, false
+	}
+	return *e.launchOverrides, true
+}
 
 // WithAllowedProviders sets the run's provider allowlist (ADR-129 §5) the
 // dispatch enforces: a chain element whose resolved provider is outside it
@@ -768,6 +799,25 @@ func WithAutoMemoryOverride(mode string) ClawExecutorOption {
 // "unset, defer to DSL/env". Highest-priority input to ambient.ResolveSourced.
 func WithAmbientContextOverride(policy string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.ambientContextOverride = policy }
+}
+
+// WithCodemodeOverride sets the run-level codemode override (CLI --codemode /
+// launch API): on|off, or "" for "unset, defer to DSL". Highest-priority rung
+// of ir.ResolveCodemode, and it wins in BOTH directions: an operator may keep
+// a declared capability off for this run, and may ask for it on a node whose
+// author stayed silent — with the default bounds, since the author set none.
+func WithCodemodeOverride(mode string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.codemodeOverride = mode }
+}
+
+// WithCodemodeBoundsOverride sets the run-level bounds override (CLI
+// --codemode-* flags / launch API). Field by field, the same rule as the
+// authored rungs: a zero field means "nobody chose" and the authored value —
+// or the default, through Limits.Clamp — stands. The values still pass
+// through Limits.Clamp at spawn, so a launch asking above scripthost.Ceiling
+// is served the ceiling and told so by OnClamp.
+func WithCodemodeBoundsOverride(b *ir.CodemodeBounds) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.codemodeBoundsOverride = b }
 }
 
 // WithAutoMemoryStore injects the knowledge store the auto-memory mirror
@@ -1143,6 +1193,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		autoMemoryEnvDefault:     envGetenv(context.Background(), automemory.ModeEnv),
 		wfAmbientContext:         wf.AmbientContext,
 		wfCodemode:               wf.Codemode,
+		wfCodemodeDefer:          wf.CodemodeDefer,
 		wfCodemodeBounds:         wf.CodemodeBounds,
 		ambientContextEnvDefault: envGetenv(context.Background(), ambient.PolicyEnv),
 		wfPermission:             wf.Permission,
@@ -1192,6 +1243,14 @@ func (e *ClawExecutor) MCPHealthCheck(ctx context.Context, servers []string) err
 	return e.mcpManager.HealthCheck(ctx, servers)
 }
 
+// WithRunFilesGrant transfers the invocation-owned grant to the executor.
+func WithRunFilesGrant(grant store.RunFilesGrant) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.runFilesGrant = grant }
+}
+
+// RunFilesGrant lends the directory capability; the executor retains ownership.
+func (e *ClawExecutor) RunFilesGrant() store.RunFilesGrant { return e.runFilesGrant }
+
 // Close releases resources held by the executor, including MCP server
 // connections and the per-run host secret-file tempdir (host runs only —
 // sandbox runs never populate it).
@@ -1209,6 +1268,10 @@ func (e *ClawExecutor) Close() error {
 	if e.handoff != nil {
 		e.handoff.Cleanup()
 	}
+	if e.runFilesGrant != nil {
+		errs = append(errs, e.runFilesGrant.Close())
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -1874,30 +1937,7 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		err = e.scrubNodeError(err)
 	}
 	if err == nil {
-		// Successful node completion: drop any session messages so
-		// the store doesn't grow without bound across long runs.
-		// Sessions are preserved on error so the recovery dispatcher
-		// has something to compact for the next attempt.
-		if e.sessions != nil && runID != "" {
-			key := nodeSessionKey(node)
-			// The node execution is over: the next one starts a tool-step
-			// budget of its own (toolTurnsAnchorCarry).
-			e.sessions.dropAnchor(runID, key)
-			llm, isLLM := node.(ir.LLMNode)
-			persist := isLLM && llm.GetSession() == ir.SessionPersist
-			if persist && output != nil {
-				sid, _ := output[delegate.SessionIDKey].(string)
-				fingerprint, _ := output[delegate.SessionFingerprintKey].(string)
-				if blob := e.packClawSession(runID, key, sid, fingerprint); len(blob) > 0 {
-					output[delegate.SessionStateBlobKey] = blob
-				}
-			} else {
-				e.sessions.evict(runID, key)
-			}
-		}
-		if output != nil && e.hooks.OnNodeFinished != nil {
-			e.hooks.OnNodeFinished(node.NodeID(), output)
-		}
+		e.finalizeNodeOutput(ctx, node, output)
 	}
 	return output, err
 }

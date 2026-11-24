@@ -117,16 +117,16 @@ workflow w:
 	}
 }
 
-// The WORKFLOW rung's block, and all seven fields.
+// The WORKFLOW rung's block, and all fields.
 //
 // Measured before this test existed: a mutant that stopped writing the
 // workflow-level block survived `./pkg/dsl/...` and every importer of this
 // package, while `iterion fmt` and the studio save path silently deleted the
 // declaration. The block form implies `on`, so the deletion does not merely
-// lose seven numbers — it turns codemode OFF for every node that inherited
-// it. The agent arm above asserted three of the seven; a per-field table is
+// lose the bounds — it turns codemode OFF for every node that inherited
+// it. The agent arm above asserted three bounds; a per-field table is
 // what makes a dropped line nameable.
-func TestTheWorkflowRungsBlockRoundTripsWithEverySeven(t *testing.T) {
+func TestTheWorkflowRungsBlockRoundTripsWithEveryBound(t *testing.T) {
 	t.Parallel()
 	src := `agent a:
   model: "m"
@@ -143,25 +143,73 @@ workflow w:
   entry: a
   codemode:
     tool_calls: 512
+    concurrent_tool_calls: 3
     wall: "7m"
     cpu: "90s"
     memory: 1073741824
     script_bytes: 1048576
     result_bytes: 4194304
     tool_result_bytes: 262144
+    store_entries: 48
+    store_bytes: 262144
   a -> j
   j -> done
 `
 	got := render(t, src)
 	for _, want := range []string{
-		"tool_calls: 512", "wall: \"7m\"", "cpu: \"90s\"", "memory: 1073741824",
+		"tool_calls: 512", "concurrent_tool_calls: 3", "wall: \"7m\"", "cpu: \"90s\"", "memory: 1073741824",
 		"script_bytes: 1048576", "result_bytes: 4194304", "tool_result_bytes: 262144",
+		"store_entries: 48", "store_bytes: 262144",
 		// and the judge's own block, the host the agent arm does not cover
 		"tool_calls: 99",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q missing from the rendered document:\n%s", want, got)
 		}
+	}
+	if again := render(t, got); again != got {
+		t.Errorf("not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}
+
+// A declared `defer` takes the block form — the short form has no way to
+// carry it, and collapsing it there would silently turn the deferral off,
+// the program's meaning changing under a formatter that promised to keep it.
+func TestADeclaredDeferRoundTripsAsABlock(t *testing.T) {
+	t.Parallel()
+	src := `agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    defer: on
+    tool_calls: 128
+
+workflow w:
+  entry: a
+  a -> done
+`
+	got := render(t, src)
+	if !strings.Contains(got, "defer: on") {
+		t.Fatalf("the declared defer was dropped, which turns the deferral off:\n%s", got)
+	}
+	if strings.Contains(got, "\n  codemode: on\n") {
+		t.Errorf("a defer-only neighbourhood collapsed to the short form, which cannot carry it:\n%s", got)
+	}
+	// Written as declared: `defer: off` is not an implied value to omit.
+	src = `agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    mode: off
+    defer: off
+
+workflow w:
+  entry: a
+  a -> done
+`
+	got = render(t, src)
+	if !strings.Contains(got, "defer: off") {
+		t.Fatalf("the declared `defer: off` was dropped:\n%s", got)
 	}
 	if again := render(t, got); again != got {
 		t.Errorf("not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)

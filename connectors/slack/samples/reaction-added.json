@@ -1,0 +1,25 @@
+{
+  "headers": {
+    "X-Slack-Request-Timestamp": "1731600240",
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "team_id": "T024BE7LD",
+    "api_app_id": "A07V1L2M3N4",
+    "type": "event_callback",
+    "event_id": "Ev07XYZGHI",
+    "event_time": 1731600240,
+    "event": {
+      "type": "reaction_added",
+      "user": "U061F7AUR",
+      "reaction": "white_check_mark",
+      "item": {
+        "type": "message",
+        "channel": "C0LAN2Q65",
+        "ts": "1731599999.000100"
+      },
+      "item_user": "U07BOT",
+      "event_ts": "1731600240.000300"
+    }
+  }
+}

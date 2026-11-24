@@ -156,10 +156,13 @@ func (r *ModelRegistry) ensureInit() {
 			SupportedReasoningEfforts: anthropicOpus47Effort, DefaultReasoningEffort: "xhigh", ThinkingMode: "adaptive", RejectsSampling: true},
 		{Canonical: "claude-opus-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus-4-6"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicOpus46Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive"},
-		// Sonnet 4.7 effort matrix not yet documented by Anthropic — leaving nil
-		// rather than guessing. Update once code.claude.com/docs/en/model-config
-		// publishes the table.
-		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-7"}, Metadata: anthropicMeta},
+		// This row records claude CLI 2.1.282 forwarding every level as
+		// handed (low, medium, high, xhigh, max) to a recording endpoint;
+		// see delegate's claudeCLIEffortMeasurements. That observation does
+		// not establish that the API accepts this model or these levels.
+		// The API default is unknown — left empty.
+		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-7"}, Metadata: anthropicMeta,
+			SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
 		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-6"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicSonnet46Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive"},
 		// Haiku does not support effort — the docs only list Opus and Sonnet.
@@ -208,8 +211,9 @@ func (r *ModelRegistry) ensureInit() {
 	r.init = true
 }
 
-// LookupModel returns the model entry for a given name or alias.
-// Returns nil if the model is not found in the registry.
+// LookupModel returns the model entry for a given name or alias. A dated
+// snapshot of a known model — claude-opus-5-5-20260101 — is that model:
+// the date suffix is stripped and the lookup retried before answering nil.
 func (r *ModelRegistry) LookupModel(nameOrAlias string) *ModelEntry {
 	r.ensureInit()
 	lower := strings.ToLower(strings.TrimSpace(nameOrAlias))
@@ -218,7 +222,38 @@ func (r *ModelRegistry) LookupModel(nameOrAlias string) *ModelEntry {
 	if canonical, ok := r.aliases[lower]; ok {
 		return r.models[canonical]
 	}
+	if base := stripDatedSuffix(lower); base != lower {
+		if canonical, ok := r.aliases[base]; ok {
+			return r.models[canonical]
+		}
+	}
 	return nil
+}
+
+// stripDatedSuffix drops a trailing snapshot date (claude-opus-5-5-20260101)
+// from a lower-cased model name: a "-" followed by exactly eight digits.
+func stripDatedSuffix(lower string) string {
+	if len(lower) < 9 || lower[len(lower)-9] != '-' {
+		return lower
+	}
+	for _, c := range lower[len(lower)-8:] {
+		if c < '0' || c > '9' {
+			return lower
+		}
+	}
+	return lower[:len(lower)-9]
+}
+
+// NormalizeModelName resolves an exact registered name or alias, then removes
+// one trailing eight-digit snapshot date. It does not resolve again after
+// stripping: "opus-20260101" becomes "opus", unlike LookupModel, which finds
+// the canonical entry. This lexical normalization is not a registry identity.
+// Unknown spellings retain their case, apart from trimming surrounding space
+// and removing the date. A resolved canonical name's date is removed too.
+func NormalizeModelName(nameOrAlias string) string {
+	// stripDatedSuffix only matches '-' and digits, so it reads a name of
+	// any casing.
+	return stripDatedSuffix(strings.TrimSpace(DefaultModelRegistry().ResolveAlias(nameOrAlias)))
 }
 
 // ResolveAlias resolves a model alias to its canonical name.

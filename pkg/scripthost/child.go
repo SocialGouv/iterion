@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // epoch is the instant every script sees as "now". A fixed point rather than
@@ -65,6 +67,19 @@ func RunChild(in io.Reader, out io.Writer) error {
 			"the script is %d bytes, over the %d-byte bound", len(req.Script), limits.ScriptBytes))
 	}
 
+	// An inherited socket would walk around a filter that denies CREATING
+	// one. Checked here, before Confine — /proc is unreadable afterwards —
+	// and in the child, where the descriptors are, rather than trusted to the
+	// spawn's cleanliness.
+	if fd, err := inheritedSocket(); err != nil {
+		return writeResponse(out, Refuse(RefusalUnavailable,
+			"the script host could not check its descriptors for an inherited socket: %v", err))
+	} else if fd >= 0 {
+		return writeResponse(out, Refuse(RefusalUnavailable,
+			"the script host inherited a socket on descriptor %d; it denies itself socket creation, "+
+				"and an inherited socket would walk around that, so it does not run the script", fd))
+	}
+
 	applied, err := Confine(limits)
 	if err != nil {
 		// Confinement failing is the one case where the child must not run
@@ -73,9 +88,19 @@ func RunChild(in io.Reader, out io.Writer) error {
 		// parent can tell "cannot confine here" from "died for some reason".
 		if errors.Is(err, ErrConfinementUnsupported) {
 			return writeResponse(out, Refuse(RefusalUnavailable,
-				"codemode needs a Linux kernel for its bounds (RLIMIT_DATA, RLIMIT_CPU, Landlock); this host offers none"))
+				"codemode needs a Linux kernel for its bounds (RLIMIT_DATA, RLIMIT_CPU, Landlock, seccomp); this host offers none"))
 		}
 		return writeResponse(out, Refuse(RefusalUnavailable, "the script host could not confine itself: %v", err))
+	}
+
+	// What the kernel accepted, said NOW rather than only in the verdict: a
+	// child the kernel kills mid-script never writes a verdict, and the
+	// bound that killed it may be a deployment's own, stricter than any the
+	// parent asked for. Only to a parent that reads it (Proto ≥ 6).
+	if req.Proto >= 6 {
+		if err := writeResponse(out, Response{Confinement: &applied}); err != nil {
+			return err
+		}
 	}
 
 	if refusal := confinementVerdict(applied, req); refusal != nil {
@@ -103,6 +128,7 @@ func RunChild(in io.Reader, out io.Writer) error {
 		}
 		bridge := newToolBridge(os.NewFile(fdToolReplies, "codemode-replies"),
 			os.NewFile(fdToolCalls, "codemode-calls"), limits)
+		bridge.index = toolindex.New(req.Catalog, req.CatalogOmitted)
 		if err := bridge.install(vm); err != nil {
 			return writeResponse(out, Refuse(RefusalUnavailable,
 				"the tool binding could not be installed: %v", err))
@@ -118,9 +144,11 @@ func RunChild(in io.Reader, out io.Writer) error {
 // enough to run a script in. Two ways it is not, and both are policy questions
 // rather than syscall results — Confine reports them instead of failing:
 //
-//   - no Landlock at all: an unrestricted filesystem and unrestricted sockets;
+//   - no Landlock at all: an unrestricted filesystem;
 //   - one thread confined instead of the process: the same, on every thread
-//     but the one that applied the bounds.
+//     but the one that applied the bounds;
+//   - no socket wall: Confine fails rather than return this, so the branch
+//     is the decision point's completeness, not a path a kernel reaches.
 //
 // One function rather than a guard per condition, because the next posture
 // would otherwise be checked at one site out of two. Separated from RunChild
@@ -129,16 +157,21 @@ func RunChild(in io.Reader, out io.Writer) error {
 // syscalls, and an unreachable branch is an untested one.
 func confinementVerdict(applied Applied, req Request) *Response {
 	switch {
+	case !applied.SocketsDenied:
+		refusal := Refuse(RefusalUnavailable,
+			"the script host could not deny itself socket creation, so a script would run with the "+
+				"network open; there is no allowance for that posture")
+		return &refusal
 	case applied.LandlockABI == 0 && !req.AllowWithoutLandlock:
 		refusal := Refuse(RefusalUnavailable,
-			"this kernel offers no Landlock, so a script would run with an unrestricted filesystem and "+
-				"unrestricted sockets; the CPU and memory bounds alone are not what codemode promises. "+
+			"this kernel offers no Landlock, so a script would run with an unrestricted filesystem; "+
+				"the socket wall, the CPU and the memory bounds alone are not what codemode promises. "+
 				"Set allow_without_landlock on the request to accept that posture deliberately")
 		return &refusal
 	case !applied.AllThreads && !req.AllowSingleThreadConfinement:
 		refusal := Refuse(RefusalUnavailable,
 			"this binary could confine only the thread that asked (a cgo-linked build cannot drive its "+
-				"own threads), so the filesystem, socket and exec bounds hold on one thread and not on "+
+				"own threads), so the filesystem and exec bounds hold on one thread and not on "+
 				"the process. Build with CGO_ENABLED=0, as iterion ships, or set "+
 				"allow_single_thread_confinement to accept that posture deliberately")
 		return &refusal
@@ -175,8 +208,10 @@ func resolveSeed(hexSeed string) ([32]byte, error) {
 // The read happens BEFORE Confine — it has to, because a deny-all ruleset
 // would stop anything that still needed to open a descriptor — so no rlimit is
 // in force for it. The ceiling's script bound plus room for the limits object
-// is the honest cap.
-const MaxRequestBytes = 4<<20 + 64<<10
+// is the honest cap, plus the catalogue `call.describe` and `call.search`
+// answer from, which crosses in the same document and is bounded by
+// [toolindex.Bound].
+const MaxRequestBytes = 4<<20 + 64<<10 + toolindex.MaxCatalogBytes
 
 // readRequest decodes the single request document.
 //

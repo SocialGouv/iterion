@@ -118,11 +118,23 @@ type TriggerOutput struct {
 	Type string `yaml:"type,omitempty" json:"type,omitempty"`
 }
 
+// The types a filter may declare. A string, enum or bool filter reads one
+// value and matches when it is among the chosen values; a list filter reads a
+// list and matches when any of its elements is. The type is declared rather
+// than read off each event: the studio picks its input from it before any
+// event exists, and the sample check proves it at load.
+const (
+	FilterString = "string"
+	FilterEnum   = "enum"
+	FilterBool   = "bool"
+	FilterList   = "list"
+)
+
 // TriggerFilter is a value an operator may filter a trigger's deliveries on.
 type TriggerFilter struct {
 	ID   string `yaml:"id" json:"id"`
 	From string `yaml:"from" json:"from"`
-	// Type is string, enum or bool.
+	// Type is string, enum, bool or list.
 	Type    string   `yaml:"type" json:"type"`
 	Options []string `yaml:"options,omitempty" json:"options,omitempty"`
 	Default []string `yaml:"default,omitempty" json:"default,omitempty"`
@@ -147,7 +159,7 @@ var reservedOutputs = map[string]string{
 
 var (
 	outputTypes  = []string{"string", "int", "bool", "list", "map"}
-	filterTypes  = []string{"string", "enum", "bool"}
+	filterTypes  = []string{FilterString, FilterEnum, FilterBool, FilterList}
 	identifierRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	placeholder  = regexp.MustCompile(`\{[^}]*\}`)
 	// neverListable are headers no expression may read, whatever a package
@@ -184,6 +196,10 @@ func NewDeliveryContext(payload map[string]any, headers http.Header, listed []st
 		NamespaceHeaders: func(p []string) any { return descend(visible, p) },
 	}}
 }
+
+// Descend walks maps (and lists, by index) along a dotted path: the one
+// path reading every site's expression namespaces share.
+func Descend(v any, p []string) any { return descend(v, p) }
 
 // descend walks maps (and lists, by index) along a dotted path.
 func descend(v any, p []string) any {
@@ -416,9 +432,9 @@ func locate(in *Ingress, l IngressLocator, payload map[string]any, headers http.
 func validateTriggerExtraction(p *Package, t Trigger) error {
 	id := p.Connector.ID
 	declares := len(t.Outputs) > 0 || len(t.Filters) > 0 || t.Ignore != "" || t.Sample != ""
-	if declares && p.Ingress == nil {
-		// Prevents: declarations nothing reads — the ingress lane is their
-		// only reader.
+	if declares && p.Ingress == nil && !t.Polled() {
+		// Prevents: declarations nothing reads — the ingress lane is a
+		// webhook trigger's only reader (a polled trigger's is its poller).
 		return fmt.Errorf("connector %q: trigger %q declares outputs, filters, an ignore or a sample, but the package declares no ingress: block to read deliveries with", id, t.ID)
 	}
 	names := map[string]bool{}
@@ -434,10 +450,15 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 		if !slices.Contains(outputTypes, typ) {
 			return fmt.Errorf("connector %q: trigger %q: output %q has type %q, not one of %s", id, t.ID, o.Name, typ, strings.Join(outputTypes, ", "))
 		}
+		if o.Name == NamespacePayload || o.Name == NamespaceHeaders {
+			// event.<output> shares the event namespace with event.payload and
+			// event.headers (ADR-168 §4): an output so named would shadow them.
+			return fmt.Errorf("connector %q: trigger %q: output name %q is reserved — event.%s reads the delivery's own %s", id, t.ID, o.Name, o.Name, o.Name)
+		}
 		if want, ok := reservedOutputs[o.Name]; ok && typ != want {
 			return fmt.Errorf("connector %q: trigger %q: output %q is reserved as a %s", id, t.ID, o.Name, want)
 		}
-		if err := checkExpr(fmt.Sprintf("trigger %s output %s", t.ID, o.Name), o.From, NamespacePayload, NamespaceHeaders); err != nil {
+		if err := checkExpr(fmt.Sprintf("trigger %s output %s", t.ID, o.Name), o.From, eventNamespaces(t)...); err != nil {
 			return fmt.Errorf("connector %q: %w", id, err)
 		}
 	}
@@ -453,7 +474,7 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 		if !slices.Contains(filterTypes, f.Type) {
 			return fmt.Errorf("connector %q: trigger %q: filter %q has type %q, not one of %s", id, t.ID, f.ID, f.Type, strings.Join(filterTypes, ", "))
 		}
-		if f.Type == "enum" {
+		if f.Type == FilterEnum {
 			if len(f.Options) == 0 {
 				return fmt.Errorf("connector %q: trigger %q: enum filter %q declares no options", id, t.ID, f.ID)
 			}
@@ -468,19 +489,36 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 				return fmt.Errorf("connector %q: trigger %q: filter %q selector %q is not an operation of this package", id, t.ID, f.ID, f.Selector)
 			}
 		}
-		if err := checkExpr(fmt.Sprintf("trigger %s filter %s", t.ID, f.ID), f.From, NamespacePayload, NamespaceHeaders); err != nil {
+		if err := checkExpr(fmt.Sprintf("trigger %s filter %s", t.ID, f.ID), f.From, eventNamespaces(t)...); err != nil {
 			return fmt.Errorf("connector %q: %w", id, err)
 		}
 	}
 	if t.Ignore != "" {
-		if err := checkExpr(fmt.Sprintf("trigger %s ignore", t.ID), t.Ignore, NamespacePayload, NamespaceHeaders); err != nil {
+		if err := checkExpr(fmt.Sprintf("trigger %s ignore", t.ID), t.Ignore, eventNamespaces(t)...); err != nil {
 			return fmt.Errorf("connector %q: %w", id, err)
 		}
 	}
 	if t.Sample != "" {
+		if t.SampleBody == nil {
+			return fmt.Errorf("connector %q: trigger %q: sample %q was not loaded", id, t.ID, t.Sample)
+		}
+		if t.Polled() {
+			return checkPollSample(p, t)
+		}
 		return checkSample(p, t)
 	}
 	return nil
+}
+
+// eventNamespaces are the namespaces a trigger's outputs, filters and loop
+// guard may read: a delivery's payload and listed headers, or — for a polled
+// trigger, whose event is one item of a response — the payload alone, since
+// an item carries no headers.
+func eventNamespaces(t Trigger) []string {
+	if t.Polled() {
+		return []string{NamespacePayload}
+	}
+	return []string{NamespacePayload, NamespaceHeaders}
 }
 
 func outputType(o TriggerOutput) string {
@@ -518,14 +556,20 @@ func checkSample(p *Package, t Trigger) error {
 	if event != t.Event {
 		return fmt.Errorf("connector %q: trigger %q: the sample's event is %q, not the trigger's %q", id, t.ID, event, t.Event)
 	}
-	ctx := NewDeliveryContext(s.Payload, headers, listed)
+	return checkExtraction(id, t, NewDeliveryContext(s.Payload, headers, listed))
+}
+
+// checkExtraction evaluates a trigger's loop guard, outputs and filters over
+// one recorded event: the guard must keep it, and each output must read its
+// declared type. A webhook sample and each item of a polled sample share it.
+func checkExtraction(id string, t Trigger, ctx *expr.Context) error {
 	if t.Ignore != "" {
 		v, err := evalExpr(t.Ignore, ctx)
 		if err != nil {
 			return fmt.Errorf("connector %q: trigger %q: ignore fails on the sample: %w", id, t.ID, err)
 		}
-		if v == true {
-			return fmt.Errorf("connector %q: trigger %q: the trigger's own ignore drops its sample — a sample must show a delivery the trigger keeps", id, t.ID)
+		if expr.Truthy(v) {
+			return fmt.Errorf("connector %q: trigger %q: the trigger's own ignore drops its sample — a sample must show an event the trigger keeps", id, t.ID)
 		}
 	}
 	for _, o := range t.Outputs {
@@ -538,9 +582,27 @@ func checkSample(p *Package, t Trigger) error {
 		}
 	}
 	for _, f := range t.Filters {
-		if _, err := evalExpr(f.From, ctx); err != nil {
+		v, err := evalExpr(f.From, ctx)
+		if err != nil {
 			return fmt.Errorf("connector %q: trigger %q: filter %q fails on the sample: %w", id, t.ID, f.ID, err)
 		}
+		if err := checkFilterShape(f, v); err != nil {
+			return fmt.Errorf("connector %q: trigger %q: filter %q %w", id, t.ID, f.ID, err)
+		}
+	}
+	return nil
+}
+
+// checkFilterShape holds a list filter's value on a sample to its declared
+// type: it reads a list. A nil value is an event that does not carry it, and
+// passes. A scalar filter is not judged here: over a list it compares the
+// list's JSON text, as it always has.
+func checkFilterShape(f TriggerFilter, v any) error {
+	if f.Type != FilterList || v == nil {
+		return nil
+	}
+	if _, isList := v.([]any); !isList {
+		return fmt.Errorf("reads %T from the sample, not the list its type declares", v)
 	}
 	return nil
 }

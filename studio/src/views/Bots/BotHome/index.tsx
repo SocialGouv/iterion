@@ -10,6 +10,7 @@ import { useServerInfoStore } from "@/store/serverInfo";
 import { useAssistantPageContext } from "@/lib/chatDock/pageContext";
 
 import { botLaunchFile } from "../botPaths";
+import { useBotLaunch } from "../useBotLaunch";
 import ActionsRow from "./ActionsRow";
 import AutomationsCard from "./AutomationsCard";
 import { ConfigSharesCard } from "./ConfigSharesCard";
@@ -95,6 +96,7 @@ export default function BotHomeView() {
 function BotHome({ entry }: { entry: BotEntryWithSchema }) {
   const serverInfo = useServerInfoStore((s) => s.info);
   const launchFile = botLaunchFile(entry);
+  const { launch, formRefusal } = useBotLaunch(entry);
   const [testOpen, setTestOpen] = useState(false);
   const assistantContext = useMemo(
     () => ({
@@ -125,6 +127,8 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
       <IdentityHeader entry={entry} />
       <ActionsRow
         entry={entry}
+        launch={launch}
+        formRefusal={formRefusal}
         launchFile={launchFile}
         testOpen={testOpen}
         onToggleTest={() => setTestOpen((v) => !v)}
@@ -149,7 +153,7 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
   // <main> is overflow-hidden (each view owns its scroll, like Secrets/Skills):
   // a full-height overflow-y-auto wrapper keeps a tall bot home (metadata +
   // automations + vars + config-shares) reachable, scrollbar at the edge.
-  if (!testOpen || !launchFile) {
+  if (!testOpen || !launch) {
     return (
       <div className="h-full overflow-y-auto">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">{main}</div>
@@ -167,7 +171,7 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
         </div>
         <div className="w-full xl:sticky xl:top-4 xl:w-[460px] xl:shrink-0">
           <TestRunPane
-            file={launchFile}
+            launch={launch}
             vars={entry.vars?.fields ?? []}
             onClose={() => setTestOpen(false)}
           />

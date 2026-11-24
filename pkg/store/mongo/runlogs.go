@@ -3,13 +3,13 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -42,19 +42,30 @@ func (s *Store) AppendRunLog(ctx context.Context, runID string, offset int64, da
 	doc := runLogDoc{
 		RunID:  runID,
 		Offset: offset,
-		Data:   data,
+		Data:   slices.Clone(data),
 		TS:     time.Now().UTC(),
 	}
 	if id, ok := store.TenantFromContext(ctx); ok {
 		doc.TenantID = id
 	}
-	if _, err := s.runLogs.InsertOne(ctx, doc); err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return nil // idempotent redelivery of an already-persisted chunk
+	return s.withRunMetadataWrite(ctx, runID, func(sc context.Context, parent *store.Run) error {
+		n, e := s.streamNamespace(sc, runID, parent)
+		if e != nil {
+			return e
 		}
-		return fmt.Errorf("store/mongo: append run log %s@%d (%d bytes): %w", runID, offset, len(data), err)
-	}
-	return nil
+		row := bson.M{"tenant_id": doc.TenantID, "run_id": doc.RunID, "offset": doc.Offset, "data": doc.Data, "ts": doc.TS}
+		n.stamp(row)
+		res, err := n.logs.UpdateOne(sc,
+			n.filter(sc, bson.M{"offset": offset}),
+			bson.M{"$setOnInsert": row}, options.UpdateOne().SetUpsert(true))
+		if err != nil {
+			return fmt.Errorf("store/mongo: append run log %s@%d (%d bytes): %w", runID, offset, len(data), err)
+		}
+		if res.UpsertedCount == 0 {
+			return errValuePublicationNoop
+		}
+		return nil
+	})
 }
 
 // ReadRunLogRange implements store.RunLogStore: reassemble bytes
@@ -67,50 +78,55 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 	if from < 0 {
 		from = 0
 	}
-	if until > 0 && from >= until {
-		return nil, nil
+	var out []byte
+	err := s.withOpaqueStreamRead(ctx, runID, func(sc context.Context, n streamDataNamespace, _ *store.Run) error {
+		out = nil
+		if until > 0 && from >= until {
+			return nil
+		}
+		var e error
+		out, e = s.readStreamLogRange(sc, n, from, until)
+		return e
+	})
+	if err != nil {
+		return nil, err
 	}
-	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	// Bound the scan below by the anchor chunk straddling `from`
-	// (chunks are contiguous, so everything starting before it ends at
-	// or before it) — a tail-poll with a growing `from` must not
-	// re-fetch and decode the run's whole chunk history on every read.
-	offsetRange := bson.M{}
+	return out, nil
+}
+func (s *Store) readStreamLogRange(ctx context.Context, n streamDataNamespace, from, until int64) ([]byte, error) {
+	filter := n.filter(ctx, nil)
+	r := bson.M{}
 	if from > 0 {
-		anchorFilter := withTenantFilter(ctx, bson.M{"run_id": runID, "offset": bson.M{"$lte": from}})
 		var anchor struct {
 			Offset int64 `bson:"offset"`
 		}
-		if err := s.runLogs.FindOne(ctx, anchorFilter,
-			options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}).SetProjection(bson.M{"offset": 1}),
-		).Decode(&anchor); err == nil {
-			offsetRange["$gte"] = anchor.Offset
+		e := n.logs.FindOne(ctx, n.filter(ctx, bson.M{"offset": bson.M{"$lte": from}}), options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}).SetProjection(bson.M{"offset": 1})).Decode(&anchor)
+		if e == nil {
+			r["$gte"] = anchor.Offset
+		} else if e != mongo.ErrNoDocuments {
+			return nil, e
 		}
 	}
 	if until > 0 {
-		offsetRange["$lt"] = until
+		r["$lt"] = until
 	}
-	if len(offsetRange) > 0 {
-		filter["offset"] = offsetRange
+	if len(r) > 0 {
+		filter["offset"] = r
 	}
-	cur, err := s.runLogs.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "offset", Value: 1}}))
-	if err != nil {
-		return nil, fmt.Errorf("store/mongo: run log range %s: %w", runID, err)
+	cur, e := n.logs.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "offset", Value: 1}}))
+	if e != nil {
+		return nil, e
 	}
 	defer cur.Close(ctx)
-
 	var out []byte
-	if until > 0 {
-		out = make([]byte, 0, until-from)
-	}
 	for cur.Next(ctx) {
 		var doc runLogDoc
-		if err := cur.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("store/mongo: decode run log chunk %s: %w", runID, err)
+		if e := cur.Decode(&doc); e != nil {
+			return nil, e
 		}
 		end := doc.Offset + int64(len(doc.Data))
 		if end <= from {
-			continue // the anchor chunk itself may end exactly at `from`
+			continue
 		}
 		data := doc.Data
 		off := doc.Offset
@@ -123,35 +139,34 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 		}
 		out = append(out, data...)
 	}
-	if err := cur.Err(); err != nil {
-		return nil, fmt.Errorf("store/mongo: run log cursor %s: %w", runID, err)
+	if e = cur.Err(); e != nil {
+		return nil, e
 	}
 	return out, nil
 }
-
-// RunLogSize implements store.RunLogStore: the end offset of the last
-// persisted chunk (the offset the next append should use), 0 when the
-// run has no log.
 func (s *Store) RunLogSize(ctx context.Context, runID string) (int64, error) {
-	res := s.runLogs.FindOne(
-		ctx,
-		withTenantFilter(ctx, bson.M{"run_id": runID}),
-		options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}),
-	)
-	var doc runLogDoc
-	if err := res.Decode(&doc); err != nil {
-		if err == mongo.ErrNoDocuments {
-			return 0, nil
+	var size int64
+	err := s.withOpaqueStreamRead(ctx, runID, func(sc context.Context, n streamDataNamespace, _ *store.Run) error {
+		size = 0
+		var d runLogDoc
+		e := n.logs.FindOne(sc, n.filter(sc, nil), options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}})).Decode(&d)
+		if e == mongo.ErrNoDocuments {
+			return nil
 		}
-		return 0, fmt.Errorf("store/mongo: run log size %s: %w", runID, err)
+		if e != nil {
+			return e
+		}
+		size = d.Offset + int64(len(d.Data))
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-	return doc.Offset + int64(len(doc.Data)), nil
+	return size, nil
 }
 
-// RunLogsCollection exposes the run_logs collection so the runview
-// Mongo log stream source can open change streams against the same
-// database the store writes to. Same caveat as EventsCollection —
-// layering shortcut, not the long-term API.
+// RunLogsCollection remains the historical direct collection for legacy adapters.
+// Strict streaming requires the separate scoped adapter before activation.
 func (s *Store) RunLogsCollection() *mongo.Collection { return s.runLogs }
 
 // SetLogPositionFn installs the callback AppendEvent uses to stamp

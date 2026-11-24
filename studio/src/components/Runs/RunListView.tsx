@@ -16,6 +16,7 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { useRuns } from "@/hooks/useRuns";
 import { useRunRepos } from "@/hooks/useRunRepos";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { navigationBirthState } from "@/lib/lostRuns";
 import { useUIStore } from "@/store/ui";
 import QueueDepthBar from "./QueueDepthBar";
 import {
@@ -161,9 +162,14 @@ export default function RunListView() {
     return [{ key: repo, label: repo, title: repo, count: 0 }, ...base];
   }, [mode, cloudRepos, runs, repo]);
 
+  // The clicked row's birth travels with the navigation: the view it opens
+  // expects that run, whatever a later poll lists under the ID.
   const openRun = useCallback(
-    (id: string) => setLocation(`/runs/${encodeURIComponent(id)}`),
-    [setLocation],
+    (id: string) =>
+      setLocation(`/runs/${encodeURIComponent(id)}`, {
+        state: navigationBirthState(id, runs.find((r) => r.id === id)?.birth_id),
+      }),
+    [setLocation, runs],
   );
 
   // Click a row's bot avatar to filter to that bot — or toggle it off

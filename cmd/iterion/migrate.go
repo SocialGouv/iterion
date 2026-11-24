@@ -347,15 +347,17 @@ func migrateRun(ctx context.Context, src store.RunStore, dst store.RunStore, run
 	}
 
 	if !dryRun {
-		// Versions belong to a store, not to the imported run. Compare against
+		// Versions and birth identities belong to the destination store. Compare against
 		// the destination copy so a concurrent destination edit is never lost.
 		existing, loadErr := dst.LoadRun(ctx, runID)
 		if loadErr != nil && !errors.Is(loadErr, store.ErrRunNotFound) {
 			return fmt.Errorf("load destination run: %w", loadErr)
 		}
 		r.CASVersion = 0
+		r.BirthID = ""
 		if existing != nil {
 			r.CASVersion = existing.CASVersion
+			r.BirthID = existing.BirthID
 		}
 		if err := dst.SaveRun(ctx, r); err != nil {
 			return fmt.Errorf("save run: %w", err)

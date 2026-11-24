@@ -6,6 +6,9 @@
  *   1. Delegate name (exact matches for known delegates)
  *   2. Model prefix before "/" (e.g. "anthropic/claude-sonnet-4" -> "anthropic")
  *   3. Model keyword/substring (e.g. "${ANTHROPIC_MODEL}" -> "anthropic")
+ * A spec that starts with the gateway protocol
+ * ("openai_compatible/scaleway/deepseek-v4.1-flash") skips step 2 and reaches
+ * step 3 without it -> "deepseek".
  */
 
 export interface ProviderInfo {
@@ -68,12 +71,13 @@ const KEYWORD_MAP: [string, string][] = [
   ["mistral", "mistral"],
   ["mixtral", "mistral"],
   ["deepseek", "deepseek"],
+  // Prefer the whole provider name over its embedded "llama" substring.
+  ["ollama", "ollama"],
   ["llama", "meta"],
   ["cohere", "cohere"],
   ["command-r", "cohere"],
   ["groq", "groq"],
   ["grok", "xai"],
-  ["ollama", "ollama"],
   ["together", "together"],
   ["fireworks", "fireworks"],
   ["bedrock", "bedrock"],
@@ -84,6 +88,14 @@ const KEYWORD_MAP: [string, string][] = [
   ["huggingface", "huggingface"],
   ["hf", "huggingface"],
 ];
+
+// The gateway protocol's name says nothing about the vendor, wherever a model
+// spec carries it: as a route's first segment
+// ("openai_compatible/scaleway/deepseek-v4.1-flash"), inside an env default
+// ("${M:-openai_compatible/…}"), or in the name of the variable that holds the
+// route ("${OPENAI_COMPATIBLE_MODEL}"). Left in place, the "openai" keyword
+// claims the model for OpenAI unless an earlier keyword matched first.
+const GATEWAY_PROTOCOL = /openai_compatible\/?/g;
 
 export function detectProvider(model?: string, delegate?: string): ProviderInfo | null {
   // 1. Check delegate (strongest signal)
@@ -97,11 +109,19 @@ export function detectProvider(model?: string, delegate?: string): ProviderInfo 
   }
 
   if (!model) return null;
-  const m = model.toLowerCase();
+  const lower = model.toLowerCase();
+  const m = lower.replace(GATEWAY_PROTOCOL, "");
+  // What follows the protocol in a gateway route is the gateway's own
+  // namespace ("scaleway", "azure"), not a vendor prefix: a spec starting with
+  // the protocol skips step 2 and the keywords decide, so the model
+  // keeps the vendor its name carries. A namespace that is itself a keyword
+  // (bedrock, groq) still decides when the model's name carries none.
+  // A protocol-named variable inside a vendor-prefixed spec is not a gateway.
+  const viaGateway = lower.startsWith("openai_compatible/");
 
   // 2. Explicit prefix: "provider/model-id"
   const slashIdx = m.indexOf("/");
-  if (slashIdx > 0) {
+  if (!viaGateway && slashIdx > 0) {
     const prefix = m.slice(0, slashIdx);
     if (PREFIX_MAP[prefix]) return PREFIX_MAP[prefix];
   }

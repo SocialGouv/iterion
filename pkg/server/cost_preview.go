@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // unitNoteFor names, for the chip, why there is no program to price. These
@@ -25,10 +26,16 @@ func unitNoteFor(err error) string {
 }
 
 type previewCostRequest struct {
-	FilePath     string   `json:"file_path,omitempty"`
-	Source       string   `json:"source,omitempty"`
-	Permission   string   `json:"permission,omitempty"`
-	Backend      string   `json:"backend,omitempty"`
+	FilePath       string `json:"file_path,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Permission     string `json:"permission,omitempty"`
+	Backend        string `json:"backend,omitempty"`
+	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the launch's codemode override ("on"|"off"; ADR-165), the
+	// rung the capability screen must judge alongside the declaration: an
+	// explicit launch `on` on a backend that serves no codemode tool is
+	// refused at dispatch, and the preview is the screen that says so.
+	Codemode     string   `json:"codemode,omitempty"`
 	BackendNames []string `json:"backend_names,omitempty"`
 }
 
@@ -61,11 +68,68 @@ type previewCostResponse struct {
 	// The client layers its own override on top (it owns the selects,
 	// so "run_override" never appears here).
 	Effective *previewEffectiveSettings `json:"effective,omitempty"`
+	// RouteRefusals (#3259) names, per LLM node, why the backend the run
+	// will actually take — the inherit route, resolved exactly as
+	// resolveBackendName resolves it — is refused by a DECLARED capability
+	// (codemode, ambient_context). Terminal at dispatch: no fallbacks:
+	// route carries a node past them, so a launch on this route dies at the
+	// first node. Said here, before the launch.
+	RouteRefusals map[string]string `json:"route_refusals,omitempty"`
 	// BackendOptions is keyed by node id, then by the backend names the
 	// Studio is actually offering. The server computes the exact launch-time
 	// permission precedence and capability crossing so the picker cannot
 	// drift from runtime admission.
 	BackendOptions map[string]map[string]previewBackendOption `json:"backend_options,omitempty"`
+	// CodemodeLimits is what the launch form's codemode fields are built
+	// from (ADR-165): the defaults a placeholder shows and the platform
+	// ceiling a value above which draws a warning. READ FROM scripthost —
+	// never a table the studio keeps: the clamps that enforce them at spawn
+	// live in the same package, so the two cannot drift.
+	CodemodeLimits *previewCodemodeLimits `json:"codemode_limits,omitempty"`
+}
+
+// previewCodemodeLimits carries the codemode bounds twice: the
+// defaults (what an unset field runs under) and the platform ceiling (what
+// no tenant can raise past). Durations in the DSL's own orthography
+// ("30s"), sizes and counts as raw integers.
+type previewCodemodeLimits struct {
+	Default previewCodemodeBounds `json:"default"`
+	Ceiling previewCodemodeBounds `json:"ceiling"`
+	// MemoryFloor is the one bound with a FLOOR: a child cannot start below
+	// it, so a value under it is raised at spawn (Clamp reports through
+	// OnClamp). Served so the form can say so BEFORE the run — the
+	// "screen shows X, the run runs Y" divergence, found by the adversarial
+	// round.
+	MemoryFloor int64 `json:"memory_floor"`
+}
+
+type previewCodemodeBounds struct {
+	ToolCalls           int64  `json:"tool_calls"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls"`
+	Wall                string `json:"wall"`
+	CPU                 string `json:"cpu"`
+	Memory              int64  `json:"memory"`
+	ScriptBytes         int64  `json:"script_bytes"`
+	ResultBytes         int64  `json:"result_bytes"`
+	ToolResultBytes     int64  `json:"tool_result_bytes"`
+	StoreEntries        int64  `json:"store_entries"`
+	StoreBytes          int64  `json:"store_bytes"`
+}
+
+// previewCodemodeBoundsOf projects a scripthost Limits onto the wire shape.
+func previewCodemodeBoundsOf(l scripthost.Limits) previewCodemodeBounds {
+	return previewCodemodeBounds{
+		ToolCalls:           l.ToolCalls,
+		ConcurrentToolCalls: l.ConcurrentToolCalls,
+		Wall:                l.Wall.String(),
+		CPU:                 l.CPU.String(),
+		Memory:              l.Memory,
+		ScriptBytes:         l.ScriptBytes,
+		ResultBytes:         l.ResultBytes,
+		ToolResultBytes:     l.ToolResultBytes,
+		StoreEntries:        l.StoreEntries,
+		StoreBytes:          l.StoreBytes,
+	}
 }
 
 type previewBackendOption struct {
@@ -237,14 +301,27 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	backendOptions, routeRefusals := buildBackendOverrideOptions(
+		cr.Workflow,
+		req.Permission,
+		req.Backend,
+		req.AmbientContext,
+		req.Codemode,
+		req.BackendNames,
+	)
 	resp := previewCostResponse{
 		Effective: buildEffectiveSettings(cr.Workflow),
-		BackendOptions: buildBackendOverrideOptions(
-			cr.Workflow,
-			req.Permission,
-			req.Backend,
-			req.BackendNames,
-		),
+		CodemodeLimits: &previewCodemodeLimits{
+			Default:     previewCodemodeBoundsOf(scripthost.DefaultLimits()),
+			Ceiling:     previewCodemodeBoundsOf(scripthost.Ceiling()),
+			MemoryFloor: scripthost.MemoryFloor().Memory,
+		},
+		// The ROUTE screen (#3259): per LLM node, why the backend the run
+		// will actually take — the inherit route — is refused by a DECLARED
+		// capability. The per-candidate loop cannot say it: the operator
+		// touching no per-node dropdown launches on exactly this route.
+		RouteRefusals:  routeRefusals,
+		BackendOptions: backendOptions,
 	}
 	hasPricing := false
 	for _, node := range cr.Workflow.Nodes {

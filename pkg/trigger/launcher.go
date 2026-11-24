@@ -45,6 +45,11 @@ type LaunchPlan struct {
 	// binding layer the launch folds with the bot manifest, the platform
 	// level and the env dials.
 	Routing llmroute.Policy
+	// SubmissionKey makes the launch an idempotent submission
+	// (runview.LaunchSpec.SubmissionKey): repeating it never produces a
+	// second run, and a key whose run was already handed on is answered
+	// with that run, before the launch gate is charged again.
+	SubmissionKey string
 }
 
 // Launcher launches a run directly (ExecutionDirect). The production impl

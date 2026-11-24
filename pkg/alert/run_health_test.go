@@ -15,7 +15,7 @@ func TestStoreSink_StallEpisodeBothEdges(t *testing.T) {
 	clock := base
 	m := NewManager(
 		WithStallTimeout(5*time.Minute),
-		WithStoreSink(func(a Alert) { persisted = append(persisted, a) }),
+		WithStoreSink(func(a Alert, _ store.RunObservation, _ bool) { persisted = append(persisted, a) }),
 	)
 	m.now = func() time.Time { return clock }
 
@@ -51,7 +51,7 @@ func TestObserve_RunHealthReplayIsInert(t *testing.T) {
 	clock := base
 	m := NewManager(
 		WithStallTimeout(5*time.Minute),
-		WithStoreSink(func(a Alert) { persisted = append(persisted, a) }),
+		WithStoreSink(func(a Alert, _ store.RunObservation, _ bool) { persisted = append(persisted, a) }),
 	)
 	m.now = func() time.Time { return clock }
 
@@ -115,7 +115,7 @@ func TestStoreSink_PanicContained(t *testing.T) {
 	m := NewManager(
 		WithStallTimeout(5*time.Minute),
 		WithSinks(sink),
-		WithStoreSink(func(Alert) { panic("boom") }),
+		WithStoreSink(func(_ Alert, _ store.RunObservation, _ bool) { panic("boom") }),
 	)
 	m.now = func() time.Time { return clock }
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/dotenv"
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -33,8 +34,10 @@ var rootCmd = &cobra.Command{
 	Long: "iterion — build, run and orchestrate agentic AI workflows\n" +
 		"\n" +
 		"The nearest `.env` walking up from the working directory is auto-loaded, filling in\n" +
-		"every variable left unset: a convenience for API keys next to a project. It does not\n" +
-		"CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
+		"every variable left unset: a convenience for API keys next to a project. The walk\n" +
+		"stops at the root of the git working tree it starts in — a linked worktree or a\n" +
+		"submodule is a tree of its own — or, outside any, at the filesystem root. It does\n" +
+		"not CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
 		"deployment, so it decides nothing an operator answers for: where plugins are\n" +
 		"installed, which table prices a model and where that table is cached, when a node\n" +
 		"compacts, and which credential a gateway is presented. A route it names — a *_URL\n" +
@@ -70,7 +73,8 @@ func main() {
 	// of that work.
 	if !isPermissionHookInvocation() && !isContractsInvocation() {
 		// Auto-load `.env` from the working directory (and walk up to
-		// the closest one) before subcommands run, so iterion behaves
+		// the closest one, no further than the root of the git working
+		// tree it starts in) before subcommands run, so iterion behaves
 		// like every other modern CLI tool when API keys / model env
 		// vars live in a `.env` next to a project. Pre-existing env
 		// vars take precedence; .env only fills in missing keys. Which
@@ -309,21 +313,28 @@ func rejectUnknownSubcommands(cmd *cobra.Command) {
 }
 
 // loadDotEnvFromCwd walks up from $CWD looking for a `.env` file and
-// applies it. We stop at the first one found OR at the filesystem
-// root. Already-set env vars are preserved (parent shell wins).
+// applies the first one found. Already-set env vars are preserved (parent
+// shell wins); the format is internal/dotenv's.
 //
-// The format is the standard one: `KEY=VALUE` per line, optional
-// `#` comments, optional surrounding `"` or `'` quotes around the
-// value. We deliberately don't pull in godotenv to avoid a
-// dependency for ~30 lines of code.
+// The walk stops at the root of the git working tree it starts in: the
+// nearest directory whose `.git` git itself accepts (ambient.IsRepoRoot) —
+// a directory in a primary checkout, a `gitdir:` file in a linked worktree
+// or a submodule. That root's own `.env` is read; above it the files belong
+// to another tree. A worktree nested in a checkout
+// (`<repo>/.claude/worktrees/<name>`) holding no `.env` of its own would
+// otherwise take the enclosing checkout's, every name the refusals below
+// let through included, for a command that runs on a different tree.
+// Outside any git tree the walk goes on to the filesystem root.
 func loadDotEnvFromCwd() {
 	dir, err := os.Getwd()
 	if err != nil {
 		return
 	}
 	for {
-		candidate := filepath.Join(dir, ".env")
-		if applyDotEnv(candidate) {
+		if applyDotEnv(filepath.Join(dir, ".env")) {
+			return
+		}
+		if ambient.IsRepoRoot(dir) {
 			return
 		}
 		parent := filepath.Dir(dir)

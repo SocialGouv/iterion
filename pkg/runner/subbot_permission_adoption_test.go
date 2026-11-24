@@ -82,7 +82,7 @@ func TestSubbotRunner_aGateThatCanAskKeepsTheChildOutOfACopyBasedParent(t *testi
 			defer cancel()
 			storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 			run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-			_, _ = run(ctx, runtime.SubbotRequest{
+			_, _ = run(boundLegacySubbotFixture(t, ctx, msg.RunID), runtime.SubbotRequest{
 				Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 				ParentSandbox: &runtime.SharedSandbox{Run: &copyOnlySandbox{}, WorkspaceFolder: dir},
 			})

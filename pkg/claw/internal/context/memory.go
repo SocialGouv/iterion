@@ -501,7 +501,18 @@ func expandImports(text, baseDir string, depth int, visited map[string]bool, mti
 			mtimes[path] = info.ModTime().UnixNano()
 		}
 		content := string(data)
-		blocks = append(blocks, fmt.Sprintf("### Imported: %s\n\n%s", path, content))
+		// The label spells the reference AS THE AUTHOR WROTE IT when it is
+		// relative: the block is part of the system prompt, and two runs of
+		// one node in two checkouts must read the same bytes or the
+		// provider's prefix cache cuts at the first run-specific one
+		// (#3283) — "### Imported: AGENTS.md" is stable across checkouts,
+		// its resolution is not. Absolute and ~ references already name
+		// their target wherever it lives; they keep the resolved path.
+		label := ref
+		if filepath.IsAbs(ref) || strings.HasPrefix(ref, "~/") {
+			label = path
+		}
+		blocks = append(blocks, fmt.Sprintf("### Imported: %s\n\n%s", label, content))
 		recLimit := limit
 		if recLimit == "" && boundary != "" && resolvesWithin(path, boundary) {
 			recLimit = boundary

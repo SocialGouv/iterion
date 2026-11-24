@@ -56,7 +56,7 @@ one. The shipped hatches are the pattern to imitate:
 | Guardrail | Escape hatch | Where |
 |---|---|---|
 | The `.bot` graph is statically terminating | `as name(unbounded [<fuel>])` — Turing-completeness by typing one keyword | [DSL totality & TC](dsl-totality-and-tc.md), [ADR-050](adr/050-dsl-turing-completeness-fuel-liveness.md) |
-| Runs are sandboxed by default | `sandbox: none` — diagnostic **C128** *warns*, it does not forbid | [sandbox](sandbox.md), [ADR-082](adr/082-sandbox-by-default.md) |
+| Local runs are sandboxed by default (`sandbox: auto` at the product entry points, skipped with a `sandbox_skipped` event on a host with no container runtime); a cloud runner sandboxes where the chart enables it (`runner.sandbox.enabled`, or a `runnerPools[]` entry's own `sandbox.enabled`) | `sandbox: none` — diagnostic **C128** *warns*, it does not forbid | [sandbox](sandbox.md), [ADR-082](adr/082-sandbox-by-default.md) |
 | Tool calls can be gated | `permission: off` **is the default**; the gate is opt-in | [permissions](permissions.md) |
 | Resume refuses a changed source | `iterion resume --force` | [resume](resume.md) |
 | A bot declares its own budget | `--max-cost-usd` / `--max-tokens` / `--max-duration` / `--max-iterations` / `--max-parallel-branches` re-budget **any** bot without editing its `.bot` | [CLI reference](cli-reference.md) |

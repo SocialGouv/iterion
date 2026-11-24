@@ -246,13 +246,14 @@ export default function RunSettingsSection({
                 value={reviewModeOverride}
                 onChange={(e) => onReviewModeChange(e.currentTarget.value)}
               >
-                <option value="">auto — resolve from detected providers</option>
-                <option value="mono">mono — single-family review</option>
-                <option value="dual">dual — cross-family review</option>
+                <option value="">auto — the engine default (single)</option>
+                <option value="single">single — one reviewer</option>
+                <option value="paired">paired — two reviewers, cross-checked</option>
               </Select>
               <div className="mt-1 text-caption text-fg-subtle">
-                Mono runs the review side against a single provider family;
-                dual splits reviewers across two families for cross-check.
+                Single runs one reviewer; paired adds a second one and
+                cross-checks their findings. Which model serves each role is the
+                bot&apos;s routing, not this choice.
               </div>
             </div>
           </div>

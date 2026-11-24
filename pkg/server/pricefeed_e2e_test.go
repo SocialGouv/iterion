@@ -591,6 +591,15 @@ func runRetireWorkflow(t *testing.T, ctx context.Context, wf *ir.Workflow, gw *r
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This local runner fixture owns the new legacy birth. Retain the
+	// original invocation context through both executor construction and Run.
+	invocation, err := store.PrepareRunInvocation(ctx, st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{
+		ID: runID, WorkflowName: wf.Name, Format: store.LegacyValueFormat,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = invocation.Context
 	workDir := t.TempDir()
 	// The run below executes with no sandbox (WithSandboxOverride("none")),
 	// so the spec says it knows the sandbox tiers and names its bot the way

@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -77,7 +78,11 @@ func TestChildResourcesRestoreAcrossNestedRuns(t *testing.T) {
 		eng := New(resourceWorkflow(next), st, ex, WithWorkDir(work), WithBundle(bundles[name]), WithParentRunID(parent), WithSandboxOverride("none"), WithSubbotRunner(func(ctx context.Context, req SubbotRequest) (map[string]any, error) {
 			return map[string]any{}, launch(ctx, req.Source, req.ParentRunID)
 		}))
-		return eng.Run(ctx, name, nil)
+		inv, err := prepareResourceInvocation(ctx, st, name, parent)
+		if err != nil {
+			return err
+		}
+		return eng.Run(inv.Context, name, nil)
 	}
 	if err := launch(context.Background(), "parent", ""); err != nil {
 		t.Fatal(err)
@@ -201,7 +206,11 @@ func TestChildResourcesExternalResumeInsideLiveChild(t *testing.T) {
 				if req.Source != "grandchild" {
 					return map[string]any{}, launch(ctx, req.Source, req.ParentRunID)
 				}
-				if err := grand().Run(ctx, "grandchild", nil); !errors.Is(err, ErrRunPaused) {
+				inv, err := prepareResourceInvocation(ctx, st, "grandchild", req.ParentRunID)
+				if err != nil {
+					return nil, err
+				}
+				if err := grand().Run(inv.Context, "grandchild", nil); !errors.Is(err, ErrRunPaused) {
 					return nil, errors.New("grandchild did not pause")
 				}
 				assertResourceBody(t, work, "child")
@@ -213,7 +222,11 @@ func TestChildResourcesExternalResumeInsideLiveChild(t *testing.T) {
 					return nil, ctx.Err()
 				}
 			}))
-			return eng.Run(ctx, name, nil)
+			inv, err := prepareResourceInvocation(ctx, st, name, parent)
+			if err != nil {
+				return err
+			}
+			return eng.Run(inv.Context, name, nil)
 		}
 		done := make(chan error, 1)
 		go func() { done <- launch(ctx, "parent", "") }()
@@ -313,7 +326,11 @@ func TestChildResourcesHostDevboxIsPerRunAndBareFileHasNoBundle(t *testing.T) {
 				return map[string]any{}, nil
 			})
 			child := New(resourceWorkflow(""), st, ex, WithWorkDir(work), WithBundle(b), WithFilePath(filepath.Join(childBundle.Dir, "step.bot")), WithParentRunID(req.ParentRunID), WithSandboxOverride("none"))
-			if err := child.Run(ctx, id, nil); err != nil {
+			inv, err := prepareResourceInvocation(ctx, st, id, req.ParentRunID)
+			if err != nil {
+				return nil, err
+			}
+			if err := child.Run(inv.Context, id, nil); err != nil {
 				return nil, err
 			}
 			if !reflect.DeepEqual(parentEnv, parentEx.engineEnv) {
@@ -489,4 +506,28 @@ func TestSnapshotChildResourcesRestoreRefusesAMidRunSymlinkSwap(t *testing.T) {
 	if readErr != nil || string(raw) != "not the run's to touch\n" {
 		t.Fatalf("the restore reached through the link: witness=%q, %v", raw, readErr)
 	}
+}
+
+// This test supplies its own child launcher, so it owns the same explicit
+// birth/context handoff as the CLI, service, dispatcher and worker adapters.
+// Mirrors the explicit child birth contract without importing runview (which
+// imports runtime). No fresh parent acquisition may overwrite its intention.
+func prepareResourceInvocation(ctx context.Context, st store.RunStore, id, parent string) (store.PreparedRunInvocation, error) {
+	owner := id
+	if parent != "" {
+		owner = parent
+		if err := store.RequireRunValueFormat(ctx, parent); err != nil {
+			return store.PreparedRunInvocation{}, err
+		}
+	}
+	format, err := store.ValueFormatForWrite(ctx, owner)
+	if err != nil {
+		return store.PreparedRunInvocation{}, err
+	}
+	child, err := store.WithRunValueFormat(ctx, store.RunValueFormat{RunID: id, Format: format})
+	if err != nil {
+		return store.PreparedRunInvocation{}, err
+	}
+	child = model.WithoutOutputCorrectionOwnership(model.WithExecutionUsageCollector(child, nil))
+	return store.PrepareRunInvocation(child, st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: id, ParentRunID: parent, Format: format}})
 }

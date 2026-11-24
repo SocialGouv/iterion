@@ -37,6 +37,21 @@ is the decision; this page is the operator and debugging map.
 - **Studio**: the org and team "Key pool" tab — the attachment editor and
   the entries' derived status.
 
+## What identifies an entry
+
+An entry is a `Pledge`, identified by the credential it lends: an `oauth`
+entry by `(lender, source, ref)` — `ref` being the kind, the one connection
+the OAuth store keeps per kind — and an `api_key` entry by
+`(lender, source, ref, key_id)` (`lender|api_key|ref|key_id`). That id is
+the `cred_pledges._id` and the address every entry route takes
+(`/api/pools/{id}/entries/{pledge}`).
+
+The key in the identity is what lets one lender push **two keys of the same
+provider** — two Anthropic keys, say — as two entries: the pair
+`(source, ref)` names both, while `key_id` and the entry id name one. The
+entries list shows each row's key_id so the two read apart, and an entry is
+reset by its own id, never by a provider the other key also answers to.
+
 ## Authoring an attached pool (the onboarding recipe)
 
 ```
@@ -83,6 +98,13 @@ runs one signal pass inline — the proof the readings are warm.
 - **A slot never draws**: an explicit tier sealed it (law 1), or the
   routing whitelist holds the slot out — the credential preview shows the
   per-slot answer the launch will produce.
+- **A pinned review family refuses at launch**: a mono pin
+  (`mono_family`) is a credential DEMAND, not a routing hint — the launch
+  asks the pool for that family's entries even when no route names them
+  (`reviewtopology.PinnedFamilies`). An attached pool holding none of it
+  still refuses with "no credential serves that family": once a grant
+  exists the platform tier is skipped, not consulted (ADR-131), so the
+  pin either rides the pool or nothing serves it.
 - **A gateway entry refuses**: it needs the verbatim `model` at pledge
   time, and its grant carries the paired URL; a URL-less grant is
   refused and its lease released (the log names it).

@@ -181,7 +181,7 @@ const (
 	// C154 is allocated from the free C154-C169 band: C113-C119 belong to the
 	// fan_out_each/groups epic and C120-C122 are taken, so the permission
 	// family cannot grow contiguously from C112.
-	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
+	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw whose ask-capable policy can reach a container-executed tool (the approval channel serves launcher-placed asks only), and the workflow does not opt out of the sandbox (warning)
 	DiagIndexOnScalar          DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 	DiagInvalidNodeTimeout     DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	DiagFileFieldNotHuman      DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
@@ -382,7 +382,7 @@ const (
 	// Stage 1 changes nothing at runtime, so a deployment's pins keep
 	// working while the catalogue is de-dialled; the hard catalogue floor
 	// arrives with the last de-dialled bot group.
-	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field, var default, tool body) reads the process environment instead of its authored literal and the levels above it (warning)
+	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field incl. a supervisor's model, var default, tool body, cursor setting, budget max_duration) reads the process environment instead of its authored literal and the levels above it (warning)
 
 	// On codex a `tools:` list is not an allowlist: codex runs its built-in
 	// shell outside the SDK's per-name callbacks, so the list buys a SANDBOX
@@ -524,4 +524,36 @@ const (
 	DiagCodemodeBoundsWithModeOff DiagCode = "C348" // codemode: bounds declared beside `mode: off` — no program runs, so the bounds are inert (warning)
 
 	DiagCodemodeBoundUnreadable DiagCode = "C349" // a codemode: duration that is not readable as one, or is negative — the default applies instead, which is tighter than a bound being raised and looser than one being lowered (warning)
+
+	DiagCodemodeMemoryBelowFloor DiagCode = "C350" // a codemode: memory bound below the measured floor a Go child works under — the platform raises the bound to the floor where the program is spawned (warning)
+
+	// A node's own `allow:`/`ask:`/`deny:` lists on a claw route that serves
+	// it no tool. On claw the declared `tools:` list IS the tool surface
+	// (ClawToolSurfaceEmpty), so a node that declares rules and nothing to
+	// call is dispatched with nothing callable: the rules bound nothing, and
+	// an `allow:` row — which reads as a grant — grants nothing. A warning:
+	// the node still runs, and the same shape is a real bound on a backend
+	// that keeps its own roster (claude_code), which is why only a route the
+	// source sends to claw is named.
+	DiagPermissionRulesNoTools DiagCode = "C351" // a node declares its own allow/ask/deny rules and a route the source sends to claw (primary or fallback) serves it no tool — nothing is callable there, so the rules bound nothing (warning)
+
+	// C352 joins the Verified Action family (C103-C106 and C179, ADR-044)
+	// beside C351, whose fact it shares and whose fix it does not: a tool
+	// node's rung-4 recovery agent is dispatched with `agent_tools:` as its
+	// whole tool list, so on claw a rung that declares none sends an agent
+	// with nothing to call to achieve a goal "with its tools". A warning: the
+	// node runs, and the postcondition still judges it.
+	DiagRecoveryAgentNoTools DiagCode = "C352" // policy: recover reaches rung 4 on a workflow the source routes to claw, with no recovery.agent_tools: and no workflow codemode — the recovery agent is served no tool (warning)
+
+	DiagInvalidCodemodeStoreQuota DiagCode = "C353" // codemode store quota is negative or declared at node scope (error)
+
+	DiagInvalidCodemodeDefer DiagCode = "C354" // codemode defer: value not one of on|off (error)
+
+	// The deferral's own C348: `defer: on` declared on a node whose codemode
+	// is off by its own declaration. Not an error — the node keeps its tools
+	// declared and loses nothing — but the property the author wrote bounds
+	// nothing, and C348 is the form that says so. Workflow rung exempt, for
+	// the reason C348 states: the workflow's defer is a default every node
+	// that turns codemode on itself inherits.
+	DiagCodemodeDeferWithModeOff DiagCode = "C355" // codemode defer: on declared beside `mode: off` on a node — no program runs, so the deferral is inert (warning)
 )

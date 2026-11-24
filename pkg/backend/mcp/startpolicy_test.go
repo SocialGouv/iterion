@@ -650,3 +650,132 @@ func TestConcurrentPolicyChangesDoNotRaceOnTheConfig(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Hold the actual SDK call in its sending middleware after the server has
+// replied. That separates the SDK return boundary from the remote tool
+// handler's return, without sleeps or a synthetic protocolClient.
+func TestSDKCallToolSerializesAliasesButNotDistinctClients(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	firstReturnedFromServer := make(chan struct{})
+	finishClientCall := make(chan struct{})
+	aliasReachedWire := make(chan struct{}, 1)
+	clientFor := func(holdFirst bool) *sdkClient {
+		server := gomcp.NewServer(&gomcp.Implementation{Name: "witness", Version: "1"}, nil)
+		for _, name := range []string{"first", "alias"} {
+			server.AddTool(&gomcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
+				func(context.Context, *gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+					return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: "served"}}}, nil
+				})
+		}
+		serverWire, clientWire := gomcp.NewInMemoryTransports()
+		serverSession, err := server.Connect(ctx, serverWire, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = serverSession.Close() })
+		client := gomcp.NewClient(&gomcp.Implementation{Name: "caller", Version: "1"}, nil)
+		if holdFirst {
+			client.AddSendingMiddleware(func(next gomcp.MethodHandler) gomcp.MethodHandler {
+				return func(ctx context.Context, method string, req gomcp.Request) (gomcp.Result, error) {
+					params, isCall := req.GetParams().(*gomcp.CallToolParams)
+					if isCall && params.Name == "alias" {
+						select {
+						case aliasReachedWire <- struct{}{}:
+						default:
+						}
+					}
+					result, err := next(ctx, method, req)
+					if isCall && params.Name == "first" {
+						close(firstReturnedFromServer)
+						select {
+						case <-finishClientCall:
+						case <-ctx.Done():
+						}
+					}
+					return result, err
+				}
+			})
+		}
+		session, err := client.Connect(ctx, clientWire, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapped := newSDKClient(&ServerConfig{}, clientInfo{}, nil, nil)
+		wrapped.session, wrapped.started = session, true
+		t.Cleanup(func() { _ = wrapped.Close() })
+		return wrapped
+	}
+	client, other := clientFor(true), clientFor(false)
+	type outcome struct {
+		result *ToolCallResult
+		err    error
+	}
+	launch := func(ctx context.Context, client *sdkClient, name string) <-chan outcome {
+		returned := make(chan outcome, 1)
+		go func() {
+			result, err := client.CallTool(ctx, name, nil)
+			returned <- outcome{result, err}
+		}()
+		return returned
+	}
+	requireSuccessful := func(returned <-chan outcome) {
+		t.Helper()
+		select {
+		case got := <-returned:
+			if got.err != nil || got.result == nil || got.result.IsError {
+				t.Fatalf("SDK call outcome = %+v", got)
+			}
+		case <-ctx.Done():
+			t.Fatal("SDK call did not return")
+		}
+	}
+	first := launch(ctx, client, "first")
+	select {
+	case <-firstReturnedFromServer:
+	case got := <-first:
+		t.Fatalf("first SDK call returned before its barrier: %+v", got)
+	case <-ctx.Done():
+		t.Fatal("first call did not reach the SDK return barrier")
+	}
+	waiter, cancelWaiter := context.WithCancel(ctx)
+	defer cancelWaiter()
+	waitObserved := make(chan struct{})
+	waiting := launch(&callSlotWitnessContext{Context: waiter, observed: waitObserved}, client, "alias")
+	select {
+	case <-waitObserved:
+	case <-aliasReachedWire:
+		t.Fatal("same-client alias reached SDK while first SDK call was active")
+	case <-ctx.Done():
+		t.Fatal("alias did not start waiting")
+	}
+	requireSuccessful(launch(ctx, other, "alias"))
+	cancelWaiter()
+	select {
+	case got := <-waiting:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("cancelled alias waiter returned %v", got.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("alias did not release on cancellation")
+	}
+	select {
+	case <-aliasReachedWire:
+		t.Fatal("cancelled waiter reached the SDK")
+	default:
+	}
+	close(finishClientCall)
+	requireSuccessful(first)
+	requireSuccessful(launch(ctx, client, "alias"))
+}
+
+type callSlotWitnessContext struct {
+	context.Context
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (c *callSlotWitnessContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}

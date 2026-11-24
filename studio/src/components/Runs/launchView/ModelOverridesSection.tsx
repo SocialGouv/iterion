@@ -48,6 +48,7 @@ export interface ModelOverridesSectionProps {
   backendOptions: Record<string, Record<string, PreviewBackendOption>>;
   backendOptionsReady: boolean;
   backendOptionsError: boolean;
+  routeRefusals: Record<string, string>;
   onChange: (nodeName: string, patch: NodeOverride) => void;
 }
 
@@ -63,6 +64,7 @@ function NodeRow({
   backendReport,
   backendOptions,
   backendOptionsReady,
+  routeRefusal,
   models,
   recommended,
   onChange,
@@ -72,6 +74,7 @@ function NodeRow({
   backendReport: BackendDetectReport | null;
   backendOptions: Record<string, PreviewBackendOption>;
   backendOptionsReady: boolean;
+  routeRefusal?: string;
   models: ModelEntry[];
   recommended: ModelEntry | null;
   onChange: (patch: NodeOverride) => void;
@@ -153,6 +156,13 @@ function NodeRow({
             {selectedAssessment.warning}
           </p>
         )}
+        {routeRefusal && !override.backend && (
+          <p className="mt-1 text-caption text-warning" role="status">
+            inherit — {routeRefusal} The run is refused at dispatch (terminal;
+            no fallbacks: route carries it), so override the backend or fix
+            the node&apos;s declaration before launching.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -165,6 +175,7 @@ export default function ModelOverridesSection({
   backendOptions,
   backendOptionsReady,
   backendOptionsError,
+  routeRefusals,
   onChange,
 }: ModelOverridesSectionProps) {
   const [open, setOpen] = useState(false);
@@ -265,6 +276,7 @@ export default function ModelOverridesSection({
                   backendReport={backendReport}
                   backendOptions={backendOptions[n.name] ?? {}}
                   backendOptionsReady={backendOptionsReady}
+                  routeRefusal={routeRefusals?.[n.name]}
                   models={models}
                   recommended={recommended}
                   onChange={(patch) => onChange(n.name, patch)}
@@ -286,6 +298,7 @@ export default function ModelOverridesSection({
                   backendReport={backendReport}
                   backendOptions={backendOptions[n.name] ?? {}}
                   backendOptionsReady={backendOptionsReady}
+                  routeRefusal={routeRefusals?.[n.name]}
                   models={models}
                   recommended={recommended}
                   onChange={(patch) => onChange(n.name, patch)}

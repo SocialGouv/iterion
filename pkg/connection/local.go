@@ -102,8 +102,16 @@ func (c *layeredCatalog) Package(connectorID string) (*spec.Package, Tier, error
 	// Every tier's reason, not just the last: two tiers can be absent for
 	// different reasons, and reporting only the last sends the reader to the
 	// wrong directory.
-	return nil, Tier{}, fmt.Errorf("%s", strings.Join(reasons, "; "))
+	return nil, Tier{}, &absentFromEveryTier{reasons: strings.Join(reasons, "; ")}
 }
+
+// absentFromEveryTier is the layered verdict that no tier holds the
+// connector: its text is every tier's reason, and it still unwraps to the one
+// sentinel a caller tests (IsNoSuchConnector) — a joined string alone lost it.
+type absentFromEveryTier struct{ reasons string }
+
+func (e *absentFromEveryTier) Error() string { return e.reasons }
+func (e *absentFromEveryTier) Unwrap() error { return errNoSuchConnector }
 
 // Connectors is the union of every tier's, deduplicated and sorted. A tier
 // that cannot list fails the union, every failing tier's reason joined in

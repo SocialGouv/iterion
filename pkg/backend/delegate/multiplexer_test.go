@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -263,5 +264,326 @@ func TestMultiplexer_PassesEventsAndSessionCapture(t *testing.T) {
 	}
 	if len(captureLog) != 1 || !strings.Contains(captureLog[0], "messages") {
 		t.Errorf("session_capture = %v, want a single snapshot", captureLog)
+	}
+}
+
+type relayObservedWriter struct {
+	*io.PipeWriter
+	started chan struct{}
+}
+
+func (w relayObservedWriter) Write(b []byte) (int, error) {
+	select {
+	case <-w.started:
+	default:
+		close(w.started)
+	}
+	return w.PipeWriter.Write(b)
+}
+
+// relayPeer drives the real wire from a runner with no implicit draining of
+// replies. Its deadline also releases both pipe directions on a failed check.
+type relayPeer struct {
+	t       *testing.T
+	ctx     context.Context
+	cancel  context.CancelFunc
+	send    *EnvelopeWriter
+	recv    *EnvelopeReader
+	stdout  *io.PipeWriter
+	stdin   *io.PipeReader
+	done    chan relayOutcome
+	writing chan struct{}
+}
+
+type relayOutcome struct {
+	result IOResult
+	err    error
+}
+
+func startRelayPeer(t *testing.T, handler MultiplexerHandler, options ...func(*Multiplexer)) *relayPeer {
+	t.Helper()
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	deadline, expire := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithCancel(deadline)
+	// The watchdog, not explicit relay cancellation, can rescue a blocked
+	// test. Teardown tests must observe the relay closing its own ends.
+	stop := context.AfterFunc(deadline, func() {
+		_ = stdinR.CloseWithError(deadline.Err())
+		_ = stdoutW.CloseWithError(deadline.Err())
+	})
+	t.Cleanup(func() {
+		stop()
+		cancel()
+		expire()
+		_ = stdinR.Close()
+		_ = stdoutW.Close()
+	})
+	p := &relayPeer{
+		t: t, ctx: ctx, cancel: cancel, send: NewEnvelopeWriter(stdoutW), recv: NewEnvelopeReader(stdinR),
+		stdout: stdoutW, stdin: stdinR, done: make(chan relayOutcome, 1), writing: make(chan struct{}),
+	}
+	go func() {
+		mux := NewMultiplexer(stdoutR, relayObservedWriter{stdinW, p.writing}, handler)
+		for _, option := range options {
+			option(mux)
+		}
+		result, err := mux.Run(ctx)
+		p.done <- relayOutcome{result, err}
+	}()
+	return p
+}
+
+func (p *relayPeer) write(env Envelope, err error) {
+	p.t.Helper()
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	if err := p.send.Write(env); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+func (p *relayPeer) read(kind EnvelopeType, id string, data any) {
+	p.t.Helper()
+	env, err := p.recv.Read()
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	if env.Type != kind || env.ID != id {
+		p.t.Fatalf("got %s:%s, want %s:%s", env.Type, env.ID, kind, id)
+	}
+	if err := json.Unmarshal(env.Data, data); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+func relayAwait[T any](t *testing.T, ctx context.Context, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-ctx.Done():
+		t.Fatalf("waiting for %s: %v", what, ctx.Err())
+		var zero T
+		return zero
+	}
+}
+
+func TestMultiplexer_BlockedToolStillRelaysEventsAndCapturesInOrder(t *testing.T) {
+	started := make(chan string, 4)
+	observed := make(chan string, 4)
+	release := make(chan struct{})
+	p := startRelayPeer(t, MultiplexerHandler{
+		OnToolCall: func(ctx context.Context, name string, _ json.RawMessage) (string, error) {
+			started <- name
+			if name == "first" {
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}
+			return name, nil
+		},
+		OnAskUser: func(context.Context, AskUserData) (map[string]string, error) {
+			started <- "ask"
+			return map[string]string{"choose": "yes"}, nil
+		},
+		OnEvent:          func(kind string, _ map[string]any) { observed <- kind },
+		OnSessionCapture: func(raw json.RawMessage) { observed <- string(raw) },
+	})
+	p.write(NewToolCallEnvelope("one", "first", nil))
+	if got := relayAwait(t, p.ctx, started, "first tool start"); got != "first" {
+		t.Fatal(got)
+	}
+	p.write(NewAskUserEnvelope("human", AskUserData{}))
+	// An untrusted runner cannot opt a forwarded tool into parallel execution.
+	p.write(Envelope{Type: EnvelopeToolCall, ID: "last", Data: json.RawMessage(`{"name":"last","parallel":true}`)}, nil)
+	p.write(NewEventEnvelope("before", nil))
+	p.write(NewSessionCaptureEnvelope(json.RawMessage(`{"capture":true}`)), nil)
+	p.write(NewEventEnvelope("after", nil))
+	for _, want := range []string{"before", `{"capture":true}`, "after"} {
+		if got := relayAwait(t, p.ctx, observed, want); got != want {
+			t.Fatalf("wire order: got %s, want %s", got, want)
+		}
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("%s overlapped the first tool", got)
+	default:
+	}
+	close(release)
+	var tool ToolResultData
+	p.read(EnvelopeToolResult, "one", &tool)
+	if tool.Output != "first" {
+		t.Fatalf("first result: %+v", tool)
+	}
+	var answer AskUserAnswerData
+	p.read(EnvelopeAskUserAnswer, "human", &answer)
+	if answer.Answers["choose"] != "yes" {
+		t.Fatalf("answer: %+v", answer)
+	}
+	p.read(EnvelopeToolResult, "last", &tool)
+	if tool.Output != "last" {
+		t.Fatalf("last result: %+v", tool)
+	}
+	for _, want := range []string{"ask", "last"} {
+		if got := relayAwait(t, p.ctx, started, want); got != want {
+			t.Fatalf("execution order: got %s, want %s", got, want)
+		}
+	}
+	p.write(NewResultEnvelope(IOResult{Tokens: 7}))
+	got := relayAwait(t, p.ctx, p.done, "terminal result")
+	if got.err != nil || got.result.Tokens != 7 {
+		t.Fatalf("result: %+v", got)
+	}
+}
+
+func TestMultiplexer_SaturationReturnsCorrelatedToolAndAskRefusals(t *testing.T) {
+	started := make(chan string, multiplexerPendingCalls+3)
+	stopped := make(chan struct{})
+	p := startRelayPeer(t, MultiplexerHandler{
+		OnToolCall: func(ctx context.Context, name string, _ json.RawMessage) (string, error) {
+			started <- name
+			if name == "blocked" {
+				<-ctx.Done()
+				close(stopped)
+			}
+			return "", ctx.Err()
+		},
+		OnAskUser: func(context.Context, AskUserData) (map[string]string, error) {
+			started <- "ask"
+			return nil, nil
+		},
+	})
+	p.write(NewToolCallEnvelope("active", "blocked", nil))
+	relayAwait(t, p.ctx, started, "blocked tool start")
+	for i := range multiplexerPendingCalls {
+		p.write(NewToolCallEnvelope(fmt.Sprint(i), "queued", nil))
+	}
+	p.write(NewToolCallEnvelope("overflow-tool", "rejected", nil))
+	p.write(NewAskUserEnvelope("overflow-ask", AskUserData{}))
+	var tool ToolResultData
+	p.read(EnvelopeToolResult, "overflow-tool", &tool)
+	if tool.Error != multiplexerBusy {
+		t.Fatalf("tool refusal: %+v", tool)
+	}
+	var ask AskUserAnswerData
+	p.read(EnvelopeAskUserAnswer, "overflow-ask", &ask)
+	if ask.Answers[AskUserErrorKey] != multiplexerBusy {
+		t.Fatalf("Ask refusal: %+v", ask)
+	}
+	p.write(NewResultEnvelope(IOResult{}))
+	p.read(EnvelopeToolResult, "active", &tool)
+	if got := relayAwait(t, p.ctx, p.done, "relay exit"); got.err == nil || !strings.Contains(got.err.Error(), "unanswered requests") {
+		t.Fatalf("premature terminal must not drop queued requests and succeed: %+v", got)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("terminal result returned before the active handler stopped")
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("dispatched %s during shutdown", got)
+	default:
+	}
+}
+
+func TestMultiplexer_StalledReplyPipeAbortsOnBacklogLimit(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	p := startRelayPeer(t, MultiplexerHandler{OnToolCall: func(ctx context.Context, _ string, _ json.RawMessage) (string, error) {
+		close(started)
+		defer close(stopped)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}})
+	p.write(NewToolCallEnvelope("active", "blocked", nil))
+	relayAwait(t, p.ctx, started, "blocked tool start")
+	for i := range multiplexerPendingCalls {
+		p.write(NewToolCallEnvelope(fmt.Sprint(i), "queued", nil))
+	}
+	// Park one refusal in the writer, then fill the reply queue behind it.
+	p.write(NewToolCallEnvelope("parked", "rejected", nil))
+	relayAwait(t, p.ctx, p.writing, "parked reply write")
+	for i := range multiplexerPendingReplies + 1 {
+		p.write(NewToolCallEnvelope(fmt.Sprintf("overflow-%d", i), "rejected", nil))
+	}
+	got := relayAwait(t, p.ctx, p.done, "reply-backlog failure")
+	if got.err == nil || !strings.Contains(got.err.Error(), "reply backlog full") {
+		t.Fatalf("outcome: %+v", got)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("relay returned before the active handler stopped")
+	}
+}
+
+func TestMultiplexer_TeardownJoinsHandler(t *testing.T) {
+	for _, kind := range []string{"EOF", "writer failure", "cancel"} {
+		t.Run(kind, func(t *testing.T) {
+			started := make(chan struct{})
+			stopped := make(chan struct{})
+			p := startRelayPeer(t, MultiplexerHandler{OnToolCall: func(ctx context.Context, name string, _ json.RawMessage) (string, error) {
+				if name == "blocked" {
+					close(started)
+					defer close(stopped)
+					<-ctx.Done()
+					return "", ctx.Err()
+				}
+				return "early", nil
+			}})
+			sentinel := errors.New("runner stopped reading its stdin")
+			if kind == "writer failure" {
+				// Keep the worker occupied on the next call while a saturation
+				// reply deterministically hits the broken write direction.
+				_ = p.stdin.CloseWithError(sentinel)
+			}
+			p.write(NewToolCallEnvelope("active", "blocked", nil))
+			relayAwait(t, p.ctx, started, "blocked tool start")
+			var want error
+			switch kind {
+			case "EOF":
+				_ = p.stdout.Close()
+				want = io.EOF
+			case "writer failure":
+				for i := range multiplexerPendingCalls + 1 {
+					p.write(NewToolCallEnvelope(fmt.Sprint(i), "queued", nil))
+				}
+				want = sentinel
+			case "cancel":
+				p.cancel()
+				want = context.Canceled
+			}
+			select {
+			case got := <-p.done:
+				if !errors.Is(got.err, want) {
+					t.Fatalf("got %v, want %v", got.err, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("relay did not shut down")
+			}
+			select {
+			case <-stopped:
+			default:
+				t.Fatal("relay returned before the active handler stopped")
+			}
+		})
+	}
+}
+
+func TestMultiplexer_TerminalResultCannotDiscardParkedReply(t *testing.T) {
+	p := startRelayPeer(t, MultiplexerHandler{OnToolCall: func(context.Context, string, json.RawMessage) (string, error) {
+		return "unread", nil
+	}}, func(m *Multiplexer) { m.SetReplyDrainTimeout(50 * time.Millisecond) })
+	p.write(NewToolCallEnvelope("parked", "tool", nil))
+	relayAwait(t, p.ctx, p.writing, "parked reply write")
+	p.write(NewResultEnvelope(IOResult{Tokens: 7}))
+	got := relayAwait(t, p.ctx, p.done, "terminal result with parked reply")
+	if got.err == nil || !strings.Contains(got.err.Error(), "still pending at the relay drain deadline") {
+		t.Fatalf("premature terminal must not discard the parked reply and succeed: %+v", got)
 	}
 }

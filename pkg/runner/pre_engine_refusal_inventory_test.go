@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -39,6 +41,10 @@ func TestEveryPreEngineReturnHasARecorder(t *testing.T) {
 	}
 	if fn == nil {
 		t.Fatal("executeRun absent")
+	}
+	unprepared := leadingUnpreparedInvocationGuard(fn)
+	if unprepared == nil {
+		t.Fatal("missing narrowly guarded invocation preparation refusal")
 	}
 	callName := func(expr ast.Expr) string {
 		call, ok := expr.(*ast.CallExpr)
@@ -118,6 +124,9 @@ func TestEveryPreEngineReturnHasARecorder(t *testing.T) {
 					continue
 				}
 				delete(unvisited, v.Pos())
+				if v == unprepared.Body.List[0] {
+					continue
+				}
 				if len(v.Results) == 1 && callName(v.Results[0]) == "r.refuseBeforeEngine" {
 					direct++
 					continue
@@ -194,6 +203,7 @@ func checkPreEnginePaths(t preEnginePathReporter, fs *token.FileSet, fn *ast.Fun
 		}
 		return false
 	}
+	unprepared := leadingUnpreparedInvocationGuard(fn)
 	var walk func([]ast.Stmt, bool) []bool
 	walk = func(stmts []ast.Stmt, covered bool) []bool {
 		states := []bool{covered}
@@ -206,6 +216,10 @@ func checkPreEnginePaths(t preEnginePathReporter, fs *token.FileSet, fn *ast.Fun
 						t.Errorf("path reaches unrecorded pre-engine return at %s", fs.Position(s.Pos()))
 					}
 				case *ast.IfStmt:
+					if s == unprepared {
+						next = append(next, state)
+						continue
+					}
 					state = state || covers(s.Init)
 					guarded := false
 					if a, ok := s.Init.(*ast.AssignStmt); ok && len(a.Rhs) == 1 {
@@ -302,6 +316,12 @@ func TestPreEngineInventoryFollowsExecutedBranches(t *testing.T) {
 		name, body string
 		wantBad    bool
 	}{
+
+		{"unprepared_leading", "invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID}); if err != nil { return r.refuseUnpreparedInvocation(ctx,msg,err) }; engine.Run(); return nil", false},
+		{"unprepared_not_global_coverage", "invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID}); if err != nil { return r.refuseUnpreparedInvocation(ctx,msg,err) }; return err", true},
+		{"unprepared_adapter_elsewhere", "return r.refuseUnpreparedInvocation(ctx,msg,err)", true},
+		{"unprepared_inverted_guard", "invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID}); if err == nil { return r.refuseUnpreparedInvocation(ctx,msg,err) }; engine.Run(); return nil", true},
+		{"unprepared_wrong_target", "invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: other}); if err != nil { return r.refuseUnpreparedInvocation(ctx,msg,err) }; engine.Run(); return nil", true},
 		{"if_engine_init", "if err := engine.Run(); err != nil { return err }; return nil", false},
 		{"switch_engine_init", "switch err := engine.Run(); { case err != nil: return err }; return nil", false},
 		{"type_switch_engine_init", "switch err := engine.Run(); value := any(err).(type) { case error: return value }; return nil", false},
@@ -351,4 +371,30 @@ func TestPreEngineInventoryFollowsExecutedBranches(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Only this leading pair is a non-writing boundary. The named adapter elsewhere
+// is NOT recorder coverage, and successful preparation does not cover later exits.
+func leadingUnpreparedInvocationGuard(fn *ast.FuncDecl) *ast.IfStmt {
+	if fn.Body == nil || len(fn.Body.List) < 2 {
+		return nil
+	}
+	canonical := func(n ast.Node) string {
+		var b bytes.Buffer
+		if format.Node(&b, token.NewFileSet(), n) != nil {
+			return ""
+		}
+		return b.String()
+	}
+	if canonical(fn.Body.List[0]) != "invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})" {
+		return nil
+	}
+	guard, ok := fn.Body.List[1].(*ast.IfStmt)
+	if !ok || guard.Init != nil || guard.Else != nil || canonical(guard.Cond) != "err != nil" || len(guard.Body.List) != 1 {
+		return nil
+	}
+	if canonical(guard.Body.List[0]) != "return r.refuseUnpreparedInvocation(ctx, msg, err)" {
+		return nil
+	}
+	return guard
 }

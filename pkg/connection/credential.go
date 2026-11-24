@@ -72,6 +72,13 @@ func SealBasic(sealer secrets.Sealer, connID, username, password string) ([]byte
 	return sealCredential(sealer, connID, credentialBlob{Username: username, Password: password})
 }
 
+// SealNone seals the empty credential of a connection whose scheme presents
+// nothing (spec.AuthNone): the record still holds a sealed blob bound to its
+// id, so the one path that opens a credential needs no exception for it.
+func SealNone(sealer secrets.Sealer, connID string) ([]byte, error) {
+	return sealCredential(sealer, connID, credentialBlob{})
+}
+
 func sealCredential(sealer secrets.Sealer, connID string, blob credentialBlob) ([]byte, error) {
 	if sealer == nil {
 		return nil, errNilSealer

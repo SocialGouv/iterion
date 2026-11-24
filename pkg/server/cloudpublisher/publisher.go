@@ -416,6 +416,28 @@ func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
 // since, or a pool another team has taken, refuses it. Then the dispatch
 // gate the launch carries: a pool-stamped resume routes only when its pool
 // is registry-active.
+// codemodeOrReplayed returns the resume's re-stated codemode choice, else
+// the launch's persisted one. Empty wins over empty: a run launched without
+// an override stays without one.
+func codemodeOrReplayed(restated string, prior *store.Run) string {
+	if restated != "" {
+		return restated
+	}
+	if prior == nil {
+		return ""
+	}
+	return prior.CodemodeOverride
+}
+
+// codemodeBoundsOrReplayed replays the prior launch's codemode bounds when
+// unstated. An explicit quota-only restatement changes just the named quotas.
+func codemodeBoundsOrReplayed(restated *ir.CodemodeBounds, prior *store.Run) *ir.CodemodeBounds {
+	if prior == nil {
+		return restated
+	}
+	return ir.ReplayCodemodeBounds(restated, prior.CodemodeBoundsOverride)
+}
+
 func (p *Publisher) resumePoolRefusal(ctx context.Context, prior *store.Run) error {
 	currentPool, err := p.runnerPoolForTeam(ctx, prior.TenantID)
 	if err != nil {
@@ -523,6 +545,14 @@ func NewForTesting(cfg Config, publish func(context.Context, *queue.RunMessage) 
 	p := newPublisher(cfg)
 	p.publishRun = publish
 	return p
+}
+
+// SetCancelForTesting hands the NATS cancel subject (iterion.cancel.<run_id>)
+// of a NewForTesting publisher to cancel, for the witnesses of other packages
+// that must see whether the real cancel path signalled a run, and which.
+// Production wiring goes through New.
+func (p *Publisher) SetCancelForTesting(cancel func(runID string, admitted store.LeaseIdentity) error) {
+	p.cancelRun = cancel
 }
 
 // newPublisher maps cfg onto a Publisher, the queue transport left to the
@@ -1590,11 +1620,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// runner's env fallback is unknowable here, and injecting "no family"
 	// facts about credentials we cannot see would be asserting a falsehood.
 	// bundle.APIKeys only, deliberately: a pinned key is spendable by the
-	// routes that name it, but these vars SHAPE THE PROGRAM (review_mode,
-	// llm_families), and widening a run's family set because one node pins a
-	// provider would switch a mono topology to dual behind the author's
-	// back. A node that wants a family pins it; funding it does not ask for
-	// a different review.
+	// routes that name it, but one of these vars SHAPES THE PROGRAM
+	// (`llm_families`), and widening a run's family set because one node
+	// pins a provider would report a host that is not this one. The review
+	// mode is not one of them any more — it reads no credential (ADR-169).
 	providers := make([]string, 0, len(bundle.APIKeys))
 	for prov := range bundle.APIKeys {
 		providers = append(providers, string(prov))
@@ -3451,6 +3480,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 	// One walk per launch: the wants, the diagnostics and the consulted
 	// line all read the same resolution.
 	wants, res := wantsFor(view)
+	// Deliberately NOT widened by a pinned family: this tier is the
+	// MUTUALISED pool, and it grants ONE credential (want-major, the first
+	// that admits). Widening it here is useless when the pool also holds
+	// the routes' family (the route want comes first and the pin stays
+	// unserved), and harmful when it holds only the pinned family: the
+	// grant then skips the platform tier wholesale (ADR-131), orphaning
+	// the family the routes spend. The pinned family is served by the
+	// ATTACHED tier, which fills per slot.
 	if len(res.Unknown) > 0 {
 		// A pin nobody knows never narrows the request to nothing: the
 		// walk widened to the full order instead. Name the pin — a typo
@@ -3978,7 +4015,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// check on its side; spec.AllowUnknownInputs is the operator's opt-out
 	// (--allow-unknown-inputs, the dispatcher's warn-and-proceed contract).
 	// The engine-injected names are carved out (#2416): a provision's
-	// stamped ITERION_VIBE_* dials are answered by the engine's expansion,
+	// stamped ITERION_* dials are answered by the engine's expansion,
 	// not by a DSL var — refusing them refused every API launch of a
 	// provisioned bot.
 	if unknown := ir.UnknownInputNames(wf, inputs); len(unknown) > 0 && !spec.AllowUnknownInputs {
@@ -4055,6 +4092,12 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// resume publisher replays it onto every later queue attempt.
 		PermissionOverride: spec.Permission,
 		PermissionMode:     spec.Permission,
+		// Same doctrine for the codemode launch choice (ADR-165): stamped so
+		// every later resume — the studio's answers, the retry sweeper,
+		// surfaces that cannot re-state an override — replays the launch's
+		// decision instead of falling back to the authored DSL.
+		CodemodeOverride:       spec.Codemode,
+		CodemodeBoundsOverride: spec.CodemodeBounds,
 		// Same display parity a local launch gets from the engine: the
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
@@ -4110,7 +4153,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// Resolve the same versioned context the local launch authority stamps.
 	// It is persisted before the queued row is published so admission on the
 	// runner and diagnostics on the server read one contract.
-	r.ExecutionContext = runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, store.ContextPolicyLegacy, "")
+	resolvedContext, contextErr := runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, store.ContextPolicyLegacy, "")
+	if contextErr != nil {
+		return sub, contextErr
+	}
+	r.ExecutionContext = resolvedContext
 	r.ExecutionContext.LaunchSurface = "cloudpublisher"
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -4229,21 +4276,34 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// after the fact when the donor is already out of pocket.
 	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID, creds.grants...)
 
-	// Resolve the credential-derived topology vars (review_mode +
-	// mono_family, plan_review, llm_families) from what actually sealed
-	// into the run — the queued-run counterpart of the host-detection
-	// injection every in-process launch surface applies. Only when the
-	// bundle resolved at least one participating credential: an empty set
-	// means the run rides the runner's env fallback, which is unknowable
-	// here, and the bots' own "auto" defaults must survive untouched.
+	// Resolve the review mode on EVERY lane, credential or not: it reads no
+	// credential since ADR-169, so the empty-bundle exception below — which
+	// exists because plan_review and llm_families are facts about
+	// credentials this publisher cannot see — does not apply to it.
+	// Skipping it let a frozen `mono` reach the bot's enum gate (a refusal)
+	// and a `dual` reach its guards as an unknown value (a paired review
+	// silently downgraded to single).
+	if _, declares := wf.Vars[reviewtopology.VarReviewMode]; declares {
+		if inputs == nil {
+			inputs = map[string]any{}
+			r.Inputs = inputs
+		}
+		if mode, injected := reviewtopology.InjectReviewModeIfDeclared(wf, inputs, spec.ReviewMode); injected {
+			p.logger.Info("cloudpublisher: run %s review topology: %s", runID, mode)
+		}
+	}
+	// The two injections that READ the bundle — plan_review and
+	// llm_families — only when it resolved at least one participating
+	// credential: an empty set means the run rides the runner's env
+	// fallback, which is unknowable here, and the bots' own defaults must
+	// survive untouched rather than be resolved from a false "no
+	// credentials" premise.
 	if len(creds.families.Families()) > 0 {
 		if inputs == nil {
 			inputs = map[string]any{}
 			r.Inputs = inputs
 		}
-		if inj, err := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); err != nil {
-			return runview.LaunchSubmission{}, fmt.Errorf("refusing to launch: %w", err)
-		} else if inj.Summary() != "" {
+		if inj := reviewtopology.InjectDerivedIfDeclared(wf, inputs, creds.families); inj.Summary() != "" {
 			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
 		}
 	}
@@ -4411,6 +4471,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
 		AmbientContext:  spec.AmbientContext,
+		Codemode:        spec.Codemode,
+		CodemodeBounds:  spec.CodemodeBounds,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
@@ -4597,6 +4659,11 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 	// so bypass the filter explicitly here rather than crashing — exactly the
 	// seam store.WithoutTenantFilter exists for. Without this, cancelling any
 	// cloud run 502s (panic: "tenant-scoped query without tenant in ctx").
+	//
+	// A checked caller (runview.Service.CancelCtx) hands a context bound to
+	// the run it admitted; the bypass keeps that binding, so the load and
+	// the flip below refuse a successor recreated under the ID — and the
+	// NATS cancel, keyed by run ID, follows only a flip that landed.
 	ctx = store.WithoutTenantFilter(ctx)
 	r, err := p.store.LoadRun(ctx, runID)
 	if err != nil {
@@ -4634,8 +4701,14 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 	if !changed {
 		// Status raced from under us — re-read and decide if this is
 		// an actual no-op (already terminal) or a transient state we
-		// should surface for the operator to retry.
-		r2, _ := p.store.LoadRun(ctx, runID)
+		// should surface for the operator to retry. A checked caller's
+		// re-read is bound: its refusal says the run behind the ID is no
+		// longer the admitted one, and is the answer — not the no-op of a
+		// run that settled.
+		r2, rerr := p.store.LoadRun(ctx, runID)
+		if _, bound := store.RunDataBindingFrom(ctx); bound && rerr != nil {
+			return fmt.Errorf("cloudpublisher: re-read run %s after a flip that changed nothing: %w", runID, rerr)
+		}
 		if r2 != nil {
 			if !r2.Status.CanBeCancelled() || r2.FailureCode == store.FailureAmbiguousEffect {
 				return nil
@@ -4695,6 +4768,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if loadErr != nil {
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
+	if err := runtime.CheckApprovalReplay(prior); err != nil && !spec.Force {
+		return err
+	}
+	// A checked resume republishes the run its surface admitted: the run
+	// service verified its own earlier read, and the document is read again
+	// here, so it is compared again — a successor recreated under the ID
+	// in the same status would otherwise be claimed below.
+	if err := spec.ExpectOrigin.Verify(prior); err != nil {
+		return fmt.Errorf("cloudpublisher: %w", err)
+	}
 	priorStatus := prior.Status
 	if spec.ExpectedStatus != "" && priorStatus != spec.ExpectedStatus {
 		return fmt.Errorf("cloudpublisher: run %s status changed: got %s, expected %s", spec.RunID, priorStatus, spec.ExpectedStatus)
@@ -4727,6 +4810,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
 	}
 
+	if bounds := spec.CodemodeBounds; bounds != nil && (bounds.StoreEntries < 0 || bounds.StoreBytes < 0) {
+		return fmt.Errorf("cloudpublisher: invalid codemode resume quota (entries=%d, bytes=%d)", bounds.StoreEntries, bounds.StoreBytes)
+	}
+	quota := runview.CodemodeResumeQuota(spec.CodemodeBounds)
+
 	// Claim this resume BEFORE resolving credentials. The status CAS is the
 	// serialization point for double-clicks/client retries: only one request
 	// may create the next queue attempt, so only that request may acquire a
@@ -4734,14 +4822,49 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// QueuedAt, the durable attempt marker used to reject stale deliveries —
 	// and the flip hands back what it replaced, read in the same write, for
 	// the rollback below.
+	var exactPause bool
+	var interactionID string
+	if priorStatus == store.RunStatusPausedWaitingHuman && prior.Checkpoint != nil {
+		exactPause = len(prior.Checkpoint.BackendPermissionInput) != 0
+		interactionID = prior.Checkpoint.InteractionID
+	}
+	if err := delegate.CheckApprovalAnswer(spec.Answers, exactPause, interactionID); err != nil {
+		return fmt.Errorf("cloudpublisher: %w", err)
+	}
+	// the rollback below. A checked resume's claim is bound to the origin it
+	// verified: the flip compares the birth in its own write (the FS lock,
+	// Mongo's bound metadata predicate), so a successor recreated since the
+	// check is refused, not queued. Everything after the claim — credentials,
+	// stamps, the publication, the rollback — keeps the unbound ctx.
+	claimCtx, bindErr := spec.ExpectOrigin.Bind(ctx, p.store)
+	if bindErr != nil {
+		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, bindErr)
+	}
 	flipper := store.AsQueuedFlipper(p.store)
+	if flipper == nil && quota != (store.CodemodeScratchLimits{}) {
+		return fmt.Errorf("cloudpublisher: resume of %s with codemode quota requires an exact queued flip", spec.RunID)
+	}
 	var flip store.QueuedFlip
 	var claimed bool
 	var claimErr error
-	if flipper != nil {
-		flip, claimed, claimErr = flipper.FlipToQueued(ctx, spec.RunID, priorStatus, time.Now())
+	if priorStatus == store.RunStatusPausedWaitingHuman || spec.Force {
+		bound := store.AsRevisionQueuedFlipper(p.store)
+		if bound == nil {
+			return fmt.Errorf("cloudpublisher: store does not support revision-bound human resume")
+		}
+		flipper = bound
+		// A forced resume is the operator's acknowledgement past an
+		// unresolved approved dispatch (CheckApprovalReplay above): the
+		// acknowledged flip is what carries it to the queue.
+		if spec.Force {
+			flip, claimed, claimErr = bound.FlipAcknowledgedRevisionToQueued(claimCtx, spec.RunID, priorStatus, time.Now(), prior.CASVersion)
+		} else {
+			flip, claimed, claimErr = bound.FlipRevisionToQueued(claimCtx, spec.RunID, priorStatus, time.Now(), prior.CASVersion)
+		}
+	} else if flipper != nil {
+		flip, claimed, claimErr = flipper.FlipToQueued(claimCtx, spec.RunID, priorStatus, time.Now())
 	} else {
-		claimed, claimErr = p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+		claimed, claimErr = p.store.UpdateRunStatusIf(claimCtx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
 	}
 	if claimErr != nil {
 		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, claimErr)
@@ -4985,26 +5108,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		}
 		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
-	// The review family this run FROZE at launch, judged against the
-	// credentials THIS resume just re-sealed. A resume replays the frozen
-	// inputs and nothing else re-judges them, so a run whose family lost its
-	// credential since — deleted, rotated, capped — used to come back, start,
-	// and die at its first review node; on the forge lane that reads as a
-	// required check going dark on every pull request of the repo, and the
-	// 7-day cap on the runs listing hid the dead runs entirely (measured
-	// 2026-09-22, #1221). The judgement is read-only: the inputs stay the
-	// launch's, byte for byte.
-	//
-	// Only when the bundle resolved at least one participating credential,
-	// exactly like the launch above: an empty set means the run rides the
-	// runner's env fallback, which is unknowable from here, and refusing on
-	// "no family" facts about credentials we cannot see would ground every
-	// such resume.
-	if len(creds.families.Families()) > 0 {
-		if err := reviewtopology.RefuseFrozenPin(wf, prior.Inputs, creds.families); err != nil {
-			return fmt.Errorf("refusing to resume: %w", err)
-		}
-	}
 	// The HARD per-key concurrency cap, asked again on every resume
 	// (cred_slots.go): the slot this run held from a previous attempt is
 	// admitted again without taking a second one; a key full of OTHER runs
@@ -5040,6 +5143,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// figure, so the studio never advertises a cap the run does not have.
 	merged := runtime.MergeResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
 	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID, creds.grants...)
+	var quotaPatch *queue.CodemodeQuotaPatch
+	if quota != (store.CodemodeScratchLimits{}) {
+		claim := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusQueued, QueuedAt: flip.At}
+		if err := claim.Validate(quota); err != nil {
+			return fmt.Errorf("cloudpublisher: resume of %s: %w", spec.RunID, err)
+		}
+		quotaPatch = &queue.CodemodeQuotaPatch{Entries: quota.Entries, Bytes: quota.Bytes, QueuedAt: flip.At}
+	}
 	msg := &queue.RunMessage{
 		V:                queue.SchemaVersion,
 		Contributions:    contributions,
@@ -5056,16 +5167,24 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			ReceiptID:         spec.ReceiptID,
 			PriorStatus:       priorStatus,
 			AcceptScratchLoss: spec.AcceptScratchLoss,
+			CodemodeQuota:     quotaPatch,
 		},
 		SecretsRef: creds.secretsRef,
 		BundleDEK:  creds.dek,
 		// Re-resolved by the resume surface like credentials are re-sealed:
 		// the resumed attempt runs the CURRENT stored bundle, consistently
 		// across the compile above and the runner-side materialization.
-		BotBundle:       queueBotBundleRef(spec.BotBundle),
-		SandboxImage:    p.effectiveSandboxImage(ctx),
-		AutoMemory:      spec.AutoMemory,
-		AmbientContext:  spec.AmbientContext,
+		BotBundle:      queueBotBundleRef(spec.BotBundle),
+		SandboxImage:   p.effectiveSandboxImage(ctx),
+		AutoMemory:     spec.AutoMemory,
+		AmbientContext: spec.AmbientContext,
+		// The codemode launch choice replays from the run doc when the resume
+		// does not re-state it — the doc is the only carrier a resume surface
+		// that cannot re-state an override (the studio's answers, the retry
+		// sweeper) has. A silence here would re-arm a capability the
+		// operator killed at launch.
+		Codemode:        codemodeOrReplayed(spec.Codemode, prior),
+		CodemodeBounds:  codemodeBoundsOrReplayed(spec.CodemodeBounds, prior),
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      prior.PermissionOverride,

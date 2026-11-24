@@ -58,11 +58,19 @@ func (s *Store) SaveRunGitMeta(ctx context.Context, runID string, meta *store.Ru
 	if id, ok := store.TenantFromContext(ctx); ok {
 		doc.TenantID = id
 	}
-	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	if _, err := s.runGitMeta.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("store/mongo: save git meta %s: %w", runID, err)
+	// Freeze the ordinary BSON metadata once before a retryable transaction.
+	// Registry changes decoding only; this preserves the existing wire codecs.
+	raw, err := bson.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("store/mongo: encode git meta %s: %w", runID, err)
 	}
-	return nil
+	return s.withRunMetadataWrite(ctx, runID, func(sc context.Context, _ *store.Run) error {
+		filter := withTenantFilter(sc, bson.M{"run_id": runID})
+		if _, err := s.runGitMeta.ReplaceOne(sc, filter, bson.Raw(raw), options.Replace().SetUpsert(true)); err != nil {
+			return fmt.Errorf("store/mongo: save git meta %s: %w", runID, err)
+		}
+		return nil
+	})
 }
 
 // LoadRunGitMeta implements store.RunGitMetaStore: the snapshot for the

@@ -4,19 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 )
 
 // ---------------------------------------------------------------------------
 // Tool blobs (per-tool-call I/O bodies, sidecar to events.jsonl)
 // ---------------------------------------------------------------------------
-
-// toolBlobPath returns runs/<id>/tools/<toolUseID>/<kind>. Caller has
-// already sanitised runID + toolUseID + kind ∈ {"input", "output"}.
-func (s *FilesystemRunStore) toolBlobPath(runID, toolUseID, kind string) string {
-	return filepath.Join(s.runDir(runID), "tools", toolUseID, kind)
-}
 
 // validateToolBlobKind rejects anything other than "input" or "output"
 // so the path component is always a known literal — no traversal risk
@@ -31,7 +23,7 @@ func validateToolBlobKind(kind string) error {
 // WriteToolBlob satisfies ToolBlobStore. Writes atomically; returns the
 // total byte size persisted. Idempotent — re-writing the same key
 // replaces the prior bytes.
-func (s *FilesystemRunStore) WriteToolBlob(_ context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
+func (s *FilesystemRunStore) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return 0, err
 	}
@@ -41,16 +33,17 @@ func (s *FilesystemRunStore) WriteToolBlob(_ context.Context, runID, toolUseID, 
 	if err := validateToolBlobKind(kind); err != nil {
 		return 0, err
 	}
-	// Tombstone guard BEFORE the MkdirAll below: a late tool-I/O flush
-	// gets the typed refusal instead of rebuilding a deleted run's tree.
-	if err := s.guardNotDeleted(runID); err != nil {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
 		return 0, err
 	}
-	dir := filepath.Dir(s.toolBlobPath(runID, toolUseID, kind))
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return 0, fmt.Errorf("store: mkdir tool blob dir: %w", err)
+	defer unlock()
+	p, err := s.openRunPayloadPath(ctx, runID, true, "tools", toolUseID, kind)
+	if err != nil {
+		return 0, err
 	}
-	if err := writeFileAtomic(s.toolBlobPath(runID, toolUseID, kind), body, filePerm); err != nil {
+	defer p.Close()
+	if err := p.WriteAtomic(ctx, body, filePerm); err != nil {
 		return 0, fmt.Errorf("store: write tool blob: %w", err)
 	}
 	return int64(len(body)), nil
@@ -59,7 +52,7 @@ func (s *FilesystemRunStore) WriteToolBlob(_ context.Context, runID, toolUseID, 
 // ReadToolBlob satisfies ToolBlobStore. limit == 0 means "all from
 // offset". Returns the bytes read, the full blob size, and eof when
 // offset+len(data) == total. Missing blob → wrapped os.ErrNotExist.
-func (s *FilesystemRunStore) ReadToolBlob(_ context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
+func (s *FilesystemRunStore) ReadToolBlob(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, 0, false, err
 	}
@@ -72,8 +65,12 @@ func (s *FilesystemRunStore) ReadToolBlob(_ context.Context, runID, toolUseID, k
 	if offset < 0 {
 		offset = 0
 	}
-	p := s.toolBlobPath(runID, toolUseID, kind)
-	f, err := os.Open(p)
+	p, err := s.openRunPayloadPath(ctx, runID, false, "tools", toolUseID, kind)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	defer p.Close()
+	f, err := p.Open()
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("store: open tool blob: %w", err)
 	}

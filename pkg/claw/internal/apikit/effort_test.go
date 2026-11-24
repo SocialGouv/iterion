@@ -50,8 +50,22 @@ func TestEffortCapabilities(t *testing.T) {
 			wantNotSupported: true,
 		},
 		{
-			name:             "sonnet 4.7 effort not yet documented",
-			input:            "claude-sonnet-4-7",
+			// Not documented by Anthropic; measured on claude CLI 2.1.282:
+			// the CLI forwarded every level as handed on recorded requests.
+			name:          "sonnet 4.7 forwards every level (measured)",
+			input:         "claude-sonnet-4-7",
+			wantSupported: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		{
+			// A dated snapshot of a known model is that model.
+			name:          "dated snapshot of opus 5.5",
+			input:         "claude-opus-5-5-20260101",
+			wantSupported: []string{"low", "medium", "high", "xhigh", "max"},
+			wantDefault:   "medium",
+		},
+		{
+			name:             "dated snapshot of haiku (no effort)",
+			input:            "claude-haiku-4-5-20251001",
 			wantNotSupported: true,
 		},
 		{

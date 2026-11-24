@@ -37,12 +37,33 @@ type User struct {
 }
 
 type NoteAttributes struct {
-	ID           int64  `json:"id"`
-	Note         string `json:"note"`
-	NoteableType string `json:"noteable_type"` // "MergeRequest" | "Issue" | "Commit" | ...
-	DiscussionID string `json:"discussion_id"`
-	AuthorID     int64  `json:"author_id"`
-	URL          string `json:"url"`
+	ID           int64         `json:"id"`
+	Note         string        `json:"note"`
+	NoteableType string        `json:"noteable_type"` // "MergeRequest" | "Issue" | "Commit" | ...
+	DiscussionID string        `json:"discussion_id"`
+	AuthorID     int64         `json:"author_id"`
+	URL          string        `json:"url"`
+	Position     *NotePosition `json:"position"`
+}
+
+// NotePosition is the diff position GitLab attaches to the note that OPENS a
+// thread on the MR's diff (a review comment on a line): which file, which
+// lines on which image, and the commit (head_sha) the position was taken
+// on. Replies in the thread carry no position — only the root does — which
+// is what makes "the note that carries a position" the thread's root
+// (ThreadRootAnchor). old_line/new_line: the pre-image and post-image line
+// numbers; a comment on a removed line carries only old_line, on an added
+// or unchanged one new_line (with old_line beside it when the line existed
+// before). old_path/new_path differ when the change renames the file.
+type NotePosition struct {
+	BaseSHA      string `json:"base_sha"`
+	StartSHA     string `json:"start_sha"`
+	HeadSHA      string `json:"head_sha"`
+	OldPath      string `json:"old_path"`
+	NewPath      string `json:"new_path"`
+	OldLine      *int64 `json:"old_line"`
+	NewLine      *int64 `json:"new_line"`
+	PositionType string `json:"position_type"` // "text" | "file"
 }
 
 // MergeRequestNoteable is the MR a note is attached to (present on MR notes).
@@ -104,6 +125,11 @@ type ParsedNote struct {
 	DiscussionID string // the thread to reply in
 	NoteURL      string
 
+	// Position is the note's own diff position, set only on the note that
+	// opened a diff thread (a review comment on a line); a reply inside the
+	// thread carries none. ThreadAnchor() normalizes it to the launch shape.
+	Position *NotePosition
+
 	AuthorID       int64
 	AuthorUsername string
 }
@@ -127,6 +153,7 @@ func ParseNote(body []byte) (ParsedNote, error) {
 		NoteBody:       oa.Note,
 		DiscussionID:   oa.DiscussionID,
 		NoteURL:        oa.URL,
+		Position:       oa.Position,
 		AuthorID:       e.User.ID,
 		AuthorUsername: e.User.Username,
 	}
@@ -170,6 +197,38 @@ func ParseNote(body []byte) (ParsedNote, error) {
 // IsMergeRequestNote reports whether this note is attached to an MR (the
 // noteable the conversational /revi flow handles).
 func (p ParsedNote) IsMergeRequestNote() bool { return p.MRIID != 0 && p.DiscussionID != "" }
+
+// ThreadAnchor normalizes the note's own diff position to the launch shape
+// the conversational bots declare. A reply note carries none — the thread
+// root's position is the anchor, read from the discussion fetch
+// (ThreadRootAnchor) — so this answers a real anchor only for the note that
+// OPENED a diff thread (a `/revi <question>` typed as a fresh inline
+// comment). GitLab names no side field: the image is which line is set.
+func (p ParsedNote) ThreadAnchor() webhooks.ThreadAnchor {
+	return positionAnchor(p.Position)
+}
+
+// positionAnchor maps a GitLab position onto the normalized ThreadAnchor:
+// new_line set → the "new" side (old_line beside it when the line existed
+// before); only old_line → the "old" side, a line the change removed.
+// head_sha is the commit the position was taken on — the value a consumer
+// compares against the revision it actually reads.
+func positionAnchor(pos *NotePosition) webhooks.ThreadAnchor {
+	if pos == nil {
+		return webhooks.ThreadAnchor{}
+	}
+	a := webhooks.ThreadAnchor{Path: pos.NewPath, OldPath: pos.OldPath, Commit: pos.HeadSHA}
+	switch {
+	case pos.NewLine != nil && *pos.NewLine > 0:
+		a.Side, a.Line = "new", *pos.NewLine
+		if pos.OldLine != nil {
+			a.OldLine = *pos.OldLine
+		}
+	case pos.OldLine != nil && *pos.OldLine > 0:
+		a.Side, a.Line = "old", *pos.OldLine
+	}
+	return a
+}
 
 // IsIssueNote reports whether this note is attached to an Issue (the surface
 // the /command-opens-MR flow handles). An MR note is never an issue note: when

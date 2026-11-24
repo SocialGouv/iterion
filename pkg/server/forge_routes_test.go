@@ -115,6 +115,15 @@ func (m *mockGitLab) server() *httptest.Server {
 func newForgeTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := newOrgTestServer(t)
+	wireForgeTestStores(t, s)
+	return s
+}
+
+// wireForgeTestStores gives s the forge layer newForgeTestServer carries —
+// webhook configs, generic secrets, a sealer, connections, integrations and
+// an orchestrator over them — on a server the caller built.
+func wireForgeTestStores(t *testing.T, s *Server) {
+	t.Helper()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
 	s.genericSecrets = secrets.NewMemoryGenericSecretStore()
 	key := make([]byte, 32)
@@ -144,7 +153,6 @@ func newForgeTestServer(t *testing.T) *Server {
 		},
 		PublicURL: "https://iterion.example.com",
 	}
-	return s
 }
 
 func testForgeBotLookup(_ context.Context, _, botID string) (*bundle.ForgeRequirements, error) {

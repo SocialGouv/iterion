@@ -9,17 +9,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
-	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -201,11 +198,16 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 	if runLogger == nil {
 		runLogger = r.cfg.Logger
 	}
-	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
+	return func(ctx context.Context, req runtime.SubbotRequest) (_ map[string]any, retErr error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
+		// A child keeps the parent's original intention; a reload is not its source.
+		if err := store.RequireRunValueFormat(ctx, req.ParentRunID); err != nil {
+			return nil, err
+		}
+
 		// Every store call below is tenant-scoped; the parent's ctx carries
 		// the identity, and re-stamping it costs nothing where its absence
 		// panics deep inside SaveRun.
@@ -219,6 +221,11 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		// checkpoint is not resumed. Same contract as in-process.
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, r.cfg.Store, req, runLogger); handled {
 			return out, aerr
+		}
+		// Only a fresh child needs a birth capability; existing-child reads
+		// remain available to an exact parent with its original binding.
+		if _, err := runview.CheckSubbotBirthInvocation(ctx, req.ParentRunID); err != nil {
+			return nil, err
 		}
 
 		var childPath string
@@ -275,7 +282,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		if root == nil {
 			rootRun, lerr := r.cfg.Store.LoadRun(ctx, msg.RunID)
 			if lerr != nil {
-				return nil, fmt.Errorf("subbot %q: the routing policy of root run %q cannot be read, so child bot %q cannot fold it: %w", req.Source, msg.RunID, childBotID, lerr)
+				return nil, fmt.Errorf("subbot %q: %w: the routing policy of root run %q cannot be read, so child bot %q cannot fold it: %w", req.Source, store.ErrChildParentUnreadable, msg.RunID, childBotID, lerr)
 			}
 			root = &subbotRoot{policy: rootRun.LLMRoutePolicy, launchRows: runview.SubbotRootLaunchRows(rootRun, runLogger)}
 		}
@@ -298,7 +305,6 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		if err != nil {
 			return nil, err
 		}
-		runview.RecordSubbotChild(ctx, r.cfg.Store, req, childRunID, runLogger)
 
 		// The child runs under the parent's message — same credentials, same
 		// sandbox decision, same run-level stamps — as its own run: the doc
@@ -320,15 +326,55 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 			childContext.Workflow = store.WorkflowContext{}
 			childContext.Lineage = store.LineageContext{}
 		}
-		childContext = runview.ResolveExecutionContext(ctx, r.cfg.Store, childRunID, runview.LaunchSpec{
+		resolvedContext, contextErr := runview.ResolveExecutionContext(ctx, r.cfg.Store, childRunID, runview.LaunchSpec{
 			FilePath:         childPath,
 			WorkDir:          req.WorkDir,
 			ParentRunID:      req.ParentRunID,
 			ParentNodeID:     req.NodeID,
 			ExecutionContext: childContext,
 		}, childWf, hash, store.ContextPolicyLegacy, "")
+		if contextErr != nil {
+			return nil, contextErr
+		}
+		childContext = resolvedContext
 		childContext.LaunchSurface = "runner-subbot"
 		child.ExecutionContext = childContext
+
+		if parentCtx, _, err := store.LoadRunWithValueFormat(ctx, r.cfg.Store, req.ParentRunID); err == nil {
+			ctx = parentCtx
+		} else if !errors.Is(err, store.ErrRunNotFound) {
+			return nil, err
+		}
+		lease, err := runview.AcquireSubbotLease(ctx, r.cfg.Store, req.ParentRunID, childRunID, runview.SubbotLeaseOptions{HeartbeatInterval: r.cfg.HeartbeatInterval, OnRefreshError: func(err error) {
+			if r.cfg.Metrics != nil {
+				r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
+			}
+			r.cfg.Logger.Error("runner: subbot child lease lost: %v", err)
+		}})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = lease.Release() }()
+		invocation, err := lease.PrepareInvocation(lease.Context, r.cfg.Store, store.RunCreateSpec{ID: childRunID, WorkflowName: childWf.Name, Inputs: req.Vars, Status: store.RunStatusRunning})
+		childValueCtx := ctx
+		if invocation.Context != nil {
+			childValueCtx = invocation.Context
+		}
+		if err != nil {
+			return nil, runtime.RetirePreparedRun(childValueCtx, r.cfg.Store, invocation, err)
+		}
+		engineHandoff := false
+		defer func() {
+			if !engineHandoff {
+				retErr = runtime.RetirePreparedRun(childValueCtx, r.cfg.Store, invocation, retErr)
+			}
+		}()
+		runview.RecordSubbotChild(ctx, r.cfg.Store, req, childRunID, runLogger)
+
+		parkCtx, err := runview.SubbotParkContext(ctx, invocation)
+		if err != nil {
+			return nil, err
+		}
 
 		// The child's own run.log — the studio's per-node Logs tab reads the
 		// CHILD's persisted log, and the parent's logger would fold every
@@ -339,7 +385,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		// child's, which holds other values (iterion#2822).
 		childLogger := runLogger.WithOwnRedactor()
 		if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
-			idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+			idCtx := store.WithIdentity(context.WithoutCancel(childValueCtx), msg.TenantID, msg.OwnerID)
 			seed, serr := ls.RunLogSize(idCtx, childRunID)
 			if serr != nil {
 				runLogger.Warn("subbot %s: seed log offset: %v — starting at 0", childRunID, serr)
@@ -357,11 +403,22 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		// The child's rotation loops register on the CHILD's guard (#2756):
 		// the handle is created before buildExecutor fills it.
 		childGuard := &runSecretGuard{}
-		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childWorkDir, childLogger, nil, childGuard)
+		childExec, childUsage, err := r.buildExecutor(childValueCtx, &child, childWf, childWorkDir, childLogger, nil, childGuard)
 		if err != nil {
 			return nil, err
 		}
-		defer r.recordOrgSpend(ctx, &child, childUsage)
+
+		childClosed := false
+		closeChild := func() {
+			if childClosed {
+				return
+			}
+			childClosed = true
+			closeExecutor(childExec)
+		}
+		defer closeChild()
+
+		defer r.recordOrgSpend(childValueCtx, &child, childUsage)
 
 		// Capture what the child emits — the terminal-node output a
 		// contractless subbot returns, plus the per-node outputs a contract's
@@ -373,7 +430,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		// secrets refresh — a child that outlives a token (a per-lot child
 		// of a supervisor runs for hours) would otherwise push with a dead
 		// one, exactly the parent's #99.
-		sbObsCtx, stopSbObs := context.WithCancel(ctx)
+		sbObsCtx, stopSbObs := context.WithCancel(childValueCtx)
 		defer stopSbObs()
 		defer r.unregisterSandboxRun(childRunID)
 
@@ -481,30 +538,13 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		r.registerRunEngine(childRunID, childEng)
 		defer r.unregisterRunEngine(childRunID)
 
-		childCtx, childCancel := context.WithCancelCause(context.WithValue(ctx, subbotDepthKey{}, depth+1))
-		childLock, err := r.cfg.Store.LockRun(childCtx, childRunID)
-		if err != nil {
-			childCancel(nil)
-			closeExecutor(childExec)
-			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
-		}
-		// The child's lease is the orphan sweeper's liveness signal, exactly
-		// like the parent's: on the cloud store LockRun is a NATS-KV entry
-		// with a 60 s TTL that only a refresher keeps alive. The parent's
-		// heartbeat refreshes the PARENT's lease; without one of its own the
-		// child reads dead at T+60 s, the sweeper flips it failed_resumable,
-		// and the reaper deletes its sandbox pod mid-flight.
-		hbDone := make(chan struct{})
-		errtrack.Go("runner.subbot.heartbeat", func() { r.childLeaseHeartbeat(childCtx, childCancel, childLock, hbDone) })
+		childCtx := context.WithValue(childValueCtx, subbotDepthKey{}, depth+1)
 		runErr := func() error {
-			defer func() { _ = childLock.Unlock() }()
-			defer func() {
-				childCancel(nil)
-				<-hbDone
-			}()
-			return childEng.Run(childCtx, childRunID, req.Vars)
+			defer func() { _ = lease.Release() }()
+			defer closeChild()
+			engineHandoff = true
+			return childEng.RunPrepared(childCtx, childRunID, req.Vars, invocation)
 		}()
-		closeExecutor(childExec)
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run; that is not
 			// a parent failure. Park until the operator answers and the child
@@ -515,7 +555,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 				// stop signal), and a park on it returns at once with
 				// `context canceled` — a gate meant to wait for a human read
 				// as a parent failure 20 ms in.
-				out, aerr := runview.AwaitSubbotTerminal(ctx, r.cfg.Store, childRunID, runLogger)
+				out, aerr := runview.AwaitSubbotTerminal(parkCtx, r.cfg.Store, childRunID, runLogger)
 				if aerr == nil {
 					runview.ClearSubbotChild(ctx, r.cfg.Store, req)
 				}
@@ -572,43 +612,5 @@ func gatewayPinnedSites(wf *ir.Workflow, rows []runview.ModelOverrideEntry) []st
 func closeExecutor(exec runtime.NodeExecutor) {
 	if c, ok := any(exec).(io.Closer); ok {
 		_ = c.Close()
-	}
-}
-
-// childLeaseHeartbeat refreshes a subbot child's run lease while its engine
-// runs — the child half of Runner.heartbeat, without the JetStream delivery
-// (a child has none: it rides its parent's). A refresh failure cancels the
-// child with ErrRunInterrupted so it unwinds to failed_resumable before the
-// lease lapses, rather than letting a sibling pod's redelivery of the parent
-// find two writers on the child's state.
-func (r *Runner) childLeaseHeartbeat(ctx context.Context, cancel context.CancelCauseFunc, lock store.RunLock, done chan<- struct{}) {
-	defer close(done)
-	natsLock, ok := lock.(*natsq.Lock)
-	if !ok {
-		return // no-op lock or non-NATS provider — nothing to refresh
-	}
-	interval := r.cfg.HeartbeatInterval
-	if interval <= 0 {
-		interval = 20 * time.Second
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if err := natsLock.Refresh(ctx); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return
-				}
-				if r.cfg.Metrics != nil {
-					r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
-				}
-				r.cfg.Logger.Error("runner: subbot child lease refresh failed: %v — cancelling the child (resumable) to avoid split-brain", err)
-				cancel(runtime.ErrRunInterrupted)
-				return
-			}
-		}
 	}
 }

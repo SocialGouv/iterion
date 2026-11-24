@@ -16,9 +16,6 @@ func TestReviewPRRunDetails(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	t.Setenv("ITERION_VIBE_EFFORT_GPT", "xhigh")
-	t.Setenv("ITERION_VIBE_EFFORT_CLAUDE", "")
-	t.Setenv("ITERION_VIBE_EFFORT_EMIT", "")
 	for _, tc := range []struct {
 		name         string
 		endpointPath string
@@ -33,41 +30,45 @@ func TestReviewPRRunDetails(t *testing.T) {
 			endpointPath: "/api/v1/forge/publish-review?unused=private#fragment",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "225800",
-				"input.ai_reviewer_gpt_model":   "openai/gpt-6-astra",
-				"input.ai_reviewer_gpt_backend": "claw",
-				"input.ai_reviewer_gpt_tokens":  "205000",
-				"input.ai_converge_model":       "openai/summary-model",
-				"input.ai_converge_backend":     "another-harness",
-				"input.ai_converge_tokens":      "20000",
+				"input.ai_reviewer_model":   "openai/gpt-6-astra",
+				"input.ai_reviewer_backend": "claw",
+				"input.ai_reviewer_tokens":  "205000",
+				"input.ai_reviewer_effort":  "xhigh", "input.ai_reviewer_effort_source": "node",
+				"input.ai_converge_model":   "openai/summary-model",
+				"input.ai_converge_backend": "another-harness",
+				"input.ai_converge_tokens":  "20000",
+				"input.ai_converge_effort":  "medium", "input.ai_converge_effort_source": "node",
 			},
-			want:   []string{"<code>run-123</code>", "**225 800**", "| Revue GPT | openai/gpt-6-astra | claw | xhigh | 205 000 |", "| Synthèse · GPT | openai/summary-model | another-harness | medium | 20 000 |"},
+			want:   []string{"<code>run-123</code>", "**225 800**", "| Revue GPT | openai/gpt-6-astra | claw | xhigh (nœud) | 205 000 |", "| Synthèse · GPT | openai/summary-model | another-harness | medium (nœud) | 20 000 |"},
 			absent: []string{"Revue Claude", "Revue GLM", "glance", "**225 000**", "private", "fragment", "test-token"},
 		},
 		{
-			// The run-details table names the family that SERVED: the gpt
-			// slot's model is a dial, and an instance pointing it at a claude
-			// model (the documented cross-vendor outage dial) must not publish
+			// The run-details table names the family that SERVED: a routing
+			// cell moves the gpt slot's model, and an instance pointing it at a
+			// claude model (the documented cross-vendor outage remedy) must not publish
 			// "Revue GPT" over a claude run — PR #1924's gate comment did
 			// exactly that.
 			name: "a gpt slot fed a claude model is labelled by what served",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "800",
-				"input.ai_reviewer_gpt_model":   "claude-sonnet-4-6",
-				"input.ai_reviewer_gpt_backend": "claude_code",
-				"input.ai_reviewer_gpt_tokens":  "760",
+				"input.ai_reviewer_model":   "claude-sonnet-4-6",
+				"input.ai_reviewer_backend": "claude_code",
+				"input.ai_reviewer_tokens":  "760",
+				"input.ai_reviewer_effort":  "xhigh", "input.ai_reviewer_effort_source": "node",
 			},
-			want:   []string{"| Revue Claude | claude-sonnet-4-6 | claude_code | xhigh | 760 |"},
+			want:   []string{"| Revue Claude | claude-sonnet-4-6 | claude_code | xhigh (nœud) | 760 |"},
 			absent: []string{"Revue GPT"},
 		},
 		{
 			name: "a glm model labels the row Revue GLM",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "900",
-				"input.ai_reviewer_claude_model":   "glm-5.3",
-				"input.ai_reviewer_claude_backend": "claude_code",
-				"input.ai_reviewer_claude_tokens":  "860",
+				"input.ai_reviewer_alternate_model":   "glm-5.3",
+				"input.ai_reviewer_alternate_backend": "claude_code",
+				"input.ai_reviewer_alternate_tokens":  "860",
+				"input.ai_reviewer_alternate_effort":  "high", "input.ai_reviewer_alternate_effort_source": "node",
 			},
-			want:   []string{"| Revue GLM | glm-5.3 | claude_code | high | 860 |"},
+			want:   []string{"| Revue GLM | glm-5.3 | claude_code | high (nœud) | 860 |"},
 			absent: []string{"Revue Claude", "Revue GPT"},
 		},
 		{
@@ -78,16 +79,18 @@ func TestReviewPRRunDetails(t *testing.T) {
 			name: "a claude id served by the z.ai facade is labelled GLM",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "72128",
-				"input.ai_reviewer_gpt_model":   "claude-sonnet-4-6",
-				"input.ai_reviewer_gpt_backend": "claude_code",
-				"input.ai_reviewer_gpt_tokens":  "72128",
-				"input.ai_reviewer_gpt_wire":    "facade:zai:https://api.z.ai/api/anthropic",
-				"input.ai_converge_model":       "claude-opus-5-5",
-				"input.ai_converge_backend":     "claude_code",
-				"input.ai_converge_tokens":      "4316",
-				"input.ai_converge_wire":        "facade:zai:https://api.z.ai/api/anthropic",
+				"input.ai_reviewer_model":   "claude-sonnet-4-6",
+				"input.ai_reviewer_backend": "claude_code",
+				"input.ai_reviewer_tokens":  "72128",
+				"input.ai_reviewer_wire":    "facade:zai:https://api.z.ai/api/anthropic",
+				"input.ai_reviewer_effort":  "xhigh", "input.ai_reviewer_effort_source": "node",
+				"input.ai_converge_model":   "claude-opus-5-5",
+				"input.ai_converge_backend": "claude_code",
+				"input.ai_converge_tokens":  "4316",
+				"input.ai_converge_wire":    "facade:zai:https://api.z.ai/api/anthropic",
+				"input.ai_converge_effort":  "medium", "input.ai_converge_effort_source": "node",
 			},
-			want:   []string{"| Revue GLM | claude-sonnet-4-6 | claude_code | xhigh | 72 128 |", "| Synthèse · GLM | claude-opus-5-5 | claude_code | medium | 4 316 |"},
+			want:   []string{"| Revue GLM | claude-sonnet-4-6 | claude_code | xhigh (nœud) | 72 128 |", "| Synthèse · GLM | claude-opus-5-5 | claude_code | medium (nœud) | 4 316 |"},
 			absent: []string{"Revue Claude", "Revue GPT", "Synthèse · Claude", "api.z.ai", "facade:"},
 		},
 		{
@@ -96,26 +99,32 @@ func TestReviewPRRunDetails(t *testing.T) {
 			name: "an unrecognised facade claims no family",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "500",
-				"input.ai_reviewer_claude_model":   "claude-opus-5-5",
-				"input.ai_reviewer_claude_backend": "claude_code",
-				"input.ai_reviewer_claude_tokens":  "500",
-				"input.ai_reviewer_claude_wire":    "facade:https://gateway.example",
+				"input.ai_reviewer_alternate_model":   "claude-opus-5-5",
+				"input.ai_reviewer_alternate_backend": "claude_code",
+				"input.ai_reviewer_alternate_tokens":  "500",
+				"input.ai_reviewer_alternate_wire":    "facade:https://gateway.example",
+				"input.ai_reviewer_alternate_effort":  "high", "input.ai_reviewer_alternate_effort_source": "node",
 			},
-			want:   []string{"| Revue | claude-opus-5-5 | claude_code | high | 500 |"},
+			want:   []string{"| Revue | claude-opus-5-5 | claude_code | high (nœud) | 500 |"},
 			absent: []string{"Revue Claude", "gateway.example"},
 		},
 		{
 			name: "the gate note names a claude reviewer served by its fallback",
 			refs: map[string]string{
 				"run.id": "run-123", "input.scope_files": "3",
-				"input.ai_reviewer_claude_model":    "glm-5.3",
-				"input.ai_reviewer_claude_backend":  "claude_code",
-				"input.ai_reviewer_claude_tokens":   "900",
-				"input.ai_reviewer_claude_fallback": "true",
+				"input.ai_reviewer_alternate_model":    "glm-5.3",
+				"input.ai_reviewer_alternate_backend":  "claude_code",
+				"input.ai_reviewer_alternate_tokens":   "900",
+				"input.ai_reviewer_alternate_fallback": "true",
 			},
 			note: "the claude reviewer ran on its fallback route (glm-5.3)",
 		},
 		{
+			// The script's arm, not the bot's route: `converge` declares no
+			// fallbacks since ADR-169 made it the one merge step, so this
+			// flag is set here rather than produced by a run. The publish
+			// script still owes a note for a deployment that re-points the
+			// merge at a CLI backend carrying a rescue.
 			name: "the gate note names a merge step served by its fallback",
 			refs: map[string]string{
 				"run.id": "run-123", "input.scope_files": "3",
@@ -139,22 +148,98 @@ func TestReviewPRRunDetails(t *testing.T) {
 			absent:       []string{"<a href="},
 		},
 		{
+			name: "a paired review says it ran two reviewers",
+			refs: map[string]string{
+				"run.id": "run-123", "input.effective_review_mode": "paired",
+				"input.ai_reviewer_alternate_model": "claude-opus-5-5",
+				"input.ai_reviewer_model":           "openai/gpt-6-astra",
+			},
+			want: []string{"Revue à deux relecteurs ; 0 finding(s) cross-confirmed by both reviewers."},
+		},
+		{
 			name: "both reviewers and a measured zero",
 			refs: map[string]string{
-				"input.ai_run_tokens": "700", "input.ai_reviewer_claude_model": "claude-opus-5-5",
-				"input.ai_reviewer_claude_backend": "claude_code", "input.ai_reviewer_claude_tokens": "700",
-				"input.ai_reviewer_gpt_model": "openai/gpt-6-astra", "input.ai_reviewer_gpt_tokens": "0",
+				"input.ai_run_tokens": "700", "input.ai_reviewer_alternate_model": "claude-opus-5-5",
+				"input.ai_reviewer_alternate_backend": "claude_code", "input.ai_reviewer_alternate_tokens": "700",
+				"input.ai_reviewer_alternate_effort": "high", "input.ai_reviewer_alternate_effort_source": "node",
+				"input.ai_reviewer_model": "openai/gpt-6-astra", "input.ai_reviewer_tokens": "0",
+				"input.ai_reviewer_effort": "xhigh", "input.ai_reviewer_effort_source": "node",
 			},
-			want: []string{"| Revue Claude | claude-opus-5-5 | claude_code | high | 700 |", "| Revue GPT | openai/gpt-6-astra | indisponible | xhigh | 0 |"},
+			want: []string{"| Revue Claude | claude-opus-5-5 | claude_code | high (nœud) | 700 |", "| Revue GPT | openai/gpt-6-astra | indisponible | xhigh (nœud) | 0 |"},
+		},
+		{
+			// What the run used, from the engine's record on the node that
+			// ran — never the level the node was written with. A routing cell's
+			// `low` is the reviewer's level; a level the gateway's feed
+			// replaced names the feed and the level asked for; an edge's
+			// level names the edge; a source the table does not know is
+			// printed as given (HTML-escaped like every engine value).
+			name: "the effort the run used, never the authored level",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "3000",
+				"input.ai_reviewer_alternate_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_alternate_backend": "claw",
+				"input.ai_reviewer_alternate_tokens": "1000",
+				"input.ai_reviewer_alternate_effort": "low", "input.ai_reviewer_alternate_effort_source": "cell",
+				"input.ai_reviewer_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_backend": "claw",
+				"input.ai_reviewer_tokens": "1000",
+				"input.ai_reviewer_effort": "xhigh", "input.ai_reviewer_effort_source": "edge",
+				"input.ai_reviewer_glance_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_glance_backend": "claw",
+				"input.ai_reviewer_glance_tokens": "400",
+				"input.ai_reviewer_glance_effort": "low", "input.ai_reviewer_glance_effort_source": "<b>who</b>",
+				"input.ai_converge_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_converge_backend": "claw",
+				"input.ai_converge_tokens": "200",
+				"input.ai_converge_effort": "high", "input.ai_converge_effort_source": "feed:pliage", "input.ai_converge_effort_requested": "medium",
+			},
+			want: []string{
+				"| Étape | Modèle | Harness | Effort (source) | Tokens |",
+				"| Revue | openai_compatible/scaleway/deepseek-v4.1-flash | claw | low (cellule) | 1 000 |",
+				"| xhigh (arête) | 1 000 |",
+				"| low (&lt;b&gt;who&lt;/b&gt;) | 400 |",
+				"| high (feed pliage ; demandé medium) | 200 |",
+			},
+			absent: []string{"<b>who</b>"},
+		},
+		{
+			// The harness's own answers and the other request sources: a
+			// level the client did not send, a recovery at a lower level, the
+			// launch's row, the overrides when the run
+			// cannot tell which layer, a level the harness clamped.
+			name: "what the harness sent, and every source of a request",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "3000",
+				"input.ai_reviewer_alternate_model": "anthropic/glm-5.3", "input.ai_reviewer_alternate_backend": "claw", "input.ai_reviewer_alternate_tokens": "1000",
+				"input.ai_reviewer_alternate_effort_source": "backend", "input.ai_reviewer_alternate_effort_requested": "high",
+				"input.ai_reviewer_model": "openai/gpt-6-astra", "input.ai_reviewer_backend": "claw", "input.ai_reviewer_tokens": "1000",
+				"input.ai_reviewer_effort": "high", "input.ai_reviewer_effort_source": "node", "input.ai_reviewer_effort_lowered": "low",
+				"input.ai_reviewer_glance_model": "openai/gpt-6-luna", "input.ai_reviewer_glance_backend": "claw", "input.ai_reviewer_glance_tokens": "400",
+				"input.ai_reviewer_glance_effort": "medium", "input.ai_reviewer_glance_effort_source": "launch",
+				"input.ai_converge_model": "claude-opus-5-5", "input.ai_converge_backend": "claude_code", "input.ai_converge_tokens": "200",
+				"input.ai_converge_effort": "low", "input.ai_converge_effort_source": "backend", "input.ai_converge_effort_requested": "none",
+			},
+			want: []string{
+				"| non envoyé (harness ; demandé high) | 1 000 |",
+				"| high (nœud) · abaissé à low (récupération) | 1 000 |",
+				"| medium (lancement) | 400 |",
+				"| low (harness ; demandé none) | 200 |",
+			},
+		},
+		{
+			name: "the overrides when the run cannot tell which layer",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "100",
+				"input.ai_converge_model": "claude-opus-5-5", "input.ai_converge_backend": "claude_code", "input.ai_converge_tokens": "100",
+				"input.ai_converge_effort": "xhigh", "input.ai_converge_effort_source": "override",
+			},
+			want: []string{"| xhigh (surcharge) | 100 |"},
 		},
 		{
 			name: "missing telemetry stays unavailable and HTML stays text",
 			refs: map[string]string{
 				"run.id": "<details>|unsafe", "input.ai_run_tokens": "{{run.tokens}}",
-				"input.ai_reviewer_gpt_model":  "<b>model</b>|extra\nrow",
-				"input.ai_reviewer_gpt_tokens": "-1",
+				"input.ai_reviewer_model":  "<b>model</b>|extra\nrow",
+				"input.ai_reviewer_tokens": "-1",
 			},
-			want:   []string{"**indisponible**", "&lt;details&gt;&#124;unsafe", "&lt;b&gt;model&lt;/b&gt;&#124;extra row", "| indisponible | xhigh | indisponible |"},
+			want:   []string{"**indisponible**", "&lt;details&gt;&#124;unsafe", "&lt;b&gt;model&lt;/b&gt;&#124;extra row", "| indisponible | indisponible | indisponible |"},
 			absent: []string{"{{run.tokens}}", "<b>model</b>", "**0**", "<a href="},
 		},
 	} {
