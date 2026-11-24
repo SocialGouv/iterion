@@ -42,10 +42,25 @@ func exitError(t *testing.T, status int) error {
 }
 
 // shellFailure is a tool node's failure as the executor builds it: the node,
-// the verb, the process's exit error, then both streams.
+// the verb, the process's exit error, then the stream quoted — through the
+// typed failure the executor returns, so the corpus runs the real reader
+// (ToolCommandFailure), not a hand-built text.
 func shellFailure(t *testing.T, status int, stderr string) *model.ToolExecutionError {
 	t.Helper()
-	return &model.ToolExecutionError{Cause: fmt.Errorf("model: tool node %q: shell command failed: %w\nstdout: \nstderr: %s", "gate", exitError(t, status), stderr)}
+	return shellFailureOn(t, "gate", status, "", stderr)
+}
+
+// shellFailureOn is shellFailure with the node id and stdout set: the paths
+// where the streams decide the reading.
+func shellFailureOn(t *testing.T, nodeID string, status int, stdout, stderr string) *model.ToolExecutionError {
+	t.Helper()
+	return &model.ToolExecutionError{Cause: &model.ToolCommandFailure{
+		NodeID:  nodeID,
+		Outcome: "shell command failed",
+		Cause:   exitError(t, status),
+		Stdout:  stdout,
+		Stderr:  stderr,
+	}}
 }
 
 // fingerprintOf is the fingerprint the engine takes of failure for a run and a
@@ -117,7 +132,12 @@ func TestTheToolFailureFingerprintKeepsItsPartsApart(t *testing.T) {
 // the fingerprint reads through that name and through nothing else.
 func TestTheToolFailureFingerprintReadsThroughTheScriptTempName(t *testing.T) {
 	script := func(name, detail string) *model.ToolExecutionError {
-		return &model.ToolExecutionError{Cause: fmt.Errorf("model: tool node %q: script failed: %w\nstdout: \nstderr: /tmp/%s: 2: %s: not found", "gate", exitError(t, 127), name, detail)}
+		return &model.ToolExecutionError{Cause: &model.ToolCommandFailure{
+			NodeID:  "gate",
+			Outcome: "script failed",
+			Cause:   exitError(t, 127),
+			Stderr:  "/tmp/" + name + ": 2: " + detail + ": not found",
+		}}
 	}
 	first := fingerprintOf(t, "run-1", "gate", script(".iterion-script-1234567890.sh", "nope"))
 	if second := fingerprintOf(t, "run-1", "gate", script(".iterion-script-42.sh", "nope")); second != first {
@@ -235,7 +255,12 @@ func newIdenticalFailer(t *testing.T) *identicalFailer {
 
 func (f *identicalFailer) Execute(_ context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
 	f.calls++
-	return nil, &model.ToolExecutionError{Cause: fmt.Errorf("model: tool node %q: shell command failed: %w\nstdout: \nstderr: x", node.NodeID(), f.exit)}
+	return nil, &model.ToolExecutionError{Cause: &model.ToolCommandFailure{
+		NodeID:  node.NodeID(),
+		Outcome: "shell command failed",
+		Cause:   f.exit,
+		Stderr:  "x",
+	}}
 }
 
 // retryOnce is the catch-all recipe without its wait: one retry of an
