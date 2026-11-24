@@ -16,7 +16,7 @@ statuses, fields and views are this page's mechanics.
 
 Nine views, split by audience. **The epic views carry `label:epic`; the ticket
 views carry `-label:epic`** — an epic sitting in the Kanban's *In progress*
-column is noise, and there are 28 of them (2026-09-22 — the count moves;
+column is noise, and there are 23 open ones (2026-11-23 — the count moves;
 `scripts/board-epics-sync.sh` is what tells you the current one, and whether
 the two representations still agree).
 
@@ -134,13 +134,24 @@ scripts/board-epics-sync.sh --apply    # fix the projection — the parent wins
 task board:epics:sync                  # same, through the Taskfile
 ```
 
+`--apply` fixes two cases: `DIVERGENT` (the field disagrees with the parent)
+and `UNSET` (the field is empty, the parent's value is known). The others need
+a hand and are only reported: `NO EPIC` (no value, and no parent whose `Epic`
+is known — attach a parent that carries one, or give the parent one), `ORPHAN`
+(the parent carries no `Epic`) and `UNMAPPED` (an epic issue without its own
+option). An epic issue is never written: its own value is the option it owns.
+A refused update is named on stderr, the remaining corrections still run, and
+the run exits 2.
+
 It is idempotent: a second consecutive run reports `board is consistent` and
 writes nothing. **That second run is the proof, not the first.**
 
 The rule it enforces holds at any depth: **an item's `Epic` equals its
-parent's `Epic`.** When the parent is an epic issue that is the epic itself;
-when the parent is an ordinary ticket (a legitimate two-level chain — #1209 →
-#1072 → the Connectors epic) it is whatever that ticket carries.
+parent's effective `Epic`.** When the parent is an epic issue that is the
+epic's own value; when the parent is an ordinary ticket (a legitimate
+two-level chain — #1209 → #1072 → the Connectors epic) it is that ticket's own
+parent's effective `Epic`, resolved up the chain, falling back to the ticket's
+field when the chain leaves the board. One `--apply` writes a whole chain.
 
 **Sub-issues are attached to OPEN work only.** Closed items carry the field
 without a parent — reported as `field-only`, which is the expected state. Two
