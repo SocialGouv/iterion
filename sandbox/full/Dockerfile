@@ -95,7 +95,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # gitlab-org/cli goreleaser archive; the dpkg arch matches the asset
 # name, and the binary lives at bin/glab inside the tarball.
 # ---------------------------------------------------------------------
-ARG GLAB_VERSION=1.102.0
+# renovate: datasource=gitlab-releases depName=gitlab-org/cli
+ARG GLAB_VERSION=1.133.0
 RUN ARCH=$(dpkg --print-architecture) \
  && curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${ARCH}.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1 bin/glab \
@@ -115,9 +116,12 @@ RUN ARCH=$(dpkg --print-architecture) \
 #                      base ships Node 24 system-wide; fnm is for
 #                      bots that need a specific Node version.
 # ---------------------------------------------------------------------
-ARG YQ_VERSION=v4.44.5
-ARG KUBECTL_VERSION=v1.31.4
-ARG K9S_VERSION=v0.32.7
+# renovate: datasource=github-releases depName=mikefarah/yq
+ARG YQ_VERSION=v4.54.3
+# renovate: datasource=github-releases depName=kubernetes/kubernetes
+ARG KUBECTL_VERSION=v1.36.7
+# renovate: datasource=github-releases depName=derailed/k9s
+ARG K9S_VERSION=v0.51.0
 ARG FNM_VERSION=v1.38.1
 
 RUN ARCH=$(dpkg --print-architecture) \

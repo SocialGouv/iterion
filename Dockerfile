@@ -169,7 +169,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # GitLab merge requests (inline comments + one-click ```suggestion
 # blocks) from here. Single static binary from the gitlab-org/cli
 # goreleaser archive (binary at bin/glab); dpkg arch matches the asset.
-ARG GLAB_VERSION=1.102.0
+# renovate: datasource=gitlab-releases depName=gitlab-org/cli
+ARG GLAB_VERSION=1.133.0
 RUN ARCH="$(dpkg --print-architecture)" \
  && curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${ARCH}.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1 bin/glab \
@@ -180,7 +181,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # from the same runner pod as glab. Single static tarball; the asset
 # layout is `gh_${VERSION}_linux_${ARCH}/bin/gh`, so `--strip-components 2`
 # pulls the binary out of the versioned directory.
-ARG GH_VERSION=2.65.0
+# renovate: datasource=github-releases depName=cli/cli
+ARG GH_VERSION=2.105.0
 RUN ARCH="$(dpkg --print-architecture)" \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${ARCH}/bin/gh" \
@@ -192,7 +194,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # within ±1 minor for the verbs we use (apply, exec, wait, delete).
 # ~50 MB at this version, which is small relative to the Node + Go
 # + LLM CLIs already in the image.
-ARG KUBECTL_VERSION=v1.36.0
+# renovate: datasource=github-releases depName=kubernetes/kubernetes
+ARG KUBECTL_VERSION=v1.36.7
 RUN ARCH="$(dpkg --print-architecture)" \
  && case "$ARCH" in \
         amd64) KARCH=amd64 ;; \
