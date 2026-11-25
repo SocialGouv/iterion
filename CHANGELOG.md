@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.38.2](https://github.com/SocialGouv/iterion/compare/v7.38.1...v7.38.2) (2026-11-25)
+
+### Bug Fixes
+
+* **security:** Go 1.27.4 builder, x/net v0.62, Debian updates and npm in the images, drop k9s ([#3712](https://github.com/SocialGouv/iterion/issues/3712)) ([45412fe](https://github.com/SocialGouv/iterion/commit/45412fee60939c2c7660e4f9e45c67676a503699)), references [#3608](https://github.com/SocialGouv/iterion/issues/3608)
+
+    <details><summary>why</summary>
+
+    The iterion image compiled iterion and iterion-execenv-guest in golang:1.27-bookworm pinned by a digest that resolves to Go 1.27.0. Trivy reads stdlib v1.27.0 in both binaries, with HIGH advisories fixed in 1.27.3. The govulncheck run behind #3608 analysed the go.mod toolchain (1.26.11), not the toolchain the shipped binaries come from. The image's build stage overrides it.
+
+    </details>
+
 ## [7.38.1](https://github.com/SocialGouv/iterion/compare/v7.38.0...v7.38.1) (2026-11-25)
 
 ### Bug Fixes
