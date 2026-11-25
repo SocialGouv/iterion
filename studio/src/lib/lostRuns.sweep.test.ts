@@ -23,6 +23,10 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { boundSweep } from "@/test/sweep";
+
+boundSweep();
+
 const RAW = import.meta.glob("/src/**/*.{ts,tsx}", {
   query: "?raw",
   import: "default",

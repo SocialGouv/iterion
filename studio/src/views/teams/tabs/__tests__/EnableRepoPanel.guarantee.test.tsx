@@ -54,7 +54,13 @@ import {
   previewForgeEnable,
 } from "@/api/forgeConnections";
 
+import { boundSweep } from "@/test/sweep";
+
 import { EnableRepoPanel } from "../integrations/EnableRepoPanel";
+
+// The callers check below globs the source tree: the file runs under the
+// sweep bound (@/test/sweep).
+boundSweep();
 
 const reposMock = vi.mocked(listForgeRepos);
 const previewMock = vi.mocked(previewForgeEnable);

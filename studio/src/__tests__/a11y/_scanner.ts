@@ -4,6 +4,12 @@
 // a whole-file scan. NOT a test file — imported by the guards. Test files are
 // excluded so a guard never matches itself.
 
+import { boundSweep } from "@/test/sweep";
+
+// Every importer of this list sweeps the tree: its tests run under the sweep
+// bound (@/test/sweep).
+boundSweep();
+
 const RAW = import.meta.glob("/src/**/*.{ts,tsx}", {
   query: "?raw",
   import: "default",

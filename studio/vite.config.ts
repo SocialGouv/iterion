@@ -86,6 +86,8 @@ export default defineConfig({
     // reports the opaque one. 5x the 3 s budget keeps the readable error
     // first by construction rather than by a 2 s margin a loaded runner can
     // eat — and only a test that was going to fail ever waits this long.
+    // A whole-tree sweep is not one unit of behaviour: its file raises both
+    // bounds through boundSweep() (src/test/sweep.ts).
     testTimeout: 15_000,
     hookTimeout: 15_000,
   },
