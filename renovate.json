@@ -44,6 +44,7 @@
         "/^Dockerfile$/",
         "/(^|/)Dockerfile\\.runner-devbox$/",
         "/(^|/)sandbox/full/Dockerfile$/",
+        "/(^|/)sandbox/slim/Dockerfile$/",
         "/(^|/)ci/arc-runner/Dockerfile$/",
         "/(^|/)pkg/plugin/builtin/firecrawl/plugin\\.yaml$/",
         "/(^|/)pkg/plugin/builtin/codeindex/plugin\\.yaml$/"
