@@ -173,6 +173,11 @@ type Store interface {
 	// ListDue returns enabled schedules whose next_fire_at <= now (capped by
 	// limit, 0 = no cap), oldest-due first.
 	ListDue(ctx context.Context, now time.Time, limit int) ([]ScheduledBot, error)
+	// ListEnabled returns every enabled schedule of every tenant, oldest
+	// next_fire_at first (ties on the id). Uncapped: the schedule-outcome
+	// watch evaluates each row's health, and a capped listing would leave
+	// the rows past the cap unwatched.
+	ListEnabled(ctx context.Context) ([]ScheduledBot, error)
 	// ClaimTick atomically advances a schedule's next_fire_at from expectedNext
 	// to newNext (and stamps last_fire_at = firedAt), returning true only when
 	// THIS caller won the CAS. A losing replica gets (false, nil). This is the

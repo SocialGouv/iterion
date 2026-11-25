@@ -58,6 +58,17 @@ func (s *MemoryStore) ListDue(_ context.Context, now time.Time, limit int) ([]Sc
 	return out, nil
 }
 
+func (s *MemoryStore) ListEnabled(_ context.Context) ([]ScheduledBot, error) {
+	out := s.kit.List(func(sb ScheduledBot) bool { return !sb.Disabled })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].NextFireAt.Equal(out[j].NextFireAt) {
+			return out[i].NextFireAt.Before(out[j].NextFireAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
 func (s *MemoryStore) ClaimTick(_ context.Context, id string, expectedNext, newNext, firedAt time.Time) (bool, error) {
 	// A missing row and a lost CAS both mean "didn't win", never an error.
 	won, _ := s.kit.Mutate(id, func(sb *ScheduledBot) bool {

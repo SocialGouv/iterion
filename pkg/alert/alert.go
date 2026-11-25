@@ -54,6 +54,12 @@ const (
 	// holders kept dying) — the run's automation is stopped and only an
 	// operator restarts it.
 	KindRouteActionFailed Kind = "route_action_failed"
+	// KindScheduleStalled fires when a cloud schedule's own row — not one
+	// run — shows it stopped producing successful runs: a slot no scheduler
+	// claimed, a launch refused before any run existed, or a last run that
+	// failed. RunID is set only when a run is the cause; RunName carries
+	// the scheduled bot.
+	KindScheduleStalled Kind = "schedule_stalled"
 )
 
 // Alert is the structured payload delivered to every sink. It carries
@@ -100,6 +106,8 @@ func (a Alert) Title() string {
 		return fmt.Sprintf("Run escalated to operator: %s", name)
 	case KindRouteActionFailed:
 		return fmt.Sprintf("Run routing action failed: %s", name)
+	case KindScheduleStalled:
+		return fmt.Sprintf("Schedule stalled: %s", name)
 	default:
 		return fmt.Sprintf("Run alert: %s", name)
 	}
