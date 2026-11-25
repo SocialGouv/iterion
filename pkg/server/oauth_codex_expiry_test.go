@@ -422,8 +422,8 @@ func TestCodexConnect_AnExpiredCredentialIsRefreshedWithoutWaitingForTheTicker(t
 }
 
 // syncBuf collects log output from the handler goroutine. A test observer fed
-// by another goroutine takes a mutex, always — the -race job is a required
-// check and has reddened tests written without one.
+// by another goroutine takes a mutex, always — the -race job runs on every
+// push to main and has reddened tests written without one.
 type syncBuf struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
