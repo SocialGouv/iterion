@@ -42,6 +42,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/git"
 )
 
 func main() {
@@ -147,8 +149,9 @@ func validateWithTestquarantine(repo string) func([]byte) error {
 type execGit struct{ dir string }
 
 func (g execGit) git(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", git.NoRunHooks(args...)...)
 	cmd.Dir = g.dir
+	cmd.Env = git.SanitizeEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

@@ -1,12 +1,9 @@
-2026-11-25T11:56:01.7114210Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-35662adc\-ce06\-43e4\-8f21\-9bd19f9cc2e4\.config
 2026-11-25T11:56:01.7327395Z ##[debug]0
 2026-11-25T11:56:01.7328216Z ##[debug]
-2026-11-25T11:56:01.7349848Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
 2026-11-25T11:56:01.7544669Z /github/runner_temp/git-credentials-35662adc-ce06-43e4-8f21-9bd19f9cc2e4.config
 2026-11-25T11:56:01.7592652Z ##[debug]0
 2026-11-25T11:56:01.7627005Z ##[debug]/github/runner_temp/git-credentials-35662adc-ce06-43e4-8f21-9bd19f9cc2e4.config
 2026-11-25T11:56:01.7627863Z ##[debug]
-2026-11-25T11:56:01.7694792Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-35662adc\-ce06\-43e4\-8f21\-9bd19f9cc2e4\.config
 2026-11-25T11:56:01.7804921Z ##[debug]0
 2026-11-25T11:56:01.7806633Z ##[debug]
 2026-11-25T11:56:01.7912581Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
