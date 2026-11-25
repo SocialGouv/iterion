@@ -158,6 +158,14 @@ func (w *Watcher) handle(ctx context.Context, run Run) error {
 		return w.green(ctx, run)
 	case "failure", "timed_out":
 		if run.Attempt == 1 {
+			newer, found, err := w.newerRun(ctx, run)
+			if err != nil {
+				return err
+			}
+			if found {
+				w.say("run %d (%s) failed on its first attempt and is not main's newest run: main's newer run %d (#%d, %s, %s) judges main. main-watch does not rerun it, since a rerun joins the watched workflow's concurrency group and could cancel the newer run", run.ID, short(run.HeadSHA), newer.ID, newer.RunNumber, newer.Event, newer.Status)
+				return nil
+			}
 			w.say("run %d (%s) failed on its first attempt: rerunning its failed jobs once", run.ID, short(run.HeadSHA))
 			return w.GH.RerunFailedJobs(ctx, run.ID)
 		}
@@ -426,18 +434,37 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 
 var flakeMarker = regexp.MustCompile(`<!-- main-watch:flake (\S+) (\S+) -->`)
 
+// modulePath prefixes every package of this repository; a ticket title
+// names a package by the rest of its path.
+const modulePath = "github.com/SocialGouv/iterion/"
+
+// titleNames says whether a maintainer's `flaky:` title names a failure's
+// package and top-level test, each as a whole token (backquotes and
+// punctuation around it aside): a top-level test name alone is shared by many
+// packages. The package is its module-relative path or its import path.
+func titleNames(title, pkg, top string) bool {
+	rel := strings.TrimPrefix(pkg, modulePath)
+	var hasPkg, hasTest bool
+	for _, tok := range strings.Fields(title) {
+		tok = strings.Trim(tok, "`'\"()[],;:")
+		hasPkg = hasPkg || tok == rel || tok == pkg
+		hasTest = hasTest || tok == top
+	}
+	return hasPkg && hasTest
+}
+
 // flakeTicket finds the open ticket of a flaking test — one main-watch filed
 // (its marker names the package and the test) or one a maintainer filed (a
-// `flaky:` title naming the top-level test) — or files it under the CI-health
-// epic. Several matches resolve to the lowest number: the oldest ticket.
+// `flaky:` title naming the package and the top-level test) — or files it
+// under the CI-health epic. Several matches resolve to the lowest number: the
+// oldest ticket.
 func (w *Watcher) flakeTicket(ctx context.Context, issues []Issue, run Run, f jobFailure) (Issue, error) {
 	top := strings.SplitN(f.Test, "/", 2)[0]
-	word := regexp.MustCompile(`\b` + regexp.QuoteMeta(top) + `\b`)
 	var byMarker, byTitle []Issue
 	for _, is := range issues {
 		if m := flakeMarker.FindStringSubmatch(is.Body); m != nil && ownIssue(is) && m[1] == f.Package && m[2] == f.Test {
 			byMarker = append(byMarker, is)
-		} else if strings.HasPrefix(is.Title, "flaky:") && maintainer(is) && word.MatchString(is.Title) {
+		} else if strings.HasPrefix(is.Title, "flaky:") && maintainer(is) && titleNames(is.Title, f.Package, top) {
 			byTitle = append(byTitle, is)
 		}
 	}
@@ -453,7 +480,7 @@ func (w *Watcher) flakeTicket(ctx context.Context, issues []Issue, run Run, f jo
 	if err := w.ensureLabel(ctx); err != nil {
 		return Issue{}, err
 	}
-	title := fmt.Sprintf("flaky: %s %s", strings.TrimPrefix(f.Package, "github.com/SocialGouv/iterion/"), f.Test)
+	title := fmt.Sprintf("flaky: %s %s", strings.TrimPrefix(f.Package, modulePath), f.Test)
 	body := fmt.Sprintf("main-watch saw `%s` (`%s`) fail on main in job [%s](%s) of run %s (commit %s), then pass when the failed jobs were rerun.\n\n"+
 		"Fix the test, remove its row from `%s` in the same change, and close this issue: the nightly quarantine witness reddens on a row whose ticket is closed.\n\n"+
 		"Opened by main-watch: %s\n\n<!-- main-watch:flake %s %s -->\n",
@@ -665,6 +692,20 @@ func (w *Watcher) mainRuns(ctx context.Context) ([]Run, error) {
 	}
 	slices.SortFunc(out, func(a, b Run) int { return b.RunNumber - a.RunNumber })
 	return out, nil
+}
+
+// newerRun returns the newest eligible run of main started after run,
+// whatever its status: when there is one, run is not main's newest and is
+// never rerun, whatever the watched workflow's concurrency keying.
+func (w *Watcher) newerRun(ctx context.Context, run Run) (Run, bool, error) {
+	runs, err := w.mainRuns(ctx)
+	if err != nil {
+		return Run{}, false, err
+	}
+	if len(runs) > 0 && runs[0].RunNumber > run.RunNumber {
+		return runs[0], true, nil
+	}
+	return Run{}, false, nil
 }
 
 // verdict says whether a run's latest attempt says something about main:

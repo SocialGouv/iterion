@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -96,9 +97,9 @@ type GitHub interface {
 	Attempt(ctx context.Context, id int64, attempt int) (Run, error)
 	Jobs(ctx context.Context, id int64, attempt int) ([]Job, error)
 	JobLog(ctx context.Context, jobID int64) (string, error)
-	// MainRuns lists the newest push runs of the watched workflow on main,
-	// whatever their status or head repository: callers filter through
-	// eligible.
+	// MainRuns lists the newest push and schedule runs of the watched
+	// workflow on main, whatever their status or head repository: callers
+	// filter through eligible.
 	MainRuns(ctx context.Context) ([]Run, error)
 	Compare(ctx context.Context, base, head string) ([]Commit, error)
 	PullRequest(ctx context.Context, number int) (PullRequest, error)
@@ -260,20 +261,42 @@ func (c *restClient) JobLog(ctx context.Context, jobID int64) (string, error) {
 	return s, c.get(ctx, c.repoPath("/actions/jobs/%d/logs", jobID), &s)
 }
 
-// MainRuns reads the first page only, the newest 100 runs: a red episode
-// older than that finds no last green run, and its ticket says the suspects
-// are unknown rather than guessing them. The `branch` filter matches a run's
-// head branch, which a pull request from any fork's `main` also has, so the
-// server is asked for push runs only: such pull request runs cannot fill the
-// page. eligible also accepts schedule runs; the watched workflow has no
-// schedule trigger, and one added there needs a second listing here
-// (event=schedule) merged with this one.
+// MainRuns reads the first page of push runs and of schedule runs (the
+// nightly), the newest 100 of each: a red episode older than that finds no
+// last green run, and its ticket says the suspects are unknown rather than
+// guessing them. The `branch` filter matches a run's head branch, which a
+// pull request from any fork's `main` also has, so the server is asked for
+// push and schedule runs by event: such pull request runs cannot fill a page.
+// A workflow_dispatch run is left out: main-watch.yml never receives one, so
+// the listing judges the same runs the event path does. A full page of push
+// runs is the window: nightlies older than its oldest run are dropped, so the
+// last-green lookup never reaches past push runs the page cut off.
 func (c *restClient) MainRuns(ctx context.Context) ([]Run, error) {
-	var v struct {
-		Runs []Run `json:"workflow_runs"`
+	list := func(event string) ([]Run, error) {
+		var v struct {
+			Runs []Run `json:"workflow_runs"`
+		}
+		err := c.get(ctx, c.repoPath("/actions/workflows/%s/runs?branch=main&event=%s&per_page=100", url.PathEscape(c.workflow), event), &v)
+		return v.Runs, err
 	}
-	err := c.get(ctx, c.repoPath("/actions/workflows/%s/runs?branch=main&event=push&per_page=100", url.PathEscape(c.workflow)), &v)
-	return v.Runs, err
+	push, err := list("push")
+	if err != nil {
+		return nil, err
+	}
+	nightly, err := list("schedule")
+	if err != nil {
+		return nil, err
+	}
+	oldest := 0
+	if len(push) == 100 {
+		oldest = slices.MinFunc(push, func(a, b Run) int { return a.RunNumber - b.RunNumber }).RunNumber
+	}
+	for _, r := range nightly {
+		if r.RunNumber >= oldest {
+			push = append(push, r)
+		}
+	}
+	return push, nil
 }
 
 func (c *restClient) Compare(ctx context.Context, base, head string) ([]Commit, error) {

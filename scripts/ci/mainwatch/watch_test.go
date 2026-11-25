@@ -62,6 +62,7 @@ func failedJobsAgain(t *testing.T, f *fixtureGitHub, id int64, n int) {
 
 func TestAFirstRedAttemptIsRerunOnce(t *testing.T) {
 	f := newFixture(t)
+	f.mainRuns = []Run{recorded(t, f, redMongoRun, 1, "failure")}
 	w, _ := newWatcher(t, f, &recordingGit{})
 	if err := w.HandleRun(context.Background(), redMongoRun); err != nil {
 		t.Fatal(err)
@@ -811,5 +812,113 @@ func TestAClosedQuarantinePullRequestIsNotReopened(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "pull/8001 was closed unmerged: main-watch does not reopen it") {
 		t.Errorf("the decision is not reported:\n%s", out)
+	}
+}
+
+// A rerun joins the watched workflow's concurrency group, which may cancel
+// the runs in it: rerunning an older red run would cost main's newer run
+// (push or nightly, running or done) its verdict. Only main's newest eligible
+// run is rerun, and the refusal names the run that judges main instead.
+func TestARedRunBehindANewerRunOfMainIsNotRerun(t *testing.T) {
+	for _, event := range []string{"push", "schedule"} {
+		for _, status := range []string{"in_progress", "completed"} {
+			t.Run(event+"/"+status, func(t *testing.T) {
+				f := newFixture(t)
+				older := recorded(t, f, redMongoRun, 1, "failure")
+				newer := older
+				newer.ID, newer.RunNumber, newer.Event, newer.Status, newer.Conclusion = 45600000001, older.RunNumber+1, event, status, ""
+				if status == "completed" {
+					newer.Conclusion = "success"
+				}
+				f.mainRuns = []Run{older, newer}
+				w, out := newWatcher(t, f, &recordingGit{})
+				if err := w.HandleRun(context.Background(), redMongoRun); err != nil {
+					t.Fatal(err)
+				}
+				if len(f.writes) != 0 {
+					t.Fatalf("an older red run was rerun behind main's newer run: writes = %v", f.kinds())
+				}
+				if want := fmt.Sprintf("main's newer run %d (#%d", newer.ID, newer.RunNumber); !strings.Contains(out.String(), want) {
+					t.Errorf("the refusal does not name the newer run (%q):\n%s", want, out)
+				}
+			})
+		}
+	}
+}
+
+// The dry run prints the same refusal.
+func TestADryRunReportsTheNewerRunThatJudgesMain(t *testing.T) {
+	f := newFixture(t)
+	older := recorded(t, f, redMongoRun, 1, "failure")
+	newer := older
+	newer.ID, newer.RunNumber, newer.Status, newer.Conclusion = 45600000001, older.RunNumber+1, "in_progress", ""
+	f.mainRuns = []Run{newer, older}
+	out := &bytes.Buffer{}
+	w, _ := newWatcher(t, newDryRun(f, out), dryGit{out: out})
+	w.Out = out
+	if err := w.HandleRun(context.Background(), redMongoRun); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "would rerun") || !strings.Contains(out.String(), "main's newer run 45600000001") {
+		t.Fatalf("the dry run does not report the refusal:\n%s", out)
+	}
+}
+
+// A maintainer's `flaky:` ticket names a test by its top-level name, which
+// many packages share: it is the flake's ticket only when its title also
+// names the flake's package.
+func TestAMaintainersFlakyTicketOfAnotherPackageIsNotReused(t *testing.T) {
+	for name, title := range map[string]string{
+		"other package": "flaky: pkg/runtime TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries hands over one pass early",
+		"no package":    "flaky: TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries hands over one pass early",
+		"longer path":   "flaky: pkg/server/sub TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries hands over one pass early",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			recorded(t, f, red3675Run, 2, "success")
+			var human Issue
+			if err := f.load("issue-3675.json", &human); err != nil {
+				t.Fatal(err)
+			}
+			human.Title = title
+			f.issues = []Issue{human}
+			w, _ := newWatcher(t, f, &recordingGit{})
+			w.ValidateQuarantine = func([]byte) error { return nil }
+			if err := w.HandleRun(context.Background(), red3675Run); err != nil {
+				t.Fatal(err)
+			}
+			if slices.ContainsFunc(f.writes, func(s string) bool { return strings.HasPrefix(s, "comment #3675") }) {
+				t.Fatalf("the flake was recorded on #3675, whose title names another package:\n%s", strings.Join(f.writes, "\n---\n"))
+			}
+			f.write("issue #7001 flaky: pkg/server TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries")
+		})
+	}
+}
+
+// The package matches as a whole token, backquoted or by its import path.
+func TestAMaintainersFlakyTicketNamingThePackageIsReused(t *testing.T) {
+	for name, title := range map[string]string{
+		"backquoted":  "flaky: `pkg/server` `TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries` hangs",
+		"import path": "flaky: github.com/SocialGouv/iterion/pkg/server TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			recorded(t, f, red3675Run, 2, "success")
+			var human Issue
+			if err := f.load("issue-3675.json", &human); err != nil {
+				t.Fatal(err)
+			}
+			human.Title = title
+			f.issues = []Issue{human}
+			w, _ := newWatcher(t, f, &recordingGit{})
+			w.ValidateQuarantine = func([]byte) error { return nil }
+			if err := w.HandleRun(context.Background(), red3675Run); err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(f.kinds(), "issue") {
+				t.Fatalf("a new ticket was filed beside #3675:\n%s", strings.Join(f.writes, "\n---\n"))
+			}
+			f.write("comment #3675")
+		})
 	}
 }

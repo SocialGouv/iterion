@@ -259,8 +259,8 @@ unproven, so `main`'s own runs are the witness, and a deterministic workflow,
 
 | what the run shows | what main-watch does |
 | --- | --- |
-| red on attempt 1 | reruns the failed jobs, once |
-| green on the rerun: a **flake** | a `flaky:` ticket per failing test under epic #1410, or a comment on the open one (a person's `flaky:` ticket naming the test counts), and one pull request adding the rows to `scripts/ci/test-quarantine.tsv`, auto-merge armed |
+| red on attempt 1 | reruns the failed jobs, once, only if it is `main`'s newest run (push or nightly): a rerun joins the concurrency group and could cancel a newer run, so an older red run is left to the newer one, which main-watch names |
+| green on the rerun: a **flake** | a `flaky:` ticket per failing test under epic #1410, or a comment on the open one (a person's `flaky:` ticket naming the package and the test counts), and one pull request adding the rows to `scripts/ci/test-quarantine.tsv`, auto-merge armed |
 | red on the rerun: a **regression** | one `main red` ticket naming the failing tests and the pull requests merged since the last green run |
 | still red 4 h after the red run started | a pull request reverting the most recently merged suspect, auto-merge armed, and a comment on the original |
 | green | the episode's revert pull request closes if still open, then the `main red` ticket closes |
