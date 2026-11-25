@@ -1,6 +1,6 @@
 Azure/setup-helm 9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 .
 SocialGouv/buildkit-operator 42071022f7c68070aeba92e8c30e95d8564eeb53 .
-SocialGouv/token-bureau 453f0eeb5add59489df124a0aedcb20a9b7fb027 .
+SocialGouv/token-bureau 1ff14fd08c4972ea9c65a2b958c7ce41d4f28036 .
 actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 .
 actions/configure-pages 983d7736d9b0ae728b81ab479565c72886d7745b .
 actions/create-github-app-token bcd2ba49218906704ab6c1aa796996da409d3eb1 .
