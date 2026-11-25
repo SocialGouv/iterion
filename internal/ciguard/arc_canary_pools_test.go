@@ -278,3 +278,148 @@ func TestTheRunnerFreshnessNamesEveryDriftedFact(t *testing.T) {
 		t.Errorf("the image this tree builds is reported stale against this tree (exit %d):\n%s", code, out)
 	}
 }
+
+// TestTheCanaryWatchdogPagesAPoolStalledBeyondThePreviousRun executes the
+// watchdog step itself — the shipped bash — against canned Actions API
+// documents through a stand-in gh, because the wiring between the runs and the
+// verdict is where a pool can go deaf unseen: judging only the previous run,
+// a heavy probe is ~35 minutes old and its 90-minute threshold is never
+// crossed (Revi Ra51f91).
+//
+// Mutations seen red: the older-runs scan removed (the stalled heavy probe
+// answers green); the oldest-pending fold dropped (same); the older probe
+// judged with the default threshold (heavy red at 60 minutes).
+func TestTheCanaryWatchdogPagesAPoolStalledBeyondThePreviousRun(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Fatalf("jq is required by this witness's stand-in gh; it is declared in devbox.json, so run through `devbox run --`: %v", err)
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(mustRead(t, canaryWorkflowPath), &wf); err != nil {
+		t.Fatalf("parse %s: %v", canaryWorkflowPath, err)
+	}
+	var step string
+	for _, s := range wf.Jobs[canaryWatchdogJob].Steps {
+		if strings.Contains(s.Run, "arc-canary-verdict.sh") {
+			step = s.Run
+		}
+	}
+	if strings.Count(step, "sleep 300\n") != 1 {
+		t.Fatalf("%s: the watchdog step has no single `sleep 300` head start to skip in this harness", canaryWorkflowPath)
+	}
+	step = strings.Replace(step, "sleep 300\n", ":\n", 1)
+
+	const fakeGh = `#!/bin/sh
+case "$1" in
+api)
+  path="$2"; shift 2
+  case "$path" in
+    */actions/workflows/arc-canary.yml/runs*) doc="$FIXTURES/runs.json" ;;
+    */actions/runs/*/jobs*) id=${path#*/actions/runs/}; id=${id%%/*}; doc="$FIXTURES/jobs-$id.json" ;;
+    *) echo "unexpected api path $path" >&2; exit 97 ;;
+  esac
+  [ -f "$doc" ] || { echo "HTTP 404: $path" >&2; exit 1; }
+  if [ "$1" = --jq ]; then exec jq -r "$2" "$doc"; fi
+  exec cat "$doc"
+  ;;
+issue|label) printf '%s\n' "$*" >> "$ACTIONS" ;;
+*) echo "unexpected gh $*" >&2; exit 96 ;;
+esac
+`
+	job := func(name, status, conclusion, created, started string) string {
+		c, s := "null", "null"
+		if conclusion != "" {
+			c = `"` + conclusion + `"`
+		}
+		if started != "" {
+			s = `"` + started + `"`
+		}
+		return `{"name":"` + name + `","status":"` + status + `","conclusion":` + c + `,"created_at":"` + created + `","started_at":` + s + `}`
+	}
+	green := func(created, started string) string {
+		return `{"jobs":[` + job("canary-small", "completed", "success", created, started) + "," +
+			job("canary-large", "completed", "success", created, started) + "," +
+			job("canary-heavy", "completed", "success", created, started) + `]}`
+	}
+	runs := func(older, olderCreated string) string {
+		r := `{"workflow_runs":[{"id":1000,"status":"in_progress","conclusion":null,"created_at":"2026-10-29T05:00:00Z"},` +
+			`{"id":999,"status":"completed","conclusion":"success","created_at":"2026-10-29T04:30:00Z"}`
+		if older != "" {
+			r += `,{"id":998,"status":"` + older + `","conclusion":null,"created_at":"` + olderCreated + `"}`
+		}
+		return r + `]}`
+	}
+	for _, tc := range []struct {
+		name, runs, prevJobs, olderJobs string
+		wantPage                        bool
+		wantDetail                      string
+	}{
+		{"heavy stalled 100 min in an older run",
+			runs("in_progress", "2026-10-29T03:20:00Z"), green("2026-10-29T04:30:00Z", "2026-10-29T04:30:10Z"),
+			`{"jobs":[` + job("canary-small", "completed", "success", "2026-10-29T03:20:00Z", "2026-10-29T03:20:10Z") + "," +
+				job("canary-large", "completed", "success", "2026-10-29T03:20:00Z", "2026-10-29T03:20:10Z") + "," +
+				job("canary-heavy", "queued", "", "2026-10-29T03:20:00Z", "") + `]}`,
+			true, "heavy: an older probe"},
+		{"heavy waiting 60 min, under its threshold",
+			runs("in_progress", "2026-10-29T04:00:00Z"), green("2026-10-29T04:30:00Z", "2026-10-29T04:30:10Z"),
+			`{"jobs":[` + job("canary-heavy", "queued", "", "2026-10-29T04:00:00Z", "") + `]}`,
+			false, ""},
+		{"small stalled 60 min in an older run",
+			runs("in_progress", "2026-10-29T04:00:00Z"), green("2026-10-29T04:30:00Z", "2026-10-29T04:30:10Z"),
+			`{"jobs":[` + job("canary-small", "queued", "", "2026-10-29T04:00:00Z", "") + `]}`,
+			true, "small: an older probe"},
+		{"legacy single-canary run, nothing to judge",
+			runs("", ""), `{"jobs":[` + job("canary", "completed", "success", "2026-10-29T04:30:00Z", "2026-10-29T04:30:10Z") + `]}`, "",
+			false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, fixtures := t.TempDir(), t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(fakeGh), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(jq, filepath.Join(dir, "jq")); err != nil {
+				t.Fatal(err)
+			}
+			docs := map[string]string{"runs.json": tc.runs, "jobs-999.json": tc.prevJobs}
+			if tc.olderJobs != "" {
+				docs["jobs-998.json"] = tc.olderJobs
+			}
+			for n, d := range docs {
+				if err := os.WriteFile(filepath.Join(fixtures, n), []byte(d), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			actions := filepath.Join(t.TempDir(), "actions")
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", step)
+			cmd.Dir = "../.."
+			cmd.Env = []string{
+				"PATH=" + dir + string(os.PathListSeparator) + "/usr/bin:/bin",
+				"HOME=" + dir, "LC_ALL=C",
+				"GH_REPO=o/r", "GITHUB_RUN_ID=1000", "LABEL=ci:arc-canary", "RUN_URL=https://example.invalid/run",
+				"NOW=2026-10-29T05:00:00Z", "FIXTURES=" + fixtures, "ACTIONS=" + actions,
+			}
+			out, runErr := cmd.CombinedOutput()
+			if runErr != nil {
+				t.Fatalf("the watchdog step failed: %v\n%s", runErr, out)
+			}
+			recorded, _ := os.ReadFile(actions)
+			paged := strings.Contains(string(recorded), "issue create") || strings.Contains(string(recorded), "issue comment")
+			if paged != tc.wantPage {
+				t.Fatalf("paged=%v, want %v\nstep output:\n%s\ngh actions:\n%s", paged, tc.wantPage, out, recorded)
+			}
+			if tc.wantDetail != "" && !strings.Contains(string(out), tc.wantDetail) {
+				t.Errorf("the page does not name %q:\n%s", tc.wantDetail, out)
+			}
+		})
+	}
+}

@@ -141,20 +141,32 @@ jobs:
           IFS=$'\t' read -r prev_id prev_status prev_conclusion prev_created <<<"$prev"
           echo "previous probe: run $prev_id status=$prev_status conclusion=$prev_conclusion created=$prev_created"
 
-          # Each pool is judged on its own probe job, with its own threshold:
+          # Each pool is judged on its own probe jobs, with its own threshold:
           # the heavy pool is saturated by design while the post-merge witness
-          # runs (#3694), so it gets 90 minutes before a stall pages.
+          # runs (#3694), so it gets 90 minutes before a stall pages. Two
+          # candidates per pool:
+          #   - its job in the previous run (as answered, waited, cancelled);
+          #   - its OLDEST job still waiting in any older run not completed.
+          # A threshold longer than the cron interval is only ever crossed by a
+          # run older than the previous one: judging the previous run alone,
+          # a deaf heavy pool would answer green forever (Revi Ra51f91).
           # Facts cross as `|`-joined fields with `-` for empty: a tab IFS
           # would merge two empty fields and shift the rest.
           jobs_json=$(gh api "repos/$GH_REPO/actions/runs/$prev_id/jobs?per_page=100")
-          verdicts=""
-          while IFS=' ' read -r name stall; do
-            job=$(printf '%s' "$jobs_json" | jq -r --arg n "$name" \
-              '[.jobs[] | select(.name == $n)][0] | select(. != null)
-               | [.status, (.conclusion // "-"), (.started_at // "-"), (.created_at // "-")] | join("|")')
-            job_status="" job_conclusion="" job_started="" job_created=""
-            if [ -n "$job" ]; then
-              IFS='|' read -r job_status job_conclusion job_started job_created <<<"$job"
+          older_runs=$(gh api "repos/$GH_REPO/actions/workflows/arc-canary.yml/runs?per_page=12" \
+            --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID and .id != $prev_id and .status != \"completed\") | .id] | map(tostring) | join(\" \")")
+          older_jobs='[]'
+          for rid in $older_runs; do
+            more=$(gh api "repos/$GH_REPO/actions/runs/$rid/jobs?per_page=100" --jq '.jobs')
+            older_jobs=$(jq -c --argjson more "$more" '. + $more' <<<"$older_jobs")
+          done
+          job_line='[.status, (.conclusion // "-"), (.started_at // "-"), (.created_at // "-")] | join("|")'
+
+          # judge <stall> <run status> <run created> <job line or empty>
+          judge() {
+            local job_status="" job_conclusion="" job_started="" job_created="" answer
+            if [ -n "$4" ]; then
+              IFS='|' read -r job_status job_conclusion job_started job_created <<<"$4"
               [ "$job_conclusion" = "-" ] && job_conclusion=""
               [ "$job_started" = "-" ] && job_started=""
               [ "$job_created" = "-" ] && job_created=""
@@ -163,11 +175,24 @@ jobs:
             # cancelled exemption, the refusal to judge on a missing date — so
             # a harness can run the text that ships:
             # internal/ciguard/arc_canary_test.go.
-            answer=$(CANARY_STALL_SECONDS="$stall" PREV_STATUS="$prev_status" PREV_CREATED="$prev_created" \
+            answer=$(CANARY_STALL_SECONDS="$1" PREV_STATUS="$2" PREV_CREATED="$3" \
               JOB_STATUS="$job_status" JOB_CONCLUSION="$job_conclusion" JOB_CREATED="$job_created" JOB_STARTED="$job_started" \
               ./scripts/ci/arc-canary-verdict.sh)
-            pool_verdict=$(printf '%s\n' "$answer" | sed -n 's/^verdict=//p')
-            pool_detail=$(printf '%s\n' "$answer" | sed -n 's/^detail=//p')
+            printf '%s\t%s\n' "$(printf '%s\n' "$answer" | sed -n 's/^verdict=//p')" "$(printf '%s\n' "$answer" | sed -n 's/^detail=//p')"
+          }
+
+          verdicts=""
+          while IFS=' ' read -r name stall; do
+            latest=$(jq -r --arg n "$name" "[.jobs[] | select(.name == \$n)][0] | select(. != null) | $job_line" <<<"$jobs_json")
+            IFS=$'\t' read -r pool_verdict pool_detail < <(judge "$stall" "$prev_status" "$prev_created" "$latest")
+            oldest=$(jq -r --arg n "$name" "[.[] | select(.name == \$n and .status != \"completed\")] | sort_by(.created_at) | .[0] | select(. != null) | $job_line" <<<"$older_jobs")
+            if [ -n "$oldest" ]; then
+              IFS=$'\t' read -r older_verdict older_detail < <(judge "$stall" in_progress "" "$oldest")
+              if [ "$older_verdict" = "red" ]; then
+                pool_verdict=red
+                pool_detail="an older probe: $older_detail"
+              fi
+            fi
             echo "$name: verdict=$pool_verdict detail=$pool_detail"
             verdicts+="${name#canary-}"$'\t'"$pool_verdict"$'\t'"$pool_detail"$'\n'
           done <<'POOLS'
