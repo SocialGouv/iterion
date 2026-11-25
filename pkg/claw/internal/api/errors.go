@@ -28,7 +28,8 @@ type APIError struct {
 	Body string
 
 	// Retryable is true iff the StatusCode falls into the standard
-	// transient-status set (408, 409, 429, 5xx).
+	// transient-status set (408, 409, 429, 5xx) — except for a grammar
+	// refusal, which NewHTTPError marks non-retryable whatever its status.
 	Retryable bool
 }
 
