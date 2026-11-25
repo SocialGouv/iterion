@@ -10,11 +10,13 @@ retains its own requirements.
 
 A **parked `revi/review`** is its own, narrower opening and does not go through
 this runbook: when the gate is paused on an exhausted LLM quota and every other
-required check is green on the PR, the operator merges THAT PR with the parked
-gate bypassed — no push to main, no train, because the required set ran on CI
-instead of being reproduced locally. What it still owes is the converged local
-adversarial loop standing in for the reviewer, and the trailers that make the
-bypass greppable: [the parked-gate merge](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+required check is green on the PR — under the `ci:full` label, since a light
+PR's run skips `race-shard` and `test-e2e` — the operator merges THAT PR with
+the parked gate bypassed: no push to main, only on an empty queue, and after
+`task ci:gate` (not `task check` alone) on the PR merged into current `main`,
+the tree no CI run tested. It also owes the converged local adversarial loop
+standing in for the reviewer, and the trailers that make the bypass greppable:
+[the parked-gate merge](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
 
 ## Prepare a fresh worktree
 
@@ -42,12 +44,18 @@ not invisible success. Record machine effects in the [flake register](../testing
 
 ## Review, integrate, push, witness
 
-1. **Give peers advance notice.** Before the first push of a wave, notify
-   sessions with queued PRs and unpushed branches. A main advance invalidates
-   merge groups and costs rebases. Identify the scope, base and intended wave.
-   A wave whose PRs sit in the queue dequeues them all and trains the exact
-   set: [one lane per burst](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24),
-   never an admin merge beside the wave's own queued entries.
+1. **Wait for an empty queue, and give peers notice.** A push to main
+   rebuilds every merge group in flight, so the push waits until the queue
+   has no entry in flight
+   ([queue hygiene](../../merge-policy.md#queue-hygiene-nothing-moves-main-while-entries-are-in-flight-decided-2026-11-25));
+   an incident fix is the one exception. Before the first push of a wave,
+   notify sessions with unpushed branches: each main advance costs them a
+   rebase. Identify the scope, base and intended wave. A wave whose PRs sit
+   in the queue dequeues them all and trains the exact set — the
+   [extended train lane](../../merge-policy.md#the-extended-train-lane-decided-2026-11-25),
+   which lands them without waiting for their CI — never an admin merge
+   beside the wave's own queued entries
+   ([one lane per burst](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24)).
 2. **Review the exact diff.** Run the [adversarial loop](adversarial-review-loop.md),
    verify findings, fix their class and re-attack the fixes. An explicitly
    operator-authorized **self-review + admin bypass** records that it is self
@@ -57,8 +65,9 @@ not invisible success. Record machine effects in the [flake register](../testing
    parked gate opens the narrower admin merge (below) or a burst lands end to
    end ([one lane per burst](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24)).
 3. **Integrate before taking the verdict.** Rebase onto current `origin/main`
-   in the integration branch. Run the complete local gate on that integrated
-   tree, retaining each member's log, exit code, SHA and machine class. Never
+   in the integration branch. Run the complete local gate, `task ci:gate`, on
+   that integrated tree — `task check` alone runs nothing under `-race` —
+   retaining each member's log, exit code, SHA and machine class. Never
    hide an exit code behind a pipe. Fix a red train before pushing; an advance
    of main requires reintegration and a fresh verdict.
 4. **Carry the evidence in trailers.** The landing commit contains
