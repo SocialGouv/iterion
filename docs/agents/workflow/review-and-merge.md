@@ -169,9 +169,9 @@ request is fine — the credential is not. Waiting for the window to reset is th
    `revi/review`; below it the residual is assumed explicitly, and
    `Adversarial-Rounds:` is where a reader sees which of the two happened.
    `revi/review` stays a required context either way, so the merge is still the
-   admin one and still owes the other six checks green: its conditions and the
-   queue guarantee it gives up are in
-   [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+   admin one and still owes the other six checks green, under `ci:full` on a
+   light pull request: its conditions and the queue guarantee it gives up are
+   in [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
    Steps 1 and 2 stay the first moves; this is for when they are unavailable
    or refused.
 

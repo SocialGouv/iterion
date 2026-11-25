@@ -57,14 +57,18 @@ jobs:
       test-native-exec's `result` from the workflow context and fails if any is
       not success. There is nothing to reproduce: what it aggregates is those
       four legs, whose own rows carry the members. Running their members IS
-      running this.
+      running this. On a light pull request (no `ci:full` label) it accepts
+      `skipped` from test-e2e, which runs in the merge queue instead; in
+      `merge_group` and on `push` a skipped leg is red (#3683).
     aggregates: [test-unit, test-e2e, studio, test-native-exec]
 
   race:
     required: yes
     checks: 1
     disposition: unexpressible
-    reason: the same shape, over race-shard and test-native-exec.
+    reason: >-
+      the same shape, over race-shard and test-native-exec; on a light pull
+      request it accepts `skipped` from race-shard alone (#3683).
     aggregates: [race-shard, test-native-exec]
 
   # ---- the gated legs behind `test` ----
@@ -114,7 +118,9 @@ jobs:
       nor that refusal (internal/ciguard's e2e_shards_test.go does). The job
       runs under `-race` with cgo at `-timeout 2400s` and skips the flake
       quarantine; `task test:e2e` runs without the detector, whose local half
-      for e2e is `task test:race` (race-shard's member, over `./...`).
+      for e2e is `task test:race` (race-shard's member, over `./...`). The job
+      skips a light pull request (no `ci:full` label) and runs in the merge
+      queue and on `main` (#3683); a local run has no such split.
 
   studio:
     required: no
@@ -155,7 +161,13 @@ jobs:
       three shards; the job leaves `./e2e` (test-e2e's) and
       `./pkg/sandbox/kubernetes` (test-native-exec's) out of its partition and
       skips the flake quarantine, both of which `task test:race` runs; the job
-      also pins yq by digest and builds the ultra11y engine first.
+      also pins yq by digest and builds the ultra11y engine first. It leaves
+      `./pkg/server` out of its package partition too and runs a test-name
+      slice of it per shard (`scripts/ci/testshards -tests ./pkg/server -n 3
+      -i <shard>` under `GOFLAGS=-race`, beside the packages; #3684), which
+      `task test:race` runs whole; internal/ciguard's
+      race_server_split_test.go exercises the split. The job skips a light
+      pull request and runs in the merge queue and on `main` (#3683).
 
   # ---- the other required contexts ----
   vendor-check:
@@ -269,7 +281,8 @@ jobs:
       (79-minute budget). A kind cluster on a developer box is a different
       machine class, not a flag — and the job pins yq by digest and uses
       unpinned third-party actions (helm/kind-action) whose versions no member
-      can match.
+      can match. It skips the merge queue (advisory) and a light pull request
+      (#3683): it runs on `main` and on a pull request labelled `ci:full`.
 
   govulncheck:
     required: no

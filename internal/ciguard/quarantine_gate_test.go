@@ -61,7 +61,8 @@ case "$1" in
     esac
     ;;
   test)
-    { printf '%s\n' "$@"; printf '%s\n' '--end--'; } >> "$TEST_ARGS"
+    f=$(mktemp "$TEST_ARGS.XXXXXX")
+    printf '%s\n' "$@" > "$f"
     ;;
   *) exit 93 ;;
 esac
@@ -85,6 +86,7 @@ esac
 					cmd.Env = []string{
 						"PATH=" + dir + string(os.PathListSeparator) + "/usr/bin:/bin",
 						"HOME=" + dir,
+						"RUNNER_TEMP=" + dir,
 						"TEST_ARGS=" + testArgs,
 						"QUARANTINE_ARGS=" + quarantineArgs,
 						"QUARANTINE_EXIT=" + exit,
@@ -94,7 +96,7 @@ esac
 						if runErr == nil {
 							t.Fatalf("the step succeeded after the quarantine list was refused: %s", output)
 						}
-						if _, err := os.Stat(testArgs); !os.IsNotExist(err) {
+						if ran, _ := filepath.Glob(testArgs + ".*"); len(ran) != 0 {
 							t.Fatal("go test ran after the quarantine list was refused: every flake would be back in the gate")
 						}
 						return
@@ -111,13 +113,18 @@ esac
 					if at < 0 || at+1 == len(qargs) || qargs[at+1] != quarantineList || !slices.Contains(qargs, "-skip") {
 						t.Fatalf("the quarantine is not read from %s in -skip mode: %v", quarantineList, qargs)
 					}
-					rawTests, err := os.ReadFile(testArgs)
-					if err != nil {
+					// One file per invocation: a step may run two go test
+					// concurrently (race-shard's pkg/server slice).
+					invocations, err := filepath.Glob(testArgs + ".*")
+					if err != nil || len(invocations) == 0 {
 						t.Fatalf("the step ran no go test: %v", err)
 					}
-					invocations := strings.Split(strings.TrimSuffix(strings.TrimSpace(string(rawTests)), "--end--"), "--end--\n")
 					for _, inv := range invocations {
-						args := strings.Split(strings.TrimSpace(inv), "\n")
+						raw, err := os.ReadFile(inv)
+						if err != nil {
+							t.Fatal(err)
+						}
+						args := strings.Split(strings.TrimSpace(string(raw)), "\n")
 						at := slices.Index(args, "-skip")
 						if at < 0 || at+1 == len(args) || args[at+1] != skipped {
 							t.Errorf("go test %v does not skip the quarantine (want -skip %q)", args, skipped)

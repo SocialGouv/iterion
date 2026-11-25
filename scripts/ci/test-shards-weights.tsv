@@ -6,9 +6,9 @@
 # drifts. Packages under 10 s are left out: unlisted packages weigh 1, so a
 # stale or missing row only degrades the balance — it never errors.
 # race-shard leaves out e2e (under -race in test-e2e) and pkg/sandbox/kubernetes
-# (under -race in test-native-exec), so neither carries a row here.
+# (under -race in test-native-exec), so neither carries a row here; nor does
+# pkg/server, which every shard runs a test-name slice of (#3684).
 github.com/SocialGouv/iterion/bots	1564
-github.com/SocialGouv/iterion/pkg/server	1070
 github.com/SocialGouv/iterion/internal/fswatch	945
 github.com/SocialGouv/iterion/pkg/runtime	745
 github.com/SocialGouv/iterion/pkg/auth	607
