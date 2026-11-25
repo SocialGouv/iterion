@@ -72,3 +72,13 @@ every `z.record`. The shared schema cleaner (`cleanSchemaJSON`) drops a
 annotations only) — an object key is always a string, so the meaning holds
 for every provider; one that constrains keys stays and still breaks those
 engines (#3645).
+
+Other constructs break other engines: qwen3.6's grammar refuses a hostname
+`pattern` that also carries length bounds (`Unable to determine if regex is
+empty`, #3679). The loop does not chase them schema by schema. A grammar
+refusal (`APIError.IsGrammarRefusal`: `xgrammar` or `Grammar error` in the
+gateway's message, even served as a 500) is never retried as transient.
+When it refuses the forced first-turn choice, that turn retries with
+`tool_choice` auto plus an instruction to use a tool, and the generation
+fails if none runs — the contract always-thinking models already follow.
+The switch shows as an `llm_retry` event naming the refusal.
