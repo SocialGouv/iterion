@@ -91,22 +91,36 @@ func TestFanoutTopologyFailureClass(t *testing.T) {
 							}
 							return
 						}
-						wantCode := ErrCodeExecutionFailed
-						wantCause := context.Canceled
-						if kind == "interrupt" {
-							wantCause = ErrRunInterrupted
+						// The run's own cancellation and interruption travel in
+						// the fan-out's error chain (runCancelledError), so the
+						// run-level handler settles them as such: cancel ends
+						// cancelled, a drain ends failed_resumable INTERRUPTED.
+						// A deadline keeps the classified TIMEOUT verdict.
+						switch kind {
+						case "cancel":
+							if r.Status != store.RunStatusCancelled || r.FailureCode != store.FailureCancelled || !errors.Is(err, ErrRunCancelled) || errors.Is(err, ErrRunInterrupted) || context.Cause(ctx) != context.Canceled {
+								t.Fatalf("FANOUT_TERMINAL_VERDICT_CHANGED status=%s code=%s err=%v cause=%v", r.Status, r.FailureCode, err, context.Cause(ctx))
+							}
+							if r.Checkpoint == nil || len(rows) != 1 || rows[0].Method != "terminal-event" || rows[0].Context != nil || rows[0].Result != nil {
+								t.Fatalf("FANOUT_TERMINAL_PUBLICATION_CHANGED checkpoint=%+v writes=%v", r.Checkpoint, rows)
+							}
+							return
+						case "interrupt":
+							if r.Status != store.RunStatusFailedResumable || r.FailureCode != store.FailureInterrupted || !errors.Is(err, ErrRunInterrupted) || errors.Is(err, ErrRunCancelled) || context.Cause(ctx) != ErrRunInterrupted {
+								t.Fatalf("FANOUT_TERMINAL_VERDICT_CHANGED status=%s code=%s err=%v cause=%v", r.Status, r.FailureCode, err, context.Cause(ctx))
+							}
+							if r.Checkpoint == nil || r.Checkpoint.Parallel == nil || len(rows) != 2 || rows[0].Method != "resumable" || rows[0].Code != store.FailureInterrupted || rows[0].Context != nil || rows[0].Result != nil || rows[1].Method != "terminal-event" || rows[1].Context != nil || rows[1].Result != nil {
+								t.Fatalf("FANOUT_TERMINAL_PUBLICATION_CHANGED checkpoint=%+v writes=%v", r.Checkpoint, rows)
+							}
+							return
 						}
-						if kind == "deadline" {
-							wantCode = ErrCodeTimeout
-							wantCause = context.DeadlineExceeded
-						}
+						wantCode := ErrCodeTimeout
 						var rt *RuntimeError
-						if r.Status != store.RunStatusFailedResumable || r.FailureCode != wantCode || !errors.As(err, &rt) || rt.Code != wantCode || context.Cause(ctx) != wantCause {
-							t.Fatalf("FANOUT_TERMINAL_VERDICT_CHANGED status=%s code=%s wantCode=%s err=%v originalCause=%v wantCause=%v", r.Status, r.FailureCode, wantCode, err, context.Cause(ctx), wantCause)
+						if r.Status != store.RunStatusFailedResumable || r.FailureCode != wantCode || !errors.As(err, &rt) || rt.Code != wantCode || context.Cause(ctx) != context.DeadlineExceeded {
+							t.Fatalf("FANOUT_TERMINAL_VERDICT_CHANGED status=%s code=%s wantCode=%s err=%v originalCause=%v", r.Status, r.FailureCode, wantCode, err, context.Cause(ctx))
 						}
-						// The historical fanout wrapper flattens cancellation into its
-						// message; the checkpoint door returns a classified verdict.
-						// It must not claim a separately persisted cancellation/interruption.
+						// A deadline returns a classified TIMEOUT verdict and does
+						// not claim a cancellation or interruption.
 						if errors.Is(err, ErrRunCancelled) || errors.Is(err, ErrRunInterrupted) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 							t.Fatalf("FANOUT_CAUSE_POLICY_CHANGED %v", err)
 						}

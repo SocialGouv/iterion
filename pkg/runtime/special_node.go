@@ -2,12 +2,14 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -294,6 +296,23 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		ParentSandbox: e.activeShare,
 	})
 	if err != nil {
+		// The parent's context has ended by the time the child's verdict is
+		// read: the node was stopped, as a trunk node is at the same
+		// boundary (engine_exec's post-execution ctx check), whatever the
+		// child's words — its engine's ErrRunCancelled / ErrRunInterrupted
+		// for an operator cancel or a drain, its own TIMEOUT RuntimeError
+		// for the parent's deadline, or a failure of its own that the
+		// cancel landed just after. The node reports the parent's context
+		// error (SubbotStoppedError), which the run-level handler settles
+		// as the parent's cancellation, interruption or timeout, keeping
+		// the child's words in the record. Two verdicts stay the node's: an
+		// undecided remote effect, and a failure no resume can change
+		// (retrypolicy.IsDeterministic), which the cancel must not turn
+		// into a resumable or operator-cancelled record.
+		if ctxErr := ctx.Err(); ctxErr != nil && !IsAmbiguousEffect(err) &&
+			(childStopped(err) || !retrypolicy.IsDeterministic(nodeFailureCode(err))) {
+			return nil, &SubbotStoppedError{NodeID: nodeID, Source: sn.Source, Cause: context.Cause(ctx), Child: err, ctxErr: ctxErr}
+		}
 		hint := ""
 		if nodeFailureCode(err) == ErrCodeBudgetExceeded {
 			hint = fmt.Sprintf("increase the CHILD bot %q budget, then resume; raising the parent budget does not change the child cap", sn.Source)
@@ -310,6 +329,23 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		output = map[string]any{}
 	}
 	return output, nil
+}
+
+// childStopped reports a child run's error that says the child was stopped
+// rather than failed: the child engine's cancellation or interruption
+// sentinel, a bare context error from a runner that never reached the
+// engine, or a parked child's end reconstructed from its record
+// (runview.subbotChildFailure), which carries the child's CANCELLED or
+// INTERRUPTED failure code and no sentinel. CANCELLED is deterministic to
+// retrypolicy — an operator's decision no resume revisits — so the code is
+// read here, not left to the deterministic test.
+func childStopped(err error) bool {
+	if errors.Is(err, ErrRunCancelled) || errors.Is(err, ErrRunInterrupted) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	code := nodeFailureCode(err)
+	return code == ErrCodeCancelled || code == store.FailureInterrupted
 }
 
 // subbotReattachKey builds the stable, unique key identifying one execution of

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -358,7 +359,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 	// same cancellation handler must persist their terminal state under the
 	// original context values, detached only from the completed request.
 	if rs.ctx != nil && terminationScope(rs.ctx) == nil && rs.ctx.Err() != nil && simpleContextCause(origErr, rs.ctx.Err()) {
-		return e.handleContextDoneWithCheckpoint(rs, nodeID, rs.ctx.Err())
+		return e.handleContextDoneWithDetail(rs, nodeID, rs.ctx.Err(), stopDetail(origErr))
 	}
 
 	return e.withCheckpointFailureWrites(rs, origErr, func(writeCtx context.Context) error {
@@ -426,7 +427,26 @@ func (e *Engine) publishFailureErrWithCheckpoint(writeCtx context.Context, rs *r
 // preserved but cancellation is not. The write budget defaults to five seconds;
 // WithTerminationWriteTimeout overrides this local budget and the two checkpoint-
 // failure doors; it does not detach the execution context.
-func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ctxErr error) (result error) {
+func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ctxErr error) error {
+	return e.handleContextDoneWithDetail(rs, nodeID, ctxErr, "")
+}
+
+// handleContextDoneWithDetail is handleContextDoneWithCheckpoint whose
+// recorded reason carries detail — what the stopped node's work said
+// (stopDetail, read by failRunErrWithCheckpoint, the door a subbot node's
+// failure takes) — after the stop's own words; "" records the stop alone.
+// The detail passes the run's scrubber first and is then cut at
+// subbotDetailLimit (boundedDetail): cutting a scrubbed text cannot expose
+// what the scrubber withheld, and an unbounded child stderr cannot bloat
+// the parent's record.
+func (e *Engine) handleContextDoneWithDetail(rs *runState, nodeID string, ctxErr error, detail string) (result error) {
+	detail = boundedDetail(e.recordedFailureText(detail))
+	withDetail := func(reason string) string {
+		if detail == "" {
+			return reason
+		}
+		return reason + "; " + detail
+	}
 	defer func() {
 		if result != nil {
 			result = &terminationSettledError{cause: result, owner: rs}
@@ -439,7 +459,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 	cp := buildCheckpoint(rs, nodeID)
 	if errors.Is(ctxErr, context.Canceled) {
 		if errors.Is(context.Cause(rs.ctx), ErrRunInterrupted) {
-			reason := fmt.Sprintf("interrupted at node %s (resumable)", nodeID)
+			reason := withDetail(fmt.Sprintf("interrupted at node %s (resumable)", nodeID))
 			if err := writes.Do(func(c context.Context) error {
 				return e.recordFailureResumable(c, rs.runID, cp, reason, store.FailureInterrupted)
 			}); err != nil {
@@ -462,7 +482,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 		changed := false
 		if err := writes.Do(func(c context.Context) error {
 			var err error
-			changed, err = e.recordFailureStatusIf(c, rs.runID, store.RunStatusCancelled, "run cancelled", store.FailureCancelled, cancellable)
+			changed, err = e.recordFailureStatusIf(c, rs.runID, store.RunStatusCancelled, withDetail("run cancelled"), store.FailureCancelled, cancellable)
 			return err
 		}); err != nil {
 			// A failed status write is not a persisted cancellation.
@@ -491,7 +511,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 		}
 		return writes.Result(fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID))
 	}
-	reason := fmt.Sprintf("timeout: %s", ctxErr.Error())
+	reason := withDetail(fmt.Sprintf("timeout: %s", ctxErr.Error()))
 	if err := writes.Do(func(c context.Context) error {
 		return e.recordFailureResumable(c, rs.runID, cp, reason, ErrCodeTimeout)
 	}); err != nil {
@@ -506,15 +526,95 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 	return writes.Result(&RuntimeError{Code: ErrCodeTimeout, Message: reason, NodeID: nodeID})
 }
 
-// wrapContextErr wraps a context error for branch-level reporting.
+// wrapContextErr wraps a context error for branch-level reporting. The
+// cancellation keeps the context's error in its chain (runCancelledError),
+// so the run-level handler recognises the run's own cancellation in a
+// fan-out's result (simpleContextCause) instead of recording it as a node
+// failure.
 func (e *Engine) wrapContextErr(ctxErr error) error {
 	if IsAmbiguousEffect(ctxErr) {
 		return ctxErr
 	}
 	if errors.Is(ctxErr, context.Canceled) {
-		return fmt.Errorf("%w: %v", ErrRunCancelled, ctxErr)
+		return &runCancelledError{ctxErr: ctxErr}
 	}
 	return ctxErr
+}
+
+// runCancelledError is ErrRunCancelled carrying the context error that
+// ended the work: errors.Is reports ErrRunCancelled, and the single Unwrap
+// reaches the context error itself.
+type runCancelledError struct {
+	ctxErr error
+}
+
+func (e *runCancelledError) Error() string {
+	return ErrRunCancelled.Error() + ": " + e.ctxErr.Error()
+}
+
+func (e *runCancelledError) Is(target error) bool { return target == ErrRunCancelled }
+
+func (e *runCancelledError) Unwrap() error { return e.ctxErr }
+
+// SubbotStoppedError is a subbot node whose parent context had ended when
+// its child's verdict was read (runSubbotNode): the node stopped because
+// the parent did — an operator cancel, a drain, or the parent's deadline.
+// The parent's context error travels as the single Unwrap, so the parent's
+// run-level handler settles its own cancellation, interruption or timeout
+// (handleContextDoneWithCheckpoint) instead of a node failure; Detail
+// carries the child's words into that record.
+type SubbotStoppedError struct {
+	NodeID string
+	Source string
+	// Cause is context.Cause of the parent's context: ErrRunInterrupted for
+	// a drain, context.DeadlineExceeded for a deadline, the context error
+	// itself for a plain cancel.
+	Cause error
+	Child error
+	// ctxErr is the parent context's Err(), the identity the run-level
+	// handler matches.
+	ctxErr error
+}
+
+func (e *SubbotStoppedError) Error() string {
+	return fmt.Sprintf("subbot %q (source %q): stopped with the parent run (%v); %s", e.NodeID, e.Source, e.Cause, e.Detail())
+}
+
+// Detail is what the child returned, for the parent's failure record.
+func (e *SubbotStoppedError) Detail() string {
+	return fmt.Sprintf("subbot %q child returned: %v", e.NodeID, e.Child)
+}
+
+func (e *SubbotStoppedError) Unwrap() error { return e.ctxErr }
+
+// subbotDetailLimit bounds, in bytes, the child's words a parent's stop
+// record carries; subbotDetailTruncated marks a cut.
+const (
+	subbotDetailLimit     = 4 << 10
+	subbotDetailTruncated = "…(truncated)"
+)
+
+// boundedDetail cuts detail at subbotDetailLimit on a rune boundary and
+// marks the cut.
+func boundedDetail(detail string) string {
+	if len(detail) <= subbotDetailLimit {
+		return detail
+	}
+	cut := subbotDetailLimit
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	return detail[:cut] + subbotDetailTruncated
+}
+
+// stopDetail is the detail a stopped node's error carries for the run's
+// stop record: a subbot's child words, "" otherwise.
+func stopDetail(err error) string {
+	var stopped *SubbotStoppedError
+	if errors.As(err, &stopped) {
+		return stopped.Detail()
+	}
+	return ""
 }
 
 // nodeFailureCode preserves a node's classified failure at execution boundaries.

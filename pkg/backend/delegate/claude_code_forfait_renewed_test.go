@@ -117,7 +117,7 @@ func TestRenderedFailure_aRenewalShipsAnAnswer(t *testing.T) {
 	writeForfait(t, dir, "at.after")
 	b := &ClaudeCodeBackend{Logger: iterlog.Nop(), renewalWait: 50 * time.Millisecond}
 	answer := `{"status":"failed","reason":"gh: not logged into any host"}`
-	if !isAuthErrorResult(answer) {
+	if !isAuthErrorResult(answer, false) {
 		t.Fatal("the fixture must read as an auth render, or this proves nothing")
 	}
 	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &answer}, Task{}, "pass 1", credSpawn{dir: dir, token: "at.before"}); err != nil {
