@@ -314,3 +314,32 @@ func TestReliabilityReportNamesTheLegacyTenantExemption(t *testing.T) {
 		})
 	}
 }
+
+// TestReliabilityReportCloudSourceNamesTheProcessLegacyTenants pins the
+// scope the LegacyTenants field documents: the list is THIS process's
+// resolution of ITERION_RELIABILITY_LEGACY_TENANTS, so a --cloud report —
+// a source that is not a filesystem store — still carries the launching
+// CLI's list, not a deployment-wide one. An operator comparing a cloud
+// baseline against the deployment's own environment reads the list beside
+// the baseline, never in place of the server pods' values.
+func TestReliabilityReportCloudSourceNamesTheProcessLegacyTenants(t *testing.T) {
+	t.Setenv(reliability.EnvMode, "")
+	t.Setenv(reliability.EnvContextPolicyAlias, "")
+	t.Setenv(reliability.EnvLegacyTenants, " team-b ,, team-a ,,team-a")
+	src := staticRunSource{
+		name: "elsewhere:cloud-baseline",
+		ids:  []string{"run-cloud"},
+		runs: map[string]*store.Run{"run-cloud": {ID: "run-cloud", Status: store.RunStatusFinished}},
+	}
+	got := reliabilityJSON(t, ReliabilityOptions{Source: src})
+	if got.Source != src.name {
+		t.Fatalf("source = %q, want %q — the report must run over the cloud source", got.Source, src.name)
+	}
+	want := []string{"team-a", "team-b"}
+	if !slices.Equal(got.LegacyTenants, want) {
+		t.Fatalf("legacy_tenants = %q, want %q — a --cloud report names THIS process's list, the launching CLI's environment, not the deployment's", got.LegacyTenants, want)
+	}
+	if got.StoreDir != "" {
+		t.Fatalf("store_dir = %q, want empty on a non-filesystem source", got.StoreDir)
+	}
+}

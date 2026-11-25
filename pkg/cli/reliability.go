@@ -109,10 +109,15 @@ type ReliabilityReport struct {
 	Mode          string `json:"mode"`
 	ContextPolicy string `json:"context_policy"`
 	// LegacyTenants is the canonical form of
-	// ITERION_RELIABILITY_LEGACY_TENANTS: the tenants the tenant-scoped
-	// legacy cap still holds back while the rest of the deployment applies
-	// the resolved mode. The promotion decision names the escape hatch that
-	// is active; omitted when the list is unset.
+	// ITERION_RELIABILITY_LEGACY_TENANTS as THIS process resolves it: the
+	// tenants the tenant-scoped legacy cap still holds back while the rest
+	// of the deployment applies the resolved mode. Like Mode and
+	// ContextPolicy above, it is read from this process's environment — a
+	// --cloud report still shows the launching CLI's list, not the
+	// deployment's active one (the deployment's values live on its server
+	// pods, per the migration note in docs/workflow-reliability-1006.md).
+	// The promotion decision names the escape hatch that is active; omitted
+	// when the list is unset.
 	LegacyTenants         []string `json:"legacy_tenants,omitempty"`
 	RetryCircuitThreshold int      `json:"retry_circuit_threshold"`
 	RetryCircuitCooldown  string   `json:"retry_circuit_cooldown"`
