@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -59,32 +60,44 @@ var routeLocalCodes = map[ErrorCode]bool{
 	ErrCodeSchemaValidation:       true,
 }
 
-// refusalCodes maps each deterministic provider refusal (api.RefusalKind) to
-// the code a node refused that way fails with. Every one is deterministic in
-// retrypolicy: the same request meets the same refusal, so neither node
-// recovery nor redelivery nor an automatic resume runs it again.
+// refusalCodes maps each provider refusal (api.RefusalKind) to the code a
+// node refused that way fails with. A budget refusal is the spend ceiling
+// every backend parks on (delegate.SpendCeilingRefusal): USAGE_LIMIT_BLOCKED,
+// whose run waits and is probed hourly, since a gateway budget often reopens
+// by itself (a windowed budget, a released reservation). Every other refusal
+// is deterministic in retrypolicy: the same request meets the same refusal,
+// so neither node recovery nor redelivery nor an automatic resume runs it
+// again.
 var refusalCodes = map[api.RefusalKind]ErrorCode{
-	api.RefusalBudget:     ErrCodeProviderBudgetExceeded,
+	api.RefusalBudget:     ErrCodeUsageLimitBlocked,
 	api.RefusalCapability: ErrCodeCapabilityUnsupported,
 	api.RefusalGrammar:    ErrCodeSchemaUnusable,
 	api.RefusalRequest:    ErrCodeProviderRequestInvalid,
 }
 
-// refusalPrecedence orders the refusal codes for a chain whose every route
-// was refused, each its own way: the remedy an operator must act on first —
-// money, then the model, then the schema, then the request — whatever order
-// the routes ran in.
+// refusalPrecedence orders the deterministic refusal codes for a chain whose
+// every route was refused, each its own way — the order api.RefusalOf reads
+// the kinds in, so the chain's code and its remedy name the same refusal:
+// the model, then the schema, then the request, whatever order the routes
+// ran in. A budget refusal is not among them: a chain holding one is read
+// as a usage window (chainWaitsOnUsageWindow).
 var refusalPrecedence = []ErrorCode{
-	ErrCodeProviderBudgetExceeded,
 	ErrCodeCapabilityUnsupported,
 	ErrCodeSchemaUnusable,
 	ErrCodeProviderRequestInvalid,
 }
 
-// providerRefusalCode reads the deterministic provider refusal err's chain
-// carries (api.RefusalOf) as the code it fails the node with. A
-// request-level refusal that names the context window is left to the
-// context reading, whose compaction can shrink the next request.
+// IsProviderRefusalCode reports a code a deterministic provider refusal fails
+// a node with (refusalPrecedence): a relaunch of the same work meets the same
+// refusal, whatever else raised the code too — each is deterministic.
+func IsProviderRefusalCode(code ErrorCode) bool {
+	return slices.Contains(refusalPrecedence, code)
+}
+
+// providerRefusalCode reads the provider refusal err's chain carries
+// (api.RefusalOf) as the code it fails the node with. A request-level
+// refusal that names the context window is left to the context reading,
+// whose compaction can shrink the next request.
 func providerRefusalCode(err error) (ErrorCode, bool) {
 	kind := api.RefusalOf(err)
 	code, ok := refusalCodes[kind]
@@ -97,28 +110,34 @@ func providerRefusalCode(err error) (ErrorCode, bool) {
 	return code, true
 }
 
-// ProviderRefusalRemedy is the operator's remedy for a deterministic provider
-// refusal err carries, naming the provider's own words, bounded before it
-// reaches persisted hints; "" when err carries no refusal.
-func ProviderRefusalRemedy(err error) string {
-	var refusal api.ProviderRefusal
-	if !errors.As(err, &refusal) {
+// refusalRemedies is the operator's remedy for each provider refusal.
+var refusalRemedies = map[api.RefusalKind]string{
+	api.RefusalBudget:     "the provider refused the call because the spend budget of its key, team or account is exhausted — raise that budget (or add credits) at the provider or gateway; the run parks, the credential is routed around, and an hourly probe resumes it once the budget reopens",
+	api.RefusalCapability: "the model cannot take an input this node sends it (e.g. an image to a text-only model) — route the node to a model that accepts it, or stop sending that input, then resume",
+	api.RefusalGrammar:    "the gateway cannot compile the request's schemas (tool or output) into a decoding grammar — simplify the schema construct it names, or serve the node on a model or gateway that accepts it, then resume",
+	api.RefusalRequest:    "the provider refused the request itself — fix what it names, then resume",
+}
+
+// ProviderRefusalRemedy is the operator's remedy for the provider refusal err
+// carries when that refusal is what classified it as code, naming the
+// provider's own words, bounded before it reaches persisted hints; ""
+// otherwise. The words are those of every error of the chain refused the
+// way the code says — sorted and deduplicated, so a fallback chain's remedy
+// names the refusal its code names, in whatever order its routes ran.
+func ProviderRefusalRemedy(err error, code ErrorCode) string {
+	refused, ok := providerRefusalCode(err)
+	if !ok || refused != code {
 		return ""
 	}
-	var remedy string
-	switch refusal.Refusal() {
-	case api.RefusalBudget:
-		remedy = "the provider refused the call because the spend budget of its key, team or account is exhausted — raise that budget (or add credits) at the provider or gateway, then resume; nothing retries this by itself"
-	case api.RefusalCapability:
-		remedy = "the model cannot take an input this node sends it (e.g. an image to a text-only model) — route the node to a model that accepts it, or stop sending that input, then resume"
-	case api.RefusalGrammar:
-		remedy = "the gateway cannot compile the request's schemas (tool or output) into a decoding grammar — simplify the schema construct it names, or serve the node on a model or gateway that accepts it, then resume"
-	case api.RefusalRequest:
-		remedy = "the provider refused the request itself — fix what it names, then resume"
-	default:
-		return ""
+	kind := api.RefusalOf(err)
+	var words []string
+	for _, r := range api.RefusalsOf(err) {
+		if r.Refusal() == kind {
+			words = append(words, refusalMessage(r))
+		}
 	}
-	return remedy + "; provider refused: " + iterlog.Truncate(refusalMessage(refusal), 2048)
+	slices.Sort(words)
+	return refusalRemedies[kind] + "; provider refused: " + iterlog.Truncate(strings.Join(slices.Compact(words), " | "), 2048)
 }
 
 // refusalMessage is the provider's own explanation a refusal carries: the
@@ -135,14 +154,15 @@ func refusalMessage(refusal api.ProviderRefusal) string {
 }
 
 // routeLocal reports a route's verdict that condemns that route alone: a
-// route-local code, or a provider refusal (another route — another key,
-// model or gateway — may serve what this one refused).
+// route-local code, or a deterministic provider refusal (another route —
+// another key, model or gateway — may serve what this one refused). A budget
+// refusal is read with the usage windows instead (chainWaitsOnUsageWindow).
 func routeLocal(code ErrorCode, cause error) bool {
 	if routeLocalCodes[code] {
 		return true
 	}
 	refused, ok := providerRefusalCode(cause)
-	return ok && refused == code
+	return ok && refused == code && code != ErrCodeUsageLimitBlocked
 }
 
 // classifyRefusedChain decides an exhausted fallback chain that holds at

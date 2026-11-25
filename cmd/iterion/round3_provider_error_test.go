@@ -51,7 +51,7 @@ func TestRunnerEncodesADeterministicRefusal(t *testing.T) {
 		want  runtime.ErrorCode
 	}{
 		"budget 422": {&api.APIError{Provider: "openai", StatusCode: 422,
-			Message: "Budget has been exceeded! Current cost: 150.18, Max budget: 150.0"}, runtime.ErrCodeProviderBudgetExceeded},
+			Message: "Budget has been exceeded! Current cost: 150.18, Max budget: 150.0"}, runtime.ErrCodeUsageLimitBlocked},
 		"stream grammar 500": {&model.APIError{StatusCode: 500, IsRetryable: true,
 			Message: "stream error: Grammar error: Unable to determine if regex is empty"}, runtime.ErrCodeSchemaUnusable},
 	} {

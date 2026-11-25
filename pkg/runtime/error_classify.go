@@ -87,12 +87,13 @@ func ClassifyError(err error) ErrorCode {
 		}
 		return ErrCodeExecutionFailed
 	}
-	// A deterministic provider refusal, read from the typed error the chain
+	// A deterministic provider refusal, read from the typed errors the chain
 	// carries (api.RefusalOf) before every status and needle reading below:
-	// a gateway serves a budget as a 400, a 422 or a 429 and a grammar
-	// refusal as a 500, and each of those statuses would otherwise buy
-	// retries, node recoveries and automatic resumes of the same answer.
-	if code, refused := providerRefusalCode(err); refused {
+	// a gateway serves a grammar refusal as a 500 and a request refusal under
+	// any 4xx, and each of those statuses would otherwise buy retries, node
+	// recoveries and automatic resumes of the same answer. A budget refusal
+	// is read just below the credential instead, as the spend ceiling it is.
+	if code, refused := providerRefusalCode(err); refused && code != ErrCodeUsageLimitBlocked {
 		return code
 	}
 	// A credential the provider rejected. Checked by TYPE, before any
@@ -103,6 +104,15 @@ func ClassifyError(err error) ErrorCode {
 	var authFailed *delegate.ErrAuthFailed
 	if errors.As(err, &authFailed) {
 		return ErrCodeAuthFailed
+	}
+	// A spend ceiling — a gateway budget under any status (LiteLLM: 400,
+	// 422, 429, 500), typed or not yet typed as the account refusal
+	// (delegate.SpendCeilingRefusal): the run parks on it like any usage
+	// window naming no reset. After the credential, as the chain reading
+	// orders the two (chainWaitsOnUsageWindow): the human the pause calls
+	// can revive a dead route.
+	if api.RefusalOf(err) == api.RefusalBudget {
+		return ErrCodeUsageLimitBlocked
 	}
 	var unavailable *delegate.ErrModelUnavailable
 	if errors.As(err, &unavailable) {

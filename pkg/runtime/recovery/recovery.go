@@ -68,10 +68,10 @@ const DefaultMaxRetries = 3
 // lands failed_resumable; the run-level auto-resume loop owns the
 // reset-aware wait (pkg/cli/auto_resume.go).
 func UsageLimitRecipe() Recipe {
-	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
 		return Action{
 			Kind:   ActionFailTerminal,
-			Reason: "provider usage window exhausted; resume after the quota resets (auto-resume waits for it)",
+			Reason: refusalReason(err, runtime.ErrCodeUsageLimitBlocked, "provider usage window exhausted; resume after the quota resets (auto-resume waits for it)"),
 		}
 	})
 }
@@ -165,31 +165,23 @@ func SchemaUnusableRecipe() Recipe {
 	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
 		return Action{
 			Kind:   ActionFailTerminal,
-			Reason: refusalReason(err, "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume"),
+			Reason: refusalReason(err, runtime.ErrCodeSchemaUnusable, "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume"),
 		}
 	})
 }
 
 func CapabilityUnsupportedRecipe() Recipe {
 	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
-		return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, "the selected backend cannot serve a declared capability — change the backend or its transport, then resume")}
+		return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, runtime.ErrCodeCapabilityUnsupported, "the selected backend cannot serve a declared capability — change the backend or its transport, then resume")}
 	})
 }
 
-// ProviderBudgetRecipe: no retry at all. The provider's or gateway's spend
-// ceiling refused the call; it lives outside iterion, so no attempt can see
-// it raised. The run fails resumable for the operator who raises it.
-func ProviderBudgetRecipe() Recipe {
-	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
-		return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, "the provider's spend budget is exhausted — raise it, then resume")}
-	})
-}
-
-// refusalReason is the remedy a deterministic provider refusal in err names
-// (runtime.ProviderRefusalRemedy), else fallback: a code that a refusal and
-// another cause share says which of the two the operator faces.
-func refusalReason(err *runtime.RuntimeError, fallback string) string {
-	if remedy := runtime.ProviderRefusalRemedy(err); remedy != "" {
+// refusalReason is the remedy the provider refusal in err names when that
+// refusal is what classified it as code (runtime.ProviderRefusalRemedy), else
+// fallback: a code a refusal and another cause share says which of the two
+// the operator faces.
+func refusalReason(err *runtime.RuntimeError, code runtime.ErrorCode, fallback string) string {
+	if remedy := runtime.ProviderRefusalRemedy(err, code); remedy != "" {
 		return remedy
 	}
 	return fallback
@@ -397,12 +389,11 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
 		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
 		runtime.ErrCodeProviderRequestInvalid: RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
-			return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, runtime.ProviderRequestRemedy(err))}
+			return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, runtime.ErrCodeProviderRequestInvalid, runtime.ProviderRequestRemedy(err))}
 		}),
-		runtime.ErrCodeProviderBudgetExceeded: ProviderBudgetRecipe(),
-		runtime.ErrCodeCapabilityUnsupported:  CapabilityUnsupportedRecipe(),
-		runtime.ErrCodeCapabilityDenied:       CapabilityDeniedRecipe(),
-		runtime.ErrCodeAmbiguousEffect:        AmbiguousEffectRecipe(),
+		runtime.ErrCodeCapabilityUnsupported: CapabilityUnsupportedRecipe(),
+		runtime.ErrCodeCapabilityDenied:      CapabilityDeniedRecipe(),
+		runtime.ErrCodeAmbiguousEffect:       AmbiguousEffectRecipe(),
 	}
 }
 

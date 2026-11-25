@@ -77,11 +77,11 @@ an older runner sends its text alone, which stays `EXECUTION_FAILED`. The
 list the values, deployment example and Claude Code's untyped-error
 limitation.
 
-A deterministic refusal — an exhausted budget, a model refusing an input
-kind (`not a multimodal model`), a grammar refusal, a non-400 4xx — is read
-from the typed error before its status (`api.ClassifyRefusal`) and stops
-every retry layer, redelivery and automatic resume; budget parks as
-`PROVIDER_BUDGET_EXCEEDED` for an operator to raise ([the table](../../backends.md#the-openai-compatible-gateway-openai_compatible)).
+A provider refusal is read from the typed error before its status
+(`api.ClassifyRefusal`). A budget is a spend ceiling: it parks as
+`USAGE_LIMIT_BLOCKED`, probed hourly. A model refusing an input kind, a
+grammar refusal or a refused request stops every retry layer, redelivery,
+automatic resume and gate relaunch ([the table](../../backends.md#the-openai-compatible-gateway-openai_compatible)).
 
 ## Images
 

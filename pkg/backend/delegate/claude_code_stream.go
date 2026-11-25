@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -1621,7 +1622,8 @@ func RateLimitedFromRefusal(provider, detail string, now time.Time) *ErrRateLimi
 // relents on a clock nobody announced. Read from the refusal's own words
 // (ErrRateLimited.Detail, or the rendering of a refusal whose type did not
 // survive) through the definitions classifyRateLimit files those refusals
-// under, so the two cannot disagree.
+// under, so the two cannot disagree. A provider's typed budget refusal
+// (api.RefusalBudget, SpendCeilingRefusal) is a spend ceiling by its type.
 func IsAccountRefusal(err error) bool {
 	if err == nil {
 		return false
@@ -1633,6 +1635,9 @@ func IsAccountRefusal(err error) bool {
 			return false
 		}
 		text = rl.Detail
+	}
+	if api.RefusalOf(err) == api.RefusalBudget {
+		return true
 	}
 	lower := strings.ToLower(text)
 	return isAccountRefusalText(lower) || isSpendLimitText(lower)

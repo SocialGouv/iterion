@@ -1076,6 +1076,12 @@ func clawUsageWindow(err error, now time.Time) error {
 	if err == nil || delegate.IsUsageWindow(err) {
 		return err
 	}
+	// A budget refusal, under whatever status or channel the gateway served
+	// it (LiteLLM: 400, 422, 429, 500, a stream frame), is the spend ceiling
+	// every backend parks on as an account refusal.
+	if spend, ok := delegate.SpendCeilingRefusal(delegate.BackendClaw, err); ok {
+		return spend
+	}
 	var detail string
 	var httpErr *api.APIError
 	var streamErr *APIError

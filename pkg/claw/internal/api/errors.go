@@ -1,7 +1,7 @@
 package api
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -88,19 +88,52 @@ const (
 	// compile the request's schemas into a grammar. Only another schema, or
 	// a request asking for no grammar, changes the answer.
 	RefusalGrammar RefusalKind = "grammar"
-	// RefusalRequest: a 4xx status that refuses the request as such (405,
-	// 415, 422, …). Every 4xx except 400, whose vLLM catch-all can be
-	// decided by the sample; 408, 409 and 429, which a retry can clear;
-	// 401 and 403, which a fresh credential can; 404, the model lookup; and
-	// 413, a payload a compaction can shrink — each keeps its own reading.
+	// RefusalRequest: a 4xx status that refuses the request as such
+	// (requestRefusalStatuses).
 	RefusalRequest RefusalKind = "request"
 )
 
 // budgetRefusalMarkers are spend-ceiling refusals in the provider's own
 // words: LiteLLM's key/team/user budgets ("Budget has been exceeded! Current
-// cost: 150.18, Max budget: 150.0", its ExceededTokenBudget form and its
-// budget_exceeded error type) and Anthropic's exhausted credit balance.
-var budgetRefusalMarkers = []string{"budget has been exceeded", "exceededtokenbudget", "budget_exceeded", "credit balance is too low"}
+// cost: 150.18, Max budget: 150.0", "ExceededBudget: User=… over budget",
+// "ExceededBudget: Key over 1d budget", "exceeded budget for model=…", its
+// ExceededTokenBudget form) and Anthropic's exhausted credit balance.
+// LiteLLM's budget_exceeded error TYPE is read from the envelope's type field
+// alone (errorEnvelope), never as a substring: a message may quote the
+// request's own identifiers ("function 'notify_budget_exceeded'").
+var budgetRefusalMarkers = []string{"budget has been exceeded", "exceededbudget", "exceededtokenbudget", "exceeded budget for model", "credit balance is too low"}
+
+// budgetRefusalType is LiteLLM's error.type for every budget refusal.
+const budgetRefusalType = "budget_exceeded"
+
+// requestRefusalStatuses are the 4xx that refuse the request as such: the
+// method, a gone endpoint, a missing length, an oversized URI, the media
+// type, an unprocessable body, oversized headers. Every other 4xx keeps its
+// own reading: 400, whose vLLM catch-all can be decided by the sample; 408,
+// 409, 421, 424, 425, 429 and a proxy's 499, which a retry can clear; 401
+// and 403, which a fresh credential can; 404, the model lookup; 413, a
+// payload a compaction can shrink.
+var requestRefusalStatuses = map[int]bool{405: true, 410: true, 411: true, 414: true, 415: true, 422: true, 431: true}
+
+// errorEnvelope reads a provider's JSON error body — {"error":{"message",
+// "type"}} or the flat {"message","type"} — and reports whether it was one.
+func errorEnvelope(body string) (message, typ string, ok bool) {
+	var env struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(body)), &env) != nil {
+		return "", "", false
+	}
+	if env.Error != nil {
+		return env.Error.Message, env.Error.Type, true
+	}
+	return env.Message, env.Type, true
+}
 
 // capabilityRefusalMarkers name a model refusing an input kind it cannot
 // take: vLLM through LiteLLM ("glm-5.3 is not a multimodal model") and
@@ -116,24 +149,29 @@ var capabilityRefusalMarkers = []string{"is not a multimodal model", "image_url 
 var grammarRefusalMarkers = []string{"xgrammar", "grammar error"}
 
 // ClassifyRefusal is the one reading of a provider refusal, from the
-// response's status, its extracted message and its raw body. The refusal's
-// own words decide before its status, because gateways serve them under any
-// status (LiteLLM: a budget as 400, 422 or 429, a grammar refusal as 500);
-// 402 Payment Required is a budget by status alone.
+// response's status, its extracted message and its raw body. The markers are
+// read on the provider's words only: the message, and from the body the
+// envelope's message and type when it is a JSON envelope, or the whole body
+// when it is not (a gateway's plain-text answer IS its message). The
+// refusal's words decide before its status, because gateways serve them
+// under any status (LiteLLM: a budget as 400, 422 or 429, a grammar refusal
+// as 500); 402 Payment Required is a budget by status alone.
 func ClassifyRefusal(statusCode int, message, body string) RefusalKind {
+	words, typ := message, ""
+	if envMessage, envType, ok := errorEnvelope(body); ok {
+		words += "\n" + envMessage
+		typ = strings.ToLower(strings.TrimSpace(envType))
+	} else {
+		words += "\n" + body
+	}
 	switch {
-	case statusCode == 402 || containsAnyFold(message, budgetRefusalMarkers) || containsAnyFold(body, budgetRefusalMarkers):
+	case statusCode == 402 || typ == budgetRefusalType || containsAnyFold(words, budgetRefusalMarkers):
 		return RefusalBudget
-	case containsAnyFold(message, capabilityRefusalMarkers) || containsAnyFold(body, capabilityRefusalMarkers):
+	case containsAnyFold(words, capabilityRefusalMarkers):
 		return RefusalCapability
-	case containsAnyFold(message, grammarRefusalMarkers) || containsAnyFold(body, grammarRefusalMarkers):
+	case containsAnyFold(words, grammarRefusalMarkers):
 		return RefusalGrammar
-	}
-	switch statusCode {
-	case 400, 401, 403, 404, 408, 409, 413, 429:
-		return RefusalNone
-	}
-	if statusCode > 400 && statusCode < 500 {
+	case requestRefusalStatuses[statusCode]:
 		return RefusalRequest
 	}
 	return RefusalNone
@@ -164,15 +202,56 @@ type ProviderRefusal interface {
 	Refusal() RefusalKind
 }
 
-// RefusalOf reports the refusal the first provider error of err's chain
-// names; RefusalNone when the chain holds none, or that error names none.
-// Every layer above the provider — the in-node retry, node recovery, the
-// runner's redelivery and the run's automatic resume — reads a refusal
-// through here, from the typed error the chain carries, never from text.
+// refusalPrecedence orders the refusal kinds RefusalOf decides between when
+// err's chain holds several: the remedy an operator acts on first — money,
+// then the model, then the schema, then the request.
+var refusalPrecedence = []RefusalKind{RefusalBudget, RefusalCapability, RefusalGrammar, RefusalRequest}
+
+// RefusalsOf returns every provider error of err's chain that names a
+// refusal, in walk order — joined errors (an exhausted fallback chain)
+// included, never descending into a provider error itself.
+func RefusalsOf(err error) []ProviderRefusal {
+	var out []ProviderRefusal
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if r, ok := e.(ProviderRefusal); ok {
+			if r.Refusal() != RefusalNone {
+				out = append(out, r)
+			}
+			return
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, inner := range u.Unwrap() {
+				walk(inner)
+			}
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		}
+	}
+	walk(err)
+	return out
+}
+
+// RefusalOf reports the refusal err's chain names: among every provider
+// error of the chain (RefusalsOf), the kind first in refusalPrecedence, so
+// the verdict never depends on the order its errors were joined in;
+// RefusalNone when the chain names none. Every layer above the provider —
+// the in-node retry, node recovery, the runner's redelivery and the run's
+// automatic resume — reads a refusal through here, from the typed errors the
+// chain carries, never from text.
 func RefusalOf(err error) RefusalKind {
-	var refusal ProviderRefusal
-	if errors.As(err, &refusal) {
-		return refusal.Refusal()
+	met := map[RefusalKind]bool{}
+	for _, r := range RefusalsOf(err) {
+		met[r.Refusal()] = true
+	}
+	for _, kind := range refusalPrecedence {
+		if met[kind] {
+			return kind
+		}
 	}
 	return RefusalNone
 }

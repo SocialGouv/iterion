@@ -113,6 +113,7 @@ const (
 var (
 	ClassifyRefusal = api.ClassifyRefusal
 	RefusalOf       = api.RefusalOf
+	RefusalsOf      = api.RefusalsOf
 )
 
 // RequestValidationError identifies a local invalid or unsupported request.
