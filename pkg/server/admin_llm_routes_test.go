@@ -320,7 +320,7 @@ func TestAdminLLM_OAuthAuditsOnlyRealMutations(t *testing.T) {
 	// The insert is deliberately DETACHED (auditWrite → goSafe), so the
 	// count is an eventual state: reading it the instant the response
 	// lands sees the write only most of the time. Poll for the expected
-	// value — a 5%-per-run flake on the required `race` check otherwise.
+	// value — a 5%-per-run flake on the `race` check (heavy layer, held) otherwise.
 	waitPlatformOAuthEvents := func(want int) {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Second)

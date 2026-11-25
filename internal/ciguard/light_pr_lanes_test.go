@@ -154,11 +154,11 @@ func mdSection(t *testing.T, path, prefix string) string {
 }
 
 // TestLightGreenIsNotAdminMergeable pins the consequence of a light pull
-// request's green `test` and `race`: the heavy legs never ran, so an admin
-// merge that bypasses the queue — the only place they gate — must not read
-// that green as proof. Both aggregators say so in the notice of a forgiven
-// skip, and each documented admin lane requires the `ci:full` run of the
-// heavy legs, read as success and not skipped, before it merges.
+// request's green `test` and `race`: the heavy legs never ran, and an admin
+// merge also gives up the queue's rebuild against the entries ahead of it, so
+// it must not read that green as proof. Both aggregators say so in the notice
+// of a forgiven skip, and each documented admin lane requires the `ci:full`
+// run of the heavy legs, read as success and not skipped, before it merges.
 func TestLightGreenIsNotAdminMergeable(t *testing.T) {
 	var wf struct{ Jobs map[string]map[string]any }
 	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
@@ -167,12 +167,12 @@ func TestLightGreenIsNotAdminMergeable(t *testing.T) {
 	aggregators := 0
 	for name, job := range wf.Jobs {
 		env, _ := job["env"].(map[string]any)
-		if env[lightPullRequestEnv] != lightPullRequestValue {
+		if env[lightRunEnv] != lightRunValue {
 			continue
 		}
 		aggregators++
 		needs, _ := job["needs"].([]any)
-		vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), lightPullRequestEnv + "=true"}
+		vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), lightRunEnv + "=true"}
 		for k, v := range env {
 			for _, l := range needs {
 				if v == fmt.Sprintf("${{ needs.%v.result }}", l) {
@@ -202,7 +202,7 @@ func TestLightGreenIsNotAdminMergeable(t *testing.T) {
 		}
 	}
 	if aggregators != 2 {
-		t.Fatalf("found %d aggregators reading %s, want test and race", aggregators, lightPullRequestEnv)
+		t.Fatalf("found %d aggregators reading %s, want test and race", aggregators, lightRunEnv)
 	}
 
 	// The policy's two lanes state the rule in full; the agent page, held to
@@ -274,7 +274,7 @@ func TestRaceFloorIsNamed(t *testing.T) {
 		t.Skipf("%s, the heaviest race package, leaves the package partition", heaviest)
 	}
 	short := "`" + strings.TrimPrefix(heaviest, modulePrefix) + "`"
-	section := mdSection(t, mergePolicyPath, "## Light pull request, heavy merge queue")
+	section := mdSection(t, mergePolicyPath, "## Light runs, heavy main")
 	named := false
 	for _, sentence := range strings.Split(section, ". ") {
 		if strings.Contains(sentence, "floor") && strings.Contains(sentence, short) {
@@ -294,13 +294,13 @@ func TestRaceFloorIsNamed(t *testing.T) {
 // TestCiFullGuidanceNamesEveryOptInJob requires the policy's `ci:full`
 // guidance to name every job a light pull request skips, so an author whose
 // change only one of them witnesses (cloud-e2e for charts and the cloud
-// stack) knows to opt in.
+// stack, mongo-conformance for the Mongo store) knows to opt in.
 func TestCiFullGuidanceNamesEveryOptInJob(t *testing.T) {
 	var wf workflowJobs
 	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
 		t.Fatal(err)
 	}
-	section := mdSection(t, mergePolicyPath, "## Light pull request, heavy merge queue")
+	section := mdSection(t, mergePolicyPath, "## Light runs, heavy main")
 	var guidance string
 	for _, sentence := range strings.Split(section, ". ") {
 		if strings.Contains(sentence, "add the `ci:full` label") {
@@ -320,7 +320,7 @@ func TestCiFullGuidanceNamesEveryOptInJob(t *testing.T) {
 			t.Errorf("the `ci:full` guidance never names %q, which a light pull request skips:\n%s", name, guidance)
 		}
 	}
-	if optIn < 3 {
-		t.Fatalf("found %d jobs gated on ci:full, want race-shard, test-e2e and cloud-e2e", optIn)
+	if optIn < 4 {
+		t.Fatalf("found %d jobs gated on ci:full, want race-shard, test-e2e, cloud-e2e and mongo-conformance", optIn)
 	}
 }

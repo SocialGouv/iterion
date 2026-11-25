@@ -21,8 +21,6 @@ var beyondTaskCheck = map[string]string{
 	// ci:vendor-check REWRITES go.mod, go.sum and vendor/: a gate that
 	// mutates the tree it judges would punish whoever shares the worktree.
 	"ci:vendor-check": "rewrites go.mod, go.sum and vendor/ — `check` must not mutate the tree it judges",
-	// ci:mongo-conformance boots a real replica set through Docker.
-	"ci:mongo-conformance": "needs a Docker daemon, which a machine owing `task check` need not have",
 	// `check` runs `lint`, whose `fmt` dependency runs `go fmt ./...` in
 	// place: after it, ci:gofmt reports what lint already rewrote.
 	"ci:gofmt": "redundant after `check`: `lint` runs `fmt`, which rewrites whatever ci:gofmt would report",

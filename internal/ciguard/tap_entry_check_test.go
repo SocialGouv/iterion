@@ -183,7 +183,7 @@ func expectRefused(t *testing.T, r tapCheckResult, because string) {
 }
 
 func TestTapCheckLetsAnythingElseThrough(t *testing.T) {
-	// TAP_ONLY false: the heavy jobs ran, so there is nothing to verify, and
+	// TAP_ONLY false: the tap skip skipped nothing, so there is nothing to verify, and
 	// nothing is read — not even a repository.
 	expectVerified(t, runTapCheck(t, t.TempDir(), map[string]string{"TAP_ONLY": "false"}))
 }
