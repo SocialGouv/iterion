@@ -1,15 +1,18 @@
 package tool
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
-	_ "image/gif" // registers the GIF header and decoder image.DecodeConfig reads
+	"image/gif"
 	"image/jpeg"
-	_ "image/png" // registers the PNG header and decoder image.DecodeConfig reads
+	"image/png"
+	"io"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
@@ -23,65 +26,93 @@ const fitJPEGQuality = 85
 // Below it the image no longer carries what the model was asked to read.
 const fitMinSide = 64
 
-// headerPrefixBase64 is how much of an image's base64 ImageHeader decodes:
-// enough for the header of a PNG or GIF, and for a JPEG's frame header
-// behind the usual EXIF and ICC segments.
-const headerPrefixBase64 = 1 << 20
+// headerPrefixBytes bounds the bytes ImageHeader reads: enough for a
+// JPEG's frame header behind the usual EXIF and ICC segments, and nothing
+// a crafted file can amplify.
+const headerPrefixBytes = 768 << 10
 
-// ImageHeader reads an image's dimensions from its header alone — a
-// bounded base64 prefix, image.DecodeConfig, no pixel decoded. ok is false
-// for a source that is not base64 data, or a header Go cannot read (a
-// format other than PNG, JPEG and GIF, or a JPEG frame header past the
-// prefix).
+var pngSignature = []byte("\x89PNG\r\n\x1a\n")
+
+// ImageHeader reads an image's format and dimensions from its header alone,
+// never a pixel: a PNG's from its IHDR (the first chunk, by the format's
+// rule) without walking the chunks after it, a WebP's from its first chunk
+// (VP8X, VP8L or VP8), a JPEG's and a GIF's through their DecodeConfig over a
+// stream of at most headerPrefixBytes. ok is false for a source that is not
+// base64 data, or a header it cannot read within that prefix.
 func ImageHeader(src *api.ImageSource) (width, height int, format string, ok bool) {
 	if src == nil || src.Type != "base64" {
 		return 0, 0, "", false
 	}
-	data := src.Data
-	if len(data) > headerPrefixBase64 {
-		data = data[:headerPrefixBase64]
-	}
-	raw, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
+	r := bufio.NewReaderSize(io.LimitReader(base64.NewDecoder(base64.StdEncoding, strings.NewReader(src.Data)), headerPrefixBytes), 64)
+	head, _ := r.Peek(30)
+	le24 := func(b []byte) int { return int(b[0]) | int(b[1])<<8 | int(b[2])<<16 }
+	switch {
+	case len(head) >= 24 && bytes.Equal(head[:8], pngSignature) && string(head[12:16]) == "IHDR" && binary.BigEndian.Uint32(head[8:12]) == 13:
+		w, h := binary.BigEndian.Uint32(head[16:20]), binary.BigEndian.Uint32(head[20:24])
+		if w > 1<<31-1 || h > 1<<31-1 {
+			return 0, 0, "", false
+		}
+		return int(w), int(h), "png", true
+	case len(head) >= 30 && string(head[:4]) == "RIFF" && string(head[8:12]) == "WEBP":
+		switch string(head[12:16]) {
+		case "VP8X":
+			return 1 + le24(head[24:27]), 1 + le24(head[27:30]), "webp", true
+		case "VP8L":
+			if head[20] != 0x2f {
+				return 0, 0, "", false
+			}
+			bits := binary.LittleEndian.Uint32(head[21:25])
+			return 1 + int(bits&0x3fff), 1 + int(bits>>14&0x3fff), "webp", true
+		case "VP8 ":
+			if head[23] != 0x9d || head[24] != 0x01 || head[25] != 0x2a {
+				return 0, 0, "", false
+			}
+			return int(binary.LittleEndian.Uint16(head[26:28]) & 0x3fff), int(binary.LittleEndian.Uint16(head[28:30]) & 0x3fff), "webp", true
+		}
 		return 0, 0, "", false
+	case len(head) >= 2 && head[0] == 0xff && head[1] == 0xd8:
+		cfg, err := jpeg.DecodeConfig(r)
+		if err != nil {
+			return 0, 0, "", false
+		}
+		return cfg.Width, cfg.Height, "jpeg", true
+	case len(head) >= 6 && (string(head[:6]) == "GIF87a" || string(head[:6]) == "GIF89a"):
+		cfg, err := gif.DecodeConfig(r)
+		if err != nil {
+			return 0, 0, "", false
+		}
+		return cfg.Width, cfg.Height, "gif", true
 	}
-	cfg, format, err := image.DecodeConfig(bytes.NewReader(raw))
-	if err != nil {
-		return 0, 0, "", false
-	}
-	return cfg.Width, cfg.Height, format, true
+	return 0, 0, "", false
 }
 
-// fitImageBase64 reduces a base64 image the tool loop produced itself (a
-// capture, never untrusted bytes) until its longer side is at most maxSide
-// and its base64 at most maxBytes (0: no bound): halved, box-filtered, to
-// the side, then re-encoded as JPEG (transparency flattened onto white) and
-// halved again until it fits. The header is read first: non-positive
-// dimensions, or more than maxPixels (0: no bound), refuse the image before
-// any decode. It returns the reduced source and a description of what was
-// done. An image Go cannot decode (PNG, JPEG and GIF are read), or one that
-// does not fit before a side falls under fitMinSide, is an error.
+// fitImageBase64 reduces a capture the tool loop produced itself — a PNG,
+// never untrusted bytes — until its longer side is at most maxSide and its
+// base64 at most maxBytes (0: no bound): halved, box-filtered, to the side,
+// then re-encoded as JPEG (transparency flattened onto white) and halved
+// again until it fits. The header is read first: bytes that are not a PNG,
+// non-positive dimensions, or more than maxPixels (0: no bound) refuse the
+// image before any decode. It returns the reduced source and a description
+// of what was done. One that does not fit before a side falls under
+// fitMinSide is an error.
 func fitImageBase64(src *api.ImageSource, maxBytes, maxSide int, maxPixels int64) (*api.ImageSource, string, error) {
-	if src.Type != "base64" {
-		return nil, "", fmt.Errorf("source %q is not base64 data", src.Type)
+	w, h, format, ok := ImageHeader(src)
+	if !ok || format != "png" {
+		return nil, "", fmt.Errorf("the capture is not a PNG (header %q, readable=%t): it is not decoded", format, ok)
+	}
+	if w <= 0 || h <= 0 {
+		return nil, "", fmt.Errorf("header declares %dx%d pixels", w, h)
+	}
+	if px := int64(w) * int64(h); maxPixels > 0 && px > maxPixels {
+		return nil, "", fmt.Errorf("header declares %dx%d = %d pixels, over the %d this reduction decodes (%s)", w, h, px, maxPixels, EnvImageMaxDecodePixels)
 	}
 	raw, err := base64.StdEncoding.DecodeString(src.Data)
 	if err != nil {
 		return nil, "", fmt.Errorf("decode base64: %w", err)
 	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	decoded, err := png.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return nil, "", fmt.Errorf("decode %s header: %w", src.MediaType, err)
-	}
-	if cfg.Width <= 0 || cfg.Height <= 0 {
-		return nil, "", fmt.Errorf("header declares %dx%d pixels", cfg.Width, cfg.Height)
-	}
-	if px := int64(cfg.Width) * int64(cfg.Height); maxPixels > 0 && px > maxPixels {
-		return nil, "", fmt.Errorf("header declares %dx%d = %d pixels, over the %d this reduction decodes (%s)", cfg.Width, cfg.Height, px, maxPixels, EnvImageMaxDecodePixels)
-	}
-	decoded, format, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return nil, "", fmt.Errorf("decode %s: %w", src.MediaType, err)
+		return nil, "", fmt.Errorf("decode png: %w", err)
 	}
 	b := decoded.Bounds()
 	opaque := false
@@ -110,7 +141,7 @@ func fitImageBase64(src *api.ImageSource, maxBytes, maxSide int, maxPixels int64
 			return nil, "", fmt.Errorf("encode jpeg: %w", err)
 		}
 		if n := base64.StdEncoding.EncodedLen(buf.Len()); maxBytes <= 0 || n <= maxBytes {
-			desc := []string{fmt.Sprintf("%dx%d %s → %dx%d JPEG, %d bytes of base64", b.Dx(), b.Dy(), format, img.Bounds().Dx(), img.Bounds().Dy(), n)}
+			desc := []string{fmt.Sprintf("%dx%d %s → %dx%d JPEG, %d bytes of base64", b.Dx(), b.Dy(), "png", img.Bounds().Dx(), img.Bounds().Dy(), n)}
 			if !opaque {
 				desc = append(desc, "transparency flattened onto white")
 			}

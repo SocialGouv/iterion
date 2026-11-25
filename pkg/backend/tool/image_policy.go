@@ -41,6 +41,12 @@ type ImagePolicy struct {
 	MaxRequestImageBytes int
 	MaxRequestImages     int
 
+	// ManyImagesThreshold and ManyImagesMaxSide: a request carrying more
+	// than ManyImagesThreshold images holds each to ManyImagesMaxSide pixels
+	// a side (Anthropic refuses the request otherwise, on every retry).
+	ManyImagesThreshold int
+	ManyImagesMaxSide   int
+
 	// TextOnly says the receiver reads text only — a codemode program. An
 	// image becomes TextOnlyImageMarker: no bound applies, and the image
 	// bytes are never kept.
@@ -66,27 +72,44 @@ const (
 // real limits differ from the family default (a gateway configured for
 // larger bodies, a provider that raised its cap).
 const (
-	EnvImageMaxBase64Bytes   = "ITERION_IMAGE_MAX_BASE64_BYTES"
-	EnvImageMaxSide          = "ITERION_IMAGE_MAX_SIDE"
-	EnvImageMaxDecodePixels  = "ITERION_IMAGE_MAX_DECODE_PIXELS"
-	EnvRequestImageMaxBytes  = "ITERION_REQUEST_IMAGE_MAX_BYTES"
-	EnvRequestImageMaxCount  = "ITERION_REQUEST_IMAGE_MAX_COUNT"
-	anthropicImageBase64     = 5 << 20
-	anthropicImageSide       = 8000
-	anthropicRequestImageB64 = 24 << 20
-	anthropicRequestImages   = 100
-	openAIImageBase64        = 20 << 20
-	openAIRequestImageB64    = 40 << 20
+	EnvImageMaxBase64Bytes        = "ITERION_IMAGE_MAX_BASE64_BYTES"
+	EnvImageMaxSide               = "ITERION_IMAGE_MAX_SIDE"
+	EnvImageMaxDecodePixels       = "ITERION_IMAGE_MAX_DECODE_PIXELS"
+	EnvRequestImageMaxBytes       = "ITERION_REQUEST_IMAGE_MAX_BYTES"
+	EnvRequestImageMaxCount       = "ITERION_REQUEST_IMAGE_MAX_COUNT"
+	EnvRequestManyImagesThreshold = "ITERION_REQUEST_MANY_IMAGES_THRESHOLD"
+	EnvRequestManyImagesMaxSide   = "ITERION_REQUEST_MANY_IMAGES_MAX_SIDE"
+	anthropicImageBase64          = 5 << 20
+	anthropicImageSide            = 8000
+	anthropicRequestImageB64      = 24 << 20
+	anthropicRequestImages        = 100
+	anthropicManyImages           = 20
+	anthropicManyImagesSide       = 2000
+	openAIImageBase64             = 20 << 20
+	openAIRequestImageB64         = 40 << 20
 	// defaultDecodePixels bounds a reduction's decode: a few-byte PNG can
 	// declare 100000×100000, whose RGBA buffer alone is 40 GB. 50 megapixels
 	// covers an 8K capture (7680×4320 ≈ 33 MP) with room, at 200 MB of RGBA.
 	defaultDecodePixels = 50_000_000
 )
 
+// ImagePolicyEnvVars are the escape hatches RouteImagePolicy reads, in one
+// list for the reader and the sandbox crossing alike.
+var ImagePolicyEnvVars = []string{
+	EnvImageMaxBase64Bytes,
+	EnvImageMaxSide,
+	EnvImageMaxDecodePixels,
+	EnvRequestImageMaxBytes,
+	EnvRequestImageMaxCount,
+	EnvRequestManyImagesThreshold,
+	EnvRequestManyImagesMaxSide,
+}
+
 // anthropicImageProviders are the routing prefixes Anthropic's Messages API
 // serves: 5 MiB of base64 and 8000 pixels a side per image (a 400 the
 // conversation cannot recover from past either), 100 images and 32 MB per
-// request.
+// request, and 2000 pixels a side for every image of a request of more than
+// 20.
 var anthropicImageProviders = map[string]bool{
 	"anthropic": true,
 	"bedrock":   true,
@@ -99,14 +122,17 @@ var anthropicImageProviders = map[string]bool{
 // route whose model id names a Claude model (a bare claude-*, a gateway
 // serving one) — bounds an image at 5 MiB of base64 and 8000 pixels a side,
 // a request's images at 24 MiB (the 32 MB request cap, less room for a full
-// context of text) and 100 images. Every other route — openai, xai,
+// context of text) and 100 images, and every image of a request of more
+// than 20 at 2000 pixels a side. Every other route — openai, xai,
 // foundry, an OpenAI-compatible gateway — bounds an image at 20 MiB and a
 // request's images at 40 MiB, under the 50 MB request OpenAI documents, with
 // no side or count bound. A reduction decodes at most 50 megapixels.
 //
 // getenv reads the escape hatches; a value that is not a non-negative
-// integer is an error, never ignored, and so is a per-image bound over the
-// per-request one: no image could ever be sent.
+// integer is an error, never ignored. A per-image bound over the per-request
+// one is not: the knobs are global and each family has its own defaults, so
+// the smaller of the two holds where an image is bounded
+// (EffectiveMaxImageBytes).
 func RouteImagePolicy(spec string, getenv func(string) string) (ImagePolicy, error) {
 	policy := ImagePolicy{
 		Route:                spec,
@@ -120,6 +146,8 @@ func RouteImagePolicy(spec string, getenv func(string) string) (ImagePolicy, err
 		policy.MaxImageSide = anthropicImageSide
 		policy.MaxRequestImageBytes = anthropicRequestImageB64
 		policy.MaxRequestImages = anthropicRequestImages
+		policy.ManyImagesThreshold = anthropicManyImages
+		policy.ManyImagesMaxSide = anthropicManyImagesSide
 	}
 	var decodePixels = int(policy.MaxDecodePixels)
 	for _, o := range []struct {
@@ -131,6 +159,8 @@ func RouteImagePolicy(spec string, getenv func(string) string) (ImagePolicy, err
 		{EnvImageMaxDecodePixels, &decodePixels},
 		{EnvRequestImageMaxBytes, &policy.MaxRequestImageBytes},
 		{EnvRequestImageMaxCount, &policy.MaxRequestImages},
+		{EnvRequestManyImagesThreshold, &policy.ManyImagesThreshold},
+		{EnvRequestManyImagesMaxSide, &policy.ManyImagesMaxSide},
 	} {
 		raw := strings.TrimSpace(getenv(o.name))
 		if raw == "" {
@@ -143,11 +173,22 @@ func RouteImagePolicy(spec string, getenv func(string) string) (ImagePolicy, err
 		*o.dst = n
 	}
 	policy.MaxDecodePixels = int64(decodePixels)
-	if per, req := policy.MaxImageBase64Bytes, policy.MaxRequestImageBytes; per > 0 && req > 0 && per > req {
-		return ImagePolicy{}, fmt.Errorf("%s: the per-image bound (%d, %s) is over the per-request one (%d, %s): no image over %d bytes could ever be sent — lower the first or raise the second",
-			spec, per, EnvImageMaxBase64Bytes, req, EnvRequestImageMaxBytes, req)
-	}
 	return policy, nil
+}
+
+// EffectiveMaxImageBytes is the byte bound one image is held to: the
+// per-image bound, or the per-request one where it is smaller — an image
+// over it could never be sent. 0 is no bound. knobs names the escape
+// hatches of the bound that holds.
+func (p ImagePolicy) EffectiveMaxImageBytes() (max int, knobs string) {
+	per, req := p.MaxImageBase64Bytes, p.MaxRequestImageBytes
+	switch {
+	case req > 0 && (per <= 0 || req < per):
+		return req, EnvRequestImageMaxBytes + " (the per-request budget, under " + EnvImageMaxBase64Bytes + ")"
+	case per > 0:
+		return per, EnvImageMaxBase64Bytes
+	}
+	return 0, ""
 }
 
 // ImagesRefusedError is a tool image a route that takes no image would

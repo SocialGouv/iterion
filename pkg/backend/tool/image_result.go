@@ -3,17 +3,30 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 )
 
 // reducibleImageProducers are the tools whose image the tool loop may decode
-// to reduce it: a PNG the tool itself encodes from the display. Every other
-// producer's bytes — read_image's are any workspace file — are never
-// decoded: a crafted JPEG costs minutes of uncancellable CPU or gigabytes to
-// decode under any pixel bound.
-var reducibleImageProducers = map[string]bool{"screenshot": true, "computer_use": true}
+// to reduce it: screenshot, a PNG the tool itself encodes from the display.
+// Every other producer's bytes — read_image's are any workspace file — are
+// never decoded: a crafted JPEG costs minutes of uncancellable CPU or
+// gigabytes to decode under any pixel bound. computer_use is not reduced
+// either: the model clicks in the coordinate space of the capture it sees,
+// and the tool executes its coordinates on the display unscaled.
+var reducibleImageProducers = map[string]bool{"screenshot": true}
+
+// reductionNote is the text block that follows a reduced image; the request
+// builder drops it with the image (IsReductionNote).
+const reductionNote = "[image %d was reduced to fit this model route's per-image limits: %s]"
+
+// IsReductionNote reports whether text is the note ImageResultContent puts
+// after a reduced image.
+func IsReductionNote(text string) bool {
+	return strings.HasPrefix(text, "[image ") && strings.Contains(text, " was reduced to fit this model route's per-image limits: ")
+}
 
 // ImageResultContent decodes the output of a tool registered with an image
 // result (read_image, screenshot, computer_use: clawImageResultAdapter's
@@ -24,7 +37,9 @@ var reducibleImageProducers = map[string]bool{"screenshot": true, "computer_use"
 // policy is what the receiver accepts. A text-only receiver gets
 // TextOnlyImageMarker in place of each image, unbounded, the image bytes
 // dropped. Otherwise a route that refuses images makes any image an
-// *ImagesRefusedError, and an image over one of the route's per-image
+// *ImagesRefusedError. An image's media type is the one its header declares
+// (ImageHeader), the producer's kept where the header is unreadable. An
+// image over one of the route's per-image
 // bounds — its base64 size, or its longer side read from the header alone
 // (ImageHeader) — is reduced to fit when toolName is a producer the tool
 // loop controls (reducibleImageProducers), a text block saying so following
@@ -62,24 +77,29 @@ func ImageResultContent(toolName, output string, policy ImagePolicy) ([]api.Cont
 				return nil, &ImagesRefusedError{Tool: toolName, Route: policy.Route}
 			}
 			src, note := b.Source, ""
+			w, h, format, headerOK := ImageHeader(src)
+			if mt := "image/" + format; headerOK && src.MediaType != mt {
+				fixed := *src
+				fixed.MediaType = mt
+				src = &fixed
+			}
 			var over, env string
-			if max := policy.MaxImageBase64Bytes; max > 0 && len(src.Data) > max {
-				over, env = fmt.Sprintf("is %d bytes of base64, over the %d this model route accepts per image", len(src.Data), max), EnvImageMaxBase64Bytes
-			} else if side := policy.MaxImageSide; side > 0 {
-				if w, h, _, ok := ImageHeader(src); ok && (w > side || h > side) {
-					over, env = fmt.Sprintf("is %dx%d pixels, over the %d-pixel side this model route accepts", w, h, side), EnvImageMaxSide
-				}
+			if max, knobs := policy.EffectiveMaxImageBytes(); max > 0 && len(src.Data) > max {
+				over, env = fmt.Sprintf("is %d bytes of base64, over the %d this model route accepts per image", len(src.Data), max), knobs
+			} else if side := policy.MaxImageSide; side > 0 && headerOK && (w > side || h > side) {
+				over, env = fmt.Sprintf("is %dx%d pixels, over the %d-pixel side this model route accepts", w, h, side), EnvImageMaxSide
 			}
 			if over != "" {
 				if !reducibleImageProducers[toolName] {
 					return nil, &ImageTooLargeError{Tool: toolName, Block: i, Over: over, Env: env}
 				}
-				fitted, desc, err := fitImageBase64(src, policy.MaxImageBase64Bytes, policy.MaxImageSide, policy.MaxDecodePixels)
+				max, _ := policy.EffectiveMaxImageBytes()
+				fitted, desc, err := fitImageBase64(src, max, policy.MaxImageSide, policy.MaxDecodePixels)
 				if err != nil {
 					return nil, &ImageTooLargeError{Tool: toolName, Block: i, Over: over, Env: env, Cause: err}
 				}
 				src = fitted
-				note = fmt.Sprintf("[image %d was reduced to fit this model route's per-image limits: %s]", i, desc)
+				note = fmt.Sprintf(reductionNote, i, desc)
 			}
 			content = append(content, api.ContentBlock{Type: "image", Source: src})
 			if note != "" {

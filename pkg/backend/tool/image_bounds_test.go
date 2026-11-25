@@ -168,13 +168,3 @@ func TestRouteImagePolicy_SideCountAndDecodeBoundsWithEscapeHatches(t *testing.T
 		t.Fatalf("overrides: policy = %+v, err = %v", p, err)
 	}
 }
-
-// A per-image bound over the per-request one would let no such image ever
-// be sent: the configuration is refused, naming both escape hatches.
-func TestRouteImagePolicy_RefusesAPerImageBoundOverThePerRequestOne(t *testing.T) {
-	env := map[string]string{EnvRequestImageMaxBytes: "1000"}
-	_, err := RouteImagePolicy("anthropic/claude-sonnet-4-6", func(k string) string { return env[k] })
-	if err == nil || !strings.Contains(err.Error(), EnvImageMaxBase64Bytes) || !strings.Contains(err.Error(), EnvRequestImageMaxBytes) {
-		t.Fatalf("err = %v, want a refusal naming both bounds", err)
-	}
-}

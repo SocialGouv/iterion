@@ -98,8 +98,16 @@ var crossedByItsOwnBranch = map[string]string{
 	// asks (envtrust.Inherited, explicit empty included), so the twin
 	// resolves what the host resolves, planted included: the state the
 	// reader consults does not cross, the RESOLUTION does.
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT":       "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":       "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
+	// The route image bounds' escape hatches cross like the watchdog knobs.
+	"ITERION_IMAGE_MAX_BASE64_BYTES":         "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_IMAGE_MAX_SIDE":                 "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_IMAGE_MAX_DECODE_PIXELS":        "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_REQUEST_IMAGE_MAX_BYTES":        "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_REQUEST_IMAGE_MAX_COUNT":        "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_REQUEST_MANY_IMAGES_THRESHOLD":  "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_REQUEST_MANY_IMAGES_MAX_SIDE":   "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
 	// ADR-163: the run's price-feed table, folded by the server and
 	// planted on the run's environment (credroute overlay). The crossing
@@ -488,6 +496,8 @@ var crossingSpellings = map[string]string{
 	"stripForfaitCrossing":                "withdraws the forfait's channels from an untrusted run's crossing (ADR-162 decision 7): sets CODEX_HOME and CLAUDE_CONFIG_DIR to the explicit empty and deletes ITERION_OPENAI_USE_OAUTH — a spelling, no read; the forfait's own reader is the OAuth dir it no longer names",
 	"stampWithheldEnvName":                "names the subscription refusal a stamped run's crossing keeps forwarding while it blanks the pod's credentials — a comparison, no read",
 	"(anthropicEnvWalk).envName":          "names the env variable a built walk's credential came from, as the key containerSpend reads the crossing's funds under — no read: the walk's values were read where the walk reads them",
+	"(*ManyImagesTooLargeError).Error":    "names the many-image rule's escape hatches in the refusal the operator reads — no read: imageBoundKnobs reads them",
+	"imageBoundKnobs":                     "keys each image bound's planted-as-unset read (envtrust.Inherited, beside it) by its name, for tool.RouteImagePolicy to look up — the reads are the ones the crossing carries",
 	"(*RequestImagesTooLargeError).Error": "names the request image budget's escape hatch in the refusal the operator reads — no read: tool.RouteImagePolicy reads it, through withRouteImagePolicy",
 	"boundRequestImages":                  "names the request image budget's escape hatch in the omission marker the model reads — no read: tool.RouteImagePolicy reads it, through withRouteImagePolicy",
 	"envFactoryCredential":                "names, beside its reads, the env variable the env factory's walk took its credential from, as the key a sandbox runner reads the crossing's record under (Registry.envSpend) — CODEX_HOME included, which it names and never reads: the login's own reader is secrets.LoadCodexCredentialsFromDisk",
@@ -505,9 +515,16 @@ var crossingSpellings = map[string]string{
 // assertion keeps it two-sided with crossedByItsOwnBranch: an entry whose
 // name stops crossing by its own branch reds here.
 var consultsWhatCrosses = map[string]string{
-	"ITERION_GATEWAY_PRICE_FEED":       "the run's feed table crosses as the ctx-overlaid value the server folded (ADR-163): the host reads it through credroute.Inherited and crosses those same bytes, so the in-container catalog prices by the table the host priced by",
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_GATEWAY_PRICE_FEED":            "the run's feed table crosses as the ctx-overlaid value the server folded (ADR-163): the host reads it through credroute.Inherited and crosses those same bytes, so the in-container catalog prices by the table the host priced by",
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT":      "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":      "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_IMAGE_MAX_BASE64_BYTES":        "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_IMAGE_MAX_SIDE":                "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_IMAGE_MAX_DECODE_PIXELS":       "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_REQUEST_IMAGE_MAX_BYTES":       "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_REQUEST_IMAGE_MAX_COUNT":       "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_REQUEST_MANY_IMAGES_THRESHOLD": "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_REQUEST_MANY_IMAGES_MAX_SIDE":  "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
 }
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",

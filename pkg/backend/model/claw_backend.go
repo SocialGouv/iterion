@@ -2941,14 +2941,6 @@ var providerCredentialEnvVars = []string{
 	// (docs/backends.md § Client identity).
 	"ITERION_LLM_USER_AGENT",
 	"CLAW_USER_AGENT",
-	// The route image bounds' escape hatches (tool.RouteImagePolicy): the
-	// generation that shapes tool images and builds requests runs in the
-	// container for a sandboxed node, which must bound them as the host does.
-	tool.EnvImageMaxBase64Bytes,
-	tool.EnvImageMaxSide,
-	tool.EnvImageMaxDecodePixels,
-	tool.EnvRequestImageMaxBytes,
-	tool.EnvRequestImageMaxCount,
 	// A header block, so it crosses FILTERED and EXPLICIT (the
 	// headerBlockEnvName branch of forwardableProviderEnv): its identity
 	// lines are the operator's, its credential lines would authenticate the
@@ -3304,6 +3296,13 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// after the host refused it. Empty reads as the fallback on both sides;
 	// the operator's own export crosses intact.
 	for _, name := range clawStreamTimeoutEnvVars {
+		env[name] = envtrust.Inherited(name)
+	}
+	// The route image bounds' escape hatches cross the same way: the
+	// generation that shapes tool images and builds requests runs in the
+	// container for a sandboxed node, which must bound them as the host
+	// reads them — planted-as-unset, an explicit empty included.
+	for _, name := range clawImageBoundEnvVars {
 		env[name] = envtrust.Inherited(name)
 	}
 	// The workspace-agent ceiling crosses ALWAYS, the routing pattern pushed

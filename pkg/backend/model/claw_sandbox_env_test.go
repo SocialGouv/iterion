@@ -921,3 +921,29 @@ func TestTheImageBoundEscapeHatchesCrossIntoTheSandbox(t *testing.T) {
 		}
 	}
 }
+
+// A knob a project .env planted has no authority, on the host as in the
+// container: a malformed planted value never fails a host generation, and the
+// crossing carries the host's planted-as-unset answer as an explicit empty, so
+// the runner's workspace .env cannot fill it in-container.
+func TestImageBoundKnobsReadAndCrossPlantedAsUnset(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	t.Setenv("ITERION_IMAGE_MAX_SIDE", "lots")
+	envtrust.MarkPlanted("ITERION_IMAGE_MAX_SIDE")
+	opts := GenerationOptions{Model: "anthropic/claude-sonnet-4-6"}
+	if _, err := withRouteImagePolicy(context.Background(), &opts); err != nil {
+		t.Fatalf("a planted malformed knob failed the host generation: %v", err)
+	}
+	if opts.images.MaxImageSide != 8000 {
+		t.Errorf("planted side honoured: MaxImageSide = %d, want the route default 8000", opts.images.MaxImageSide)
+	}
+	env := envFor(t, context.Background())
+	if got, ok := env["ITERION_IMAGE_MAX_SIDE"]; !ok || got != "" {
+		t.Errorf("planted side crossed as %q (present=%v), want an explicit empty", got, ok)
+	}
+	if got, ok := env["ITERION_REQUEST_IMAGE_MAX_COUNT"]; !ok || got != "" {
+		t.Errorf("an unset knob crossed as %q (present=%v), want an explicit empty", got, ok)
+	}
+}
