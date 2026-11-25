@@ -17,7 +17,11 @@
 ## Tools NON couverts ici (et pourquoi) :
 ##   - web_fetch / web_search → besoin de network stable / BRAVE_API_KEY
 ##   - mcp_auth                → flux OAuth, dépendances externes
-##   - lsp                     → besoin d'un LSP server
+##   - team_* / cron_* / lsp   → refusés de façon typée sur claw (C159) :
+##                               lifecycle_runner et aux_runner appellent
+##                               chacun une fois, et le test vérifie le
+##                               refus (aucun succès, l'erreur porte
+##                               « UNAVAILABLE on this backend »).
 ##   - skill                   → besoin d'un skill registry pré-rempli
 ##   - repl                    → besoin d'un runtime python/js
 ##   - notebook_edit           → besoin d'un .ipynb réel
@@ -33,7 +37,8 @@
 ##                               sans runner câblé, chaque appel est
 ##                               refusé de façon typée (#1940).
 ##
-## Couverture attendue ici : 25 tools réels via 3 agents en séquence.
+## Couverture attendue : chaque tool déclaré est appelé ; les neuf team_*,
+## cron_* et lsp le sont aussi, et chacun reçoit le refus typé.
 
 mcp_server testsrv:
   transport: stdio
@@ -147,9 +152,10 @@ agent mcp_runner:
 ## ─── Agent 3 — State lifecycle (tasks/teams/cron) ──────────────
 
 prompt lifecycle_system:
-  Tu valides le state lifecycle de claw (tasks/teams/cron). Crée
-  une entité de chaque type, lis-la, liste-la. Pour cron et team,
-  supprime-la après lecture.
+  Tu valides le state lifecycle de claw (tasks/teams/cron). Crée une
+  task, lis-la, liste-la. Les tools team_* et cron_* sont refusés sur
+  ce backend : appelle chacun UNE fois, constate l'erreur, ne réessaie
+  pas.
 
 prompt lifecycle_user:
   Checklist (11 tools, dans l'ordre) :
@@ -157,26 +163,25 @@ prompt lifecycle_user:
    2. task_get      — task_id=<celui retourné par task_create>
    3. task_list
    4. team_create   — name="probe-team", description="probe"
-   5. team_get      — team_id=<celui de team_create>
+   5. team_get      — team_id="probe"
    6. team_list
-   7. team_delete   — team_id=<même>
+   7. team_delete   — team_id="probe"
    8. cron_create   — name="probe-cron", schedule="0 * * * *", prompt="ok"
-   9. cron_get      — cron_id=<celui de cron_create>
+   9. cron_get      — cron_id="probe"
   10. cron_list
-  11. cron_delete   — cron_id=<même>
+  11. cron_delete   — cron_id="probe"
+
+  Les étapes 4 à 11 retournent chacune une erreur « UNAVAILABLE on this
+  backend » : c'est le résultat attendu, passe à l'étape suivante.
 
   Remplis :
    - task_id    : id retourné par task_create
-   - team_id    : id retourné par team_create
-   - cron_id    : id retourné par cron_create
 
 schema lifecycle_input:
   trigger: string
 
 schema lifecycle_output:
   task_id: string
-  team_id: string
-  cron_id: string
 
 agent lifecycle_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
@@ -422,11 +427,9 @@ prompt aux_user:
            "iterion-ask-user-probe-answer" inline, sans pause).
 
   11. lsp — action="diagnostics", path="{{vars.workspace_dir}}/probe.go"
-        → capture le champ "action" du retour dans `lsp_action`
-          (doit être "diagnostics" — le test pré-enregistre un serveur
-           LSP "go" StatusConnected sans transport, donc Dispatch
-           retourne une réponse déterministe : action=diagnostics,
-           path=<fixture>, count=0).
+        → le tool est refusé sur ce backend : l'appel retourne une erreur
+          « UNAVAILABLE on this backend ». Appelle-le UNE fois, ne
+          réessaie pas, passe à l'étape suivante.
 
   12. screenshot
         → capture l'écran (Xvfb sur DISPLAY=:99 dans le test). Le retour
@@ -453,7 +456,6 @@ schema aux_output:
   image_description: string
   web_search_text: string
   ask_user_answer: string
-  lsp_action: string
   screenshot_description: string
   computer_use_description: string
 

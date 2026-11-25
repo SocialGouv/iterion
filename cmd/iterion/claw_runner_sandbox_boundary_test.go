@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -314,7 +315,7 @@ func TestHybridToolDefs_RefusesWhatTheContainerCannotExecute(t *testing.T) {
 		name string
 		want string
 	}{
-		{"lsp", "child processes of the launcher"},
+		{"lsp", "no language server"},
 		{"screenshot", "display"},
 		{"worker_create", "working directory the model supplies"},
 		// Fail closed: a name from a claw bump nobody classified yet is
@@ -328,6 +329,14 @@ func TestHybridToolDefs_RefusesWhatTheContainerCannotExecute(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%q: error does not say why it cannot run in-container: %v", tc.name, err)
+		}
+		// A name the launcher typed-refuses on every host (lsp) gains nothing
+		// unsandboxed, so its remedy must not offer that; every other refused
+		// name keeps it.
+		_, refusedEverywhere := toolcatalog.ClawRefusesBuiltin(tc.name)
+		if offers := strings.Contains(err.Error(), "run the workflow unsandboxed"); offers == refusedEverywhere {
+			t.Errorf("%q: the remedy offers running unsandboxed = %v, but the tool is refused on every host = %v: %v",
+				tc.name, offers, refusedEverywhere, err)
 		}
 		// The refusal is addressed to the workflow author: it must carry the
 		// refused tool's name, so the offending `tools:` entry is greppable.

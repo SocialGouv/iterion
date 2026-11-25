@@ -3,6 +3,8 @@ package tool
 import (
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,6 +66,18 @@ func (p SandboxPlacement) String() string {
 type placementRule struct {
 	placement SandboxPlacement
 	reason    string
+}
+
+// UnsandboxedRemedy is the tail a sandbox placement refusal appends to its
+// first remedy: the offer to run the workflow unsandboxed, where the launcher
+// serves the tool itself. A name on toolcatalog's refused list earns the same
+// typed refusal unsandboxed, so for it the tail says that instead of offering
+// a remedy that changes nothing.
+func UnsandboxedRemedy(name string) string {
+	if _, refused := toolcatalog.ClawRefusesBuiltin(name); refused {
+		return " (every call to it is refused on any host, sandboxed or not)"
+	}
+	return ", or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)"
 }
 
 // SandboxPlacementOf classifies a tool by the name the registry knows it
@@ -179,15 +193,15 @@ var sandboxPlacements = map[string]placementRule{
 	"task_update":     {PlacementLauncher, "it mutates the launcher's in-memory task registry"},
 	"run_task_packet": {PlacementLauncher, "it mutates the launcher's in-memory task registry"},
 
-	"team_create": {PlacementLauncher, "it mutates the launcher's in-memory team registry"},
-	"team_get":    {PlacementLauncher, "it reads the launcher's in-memory team registry"},
-	"team_list":   {PlacementLauncher, "it reads the launcher's in-memory team registry"},
-	"team_delete": {PlacementLauncher, "it mutates the launcher's in-memory team registry"},
+	"team_create": {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
+	"team_get":    {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
+	"team_list":   {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
+	"team_delete": {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
 
-	"cron_create": {PlacementLauncher, "it mutates the launcher's in-memory cron registry"},
-	"cron_get":    {PlacementLauncher, "it reads the launcher's in-memory cron registry"},
-	"cron_list":   {PlacementLauncher, "it reads the launcher's in-memory cron registry"},
-	"cron_delete": {PlacementLauncher, "it mutates the launcher's in-memory cron registry"},
+	"cron_create": {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
+	"cron_get":    {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
+	"cron_list":   {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
+	"cron_delete": {PlacementLauncher, "its call goes to the launcher's tool registry, which typed-refuses it"},
 
 	// Persisted launcher-side, at paths derived from launcher state and never
 	// from a model argument; the container is torn down at the end of the node.
@@ -208,7 +222,7 @@ var sandboxPlacements = map[string]placementRule{
 	// half runs on the host, and the container has no seam onto that half.
 	// -----------------------------------------------------------------
 	"lsp": {PlacementRefused,
-		"the language servers are child processes of the launcher"},
+		"iterion registers no language server for it on any host"},
 	"screenshot": {PlacementRefused,
 		"it drives the launcher host's display through xdotool / import"},
 	"computer_use": {PlacementRefused,

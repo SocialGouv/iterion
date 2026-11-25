@@ -10,13 +10,11 @@ import (
 // refusedCode is the code under test.
 const refusedCode = DiagToolRefusedOnClaw
 
-// refusedProbe is the name the scenarios below declare. The production list
-// is EMPTY — `agent` left it when iterion wired real subagents at both hosts
-// (#1940) — so C159's three arms are driven through an injected entry over a
-// name the catalog really holds. Without it the mechanism would be read by
-// nothing, and a mechanism no test can fire is a mechanism nobody knows still
-// works; with it, every reduction, scope and hedge below is exercised exactly
-// as the next refused capability will find them.
+// refusedProbe is the name the scenarios below declare. C159's three arms are
+// driven through an injected entry over a name the catalog really holds and
+// the production list does not, so every reduction, scope and hedge below is
+// exercised on a refusal whose words the test controls; the shipped entries
+// are witnessed by TestAShippedRefusedToolWarnsAndStillCompiles.
 const refusedProbe = "web_search"
 
 // probeRefusal is shaped like the refusals this list carries: a reason in the
@@ -33,21 +31,33 @@ func withRefusedProbe(t *testing.T) {
 	t.Cleanup(toolcatalog.SetClawRefusedBuiltinForTest(refusedProbe, probeRefusal))
 }
 
-// TestTheRefusedClawListIsEmptyInProduction is the flip of #1940: with the
-// subagent runner wired at both hosts, no name claw registers is beyond
-// iterion, and `agent` in particular must draw no warning — a warning that
-// contradicts a working capability teaches authors to ignore diagnostics.
-func TestTheRefusedClawListIsEmptyInProduction(t *testing.T) {
-	if names := toolcatalog.ClawRefusedBuiltins(); len(names) != 0 {
-		t.Fatalf("the refused list carries %v; every name claw registers is served, so C159 fires on nothing", names)
-	}
+// TestAShippedRefusedToolWarnsAndStillCompiles drives the production list,
+// not an injection: a claw node declaring cron_create — a tool claw registers
+// and iterion refuses, since no scheduler ever fires its entry — earns C159
+// quoting the catalog's reason and remedy, and the workflow still compiles.
+// `agent` and the probe stay silent: the subagent runner is wired (#1940), and
+// the probe is not on the shipped list.
+func TestAShippedRefusedToolWarnsAndStillCompiles(t *testing.T) {
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, "+refusedProbe+"]\n"))
-	if got := diagsFor(cr, refusedCode); len(got) > 0 {
-		t.Fatalf("a claw node declaring `agent` still warns: %v — the capability is wired (#1940)", got)
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, cron_create, agent, "+refusedProbe+"]\n"))
+	got := diagsFor(cr, refusedCode)
+	if len(got) != 1 {
+		t.Fatalf("want exactly one C159, for cron_create, got %v", got)
+	}
+	r, refused := toolcatalog.ClawRefusesBuiltin("cron_create")
+	if !refused {
+		t.Fatal("cron_create is not on the shipped refused list")
+	}
+	for _, want := range []string{`"cron_create"`, r.Reason, r.Remedy} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("the C159 message does not carry %q: %s", want, got[0])
+		}
+	}
+	if cr.HasErrors() {
+		t.Errorf("C159 must be a warning — the node still runs and the call earns a typed refusal: %v", cr.Diagnostics)
 	}
 	if got := diagsFor(cr, DiagUnknownTool); len(got) > 0 {
-		t.Fatalf("`agent` must stay a name the registry HOLDS, so C135 has nothing to say: %v", got)
+		t.Fatalf("the declared names are ones the registry HOLDS, so C135 has nothing to say: %v", got)
 	}
 }
 
@@ -56,8 +66,9 @@ func TestTheRefusedClawListIsEmptyInProduction(t *testing.T) {
 // because iterion serves it on no host. The author pays a run to learn that;
 // the compiler knows it from the source.
 //
-// A warning, not an error: a host MAY serve the capability, and philosophy #1
-// warns rather than rejects.
+// A warning, not an error: the node still runs and the refusal reaches the
+// model as a tool error it can act on, and philosophy #1 warns rather than
+// rejects.
 func TestRefusedToolOnClawIsAWarning(t *testing.T) {
 	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
@@ -73,7 +84,7 @@ func TestRefusedToolOnClawIsAWarning(t *testing.T) {
 		t.Errorf("the message must name where the capability IS served: %s", got[0])
 	}
 	if cr.HasErrors() {
-		t.Error("C159 must be a warning — the node still runs, and a host may wire a runner")
+		t.Error("C159 must be a warning — the node still runs, and the refusal is a tool error the model can act on")
 	}
 	if len(diagsFor(cr, DiagUnknownTool)) != 0 {
 		t.Error("C159 and C135 must stay disjoint: the probe is a name claw HAS")
@@ -229,21 +240,19 @@ func TestRefusedRecoveryAgentToolSilentWhenNotDeclared(t *testing.T) {
 	}
 }
 
-// TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined: the refusal is a
-// WARNING at compile time because a host MAY wire a subagent runner, so no
-// such message may state it as certain — the rule this file already applies
-// to C135 (toolDiag's consequence travels with the reporter). An operator who
-// wired the runner must not read a warning whose text is false for their
-// deployment.
+// TestEveryCompileTimeMessageStatesTheRefusalAsCertain: a listed name is
+// refused by registerClawTool whatever the host wires — a registry passed in
+// ClawDefaults, or an exec of its own through RegisterClawTool — so no C159
+// message may promise a host that serves it. A hedge there would tell an
+// operator their deployment can lift a refusal no deployment can.
 //
 // Three messages make the claim, and the guard takes all three: C159's arms
 // (the node's own backend, its first claw `fallbacks:` route, a Verified
-// Action's rung-4 `recovery: agent_tools:`). C270's claw arm left the table
-// when the `agent` spawner stopped being refused (#1940) — it now describes a
-// capability that works, and has nothing to hedge.
-func TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined(t *testing.T) {
+// Action's rung-4 `recovery: agent_tools:`). A host that wires no subagent
+// runner is a run-time fact about `agent`, which is not on the list and earns
+// no C159 (toolcatalog.ClawUnwiredSubagentRefusal answers it).
+func TestEveryCompileTimeMessageStatesTheRefusalAsCertain(t *testing.T) {
 	withRefusedProbe(t)
-	const hedge = "unless"
 	for _, tc := range []struct {
 		name string
 		code DiagCode
@@ -261,12 +270,14 @@ func TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("%s: want one %s, got %+v", tc.name, tc.code, tc.cr.Diagnostics)
 		}
-		if !strings.Contains(got[0], hedge) {
-			t.Errorf("%s: the warning asserts the refusal as certain, with no %q clause for a host that wires the runner: %s",
-				tc.name, hedge, got[0])
+		for _, hedge := range []string{"unless", "host serves", "MAY"} {
+			if strings.Contains(got[0], hedge) {
+				t.Errorf("%s: the warning promises a host that serves the tool (%q), but every host refuses a listed name: %s",
+					tc.name, hedge, got[0])
+			}
 		}
-		if !strings.Contains(got[0], "host serves it") && !strings.Contains(got[0], "subagent runner") {
-			t.Errorf("%s: the message does not name the override that changes the outcome: %s", tc.name, got[0])
+		if !strings.Contains(got[0], "the call is refused") {
+			t.Errorf("%s: the warning does not state that the call is refused: %s", tc.name, got[0])
 		}
 	}
 }
@@ -314,5 +325,49 @@ func TestRefusedToolNameIsReportedTrimmed(t *testing.T) {
 	}
 	if !strings.Contains(got[0], `"`+refusedProbe+`"`) {
 		t.Errorf("the message quotes the author's padding instead of the tool name: %s", got[0])
+	}
+}
+
+// TestARefusedRegistryCommandOnAToolNodeWarnsOnEveryBackend: a tool node's
+// bare `command:` names a tool in the registry RegisterClawAll builds, and
+// ClawExecutor runs every tool node whatever the workflow's backend, so
+// `command: cron_create` is refused on every run. A tool node has no model to
+// read the refusal: the node fails. Only the registry recipe is read — a
+// shell command that merely mentions the name runs through sh, and a served
+// name says nothing.
+func TestARefusedRegistryCommandOnAToolNodeWarnsOnEveryBackend(t *testing.T) {
+	for _, backend := range []string{"claw", "claude_code"} {
+		t.Run(backend, func(t *testing.T) {
+			src := `tool arm:
+  command: cron_create
+
+tool shell:
+  command: "echo cron_create"
+
+tool reader:
+  command: read_file
+
+workflow w:
+  default_backend: "` + backend + `"
+  entry: arm
+  arm -> shell
+  shell -> reader
+  reader -> done
+`
+			cr := compileToolsSrc(t, src)
+			got := diagsFor(cr, refusedCode)
+			if len(got) != 1 {
+				t.Fatalf("want exactly one C159, for the registry command cron_create, got %v", got)
+			}
+			r, _ := toolcatalog.ClawRefusesBuiltin("cron_create")
+			for _, want := range []string{`"arm"`, "command:", `"cron_create"`, r.Reason, r.Remedy} {
+				if !strings.Contains(got[0], want) {
+					t.Errorf("the C159 message does not carry %q: %s", want, got[0])
+				}
+			}
+			if cr.HasErrors() {
+				t.Errorf("C159 stays a warning on a tool node: %v", cr.Diagnostics)
+			}
+		})
 	}
 }
