@@ -156,6 +156,45 @@ green.
   the 20-job cap above is what makes a cycle slow. That scale set is **outside this repository**, and it was dead
   and unnoticed for over a year before 2026-09-08.
 
+  Three runner classes route it (#3694), and every self-hosted job of
+  `tests.yml` and `merge-queue-gate.yml` is classified into one by its
+  measured peak. Each class ends its `runs-on` expression on its own
+  repository variable, `vars.CI_<CLASS>_RUNNER || 'arc-runners'`:
+
+  | class | variable | jobs |
+  | --- | --- | --- |
+  | small | `CI_SMALL_RUNNER` | the `test` and `race` aggregators, `fmt-check`, `vendor-check`, `govulncheck`, `docs-build`, `nats-conformance`, `desktop-vet-cross`, `brand`, `helm-lint`, the merge-queue-gate mirror |
+  | large | `CI_LARGE_RUNNER` | the heavy jobs the queue requires: `test-unit`, `golangci`, `studio` |
+  | heavy | `CI_HEAVY_RUNNER` | the heavy layer the merge queue does not require, run after the merge (a `ci:full` pull request's `test` and `race` still wait on it): `race-shard`, `test-e2e`, `mongo-conformance`, `cloud-e2e` |
+
+  The variable names the class's scale set (the small one is
+  `arc-runners-small`, 500m / 1 Gi). **Unset means `arc-runners`**: with a
+  variable empty, its jobs route exactly as before, so setting it is the
+  switch and clearing it is the rollback. The three spellings keep every
+  clause — the `CI_SELF_HOSTED` lever, the fork guard and the dependency-bot
+  guard — and `internal/ciguard`'s `TestSelfHostedRoutingExpressionsAgree`
+  pins them byte for byte, one base with only the tail swapped, and which job
+  carries which: a new job in those two files whose `runs-on` names
+  `arc-runners` or a class variable is classified in that test, never
+  silently accepted. `test-native-exec` is pinned by
+  `native_exec_runner_test.go` to the same base with its own
+  `CI_NATIVE_EXEC_RUNNER` tail, whatever class its neighbours take: no class
+  variable can send its Bubblewrap mount to an ARC pod. The other workflows on
+  `arc-runners` (`arc-canary`, `arc-kind-probe`, `test-quarantine`) are
+  outside this guard and stay on `arc-runners`. `arc-canary` probes
+  `arc-runners` only: once a class variable is set, a dead scale set behind
+  it stalls that class unpaged — for `CI_SMALL_RUNNER`, the required `test`,
+  `vendor-check`, `brand` and the queue branch's `revi/review` mirror (and
+  the unrequired `fmt-check`); for `CI_LARGE_RUNNER`, the required `golangci`
+  and, through its legs, `test` — until the queue's
+  `check_response_timeout_minutes`; for `CI_HEAVY_RUNNER` no queue check, but
+  a `ci:full` pull request's required `test` (through `test-e2e`) and its
+  `race` (through `race-shard`) wait too, and with them the admin-merge lane
+  that requires them; so do the heavy jobs of the push witness and the
+  nightly, and with them the next push run. Set a
+  variable only once the canary (or a probe) covers its scale set (#3694).
+  The repair is clearing that variable, or `CI_SELF_HOSTED=off`.
+
   > **If nobody can merge and the checks never report, this is the first thing
   > to try.** Set the repository variable **`CI_SELF_HOSTED` to `off`**
   > (Settings → Secrets and variables → Actions → Variables) and every job
@@ -193,9 +232,13 @@ layer gates where it pays:
 
 The nightly is `tests.yml`'s own `schedule` (`47 1 * * *`): the full suite on
 `main` once a day, in a concurrency group of its own so no merge cancels it.
-A push run's group is keyed by its commit, so the merge or release landing
-after it does not cancel it either: each merge keeps its own heavy verdict, at
-the cost of one heavy run per merge.
+Every push to `main` shares one concurrency group that never cancels the run
+in progress: at most one push run is in flight and one pending, a newer push
+replacing the pending run. The heavy load after merges is thus one run at a
+time, the witness of the merged batch — every pull request merged since the
+last run started — not one heavy run per merge. A red push run names a batch,
+and main-watch's suspects are the pull requests merged since the last green
+run.
 
 Automatic releases (`version.yml` on a merge and nightly) can tag and publish
 a commit whose heavy layer has not yet run or has not yet finished: a heavy

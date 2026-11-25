@@ -432,15 +432,23 @@ func resolvePath(v any, path []string) any {
 // `concurrency:` to the compensations of the experimental delivery mode
 // (docs/adr/173-experimental-delivery-mode.md): every event ciEvents
 // designs is a real trigger, the nightly carries at least one cron, and the
-// concurrency group, rendered for each event, gives every push to `main` its
-// own run while a newer commit of the same pull request still cancels the
-// older one.
+// concurrency group and cancel-in-progress, rendered for each event, bound the
+// post-merge witness while a newer commit of a pull request still cancels the
+// older run.
+//
+// Every push to `main` shares ONE group without cancel-in-progress: one push
+// run in flight, at most one pending, a newer pending run replacing the older
+// one, and the run in progress never cancelled. The heavy load after merges is
+// one witness of the merged batch at a time, not one per merge. A `queue:` key
+// on the group would keep every pending push run and lift that bound. The
+// nightly and a dispatch keep groups of their own, so no push displaces them.
 func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 	var wf struct {
 		On          map[string]any `yaml:"on"`
 		Concurrency struct {
 			Group            string `yaml:"group"`
 			CancelInProgress any    `yaml:"cancel-in-progress"`
+			Queue            any    `yaml:"queue"`
 		} `yaml:"concurrency"`
 	}
 	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
@@ -455,21 +463,91 @@ func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 	if crons, _ := wf.On["schedule"].([]any); len(crons) == 0 {
 		t.Errorf("the nightly has no cron: `on.schedule` is %#v, want at least one `- cron:` entry", wf.On["schedule"])
 	}
+	// Each event carries only the payload GitHub gives it: a push its
+	// before/after/compare and head_commit, a pull request its
+	// pull_request, the nightly and a dispatch none. Every per-push or
+	// per-run field it models is distinct per sha; run_attempt stays "1", as
+	// two first attempts share it. renderTemplate renders an undefined path
+	// as "", so a group keyed on a path no context models would render alike
+	// for two pushes here and differ on GitHub: the strict check below fails
+	// on any `github.` path the concurrency block reads that ctxFor lacks.
+	ctxFor := func(event, ref, sha string) map[string]any {
+		payload := map[string]any{}
+		switch event {
+		case "push":
+			payload = map[string]any{
+				"after": sha, "before": "before-" + sha, "compare": "compare-" + sha,
+				"head_commit": map[string]any{
+					"id": sha, "timestamp": "ts-" + sha, "message": "msg-" + sha, "tree_id": "tree-" + sha,
+				},
+			}
+		case "pull_request":
+			payload = map[string]any{"pull_request": map[string]any{"head": map[string]any{"sha": sha}}}
+		}
+		return map[string]any{
+			"workflow": "🧪 Tests", "event_name": event, "ref": ref, "sha": sha,
+			"run_id": "run-" + sha, "run_number": "n-" + sha, "run_attempt": "1",
+			"event": payload,
+		}
+	}
+	exprs := []string{wf.Concurrency.Group}
+	if v, ok := wf.Concurrency.CancelInProgress.(string); ok {
+		exprs = append(exprs, v)
+	}
+	for _, expr := range exprs {
+		for _, m := range githubPath.FindAllStringSubmatch(expr, -1) {
+			path := strings.Split(m[1][1:], ".")
+			modelled := false
+			for _, ev := range []string{"push", "pull_request", "schedule", "workflow_dispatch"} {
+				if resolvePath(ctxFor(ev, "r", "s"), path) != nil {
+					modelled = true
+				}
+			}
+			if !modelled {
+				t.Fatalf("concurrency reads github%s, which ctxFor does not model: it would render \"\" here and a real value on GitHub", m[1])
+			}
+		}
+	}
 	group := func(event, ref, sha string) string {
-		ctx := map[string]any{"workflow": "🧪 Tests", "event_name": event, "ref": ref, "sha": sha, "event": map[string]any{}}
-		g, err := renderTemplate(wf.Concurrency.Group, ctx)
+		g, err := renderTemplate(wf.Concurrency.Group, ctxFor(event, ref, sha))
 		if err != nil {
 			t.Fatalf("concurrency group %q: %v", wf.Concurrency.Group, err)
 		}
 		return g
 	}
+	cancels := func(event, ref string) bool {
+		switch v := wf.Concurrency.CancelInProgress.(type) {
+		case bool:
+			return v
+		case string:
+			r, err := renderTemplate(v, ctxFor(event, ref, "aaa"))
+			if err != nil {
+				t.Fatalf("cancel-in-progress %q: %v", v, err)
+			}
+			switch r {
+			case "true":
+				return true
+			case "false":
+				return false
+			}
+			t.Fatalf("cancel-in-progress %q renders %q on %s, want true or false", v, r, event)
+		}
+		t.Fatalf("cancel-in-progress is %#v, want a boolean or an expression", wf.Concurrency.CancelInProgress)
+		return false
+	}
 	const main = "refs/heads/main"
-	if a, b := group("push", main, "aaa"), group("push", main, "bbb"); a == b {
-		t.Errorf("two pushes to main share the concurrency group %q: each merge cancels the heavy witness of the one before it", a)
+	if a, b := group("push", main, "aaa"), group("push", main, "bbb"); a != b {
+		t.Errorf("two pushes to main land in different groups (%q, %q): every merge starts its own heavy run, and the post-merge load is no longer capped at one witness", a, b)
+	}
+	if cancels("push", main) {
+		t.Error("cancel-in-progress is true on push: each merge would cancel the witness in progress, and a steady merge rate would never finish one")
+	}
+	if wf.Concurrency.Queue != nil {
+		t.Errorf("concurrency carries `queue: %v`: every pending push run would be kept, one heavy run per merge, and the witness is no longer bounded", wf.Concurrency.Queue)
 	}
 	for _, other := range []string{"schedule", "workflow_dispatch"} {
 		if p, o := group("push", main, "aaa"), group(other, main, "aaa"); p == o {
-			t.Errorf("push and %s on main share the concurrency group %q", other, p)
+			t.Errorf("push and %s on main share the concurrency group %q: a merge would displace the %s run", other, p, other)
 		}
 	}
 	if s, d := group("schedule", main, "aaa"), group("workflow_dispatch", main, "aaa"); s == d {
@@ -478,8 +556,11 @@ func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 	if a, b := group("pull_request", "refs/pull/1/merge", "aaa"), group("pull_request", "refs/pull/1/merge", "bbb"); a != b {
 		t.Errorf("two commits of one pull request land in different groups (%q, %q): a superseded commit's run is no longer cancelled", a, b)
 	}
-	if wf.Concurrency.CancelInProgress != true {
-		t.Errorf("cancel-in-progress is %#v, want true: a superseded pull request commit keeps its run", wf.Concurrency.CancelInProgress)
+	if a, b := group("pull_request", "refs/pull/1/merge", "aaa"), group("pull_request", "refs/pull/2/merge", "aaa"); a == b {
+		t.Errorf("two pull requests share the concurrency group %q: one cancels the other", a)
+	}
+	if !cancels("pull_request", "refs/pull/1/merge") {
+		t.Error("cancel-in-progress is false on pull_request: a superseded pull request commit keeps its run")
 	}
 }
 
@@ -540,6 +621,9 @@ func TestDocsLinksDiffStepRunsOnlyWhereItHasABase(t *testing.T) {
 		}
 	}
 }
+
+// githubPath matches a `github.` context path inside an expression.
+var githubPath = regexp.MustCompile(`\bgithub((?:\.[A-Za-z0-9_*-]+)+)`)
 
 var templateExpr = regexp.MustCompile(`\$\{\{.*?\}\}`)
 

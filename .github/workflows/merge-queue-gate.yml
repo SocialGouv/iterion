@@ -43,9 +43,10 @@
 # that did not exist.
 #
 # WHERE it runs: this job is repo-owned glue reading public API state, so it
-# takes the same self-hosted routing expression as every required job in
-# tests.yml (byte-equality pinned by internal/ciguard's routing guard, which
-# reads this file alongside tests.yml as of the aggregator split) and frees
+# takes the small self-hosted routing expression of tests.yml, the one
+# ending on `vars.CI_SMALL_RUNNER || 'arc-runners'` (byte-equality and the
+# job's class pinned by internal/ciguard's routing guard, which reads this
+# file alongside tests.yml) and frees
 # one of the org's 20
 # GitHub-hosted slots per queue entry. The trade-off, said plainly: when the
 # scale set is down, this job now queues behind that outage instead of failing
@@ -72,7 +73,7 @@ jobs:
     # alternative is a merge queue that stalls on every entry while someone
     # finds this line.
     if: vars.MERGE_QUEUE_MIRROR != 'off'
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 5
     steps:
       - name: Mirror the PR head's revi/review verdict onto the queue branch

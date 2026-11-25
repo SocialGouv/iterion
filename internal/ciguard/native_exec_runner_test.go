@@ -65,6 +65,10 @@ func nativeExecPackages(t *testing.T) []string {
 	return pkgs
 }
 
+// nativeExecRoutingTail is test-native-exec's last alternatives: its own
+// variable, falling back to a GitHub-hosted VM, never a scale set.
+const nativeExecRoutingTail = routingTailHead + "vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}"
+
 // bwrapLookup is how a test reaches for Bubblewrap. Spelled in two halves so
 // this file does not count itself among the packages it looks for.
 const bwrapLookup = "exec.LookPath(" + `"bwrap")`
@@ -115,12 +119,15 @@ func TestNativeExecRunnersPreserveTrustBoundaryAndProveMounts(t *testing.T) {
 	if wf.Defaults.Run.Shell != "" {
 		t.Fatal("workflow default shell changes native preflight execution contract")
 	}
-	canonical := wf.Jobs["golangci"].RunsOn
-	suffix := "|| 'arc-runners' }}"
-	if !strings.HasSuffix(canonical, suffix) {
-		t.Fatal("ARC routing shape changed; re-evaluate native trust boundary")
+	// The base is golangci's clauses alone, with whichever class tail it
+	// carries removed: no scale-set variable of any class reaches the native
+	// job's expression. TestSelfHostedRoutingExpressionsAgree holds every
+	// class on that one base.
+	base, ok := routingBase(wf.Jobs["golangci"].RunsOn)
+	if !ok {
+		t.Fatalf("golangci carries no canonical routing tail (runs-on %q): re-evaluate the native trust boundary", wf.Jobs["golangci"].RunsOn)
 	}
-	expected := strings.TrimSuffix(canonical, suffix) + "|| vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}"
+	expected := base + nativeExecRoutingTail
 	const preflight = "sudo apt-get update\nsudo apt-get install -y bubblewrap build-essential\nbwrap --version\nbwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true"
 	pkgs := nativeExecPackages(t)
 
@@ -133,6 +140,9 @@ func TestNativeExecRunnersPreserveTrustBoundaryAndProveMounts(t *testing.T) {
 	}
 	if job.RunsOn != expected {
 		t.Errorf("%s can lose its native mount capability or bypass the shared fork/bot/off guards: runs-on %q, want %q", nativeExecJob, job.RunsOn, expected)
+	}
+	if namesSelfHostedRunner(job.RunsOn) {
+		t.Errorf("%s names a scale set or a scale-set variable (runs-on %q): setting that variable would route its Bubblewrap mount to an ARC pod, which refuses it", nativeExecJob, job.RunsOn)
 	}
 	prerequisiteIndex, found := -1, 0
 	plain, race := map[string]bool{}, map[string]bool{}
@@ -211,7 +221,7 @@ func TestNativeExecRunnersPreserveTrustBoundaryAndProveMounts(t *testing.T) {
 		if !ok {
 			t.Fatal("missing sharded test job", id)
 		}
-		if leg.RunsOn != canonical {
+		if routingClass(leg.RunsOn) == "" {
 			t.Errorf("%s left the scale set (runs-on %q): its packages need no namespace, and a hosted queue is what #3662 removed", id, leg.RunsOn)
 		}
 		helmFound, helmIndex, testIndex := 0, -1, -1

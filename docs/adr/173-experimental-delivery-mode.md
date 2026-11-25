@@ -18,7 +18,7 @@ While the project is experimental, the **merge queue gates on the light layer**:
 
 The **heavy layer** — `race-shard`, `test-e2e`, `mongo-conformance`, `cloud-e2e` — runs after the merge instead:
 
-- on every **push to `main`**, the witness of each merged group;
+- on **push to `main`**, the witness of the merged batch: one push run at a time, covering every group merged since the last run started;
 - on a **nightly schedule** (`47 1 * * *`, `.github/workflows/tests.yml`), the full suite on `main` even when no push gave it a witness;
 - on a **dispatch**, and on a **pull request labelled `ci:full`**, for a change an author wants proved before it lands.
 
@@ -30,7 +30,7 @@ One literal decides it, the heavy jobs' own condition: true on any event that is
 
 Moving the heavy layer after the merge means a regression it alone sees lands on `main`. Three mechanisms pay for that:
 
-1. **The push witness.** Every merged group runs the full suite on `main`, in a concurrency group keyed by its commit so the merge or release landing after it does not cancel it; a red heavy job there names the group that brought it. That costs one heavy run per merge on the runner pool.
+1. **The push witness.** Pushes to `main` run the full suite in one shared concurrency group that never cancels the run in progress: one run in flight, at most one pending, each newer push replacing the pending run. The post-merge heavy load is bounded to one witness of the merged batch whatever the merge rate, and each run's test jobs judge the tip, hence every group merged since the previous run started; the advisory `docs-links` diff compares against the last push's parent only. A red heavy job there names a batch, not a group: main-watch's suspects are the pull requests merged since the last green run.
 2. **The nightly.** Once a day the full suite runs on `main` whatever was cancelled during the day, under its own concurrency group so no merge cancels it.
 3. **The main-red discipline**, automated by the main-watch workflow of [#3692](https://github.com/SocialGouv/iterion/issues/3692) and owed by hand until it lands: a red push or nightly run is rerun once; green on rerun, the failing test is a flake and goes to `scripts/ci/test-quarantine.tsv` with an open ticket; red twice, it is a regression, and the merge that brought it is reverted, or fixed forward, within four hours. A red `main` nobody owns is the failure mode this mode cannot afford.
 
