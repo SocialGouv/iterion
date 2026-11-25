@@ -39,4 +39,4 @@ const SkillSharingSince = "4.6.0"
 // which keeps it strictly above every released build: a build that does not
 // know either key refuses the whole manifest at its strict decode, so a
 // bundle declaring one owes a floor that says so at authoring time.
-const ForgeLabelsSince = "next"
+const ForgeLabelsSince = "7.36.0"

@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.36.0](https://github.com/SocialGouv/iterion/compare/v7.35.0...v7.36.0) (2026-11-25)
+
+### Features
+
+* **forge:** route labelled issues through per-bot subscriptions (ADR-172 P1a) ([#3632](https://github.com/SocialGouv/iterion/issues/3632)) ([bdefd92](https://github.com/SocialGouv/iterion/commit/bdefd9296538ef3eed9d41bd309be19def9283bd)), references [#3530](https://github.com/SocialGouv/iterion/issues/3530) [#3516](https://github.com/SocialGouv/iterion/issues/3516) [#3530](https://github.com/SocialGouv/iterion/issues/3530)
+
+    <details><summary>why</summary>
+
+    P1a of the forge spine cutover (ADR-172), manifest side:
+
+    </details>
+* **models:** default z.ai GLM to glm-5.4 ([#3644](https://github.com/SocialGouv/iterion/issues/3644)) ([d49ced5](https://github.com/SocialGouv/iterion/commit/d49ced5d4a1e344c5fff0220f250577f53c41efb)), references [#3631](https://github.com/SocialGouv/iterion/issues/3631)
+
+    <details><summary>why</summary>
+
+    z.ai released GLM-5.4 on 2026-11-23 on its Coding Plan, the /api/anthropic wire iterion reaches z.ai through. Every default that names z.ai's GLM moves to it:
+
+    </details>
+* **server:** alarm the operator when a schedule stops producing successful runs ([#3655](https://github.com/SocialGouv/iterion/issues/3655)) ([4900671](https://github.com/SocialGouv/iterion/commit/490067108d72d6135a9860b3a6411354eb86f0dd)), closes [#3594](https://github.com/SocialGouv/iterion/issues/3594)
+
+    <details><summary>why</summary>
+
+    A cloud schedule that stopped delivering reached nobody: its row carries its health (next_fire_at, last_error, last_run_status) but only pull surfaces read it, and the ops dispatcher sees runs, not ticks refused before any run or a scheduler that stopped claiming slots.
+
+    </details>
+
 ## [7.35.0](https://github.com/SocialGouv/iterion/compare/v7.34.0...v7.35.0) (2026-11-25)
 
 ### Features
