@@ -105,22 +105,31 @@ func isModelUnavailableResult(s string) bool {
 // Non-transient — a retry can't revive a dead credential; the caller fails
 // fast with a legible auth error.
 //
-// cliError is the result message's own verdict: is_error=true on a
-// subtype=success result is the CLI saying the text is its render of a failed
-// request, not an answer. The render's LENGTH says nothing — the provider's
-// JSON body, a request id and a remediation sentence quoted back push a real
-// render past any cap — so three readings decide, none of them on length:
+// cliError is the result message's is_error flag on a subtype=success result
+// (cliErrorRender). No CLI source is vendored here; what the flag means is
+// read from the stream-json result the SDK decodes
+// (claudesdk.ResultMessage.IsError) and from the renders this package has
+// met: the CLI sets it when the result text is its render of a failed API
+// request — an auth refusal, a quota window — and clears it on an answer. It
+// is evidence when set, never proof of an answer when clear: the
+// model-unavailable render arrives with is_error=false.
 //
-//   - the render's own anchored shapes: the whole result is an "API Error"
-//     line carrying a 401/403 status or an auth signature, a malformed
-//     Authorization header quoted back, or the CLI's "Failed to authenticate.
-//     API Error" lead. An answer does not begin that way.
-//   - cliError: the text is an error render, so an auth signature anywhere in
-//     it is the verdict.
-//   - otherwise a SHORT text carrying an auth signature: the CLI's bare
-//     one-liners ("Not logged in · Please run /login") come with no other
-//     mark. Only there does length count, and only to keep a long answer
-//     that discusses authentication an answer.
+// The render's LENGTH says nothing — the provider's JSON body, a request id
+// and a remediation sentence quoted back push a real render past any cap —
+// so the cap is lifted only where the text is marked as a render:
+//
+//   - the CLI's exact render form (cliRenderShape): the result begins
+//     "API Error:" as the CLI writes it, case and colon included, or with
+//     its "Failed to authenticate. API Error:" lead. Prose that opens with
+//     "API errors…" or "API error 401 is…" is not that form.
+//   - cliError: the CLI flagged the text as its render.
+//
+// In either, an explicit status decides first: a 5xx is the transient class
+// whatever auth words the relayed body carries, a 401/403 is the provider's
+// verdict on the credential; failing a status, an auth signature anywhere is
+// the verdict. Any other text is classified only as a SHORT one-liner — the
+// CLI's bare "Not logged in · Please run /login" comes with no other mark —
+// so a long answer that discusses authentication stays an answer.
 func isAuthErrorResult(s string, cliError bool) bool {
 	t := strings.TrimSpace(s)
 	if t == "" || isModelUnavailableResult(t) {
@@ -132,34 +141,58 @@ func isAuthErrorResult(s string, cliError bool) bool {
 	if strings.HasPrefix(t, "API Error: Header '") && strings.Contains(t, "has invalid value") {
 		return true
 	}
-	// A 401/403 status is the provider's own verdict on the credential,
-	// whatever prose or body follows it: a facade renders "API Error:
-	// [401][Unauthorized][<id>]", which matches no signature below.
-	// Prefix-anchored by the regex. 403 is in the class as the pi backend
-	// mints it from the upstream status: a permission error is per-key and
-	// the pool's rotation is the right first move; a facade block fails the
-	// next key the same way and surfaces then, no worse than surfacing now.
-	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil && (m[1] == "401" || m[1] == "403") {
-		return true
-	}
 	low := strings.ToLower(t)
-	if cliError || hasRenderPrefix(t) || failedToAuthenticateRenderRe.MatchString(t) {
+	if cliRenderShape(t) || cliError {
+		if verdict, decided := authStatusVerdict(cliRenderStatusRe.FindStringSubmatch(t)); decided {
+			return verdict
+		}
 		return hasAuthSignature(low)
 	}
 	if len(t) > authProseCap {
 		return false
 	}
+	// A one-liner keeps the lenient status reading: a facade renders "API
+	// Error: [401][Unauthorized][<id>]", which matches no signature.
+	if verdict, decided := authStatusVerdict(apiErrorResultStatusRe.FindStringSubmatch(t)); decided {
+		return verdict
+	}
 	return hasAuthSignature(low)
 }
 
+// authStatusVerdict reads a status match (group 1): a 5xx is not an auth
+// failure, a 401/403 is — 403 is in the class as the pi backend mints it
+// from the upstream status: a permission error is per-key and the pool's
+// rotation is the right first move; a facade block fails the next key the
+// same way and surfaces then, no worse than surfacing now. Any other status,
+// or none, decides nothing.
+func authStatusVerdict(m []string) (verdict, decided bool) {
+	if m == nil {
+		return false, false
+	}
+	switch {
+	case m[1][0] == '5':
+		return false, true
+	case m[1] == "401" || m[1] == "403":
+		return true, true
+	}
+	return false, false
+}
+
 // authProseCap bounds the unmarked reading of isAuthErrorResult: a text with
-// neither an anchored render shape nor the CLI's is_error flag is classified
-// on its signatures only when it is a one-liner.
+// neither the CLI's render form nor its is_error flag is classified on its
+// signatures only when it is a one-liner.
 const authProseCap = 200
 
-// failedToAuthenticateRenderRe anchors the CLI's auth-failure lead: the whole
-// result is "Failed to authenticate. API Error: …", whatever body follows.
-var failedToAuthenticateRenderRe = regexp.MustCompile(`(?i)^failed to authenticate\.?\s*api error`)
+// cliRenderLeadRe is the CLI's exact render form, case-sensitive: the result
+// begins "API Error:", optionally behind its "Failed to authenticate." lead.
+var cliRenderLeadRe = regexp.MustCompile(`^(?:Failed to authenticate\.?\s*)?API Error:`)
+
+// cliRenderStatusRe extracts the status of that form: "API Error: 401 …" or
+// the bracketed facade form "API Error: [401][…]".
+var cliRenderStatusRe = regexp.MustCompile(`^(?:Failed to authenticate\.?\s*)?API Error:\s*\[?(\d{3})(?:\]|\b)`)
+
+// cliRenderShape reports the CLI's own render form (cliRenderLeadRe).
+func cliRenderShape(t string) bool { return cliRenderLeadRe.MatchString(t) }
 
 // hasAuthSignature reports an auth-failure phrase in a lowered text.
 func hasAuthSignature(low string) bool {
@@ -239,8 +272,11 @@ func isHighConfidenceAuthRender(t string) bool {
 // same dead credential, gating the healthy tiers off behind it. The
 // session's Source stamp keys the reading under the credential that
 // actually ran. Fail-fast and evidence are two thresholds on purpose:
-// every auth render fails the node legibly, but only the CLI's own
-// high-confidence shapes bench the credential.
+// every auth render fails the node legibly, but only a text that IS the
+// CLI's render — its exact form (cliRenderShape) or its is_error flag — and
+// carries a high-confidence phrase benches the credential: a short answer
+// that merely contains "invalid bearer token" fails the node, never the
+// fleet's use of the key.
 //
 // cliError is the result message's is_error flag on a subtype=success result
 // (cliErrorRender): see isAuthErrorResult.
@@ -252,7 +288,7 @@ func authFailureFast(result *string, cliError bool, task Task, spawn credSpawn) 
 		return nil
 	}
 	t := strings.TrimSpace(*result)
-	if isHighConfidenceAuthRender(t) && task.Hooks.OnUsageWindow != nil {
+	if (cliError || cliRenderShape(t)) && isHighConfidenceAuthRender(t) && task.Hooks.OnUsageWindow != nil {
 		_ = task.Hooks.OnUsageWindow(usagecap.Reading{
 			Window:     usagecap.WindowAuth,
 			Status:     usagecap.StatusRejected,
