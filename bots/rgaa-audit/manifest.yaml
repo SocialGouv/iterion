@@ -2,7 +2,7 @@ name: rgaa-audit
 display_name: Acci
 icon: ♿
 version: 3.3.0
-## 3.3.0 — ultra11y 9.6.4 (from 7.2.0). Two outcomes now exit 1 with their
+## 3.3.0 — ultra11y 9.6.5 (from 7.2.0). Two outcomes now exit 1 with their
 ## result written, and the bot reads them as data: a fold the gate refused
 ## part of (accepted verdicts written, ok: false; SocialGouv/ultra11y#223),
 ## checked by L.foldJSON at every verify --apply call — exit 2, a signal, no
@@ -14,9 +14,9 @@ version: 3.3.0
 ## 9.0.1 decides 1.1 itself on an <img> without alt. Nothing the bot calls
 ## was removed in 8.x/9.x (capture write, render --setup/--scaffold, pack,
 ## --pack/--override/--guidance, WCAG output); it already read results
-## under `core`. 9.6.2–9.6.4 (page verdicts on still-manual criteria,
-## absence-grounded page NA, decision protocols in the briefs) moved nothing
-## the bot reads.
+## under `core`. 9.6.2–9.6.5 (page verdicts on still-manual criteria,
+## absence-grounded page NA, decision protocols in the briefs, report page
+## counts and no-page labels) moved nothing the bot reads.
 ## 3.2.1 — ultra11y 7.2.0 (from 5.49.0). The fold names a coverage gap — an
 ## open criterion the adjudication never mentions — apart from its
 ## refusals, in notInWorklist (SocialGouv/ultra11y#136): fold_probe re-asks
