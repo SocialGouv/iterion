@@ -126,6 +126,15 @@ workflow w:
   child the worktree its own `worktree: auto` gives it; a child declared
   without it works in the parent's tree.
 - A depth guard bounds nested subbot recursion. Diagnostic **C119** (no `source`).
+- Stopping the **parent** stops the child through the context it runs under,
+  and the parent's own verdict wins: an operator cancel ends the child and
+  the parent `cancelled` (never auto-resumed), a drain ends them
+  `failed_resumable` `INTERRUPTED`, on the main loop and inside a fan-out
+  branch alike. The child's stop reaches the parent typed in the error chain
+  (`runtime.SubbotStoppedError`, which unwraps to the parent's context
+  error); any other child verdict — a budget refusal, a plain failure —
+  stays the subbot node's failure even when the parent's context has also
+  ended.
 - The runtime invokes a host-supplied `SubbotRunner`; both the `iterion run`
   CLI (`pkg/cli/run.go`) and the studio's in-process engine
   (`pkg/runview/subbot.go`, wired for Launch AND Resume) provide one that

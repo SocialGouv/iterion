@@ -115,7 +115,7 @@ func TestFanoutTerminalWriteObservation(t *testing.T) {
 					if len(rows) == 0 {
 						t.Fatal("MISSED_FAILURE_WRITER")
 					}
-					if r.Status != store.RunStatusFailedResumable {
+					if r.Status != store.RunStatusCancelled {
 						t.Errorf("FANOUT_TERMINATION_UNPERSISTED status=%s err=%v", r.Status, err)
 					}
 				}
@@ -127,7 +127,7 @@ func TestFanoutCancellationWrapperObservation(t *testing.T) {
 	e := &Engine{}
 	err := e.wrapContextErr(context.Canceled)
 	t.Logf("WRAPPER raw=%v cancelled=%v context=%v", err, errors.Is(err, ErrRunCancelled), errors.Is(err, context.Canceled))
-	if !errors.Is(err, ErrRunCancelled) {
+	if !errors.Is(err, ErrRunCancelled) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected wrapper: %v", err)
 	}
 }

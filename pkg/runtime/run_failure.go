@@ -506,16 +506,60 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 	return writes.Result(&RuntimeError{Code: ErrCodeTimeout, Message: reason, NodeID: nodeID})
 }
 
-// wrapContextErr wraps a context error for branch-level reporting.
+// wrapContextErr wraps a context error for branch-level reporting. The
+// cancellation keeps the context's error in its chain (runCancelledError),
+// so the run-level handler recognises the run's own cancellation in a
+// fan-out's result (simpleContextCause) instead of recording it as a node
+// failure.
 func (e *Engine) wrapContextErr(ctxErr error) error {
 	if IsAmbiguousEffect(ctxErr) {
 		return ctxErr
 	}
 	if errors.Is(ctxErr, context.Canceled) {
-		return fmt.Errorf("%w: %v", ErrRunCancelled, ctxErr)
+		return &runCancelledError{ctxErr: ctxErr}
 	}
 	return ctxErr
 }
+
+// runCancelledError is ErrRunCancelled carrying the context error that
+// ended the work: errors.Is reports ErrRunCancelled, and the single Unwrap
+// reaches the context error itself.
+type runCancelledError struct {
+	ctxErr error
+}
+
+func (e *runCancelledError) Error() string {
+	return ErrRunCancelled.Error() + ": " + e.ctxErr.Error()
+}
+
+func (e *runCancelledError) Is(target error) bool { return target == ErrRunCancelled }
+
+func (e *runCancelledError) Unwrap() error { return e.ctxErr }
+
+// SubbotStoppedError is a subbot node whose child reported it was stopped
+// (childStopped) while the parent's context had ended: the node stopped
+// because the parent did. The parent's context error travels as the single
+// Unwrap, so
+// the parent's run-level handler settles its own cancellation, drain or
+// deadline (handleContextDoneWithCheckpoint) instead of a node failure;
+// Child keeps what the child returned for the record.
+type SubbotStoppedError struct {
+	NodeID string
+	Source string
+	// Cause is context.Cause of the parent's context: ErrRunInterrupted for
+	// a drain, the context error itself for a plain cancel.
+	Cause error
+	Child error
+	// ctxErr is the parent context's Err(), the identity the run-level
+	// handler matches.
+	ctxErr error
+}
+
+func (e *SubbotStoppedError) Error() string {
+	return fmt.Sprintf("subbot %q (source %q): stopped with the parent run (%v); child returned: %v", e.NodeID, e.Source, e.Cause, e.Child)
+}
+
+func (e *SubbotStoppedError) Unwrap() error { return e.ctxErr }
 
 // nodeFailureCode preserves a node's classified failure at execution boundaries.
 func nodeFailureCode(err error) ErrorCode { return ClassifyError(err) }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -294,6 +295,18 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		ParentSandbox: e.activeShare,
 	})
 	if err != nil {
+		// The child says it was stopped (childStopped) and the parent's
+		// context has ended: an operator cancel, a drain or a deadline of
+		// the PARENT reached the child through the context it descends
+		// from. The node then reports the parent's context error, which the
+		// run-level handler settles as the parent's own cancellation,
+		// interruption or timeout — never as a node failure that
+		// auto-resume would re-drive. Any other child verdict stays
+		// authoritative even when the parent's context has also ended, as
+		// on every node; so does an undecided remote effect.
+		if ctxErr := ctx.Err(); ctxErr != nil && childStopped(err) && !IsAmbiguousEffect(err) {
+			return nil, &SubbotStoppedError{NodeID: nodeID, Source: sn.Source, Cause: context.Cause(ctx), Child: err, ctxErr: ctxErr}
+		}
 		hint := ""
 		if nodeFailureCode(err) == ErrCodeBudgetExceeded {
 			hint = fmt.Sprintf("increase the CHILD bot %q budget, then resume; raising the parent budget does not change the child cap", sn.Source)
@@ -310,6 +323,15 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		output = map[string]any{}
 	}
 	return output, nil
+}
+
+// childStopped reports a child run's error that says the child was stopped
+// rather than failed: the child engine's cancellation or interruption
+// sentinel, or a bare context error from a runner that never reached the
+// engine.
+func childStopped(err error) bool {
+	return errors.Is(err, ErrRunCancelled) || errors.Is(err, ErrRunInterrupted) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // subbotReattachKey builds the stable, unique key identifying one execution of
