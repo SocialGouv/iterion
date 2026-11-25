@@ -15,7 +15,7 @@
 #   - Go version management: g (stefanmaric/g).
 #   - VCS: gh (GitHub CLI).
 #   - Data shaping: jq (inherited from slim), yq (mikefarah).
-#   - Kubernetes ops: kubectl, helm, k9s.
+#   - Kubernetes ops: kubectl, helm.
 #   - Dev env: direnv. (devbox + Nix inherited from slim base.)
 #
 # Heavier language stacks (Rust, JVM, Ruby, …) remain out of scope —
@@ -111,7 +111,6 @@ RUN ARCH=$(dpkg --print-architecture) \
 #   kubectl          — Kubernetes CLI. Pinned to a recent stable line.
 #   helm             — Kubernetes package manager (official install
 #                      script auto-pins to latest stable v3).
-#   k9s              — Kubernetes TUI for observability work.
 #   fnm              — Node version manager (Schniz/fnm). The slim
 #                      base ships Node 24 system-wide; fnm is for
 #                      bots that need a specific Node version.
@@ -120,8 +119,6 @@ RUN ARCH=$(dpkg --print-architecture) \
 ARG YQ_VERSION=v4.54.3
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
 ARG KUBECTL_VERSION=v1.36.7
-# renovate: datasource=github-releases depName=derailed/k9s
-ARG K9S_VERSION=v0.51.0
 ARG FNM_VERSION=v1.38.1
 
 RUN ARCH=$(dpkg --print-architecture) \
@@ -131,9 +128,6 @@ RUN ARCH=$(dpkg --print-architecture) \
  && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
         -o /usr/local/bin/kubectl \
  && chmod +x /usr/local/bin/kubectl \
- && curl -fsSL "https://github.com/derailed/k9s/releases/download/${K9S_VERSION}/k9s_Linux_${ARCH}.tar.gz" \
-        | tar -xz -C /usr/local/bin k9s \
- && chmod +x /usr/local/bin/k9s \
  && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
         | DESIRED_VERSION="" bash
 
@@ -181,7 +175,6 @@ RUN gh --version \
  && yq --version \
  && kubectl version --client --output=yaml \
  && helm version --short \
- && k9s version --short \
  && fnm --version \
  && command -v g \
  && direnv --version \
