@@ -153,6 +153,31 @@ func TestImageResultContent_AdvisesEachProducerOnAnIrreducibleImage(t *testing.T
 	}
 }
 
+// An image whose header declares more pixels than the reduction decodes is
+// refused from its header, before any full decode — a few-byte PNG can
+// declare a 40 GB buffer — through the producer's typed error. The bound is
+// lowered to 1 megapixel so the image stays small: without the check the
+// 2000×2000 zero image decodes (16 MB) and fits, and the test reddens.
+func TestImageResultContent_RefusesAnImageDeclaringTooManyPixels(t *testing.T) {
+	saved := fitMaxPixels
+	fitMaxPixels = 1_000_000
+	t.Cleanup(func() { fitMaxPixels = saved })
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 2000, 2000))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	data := base64.StdEncoding.EncodeToString(buf.Bytes())
+	_, err := ImageResultContent("read_image", imageResultJSON("image/png", data), ImagePolicy{MaxImageBase64Bytes: len(data) - 1})
+	var tooLarge *ImageTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("err = %v, want *ImageTooLargeError refusing the declared pixels", err)
+	}
+	if !strings.Contains(err.Error(), "4000000 pixels") || !strings.Contains(err.Error(), "read that file") {
+		t.Errorf("err = %q, want the declared pixel count and read_image's advice", err)
+	}
+}
+
 // A text-only receiver gets the marker in place of the image — whatever its
 // size, and without the image bytes.
 func TestImageResultContent_TextOnlyReceiverGetsTheMarker(t *testing.T) {

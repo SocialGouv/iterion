@@ -22,6 +22,13 @@ const fitJPEGQuality = 85
 // Below it the image no longer carries what the model was asked to read.
 const fitMinSide = 64
 
+// fitMaxPixels bounds the pixels the reduction decodes, read from the image
+// header before any decode: a few-byte PNG can declare 100000×100000, whose
+// RGBA buffer alone is 40 GB, and read_image reads untrusted workspace files.
+// 50 megapixels covers an 8K capture (7680×4320 ≈ 33 MP) with room, at
+// 200 MB of RGBA. A variable so a test can lower it.
+var fitMaxPixels int64 = 50_000_000
+
 // fitImageBase64 reduces a base64 image to at most max bytes of base64: a
 // JPEG re-encode at full size first (transparency flattened onto white),
 // then the image halved, box-filtered, until it fits. It returns the reduced
@@ -35,6 +42,16 @@ func fitImageBase64(src *api.ImageSource, max int) (*api.ImageSource, string, er
 	raw, err := base64.StdEncoding.DecodeString(src.Data)
 	if err != nil {
 		return nil, "", fmt.Errorf("decode base64: %w", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode %s header: %w", src.MediaType, err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, "", fmt.Errorf("header declares %dx%d pixels", cfg.Width, cfg.Height)
+	}
+	if px := int64(cfg.Width) * int64(cfg.Height); px > fitMaxPixels {
+		return nil, "", fmt.Errorf("header declares %dx%d = %d pixels, over the %d this reduction decodes", cfg.Width, cfg.Height, px, fitMaxPixels)
 	}
 	decoded, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
