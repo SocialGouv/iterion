@@ -54,6 +54,18 @@ green.
   > is left on #2377; `internal/ciguard` holds the three numbers above to the
   > ceiling this file claims, and holds every site that writes the timeout to
   > one value.
+  >
+  > **One probe per pool (#3701).** Since the runners split into the small,
+  > large and heavy pools of #3694, the canary runs one probe job per pool,
+  > routed through that pool's `CI_*_RUNNER` variable, and judges each pool on
+  > its own job: a pool still waiting no longer reddens the others, and the
+  > heavy pool, saturated by design while the post-merge witness runs, pages
+  > after 90 minutes instead of 25 (`CANARY_STALL_SECONDS`; it carries no
+  > required check). `scripts/ci/arc-canary-aggregate.sh` folds the verdicts:
+  > any red pool pages. Once a pool's variable is set, its probe also checks
+  > that the pool runs the image `ci/arc-runner/` defines
+  > (`scripts/ci/arc-runner-freshness.sh`), since that pin lives outside this
+  > repository.
 - **Required checks** (the fast, reliable ones): `test`, `vendor-check`,
   `golangci`, `brand`, `revi/review` — and `nats-conformance` once an admin
   adds it to ruleset 18857412. `race` and `mongo-conformance` are **held** out
