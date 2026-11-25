@@ -784,16 +784,14 @@ jobs:
     # package still runs under -race — `./...` minus e2e (under -race in
     # test-e2e, #3664) and pkg/sandbox/kubernetes (under -race in
     # test-native-exec, #3662) — partitioned three ways by
-    # scripts/ci/testshards, pkg/server by test name and every other package
-    # whole (#3684) — a pure function of the commit, so the three
+    # scripts/ci/testshards — a pure function of the commit, so the three
     # legs of one merge-queue entry always pick complementary sets. The
     # partition goes through an ASSIGNMENT (`pkgs=$(...)`), never inline
     # `$( )`: inline substitution loses the splitter's exit code, and an
     # empty-shard refusal would degrade into `go test` with no package
     # arguments. The weights table carries measured -race package durations;
     # LPT packs the three shards to near-equal weight, and the three heaviest
-    # rows (bots, internal/fswatch, pkg/runtime) each lead one shard; a third
-    # of pkg/server's tests runs beside them on every shard. The leg's
+    # rows (bots, pkg/server, internal/fswatch) each lead one shard. The leg's
     # wall is the larger of its heaviest package (bots, one sequential test
     # binary) and its shard's load spread over the runner's parallel test
     # slots; LPT balances the second, only splitting bots lowers the first.
@@ -876,37 +874,12 @@ jobs:
         # ceiling (#2789). See the scripts/ci/testshards doc for why the
         # assignment form is load-bearing. The quarantined flakes
         # (scripts/ci/test-quarantine.tsv) are skipped here and run nightly.
-        #
-        # pkg/server is split by TEST NAME, not packed whole (#3684): alone it
-        # ran ~1434 s under -race on ARC, the largest package after bots
-        # (~1630-1715 s), which still runs whole and stays the race floor.
-        # It leaves the package partition (its
-        # sub-packages stay in it) and each shard runs its hash slice of the
-        # package's top-level tests — test-e2e's discovery, under -race so a
-        # race-tagged test is listed — in the background, beside its packages,
-        # the way go test runs a package beside its siblings. Discovery is
-        # bounded at ten minutes, the cold -race compile the slice reuses. A
-        # discovery failure stops the shard before any test; either run's
-        # failure reddens it. The slice's output is printed after both end.
-        shell: bash
         run: |
           set -euo pipefail
-          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes|pkg/server)$' -weights scripts/ci/test-shards-weights.tsv)
-          server=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./pkg/server -n 3 -i ${{ matrix.shard }} -list-timeout 10m)
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes)$' -weights scripts/ci/test-shards-weights.tsv)
           quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
-          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages and $(echo "$server" | tr '|' '\n' | wc -l) pkg/server tests"
-          server_log="$RUNNER_TEMP/race-pkg-server.log"
-          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" -run "$server" ./pkg/server > "$server_log" 2>&1 &
-          server_pid=$!
-          pkgs_status=0
-          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" $pkgs || pkgs_status=$?
-          server_status=0
-          wait "$server_pid" || server_status=$?
-          echo "::group::pkg/server slice (exit ${server_status})"
-          cat "$server_log"
-          echo "::endgroup::"
-          [ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard ${{ matrix.shard }} failed (exit ${server_status})"
-          [ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" $pkgs
 
   # ---- held aggregator: a name the ruleset requires again when ADR-173 ends ----
 

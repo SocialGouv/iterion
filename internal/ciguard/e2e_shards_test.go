@@ -198,8 +198,7 @@ func TestE2ERunsUnderRaceOnceOnTheScaleSet(t *testing.T) {
 	}
 }
 
-// goTestTimeout reads the -timeout value the `go test` lines of a step share;
-// lines that disagree fail the test, since one shard carries one bound.
+// goTestTimeout reads the -timeout value of the one `go test` line of a step.
 func goTestTimeout(t *testing.T, job, run string) string {
 	t.Helper()
 	var values []string
@@ -214,13 +213,8 @@ func goTestTimeout(t *testing.T, job, run string) string {
 		}
 		values = append(values, fields[at+1])
 	}
-	if len(values) == 0 {
-		t.Fatalf("%s: no go test line", job)
-	}
-	for _, v := range values[1:] {
-		if v != values[0] {
-			t.Fatalf("%s: go test lines disagree on -timeout: %v", job, values)
-		}
+	if len(values) != 1 {
+		t.Fatalf("%s: want one go test line, got %d", job, len(values))
 	}
 	return values[0]
 }
