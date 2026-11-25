@@ -224,7 +224,7 @@ func ChainRouteVerdicts(err error) []map[string]any {
 
 func providerParameterCause(err error) string {
 	var typed *api.APIError
-	if errors.As(err, &typed) && typed.StatusCode == 400 && invalidProviderParameter(typed.Message) {
+	if errors.As(err, &typed) && (typed.IsGrammarRefusal() || typed.StatusCode == 400 && invalidProviderParameter(typed.Message)) {
 		return typed.Message
 	}
 	var stream *model.APIError

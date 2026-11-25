@@ -138,6 +138,14 @@ func ClassifyError(err error) ErrorCode {
 		if matchesProviderContext(body) {
 			return ErrCodeContextLengthExceeded
 		}
+		// The gateway refused to compile the request's schemas into a
+		// decoding grammar (#3679). Before the 5xx rule: LiteLLM serves
+		// some of these refusals as a 500, and the same request meets the
+		// same refusal on every attempt. Route-local — another route's
+		// engine may compile it.
+		if apiErr.IsGrammarRefusal() {
+			return ErrCodeProviderRequestInvalid
+		}
 		// 5xx and 408 (Request Timeout) from the upstream API are
 		// textbook transient failures: gateway timeouts, upstream
 		// connection resets, service overload, deploys mid-rollout.
