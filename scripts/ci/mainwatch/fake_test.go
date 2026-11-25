@@ -64,7 +64,9 @@ func (f *fixtureGitHub) fail(kind string) error {
 }
 
 func newFixture(t *testing.T) *fixtureGitHub {
-	list, err := os.ReadFile("../../../" + quarantineFile)
+	// The fixtures record main as it stood before #3675's row landed: a
+	// snapshot keeps them independent of later quarantine changes on main.
+	list, err := os.ReadFile(filepath.Join("testdata", "quarantine-main.tsv"))
 	if err != nil {
 		t.Fatal(err)
 	}
