@@ -1,6 +1,7 @@
 package delegate
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -118,18 +119,22 @@ func isModelUnavailableResult(s string) bool {
 // and a remediation sentence quoted back push a real render past any cap —
 // so the cap is lifted only where the text is marked as a render:
 //
-//   - the CLI's exact render form (cliRenderShape): the result begins
-//     "API Error:" as the CLI writes it, case and colon included, or with
-//     its "Failed to authenticate. API Error:" lead. Prose that opens with
-//     "API errors…" or "API error 401 is…" is not that form.
 //   - cliError: the CLI flagged the text as its render.
+//   - unflagged, the WHOLE text is the CLI's render grammar
+//     (isCLIRenderLine): one line, an optional "Failed to authenticate. "
+//     lead, "API Error: " and a three-digit status, a JSON body that
+//     parses, an optional " · <hint>" tail. An answer that merely opens
+//     with that lead and goes on as prose — quoting a render it diagnosed,
+//     reporting a third party's 401 — is not that grammar.
 //
 // In either, an explicit status decides first: a 5xx is the transient class
-// whatever auth words the relayed body carries, a 401/403 is the provider's
-// verdict on the credential; failing a status, an auth signature anywhere is
-// the verdict. Any other text is classified only as a SHORT one-liner — the
-// CLI's bare "Not logged in · Please run /login" comes with no other mark —
-// so a long answer that discusses authentication stays an answer.
+// whatever auth words the relayed body carries — a gateway's 5xx envelope
+// relaying an upstream 401 included, since the status is the verdict on the
+// request this spawn made — and a 401/403 is the provider's verdict on the
+// credential; failing a status, an auth signature anywhere is the verdict.
+// Any other text is classified only as a SHORT one-liner — the CLI's bare
+// "Not logged in · Please run /login" comes with no other mark — so a long
+// answer that discusses authentication stays an answer.
 func isAuthErrorResult(s string, cliError bool) bool {
 	t := strings.TrimSpace(s)
 	if t == "" || isModelUnavailableResult(t) {
@@ -142,7 +147,7 @@ func isAuthErrorResult(s string, cliError bool) bool {
 		return true
 	}
 	low := strings.ToLower(t)
-	if cliRenderShape(t) || cliError {
+	if cliError || isCLIRenderLine(t) {
 		if verdict, decided := authStatusVerdict(cliRenderStatusRe.FindStringSubmatch(t)); decided {
 			return verdict
 		}
@@ -183,16 +188,34 @@ func authStatusVerdict(m []string) (verdict, decided bool) {
 // signatures only when it is a one-liner.
 const authProseCap = 200
 
-// cliRenderLeadRe is the CLI's exact render form, case-sensitive: the result
-// begins "API Error:", optionally behind its "Failed to authenticate." lead.
-var cliRenderLeadRe = regexp.MustCompile(`^(?:Failed to authenticate\.?\s*)?API Error:`)
-
-// cliRenderStatusRe extracts the status of that form: "API Error: 401 …" or
-// the bracketed facade form "API Error: [401][…]".
+// cliRenderStatusRe extracts the status of the CLI's render form,
+// case-sensitive: "API Error: 401 …" or the bracketed facade form "API
+// Error: [401][…]", optionally behind the "Failed to authenticate." lead.
 var cliRenderStatusRe = regexp.MustCompile(`^(?:Failed to authenticate\.?\s*)?API Error:\s*\[?(\d{3})(?:\]|\b)`)
 
-// cliRenderShape reports the CLI's own render form (cliRenderLeadRe).
-func cliRenderShape(t string) bool { return cliRenderLeadRe.MatchString(t) }
+// cliRenderLineRe is the CLI's single-line render grammar: optional lead,
+// "API Error: ", status, a body that opens and closes as an object, and an
+// optional " · <hint>" tail ("· Please run /login"). `.` stops at a newline,
+// so a text of several lines never matches.
+var cliRenderLineRe = regexp.MustCompile(`^(?:Failed to authenticate\. )?API Error: \d{3} (\{.*\})(?: · [^\n]*)?$`)
+
+// cliRenderAnchored reports an unflagged text that is the CLI's render: its
+// whole grammar (isCLIRenderLine), or a one-line one-liner within the prose
+// cap that opens with the CLI's exact lead and a status ("Failed to
+// authenticate. API Error: 401 Invalid bearer token").
+func cliRenderAnchored(t string) bool {
+	if isCLIRenderLine(t) {
+		return true
+	}
+	return len(t) <= authProseCap && !strings.Contains(t, "\n") && cliRenderStatusRe.MatchString(t)
+}
+
+// isCLIRenderLine reports a text that is, whole, the CLI's render of a
+// failed request: cliRenderLineRe with a body that parses as JSON.
+func isCLIRenderLine(t string) bool {
+	m := cliRenderLineRe.FindStringSubmatch(t)
+	return m != nil && json.Valid([]byte(m[1]))
+}
 
 // hasAuthSignature reports an auth-failure phrase in a lowered text.
 func hasAuthSignature(low string) bool {
@@ -273,10 +296,10 @@ func isHighConfidenceAuthRender(t string) bool {
 // session's Source stamp keys the reading under the credential that
 // actually ran. Fail-fast and evidence are two thresholds on purpose:
 // every auth render fails the node legibly, but only a text that IS the
-// CLI's render — its exact form (cliRenderShape) or its is_error flag — and
-// carries a high-confidence phrase benches the credential: a short answer
-// that merely contains "invalid bearer token" fails the node, never the
-// fleet's use of the key.
+// CLI's render (cliRenderAnchored, or the is_error flag) and carries a
+// high-confidence phrase benches the credential: a short answer that merely
+// contains "invalid bearer token" fails the node, never the fleet's use of
+// the key.
 //
 // cliError is the result message's is_error flag on a subtype=success result
 // (cliErrorRender): see isAuthErrorResult.
@@ -288,7 +311,7 @@ func authFailureFast(result *string, cliError bool, task Task, spawn credSpawn) 
 		return nil
 	}
 	t := strings.TrimSpace(*result)
-	if (cliError || cliRenderShape(t)) && isHighConfidenceAuthRender(t) && task.Hooks.OnUsageWindow != nil {
+	if (cliError || cliRenderAnchored(t)) && isHighConfidenceAuthRender(t) && task.Hooks.OnUsageWindow != nil {
 		_ = task.Hooks.OnUsageWindow(usagecap.Reading{
 			Window:     usagecap.WindowAuth,
 			Status:     usagecap.StatusRejected,

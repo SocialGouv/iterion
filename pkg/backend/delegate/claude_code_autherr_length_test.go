@@ -26,7 +26,10 @@ func TestIsAuthErrorResult_lengthDoesNotHideARender(t *testing.T) {
 		if len(s) <= authProseCap {
 			t.Fatalf("%s: fixture is %d bytes — it must exceed the prose cap to witness length independence", name, len(s))
 		}
-		if !isAuthErrorResult(s, false) {
+		// Unflagged, only the render's whole grammar (a status and a JSON
+		// body, isCLIRenderLine) classifies; the status-less body needs
+		// the is_error flag.
+		if name != "status-less facade body" && !isAuthErrorResult(s, false) {
 			t.Errorf("%s: anchored render of %d bytes not classified as an auth failure", name, len(s))
 		}
 		if !isAuthErrorResult(s, true) {

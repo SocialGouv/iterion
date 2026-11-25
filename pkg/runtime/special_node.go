@@ -333,11 +333,19 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 
 // childStopped reports a child run's error that says the child was stopped
 // rather than failed: the child engine's cancellation or interruption
-// sentinel, or a bare context error from a runner that never reached the
-// engine.
+// sentinel, a bare context error from a runner that never reached the
+// engine, or a parked child's end reconstructed from its record
+// (runview.subbotChildFailure), which carries the child's CANCELLED or
+// INTERRUPTED failure code and no sentinel. CANCELLED is deterministic to
+// retrypolicy — an operator's decision no resume revisits — so the code is
+// read here, not left to the deterministic test.
 func childStopped(err error) bool {
-	return errors.Is(err, ErrRunCancelled) || errors.Is(err, ErrRunInterrupted) ||
-		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	if errors.Is(err, ErrRunCancelled) || errors.Is(err, ErrRunInterrupted) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	code := nodeFailureCode(err)
+	return code == ErrCodeCancelled || code == store.FailureInterrupted
 }
 
 // subbotReattachKey builds the stable, unique key identifying one execution of

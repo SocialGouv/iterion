@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -432,8 +433,14 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 
 // handleContextDoneWithDetail is handleContextDoneWithCheckpoint whose
 // recorded reason carries detail — what the stopped node's work said
-// (stopDetail) — after the stop's own words; "" records the stop alone.
+// (stopDetail, read by failRunErrWithCheckpoint, the door a subbot node's
+// failure takes) — after the stop's own words; "" records the stop alone.
+// The detail passes the run's scrubber first and is then cut at
+// subbotDetailLimit (boundedDetail): cutting a scrubbed text cannot expose
+// what the scrubber withheld, and an unbounded child stderr cannot bloat
+// the parent's record.
 func (e *Engine) handleContextDoneWithDetail(rs *runState, nodeID string, ctxErr error, detail string) (result error) {
+	detail = boundedDetail(e.recordedFailureText(detail))
 	withDetail := func(reason string) string {
 		if detail == "" {
 			return reason
@@ -579,6 +586,26 @@ func (e *SubbotStoppedError) Detail() string {
 }
 
 func (e *SubbotStoppedError) Unwrap() error { return e.ctxErr }
+
+// subbotDetailLimit bounds, in bytes, the child's words a parent's stop
+// record carries; subbotDetailTruncated marks a cut.
+const (
+	subbotDetailLimit     = 4 << 10
+	subbotDetailTruncated = "…(truncated)"
+)
+
+// boundedDetail cuts detail at subbotDetailLimit on a rune boundary and
+// marks the cut.
+func boundedDetail(detail string) string {
+	if len(detail) <= subbotDetailLimit {
+		return detail
+	}
+	cut := subbotDetailLimit
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	return detail[:cut] + subbotDetailTruncated
+}
 
 // stopDetail is the detail a stopped node's error carries for the run's
 // stop record: a subbot's child words, "" otherwise.
