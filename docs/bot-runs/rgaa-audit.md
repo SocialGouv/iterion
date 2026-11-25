@@ -9,6 +9,43 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
+## 2026-11-23 — 3.2.1: ultra11y 7.2.0, and the bot becomes ultra11y's documented CI path
+
+- Status: **engine-proven, no run**. The contract and node tests run on the
+  real 7.2.0 (`task test:contract:rgaa`), plus one real `scan --sample`
+  on the fixture site; no LLM run was paid.
+- Why now: ultra11y 6.0.0 drops its GitHub Action and GitLab template
+  (SocialGouv/ultra11y#165) and points CI audits here. The bot's README
+  gains « Run Acci in your CI » (a GitHub Actions and a GitLab CI job).
+- Two contracts moved between 5.49.0 and 6.0.0, both intended upstream:
+  - a coverage gap (an open criterion the adjudication never mentions) is
+    no longer a refusal: the fold names it in `notInWorklist`, outside
+    `rejectedCriteria` and `issues` (#136). The contract test went red on
+    `rejected=0, expected 98 coverage gaps`; `fold_probe` now re-asks
+    `notInWorklist` like a refusal, so a gap is never read as a decision.
+  - `report --json`'s `conformancePct` is the RGAA rate, its operands under
+    `conformance`, the automatic rate as `automaticPct` (#116, #125); the
+    fold JSON adds `automaticPassRatePct` and `conformanceRatePct` (#156).
+    The bot still computes the rate from `criteria[]`; the contract test
+    now pins both JSON numbers against the report's line.
+- Not taken: the engine's `orchestration/<phase>.batches.json` (5.59.0).
+  `plan_batches` partitions re-ask rounds with prior issues under the
+  bot's `batch_size`, which the engine's one-shot `orchestrate` output
+  does not model.
+- Nothing moved between 6.0.0 and 7.2.0 for the bot: 7.0.0 (#172) removed
+  commands and flags it never called (`mcp`, `dev`, `judge`, `affected`,
+  `import`, `audit --lite`, `--format sarif|github`, `init --ci`,
+  `--baseline`, `render --e2e`, `pages --diff`, `scan --runtime docker`;
+  the bot runs `scan --runtime local`); 7.1.0 (#176) makes `audit` read
+  Jest/Vitest `__snapshots__/*.snap` files in scope as component renders
+  (`scope.unitSnapshots`); 7.2.0 (#177) injects ultra11y's own exact
+  axe-core 4.13.0 in `scan` (the fixture scan records `axe: {version:
+  "4.13.0", origin: "ultra11y"}`). The contract tests passed unchanged.
+- Not taken yet: 7.2.0's route inventory (`pages discover --write` →
+  `.ultra11y/routes.json`, `scan --all-routes [--max-routes]`, annex
+  section F, `scope.routes`). The bot still renders the declared sample;
+  accounting for every discovered route is a later node.
+
 ## 2026-10-20 — the demo path proven: `task demo:rgaa-audit`, one real run, one resume (#2593)
 
 The colleague-facing one-command path landed (#2598): build, pinned

@@ -85,7 +85,7 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   own findings are never pruned) and reports what it pruned; an incomplete
   trial is not applied, and the part of an applied one the engine refuses
   (a retained claim whose anchor does not ground) is named as a degradation.
-- `final_report` uses ultra11y 5.49.0 to render the business summary and
+- `final_report` uses ultra11y 7.2.0 to render the business summary and
   its separate technical annex. It cross-checks the annex's « Décidés »
   line and the summary's RGAA rate against the audit, then runs the engine's
   integrity and completeness checks. Both draft readers receive both files.
@@ -156,6 +156,92 @@ its cap, or the re-ask is declined.
 
 `iterion validate --exec --strict --fixtures bots/testdata/rgaa-audit-dryrun-fixtures.json bots/rgaa-audit/main.bot`
 walks the whole graph without a model, a shell or a workspace.
+
+## Run Acci in your CI
+
+ultra11y no longer ships a GitHub Action or a GitLab template (6.0.0): a CI
+audit runs this bot. The job installs a pinned iterion release, installs
+the bot from that same tag (the engine pin travels with it), and runs it on
+the checkout; `prepare` installs the pinned engine itself (an `npm install`
+into the run directory, fingerprint-checked), so the job needs Node with
+`npm` and the `claude` CLI the agents delegate to.
+
+- **Secret**: `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) — the
+  `claude_code` backend's credential. Another provider is a backend/model
+  dial (`ITERION_RGAA_BACKEND_*`, `ITERION_RGAA_MODEL_*`, above).
+- **Budget**: the wall of a full run is the token ceiling, not dollars —
+  the bot's default 3M ran out at 91% on a ~100-criterion run;
+  `--max-tokens` raises it, `--max-cost-usd` caps the spend (about 2 $
+  per batch of 8 criteria; a first run with no ledger is ~60 $). A
+  committed ledger (`.ultra11y/verdicts/rgaa.json`) is replayed, so a
+  recurring run only re-adjudicates what changed.
+- `rendered=off` keeps the job static; for the rendered layer, serve the
+  site with `serve_command` / `serve_ready_url`, install a Chromium and name
+  it with `browser_path`.
+
+GitHub Actions:
+
+```yaml
+jobs:
+  rgaa-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      ITERION_VERSION: v7.33.0   # pin a release; the bot is installed from the same tag
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: |
+          mkdir -p "$HOME/.local/bin"   # install.sh falls back to sudo mv when the directory is missing
+          curl -fsSL https://socialgouv.github.io/iterion/install.sh | INSTALL_DIR="$HOME/.local/bin" sh -s -- "$ITERION_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          npm install -g @anthropic-ai/claude-code
+      - run: iterion bots install https://github.com/SocialGouv/iterion --path bots/rgaa-audit --ref "$ITERION_VERSION"
+      - run: |
+          iterion run .botz/rgaa-audit --sandbox none --no-interactive \
+            --max-cost-usd 60 --max-tokens 5000000 \
+            --var 'scope_globs=src/**' --var rendered=off \
+            --var report_dir="$PWD/rgaa-report"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: rgaa-report, path: rgaa-report/ }
+```
+
+GitLab CI — a Node image, because `prepare` installs the engine with `npm`.
+The published `ghcr.io/socialgouv/iterion` image carries the `node` binary
+but no `npm`, so the engine resolves nowhere there and the run stops at
+`ENGINE_UNRESOLVED`:
+
+```yaml
+rgaa-audit:
+  image: node:24
+  timeout: 3h
+  variables:
+    ITERION_VERSION: v7.33.0   # pin a release; the bot is installed from the same tag
+  script:
+    # ANTHROPIC_API_KEY: a masked CI/CD variable. git refuses a clone owned by
+    # another uid than the job's, which depends on the runner.
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh -s -- "$ITERION_VERSION"
+    - npm install -g @anthropic-ai/claude-code
+    - iterion bots install https://github.com/SocialGouv/iterion --path bots/rgaa-audit --ref "$ITERION_VERSION"
+    - >-
+      iterion run .botz/rgaa-audit --sandbox none --no-interactive
+      --max-cost-usd 60 --max-tokens 5000000
+      --var 'scope_globs=src/**' --var rendered=off
+      --var report_dir="$CI_PROJECT_DIR/rgaa-report"
+  artifacts:
+    when: always
+    paths: [rgaa-report/]
+```
+
+The report is advisory by default: the run fails only on a typed refusal
+(above). `--var require_complete=true` turns a degraded layer into a
+failing job. For the engine-only, model-free regression net (replay the
+committed ledger, hold the pages to the engine's completeness check), see
+iterion's own `.github/workflows/a11y-advisory.yml`.
 
 ## Tests
 
