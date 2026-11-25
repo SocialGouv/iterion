@@ -74,7 +74,8 @@ green.
   `pattern=$(CGO_ENABLED=1 GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i 0)`
   then `CGO_ENABLED=1 go test -race -mod=vendor -count=1 -run "$pattern" -timeout 2400s ./e2e`,
   in the same devbox and build environment, under `set -euo pipefail`.
-  Discovery has its own configurable `-list-timeout` (five minutes; zero
+  Discovery has its own configurable `-list-timeout` (five minutes by default;
+  CI passes ten minutes, the cold `-race` compile on an ARC pod; zero
   disables it); its failure stops execution. Discovery owns a Unix process
   group through cancellation and output drainage, using the shared
   `ITERION_PROC_WAIT_DELAY` override; a descendant starting another session
@@ -92,7 +93,9 @@ green.
   themselves carry the tap skip and nothing else, a contract `internal/ciguard`'s
   `gatedJobs` enforces: a leg any other condition skips reports Success on the
   pull request while reddening its queue entry forever, and a leg without the
-  skip spends the heavy minutes the skip exists to save. `fmt-check` is
+  skip spends the heavy minutes the skip exists to save. The one exception is
+  the heavy legs, which also skip a light pull request
+  ([below](#light-pull-request-heavy-merge-queue)). `fmt-check` is
   STAGED: it reports on the pull request AND in the queue, so the context is
   already there the day the ruleset names it, and `internal/ciguard`'s
   `requiredChecks` carries it. Editing that ruleset from the API needs
@@ -163,6 +166,51 @@ green.
   factory's own adversarial review + the checks are the gate; a reviewer still
   merges deliberately.
 
+## Light pull request, heavy merge queue
+
+Decided 2026-11-25 (#3683). Every pull request used to pay the whole suite
+twice — on its own run, then on its `merge_group` run — about 25 ARC jobs each
+on a scale set of ~40 concurrent pods; queue latency reached 4-14 hours and 8
+of 12 merge-group runs were cancelled. So each layer gates where it pays:
+
+| layer | pull request | merge queue | push to `main` |
+| --- | --- | --- | --- |
+| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `mongo-conformance`, `golangci`, `brand`, `fmt-check` | runs | runs | runs |
+| `race-shard`, `test-e2e` (heavy legs) | skipped, unless labelled `ci:full` | runs | runs |
+| `cloud-e2e` (heavy, advisory) | skipped, unless labelled `ci:full` | skipped | runs |
+| other advisory jobs | runs | skipped | runs |
+| `revi/review` | runs | mirrored | — |
+
+`test-unit` stays on the pull request: it is the fast signal (sharded three
+ways, a 30-minute ceiling against the heavy legs' 50) and carries the
+freshness gate, gofmt and vet — the checks behind the queue's most frequent
+ejection, two pull requests regenerating the same artefact.
+`test-native-exec` stays too: one small job on a GitHub-hosted VM.
+
+The aggregators stay honest. `test` and `race` read `LIGHT_PULL_REQUEST`, the
+negation of the heavy legs' own condition, evaluated by GitHub, and accept
+`skipped` from a heavy leg only when it is `true`; on `merge_group` and `push`
+it is `false`, and a skipped heavy leg is as red as a failed one.
+`internal/ciguard` pins the condition byte for byte on the legs, `cloud-e2e`
+and both aggregators, and runs each aggregator's step under both values.
+
+To run the heavy jobs on a pull request — `race-shard` and `test-e2e` for a
+change to concurrency, the race-sensitive engine, or e2e itself; `cloud-e2e`
+for a change to `charts/` or the cloud stack — add the `ci:full` label, then
+push: a label alone starts no run, since `labeled` is not among the triggers.
+A light pull request's green `test` and `race` never ran the heavy legs, so it
+is not admin-mergeable: an admin merge bypasses the queue, the only place they
+gate (the [parked gate](#a-parked-gate-decided-2026-11-10) and the
+[fast lane](#the-fast-lane-for-an-incident-fix-and-its-exact-procedure) say
+what they owe).
+
+`race-shard` splits `pkg/server` by test name (#3684): alone it ran ~1434 s
+under `-race` on ARC, the largest package after `bots`. At ~1630-1715 s,
+`bots` still runs whole and stays the floor of the race wall. The package leaves the weights partition, and each shard runs its
+hash slice of the package's top-level tests
+(`scripts/ci/testshards -tests ./pkg/server -n 3 -i <shard>` under
+`GOFLAGS=-race`) beside its packages; a discovery failure reddens the shard.
+
 ## The one verified skip: the Homebrew tap update
 
 `brew-update.yml` opens one pull request a night, `chore(brew): update tap to
@@ -175,7 +223,7 @@ queue, where the entry held one of the three build slots for ~25 minutes
 `fmt-check` 1.8, `vendor-check` 1.0 min, measured on #2314).
 
 So the gated legs (`test-unit`, `test-e2e`, `studio`, `test-native-exec`,
-`race-shard`), the
+`race-shard`; the heavy two combine it with the light pull request clause), the
 aggregators `test` and `race` that speak for them (combined with their
 `!cancelled()` clause), `mongo-conformance`, `golangci`, `vendor-check` and
 `fmt-check` carry one condition, the only `if:` a required check may carry
@@ -277,7 +325,12 @@ gate.** What it owes:
    success: a job skipped by a job-level `if:` reports SUCCESS, so a required
    check that never ran satisfies the gate
    ([tests.yml](../.github/workflows/tests.yml) says so of the Homebrew-tap
-   skip, which five required checks carry).
+   skip, which five required checks carry). On a
+   [light pull request](#light-pull-request-heavy-merge-queue) `test` and
+   `race` turn green with the heavy legs skipped: before the admin merge the
+   pull request carries the `ci:full` label, has been pushed since, and every
+   `race-shard (n)` and `test-e2e (n)` reads `success` on its head, not
+   `skipped`.
 2. **A local adversarial loop, and the trailer says which kind.** At the bar
    [the loop](agents/workflow/adversarial-review-loop.md) states — a round on
    the diff, each finding AND its proposed fix verified independently, a
@@ -318,7 +371,8 @@ gate.** What it owes:
    ([the known gap](merge-gate.md#a-paused-review-says-so-on-the-pr)).
 
 **What this bypass gives up, stated plainly.** The required set ran on real CI,
-on the merge ref as of its run — that is its strength over a locally reproduced
+on the merge ref as of its run, the heavy legs included through `ci:full` —
+that is its strength over a locally reproduced
 gate. What it does not have is the queue's one unique guarantee: the rebuild
 against **current** `main` and against the entries ahead of it, which is what
 closes the semantic inter-PR conflict class (two PRs each green against
@@ -357,8 +411,12 @@ gh pr merge <n> --repo <owner>/<repo> --squash --admin
 
 Before using it, the same proofs the queue would have demanded must already be
 green **on the PR head**: every required check (`test`, `race`, `vendor-check`,
-`mongo-conformance`, `golangci`, `brand`) and `revi/review`. The bypass skips the
-*rebuild against the queue's other members*, nothing else — so it is legitimate
+`mongo-conformance`, `golangci`, `brand`) and `revi/review`. A light pull
+request's `test` and `race` are green with the heavy legs skipped, so the PR
+first carries the `ci:full` label and a push after it, and every
+`race-shard (n)` and `test-e2e (n)` reads `success` on the head, not
+`skipped`. With that, the bypass skips the *rebuild against the queue's other
+members*; without it, it also skips `-race` and e2e — so it is legitimate
 when the PR is small, or touches files no queued PR touches, and reckless when
 it is a wide refactor.
 

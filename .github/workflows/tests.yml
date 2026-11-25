@@ -100,10 +100,23 @@ concurrency:
 #      guarantee would die without any queue signal — which is why ciguard
 #      refuses any other `if:` on a leg outright, and refuses a leg without
 #      the skip (it would spend the heavy minutes the skip exists to save).
+#      The HEAVY legs, `race-shard` and `test-e2e`, carry one more clause,
+#      also byte for byte: a LIGHT pull request — any pull request without
+#      the `ci:full` label — skips them (#3683). Run on every pull request,
+#      they would cost the whole suite twice per change, on its own run and
+#      again in the queue, on a scale set where that doubling queues entries
+#      for hours; the queue runs them on every entry, and main on every push. Their aggregators
+#      read LIGHT_PULL_REQUEST, the negation of that same clause evaluated by
+#      GitHub, and forgive a heavy leg's `skipped` only when it is `true`:
+#      in `merge_group` and on `push` it is `false`, and a skipped heavy leg
+#      is red like a failed one. ciguard runs each aggregator under both. To
+#      run the heavy legs on a pull request, add the `ci:full` label and push
+#      (a label alone starts no run: `labeled` is not among the triggers).
 #   3. ADVISORY — the eight jobs that cannot block a merge. Running one
 #      inside the queue buys a verdict nobody can act on while holding a
 #      runner slot the queue needs, so they run on the pull request and on
-#      main and skip in `merge_group`.
+#      main and skip in `merge_group`. `cloud-e2e`, heavy too, skips a light
+#      pull request as well.
 #
 # The trap the aggregator design answers, twice over: a job skipped by a
 # job-level `if:` reports SUCCESS, so a required check that never ran
@@ -455,8 +468,7 @@ jobs:
     # `//go:embed all:static` — the e2e server boots against nothing without
     # it, and artifact-sharing would serialize this job behind `studio`
     # through the cache service ADR-105 measured at 1-3 MB/s. Runs in the
-    # merge queue behind the required `test` aggregator; carries the tap skip
-    # and nothing else.
+    # merge queue behind the required `test` aggregator.
     #
     # UNDER -race (#3664): this is the package's only run, so the data-race
     # detector proves it here, on the scale set, and race-shard leaves it out
@@ -469,8 +481,11 @@ jobs:
     # third of the package). So each shard keeps race-shard's proven -race
     # bounds, 2400 s per package and a 50-minute job, until ARC -race shard
     # walls are measured.
-    # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    # HEAVY (#3683): a light pull request skips this leg and the merge queue
+    # runs it on every entry; `test` forgives that skip on a light pull
+    # request only. A Homebrew tap update skips it too: the header says why,
+    # and `brand` verifies it.
+    if: "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 50
     strategy:
@@ -530,6 +545,8 @@ jobs:
         # Discovery includes Test, Example and Fuzz corpus names. Subtests
         # stay with their parent. All legs use one commit and Go's own
         # inventory; a discovery failure must stop before running any test.
+        # Discovery is the cold -race compile on an ARC pod with no Go cache:
+        # its bound is ten minutes, and the run below reuses the compile.
         # The per-shard hang bound and e2e/main_test.go's parallel cap stay.
         # The quarantined flakes (scripts/ci/test-quarantine.tsv) are skipped
         # here and run nightly.
@@ -538,7 +555,7 @@ jobs:
           set -euo pipefail
           # Discovery lists under -race, the build execution runs: a file
           # tagged `//go:build race` exists only in that variant.
-          pattern=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 5m)
+          pattern=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 10m)
           quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
           go test -race -mod=vendor -count=1 -v -run "$pattern" -skip "$quarantine" -timeout 2400s ./e2e
 
@@ -685,6 +702,13 @@ jobs:
     # byte for byte. The step then re-verifies each leg's result rather than
     # trusting the needs-graph, so a red leg can only ever produce a red
     # required check.
+    #
+    # ONE forgiven result (#3683): on a LIGHT pull request — one without the
+    # `ci:full` label — test-e2e skips by design and runs in the merge queue
+    # instead, so `skipped` from it is accepted there and nowhere else.
+    # LIGHT_PULL_REQUEST is the negation of the very expression the heavy leg
+    # runs on, evaluated by GitHub: `false` on merge_group and push, where a
+    # skipped test-e2e is as red as a failed one.
     needs: [test-unit, test-e2e, studio, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
@@ -694,6 +718,7 @@ jobs:
       TEST_E2E_RESULT: ${{ needs.test-e2e.result }}
       STUDIO_RESULT: ${{ needs.studio.result }}
       TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
+      LIGHT_PULL_REQUEST: ${{ !(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every leg reported success
         shell: bash
@@ -703,6 +728,10 @@ jobs:
           for pair in "test-unit:${TEST_UNIT_RESULT}" "test-e2e:${TEST_E2E_RESULT}" "studio:${STUDIO_RESULT}" "test-native-exec:${TEST_NATIVE_EXEC_RESULT}"; do
             leg="${pair%%:*}"
             result="${pair#*:}"
+            if [ "$leg" = "test-e2e" ] && [ "$result" = "skipped" ] && [ "$LIGHT_PULL_REQUEST" = "true" ]; then
+              echo "::notice::leg ${leg} skipped on a light pull request — the merge queue runs it, so this green is not admin-mergeable; label the pull request ci:full and push to run it here."
+              continue
+            fi
             if [ "$result" != "success" ]; then
               echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."
               fail=1
@@ -725,14 +754,16 @@ jobs:
     # package still runs under -race — `./...` minus e2e (under -race in
     # test-e2e, #3664) and pkg/sandbox/kubernetes (under -race in
     # test-native-exec, #3662) — partitioned three ways by
-    # scripts/ci/testshards — a pure function of the commit, so the three
+    # scripts/ci/testshards, pkg/server by test name and every other package
+    # whole (#3684) — a pure function of the commit, so the three
     # legs of one merge-queue entry always pick complementary sets. The
     # partition goes through an ASSIGNMENT (`pkgs=$(...)`), never inline
     # `$( )`: inline substitution loses the splitter's exit code, and an
     # empty-shard refusal would degrade into `go test` with no package
     # arguments. The weights table carries measured -race package durations;
     # LPT packs the three shards to near-equal weight, and the three heaviest
-    # rows (bots, pkg/server, internal/fswatch) each lead one shard. The leg's
+    # rows (bots, internal/fswatch, pkg/runtime) each lead one shard; a third
+    # of pkg/server's tests runs beside them on every shard. The leg's
     # wall is the larger of its heaviest package (bots, one sequential test
     # binary) and its shard's load spread over the runner's parallel test
     # slots; LPT balances the second, only splitting bots lowers the first.
@@ -742,8 +773,11 @@ jobs:
     # `runs-on` stays at the JOB level, outside the matrix, where the
     # ciguard regex and the fork guard can read it (the desktop-vet-cross
     # lesson: a matrix over runs-on diverges from its id silently).
-    # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    # HEAVY (#3683): a light pull request skips this leg and the merge queue
+    # runs it on every entry; `race` forgives that skip on a light pull
+    # request only. A Homebrew tap update skips it too: the header says why,
+    # and `brand` verifies it.
+    if: "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
     # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
     # excluded from the partition and proved by test-native-exec instead.
@@ -811,12 +845,37 @@ jobs:
         # ceiling (#2789). See the scripts/ci/testshards doc for why the
         # assignment form is load-bearing. The quarantined flakes
         # (scripts/ci/test-quarantine.tsv) are skipped here and run nightly.
+        #
+        # pkg/server is split by TEST NAME, not packed whole (#3684): alone it
+        # ran ~1434 s under -race on ARC, the largest package after bots
+        # (~1630-1715 s), which still runs whole and stays the race floor.
+        # It leaves the package partition (its
+        # sub-packages stay in it) and each shard runs its hash slice of the
+        # package's top-level tests — test-e2e's discovery, under -race so a
+        # race-tagged test is listed — in the background, beside its packages,
+        # the way go test runs a package beside its siblings. Discovery is
+        # bounded at ten minutes, the cold -race compile the slice reuses. A
+        # discovery failure stops the shard before any test; either run's
+        # failure reddens it. The slice's output is printed after both end.
+        shell: bash
         run: |
           set -euo pipefail
-          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes)$' -weights scripts/ci/test-shards-weights.tsv)
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes|pkg/server)$' -weights scripts/ci/test-shards-weights.tsv)
+          server=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./pkg/server -n 3 -i ${{ matrix.shard }} -list-timeout 10m)
           quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
-          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" $pkgs
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages and $(echo "$server" | tr '|' '\n' | wc -l) pkg/server tests"
+          server_log="$RUNNER_TEMP/race-pkg-server.log"
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" -run "$server" ./pkg/server > "$server_log" 2>&1 &
+          server_pid=$!
+          pkgs_status=0
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" $pkgs || pkgs_status=$?
+          server_status=0
+          wait "$server_pid" || server_status=$?
+          echo "::group::pkg/server slice (exit ${server_status})"
+          cat "$server_log"
+          echo "::endgroup::"
+          [ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard ${{ matrix.shard }} failed (exit ${server_status})"
+          [ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
 
   # ---- required aggregator: the name the ruleset requires ----
 
@@ -833,6 +892,11 @@ jobs:
     # (the header's catastrophe, one level up). Combined with the tap skip
     # the shards carry, so this job skips exactly the entries they skip and
     # re-verifies every other one; ciguard pins the spelling byte for byte.
+    #
+    # ONE forgiven result (#3683): on a light pull request race-shard skips
+    # by design, so `skipped` from it is accepted there and nowhere else —
+    # the `test` aggregator's rule, through the same LIGHT_PULL_REQUEST.
+    # test-native-exec is not heavy: it runs on every pull request.
     needs: [race-shard, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
@@ -840,6 +904,7 @@ jobs:
     env:
       RACE_SHARD_RESULT: ${{ needs.race-shard.result }}
       TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
+      LIGHT_PULL_REQUEST: ${{ !(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every shard reported success
         shell: bash
@@ -849,6 +914,10 @@ jobs:
           for pair in "race-shard:${RACE_SHARD_RESULT}" "test-native-exec:${TEST_NATIVE_EXEC_RESULT}"; do
             leg="${pair%%:*}"
             result="${pair#*:}"
+            if [ "$leg" = "race-shard" ] && [ "$result" = "skipped" ] && [ "$LIGHT_PULL_REQUEST" = "true" ]; then
+              echo "::notice::leg ${leg} skipped on a light pull request — the merge queue runs it, so this green is not admin-mergeable; label the pull request ci:full and push to run it here."
+              continue
+            fi
             if [ "$result" != "success" ]; then
               echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."
               fail=1
@@ -1081,8 +1150,10 @@ jobs:
 
   cloud-e2e:
     # Advisory: not a required check, so it cannot block a merge — see the
-    # merge-queue note at the top of this file.
-    if: github.event_name != 'merge_group'
+    # merge-queue note at the top of this file. Heavy too (#3683): a light
+    # pull request skips it, so it runs on main and on a pull request that
+    # carries the `ci:full` label.
+    if: "github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full'))"
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with its dev Mongo + NATS + SeaweedFS (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →

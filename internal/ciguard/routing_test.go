@@ -187,6 +187,48 @@ var gatedJobs = map[string]bool{
 	"race-shard":       true,
 }
 
+// fullSuite is true wherever the heavy legs run: on every event but a pull
+// request, and on a pull request that carries the `ci:full` opt-in label. A
+// pull request without the label is LIGHT — the heavy legs skip it and the
+// merge queue, which runs them on every entry, is where they gate (#3683).
+// One literal, three readers, each pinned byte for byte below: the heavy
+// legs' `if:` (heavyLegIf), the heavy advisory job's `if:` (heavyAdvisoryIf)
+// and the aggregators' lightPullRequestEnv. The legs run where it is true and
+// the aggregators forgive a `skipped` leg where its negation is true, so the
+// two sides cannot disagree about which runs are light.
+const fullSuite = `(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full'))`
+
+// heavyLegs are the gated legs a light pull request skips: the -race shards
+// and the -race e2e shards, seven ARC pods of up to 50 minutes on every PR
+// push before #3683. Each still feeds its aggregator in the queue and on main.
+var heavyLegs = map[string]bool{
+	"test-e2e":   true,
+	"race-shard": true,
+}
+
+// heavyLegIf is the one `if:` a heavy leg carries: the tap skip every gated
+// leg carries, combined with fullSuite.
+const heavyLegIf = fullSuite + " && " + tapSkip
+
+// heavyAdvisoryJobs are advisory jobs a light pull request skips too. They
+// already skip the merge queue, so they run on main and on an opted-in PR.
+var heavyAdvisoryJobs = map[string]bool{
+	"cloud-e2e": true,
+}
+
+// heavyAdvisoryIf is the one `if:` a heavy advisory job carries.
+const heavyAdvisoryIf = "github.event_name != 'merge_group' && " + fullSuite
+
+// lightPullRequestEnv is the env key, and lightPullRequestValue its exact
+// value, through which an aggregator learns whether the run is a light pull
+// request: the negation of fullSuite, evaluated by GitHub, so it is `false`
+// on merge_group and push, and the aggregator's step accepts a `skipped`
+// heavy leg only when it reads `true`.
+const (
+	lightPullRequestEnv   = "LIGHT_PULL_REQUEST"
+	lightPullRequestValue = "${{ !" + fullSuite + " }}"
+)
+
 // aggregatorIf is the ONE spelling a required aggregator may carry: the
 // run-state clause `!cancelled()` — it reads exclusively run-cancellation
 // state, a value that cannot differ inside a merge_group run, unlike every
@@ -310,6 +352,15 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// round; the set is closed instead, and each member is compared
 			// byte for byte against the role of the job that carries it.
 			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check carries no `if:` other than tapSkip (%q), byte for byte, or on an aggregator exactly %q; %q carries none at all. If another one truly must, teach this test to EVALUATE it before adding it here", name, job.If, tapSkip, aggregatorIf, tapVerifierJob)
+		case heavyLegs[name] && !gatedJobs[name]:
+			t.Errorf("job %q is a heavy leg but not a gated leg: heavyLegs is a subset of gatedJobs", name)
+		case heavyLegs[name] && sameExpression(job.If, heavyLegIf):
+			// A heavy leg skips a light pull request on top of the tap skip;
+			// its aggregator forgives that `skipped` through
+			// lightPullRequestEnv only, which reads `false` in the queue
+			// (TestAggregatorsGoRedOnEveryRedLeg runs both events).
+		case heavyLegs[name]:
+			t.Errorf("job %q is a heavy leg and carries `if:` %q, want exactly %q — the light pull request skip and the tap skip, nothing else. A heavy leg without the light skip spends its ARC pods on every pull request push (#3683); with any other condition, its aggregator's forgiveness and its skip read different runs", name, job.If, heavyLegIf)
 		case gatedJobs[name] && sameExpression(job.If, tapSkip):
 			// A leg carries the tap skip its aggregator carries: it runs
 			// everywhere its aggregator runs and skips exactly where the
@@ -323,6 +374,8 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// exists to save — verified by nobody, since its aggregator
 			// skipped.
 			t.Errorf("job %q is a gated leg and carries `if:` %q, want exactly tapSkip (%q) — legs run everywhere their aggregator runs and skip exactly where it skips. Carry the tap skip and nothing else, or rename the job out of gatedJobs if it no longer feeds an aggregator", name, job.If, tapSkip)
+		case heavyAdvisoryJobs[name] && !sameExpression(job.If, heavyAdvisoryIf):
+			t.Errorf("job %q is a heavy advisory job and carries `if:` %q, want exactly %q — out of the merge queue like every advisory job, and out of a light pull request like the heavy legs", name, job.If, heavyAdvisoryIf)
 		case !requiredChecks[name] && !gatedJobs[name] && !skips:
 			t.Errorf("job %q is advisory and does NOT skip merge_group (if: %q) — it holds a queue slot for a verdict nobody can act on; add `if: github.event_name != 'merge_group'` verbatim, spaces included, or add it to the ruleset and to requiredChecks here", name, job.If)
 		}
@@ -349,6 +402,13 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 	for name := range gatedJobs {
 		if _, ok := wf.Jobs[name]; !ok {
 			t.Errorf("gatedJobs names %q, which this workflow does not define — the leg bucket drifted from the file", name)
+		}
+	}
+	for _, bucket := range []map[string]bool{heavyLegs, heavyAdvisoryJobs} {
+		for name := range bucket {
+			if _, ok := wf.Jobs[name]; !ok {
+				t.Errorf("%q is listed as heavy but this workflow does not define it — the bucket drifted from the file", name)
+			}
 		}
 	}
 }
@@ -424,6 +484,25 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 				t.Errorf("job %q needs %q but no env value is exactly %q — a leg whose result is read through any expression, or not at all, could report anything", name, leg, needle)
 			}
 		}
+		// An aggregator over a heavy leg learns whether the run is light
+		// from the one evaluated literal the legs' skip is built from; any
+		// other key or spelling could forgive a `skipped` leg in the queue.
+		needsHeavy := false
+		for _, leg := range job.Needs {
+			needsHeavy = needsHeavy || heavyLegs[leg]
+		}
+		got, carries := job.Env[lightPullRequestEnv]
+		switch {
+		case needsHeavy && (!carries || !sameExpression(got, lightPullRequestValue)):
+			t.Errorf("job %q needs a heavy leg but its %s is %q, want exactly %q", name, lightPullRequestEnv, got, lightPullRequestValue)
+		case !needsHeavy && carries:
+			t.Errorf("job %q needs no heavy leg yet carries %s: nothing it aggregates may be forgiven a skip", name, lightPullRequestEnv)
+		}
+		for key, value := range job.Env {
+			if key != lightPullRequestEnv && strings.Contains(value, "pull_request") {
+				t.Errorf("job %q reads the event through %s=%q: only %s may tell its step about the pull request", name, key, value, lightPullRequestEnv)
+			}
+		}
 	}
 }
 
@@ -438,8 +517,17 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 // or dropped `set -e` (measured, eleven shapes). So the step's shape is closed
 // — exactly `name` + `shell: bash` + a `run` reading no `${{ }}`, so the run
 // here is the run there — only the exact `${{ needs.<leg>.result }}` reads
-// reach its env, and the verdict is the script's own exit code under a bare
-// shell (no profile, no rc, no host env, a throwaway HOME and directory).
+// and the exact lightPullRequestValue reach its env, and the verdict is the
+// script's own exit code under a bare shell (no profile, no rc, no host env,
+// a throwaway HOME and directory).
+//
+// Each aggregator runs under every value its light-pull-request key can take
+// (#3683). `false` is what GitHub evaluates on merge_group, on push and on an
+// opted-in pull request: there every non-success leg, a skipped heavy leg
+// included, is red. `true` is a light pull request: a heavy leg may report
+// `skipped` and nothing else — its failure or cancellation, and any other
+// leg's skip, stay red. Any other value (empty, a spelling GitHub never
+// produces) is read as not light.
 func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 	var wf struct{ Jobs map[string]map[string]any }
 	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
@@ -449,12 +537,21 @@ func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 		needs, _ := job["needs"].([]any)
 		env, _ := job["env"].(map[string]any)
 		steps, _ := job["steps"].([]any)
-		green := func(leg, result string) bool {
+		// green runs the steps with legs[leg] = result for the named legs and
+		// success for every other, and the light key at light.
+		green := func(light string, results map[string]string) bool {
 			vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 			for k, v := range env {
+				if v == lightPullRequestValue {
+					vars = append(vars, k+"="+light)
+				}
 				for _, l := range needs {
 					if v == fmt.Sprintf("${{ needs.%v.result }}", l) {
-						vars = append(vars, k+"="+map[bool]string{true: result, false: "success"}[fmt.Sprint(l) == leg])
+						result, ok := results[fmt.Sprint(l)]
+						if !ok {
+							result = "success"
+						}
+						vars = append(vars, k+"="+result)
 					}
 				}
 			}
@@ -471,13 +568,35 @@ func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 			}
 			return true
 		}
-		if len(needs) > 0 && !green("", "") {
-			t.Errorf("aggregator %q is RED with every leg at success — its re-verification refuses a healthy entry", name)
+		if len(needs) == 0 {
+			continue
 		}
+		allHeavySkipped := map[string]string{}
 		for _, leg := range needs {
-			for _, r := range []string{"failure", "cancelled", "skipped"} {
-				if green(fmt.Sprint(leg), r) {
-					t.Errorf("aggregator %q stays GREEN when leg %v reports %s — a red leg would merge under a green required check", name, leg, r)
+			if heavyLegs[fmt.Sprint(leg)] {
+				allHeavySkipped[fmt.Sprint(leg)] = "skipped"
+			}
+		}
+		for _, light := range []string{"false", "true", "", "True"} {
+			lightRun := light == "true"
+			if !green(light, nil) {
+				t.Errorf("aggregator %q is RED with every leg at success (%s=%q) — its re-verification refuses a healthy entry", name, lightPullRequestEnv, light)
+			}
+			for _, leg := range needs {
+				leg := fmt.Sprint(leg)
+				for _, r := range []string{"failure", "cancelled", "skipped"} {
+					forgiven := lightRun && heavyLegs[leg] && r == "skipped"
+					switch got := green(light, map[string]string{leg: r}); {
+					case got && !forgiven:
+						t.Errorf("aggregator %q stays GREEN when leg %s reports %s with %s=%q — a red or unexecuted leg would merge under a green required check", name, leg, r, lightPullRequestEnv, light)
+					case !got && forgiven:
+						t.Errorf("aggregator %q is RED when heavy leg %s is skipped on a light pull request — the light run the leg skipped by design would never pass", name, leg)
+					}
+				}
+			}
+			if len(allHeavySkipped) > 0 {
+				if got := green(light, allHeavySkipped); got != lightRun {
+					t.Errorf("aggregator %q with every heavy leg skipped and %s=%q is green=%v, want %v", name, lightPullRequestEnv, light, got, lightRun)
 				}
 			}
 		}
