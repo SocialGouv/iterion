@@ -63,7 +63,13 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           trivyignores: .trivyignore
-          skip-dirs: vendor,studio/node_modules,node_modules
+          # The two e2e fixtures pin DELIBERATELY vulnerable packages: they are
+          # the secured-renovacy bot's test input (their READMEs say so, and
+          # e2e/live_bot_secured_renovacy_test.go drives them). Scanning them
+          # publishes the fixture's purpose as alerts. Any other fixture is
+          # still scanned; a new deliberately vulnerable one is listed here,
+          # named, never by a broader e2e/fixtures glob.
+          skip-dirs: vendor,studio/node_modules,node_modules,e2e/fixtures/renovacy-multi-stack,e2e/fixtures/protestware-node-ipc
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
@@ -87,7 +93,8 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           trivyignores: .trivyignore
-          skip-dirs: vendor,studio/node_modules,node_modules
+          # Same list as the SARIF step above; the two must not diverge.
+          skip-dirs: vendor,studio/node_modules,node_modules,e2e/fixtures/renovacy-multi-stack,e2e/fixtures/protestware-node-ipc
           output: trivy-fs.txt
 
       - name: Append summary
@@ -151,6 +158,12 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           trivyignores: .trivyignore
+          # /nix/store/<hash>-nixpkgs is the nixpkgs SOURCE tree devbox
+          # evaluates: package expressions, among them the Cargo.lock files of
+          # crates it never builds into this image. Each one reads as an
+          # installed vulnerable crate. Installed Nix packages live in their
+          # own /nix/store/<hash>-<name> paths and stay scanned.
+          skip-dirs: /nix/store/*-nixpkgs
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
@@ -170,6 +183,8 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           trivyignores: .trivyignore
+          # Same as the SARIF step above; the two must not diverge.
+          skip-dirs: /nix/store/*-nixpkgs
           output: trivy-${{ matrix.image }}.txt
 
       - name: Append summary
