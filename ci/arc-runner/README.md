@@ -145,3 +145,18 @@ docker CLI would not — and names the hypothesis those facts support
 (`scripts/ci/arc-kind-probe.sh`, exit 0 only on `usable`). Its routing is a
 plain label on purpose: a probe of the scale set must not follow the
 `CI_SELF_HOSTED` lever away from it.
+
+## Freshness on the pools
+
+The pools run this image under a version-and-digest pin that lives in the
+operator's infrastructure, not here: Renovate cannot bump it, and a stale pin
+fails quietly — the actions it no longer bakes are downloaded again, a Go or
+Node it does not carry is set up per job, and a runner below what GitHub
+accepts exits on connect (the 2025 deadlock). So every pool probe of
+`.github/workflows/arc-canary.yml` runs `scripts/ci/arc-runner-freshness.sh`
+once the pool's `CI_*_RUNNER` variable is set. It compares what the running
+image records about itself (`iterion-ci-runner.env`,
+`iterion-ci-runner-actions.txt`, `Runner.Listener --version`) with what this
+tree builds (`ARG GO_VERSION`, `ARG NODE_VERSION`, the pinned `FROM`, and
+`baked-actions.txt`), with no network, and fails the probe naming each fact
+that drifted. A red canary for that reason says: bump the pool pin.

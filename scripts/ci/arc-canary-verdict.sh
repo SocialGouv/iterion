@@ -13,12 +13,19 @@
 #   PREV_STATUS      the previous probe run's status: queued, in_progress or
 #                    completed. Empty when there is no previous probe.
 #   PREV_CREATED     its created_at (ISO 8601), needed when it is not completed.
-#   JOB_CONCLUSION   the `canary` job's conclusion when the run completed:
+#   JOB_STATUS       the probe job's own status (queued, in_progress,
+#                    completed), when the run carries it. A run probes several
+#                    pools: one pool still waiting keeps the run in progress,
+#                    so each pool is judged on its own job, not on the run.
+#   JOB_CONCLUSION   the probe job's conclusion when the job completed:
 #                    success, failure, cancelled, skipped… Empty when the run
 #                    carries no such job.
 #   JOB_CREATED      the job's created_at (ISO 8601) — when it was dispatched.
 #   JOB_STARTED      its started_at (ISO 8601) — when a runner took it. Empty
 #                    or "null" for a job no runner ever took.
+#   CANARY_STALL_SECONDS  optional per-pool threshold (integer seconds) in place
+#                    of STALL_SECONDS: a pool saturated by design for a while
+#                    (the heavy pool under the post-merge witness) gets more.
 #   NOW              optional clock override (anything GNU date parses), so the
 #                    judgement is reproducible. Defaults to the current time.
 #
@@ -43,6 +50,16 @@ STALL_SECONDS=1500
 
 say() { printf '%s\n' "$*" >&2; }
 
+if [ -n "${CANARY_STALL_SECONDS:-}" ]; then
+	case "$CANARY_STALL_SECONDS" in
+	*[!0-9]*)
+		say "arc-canary-verdict: CANARY_STALL_SECONDS is not a number of seconds: '$CANARY_STALL_SECONDS'"
+		exit 2
+		;;
+	esac
+	STALL_SECONDS=$CANARY_STALL_SECONDS
+fi
+
 # epoch_of <name> <value> — the value as epoch seconds, or a refusal naming
 # which fact is missing.
 epoch_of() {
@@ -62,6 +79,7 @@ verdict=green
 detail=""
 
 prev_status="${PREV_STATUS:-}"
+job_status="${JOB_STATUS:-}"
 job_conclusion="${JOB_CONCLUSION:-}"
 job_started="${JOB_STARTED:-}"
 
@@ -72,7 +90,18 @@ if [ -z "$prev_status" ]; then
 	exit 0
 fi
 
-if [ "$prev_status" != "completed" ]; then
+if [ -n "$job_status" ] && [ "$job_status" != "completed" ]; then
+	# This pool's probe still waits or runs: its own age decides, whatever
+	# the other pools of the run did.
+	now="$(epoch_of NOW "${NOW:-$(date -u +%FT%TZ)}")"
+	created="$(epoch_of JOB_CREATED "${JOB_CREATED:-}")"
+	age=$((now - created))
+	say "probe job still $job_status after ${age}s"
+	if [ "$age" -gt "$STALL_SECONDS" ]; then
+		verdict=red
+		detail="probe job still '$job_status' ${age}s after creation — nothing picked it up"
+	fi
+elif [ "$prev_status" != "completed" ] && [ -z "$job_status" ]; then
 	now="$(epoch_of NOW "${NOW:-$(date -u +%FT%TZ)}")"
 	created="$(epoch_of PREV_CREATED "${PREV_CREATED:-}")"
 	age=$((now - created))
