@@ -45,13 +45,17 @@ not invisible success. Record machine effects in the [flake register](../testing
 1. **Give peers advance notice.** Before the first push of a wave, notify
    sessions with queued PRs and unpushed branches. A main advance invalidates
    merge groups and costs rebases. Identify the scope, base and intended wave.
+   A wave whose PRs sit in the queue dequeues them all and trains the exact
+   set: [one lane per burst](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24),
+   never an admin merge beside the wave's own queued entries.
 2. **Review the exact diff.** Run the [adversarial loop](adversarial-review-loop.md),
    verify findings, fix their class and re-attack the fixes. An explicitly
    operator-authorized **self-review + admin bypass** records that it is self
    review, its mutations and residual findings; it is not a fabricated peer
    review or Revi verdict. It does not waive the local gate or train. Existing
    PRs still owe `revi/review` under the normal merge contract, save where a
-   parked gate opens the narrower admin merge (below).
+   parked gate opens the narrower admin merge (below) or a burst lands end to
+   end ([one lane per burst](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24)).
 3. **Integrate before taking the verdict.** Rebase onto current `origin/main`
    in the integration branch. Run the complete local gate on that integrated
    tree, retaining each member's log, exit code, SHA and machine class. Never
