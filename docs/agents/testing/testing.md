@@ -15,7 +15,7 @@ change needs.
 
 | layer | proves | cost | runs |
 |---|---|---|---|
-| **deterministic** | the real seams, credential-free, stub executor | free | **main**; PR and queue [split](../../merge-policy.md#light-pull-request-heavy-merge-queue) (e2e under `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
+| **deterministic** | the real seams, credential-free, stub executor | free | **main**; PR and queue [split](../../merge-policy.md#light-runs-heavy-main) (e2e under `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
 | **live** (`-tags live`) | what a real harness actually does | real LLM spend | only when a human or an agent asks — **no CI job carries the tag** |
 
 The free layer carries **361 of the 387 rows** of

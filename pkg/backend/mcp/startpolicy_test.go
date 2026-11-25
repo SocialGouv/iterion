@@ -582,7 +582,7 @@ func TestAFarSideRefusalIsNotCachedAsAPermanentFailure(t *testing.T) {
 // that pointer — and a race the moment a writer existed. Two concurrent
 // SetStartPolicy is not a shape the engine produces today; the guard is here
 // because nothing in WithConfigRefresher's contract says it may not, and the
-// CI `race` job is a required check.
+// CI `race` check (heavy layer, held) runs it.
 func TestConcurrentPolicyChangesDoNotRaceOnTheConfig(t *testing.T) {
 	// A server that really STARTS: the refusal loop only reads the config
 	// it used to read unlocked once a live client exists, so a catalog of

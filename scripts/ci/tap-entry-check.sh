@@ -52,7 +52,7 @@ need() {
 
 case "${TAP_ONLY:-}" in
 false)
-  echo "not a Homebrew tap update — the heavy checks ran, nothing to verify"
+  echo "not a Homebrew tap update — no check skipped it, nothing to verify"
   exit 0
   ;;
 true) ;;

@@ -21,7 +21,9 @@
 #   unexpressible it cannot run on a developer's box, and `reason` says why.
 #
 # `required` — yes (in ruleset 18857412) · staged (in internal/ciguard's
-# requiredChecks, ahead of the ruleset) · pending (documented promotion) · no.
+# requiredChecks, ahead of the ruleset) · pending (documented promotion; `race`
+# and `mongo-conformance` are internal/ciguard's heldChecks, out of the ruleset
+# while the experimental delivery mode of docs/adr/173 lasts) · no.
 #
 # `mutates` — the member rewrites tracked files. The runner orders those LAST,
 # so no member after one compiles against a tree it rewrote mid-run.
@@ -57,18 +59,21 @@ jobs:
       test-native-exec's `result` from the workflow context and fails if any is
       not success. There is nothing to reproduce: what it aggregates is those
       four legs, whose own rows carry the members. Running their members IS
-      running this. On a light pull request (no `ci:full` label) it accepts
-      `skipped` from test-e2e, which runs in the merge queue instead; in
-      `merge_group` and on `push` a skipped leg is red (#3683).
+      running this. On a light run — a merge-queue build, or a pull request
+      without the `ci:full` label — it accepts `skipped` from test-e2e, which
+      runs after the merge instead; on push, the nightly, a dispatch and a
+      `ci:full` pull request a skipped leg is red (#3683, #3691).
     aggregates: [test-unit, test-e2e, studio, test-native-exec]
 
   race:
-    required: yes
+    required: pending
     checks: 1
     disposition: unexpressible
     reason: >-
-      the same shape, over race-shard and test-native-exec; on a light pull
-      request it accepts `skipped` from race-shard alone (#3683).
+      the same shape, over race-shard and test-native-exec; on a light run it
+      accepts `skipped` from race-shard alone (#3683, #3691). Out of the
+      ruleset while the experimental delivery mode lasts, and back in it when
+      the mode ends (docs/adr/173-experimental-delivery-mode.md).
     aggregates: [race-shard, test-native-exec]
 
   # ---- the gated legs behind `test` ----
@@ -119,8 +124,9 @@ jobs:
       runs under `-race` with cgo at `-timeout 2400s` and skips the flake
       quarantine; `task test:e2e` runs without the detector, whose local half
       for e2e is `task test:race` (race-shard's member, over `./...`). The job
-      skips a light pull request (no `ci:full` label) and runs in the merge
-      queue and on `main` (#3683); a local run has no such split.
+      skips a light run — the merge queue and a pull request without the
+      `ci:full` label — and runs on push to `main`, the nightly and a dispatch
+      (#3683, #3691); a local run has no such split.
 
   studio:
     required: no
@@ -167,9 +173,10 @@ jobs:
       -i <shard>` under `GOFLAGS=-race`, beside the packages; #3684), which
       `task test:race` runs whole; internal/ciguard's
       race_server_split_test.go exercises the split. The job skips a light
-      pull request and runs in the merge queue and on `main` (#3683).
+      run — the merge queue and an unlabelled pull request — and runs on push
+      to `main`, the nightly and a dispatch (#3683, #3691).
 
-  # ---- the other required contexts ----
+  # ---- the other required contexts, and the held mongo-conformance ----
   vendor-check:
     required: yes
     checks: 1
@@ -183,7 +190,7 @@ jobs:
       refuses rather than blaming a parallel session's work in progress.
 
   mongo-conformance:
-    required: yes
+    required: pending
     checks: 1
     disposition: local
     members: ["ci:mongo-conformance"]
@@ -192,6 +199,9 @@ jobs:
       READ FROM the job rather than restated — every one of them, including
       the targeted lines `docs/development.md`'s regex cannot see. Needs docker, and
       refuses with exit 2 where this process cannot reach the published port.
+      The job is heavy (#3691): it skips the merge queue and a pull request
+      without `ci:full`, and is out of the ruleset until the experimental
+      delivery mode ends (docs/adr/173-experimental-delivery-mode.md).
 
   golangci:
     required: yes
@@ -281,8 +291,9 @@ jobs:
       (79-minute budget). A kind cluster on a developer box is a different
       machine class, not a flag — and the job pins yq by digest and uses
       unpinned third-party actions (helm/kind-action) whose versions no member
-      can match. It skips the merge queue (advisory) and a light pull request
-      (#3683): it runs on `main` and on a pull request labelled `ci:full`.
+      can match. It skips the merge queue and a light pull request (#3683,
+      #3691): it runs on push to `main`, the nightly, a dispatch and a pull
+      request labelled `ci:full`.
 
   govulncheck:
     required: no

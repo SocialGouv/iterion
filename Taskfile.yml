@@ -807,7 +807,7 @@ tasks:
       - bash scripts/ci/vendor-check.sh
 
   ci:mongo-conformance:
-    desc: "The local member of CI's `mongo-conformance` required check — a real one-member mongo:8.0 replica set (change streams + transactions), then BOTH `go test` invocations READ FROM the job itself rather than restated here. Needs docker; `ITERION_CI_GATE_EVIDENCE=<dir>` keeps the per-invocation logs and the exit-code matrix"
+    desc: "The local member of CI's held `mongo-conformance` job (heavy layer: push, nightly, dispatch, ci:full) — a real one-member mongo:8.0 replica set (change streams + transactions), then BOTH `go test` invocations READ FROM the job itself rather than restated here. Needs docker; `ITERION_CI_GATE_EVIDENCE=<dir>` keeps the per-invocation logs and the exit-code matrix"
     cmds:
       - bash scripts/ci/mongo-conformance.sh
 
