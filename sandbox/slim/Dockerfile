@@ -32,14 +32,26 @@ USER root
 # apt cache mounts keep the downloaded .deb archives + package lists warm on
 # the operator daemon (dropping docker-clean so apt doesn't purge them); the
 # mounts never land in the image layer, so no rm -rf cleanup is needed.
+# npm: NodeSource's nodejs 24 bundles an npm whose own dependencies
+# (undici, ip-address, brace-expansion, postcss-selector-parser) carry
+# fixed HIGH/CRITICAL advisories; a newer npm of the same major bundles
+# the fixed versions. Pinned so the image is reproducible.
+# renovate: datasource=npm depName=npm versioning=npm
+ARG NPM_VERSION=11.21.3
+# `apt-get upgrade`: the pinned base digest freezes the Debian packages
+# it was built with, and its maintainers do not rebuild it for every
+# security update; upgrading here applies the ones published since.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
  && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg jq procps tini \
  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
- && apt-get install -y --no-install-recommends nodejs
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g "npm@${NPM_VERSION}" \
+ && test "$(npm --version)" = "${NPM_VERSION}"
 
 # /workspace is the canonical bind-mount target used by iterion's
 # docker driver (see pkg/sandbox/docker/driver.go DefaultWorkspace).

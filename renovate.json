@@ -44,6 +44,7 @@
         "/^Dockerfile$/",
         "/(^|/)Dockerfile\\.runner-devbox$/",
         "/(^|/)sandbox/full/Dockerfile$/",
+        "/(^|/)sandbox/slim/Dockerfile$/",
         "/(^|/)ci/arc-runner/Dockerfile$/",
         "/(^|/)pkg/plugin/builtin/firecrawl/plugin\\.yaml$/",
         "/(^|/)pkg/plugin/builtin/codeindex/plugin\\.yaml$/"
@@ -55,7 +56,7 @@
   ],
   "packageRules": [
     {
-      "description": "CLI binaries baked into the images (gh, glab, kubectl, yq, k9s), pinned by `# renovate:` comments in Dockerfile, Dockerfile.runner-devbox and sandbox/full/Dockerfile. Their release tags carry a leading `v` that the inline-pin regex does not capture (it reads the digits after `VERSION=` or `VERSION=v`), so the tag is stripped to the bare version; otherwise a bump would write `vv1.2.3`. One group, so a tool pinned in several Dockerfiles moves in one PR.",
+      "description": "CLI binaries baked into the images (gh, glab, kubectl, yq), pinned by `# renovate:` comments in Dockerfile, Dockerfile.runner-devbox and sandbox/full/Dockerfile. Their release tags carry a leading `v` that the inline-pin regex does not capture (it reads the digits after `VERSION=` or `VERSION=v`), so the tag is stripped to the bare version; otherwise a bump would write `vv1.2.3`. One group, so a tool pinned in several Dockerfiles moves in one PR.",
       "matchManagers": [
         "custom.regex"
       ],
@@ -67,8 +68,7 @@
         "cli/cli",
         "gitlab-org/cli",
         "kubernetes/kubernetes",
-        "mikefarah/yq",
-        "derailed/k9s"
+        "mikefarah/yq"
       ],
       "extractVersion": "^v(?<version>.+)$",
       "groupName": "image CLI tools"
