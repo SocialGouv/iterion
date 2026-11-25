@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 )
 
@@ -236,6 +237,146 @@ func TestScheduleOutcomeWatchUnreadableFenceAlerts(t *testing.T) {
 			t.Fatalf("alert = %+v, want a launch_refused schedule_stalled alert naming the unreadable fence", a)
 		}
 	}
+}
+
+// One unreadable fence read during an armed maintenance is superseded by the
+// armed ticks that follow it: the row does not keep "could not be read" for
+// the whole window, and a sweep after the next armed tick raises nothing.
+func TestScheduleOutcomeWatchFenceReadBlipClearedByNextArmedTick(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+	st := cloudsched.NewMemoryStore()
+	if err := st.Create(ctx, cloudsched.ScheduledBot{ID: "sb-blip", TenantID: "t1", BotID: "feed-watch", Cron: "* * * * *",
+		NextFireAt: now.Add(-30 * time.Second)}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fence := &blipMaintenanceStore{failures: 1, rec: platformcfg.Maintenance{FenceLaunches: true, Reason: "schema rollout"}}
+	sink := &advSink{}
+	s := watchReplica(st, usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = fence
+	for i := 0; i < 10; i++ {
+		at := now.Add(time.Duration(i) * time.Minute)
+		tk := &cloudsched.Ticker{Store: st, Now: func() time.Time { return at },
+			Launch: func(ctx context.Context, _ cloudsched.ScheduledBot) error {
+				return s.gateMaintenance(ctx, launchSubject{}).err()
+			}}
+		if _, err := tk.Tick(ctx); err != nil {
+			t.Fatalf("Tick %d: %v", i, err)
+		}
+	}
+	if fence.reads() < 2 {
+		t.Fatalf("the fence was read %d time(s), want the blip and at least one armed read", fence.reads())
+	}
+	s.scheduleOutcomeSweep(ctx, now.Add(10*time.Minute), scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 0 {
+		t.Fatalf("one fence-read blip under an armed fence raised %d alert(s), want 0: %+v", len(got), got)
+	}
+	row, err := st.Get(ctx, "sb-blip")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.LastError != "" || row.LastErrorAt != nil {
+		t.Fatalf("an armed tick left the blip's verdict on the row: last_error=%q", row.LastError)
+	}
+}
+
+// A sweep that reads the fence armed does not alert on an unreadable-fence
+// verdict: the slot is held by the operator's fence either way. A sweep that
+// cannot read the fence either still alerts, since the store may be down. An
+// overdue row alerts whatever its verdict: no scheduler claims its slot.
+func TestScheduleOutcomeWatchUnreadableVerdictUnderArmedFence(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+	errAt := now.Add(-time.Minute)
+	newRowWith := func(t *testing.T, lastError string) cloudsched.Store {
+		st := cloudsched.NewMemoryStore()
+		if err := st.Create(ctx, cloudsched.ScheduledBot{ID: "sb-fenced", TenantID: "t1", BotID: "feed-watch", Cron: "* * * * *",
+			NextFireAt: now.Add(30 * time.Second), LastError: lastError, LastErrorAt: &errAt}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		return st
+	}
+	newRow := func(t *testing.T) cloudsched.Store {
+		return newRowWith(t, schedgate.ErrMaintenanceFenceUnreadable.Error())
+	}
+	armed := platformcfg.NewMemoryStore[platformcfg.Maintenance]()
+	if err := armed.Put(ctx, platformcfg.Maintenance{FenceLaunches: true, Reason: "schema rollout"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	sink := &advSink{}
+	s := watchReplica(newRow(t), usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = armed
+	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 0 {
+		t.Fatalf("a sweep reading the fence armed alerted on an unreadable-fence verdict: %+v", got)
+	}
+
+	sink = &advSink{}
+	s = watchReplica(newRow(t), usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = brokenMaintenanceStore{}
+	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 1 {
+		t.Fatalf("a sweep that cannot read the fence raised %d alert(s) on an unreadable-fence verdict, want 1: %+v", len(got), got)
+	}
+
+	sink = &advSink{}
+	s = watchReplica(newRow(t), usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = platformcfg.NewMemoryStore[platformcfg.Maintenance]()
+	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 1 {
+		t.Fatalf("a sweep reading the fence disarmed raised %d alert(s) on an unreadable-fence verdict, want 1: %+v", len(got), got)
+	}
+
+	sink = &advSink{}
+	s = watchReplica(newRowWith(t, "launch gate: concurrency_cap_exceeded"), usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = armed
+	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 1 {
+		t.Fatalf("a sweep reading the fence armed raised %d alert(s) on another refusal, want 1: %+v", len(got), got)
+	}
+
+	sink = &advSink{}
+	overdue := cloudsched.NewMemoryStore()
+	if err := overdue.Create(ctx, cloudsched.ScheduledBot{ID: "sb-fenced", TenantID: "t1", BotID: "feed-watch", Cron: "* * * * *",
+		NextFireAt: now.Add(-3 * time.Hour), LastError: schedgate.ErrMaintenanceFenceUnreadable.Error(), LastErrorAt: &errAt}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	s = watchReplica(overdue, usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = armed
+	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 1 || !strings.Contains(got[0].Reason, "is overdue") {
+		t.Fatalf("a sweep reading the fence armed hid an overdue row behind an unreadable-fence verdict: %+v", got)
+	}
+}
+
+// blipMaintenanceStore fails its first `failures` reads, then returns rec.
+type blipMaintenanceStore struct {
+	mu       sync.Mutex
+	failures int
+	n        int
+	rec      platformcfg.Maintenance
+}
+
+func (b *blipMaintenanceStore) Get(context.Context) (*platformcfg.Maintenance, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.n++
+	if b.n <= b.failures {
+		return nil, errors.New("read timed out")
+	}
+	rec := b.rec
+	return &rec, nil
+}
+
+func (b *blipMaintenanceStore) Put(context.Context, platformcfg.Maintenance) error {
+	return errors.New("blipMaintenanceStore is read-only")
+}
+
+func (b *blipMaintenanceStore) reads() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.n
 }
 
 // sweepBehindMaintenance creates three due schedules, ticks them through the
