@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
-	otellog "go.opentelemetry.io/otel/log"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -372,8 +372,8 @@ func TestEventToRecord_AttributesPopulated(t *testing.T) {
 	}
 	rec := eventToRecord(ev)
 	got := map[string]string{}
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		got[kv.Key] = kv.Value.String()
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		got[string(kv.Key)] = kv.Value.String()
 		return true
 	})
 

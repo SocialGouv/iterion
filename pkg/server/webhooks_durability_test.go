@@ -16,8 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -93,15 +91,8 @@ func TestWebhookDurability_ForgeDisconnectAfter100ms(t *testing.T) {
 				runs.Add(1)
 				return "run-after-disconnect", nil
 			}
-			client, server := net.Pipe()
-			defer client.Close()
-			defer server.Close()
-			go (&http2.Server{}).ServeConn(server, &http2.ServeConnOpts{Handler: s.mux})
-			cc, err := (&http2.Transport{}).NewClientConn(client)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer cc.Close()
+			cc, stop := h2PipeConn(t, s.mux)
+			defer stop()
 			req := ghReq(context.Background(), payload, event, secret)
 			req.URL.Scheme, req.URL.Host, req.RequestURI = "http", "forge.test", ""
 			// This fake forge does not redeliver. Its connection has its own
@@ -110,6 +101,9 @@ func TestWebhookDurability_ForgeDisconnectAfter100ms(t *testing.T) {
 			defer timer.Stop()
 			resp, err := cc.RoundTrip(req)
 			if err == nil {
+				if resp.ProtoMajor != 2 {
+					t.Fatalf("the forge connection must speak HTTP/2, got %s", resp.Proto)
+				}
 				body, readErr := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				if readErr == nil {
@@ -315,24 +309,20 @@ func TestWebhookDurability_HTTP2AcknowledgesBeforeLaunchCompletes(t *testing.T) 
 		<-release
 		return "run", nil
 	}
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
 	handler := s.acknowledgeWebhookLaunch(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.acceptWebhookTargets(ghCtx(cfg), w, r, cfg, webhookEventMeta{}, []forgeLaunchTarget{{BotID: "review-pr", IdemKey: "ack-before-launch", Vars: map[string]string{}}}, "hash", "ip")
 	}))
-	go (&http2.Server{}).ServeConn(server, &http2.ServeConnOpts{Handler: handler})
-	cc, err := (&http2.Transport{}).NewClientConn(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cc.Close()
+	cc, stop := h2PipeConn(t, handler)
+	defer stop()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://forge.test/webhook", nil)
 	resp, err := cc.RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("the forge connection must speak HTTP/2, got %s", resp.Proto)
 	}
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -561,3 +551,66 @@ func TestWebhookDurability_RetryRespectsNewerClaim(t *testing.T) {
 		t.Fatalf("older retry races admitted current head: launched=%v cancelled=%v", launched, cancelled)
 	}
 }
+
+// h2PipeConn serves handler over HTTP/2 with prior knowledge on one end of an
+// in-memory net.Pipe and returns a client connection bound to the other end,
+// so a test drives the framing (END_STREAM, a forge hanging up) without a
+// socket. stop closes the client, the server and both pipe ends; the caller
+// defers it where it wants the connection torn down relative to its other
+// cleanup.
+func h2PipeConn(t *testing.T, handler http.Handler) (*http.ClientConn, func()) {
+	t.Helper()
+	client, server := net.Pipe()
+	h2Only := func() *http.Protocols {
+		p := new(http.Protocols)
+		p.SetUnencryptedHTTP2(true)
+		return p
+	}
+	srv := &http.Server{Handler: handler, Protocols: h2Only()}
+	ln := &pipeListener{conn: server, done: make(chan struct{})}
+	go func() { _ = srv.Serve(ln) }()
+	tr := &http.Transport{
+		Protocols: h2Only(),
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	cc, err := tr.NewClientConn(context.Background(), "http", "forge.test:80")
+	if err != nil {
+		_ = srv.Close()
+		_ = client.Close()
+		_ = server.Close()
+		t.Fatalf("HTTP/2 client over the pipe: %v", err)
+	}
+	return cc, func() {
+		_ = cc.Close()
+		_ = srv.Close()
+		_ = client.Close()
+		_ = server.Close()
+	}
+}
+
+// pipeListener hands its one connection to the first Accept, then blocks
+// until Close: http.Server.Serve treats any Accept error as the end of the
+// listener.
+type pipeListener struct {
+	conn net.Conn
+	once sync.Once
+	done chan struct{}
+	used atomic.Bool
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	if l.used.CompareAndSwap(false, true) {
+		return l.conn, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr { return l.conn.LocalAddr() }
