@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.38.0](https://github.com/SocialGouv/iterion/compare/v7.37.0...v7.38.0) (2026-11-25)
+
+### Features
+
+* **codemode:** bench the kubernetes sandbox pod a script host is born in ([#3444](https://github.com/SocialGouv/iterion/issues/3444)) ([2ac58c2](https://github.com/SocialGouv/iterion/commit/2ac58c2eac7ec170d64d2c57527065bf465a4995)), references [#2965](https://github.com/SocialGouv/iterion/issues/2965) [#3693](https://github.com/SocialGouv/iterion/issues/3693) [#3675](https://github.com/SocialGouv/iterion/issues/3675) [#3689](https://github.com/SocialGouv/iterion/issues/3689) [#3660](https://github.com/SocialGouv/iterion/issues/3660)
+
+    <details><summary>why</summary>
+
+    iterion.cloud runs claw nodes in per-run kubernetes sandbox pods (a global sandbox default; measured on Vigie's scheduled run), so a sandboxed node's script host is spawned THERE, by `iterion __claw-runner` — not in the runner pod the in-pod bench certified. The codemode leaf said "production runs are not sandboxed", true of the chart's default only.
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** type-refuse cron_*, team_* and lsp — registries nothing reads back ([#3659](https://github.com/SocialGouv/iterion/issues/3659)) ([ab07b5a](https://github.com/SocialGouv/iterion/commit/ab07b5a6cac5113abc41ea66fdeb6cd0a2f7910f)), closes [#3595](https://github.com/SocialGouv/iterion/issues/3595), references [#1](https://github.com/SocialGouv/iterion/issues/1)
+
+    <details><summary>why</summary>
+
+    claw's cron_*, team_* and lsp tools answered success while nothing consumed their state. Cron entries went into a per-run in-memory registry that no scheduler fires, teams into a registry nothing reads, and lsp answered 'dispatched' or zero diagnostics with no server ever registered. The nine names join toolcatalog's refused list, so C159 warns at compile time. registerClawTool, which every claw registration passes through, now reads the same list and turns each listed name into a typed…
+
+    </details>
+
 ## [7.37.0](https://github.com/SocialGouv/iterion/compare/v7.36.1...v7.37.0) (2026-11-25)
 
 ### Features
