@@ -156,6 +156,34 @@ green.
   the 20-job cap above is what makes a cycle slow. That scale set is **outside this repository**, and it was dead
   and unnoticed for over a year before 2026-09-08.
 
+  Two scale sets serve it (#3694), and every self-hosted job of `tests.yml`
+  and `merge-queue-gate.yml` is classified into one by its measured peak. **Large** jobs — `test-unit`, `test-e2e`,
+  `race-shard`, `mongo-conformance`, `cloud-e2e`, `golangci`, `studio` — end
+  their `runs-on` expression on `arc-runners` (2 CPU / 4 Gi). **Small** jobs —
+  the `test` and `race` aggregators, `fmt-check`, `vendor-check`,
+  `govulncheck`, `docs-build`, `nats-conformance`, `desktop-vet-cross`,
+  `brand`, `helm-lint` and the merge-queue-gate mirror — end it on
+  `vars.CI_SMALL_RUNNER || 'arc-runners'`: the repository variable
+  **`CI_SMALL_RUNNER`** names the small scale set (`arc-runners-small`,
+  500m / 1 Gi). **Unset means `arc-runners`**: with the variable empty, a
+  small job routes exactly like a large one, so setting it is the switch and
+  clearing it is the rollback. Both spellings keep every clause — the
+  `CI_SELF_HOSTED` lever, the fork guard and the dependency-bot guard — and
+  `internal/ciguard`'s `TestSelfHostedRoutingExpressionsAgree` pins the two
+  expressions byte for byte and which job carries which: a new job in those
+  two files whose `runs-on` names `arc-runners` or `CI_SMALL_RUNNER` is
+  classified in that test, never silently accepted. `test-native-exec` is
+  pinned by `native_exec_runner_test.go`; the other workflows on
+  `arc-runners` (`arc-canary`, `arc-kind-probe`, `test-quarantine`) are
+  outside this guard and stay on the large set. `arc-canary` probes
+  `arc-runners` only: once `CI_SMALL_RUNNER` is set, a dead
+  `arc-runners-small` stalls the required `test`, `vendor-check`, `brand`
+  and the queue branch's `revi/review` mirror (and the unrequired
+  `fmt-check`) unpaged until the queue's `check_response_timeout_minutes`.
+  Set it only once the canary
+  (or a probe) covers `arc-runners-small` (#3694). The repair is clearing
+  `CI_SMALL_RUNNER`, or `CI_SELF_HOSTED=off`.
+
   > **If nobody can merge and the checks never report, this is the first thing
   > to try.** Set the repository variable **`CI_SELF_HOSTED` to `off`**
   > (Settings → Secrets and variables → Actions → Variables) and every job

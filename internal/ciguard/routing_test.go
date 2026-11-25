@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -20,13 +21,108 @@ var workflowPaths = []string{
 	"../../.github/workflows/merge-queue-gate.yml",
 }
 
-// runsOnLine captures the value of every job-level `runs-on:` in a file.
-var runsOnLine = regexp.MustCompile(`(?m)^\s{4}runs-on:\s*(.+)$`)
+// The two scale sets a self-hosted job routes to. Both expressions share
+// every clause byte for byte and differ in their last alternative only:
+//
+//   - large ends on `'arc-runners'`, the 2 CPU / 4 Gi scale set;
+//   - small ends on `vars.CI_SMALL_RUNNER || 'arc-runners'`: the repository
+//     variable names the small scale set, and while it is unset the job lands
+//     on `arc-runners` exactly as a large job does.
+const (
+	largeRunner = "large"
+	smallRunner = "small"
+
+	largeRoutingTail = "&& 'ubuntu-latest' || 'arc-runners' }}"
+	smallRoutingTail = "&& 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}"
+)
+
+// runnerClasses pins, per workflow file and job id, which scale set each
+// self-hosted job routes to. It is the classification of #3694, measured on
+// peak memory and CPU: a job on the wrong expression either starves on 500m
+// or holds a 2 CPU pod for a seconds-long script. A self-hosted job absent
+// from this table is red: a new job is classified, never silently accepted.
+// test-native-exec carries its own runner variable and is pinned by
+// native_exec_runner_test.go; GitHub-hosted jobs are not listed.
+var runnerClasses = map[string]map[string]string{
+	"../../.github/workflows/tests.yml": {
+		"test-unit":         largeRunner,
+		"test-e2e":          largeRunner,
+		"studio":            largeRunner,
+		"race-shard":        largeRunner,
+		"mongo-conformance": largeRunner,
+		"cloud-e2e":         largeRunner,
+		"golangci":          largeRunner,
+
+		"test":              smallRunner,
+		"race":              smallRunner,
+		"nats-conformance":  smallRunner,
+		"vendor-check":      smallRunner,
+		"helm-lint":         smallRunner,
+		"brand":             smallRunner,
+		"desktop-vet-cross": smallRunner,
+		"govulncheck":       smallRunner,
+		"fmt-check":         smallRunner,
+		"docs-build":        smallRunner,
+	},
+	"../../.github/workflows/merge-queue-gate.yml": {
+		"mirror-revi-verdict": smallRunner,
+	},
+}
+
+// routedJob is one job-level `runs-on:` that reaches a self-hosted runner.
+type routedJob struct {
+	path, id, runsOn string
+}
+
+// selfHostedJobs reads every job of workflowPaths whose `runs-on:` names the
+// scale set or the small-runner variable.
+func selfHostedJobs(t *testing.T) []routedJob {
+	t.Helper()
+	var jobs []routedJob
+	for _, path := range workflowPaths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var wf struct {
+			Jobs map[string]struct {
+				RunsOn string `yaml:"runs-on"`
+			} `yaml:"jobs"`
+		}
+		if err := yaml.Unmarshal(src, &wf); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for id, job := range wf.Jobs {
+			value := strings.TrimSpace(job.RunsOn)
+			if strings.Contains(value, "arc-runners") || strings.Contains(value, "CI_SMALL_RUNNER") {
+				jobs = append(jobs, routedJob{path: path, id: id, runsOn: value})
+			}
+		}
+	}
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].path != jobs[j].path {
+			return jobs[i].path < jobs[j].path
+		}
+		return jobs[i].id < jobs[j].id
+	})
+	return jobs
+}
+
+// routingClass names the scale set an expression's tail selects, or "" for
+// a spelling that is neither canonical tail.
+func routingClass(runsOn string) string {
+	switch {
+	case strings.HasSuffix(runsOn, smallRoutingTail):
+		return smallRunner
+	case strings.HasSuffix(runsOn, largeRoutingTail):
+		return largeRunner
+	}
+	return ""
+}
 
 // TestSelfHostedRoutingExpressionsAgree pins every copy of one security
-// decision against each other. The count is deliberately NOT asserted: a job
-// added without the expression is the guard's blind spot by design — what it
-// pins is that no copy DIFFERS, not how many exist.
+// decision against each other, in exactly two canonical spellings — large
+// and small — and pins which job carries which.
 //
 // `runs-on` cannot read a workflow-level `env`, and routing the choice
 // through a `needs:` job would put every job behind a single GitHub-hosted
@@ -35,64 +131,91 @@ var runsOnLine = regexp.MustCompile(`(?m)^\s{4}runs-on:\s*(.+)$`)
 // how one copy quietly stops matching the others: a fork guard removed from
 // five jobs is loud, removed from one it is invisible.
 //
-// The assertion is deliberately byte equality between the copies, not a
-// parse of what each means. Any difference at all — a clause dropped, a bot
-// login changed, an operator lever added to five of six — is a difference
-// the reviewer must see.
+// The assertion is deliberately byte equality, not a parse of what each
+// copy means: within a class every copy is identical, and the small
+// expression is the large one with its last alternative replaced and nothing
+// else. Any other difference — a clause dropped, a bot login changed, an
+// operator lever added to five of six — is a difference the reviewer must see.
 func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
-	seen := map[string][]string{}
-	for _, path := range workflowPaths {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for _, m := range runsOnLine.FindAllStringSubmatch(string(src), -1) {
-			value := strings.TrimSpace(m[1])
-			if !strings.Contains(value, "arc-runners") {
-				continue // GitHub-hosted jobs carry a plain label, by design.
-			}
-			seen[value] = append(seen[value], value)
-		}
-	}
-
-	switch len(seen) {
-	case 0:
+	jobs := selfHostedJobs(t)
+	if len(jobs) == 0 {
 		t.Fatal("no job routes to arc-runners — either the self-hosted routing was " +
 			"removed (then delete this guard in the same change) or the expression " +
 			"no longer names the scale set this reads for.")
-	case 1:
-		// One distinct expression: every copy agrees.
-	default:
-		t.Errorf("the %d jobs routed to arc-runners do NOT all carry the same expression, "+
-			"so one security decision now has %d different answers. The fork guard and the "+
-			"dependency-bot guard are only worth what their LEAST protected copy is worth.",
-			total(seen), len(seen))
-		for value, occurrences := range seen {
-			t.Errorf("  %d copy/copies: %s", len(occurrences), value)
+	}
+
+	seen := map[string]map[string]bool{}
+	byClass := map[string]map[string][]string{largeRunner: {}, smallRunner: {}}
+	for _, job := range jobs {
+		if seen[job.path] == nil {
+			seen[job.path] = map[string]bool{}
+		}
+		seen[job.path][job.id] = true
+		want, classified := runnerClasses[job.path][job.id]
+		if !classified {
+			t.Errorf("%s: job %q routes to a self-hosted runner but runnerClasses does not "+
+				"classify it: add it as %q or %q, from its measured peak", job.path, job.id, largeRunner, smallRunner)
+			continue
+		}
+		got := routingClass(job.runsOn)
+		switch {
+		case got == "":
+			t.Errorf("%s: job %q carries a third routing spelling, neither the large tail %q nor the small tail %q:\n  %s",
+				job.path, job.id, largeRoutingTail, smallRoutingTail, job.runsOn)
+			continue
+		case got != want:
+			t.Errorf("%s: job %q is classified %s but carries the %s expression", job.path, job.id, want, got)
+		}
+		byClass[got][job.runsOn] = append(byClass[got][job.runsOn], job.id)
+	}
+	for path, classes := range runnerClasses {
+		for id, class := range classes {
+			if !seen[path][id] {
+				t.Errorf("%s: job %q is classified %s but no longer routes to a self-hosted runner "+
+					"(renamed, deleted or moved to a hosted label): update runnerClasses in the same change", path, id, class)
+			}
+		}
+	}
+
+	canonical := map[string]string{}
+	for _, class := range []string{largeRunner, smallRunner} {
+		switch len(byClass[class]) {
+		case 0:
+			// A class with no job is reported per job above whenever runnerClasses expects one.
+		case 1:
+			for value := range byClass[class] {
+				canonical[class] = value
+			}
+		default:
+			t.Errorf("the %s jobs do NOT all carry the same expression, so one security decision "+
+				"now has %d different answers. The fork guard and the dependency-bot guard are only "+
+				"worth what their LEAST protected copy is worth.", class, len(byClass[class]))
+			for value, ids := range byClass[class] {
+				t.Errorf("  %v: %s", ids, value)
+			}
+		}
+	}
+	large, small := canonical[largeRunner], canonical[smallRunner]
+	if large != "" && small != "" {
+		if want := strings.TrimSuffix(large, largeRoutingTail) + smallRoutingTail; small != want {
+			t.Errorf("the small expression differs from the large one in more than its last alternative:\n"+
+				"  large: %s\n  small: %s\n  want:  %s", large, small, want)
 		}
 	}
 }
 
-// TestSelfHostedRoutingKeepsItsThreeClauses asserts the expression still
+// TestSelfHostedRoutingKeepsItsClauses asserts the expression still
 // carries each guard the comment above it promises. Byte equality across
 // copies (above) proves they AGREE; it cannot notice all six losing the
 // same clause at once, which is exactly what a tidy-up does.
-func TestSelfHostedRoutingKeepsItsThreeClauses(t *testing.T) {
+func TestSelfHostedRoutingKeepsItsClauses(t *testing.T) {
 	// Every DISTINCT expression across every guarded file must carry the
 	// clauses — not just the first copy found: the header promises the guard
 	// covers the class, and a second expression shape is exactly where a
 	// clause would go missing.
 	expressions := map[string]bool{}
-	for _, path := range workflowPaths {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for _, m := range runsOnLine.FindAllStringSubmatch(string(src), -1) {
-			if value := strings.TrimSpace(m[1]); strings.Contains(value, "arc-runners") {
-				expressions[value] = true
-			}
-		}
+	for _, job := range selfHostedJobs(t) {
+		expressions[job.runsOn] = true
 	}
 	if len(expressions) == 0 {
 		t.Skip("no self-hosted routing to check; the guard above reports it")
@@ -106,6 +229,8 @@ func TestSelfHostedRoutingKeepsItsThreeClauses(t *testing.T) {
 				"these runners sit inside the cluster"},
 			{"renovate[bot]", "the dependency-bot guard — its author has write access, its CONTENT " +
 				"is arbitrary upstream code that `pnpm install` executes"},
+			{"dependabot[bot]", "the retired-bot carve-out — Dependabot is off here, and the " +
+				"literal covers that lane before it reopens"},
 		} {
 			if !strings.Contains(expression, clause.needle) {
 				t.Errorf("the self-hosted routing no longer carries %q.\nThat clause is %s.\n"+
@@ -114,14 +239,6 @@ func TestSelfHostedRoutingKeepsItsThreeClauses(t *testing.T) {
 			}
 		}
 	}
-}
-
-func total(m map[string][]string) int {
-	n := 0
-	for _, v := range m {
-		n += len(v)
-	}
-	return n
 }
 
 // requiredChecks names the jobs THIS workflow defines that ruleset 18857412
