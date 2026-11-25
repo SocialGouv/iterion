@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.37.0](https://github.com/SocialGouv/iterion/compare/v7.36.1...v7.37.0) (2026-11-25)
+
+### Features
+
+* **cli:** send X-Iterion-Client and refuse a server of another major ([#3657](https://github.com/SocialGouv/iterion/issues/3657)) ([ca1b10c](https://github.com/SocialGouv/iterion/commit/ca1b10cd4096e77e1ab8ba04c45cdc47872a362e)), closes [#3554](https://github.com/SocialGouv/iterion/issues/3554)
+
+    <details><summary>why</summary>
+
+    Every RemoteClient request, the login identity probe and the cloud shard dispatch now name the client release in X-Iterion-Client. RemoteClient reads GET /api/server/info once (again after a 404 or 426). When both sides name a release of different majors, it refuses before sending with a typed *MajorMismatchError (ErrMajorMismatch, ErrClientMajorOlder/Newer). ITERION_REMOTE_ALLOW_MAJOR_MISMATCH=1 sends anyway. A dev client, a version-less or older server and a failed probe pass, so v7 instances…
+
+    </details>
+* **rgaa-audit:** pin ultra11y 7.2.0, the bot becomes ultra11y's CI path ([#3592](https://github.com/SocialGouv/iterion/issues/3592)) ([f9c0db9](https://github.com/SocialGouv/iterion/commit/f9c0db9712c5bdf41f152728868745132099cecb)), references [SocialGouv/ultra11y#136](https://github.com/SocialGouv/ultra11y/issues/136) [#116](https://github.com/SocialGouv/iterion/issues/116) [#125](https://github.com/SocialGouv/iterion/issues/125) [#156](https://github.com/SocialGouv/iterion/issues/156)
+
+    <details><summary>why</summary>
+
+    ultra11y 6.0.0 drops its GitHub Action and GitLab template; CI audits now run through Acci. The pin moves from 5.49.0 to 6.0.0 in its authored places (pin file, lockfile regenerated from the registry, runner and rgaa sandbox image ARGs, the bot's engine_* defaults), and the two contracts that moved are carried:
+
+    </details>
+
+### Bug Fixes
+
+* **security:** close every reachable Go vulnerability and revive the govulncheck SARIF channel ([#3608](https://github.com/SocialGouv/iterion/issues/3608)) ([5b99ca3](https://github.com/SocialGouv/iterion/commit/5b99ca31ce798bb3cad13aaf8df1defac48740ea)), references [#3331](https://github.com/SocialGouv/iterion/issues/3331) [#3332](https://github.com/SocialGouv/iterion/issues/3332) [#2330](https://github.com/SocialGouv/iterion/issues/2330) [#2331](https://github.com/SocialGouv/iterion/issues/2331) [#3602](https://github.com/SocialGouv/iterion/issues/3602)
+
+    <details><summary>why</summary>
+
+    govulncheck ./... goes from 37 reachable vulnerabilities to 0.
+
+    </details>
+
 ## [7.36.1](https://github.com/SocialGouv/iterion/compare/v7.36.0...v7.36.1) (2026-11-25)
 
 ### Features
