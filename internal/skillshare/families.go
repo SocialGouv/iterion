@@ -45,7 +45,7 @@ func Families() []Family {
 			Mirrors: []string{"branch-improve-loop", "feature-dev", "instrument", "whole-improve-loop"},
 			Variants: []Variant{
 				{"docs-refresh", "adds §6 amend mode: when the run was launched ON a pull request, it lands its commits in that PR and comments instead of opening a second one."},
-				{"product-docs", "adds §4b draft mode and its own iterion/product-docs branch prefix: functional documentation is marked ready by the people who own the product, never by the bot."},
+				{"product-docs", "adds §4b draft mode and its own iterion/product-docs branch prefix (docs/release-<label> on a release run): functional documentation is marked ready by the people who own the product, never by the bot. Also honours the workflow's forge override over host detection and the GitLab delete-source-branch request, which only this bundle's tail carries."},
 			},
 		},
 		{

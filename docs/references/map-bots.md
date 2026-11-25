@@ -32,7 +32,7 @@ The bundles under `bots/`, then the skills they carry.
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.8.0 |
 | `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (scheduled ticks, zero LLM in this slice — the compiled workflow contains no agent or… | 0.4.0 |
-| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.6.0 |
+| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.7.0 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.2.1 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.11.1 |

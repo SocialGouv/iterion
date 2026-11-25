@@ -1,0 +1,114 @@
+# Prody (product-docs) — launch a release-scoped documentation run on every
+# release tag of a GitLab repository.
+#
+# This is an include, not a pipeline of its own: copy it into the CODE
+# repository (the branch tags are cut from) and include it from its
+# .gitlab-ci.yml:
+#
+#   include:
+#     - local: .gitlab/prody-release-docs.yml
+#
+# The job posts to an iterion generic webhook (POST /api/webhooks/generic/<id>)
+# from the CI runner. It needs no webhook from the GitLab instance itself, so
+# it works on an instance whose admin filters outbound webhooks.
+#
+# What the run does: it checks out the docs branch, reads this repository at
+# the tag, measures the delta from the previous release tag, aligns the
+# functional docs and opens a DRAFT merge request docs/release-<version> ->
+# docs branch whose first section says what the version brings. The first
+# release (no previous release tag) is a full sweep.
+#
+# CI/CD variables (Settings > CI/CD > Variables):
+#   PRODY_WEBHOOK_URL      https://<iterion host>/api/webhooks/generic/<webhook id>  (required)
+#   PRODY_WEBHOOK_TOKEN    the webhook's iwh_ token: masked AND protected           (required)
+#   PRODY_PRODUCT_ID       the product id in the catalog                            (required)
+#   PRODY_SOURCE_ID        the catalog id of THIS repository                        (required)
+#   PRODY_CATALOG_PATH     catalog path on the docs branch   (default catalog.yaml)
+#   PRODY_DOCS_BRANCH      the long-lived docs branch        (default docs-fonctionnelle)
+#   PRODY_BOT              bot id on the iterion deployment   (default product-docs)
+#   PRODY_RELEASE_TAG_RE   extended regex naming a RELEASE tag, used to find the
+#                          previous one — keep it the same as the `rules:` pattern
+#                          below (default ^v?[0-9]+\.[0-9]+\.[0-9]+$: pre-releases
+#                          such as v1.21.0-rc.1 and floating tags such as v1 are
+#                          never "the previous release")
+#
+# Protected variables only reach protected refs: protect the release tags
+# (Settings > Repository > Protected tags), so only a maintainer's tag can
+# launch a paid run.
+#
+# The job runs in `.post`, after the release pipeline succeeded. GitLab does
+# not run a pipeline made of `.pre`/`.post` jobs only: if no other job of yours
+# runs on tags, give this one a stage of your pipeline
+# (`prody-release-docs: {stage: <your stage>}` after the include).
+#
+# A green job means iterion ACCEPTED the run (status accepted, launched or
+# duplicate), not that it finished: follow it on iterion. Re-running the job
+# for the same tag and commit is a duplicate, never a second paid run.
+
+prody-release-docs:
+  stage: .post
+  image: alpine:3.22
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - apk add --no-cache curl jq git >/dev/null
+    - |
+      set -eu
+      : "${PRODY_WEBHOOK_URL:?set the PRODY_WEBHOOK_URL CI/CD variable}"
+      : "${PRODY_WEBHOOK_TOKEN:?set the PRODY_WEBHOOK_TOKEN CI/CD variable (masked, protected)}"
+      : "${PRODY_PRODUCT_ID:?set the PRODY_PRODUCT_ID CI/CD variable}"
+      : "${PRODY_SOURCE_ID:?set the PRODY_SOURCE_ID CI/CD variable (the catalog id of this repository)}"
+      docs_branch="${PRODY_DOCS_BRANCH:-docs-fonctionnelle}"
+      release_re="${PRODY_RELEASE_TAG_RE:-^v?[0-9]+\.[0-9]+\.[0-9]+$}"
+      # A tag pipeline fetches its own tag only, and a project or group
+      # GIT_DEPTH outranks the job's: the previous release needs the others
+      # AND the history down to them.
+      if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+        git fetch --quiet --unshallow --tags origin
+      else
+        git fetch --quiet --tags origin
+      fi
+      # The previous release is the highest RELEASE tag (same pattern as the
+      # trigger) this one contains, other than the tags of its own commit —
+      # compared on the version without its prefix, so v1.9.0 never outranks
+      # 1.10.0 and app@1.9.0 never outranks app@2.0.0.
+      prev="$(git tag --merged "$CI_COMMIT_TAG" --no-contains "$CI_COMMIT_TAG" | grep -E "$release_re" \
+        | sed -E 's/^[^0-9]*(.*)$/\1 &/' | sort -t. -k1,1nr -k2,2nr -k3,3nr -k4,4nr | head -n 1 | cut -d' ' -f2 || true)"
+      # The version is the tag without its prefix (v1.21.0, app@1.21.0 -> 1.21.0):
+      # it names the release branch, where the bot accepts no other character.
+      label="$(printf '%s' "$CI_COMMIT_TAG" | sed -E 's/^[^0-9]*//')"
+      if [ -n "$prev" ]; then mode=incremental; since="${PRODY_SOURCE_ID}=${prev}"; else mode=full; since=""; fi
+      echo "release ${CI_COMMIT_TAG} (version ${label}), previous release: ${prev:-none}, mode ${mode}"
+      body="$(jq -n \
+        --arg bot "${PRODY_BOT:-product-docs}" \
+        --arg key "prody-release-${CI_PROJECT_ID}-${CI_COMMIT_TAG}-${CI_COMMIT_SHA}" \
+        --arg repo "${CI_PROJECT_URL}.git" \
+        --arg branch "$docs_branch" \
+        --arg path "$CI_PROJECT_PATH" \
+        --arg catalog "${PRODY_CATALOG_PATH:-catalog.yaml}" \
+        --arg product "$PRODY_PRODUCT_ID" \
+        --arg mode "$mode" \
+        --arg label "$label" \
+        --arg refs "${PRODY_SOURCE_ID}=${CI_COMMIT_TAG}" \
+        --arg since "$since" \
+        --arg notes "Version ${label} (tag ${CI_COMMIT_TAG}${prev:+, version précédente ${prev}})" \
+        '{bot: $bot, idempotency_key: $key, repo_url: $repo, repo_ref: $branch, project_path: $path,
+          vars: ({catalog_path: $catalog, product_id: $product, mode: $mode, open_mr: "true",
+                  mr_base: $branch, release_label: $label, source_refs: $refs,
+                  mr_remove_source_branch: "true", forge_kind: "gitlab", scope_notes: $notes}
+                 + (if $since == "" then {} else {source_since: $since} end))}')"
+      # The token travels on curl's stdin, never on its command line. A refused
+      # request still prints the server's answer before the job fails.
+      rc=0
+      resp="$(printf 'header = "X-Iterion-Webhook-Token: %s"\n' "$PRODY_WEBHOOK_TOKEN" \
+        | curl --config - --fail-with-body -sS -X POST "$PRODY_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' --data "$body")" || rc=$?
+      echo "$resp"
+      if [ "$rc" -ne 0 ]; then echo "the iterion webhook refused the request (curl exit ${rc})" >&2; exit 1; fi
+      status="$(printf '%s' "$resp" | jq -r '.status // empty' 2>/dev/null || true)"
+      case "$status" in
+        accepted|launched|duplicate) echo "iterion: ${status}" ;;
+        *) echo "iterion did not accept the run (status: ${status:-none}) — see the response above" >&2; exit 1 ;;
+      esac

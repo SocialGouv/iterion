@@ -199,7 +199,27 @@ func catalogFixture(t *testing.T, ws, rel string, yamlBody string, jsonBody stri
 
 func ingestCommand(t *testing.T, ws, catalog, product, scratch string) string {
 	t.Helper()
-	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), map[string]string{
+	return ingestCommandWith(t, ws, catalog, product, scratch, nil)
+}
+
+// ingestReleaseVarDefaults are the shipped defaults of the release-scoped
+// launch vars catalog_ingest judges before anything is spent: all empty but
+// the table of contents' name, i.e. the bot with no release var given.
+func ingestReleaseVarDefaults() map[string]string {
+	return map[string]string{
+		"vars.source_refs":   "",
+		"vars.source_since":  "",
+		"vars.release_label": "",
+		"vars.forge_kind":    "",
+		"vars.summary_file":  "SUMMARY.md",
+	}
+}
+
+// ingestCommandWith resolves catalog_ingest with the shipped defaults, then
+// the caller's overrides (a release var, a bad value to refuse).
+func ingestCommandWith(t *testing.T, ws, catalog, product, scratch string, extra map[string]string) string {
+	t.Helper()
+	refs := map[string]string{
 		"vars.workspace_dir": ws,
 		"vars.catalog_path":  catalog,
 		"vars.product_id":    product,
@@ -207,7 +227,14 @@ func ingestCommand(t *testing.T, ws, catalog, product, scratch string) string {
 		"vars.clone_depth":   "1",
 		"vars.secret_globs":  "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*.pem,*.key",
 		"vars.oracle_dir":    ".golden-master",
-	})
+	}
+	for k, v := range ingestReleaseVarDefaults() {
+		refs[k] = v
+	}
+	for k, v := range extra {
+		refs[k] = v
+	}
+	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), refs)
 }
 
 // TestProductDocsCatalogIngest pins the front door's four promises: it
@@ -1952,6 +1979,7 @@ func coverageCommandTimed(t *testing.T, ws, productDir, oraclePath, exclToken, m
 		"vars.coverage_placeholders":       defaultPlaceholders,
 		"vars.coverage_min_prose":          "60",
 		"vars.coverage_max_anchorless":     maxAnchorless,
+		"vars.summary_file":                "SUMMARY.md",
 	})
 }
 
@@ -3879,7 +3907,7 @@ func TestProductDocsCatalogIngestRefusesADelegatedObjectStore(t *testing.T) {
 	if got.OKCount != 0 || got.Degraded != 1 {
 		t.Fatalf("a repository delegating its objects outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
 	}
-	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "reads its git objects from OUTSIDE the docs workspace") {
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "delegates its git objects to other stores") {
 		t.Fatalf("the refusal does not name its cause: %q", note)
 	}
 	if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "secret-notes.md")); err == nil {
@@ -4916,7 +4944,7 @@ func TestProductDocsCatalogIngestRefusesAnAbsoluteOracleDir(t *testing.T) {
 	// Stripped-then-tested, an absolute oracle_dir went looking under
 	// <ws>/workspace/... and the exhaustiveness gate went inert IN SILENCE.
 	// A configuration error is a refusal that names the fix, never a pass.
-	cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), map[string]string{
+	refs := map[string]string{
 		"vars.workspace_dir":               ws,
 		"vars.catalog_path":                "catalog",
 		"vars.product_id":                  "demo",
@@ -4932,7 +4960,11 @@ func TestProductDocsCatalogIngestRefusesAnAbsoluteOracleDir(t *testing.T) {
 		"vars.coverage_min_prose":          "60",
 		"vars.coverage_max_anchorless":     shippedAnchorlessCeiling,
 		"vars.oracle_dir":                  "/workspace/.golden-master",
-	})
+	}
+	for k, v := range ingestReleaseVarDefaults() {
+		refs[k] = v
+	}
+	cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), refs)
 	runExpectingFailure(t, cmd, "oracle_dir must be RELATIVE")
 }
 
@@ -5112,7 +5144,7 @@ func TestProductDocsCatalogIngestFollowsAlternatesTransitively(t *testing.T) {
 	if got.OKCount != 0 || got.Degraded != 1 {
 		t.Fatalf("a repository delegating through an in-workspace hop to an outside store was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
 	}
-	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "reads its git objects from OUTSIDE the docs workspace") {
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "delegates its git objects to other stores") {
 		t.Fatalf("the refusal does not name its cause: %q", note)
 	}
 }

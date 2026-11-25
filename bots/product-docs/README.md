@@ -67,7 +67,7 @@ authorise the bot to invent. See
 
 ```
 catalog_ingest ─▶ route_table ─▶ diagram ─▶ scan_hints ─▶ campaign ─▶ scope_check
-               ─▶ page_lint ─▶ diagram_lint ─▶ coverage_check ─▶ gate
+               ─▶ page_lint ─▶ diagram_lint ─▶ coverage_check ─▶ summary_check ─▶ gate
 gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ delivery_gate ──(paths owned)──▶ finalize_mr
                                           ─▶ surface_pr_link ─▶ done
 delivery_gate ─▶ delivery_paths_refused     (typed fail: DELIVERY_PATHS_REFUSED)
@@ -148,9 +148,11 @@ workspace-owned directory sits on the run's PATH.
   pass.
 - **`coverage_check`** (deterministic truth gate, armed only with a net)
   — the exhaustiveness gate. See below.
+- **`summary_check`** (deterministic truth gate, armed only by a table
+  of contents) — see *The published navigation* below.
 - **`gate`** — `converged = scope_ok ∧ lint_ok ∧ diagram_ok ∧
-  coverage_ok ∧ docs_aligned`. Nothing else; the hint counts are
-  telemetry, never conditions.
+  coverage_ok ∧ summary_ok ∧ docs_aligned`. Nothing else; the hint counts
+  are telemetry, never conditions.
 
 A documentation-only change cannot break a build, so there is no build
 gate — `page_lint` is this bot's equivalent truth oracle on the artifact
@@ -447,11 +449,15 @@ content, so that containment is:
   path under `path`, a `..` escape, a symlink out, or a value outside the
   workspace under `url` is a named `degraded` entry;
 - the root of a repository, never a plain directory;
-- no **delegated object store**: a repository whose git dir, object
-  directory or `objects/info/alternates` resolves outside the workspace
-  is refused. A clone serves the union of those stores, so confining the
-  path alone confines nothing — and `--no-local` does not change that,
-  since `upload-pack` serves the alternates too.
+- no **delegated object store**: a repository whose git dir or object
+  directory (as git reports them) resolves outside the workspace is
+  refused, and so is one whose object store declares any delegation — a
+  non-empty `objects/info/alternates`, wherever it points. A clone serves
+  the union of those stores, so confining the path alone confines nothing
+  (`--no-local` does not change that: `upload-pack` serves the alternates
+  too), and following a delegation means parsing git's grammar for it,
+  where every divergence was an escape. `git repack -a -d` and deleting
+  the file makes such a repository readable.
 
 A `.json` catalog needs no dependency at all. A YAML catalog is parsed
 with PyYAML when the interpreter's system site-packages have it (tool
@@ -476,6 +482,69 @@ nothing. When a shallow clone cannot reach a recorded commit the entry is
 marked `delta unavailable` with the reason — a delta that could not be
 computed is **never** reported as an empty one.
 
+## Release-scoped runs
+
+A product team that documents each release wants the run bounded by it.
+Three launch vars, all empty by default — the bot as it was — and all judged
+by `catalog_ingest` before anything is spent:
+
+| Var | What it pins |
+|---|---|
+| `source_refs` (`id=ref,…`) | Reads that catalog entry at `ref` for this run, replacing its committed `ref:` — the catalog cannot name a tag that does not exist yet. |
+| `source_since` (`id=ref,…`) | Computes that source's `changed_files` **and the commit subjects** of the window from this base, instead of from the `Product-Docs-Sources:` trailer. A squash merge that dropped the trailer no longer turns the next release into a full sweep. |
+| `release_label` | Asks the campaign for `release_highlights` — what the version brings to the product's **users**, sourced or `[à confirmer]` — rendered as the pull request's opening section "Ce qu'apporte la version <label>"; the branch defaults to `docs/release-<label>`, the title to `docs(<product>): version <label>`. |
+
+What each refusal and degradation says:
+
+- an override naming no catalog id, a ref git would read as an option, a
+  range or a remote helper, a label that is no version-like token: the run
+  **stops** and names it;
+- a source the launch pins (`source_refs` or `source_since`) that cannot be
+  read **stops** the run, naming why — the release is what the run exists to
+  document, so documenting the rest of the product instead would be paid
+  for nothing; an unreachable `source_since` base alone is not that: the
+  source is read and its delta is marked unavailable;
+- a source with an explicit base is cloned **blobless** (`--filter=blob:none`:
+  the full commit graph, file contents only for the checkout), so the window
+  is exact without a depth guess — `clone_depth` does not apply to it;
+- a base no commit answers to is a **named unavailable** delta, never an
+  empty one; a base off the documented line of history yields the tree delta
+  and **no** commit subject, since `base..head` would then name commits the
+  release never received;
+- the commit subjects are **data**: printable, bounded (300 subjects, 200
+  characters each, with the true count beside them), and the campaign is told
+  they point at what to read, never at what to write.
+
+The stamp still records the documented commit, so a later run with no
+explicit base measures from the release.
+
+**The documented repository is named by its forge url.** A team keeping
+its docs in the code repository (a long-lived docs branch) names the code
+by `url:` in the catalog, not `path: .`: a cloud runner clones the
+workspace without its tags, so a local source cannot be read at a release
+tag — the run stops and its message says so.
+
+## The published navigation
+
+GitBook lists a space's pages in a table of contents, and a page the table
+does not list is a page no reader can reach. `summary_check` makes that
+table (`<product_dir>/<summary_file>`, `SUMMARY.md` by default) a
+convergence term **when the product carries one**:
+
+| cause | what it catches |
+|---|---|
+| `SUMMARY_UNLISTED` | a `.md` page under the product directory the table does not list |
+| `SUMMARY_DEAD_ENTRY` | an entry naming no page of the product — missing, or outside the product directory |
+| `SUMMARY_REMOVED` | a table that existed at the run base and is gone: deleting it does not turn the gate off |
+| `SUMMARY_UNREADABLE` | a table that is a symbolic link or cannot be read |
+
+Links are read as GitBook reads them: relative to the table's own
+directory, a leading `/` from the product directory, a directory standing
+for its `README.md`, external urls and bare anchors ignored, fenced code
+ignored. Dot directories (`.gitbook/` assets) hold no page. With no table
+at the run base and none now the gate is **inert**; `summary_file=""`
+disables it outright.
+
 ## Inputs (main vars)
 
 | Var | Default | Description |
@@ -490,6 +559,7 @@ computed is **never** reported as an empty one.
 | `secret_globs` | credential-carrier globs | Files deleted from every source clone before the agent may read them |
 | `lint_rules` | all four | Editorial rules `page_lint` enforces — drop a name to disable that rule |
 | `extra_forbidden_headings` | `""` | Extra heading titles a published page must never carry |
+| `summary_file` | `SUMMARY.md` | The product's table of contents, relative to `product_dir`. Present ⇒ `summary_check` is armed; empty disables it |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `oracle_dir` | `.golden-master` | Where the golden-master net lives, looked up in the workspace then in each source clone. Both `feature-coverage.json` and `corpus.json` present ⇒ `coverage_check` is armed; empty disables the lookup |
 | `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive). Empty while the net declares a hole stops the run: no page could ever name one |
@@ -507,6 +577,10 @@ computed is **never** reported as an empty one.
 | `mr_draft` | `true` | Open that PR as a **draft** — human validation happens on the forge |
 | `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/product-docs/<run-id>`) / base |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
+| `mr_title` | `""` | PR title override (default derived; `docs(<product>): version <label>` on a release run) |
+| `mr_remove_source_branch` | `false` | Ask GitLab to delete the source branch on merge (`--remove-source-branch`); reported as not applicable on GitHub / Forgejo |
+| `forge_kind` | `""` | `gitlab`, `github` or `forgejo`; empty = detected from the origin host (a self-managed GitLab whose host does not say "gitlab" needs it) |
+| `source_refs` / `source_since` / `release_label` | `""` | Release-scoped run — see above |
 
 ## PR finalization (opt-in)
 
@@ -557,6 +631,38 @@ literal lives in the DSL: swap platforms by attaching another
 keeps `onyxia-serve-init.sh`, the standing-service half of the former SSP
 Cloud datalab target, for the plugin that still uses it.
 
+## Trigger a release run, and sync GitBook
+
+Two GitLab CI includes ship in [`ci/`](ci/), for a team whose docs live on a
+long-lived branch of the code repository and are published to GitBook. Each
+file's header is its manual; what matters before adopting them:
+
+- [`ci/gitlab-release-docs.yml`](ci/gitlab-release-docs.yml) — included from
+  the **code** branch's CI. On every release tag it finds the previous
+  **release** tag with the trigger's own pattern (a pre-release such as
+  `v1.21.0-rc.1` or a floating `v1` is never "the previous release"; a shallow
+  checkout is completed first) and posts a release run to an iterion
+  **generic webhook**: `release_label`, `source_refs`, `source_since`,
+  `mode=incremental`, `open_mr=true`, `mr_base` = the docs branch,
+  `mr_remove_source_branch=true`, `forge_kind=gitlab`. It runs from the CI
+  runner, so it needs no outbound webhook from the GitLab instance. The job
+  fails unless iterion answers `accepted`, `launched` or `duplicate` — green
+  means accepted, not finished. The first release (no previous one) is a full
+  sweep. The token travels on curl's stdin, never on its command line.
+- [`ci/gitbook-api-sync.yml`](ci/gitbook-api-sync.yml) — for an instance that
+  cannot send GitBook the webhook Git Sync needs, and only on a space **without**
+  Git Sync (the API answers 400 otherwise). Included from the **docs** branch's
+  own CI (a push runs that branch's `.gitlab-ci.yml`), in the `deploy` stage (a
+  pipeline of `.post` jobs only never runs). `gitbook-import`
+  (`POST /v1/spaces/{id}/git/import`) is **manual** unless
+  `GITBOOK_AUTO_IMPORT=true`, because an import replaces the space's content:
+  an edit made in GitBook and not yet exported is lost. `gitbook-export`
+  (`…/git/export`) pushes GitBook's edits to a branch to merge. Both are queued
+  by GitBook and run after the job: export, wait for the branch, merge, then
+  import. The variables are protected, so the docs branch must be protected.
+  **Git Sync stays the better path** when the instance's admin can allow
+  GitBook's hosts in *Admin > Settings > Network > Outbound requests*.
+
 ## Run
 
 ```bash
@@ -567,6 +673,16 @@ iterion run bots/product-docs/main.bot \
 ```
 
 Add `--var open_mr=true` to open the (draft) pull request at the end.
+
+A release run, by hand — what the CI include sends on a tag:
+
+```bash
+iterion run bots/product-docs/main.bot \
+  --var catalog_path=catalog.yaml --var product_id=demo \
+  --var mode=incremental --var open_mr=true --var mr_base=docs-fonctionnelle \
+  --var release_label=1.21.0 --var forge_kind=gitlab --var mr_remove_source_branch=true \
+  --var source_refs=demo-app=v1.21.0 --var source_since=demo-app=v1.20.0
+```
 The weekly scheduled invocation already carries `mode: incremental`
 (`manifest.yaml`); pass `--var mode=incremental` by hand for an
 out-of-band incremental pass.

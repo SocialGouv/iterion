@@ -39,6 +39,7 @@ func coverageCommandFor(t *testing.T, ws, productDir, oraclePath string, rt rout
 		"vars.coverage_placeholders":       defaultPlaceholders,
 		"vars.coverage_min_prose":          "60",
 		"vars.coverage_max_anchorless":     shippedAnchorlessCeiling,
+		"vars.summary_file":                "SUMMARY.md",
 	})
 }
 
