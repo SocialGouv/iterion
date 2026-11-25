@@ -38,6 +38,7 @@ this bot is a deterministic node.
 | one evidence file per criterion | the engine's harvest for one criterion: `evidence[]` (`file`, `line`, `selector`, `snippet`, `note`), `signals[]` (rule hits), `population` (`classes`, `occurrences`, `files`, `pages` — how many subjects it found), `testIds`, `needsRenderedEvidence`, `evidenceComplete` |
 | one brief per criterion | the criterion's own numbered tests, the standard's testing methodology and glossary, rendered by the engine at run time — the ONLY normative text in the run |
 | the `contract` in your input | the verdict vocabulary and what each verdict must carry; it wins over this page if the two ever disagree |
+| the verdict contract file (`ADJUDICATE.contract.md`, path in your input) | the rules every brief shares — verdicts, citations, severity, page-by-page verdicts — written once per worklist; every brief refers to it, read it once before the first brief |
 
 Your batch input lists the absolute path of every evidence file and brief
 it hands you (a null brief path names a criterion the engine decided
@@ -70,7 +71,8 @@ criterion with harvested evidence must cite that evidence.
 
 `audit-latest.json` (the pack audit: `findings[]`, `criteria[]`,
 `residualRisks[]`; its root `conformancePct` is the automatic pass rate),
-`items/`, `adjudicate/` (the briefs), `ADJUDICATE.todo.json` and
+`items/`, `adjudicate/` (the briefs), `ADJUDICATE.contract.md` (the verdict
+contract the briefs share), `ADJUDICATE.todo.json` and
 `ADJUDICATE.verdicts.json` (the engine's worklist and verdict skeleton),
 `adjudication.json` (the merged verdicts), `fragments/` (one file per batch),
 `probe/` (the folds on copies), `ledger/` (the replayed ledger, then the

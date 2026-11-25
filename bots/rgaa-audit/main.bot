@@ -38,7 +38,9 @@
 ## Three engine facts the graph is built around (measured on 5.45.0, pinned
 ## by bots/rgaa_audit_engine_contract_test.go):
 ##   - `verify --apply` folds PARTIALLY: every accepted verdict lands, each
-##     refusal is named. The fold is probed on a COPY, the named refusals are
+##     refusal is named. Since 9.6.1 any refusal exits 1 (an incomplete fold,
+##     the accepted verdicts still written, `ok: false`); 2 is usage. The
+##     fold is probed on a COPY, the named refusals are
 ##     re-asked once, and the real audit is folded exactly once. Re-folding
 ##     a decided criterion returns a structured refusal; replay records still
 ##     prevent a second mutation of the audit.
@@ -66,9 +68,9 @@ vars:
   ## (scripts/ultra11y.mjs in the npm tarball). bots/rgaa-audit/ultra11y.pin
   ## is the authored copy; bots/rgaa_audit_engine_pin_test.go holds these
   ## three defaults equal to it. Bump deliberately, through the pin file.
-  engine_version: string = "7.2.0"
-  engine_sha256: string = "0766f8e4fafc68f61b6c8bf27910c2d20ffd0eb140aedb66038425f379e78fb2"
-  engine_size: int = 3268546
+  engine_version: string = "9.6.1"
+  engine_sha256: string = "246ce355c8eb0825878bc7a9aa77f1031a24ed07e3b3598a740d346524770b8f"
+  engine_size: int = 3732187
   ## The standard the engine audits against. Only the French RGAA 4.1.2 pack
   ## today: the WCAG core report carries no « Décidés » line and a different
   ## rate semantics, so the cross-checks below would read it as degraded on
@@ -244,6 +246,8 @@ prompt adjudicate_user:
   you need; open them as listed, never a path reconstructed from memory:
   Evidence items: {{input.item_paths}}
   Briefs (normative text): {{input.brief_paths}}
+  Verdict contract every brief refers to — read it ONCE, before the first
+  brief: {{input.contract_path}}
   Audited workspace: {{input.workspace_dir}}
   Standard: {{input.standard}}
   Scope hint (may be empty): {{input.scope_notes}}
@@ -490,6 +494,7 @@ schema worklist_output:
   count: int
   items_dir: string
   briefs_dir: string
+  contract_path: string
   todo_path: string
   verdicts_path: string
   pending_ids: json
@@ -512,6 +517,7 @@ schema adjudicate_input:
   ids: json
   item_paths: json
   brief_paths: json
+  contract_path: string
   contract: json
   prior_issues: json
   workspace_dir: string
@@ -1042,6 +1048,35 @@ tool prepare:
       // The criteria an engine apply refused: every fold JSON carries the list,
       // and a decision read from its absence would read "nothing refused".
       const rejectedOf = (json, what) => { if (!Array.isArray(json.rejectedCriteria)) die(what + " printed no rejectedCriteria list"); return json.rejectedCriteria; };
+      // `verify --apply <adjudication>`'s exit contract (ultra11y 9.6.1,
+      // SocialGouv/ultra11y#223): 0 = the gate refused nothing (`ok: true`);
+      // 1 = an incomplete fold — at least one criterion refused, the accepted
+      // verdicts written (`auditPath`), `ok: false` — or nothing landed (no
+      // audit written); 2 = usage / invalid input. A refusal is data the node
+      // reads; a signal, exit 2 or any other code, no JSON, or an exit that
+      // contradicts `ok` is a crash, never a refusal.
+      // `scan --sample --merge --json`'s outcome: the printed document opens
+      // with the scan's `pages` summary ({sample, recorded, refused:[{id,
+      // reason}]}). A PARTIAL sample — a page that redirected elsewhere or
+      // answered HTTP >= 400, refused and named — exits 1 with the merged
+      // audit still written (ultra11y 9.x): the layer's measure, not its
+      // failure. Any other non-zero exit, no JSON, or an exit 1 without that
+      // summary (no page recorded at all: nothing written) is not ok.
+      // `refused` is the engine's list, or null when it printed none.
+      const scanOutcome = (r) => {
+        const pages = isObj(r.json) && isObj(r.json.pages) ? r.json.pages : null;
+        const refused = pages && Array.isArray(pages.refused) ? pages.refused.filter((x) => isObj(x)).map((x) => ({ id: String(x.id), reason: String(x.reason || "") })) : null;
+        const partial = r.code === 1 && !!refused && refused.length > 0 && Array.isArray(pages.recorded) && pages.recorded.length > 0;
+        return { ok: isObj(r.json) && (r.code === 0 || partial), partial: partial, refused: refused };
+      };
+      const foldJSON = (r, what) => {
+        const said = String(r.stderr || "").trim().slice(-3000);
+        if (r.code === null) die(what + " was killed by a signal: " + said);
+        if (r.code !== 0 && r.code !== 1) die(what + " exit " + r.code + (r.code === 2 ? " (usage / invalid input)" : "") + ": " + said);
+        if (r.json === null || typeof r.json !== "object" || Array.isArray(r.json)) die(what + " printed no JSON (exit " + r.code + "): " + said);
+        if ((r.code === 0) !== (r.json.ok === true)) die(what + " exit " + r.code + " contradicts its ok=" + JSON.stringify(r.json.ok) + ": " + said);
+        return r.json;
+      };
       // A transcription restored from the anchor it stands on: the anchor's
       // own snippet and selector (none when the anchor has none). A copy or an
       // excerpt of the anchor (`edits` 0) is returned as written.
@@ -1120,7 +1155,7 @@ tool prepare:
         return rep;
       };
 
-      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, reportParts, reportFile, copyReportFiles, generateReport, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf };
+      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, reportParts, reportFile, copyReportFiles, generateReport, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf, foldJSON, scanOutcome };
       return api;
     }
     fs.writeFileSync(path.join(RUN, "bin", "lib.js"), "module.exports = (" + helpers.toString() + ")();\n");
@@ -1323,14 +1358,17 @@ tool render:
       const missing = Array.isArray(check.json.missing) ? check.json.missing.map((m) => m.id || m) : [];
       const browserPath = String({{input.browser_path}} || "");
       const scan = L.engine(["scan", "--sample", "--runtime", "local", "--cwd", {{input.engine_pkg_dir}}].concat(browserPath ? ["--browser-path=" + browserPath] : [], ["--standard", STD, "--merge", L.auditPath(), "--out", RUN, "--json"]), { cwd: WS, timeoutMs: 2700000 });
-      if (scan.code !== 0 || !scan.json) return degrade("scan --sample exit " + scan.code + ": " + (scan.stderr || "").slice(-1500));
+      const outcome = L.scanOutcome(scan);
+      if (!outcome.ok) return degrade("scan --sample exit " + scan.code + ": " + (scan.stderr || "").slice(-1500));
+      const refusedPages = outcome.refused;
       sha = L.commitAudit();
       // The scan's JSON is the merged document; the captures it wrote are
-      // the page directories touched since this node started.
+      // the page directories touched since this node started. The refused
+      // pages are the engine's own list when it printed one.
       let recorded = 0;
       if (L.exists(pagesDir)) for (const d of fs.readdirSync(pagesDir)) { try { if (fs.statSync(path.join(pagesDir, d)).mtimeMs >= started - 1000) recorded++; } catch (e) {} }
-      const refused = Math.max(0, sample - recorded);
-      L.layer("rendered", { status: "ok", pages_recorded: recorded, pages_refused: refused, missing_kinds: missing });
+      const refused = refusedPages ? new Set(refusedPages.map((r) => r.id)).size : Math.max(0, sample - recorded);
+      L.layer("rendered", { status: "ok", pages_recorded: recorded, pages_refused: refused, refused_pages: refusedPages || [], missing_kinds: missing });
       L.out(L.record("render", { ok: true, fail_code: "", reason: "", status: "ok", pages_recorded: recorded, pages_refused: refused, missing_kinds: missing, audit_sha256: sha }));
     };
     main().catch((e) => L.die("render: " + (e && e.stack || e)));
@@ -1400,8 +1438,9 @@ tool ledger_replay:
     const said = (r.stderr || "").trim().slice(-600);
     if (!r.json && /^E[A-Z]+: /m.test(said)) L.die("the engine failed on its environment, not on the ledger (exit " + r.code + "): " + said);
     if (!r.json) L.refuse("LEDGER_INVALID", "the engine could not replay the ledger at " + {{input.ledger_path}} + " (exit " + r.code + ", no JSON): " + (said || "no message"), { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha });
-    // Exit 1 (every fresh entry refused by the gate) nests the replay's own
-    // accounting under `replay`; exit 0 prints it at the top level.
+    // Exit 1 is an incomplete replay (ultra11y 9.6.1): when nothing landed it
+    // nests the replay's own accounting under `replay`; when the gate refused
+    // only part, it prints it at the top level, like exit 0.
     const rp = L.isObj(r.json.replay) ? r.json.replay : r.json;
     const stale = rp.stale || [], obsolete = rp.obsolete || [], missing = rp.missing || [];
     // A fresh entry the engine's gate still refuses goes back to « à évaluer »
@@ -1410,7 +1449,8 @@ tool ledger_replay:
     const dropped = new Set([].concat(stale, obsolete, missing, refused).map(String));
     // The copy the final fold merges into keeps only what replayed.
     const kept = Object.assign({}, Array.isArray(doc) ? { kind: "verdict-ledger" } : doc, { entries: replayable.filter((e) => !dropped.has(String(e.criteriaId))) });
-    // Exit 1 writes no audit; exit 0 wrote a whole one beside the real audit.
+    // A replay where nothing landed writes no audit; otherwise (exit 0, or
+    // exit 1 on a partial refusal) a whole one was written beside the real audit.
     if (L.exists(replayedDoc)) fs.renameSync(replayedDoc, L.auditPath());
     L.writeJSON(copy, kept);
     sha = L.commitAudit();
@@ -1443,13 +1483,17 @@ tool worklist:
     if (r.code !== 0) L.die("verify --manual exit " + r.code + ": " + r.stderr.slice(-3000));
     const w = r.json;
     const todo = L.readJSON(w.todoPath), skeleton = L.readJSON(w.verdictsPath);
+    // The verdict contract every brief refers to, written ONCE beside the
+    // worklist (ultra11y 9.6.1): the briefs no longer repeat it.
+    const contractPath = path.join(path.dirname(w.mdPath), "ADJUDICATE.contract.md");
+    if (!L.exists(contractPath)) L.die("verify --manual wrote no verdict contract at " + contractPath + " — the briefs refer to it");
     const itemsDir = path.join(RUN, "items");
     const ids = [];
     for (const it of todo.items || []) { ids.push(it.criteriaId); L.writeJSON(path.join(itemsDir, it.criteriaId + ".json"), it); }
     L.writeJSON(path.join(RUN, "pending.json"), { round: 0, ids: ids, issues: {} });
-    L.writeJSON(path.join(RUN, "worklist.json"), { count: Number(w.count || 0), ids: ids, items_dir: itemsDir, briefs_dir: w.itemsDir, todo_path: w.todoPath, verdicts_path: w.verdictsPath, contract: skeleton.contract || {} });
+    L.writeJSON(path.join(RUN, "worklist.json"), { count: Number(w.count || 0), ids: ids, items_dir: itemsDir, briefs_dir: w.itemsDir, contract_path: contractPath, todo_path: w.todoPath, verdicts_path: w.verdictsPath, contract: skeleton.contract || {} });
     L.layer("worklist", { status: "ok", count: Number(w.count || 0) });
-    L.out({ ok: true, fail_code: "", reason: "", count: Number(w.count || 0), items_dir: itemsDir, briefs_dir: w.itemsDir, todo_path: w.todoPath, verdicts_path: w.verdictsPath, pending_ids: ids, contract: skeleton.contract || {}, audit_sha256: sha });
+    L.out({ ok: true, fail_code: "", reason: "", count: Number(w.count || 0), items_dir: itemsDir, briefs_dir: w.itemsDir, contract_path: contractPath, todo_path: w.todoPath, verdicts_path: w.verdictsPath, pending_ids: ids, contract: skeleton.contract || {}, audit_sha256: sha });
   language: js
   input: worklist_input
   output: worklist_output
@@ -1645,7 +1689,7 @@ tool fold_probe:
     let applied = 0, rejected = [], gaps = [], issueList = [];
     if (adj.items.length) {
       const r = L.engine(["verify", "--apply", path.join(RUN, "adjudication.json"), "--in", copy, "--out", dir, "--json"].concat(L.std({{input.standard}})), { cwd: {{input.workspace_dir}} });
-      if (!r.json) L.die("fold probe printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
+      L.foldJSON(r, "the fold probe");
       applied = Number(r.json.applied || 0); rejected = L.rejectedOf(r.json, "the fold probe").map(String); issueList = (r.json.issues || []).map(String);
       // An open criterion the file never mentions is a coverage gap, which the
       // engine names apart from its refusals (SocialGouv/ultra11y#136): it is
@@ -1714,7 +1758,7 @@ tool fold_final:
         L.writeJSON(path.join(dir, "adjudication.json"), doc);
         L.writeJSON(path.join(dir, "audit-latest.json"), L.readJSON(L.auditPath()));
         const r = L.engine(["verify", "--apply", path.join(dir, "adjudication.json"), "--in", path.join(dir, "audit-latest.json"), "--out", dir, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
-        if (!r.json) L.die("the " + name + " restore probe printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
+        L.foldJSON(r, "the " + name + " restore probe");
         return new Set(L.rejectedOf(r.json, "the " + name + " restore probe").map(String));
       };
       const asWritten = refusedBy("as-written", adj);
@@ -1739,7 +1783,7 @@ tool fold_final:
     let applied = 0, stillManual = 0, rejected = [];
     if (folded.items.length) {
       const r = L.engine(["verify", "--apply", foldedPath, "--in", L.auditPath(), "--out", RUN, "--ledger", ledger, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
-      if (!r.json) L.die("the final fold printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
+      L.foldJSON(r, "the final fold");
       applied = Number(r.json.applied || 0); stillManual = Number(r.json.stillManual || 0); rejected = L.rejectedOf(r.json, "the final fold").map(String);
     }
     sha = L.commitAudit();
@@ -1895,6 +1939,10 @@ tool refute_apply:
       L.out(L.record("refute_apply", { ok: true, fail_code: "", reason: reason, applied: false, degraded: true, refuted: 0, unsupported: 0, cleared: [], removed_findings: 0, reopened: [], skipped_engine: 0, audit_sha256: sha }));
     }
     const r = L.engine(["verify", "--apply", draft.todo_path, "--report", draft.draft_path, "--in", L.auditPath(), "--out", RUN, "--prune", "--json"].concat(L.exists(ledger) ? ["--ledger", ledger] : [], L.std(STD)), { cwd: {{input.workspace_dir}} });
+    // The trial's exit: 0 = accepted whole, 1 = refused in part (the JSON
+    // names what, read below), 2 = usage. Anything but 0/1 with JSON is a crash.
+    if (r.code === null) L.die("verify --apply <trial> --prune was killed by a signal: " + (r.stderr || "").trim().slice(-3000));
+    if (r.code !== 0 && r.code !== 1) L.die("verify --apply <trial> --prune exit " + r.code + (r.code === 2 ? " (usage / invalid input)" : "") + ": " + (r.stderr || "").trim().slice(-3000));
     if (!r.json) L.die("verify --apply <trial> --prune printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
     const j = r.json, g = L.isObj(j.grounding) ? j.grounding : {};
     // The engine's own write is the next link of the chain, never an outside
@@ -2015,7 +2063,7 @@ tool final_report:
     a.push("| Couche | État | Détail |");
     a.push("|---|---|---|");
     a.push("| Analyse statique | " + st(layers.static) + " | " + (layers.static ? layers.static.files + " fichier(s), " + layers.static.findings + " constat(s) moteur, " + layers.static.residual + " critère(s) laissés au jugement" + (layers.static.reason ? " — " + layers.static.reason : "") + (layers.static.pages_purged ? " — " + layers.static.pages_purged + " capture(s) de page d'un run précédent écartée(s) avant l'audit" : "") : "") + " |");
-    a.push("| Pages rendues | " + st(layers.rendered) + " | " + (layers.rendered ? (layers.rendered.reason || (layers.rendered.pages_recorded + " page(s) capturée(s), " + layers.rendered.pages_refused + " refusée(s)" + (layers.rendered.missing_kinds && layers.rendered.missing_kinds.length ? " ; types de page manquants : " + layers.rendered.missing_kinds.join(", ") : ""))) : "couche désactivée, ou pas de navigateur / d'échantillon de pages") + " |");
+    a.push("| Pages rendues | " + st(layers.rendered) + " | " + (layers.rendered ? (layers.rendered.reason || (layers.rendered.pages_recorded + " page(s) capturée(s), " + layers.rendered.pages_refused + " refusée(s)" + (Array.isArray(layers.rendered.refused_pages) && layers.rendered.refused_pages.length ? " (" + layers.rendered.refused_pages.map((r) => r.id + (r.reason ? " : " + r.reason : "")).join(", ") + ")" : "") + (layers.rendered.missing_kinds && layers.rendered.missing_kinds.length ? " ; types de page manquants : " + layers.rendered.missing_kinds.join(", ") : ""))) : "couche désactivée, ou pas de navigateur / d'échantillon de pages") + " |");
     a.push("| Registre de verdicts | " + st(layers.ledger) + " | " + (layers.ledger ? (layers.ledger.reason || (layers.ledger.replayed + " verdict(s) rejoués ; périmés : " + fmt(layers.ledger.stale) + " ; obsolètes : " + fmt(layers.ledger.obsolete) + " ; refusés par le gate moteur : " + fmt(layers.ledger.refused || []) + " ; recommandations non rejouées (non normatives) : " + Number(layers.ledger.recommendations_stripped || 0))) : "") + " |");
     a.push("| Adjudication par agents | " + st(layers.adjudication) + " | " + (layers.adjudication ? layers.adjudication.filled + " verdict(s) reçus, " + layers.adjudication.unfilled + " sans réponse, lots perdus : " + fmt(layers.adjudication.failed_batches) + ", lots partiels (critères du lot sans réponse) : " + fmtPartial(layers.adjudication.partial_batches) + ", verdicts écartés (hors lot, doublons, malformés) : " + layers.adjudication.foreign_dropped + ", citations renvoyées : " + layers.adjudication.citation_rejected + ", recommandations écartées (pas un objet ancré avec un message, ou hors de l'évidence du critère) : " + Number(layers.adjudication.recommendations_dropped || 0) : "") + " |");
     const restoredIds = layers.fold && Array.isArray(layers.fold.citations_restored_ids) ? layers.fold.citations_restored_ids : [];
@@ -2424,6 +2472,7 @@ workflow rgaa_audit:
     ids: "{{outputs.dispatch.batch.ids}}",
     item_paths: "{{outputs.dispatch.batch.item_paths}}",
     brief_paths: "{{outputs.dispatch.batch.brief_paths}}",
+    contract_path: "{{outputs.worklist.contract_path}}",
     contract: "{{outputs.worklist.contract}}",
     prior_issues: "{{outputs.dispatch.batch.prior_issues}}",
     workspace_dir: "{{vars.workspace_dir}}",
