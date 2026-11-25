@@ -27,7 +27,7 @@ func (h *hookChildExecutor) Execute(ctx context.Context, node ir.Node, input map
 // runParentOverChild runs wf with a runner that prepares and runs a real
 // child engine, then calls afterChild with the child's error before
 // returning it to the parent.
-func runParentOverChild(t *testing.T, ctx context.Context, wf *ir.Workflow, childExec NodeExecutor, afterChild func(childErr error)) (error, *store.Run) {
+func runParentOverChild(t *testing.T, ctx context.Context, wf *ir.Workflow, childExec NodeExecutor, afterChild func(childErr error)) (*store.Run, error) {
 	t.Helper()
 	s := tmpStore(t)
 	runner := func(ctx context.Context, req SubbotRequest) (map[string]any, error) {
@@ -50,7 +50,7 @@ func runParentOverChild(t *testing.T, ctx context.Context, wf *ir.Workflow, chil
 	if lerr != nil {
 		t.Fatalf("load parent: %v", lerr)
 	}
-	return err, parent
+	return parent, err
 }
 
 // TestSubbotChildFailureRacingParentCancel: an operator cancel of the parent
@@ -121,7 +121,7 @@ func TestSubbotChildFailureRacingParentCancel(t *testing.T) {
 			if tc.cancelLow {
 				after = func(error) { cancel() }
 			}
-			err, parent := runParentOverChild(t, ctx, tc.wf(), exec, after)
+			parent, err := runParentOverChild(t, ctx, tc.wf(), exec, after)
 			if err == nil {
 				t.Fatal("parent Run returned nil")
 			}
@@ -148,7 +148,7 @@ func TestSubbotParentDeadlineKeepsTimeout(t *testing.T) {
 	// The child's words are whatever it returned when the deadline cut it —
 	// inside its node, or earlier in its own setup — read from the runner.
 	var childErr error
-	err, parent := runParentOverChild(t, ctx, parentSubbotWorkflow(), exec, func(e error) { childErr = e })
+	parent, err := runParentOverChild(t, ctx, parentSubbotWorkflow(), exec, func(e error) { childErr = e })
 	var rt *RuntimeError
 	if !errors.As(err, &rt) || rt.Code != ErrCodeTimeout {
 		t.Fatalf("parent Run error = %v, want TIMEOUT", err)

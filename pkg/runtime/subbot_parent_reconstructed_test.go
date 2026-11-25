@@ -12,7 +12,7 @@ import (
 // runParentOverRunner runs parentSubbotWorkflow over a hand-written runner
 // that cancels the parent before returning childErr, as the operator's
 // cancel of a pipeline reaches the parent and its parked child together.
-func runParentOverRunner(t *testing.T, childErr error) (error, *store.Run) {
+func runParentOverRunner(t *testing.T, childErr error) (*store.Run, error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -26,7 +26,7 @@ func runParentOverRunner(t *testing.T, childErr error) (error, *store.Run) {
 	if lerr != nil {
 		t.Fatalf("load parent: %v", lerr)
 	}
-	return err, parent
+	return parent, err
 }
 
 // TestSubbotReconstructedChildStopIsAStop: a parked child's end comes back
@@ -38,7 +38,7 @@ func runParentOverRunner(t *testing.T, childErr error) (error, *store.Run) {
 func TestSubbotReconstructedChildStopIsAStop(t *testing.T) {
 	for _, code := range []ErrorCode{ErrCodeCancelled, store.FailureInterrupted} {
 		t.Run(string(code), func(t *testing.T) {
-			err, parent := runParentOverRunner(t, &RuntimeError{Code: code, Message: "subbot child run child-1 ended: run cancelled"})
+			parent, err := runParentOverRunner(t, &RuntimeError{Code: code, Message: "subbot child run child-1 ended: run cancelled"})
 			if parent.Status != store.RunStatusCancelled || parent.FailureCode != store.FailureCancelled || !errors.Is(err, ErrRunCancelled) {
 				t.Fatalf("parent = %s/%q (error %q), err = %v, want cancelled", parent.Status, parent.FailureCode, parent.Error, err)
 			}
@@ -51,7 +51,7 @@ func TestSubbotReconstructedChildStopIsAStop(t *testing.T) {
 // an unbounded child stderr cannot bloat the parent's document.
 func TestSubbotChildWordsAreBounded(t *testing.T) {
 	words := "child stderr: " + strings.Repeat("x", 64<<10)
-	_, parent := runParentOverRunner(t, errors.New(words))
+	parent, _ := runParentOverRunner(t, errors.New(words))
 	if parent.Status != store.RunStatusCancelled {
 		t.Fatalf("parent = %s/%q, want cancelled", parent.Status, parent.FailureCode)
 	}

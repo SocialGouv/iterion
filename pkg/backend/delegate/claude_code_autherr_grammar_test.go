@@ -23,7 +23,7 @@ func TestRenderedFailure_unflaggedRenderLeadIsNotEnough(t *testing.T) {
 		if len(s) <= authProseCap {
 			t.Fatalf("%s: fixture is %d bytes — it must exceed the prose cap", name, len(s))
 		}
-		err, readings := renderWithEvidence(t, s, false)
+		readings, err := renderWithEvidence(t, s, false)
 		if err != nil || len(readings) != 0 {
 			t.Errorf("%s: err = %v, readings = %d, want the answer and no evidence", name, err, len(readings))
 		}
@@ -34,7 +34,7 @@ func TestRenderedFailure_unflaggedRenderLeadIsNotEnough(t *testing.T) {
 		if name == "status-less facade body" {
 			continue // carries no status: classified only when flagged
 		}
-		err, _ := renderWithEvidence(t, s, false)
+		_, err := renderWithEvidence(t, s, false)
 		var auth *ErrAuthFailed
 		if !errors.As(err, &auth) {
 			t.Errorf("%s: err = %v, want ErrAuthFailed", name, err)

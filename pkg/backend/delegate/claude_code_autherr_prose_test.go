@@ -12,7 +12,7 @@ import (
 
 // renderWithEvidence drives renderedFailure on one result and returns its
 // error and the usage-cap readings it filed.
-func renderWithEvidence(t *testing.T, text string, isError bool) (error, []usagecap.Reading) {
+func renderWithEvidence(t *testing.T, text string, isError bool) ([]usagecap.Reading, error) {
 	t.Helper()
 	var readings []usagecap.Reading
 	task := Task{}
@@ -20,7 +20,8 @@ func renderWithEvidence(t *testing.T, text string, isError bool) (error, []usage
 	res := text
 	rm := &claudesdk.ResultMessage{Subtype: claudesdk.ResultSuccess, IsError: isError, Result: &res}
 	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
-	return b.renderedFailure(context.Background(), rm, task, "pass 1", credSpawn{}), readings
+	err := b.renderedFailure(context.Background(), rm, task, "pass 1", credSpawn{})
+	return readings, err
 }
 
 // TestRenderedFailure_proseOpeningWithAPIErrorIsAnAnswer: an answer
@@ -37,7 +38,7 @@ func TestRenderedFailure_proseOpeningWithAPIErrorIsAnAnswer(t *testing.T) {
 		if len(s) <= authProseCap {
 			t.Fatalf("%s: fixture is %d bytes — it must exceed the prose cap", name, len(s))
 		}
-		err, readings := renderWithEvidence(t, s, false)
+		readings, err := renderWithEvidence(t, s, false)
 		if err != nil {
 			t.Errorf("%s: answer refused: %v", name, err)
 		}
@@ -53,7 +54,7 @@ func TestRenderedFailure_proseOpeningWithAPIErrorIsAnAnswer(t *testing.T) {
 // credential fleet-wide.
 func TestAuthFailureFast_evidenceNeedsTheRenderShape(t *testing.T) {
 	prose := "The deploy step stopped: the registry answered invalid bearer token."
-	err, readings := renderWithEvidence(t, prose, false)
+	readings, err := renderWithEvidence(t, prose, false)
 	var auth *ErrAuthFailed
 	if !errors.As(err, &auth) {
 		t.Fatalf("err = %v, want ErrAuthFailed", err)
@@ -68,7 +69,7 @@ func TestAuthFailureFast_evidenceNeedsTheRenderShape(t *testing.T) {
 		"anchored render": {`API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"}}`, false},
 		"flagged render":  {prose, true},
 	} {
-		err, readings := renderWithEvidence(t, c.text, c.isError)
+		readings, err := renderWithEvidence(t, c.text, c.isError)
 		if !errors.As(err, &auth) || len(readings) != 1 {
 			t.Errorf("%s: err = %v, readings = %+v, want ErrAuthFailed and one reading", name, err, readings)
 		}
@@ -84,7 +85,7 @@ func TestRenderedFailure_serverStatusDecidesBeforeAuthWords(t *testing.T) {
 		`API Error: 500 {"type":"error","error":{"type":"api_error","message":"authentication_error lookup timed out"}}`,
 	} {
 		for _, isError := range []bool{false, true} {
-			err, readings := renderWithEvidence(t, s, isError)
+			readings, err := renderWithEvidence(t, s, isError)
 			var transient *ErrTransient
 			if !errors.As(err, &transient) {
 				t.Errorf("is_error=%v %.40q: err = %v, want ErrTransient", isError, s, err)
