@@ -1,0 +1,12 @@
+{
+    "head": {
+        "ref": "feat/3594-schedule-outcome-watchdog"
+    },
+    "html_url": "https://github.com/SocialGouv/iterion/pull/3655",
+    "merge_commit_sha": "490067108d72d6135a9860b3a6411354eb86f0dd",
+    "merged_at": "2026-11-25T10:33:41Z",
+    "node_id": "PR_kwDORsIvts8AAAABRo6iBA",
+    "number": 3655,
+    "state": "closed",
+    "title": "feat(server): alarm the operator when a schedule stops producing successful runs"
+}

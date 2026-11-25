@@ -1,0 +1,25 @@
+# Flake quarantine for scripts/ci/testquarantine: import-path<TAB>test<TAB>#ticket.
+#
+# A row takes one test out of the GATING jobs of .github/workflows/tests.yml
+# (test-unit, test-e2e, race-shard, test-native-exec skip it through
+# `go test -skip`) and into the nightly advisory workflow
+# .github/workflows/test-quarantine.yml, which runs exactly these tests under
+# the gating flags (plain, then -race) and fails visibly when one fails.
+#
+# `test` is a `go test -run` path: slash-separated levels, each a regexp the
+# tool anchors (^level$); letters, digits and `_ - . * + ? = : ,` only. The
+# top level names a Test function of THIS package and of no other one — the
+# gating -skip is global to a `go test` invocation, so a name shared with
+# another package would skip that package's test too (the tool's guard
+# refuses it).
+#
+# Every row carries the OPEN ticket that owns the fix. Closing the ticket
+# removes the row in the same change: the nightly job reads each ticket's state
+# and fails on a closed or missing one.
+github.com/SocialGouv/iterion/pkg/backend/model	TestSandboxSeed_AnUnboundableSessionIsLeftBehindNotFailed	#3512
+github.com/SocialGouv/iterion/pkg/backend/model	TestSandboxRelay_AnUnshrinkablePayloadIsRefusedAndReported	#3512
+github.com/SocialGouv/iterion/pkg/runview	TestAlertsOfASuccessorNeverReachAPredecessorsStream	#3624
+github.com/SocialGouv/iterion/pkg/runview	TestAlertRotationReregistersTheSuccessor	#3624
+github.com/SocialGouv/iterion/pkg/runview	TestAlertEpochEndRetiredQueueAndResume	#3624
+github.com/SocialGouv/iterion/pkg/runtime/recovery	TestOwnedExtractionAllowanceAndControl/parent-cancel	#3588
+github.com/SocialGouv/iterion/pkg/runtime	TestBankScratch_quiescesTheSandboxBeforeTarReadsIt/an_archive_that_outlives_the_budget	#3677

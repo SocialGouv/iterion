@@ -1,0 +1,229 @@
+2026-11-25T08:54:51.1332128Z --- PASS: TestTicketMemory_DistinctTickets (0.00s)
+2026-11-25T08:54:51.1332870Z PASS
+2026-11-25T08:54:51.1333709Z ok  	github.com/SocialGouv/iterion/pkg/internal/storekit	1.462s
+2026-11-25T08:54:51.2299117Z === RUN   TestMemoryStore
+2026-11-25T08:54:51.2300633Z === RUN   TestMemoryStore/tenant_scope_+_isolation
+2026-11-25T08:54:51.2343704Z     --- PASS: TestMongoStore/pagination (0.01s)
+2026-11-25T08:54:51.2344211Z PASS
+2026-11-25T08:54:51.2345783Z ok  	github.com/SocialGouv/iterion/pkg/audit	1.281s
+2026-11-25T08:55:07.7193824Z === RUN   TestMongoStore
+2026-11-25T08:55:07.7194593Z === RUN   TestMongoStore/lookup_by_hash_+_verify
+2026-11-25T08:55:07.7225588Z     --- PASS: TestUsable/revoked (0.00s)
+2026-11-25T08:55:07.7226111Z PASS
+2026-11-25T08:55:07.7226644Z ok  	github.com/SocialGouv/iterion/pkg/pat	1.064s
+2026-11-25T08:55:50.8626595Z === RUN   TestForgeCredential_SealOpenRoundTrip
+2026-11-25T08:55:50.8627636Z --- PASS: TestForgeCredential_SealOpenRoundTrip (0.00s)
+2026-11-25T08:55:50.9507108Z     --- PASS: TestAnUntrustedRunLearnsNoAliasesFromAReadMiss/the_tenant's_own_run_keeps_the_suggestion (0.00s)
+2026-11-25T08:55:50.9507853Z PASS
+2026-11-25T08:55:50.9508250Z ok  	github.com/SocialGouv/iterion/pkg/connection	16.593s
+2026-11-25T08:56:13.0994215Z === RUN   TestCron
+2026-11-25T08:56:13.1106312Z --- PASS: TestCron (0.00s)
+2026-11-25T08:56:13.1159824Z --- PASS: TestRound2HeldIntentDoesNotRerunConsumedGuard (0.00s)
+2026-11-25T08:56:13.1160601Z PASS
+2026-11-25T08:56:13.1161210Z ok  	github.com/SocialGouv/iterion/pkg/cloudsched	16.979s
+2026-11-25T08:59:25.7802506Z === RUN   TestCredentialChange_ADisableLandingAfterTheCommitLeavesNoSession
+2026-11-25T08:59:25.7805109Z === RUN   TestCredentialChange_ADisableLandingAfterTheCommitLeavesNoSession/password_change
+2026-11-25T08:59:25.9528787Z     --- PASS: TestAlsoRefusingKeepsWhatTheCallerNamed/the_caller's_array_is_never_written_into (0.00s)
+2026-11-25T08:59:25.9529458Z PASS
+2026-11-25T08:59:25.9529827Z ok  	github.com/SocialGouv/iterion/pkg/auth	209.573s
+2026-11-25T08:59:25.9530309Z === RUN   TestMongoStore
+2026-11-25T08:59:25.9531056Z --- PASS: TestMongoStore (1.38s)
+2026-11-25T08:59:25.9535322Z --- PASS: TestMemoryStore_NothingRedeemableRestsInIt (0.00s)
+2026-11-25T08:59:25.9535828Z PASS
+2026-11-25T08:59:25.9536236Z ok  	github.com/SocialGouv/iterion/pkg/auth/desktopsso	1.440s
+2026-11-25T08:59:25.9536781Z === RUN   TestGenericConnector_HappyPath
+2026-11-25T08:59:25.9537800Z --- PASS: TestGenericConnector_HappyPath (0.01s)
+2026-11-25T08:59:25.9564186Z --- PASS: TestSafeGenericClientHonoursItsStrictness (0.00s)
+2026-11-25T08:59:25.9564670Z PASS
+2026-11-25T08:59:25.9565071Z ok  	github.com/SocialGouv/iterion/pkg/auth/oidc	1.465s
+2026-11-25T08:59:25.9565870Z === RUN   TestMemoryDomainStore_TenantsForDomain
+2026-11-25T08:59:25.9566443Z --- PASS: TestMemoryDomainStore_TenantsForDomain (0.00s)
+2026-11-25T08:59:25.9607511Z --- PASS: TestOIDCSlugRoundTrip (0.00s)
+2026-11-25T08:59:25.9608039Z PASS
+2026-11-25T08:59:25.9608425Z ok  	github.com/SocialGouv/iterion/pkg/auth/orgsso	0.101s
+2026-11-25T08:59:25.9608898Z === RUN   TestMongoStore
+2026-11-25T08:59:25.9609263Z --- PASS: TestMongoStore (0.59s)
+2026-11-25T08:59:25.9611216Z --- PASS: TestMemoryStore_Expiry (0.00s)
+2026-11-25T08:59:25.9611766Z PASS
+2026-11-25T08:59:25.9612150Z ok  	github.com/SocialGouv/iterion/pkg/auth/wsticket	0.649s
+2026-11-25T08:59:25.9612811Z === RUN   TestBotBindingTwins_AContextBindingReadsBackWholeOnEitherTwin
+2026-11-25T08:59:25.9613617Z === RUN   TestBotBindingTwins_AContextBindingReadsBackWholeOnEitherTwin/memory
+2026-11-25T08:59:26.0457326Z --- PASS: TestOnlyBaseURLNamesZAISpellsTheZAIHosts (3.07s)
+2026-11-25T08:59:26.0457675Z PASS
+2026-11-25T08:59:26.0457928Z ok  	github.com/SocialGouv/iterion/pkg/secrets	12.747s
+2026-11-25T08:59:26.0458101Z === RUN   TestMongoCounter
+2026-11-25T08:59:26.0458322Z === RUN   TestMongoCounter/unlimited_still_meters
+2026-11-25T08:59:26.0487131Z --- PASS: TestForkAuthorSubject_SeparatorInASegmentCannotMergeTwoContributors (0.00s)
+2026-11-25T08:59:26.0487326Z PASS
+2026-11-25T08:59:26.0487581Z ok  	github.com/SocialGouv/iterion/pkg/orgusage	0.968s
+2026-11-25T08:59:26.0487752Z === RUN   TestMemoryCounter_Conformance
+2026-11-25T08:59:26.0487970Z --- PASS: TestMemoryCounter_Conformance (0.00s)
+2026-11-25T08:59:26.0488398Z --- PASS: TestMongoCounter_Conformance (0.47s)
+2026-11-25T08:59:26.0488509Z PASS
+2026-11-25T08:59:26.0489072Z ok  	github.com/SocialGouv/iterion/pkg/credusage	0.498s
+2026-11-25T08:59:26.0489271Z === RUN   TestAcquire_servesALentAPIKey
+2026-11-25T08:59:26.0489471Z --- PASS: TestAcquire_servesALentAPIKey (0.00s)
+2026-11-25T08:59:26.0878479Z --- PASS: TestPoolReview6_G10_anInterimLandingAfterTheFinalChargesNoSettledLease (0.00s)
+2026-11-25T08:59:26.0878614Z PASS
+2026-11-25T08:59:26.0878842Z ok  	github.com/SocialGouv/iterion/pkg/credpool	12.702s
+2026-11-25T08:59:26.0879034Z === RUN   TestTheStoreNeverHoldsADraft
+2026-11-25T08:59:26.0879253Z --- PASS: TestTheStoreNeverHoldsADraft (0.00s)
+2026-11-25T08:59:26.0891268Z --- PASS: TestMemoryStore_VersionHistory (0.00s)
+2026-11-25T08:59:26.0891402Z PASS
+2026-11-25T08:59:26.0891629Z ok  	github.com/SocialGouv/iterion/pkg/botsource	3.105s
+2026-11-25T08:59:26.0891828Z === RUN   TestNextConfigStamp
+2026-11-25T08:59:26.0892009Z --- PASS: TestNextConfigStamp (0.00s)
+2026-11-25T08:59:26.1022471Z --- PASS: TestMemoryStoresAnswerAnExpiredReadWithItsError (0.00s)
+2026-11-25T08:59:26.1022606Z PASS
+2026-11-25T08:59:26.1022864Z ok  	github.com/SocialGouv/iterion/pkg/pricefeed	9.488s
+2026-11-25T08:59:26.1023476Z === RUN   TestRequireBoundObservationSourceAdmitsOnlyItsReceiver
+2026-11-25T08:59:26.1023839Z === PAUSE TestRequireBoundObservationSourceAdmitsOnlyItsReceiver
+2026-11-25T08:59:26.1265867Z     --- SKIP: TestMongoResolvedReplayTailAndSourceClose/p1-f2 (0.00s)
+2026-11-25T08:59:26.1266001Z PASS
+2026-11-25T08:59:26.1266373Z ok  	github.com/SocialGouv/iterion/pkg/runview/runstream	129.321s
+2026-11-25T08:59:26.1266552Z === RUN   TestPurgedByCascadeTellsTheTruth
+2026-11-25T08:59:26.1266868Z --- PASS: TestPurgedByCascadeTellsTheTruth (0.00s)
+2026-11-25T08:59:26.1291100Z --- PASS: TestPurgeOrg_Mongo_ResumesAfterADeferredPass (2.59s)
+2026-11-25T08:59:26.1291348Z PASS
+2026-11-25T08:59:26.1291607Z ok  	github.com/SocialGouv/iterion/pkg/cloud/orgsweep	24.561s
+2026-11-25T08:59:26.1291897Z === RUN   TestAccountReadingEqualTimestampIsOrderIndependent
+2026-11-25T08:59:26.1292221Z --- PASS: TestAccountReadingEqualTimestampIsOrderIndependent (0.00s)
+2026-11-25T08:59:26.1332458Z --- PASS: TestTrustFromEnv (0.00s)
+2026-11-25T08:59:26.1332567Z PASS
+2026-11-25T08:59:26.1332794Z ok  	github.com/SocialGouv/iterion/pkg/usagecap	0.736s
+2026-11-25T09:02:57.5417038Z === RUN   TestApplyPatchDropsTheMintedGrantFromACardsBotArgs
+2026-11-25T09:02:57.5512531Z --- PASS: TestApplyPatchDropsTheMintedGrantFromACardsBotArgs (0.00s)
+2026-11-25T09:02:57.8222354Z --- PASS: TestMongoStore_TriggerPrimitives (1.90s)
+2026-11-25T09:02:57.8223046Z PASS
+2026-11-25T09:02:57.8223674Z ok  	github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo	407.597s
+2026-11-25T09:02:57.8224542Z === RUN   TestBulkDecodeKeepsReadableSiblingsAndNamesCorruption
+2026-11-25T09:02:57.8225571Z === RUN   TestBulkDecodeKeepsReadableSiblingsAndNamesCorruption/orgs
+2026-11-25T09:02:58.0334796Z     --- PASS: TestMongoStore_UserSearch/the_page_applies_AFTER_the_filter (0.02s)
+2026-11-25T09:02:58.0335380Z PASS
+2026-11-25T09:02:58.0335762Z ok  	github.com/SocialGouv/iterion/pkg/identity	5.214s
+2026-11-25T09:02:58.0336845Z === RUN   TestDispatcherHumanInputNotifiesOwner
+2026-11-25T09:02:58.0337449Z --- PASS: TestDispatcherHumanInputNotifiesOwner (0.03s)
+2026-11-25T09:02:58.0449205Z --- PASS: TestUsagePark_TheBodyNamesTheInstantTheRunComesBack (0.03s)
+2026-11-25T09:02:58.0450120Z PASS
+2026-11-25T09:02:58.0450534Z ok  	github.com/SocialGouv/iterion/pkg/usernotify	0.574s
+2026-11-25T09:02:58.0451297Z === RUN   TestSinkDeliverAndPrune
+2026-11-25T09:02:58.0452097Z --- PASS: TestSinkDeliverAndPrune (0.02s)
+2026-11-25T09:02:58.0459675Z --- PASS: TestMongoSubscriptionStore_DeleteByUser (0.79s)
+2026-11-25T09:02:58.0460533Z PASS
+2026-11-25T09:02:58.0461299Z ok  	github.com/SocialGouv/iterion/pkg/usernotify/webpush	0.860s
+2026-11-25T09:02:58.0462250Z === RUN   TestProjectConfig_StripsEverythingElse
+2026-11-25T09:02:58.0462820Z --- PASS: TestProjectConfig_StripsEverythingElse (0.00s)
+2026-11-25T09:02:58.0651344Z --- PASS: TestMongoStore_ScrubActor (0.63s)
+2026-11-25T09:02:58.0651830Z PASS
+2026-11-25T09:02:58.0652499Z ok  	github.com/SocialGouv/iterion/pkg/configshare	0.650s
+2026-11-25T09:02:58.0653338Z === RUN   TestFetch_RunsGitWithoutAutoMaintenance
+2026-11-25T09:02:58.0654181Z --- PASS: TestFetch_RunsGitWithoutAutoMaintenance (0.34s)
+2026-11-25T09:02:58.1611213Z     --- PASS: TestPublish_NeverRetiresACompleteImmutableTree/a_peer_that_repairs_an_incomplete_final_is_accepted,_not_retired (0.00s)
+2026-11-25T09:02:58.1612034Z PASS
+2026-11-25T09:02:58.1612436Z ok  	github.com/SocialGouv/iterion/pkg/pluginsource	1.982s
+2026-11-25T09:02:58.1613168Z === RUN   TestParseProposalsRejectsWholeMalformedList
+2026-11-25T09:02:58.1614857Z --- PASS: TestParseProposalsRejectsWholeMalformedList (0.00s)
+2026-11-25T09:02:58.2059440Z         --- PASS: TestMissionReconcileCandidates/mongo/lease_boundary_and_terminal_states (0.45s)
+2026-11-25T09:02:58.2060338Z PASS
+2026-11-25T09:02:58.2060751Z ok  	github.com/SocialGouv/iterion/pkg/assistantmission	98.301s
+2026-11-25T09:02:58.2061331Z === RUN   TestWatchStoreReconciliationAndCompletion
+2026-11-25T09:02:58.2061895Z === RUN   TestWatchStoreReconciliationAndCompletion/fs
+2026-11-25T09:02:58.2110398Z --- PASS: TestFSStoreTreeTrackingAndPerRunCursorAreMonotonic (0.10s)
+2026-11-25T09:02:58.2110928Z PASS
+2026-11-25T09:02:58.2111300Z ok  	github.com/SocialGouv/iterion/pkg/runwatch	32.016s
+2026-11-25T09:02:58.2313653Z === RUN   TestConfigHoldAndAllowlistTagsStayPinned
+2026-11-25T09:02:58.2315596Z --- PASS: TestConfigHoldAndAllowlistTagsStayPinned (0.00s)
+2026-11-25T09:02:58.3258867Z --- PASS: TestMemoryCounter_OrgAndWebhookCaps (0.00s)
+2026-11-25T09:02:58.3259779Z PASS
+2026-11-25T09:02:58.3260597Z ok  	github.com/SocialGouv/iterion/pkg/webhooks	6.926s
+2026-11-25T09:02:58.3261563Z === RUN   TestParseRequest_HappyPath
+2026-11-25T09:02:58.3262257Z --- PASS: TestParseRequest_HappyPath (0.00s)
+2026-11-25T09:02:58.3269385Z --- PASS: TestParseRequest_RejectsMalformedJSON (0.00s)
+2026-11-25T09:02:58.3270192Z PASS
+2026-11-25T09:02:58.3270885Z ok  	github.com/SocialGouv/iterion/pkg/webhooks/generic	0.007s
+2026-11-25T09:02:58.3271823Z === RUN   TestInAllowlist
+2026-11-25T09:02:58.3302476Z --- PASS: TestInAllowlist (0.00s)
+2026-11-25T09:02:58.3780330Z --- PASS: TestNoteCommand (0.00s)
+2026-11-25T09:02:58.3780733Z PASS
+2026-11-25T09:02:58.3781176Z ok  	github.com/SocialGouv/iterion/pkg/webhooks/gitlab	0.027s
+2026-11-25T09:02:58.3781897Z === RUN   TestParseIssues_GitHubLabeled
+2026-11-25T09:02:58.3782451Z --- PASS: TestParseIssues_GitHubLabeled (0.00s)
+2026-11-25T09:02:58.4091188Z --- PASS: TestParseReviewCommentUnnamedHeadRepoIsNotProvenSameRepo (0.00s)
+2026-11-25T09:02:58.4092088Z PASS
+2026-11-25T09:02:58.4092506Z ok  	github.com/SocialGouv/iterion/pkg/webhooks/prforge	0.021s
+2026-11-25T09:02:58.4093187Z === RUN   TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow
+2026-11-25T09:02:58.4094159Z --- PASS: TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow (0.00s)
+2026-11-25T09:02:58.9824020Z --- PASS: TestTheLaunchResolvesOnlyValuelessSecretDeclarations (0.00s)
+2026-11-25T09:02:58.9824139Z PASS
+2026-11-25T09:02:58.9824449Z ok  	github.com/SocialGouv/iterion/pkg/server/cloudpublisher	34.369s
+2026-11-25T09:02:58.9824600Z === RUN   TestParseProjectRef
+2026-11-25T09:02:58.9824781Z --- PASS: TestParseProjectRef (0.00s)
+2026-11-25T09:02:59.0429212Z     --- PASS: TestProvisionStoreTwins/mongo (1.66s)
+2026-11-25T09:02:59.0429334Z PASS
+2026-11-25T09:02:59.0429538Z ok  	github.com/SocialGouv/iterion/pkg/forge	7.982s
+2026-11-25T09:02:59.0429734Z === RUN   TestForgejoCreateHook_TypeAndConfig
+2026-11-25T09:02:59.0429954Z --- PASS: TestForgejoCreateHook_TypeAndConfig (0.00s)
+2026-11-25T09:02:59.0444902Z --- PASS: TestSetCommitStatusInterface (0.00s)
+2026-11-25T09:02:59.0445007Z PASS
+2026-11-25T09:02:59.0445261Z ok  	github.com/SocialGouv/iterion/pkg/forge/forgejo	0.087s
+2026-11-25T09:02:59.0445572Z === RUN   TestAppClientRecordsAStatusWriteRefusalForTheNextPreflight
+2026-11-25T09:02:59.0445957Z --- PASS: TestAppClientRecordsAStatusWriteRefusalForTheNextPreflight (0.51s)
+2026-11-25T09:02:59.0581886Z --- PASS: TestWorkflowDispatchInstallationPermissionsIsExact (0.00s)
+2026-11-25T09:02:59.0581987Z PASS
+2026-11-25T09:02:59.0582324Z ok  	github.com/SocialGouv/iterion/pkg/forge/github	4.080s
+2026-11-25T09:02:59.0582686Z === RUN   TestMintProjectBot_RequestShapeAndCredential
+2026-11-25T09:02:59.0582955Z --- PASS: TestMintProjectBot_RequestShapeAndCredential (0.01s)
+2026-11-25T09:03:02.8413420Z --- PASS: TestSetCommitStatus_VerdictRejectionSurfaces (0.00s)
+2026-11-25T09:03:02.8413910Z PASS
+2026-11-25T09:03:02.8414308Z ok  	github.com/SocialGouv/iterion/pkg/forge/gitlab	2.398s
+2026-11-25T09:03:02.8414829Z === RUN   TestPromoteIsIdempotent
+2026-11-25T09:03:02.8415265Z --- PASS: TestPromoteIsIdempotent (0.06s)
+2026-11-25T09:03:02.9820985Z --- PASS: TestWatchdogEventsSpineVisibility (0.00s)
+2026-11-25T09:03:02.9821426Z PASS
+2026-11-25T09:03:02.9821804Z ok  	github.com/SocialGouv/iterion/pkg/trigger	12.609s
+2026-11-25T09:03:02.9822488Z === RUN   TestRun_aLeaderWhoseEveryPassIsUnreachableHandsOverToAHealthyPeer
+2026-11-25T09:03:02.9824029Z --- PASS: TestRun_aLeaderWhoseEveryPassIsUnreachableHandsOverToAHealthyPeer (0.00s)
+2026-11-25T09:03:03.1949557Z --- PASS: TestTheSpecHealthLedgerCoversOneSiteNotEverySpecASymbolBuilds (0.00s)
+2026-11-25T09:03:03.1950185Z PASS
+2026-11-25T09:03:03.1950708Z ok  	github.com/SocialGouv/iterion/pkg/lease	31.027s
+2026-11-25T09:03:03.1951268Z === RUN   TestBotVars_SettingsChangeIsLiveThroughExpansion
+2026-11-25T09:03:03.1951931Z --- PASS: TestBotVars_SettingsChangeIsLiveThroughExpansion (0.00s)
+2026-11-25T09:03:03.2035027Z --- PASS: TestRunnerPoolsValidate (0.00s)
+2026-11-25T09:03:03.2035438Z PASS
+2026-11-25T09:03:03.2035837Z ok  	github.com/SocialGouv/iterion/pkg/platformcfg	5.706s
+2026-11-25T09:18:05.8242711Z === RUN   TestAdminBots_PlatformOverrideLifecycle
+2026-11-25T09:18:05.8243902Z --- PASS: TestAdminBots_PlatformOverrideLifecycle (0.02s)
+2026-11-25T09:18:09.5620111Z --- PASS: TestReadyzNeverMisreportsAFinishedCheck (4.62s)
+2026-11-25T09:18:09.5620275Z PASS
+2026-11-25T09:18:09.5620790Z ok  	github.com/SocialGouv/iterion/pkg/server	1132.062s
+2026-11-25T09:18:09.5621096Z === RUN   TestConfigDir_UnderGoTestIsTheTestProcessDir
+2026-11-25T09:18:09.5621679Z --- PASS: TestConfigDir_UnderGoTestIsTheTestProcessDir (0.00s)
+2026-11-25T09:18:09.5633440Z --- PASS: TestRegisterWithStoreCanClearPinnedEnvFile (0.00s)
+2026-11-25T09:18:09.5633601Z PASS
+2026-11-25T09:18:09.5633899Z ok  	github.com/SocialGouv/iterion/pkg/server/projects	0.554s
+2026-11-25T09:18:09.5634702Z === RUN   TestMemoryStoreConformance
+2026-11-25T09:18:09.5635333Z === RUN   TestMemoryStoreConformance/accept_writes_a_delivery_once_and_keeps_what_the_row_became
+2026-11-25T09:18:09.6782160Z --- PASS: TestWorkerRetriesAPairWhoseDeliveryCannotBeRead (0.00s)
+2026-11-25T09:18:09.6782742Z PASS
+2026-11-25T09:18:09.6783189Z ok  	github.com/SocialGouv/iterion/pkg/connector/intake	22.307s
+2026-11-25T09:18:09.6783766Z === RUN   TestMemoryStoreConformance
+2026-11-25T09:18:09.6784627Z === RUN   TestMemoryStoreConformance/ensure_writes_a_poller_once,_due_at_once,_at_generation_zero
+2026-11-25T09:18:09.7026417Z     --- PASS: TestMongoStoreConformance/a_holder_must_be_named (0.22s)
+2026-11-25T09:18:09.7027118Z PASS
+2026-11-25T09:18:09.7027740Z ok  	github.com/SocialGouv/iterion/pkg/connector/poller	13.149s
+2026-11-25T09:18:45.5192243Z === RUN   TestBlobSelectionRetainsOriginalDataScope
+2026-11-25T09:18:45.5195534Z === PAUSE TestBlobSelectionRetainsOriginalDataScope
+2026-11-25T09:33:29.9052316Z     --- PASS: TestRunMetadataPublicMutatorsRefuseFuture/clear-retry (0.11s)
+2026-11-25T09:33:29.9053816Z     --- PASS: TestRunMetadataPublicMutatorsRefuseFuture/abandon-retry (0.30s)
+2026-11-25T09:33:45.5196239Z panic: test timed out after 15m0s
+2026-11-25T09:33:45.5197505Z 	running tests:
+2026-11-25T09:33:45.5223402Z 		TestRunMetadataPublicWireGuard (40s)
+2026-11-25T09:33:45.5249743Z 		TestRunMetadataPublicWireGuard/acquisition/malformed (16s)
+2026-11-25T09:33:45.5250470Z 
+2026-11-25T09:33:45.5250680Z goroutine 137114 [running]:
+2026-11-25T09:33:45.6361465Z created by go.mongodb.org/mongo-driver/v2/x/mongo/driver/topology.(*Server).Connect in goroutine 136990
+2026-11-25T09:33:45.6362752Z 	/home/runner/_work/iterion/iterion/vendor/go.mongodb.org/mongo-driver/v2/x/mongo/driver/topology/server.go:278 +0x1bb
+2026-11-25T09:33:45.6363683Z FAIL	github.com/SocialGouv/iterion/pkg/store/mongo	900.081s
+2026-11-25T09:33:45.6364153Z FAIL
+2026-11-25T09:33:45.7157222Z ##[error]Process completed with exit code 1.
+2026-11-25T09:33:45.7175925Z ##[debug]Finishing: Mongo conformance harness

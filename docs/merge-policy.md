@@ -250,6 +250,55 @@ hash slice of the package's top-level tests
 (`scripts/ci/testshards -tests ./pkg/server -n 3 -i <shard>` under
 `GOFLAGS=-race`) beside its packages; a discovery failure reddens the shard.
 
+## main-watch: a red main is rerun, quarantined or reverted
+
+Decided 2026-11-25 (#3692). The queue lets the heavy layer reach `main`
+unproven, so `main`'s own runs are the witness, and a deterministic workflow,
+`.github/workflows/main-watch.yml` (no agent), acts on every run of
+`🧪 Tests` on `main`, push or schedule:
+
+| what the run shows | what main-watch does |
+| --- | --- |
+| red on attempt 1 | reruns the failed jobs, once, only if it is `main`'s newest run (push or nightly): a rerun joins the concurrency group and could cancel a newer run, so an older red run is left to the newer one, which main-watch names |
+| green on the rerun: a **flake** | a `flaky:` ticket per failing test under epic #1410, or a comment on the open one (a person's `flaky:` ticket naming the package and the test counts), and one pull request adding the rows to `scripts/ci/test-quarantine.tsv`, auto-merge armed |
+| red on the rerun: a **regression** | one `main red` ticket naming the failing tests and the pull requests merged since the last green run |
+| still red 4 h after the red run started | a pull request reverting the most recently merged suspect, auto-merge armed, and a comment on the original |
+| green | the episode's revert pull request closes if still open, then the `main red` ticket closes |
+
+Failing tests are read from the failed jobs' logs (`--- FAIL` lines, and the
+tests a `-timeout` panic lists). A job that failed with no FAIL line is
+infrastructure: rerun only, never quarantined, never reverted. A job past its
+`timeout-minutes` concludes cancelled: the ticket names it as a hang (and the
+`<pkg>.test` the runner killed), never quarantined, never reverted. A rerun
+cancelled by a newer push leaves no verdict: main-watch says so and lets the
+newer run judge `main`. A row is added
+only for a test of a job that skips the list (`test-unit`, `test-e2e`,
+`race-shard`, `test-native-exec`, read from `tests.yml` itself); a flake in
+another job gets its ticket and no row. Suspects come from the `(#N)` squash
+subjects between the two runs' commits; the most recent is the one merged
+last. A `(#N)` naming an issue (a commit landed outside a pull request) hands
+the revert to a person. main-watch never reverts a revert or one of its own `main-watch/*`
+changes, reverts once per red episode, and hands a revert that does not apply
+to a person on the ticket.
+
+A half-hour schedule runs the revert clock and judges `main`'s newest run, so
+a missed event is caught; markers in the tickets and branch names keyed by run
+and by pull request make a second judgement a no-op, and a flake pass that failed
+half-way is finished by the next. A marker counts only in an issue or comment
+written by `github-actions[bot]`, and a person's `flaky:` ticket only when its
+author is an owner, member or collaborator: anyone can open an issue here. The job's
+`GITHUB_TOKEN` reruns, writes the tickets and comments on the pull requests; the token-bureau App token
+pushes the branches and opens the pull requests, whose checks a
+`GITHUB_TOKEN` pull request would never start. The job runs only for push and
+schedule runs of `main` from this repository, checks out `main`, interpolates
+nothing into a shell, and `scripts/ci/mainwatch` refuses any other run again;
+`internal/ciguard/main_watch_test.go` pins each line.
+
+To see a decision without acting, dispatch main-watch with `dry_run` (the
+default) and a `run_id` — everything is read, every write printed. To stop it,
+disable the workflow (`gh workflow disable main-watch.yml`); to keep a
+reverted change, close its revert pull request and fix `main`.
+
 ## The one verified skip: the Homebrew tap update
 
 `brew-update.yml` opens one pull request a night, `chore(brew): update tap to

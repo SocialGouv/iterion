@@ -1,0 +1,12 @@
+{
+    "head": {
+        "ref": "feat/glm-5-4-default"
+    },
+    "html_url": "https://github.com/SocialGouv/iterion/pull/3644",
+    "merge_commit_sha": "d49ced5d4a1e344c5fff0220f250577f53c41efb",
+    "merged_at": "2026-11-25T08:38:28Z",
+    "node_id": "PR_kwDORsIvts8AAAABRm1s6Q",
+    "number": 3644,
+    "state": "closed",
+    "title": "feat(models): default z.ai GLM to glm-5.4"
+}

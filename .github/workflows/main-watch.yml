@@ -1,0 +1,134 @@
+# main-watch (#3692) keeps main from staying red while the merge queue gates
+# on the light layer only: it judges every run of 🧪 Tests on main — each push
+# and the nightly — and acts, deterministically, with no agent:
+#
+#   red on attempt 1      rerun the failed jobs, once
+#   green on the rerun    a FLAKE: a `flaky:` ticket per failing test under
+#                         epic #1410 (or a comment on the open one) and a pull
+#                         request adding its row to scripts/ci/test-quarantine.tsv,
+#                         auto-merge armed
+#   red on the rerun      a REGRESSION: one "main red" ticket naming the failing
+#                         tests and the pull requests merged since the last
+#                         green run
+#   red for 4 h           a revert pull request of the most recently merged
+#                         suspect, auto-merge armed, and a comment on it
+#   green                 the episode's open revert pull request closes, then
+#                         the main-red ticket
+#
+# The decisions live in scripts/ci/mainwatch (tested offline on recorded runs);
+# this file only wires them. The schedule is the revert clock, and it also
+# judges main's newest run, so an event this workflow missed is caught within
+# 30 minutes; every decision is idempotent, so judging a run twice changes
+# nothing.
+#
+# Trust boundary (internal/ciguard's main_watch_test.go pins each line): a
+# workflow_run job runs with this repository's secrets whatever triggered the
+# watched run, and `branches: [main]` also matches a fork's pull request from
+# a branch called main. So the job runs only for a push or schedule run from
+# THIS repository; it checks out main, never the watched run's head; no
+# expression is interpolated into a shell; and scripts/ci/mainwatch refuses
+# the same runs again, which also covers a dispatched run id.
+#
+# Two tokens: the job's GITHUB_TOKEN reruns, files issues and comments on
+# issues and pull requests (GitHub gates a comment on a pull request on
+# `pull-requests`, not `issues`); the token-bureau App token pushes branches
+# and opens pull requests, because a pull request opened with GITHUB_TOKEN
+# starts no workflow and could never get the checks its merge needs.
+#
+# Dry run: dispatch with `dry_run` (the default) and an optional `run_id` —
+# everything is read, every write is printed instead of made. Without a
+# run_id, a dispatch is a sweep.
+name: main-watch
+
+on:
+  workflow_run:
+    workflows: ["🧪 Tests"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # :11 and :41 — off the :00/:30 marks where every scheduled workflow lands.
+    - cron: "11,41 * * * *"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "A 🧪 Tests run id on main to judge; empty sweeps main's newest run and the revert clock"
+        required: false
+        default: ""
+      dry_run:
+        description: "Print every write instead of making it"
+        type: boolean
+        default: true
+
+permissions: {}
+
+# One judge at a time, none dropped: the decisions read then write, and a
+# pending workflow_run event replaced by a newer one would be a run nobody
+# judges until the next sweep.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  watch:
+    if: >-
+      github.repository == 'SocialGouv/iterion' && (
+      github.event_name != 'workflow_run' || (
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write   # rerun the failed jobs of a red run
+      issues: write    # flake and main-red tickets, comments, sub-issues
+      pull-requests: write  # comment on the reverted and the revert pull requests
+      id-token: write  # SocialGouv/token-bureau (OIDC exchange)
+    steps:
+      - name: Get GitHub App Token
+        id: token
+        uses: SocialGouv/token-bureau@1ff14fd08c4972ea9c65a2b958c7ce41d4f28036 # main
+        with:
+          token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
+          audience: socialgouv
+
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Judge
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ steps.token.outputs.token }}
+          EVENT: ${{ github.event_name }}
+          WATCHED_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=()
+          case "$EVENT" in
+            workflow_run) args=(-run-id "$WATCHED_RUN_ID") ;;
+            schedule) args=(-sweep) ;;
+            workflow_dispatch)
+              if [ -n "$INPUT_RUN_ID" ]; then args=(-run-id "$INPUT_RUN_ID"); else args=(-sweep); fi
+              if [ "$INPUT_DRY_RUN" = "true" ]; then args+=(-dry-run); fi
+              ;;
+            *) echo "::error::main-watch does not handle the $EVENT event"; exit 1 ;;
+          esac
+          go run -mod=vendor ./scripts/ci/mainwatch "${args[@]}"
