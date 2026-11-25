@@ -19,6 +19,12 @@
 #   - leg 5 of the bench runs the BENCH's own `Confine` (built from HEAD), not
 #     the image's; legs 1-4, 6 and 7 exercise the image's own `iterion`.
 #
+# TWO POSTURES. `--posture runner` (the default) measures the chart's runner
+# pod, the in-pod topology. `--posture sandbox` measures the pod the kubernetes
+# sandbox driver creates for a run (#3444) — the posture a sandboxed claw node's
+# script host is born in — rendered by the driver's own builder so it cannot
+# drift from what a run gets.
+#
 # THE ONE THING IT VARIES, and refuses to vary: the seccomp profile. The
 # measured pod and its Unconfined twin share uid, capabilities, no_new_privs and
 # resources, so `Seccomp: 2` vs `Seccomp: 0` attributes to the profile alone. If
@@ -69,6 +75,20 @@ usage: codemode-remote-bench.sh --bench-image <ref> --kubeconfig <path> --namesp
                   decide; the bench refuses to measure unless they are declared,
                   and then requires an EXACT match in both directions.
   --pull-policy   IfNotPresent (default) or Never.
+  --posture       runner (default) or sandbox. `runner` measures the chart's
+                  runner pod, written here by hand because no Go builder
+                  produces it. `sandbox` measures the pod the KUBERNETES
+                  SANDBOX DRIVER creates for a run (#3444): rendered by the
+                  driver's own builder (scripts/ci/sandboxbenchpod), so the
+                  posture measured is the one a sandboxed run gets. Build the
+                  bench image FROM the deployment's sandbox image.
+  --sandbox-user  the sandbox spec's `user` (sandbox posture only). Empty, the
+                  default, is what a spec naming only an image resolves to:
+                  the image's own USER runs, and --uid must name it. The arm
+                  compares the measured pod with the namespace's LIVE sandbox
+                  pods and refuses a posture none of them runs.
+  --name-prefix   prefix of the pod names (default codemode-posture); the run
+                  appends its timestamp.
   --keep          leave the pods behind for inspection.
   --max-wait      seconds to wait for terminal phases (default 600).
 
@@ -78,10 +98,10 @@ USAGE
 }
 
 BENCH_IMAGE="" KUBECONFIG_PATH="" CONTEXT="" NS="" CREATE_NS="" UID_WANT=1000 EXPECT_GROUPS=""
-PULL_POLICY=IfNotPresent KEEP="" MAX_WAIT=600
+PULL_POLICY=IfNotPresent KEEP="" MAX_WAIT=600 POSTURE_OF=runner SANDBOX_USER="" NAME_PREFIX=codemode-posture
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--bench-image | --kubeconfig | --context | --namespace | --uid | --expect-groups | --pull-policy | --max-wait)
+	--bench-image | --kubeconfig | --context | --namespace | --uid | --expect-groups | --pull-policy | --max-wait | --posture | --sandbox-user | --name-prefix)
 		[ $# -ge 2 ] || die "$1 needs a value"
 		case "$1" in
 		--bench-image) BENCH_IMAGE=$2 ;;
@@ -92,6 +112,9 @@ while [ $# -gt 0 ]; do
 		--expect-groups) EXPECT_GROUPS=$2 ;;
 		--pull-policy) PULL_POLICY=$2 ;;
 		--max-wait) MAX_WAIT=$2 ;;
+		--posture) POSTURE_OF=$2 ;;
+		--sandbox-user) SANDBOX_USER=$2 ;;
+		--name-prefix) NAME_PREFIX=$2 ;;
 		esac
 		shift 2
 		;;
@@ -107,6 +130,14 @@ done
 case "$UID_WANT" in '' | *[!0-9]*) die "--uid must be a number, got '$UID_WANT'" ;; esac
 case "$MAX_WAIT" in '' | *[!0-9]*) die "--max-wait must be a number, got '$MAX_WAIT'" ;; esac
 case "$PULL_POLICY" in IfNotPresent | Never) ;; *) die "--pull-policy must be IfNotPresent or Never, got '$PULL_POLICY'" ;; esac
+case "$POSTURE_OF" in runner | sandbox) ;; *) die "--posture must be runner or sandbox, got '$POSTURE_OF'" ;; esac
+[ -z "$SANDBOX_USER" ] || [ "$POSTURE_OF" = sandbox ] || die "--sandbox-user only means something with --posture sandbox"
+# The prefix names pods this script later deletes BY NAME: a DNS label, and
+# short enough that the timestamp and the longest suffix still fit in 63.
+case "$NAME_PREFIX" in
+'' | -* | *[!a-z0-9-]*) die "--name-prefix must be lower-case letters, digits and dashes, got '$NAME_PREFIX'" ;;
+esac
+[ "${#NAME_PREFIX}" -le 30 ] || die "--name-prefix is longer than 30 characters: '$NAME_PREFIX'"
 # Group IDS, not names: the bench pod parses them, and a name it refused there
 # came back as the pod's own usage exit — a caller error that used to be read
 # as a red verdict about the cluster. The docs introduce the groups by name
@@ -156,7 +187,7 @@ kube_raw() {
 
 # A name nobody else can be using, so cleanup removes OUR pods and nothing else:
 # this script must never delete a pod it did not create.
-PREFIX="codemode-posture-$(date +%s)"
+PREFIX="$NAME_PREFIX-$(date +%s)"
 
 CREATED_NS=""
 cleanup() {
@@ -214,9 +245,39 @@ fi
 # resources are values-prod.yaml's runner requests/limits: the bench's memory
 # bombs need a cgroup large enough to hold them, which is also why leg 6 refuses
 # rather than reports when it cannot.
-say "the measured image: $BENCH_IMAGE (uid $UID_WANT, pull policy $PULL_POLICY)"
+say "the measured image: $BENCH_IMAGE (uid $UID_WANT, pull policy $PULL_POLICY, posture $POSTURE_OF)"
+# A sandbox pod carries activeDeadlineSeconds, counted from the pod's start —
+# image pull included. It outlives this script's own wait by a margin, so a
+# slow pull or a long --max-wait ends as the wait's "nothing was tested", never
+# as a pod the kubelet killed and the verdict read as a red bench.
+POD_DEADLINE=$((MAX_WAIT + 120))
+if [ "$POSTURE_OF" = sandbox ]; then
+	# Built once, from this tree: the pods are the driver's as this commit
+	# renders them, which is the driver a release of this commit runs.
+	CGO_ENABLED=0 go build -o "$EVIDENCE/sandboxbenchpod" ./scripts/ci/sandboxbenchpod \
+		> "$EVIDENCE/sandboxbenchpod.build.log" 2>&1 \
+		|| die "the sandbox pod renderer did not build: $EVIDENCE/sandboxbenchpod.build.log"
+fi
 emit_pod() {
 	local name=$1 seccomp=$2 cmd=$3 args=$4 file="$EVIDENCE/$1.yaml"
+	if [ "$POSTURE_OF" = sandbox ]; then
+		file="$EVIDENCE/$1.json"
+		# Small and short by contract: requests place the pod, they are not
+		# the posture. The limit still holds the memory leg's bombs (~1.2 GiB);
+		# under less the bench refuses that leg instead of misreporting it.
+		local renderer_pull=() profile=${seccomp#*type: }
+		profile=${profile%\}}
+		[ "$PULL_POLICY" = Never ] && renderer_pull=(-pull-policy Never)
+		"$EVIDENCE/sandboxbenchpod" -namespace "$NS" -name "$name" -run "$PREFIX" \
+			-image "$BENCH_IMAGE" -user "$SANDBOX_USER" -seccomp "$profile" \
+			-command "$cmd" -args "$args" \
+			-cpu-request 100m -memory-request 256Mi -cpu-limit 2 -memory-limit 2Gi \
+			-deadline "$POD_DEADLINE" \
+			"${renderer_pull[@]}" > "$file" 2> "$EVIDENCE/$1.render.err" \
+			|| die "the sandbox pod '$name' could not be rendered: $(tail -1 "$EVIDENCE/$1.render.err")"
+		printf '%s\n' "$file"
+		return
+	fi
 	cat > "$file" <<EOF
 apiVersion: v1
 kind: Pod
@@ -279,13 +340,51 @@ admit() {
 	return 1
 }
 
-admit "$PREFIX-bench" "$(emit_pod "$PREFIX-bench" '{type: RuntimeDefault}' "$BENCH" "$BENCH_ARGS")" \
+# Rendered BEFORE any admission, each in an assignment: a pod that cannot be
+# written stops the run here (the ERR trap: nothing was tested) instead of
+# reaching `kubectl apply -f ""` and reading as an admission refusal.
+POD_BENCH=$(emit_pod "$PREFIX-bench" '{type: RuntimeDefault}' "$BENCH" "$BENCH_ARGS")
+POD_POSTURE=$(emit_pod "$PREFIX-posture" '{type: RuntimeDefault}' "$POSTURE" '[]')
+POD_TWIN=$(emit_pod "$PREFIX-posture-unconfined" '{type: Unconfined}' "$POSTURE" '[]')
+admit "$PREFIX-bench" "$POD_BENCH" \
 	|| die "the measured pod was refused, so nothing was tested: $EVIDENCE/$PREFIX-bench.apply.log"
-admit "$PREFIX-posture" "$(emit_pod "$PREFIX-posture" '{type: RuntimeDefault}' "$POSTURE" '[]')" \
+admit "$PREFIX-posture" "$POD_POSTURE" \
 	|| die "the posture readback was refused, so the profile cannot be identified: $EVIDENCE/$PREFIX-posture.apply.log"
 HAVE_TWIN=0
-if admit "$PREFIX-posture-unconfined" "$(emit_pod "$PREFIX-posture-unconfined" '{type: Unconfined}' "$POSTURE" '[]')"; then
+if admit "$PREFIX-posture-unconfined" "$POD_TWIN"; then
 	HAVE_TWIN=1
+fi
+
+# --- the posture a live run has ----------------------------------------------
+# The renderer is the driver's builder, but its INPUT is ours: the sandbox
+# spec's user above all, which the deployment's sandbox default decides and
+# this script cannot read. A live run's pod can be read. So the measured pod is
+# compared with every sandbox pod running in the namespace — the same fields,
+# read back through the same API so both carry its defaults — and the arm only
+# measures a posture at least one live run has. The fact travels with its
+# count: which posture, how many of the live pods run it.
+LIVE_MATCH=""
+if [ "$POSTURE_OF" = sandbox ]; then
+	SECURITY='{.spec.securityContext}|{.spec.automountServiceAccountToken}|{.spec.containers[0].securityContext}'
+	ours=$(kube get pod "$PREFIX-bench" -o jsonpath="$SECURITY" 2> "$EVIDENCE/ours.err") \
+		|| die "the measured pod's security context could not be read back: $(tail -1 "$EVIDENCE/ours.err")"
+	# RUNNING pods only: a run's pod that Cleanup never deleted lingers as
+	# Succeeded or Failed, possibly rendered by an older driver, and a match on
+	# it would certify a posture no current run has.
+	kube get pods -l iterion.io/component=sandbox-run --field-selector=status.phase=Running -o jsonpath="{range .items[*]}$SECURITY{\"\\n\"}{end}" \
+		> "$EVIDENCE/live-postures.raw" 2> "$EVIDENCE/live-postures.err" \
+		|| die "the live sandbox pods could not be listed: $(tail -1 "$EVIDENCE/live-postures.err")"
+	sort "$EVIDENCE/live-postures.raw" | uniq -c > "$EVIDENCE/live-postures.txt"
+	total=$(grep -c . "$EVIDENCE/live-postures.raw" || true)
+	if [ "$total" -eq 0 ]; then
+		LIVE_MATCH=none
+	else
+		same=$(grep -cxF -- "$ours" "$EVIDENCE/live-postures.raw" || true)
+		[ "$same" -gt 0 ] \
+			|| die "the measured pod is not the posture any of the $total live sandbox pod(s) runs, so it would certify a posture no run has. ours: $ours — live: $(tr '\n' ';' < "$EVIDENCE/live-postures.txt") Pass the deployment's sandbox user with --sandbox-user."
+		LIVE_MATCH="$same of $total"
+		say "the measured posture is the one $same of $total live sandbox pod(s) run"
+	fi
 fi
 
 # --- wait for terminal phases ------------------------------------------------
@@ -320,6 +419,11 @@ done
 [ "$pending" -eq 0 ] || { say "the pods did not terminate within ${MAX_WAIT}s; refusing to judge a run that is still going. Evidence: $EVIDENCE"; exit 2; }
 
 for p in $ADMITTED; do
+	# A pod the kubelet stopped at its deadline did not finish what it was
+	# measuring: its exit code is the kill's, not a verdict.
+	reason=$(kube get pod "$p" -o jsonpath='{.status.reason}' 2>/dev/null) || reason=""
+	[ "$reason" != DeadlineExceeded ] \
+		|| die "nothing was tested: $p was stopped at its activeDeadlineSeconds ($POD_DEADLINE s) before it finished"
 	# Unreadable logs are "nothing was tested", never a verdict: kubectl's own
 	# error text would land in the log and fail every posture grep below —
 	# a red about the cluster when the credential lacks `pods/log`, or when the
@@ -374,9 +478,9 @@ grep -q '^Seccomp:[[:space:]]*2' "$EVIDENCE/$PREFIX-posture.log" \
 # The trailing space is the anchor: the line is `uid=N gid=G`, and without it
 # --uid 1000 accepted a readback running as 10001.
 grep -q "^uid=$UID_WANT " "$EVIDENCE/$PREFIX-posture.log" \
-	|| { say "FAIL the arm did not run as uid $UID_WANT, so it is not the runner's posture"; rc=1; }
+	|| { say "FAIL the arm did not run as uid $UID_WANT, so it is not the $POSTURE_OF posture"; rc=1; }
 grep -q '^NoNewPrivs:[[:space:]]*1' "$EVIDENCE/$PREFIX-posture.log" \
-	|| { say "FAIL the measured arm lost no_new_privs, so it does not match the chart's securityContext"; rc=1; }
+	|| { say "FAIL the measured arm lost no_new_privs, so it does not match the $POSTURE_OF securityContext"; rc=1; }
 
 if [ "$HAVE_TWIN" -eq 1 ]; then
 	grep -q '^Seccomp:[[:space:]]*0' "$EVIDENCE/$PREFIX-posture-unconfined.log" \
@@ -413,6 +517,9 @@ case "$merged" in
 esac
 
 # --- what this arm did not earn ---------------------------------------------
+if [ "$LIVE_MATCH" = none ]; then
+	say "GAP no sandbox run was live in '$NS', so the measured pod was not compared with a run's: its user is --sandbox-user's ('$SANDBOX_USER'), not read off the deployment"
+fi
 if [ "$HAVE_TWIN" -eq 0 ]; then
 	say "GAP the Unconfined twin was refused by admission, so the seccomp read is uncorroborated: re-run in a namespace whose policy allows it (--create-namespace labels it privileged)"
 fi

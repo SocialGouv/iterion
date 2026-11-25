@@ -101,6 +101,65 @@ does a declared group that is absent). Refusing them outright would make the
 runner image unmeasurable in a cluster while the same binary measures clean
 under docker, where the groups are the single one passed to `--user`.
 
+## The sandbox posture (#3444)
+
+`POSTURE=sandbox` measures the pod the **kubernetes sandbox driver** creates
+for a run — where a sandboxed claw node's script host is born — instead of the
+runner's. `scripts/ci/sandboxbenchpod` renders it with the driver's own
+`BuildPodManifest`, so a driver change moves the bench with it, and replaces
+only what a bench must:
+
+- the image: built FROM the deployment's **sandbox** image, by digest;
+- the command: the bench, where a run execs `__claw-runner` into
+  `sleep infinity`. An exec'd process inherits the container's seccomp
+  profile, capabilities, `no_new_privs` and user — the four the bench checks
+  on itself before measuring;
+- small resources, and an `activeDeadlineSeconds` of `--max-wait` + 120 s:
+  it counts from the pod's start, image pull included, so the script's own
+  wait expires first, and a pod the kubelet stops at it reads as nothing
+  tested — never as the kill's exit code read as a verdict;
+- the labels: the driver's `iterion.io/managed` is what a runner's orphan
+  reaper lists, so a bench pod carrying it in a runner namespace would be
+  reaped as a run's.
+
+The builder is the driver's, but its input is the bench's — the sandbox
+spec's user above all, which the deployment's sandbox default decides. So the
+arm reads back every **running** sandbox pod of the namespace (`iterion.io/component=sandbox-run`; a lingering Succeeded or Failed pod may be an older driver's)
+and measures only a posture at least one of them runs, printing how many; none
+live is a `GAP`. Production's default sets `1000:1000` (`SANDBOX_USER=1000:1000`):
+without it the arm refuses, naming both postures. The renderer is also built
+from the bench's tree — `pkg/sandbox/kubernetes/manifest.go` was unchanged
+since v7.32.0 for the run below. Its suite compares the rendered pod
+with the driver's, whole, minus those fields; four renderer mutants (privilege escalation, the driver's labels kept,
+a twin that varies a capability, no command) each redden their own assertion.
+
+Measured 2026-11-24, `NAME_PREFIX=cm6-bench`, three pods at 100m / 256Mi
+requested (quota read first: 45 of 120 pods), all removed on exit:
+
+| | production runner namespace, `node3` | `kind` witness |
+|---|---|---|
+| base | `iterion-sandbox-full` v7.32.0 `sha256:2cbcc2f2…` (the run's) | same |
+| containerd / kernel / Landlock ABI | 2.3.6 / 6.1.0-54 / 2 | 2.1.1 / 6.8 / 4 |
+| posture read back | `Seccomp: 2`, `NoNewPrivs: 1`, uid 1000, groups 27,100,1000 | same |
+| against live runs | **1 of 1** live sandbox pod runs this exact posture | decoy `1000:1000`: matched; without the user → exit 2 |
+| legs | **7/7 held**; the shipped child `sockets_denied:true`, 340 MiB memory bound (84 + 256 room); a compromised child's open, connect, UDP, `io_uring`, exec all `EACCES` | 7/7, exit 0 |
+| Unconfined twin | refused: the namespace enforces PodSecurity `baseline` → `GAP` | admitted, `Seccomp: 0` |
+| mutant: the measured pod `Unconfined` | — | posture refused → exit 2 |
+| mutant: `allowPrivilegeEscalation: true` | — | `NoNewPrivs: 0` refused → exit 2 |
+| mutant: the live comparison removed | — | the decoy mismatch passes, exit 0 — the witness above is what reddens |
+| a terminated decoy at 1000:1000, none running | — | `GAP` (none live); without the Running filter it matched, "1 of 1" |
+| the pod deadline forced to 5 s | — | exit 2 naming the deadline; without the mapping the kill's code read as the bench refusing its own arguments |
+
+The image's `devbox` user brings `sudo` and `users`, as on the runner image:
+`EXPECT_GROUPS=27,100,1000`.
+
+**Not earned here.** The ADR-162 fork pool is this driver under a pool's own
+posture, which cannot be deployed before #2965. The **docker** driver sets no
+security option (`--user` only): under docker 29.10's defaults the child holds
+7/7 on 6.8 / ABI 4, but the container runs with `NoNewPrivs: 0` — the child
+sets it for itself — so the posture check refuses it and the run is recorded
+with `-allow-any-posture`, exit 7: measured, not certified.
+
 ## Witnessed, not assumed
 
 Against a `kind` cluster driven purely through `kubectl`:

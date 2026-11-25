@@ -333,6 +333,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/workspacetrack` | versions a run's workspace: it captures what the files look like at a point in execution and can put them back. | `Tracker` |
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
 | `scripts/ci/inpodbench` | Command inpodbench reports what a codemode child actually confines itself to under the posture it is GIVEN, whether that confinement REFUSES, and… | — |
+| `scripts/ci/sandboxbenchpod` | Command sandboxbenchpod renders the pod the kubernetes sandbox driver creates for a run, so the codemode posture bench measures THAT pod and not a… | — |
 | `scripts/ci/testcaps` | Command testcaps publishes a deterministic source census of test skips and sleeps, plus optional observations of the runner's literal prerequisites. | — |
 | `scripts/ci/testquarantine` | Command testquarantine reads the checked-in flake quarantine (scripts/ci/test-quarantine.tsv) and prints what the CI jobs consume: 	testquarantine… | — |
 | `scripts/ci/testshards` | Command testshards prints the Go test packages of one deterministic shard, the mechanism the CI matrix legs use to split `./...` across runners (the… | — |

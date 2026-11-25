@@ -149,25 +149,24 @@ runtime class here.
 
 ## The cloud posture, which is not the one people assume
 
-Production runs are **not** sandboxed. `charts/iterion/values.yaml` ships
+The chart's default is **not** sandboxed: `charts/iterion/values.yaml` ships
 `runner.sandbox.enabled: false` and the configmap renders
-`ITERION_SANDBOX_OVERRIDE: "none"`, saying why: *"pod is the isolation
-boundary"*. So the script host, the bash a node already holds and the runner
-are siblings in one pod under one uid.
+`ITERION_SANDBOX_OVERRIDE: "none"` — *"pod is the isolation boundary"* — so
+the script host, the node's bash and the runner are siblings in one pod under
+one uid. That is **in-pod**, the topology proven first (#3299).
 
-In that posture `__script-host` is also the **first** credential-less child
-iterion spawns: the `__claw-runner` precedent is started only when a run is
-sandboxed, which production never is. ADR-029 is the template for the IPC and
-the hidden-subcommand convention, not for the spawn — and `SysProcAttr` carries
-no rlimit field, so the child applies its own limits after `exec`.
+iterion.cloud turns the kubernetes sandbox on with a global default: a claw
+node runs in a per-run sandbox pod through `iterion __claw-runner`, and its
+script host is born **there** (measured 2026-11-24 on Vigie's scheduled run).
+That crossing is benched against the pod the driver itself renders, 7/7 on
+production ([the sandbox posture](../testing/posture-bench-remote.md), #3444).
+Not earned yet: the ADR-162 fork pool's own posture (#2965), and the docker
+driver, which sets no security option.
 
-Two named topologies: **in-pod** is the default and the one that must be proven
-first; **sibling pod** is the stronger form and a deployment choice, not a
-per-bot one. The sandbox crossing is a later lot, for the sandbox pools and the
-ADR-162 fork pool — not the default posture.
-
-This is also why the first bench is in-pod: a bench on the sandbox crossing
-would prove a posture nobody runs.
+ADR-029 is the template for the IPC and the hidden-subcommand convention, not
+for the spawn — and `SysProcAttr` carries no rlimit field, so the child
+applies its own limits after `exec`. **Sibling pod** is the stronger form, a
+deployment choice rather than a per-bot one.
 
 ## What a script may not do
 
