@@ -84,7 +84,7 @@ func (r *Runner) restoreBankedChain(ctx context.Context, msg *queue.RunMessage, 
 		r.recordBankRestore(ctx, msg, data)
 		return ""
 	}
-	if err := r.runGitEnv(ctx, dir, tok, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", "refs/heads/"+chain.Ref); err != nil {
+	if err := r.runGitAuthEnv(ctx, dir, tok, msg.RepoURL, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", "refs/heads/"+chain.Ref); err != nil {
 		return refuse("fetch_failed", err.Error())
 	}
 	fetched, err := r.runGitOutEnv(ctx, dir, "", nil, "rev-parse", "--verify", "FETCH_HEAD^{commit}")

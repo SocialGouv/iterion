@@ -2,29 +2,122 @@ package runner
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
 )
 
-func TestInjectGitToken(t *testing.T) {
-	cases := []struct{ in, tok, want string }{
-		// https → oauth2 userinfo injected
-		{"https://gitlab.example/grp/repo.git", "tok123", "https://oauth2:tok123@gitlab.example/grp/repo.git"},
-		// no token → unchanged
-		{"https://gitlab.example/grp/repo.git", "", "https://gitlab.example/grp/repo.git"},
-		// non-https (scp-like / http) → unchanged, never carry a token in cleartext schemes
-		{"git@github.com:grp/repo.git", "tok", "git@github.com:grp/repo.git"},
-		{"http://insecure/repo.git", "tok", "http://insecure/repo.git"},
+// The run's forge token authenticates the clone and the fetches that follow
+// it, and never rides git's argv — world-readable in /proc/<pid>/cmdline for
+// as long as the clone runs — nor the remote URL git persists in
+// .git/config. Driven through prepareRepoWorkspace with a PATH-front git
+// that records each invocation's argv and the GIT_CONFIG_VALUE_* entries it
+// received from the environment, then hands over to the real git. The
+// operator's own GIT_CONFIG entry (an insteadOf onto a local origin) must
+// survive the credential's: the clone only succeeds through it. The bank
+// push that runs once the workspace is prepared (its ls-remote and its
+// push) carries no header at all: it reads the live token from the
+// credential store, so a GitHub App token frozen at clone time, dead an hour
+// later, never reaches it.
+func TestTheCloneCredentialRidesTheEnvironmentNotArgv(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
 	}
-	for _, c := range cases {
-		if got := injectGitToken(c.in, c.tok); got != c.want {
-			t.Errorf("injectGitToken(%q, %q) = %q; want %q", c.in, c.tok, got, c.want)
+	r, _ := forgeRunner(t)
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin.git")
+	gitOut(t, tmp, "init", "--quiet", "--bare", "--initial-branch=main", origin)
+	seed := filepath.Join(tmp, "seed")
+	gitOut(t, tmp, "clone", "--quiet", origin, seed)
+	gitOut(t, seed, "config", "user.email", "t@test.invalid")
+	gitOut(t, seed, "config", "user.name", "t")
+	gitOut(t, seed, "commit", "--quiet", "--allow-empty", "-m", "baseline")
+	gitOut(t, seed, "push", "--quiet", "origin", "HEAD:main")
+
+	const repoURL = "https://127.0.0.1/o/r.git"
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "url.file://"+origin+".insteadOf")
+	t.Setenv("GIT_CONFIG_VALUE_0", repoURL)
+
+	bin := filepath.Join(tmp, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatalf("mkdir the recording git's dir: %v", err)
+	}
+	logPath := filepath.Join(tmp, "git.log")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\t%%s\\n' \"$*\" \"$(env | grep '^GIT_CONFIG_VALUE_' | tr '\\n' ' ')\" >> %s\nexec %s \"$@\"\n",
+		strconv.Quote(logPath), strconv.Quote(realGit))
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write the recording git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	msg := &queue.RunMessage{RunID: "run-token-off-argv", RepoURL: repoURL, RepoSHA: "main"}
+	ctx := cloneCredCtx("forge_token")
+	dir, _, prepErr := r.prepareRepoWorkspace(ctx, cloneCredWorkflow(), msg)
+	if prepErr != nil {
+		t.Fatalf("prepareRepoWorkspace: %v", prepErr)
+	}
+	prepared, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read the recording git's log: %v", err)
+	}
+	gitOut(t, dir, "commit", "--quiet", "--allow-empty", "-m", "run work")
+	head := gitOut(t, dir, "rev-parse", "HEAD")
+	if _, _, err := r.pushBankWithRetry(ctx, msg, dir, cloneCredTestToken, "iterion/run/"+msg.RunID, head, "finished"); err != nil {
+		t.Fatalf("bank push after the preparation: %v", err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read the recording git's log: %v", err)
+	}
+	header := "AUTHORIZATION: Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:"+cloneCredTestToken))
+	authed := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
+		argv, envHeader, _ := strings.Cut(line, "\t")
+		if strings.Contains(argv, cloneCredTestToken) || strings.Contains(strings.ToLower(argv), "extraheader") {
+			t.Errorf("git argv carries the forge credential: %q", argv)
 		}
+		for _, verb := range []string{" clone ", " fetch "} {
+			if strings.Contains(" "+argv+" ", verb) && strings.Contains(envHeader, header) {
+				authed[strings.TrimSpace(verb)] = true
+			}
+		}
+	}
+	bankCalls := 0
+	for _, line := range strings.Split(strings.TrimSuffix(strings.TrimPrefix(string(raw), string(prepared)), "\n"), "\n") {
+		argv, envValues, _ := strings.Cut(line, "\t")
+		if strings.Contains(" "+argv+" ", " ls-remote ") || strings.Contains(" "+argv+" ", " push ") {
+			bankCalls++
+		}
+		if strings.Contains(envValues, header) {
+			t.Errorf("git %q after the preparation carries the clone-time forge header in its environment", argv)
+		}
+	}
+	if bankCalls < 2 {
+		t.Errorf("the bank push ran %d ls-remote/push git calls, want both; invocations after the preparation:\n%s", bankCalls, strings.TrimPrefix(string(raw), string(prepared)))
+	}
+	for _, verb := range []string{"clone", "fetch"} {
+		if !authed[verb] {
+			t.Errorf("no git %s received the forge header through its environment; invocations:\n%s", verb, raw)
+		}
+	}
+	cfg, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
+	if err != nil {
+		t.Fatalf("read the clone's .git/config: %v", err)
+	}
+	if strings.Contains(string(cfg), cloneCredTestToken) {
+		t.Errorf("the clone's .git/config carries the forge token:\n%s", cfg)
 	}
 }
 

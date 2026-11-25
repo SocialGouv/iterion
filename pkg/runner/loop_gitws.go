@@ -216,11 +216,10 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 		return "", "", fmt.Errorf("runner: run %s: admitted for commit %s but carries no ref to fetch — refusing rather than running the clone's default branch with the pin unenforced",
 			msg.RunID, msg.RepoSHAExpected)
 	}
-	// The run's clone dir holds the forge token from the clone on (in the
-	// clone URL git persists in .git/config, then in the credential store),
-	// and only an accepted workspace keeps it: executeRun removes that one
-	// when the run returns. Every other return from here on removes the
-	// dir — a refusal, which then leaves no tree an earlier attempt left on
+	// The run's clone dir holds the forge token once the credential store
+	// is written (installGitCredentialStore), and only an accepted
+	// workspace keeps it: executeRun removes that one when the run
+	// returns. Every other return from here on removes the dir — a refusal, which then leaves no tree an earlier attempt left on
 	// this pod (a process killed mid-preparation), and a preparation that
 	// fails after the clone, which leaves no clone behind.
 	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
@@ -236,8 +235,8 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 	// The clone credential's grants are judged before anything is spent on
 	// it: a run whose forge secret withholds the `file` sink the credential
 	// store needs is refused here, ahead of the DNS check, the workspace
-	// directory and the clone, so its token reaches neither the clone URL
-	// git persists nor the store (ADR-146's clone-credential follow-up).
+	// directory and the clone, so its token reaches neither the forge nor
+	// the store (ADR-146's clone-credential follow-up).
 	if err := refuseUngrantedCloneCredential(ctx, wf, msg.RunID); err != nil {
 		return "", "", err
 	}
@@ -311,19 +310,21 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 		return "", "", fmt.Errorf("mkdir repo parent: %w", err)
 	}
 
-	cloneURL, appBotLogin := msg.RepoURL, ""
+	appBotLogin := ""
 	_, tok := cloneCredentialToken(ctx)
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		appBotLogin = creds.ForgeAppBotLogin
 	}
-	if tok != "" {
-		cloneURL = injectGitToken(msg.RepoURL, tok)
-	}
 
+	// The clone URL stays the bare msg.RepoURL: the token authenticates
+	// through git's environment (runGitAuthEnv), as a header bound to the
+	// forge origin, so it reaches neither git's argv, nor the
+	// remote.origin.url git persists in .git/config, nor any host other than
+	// the forge's.
 	// -c http.followRedirects=false closes SSRF vector (b): a 302 from the
 	// validated canonical https host to an internal address must not be
 	// auto-followed by git.
-	if err := r.runGitEnv(ctx, "", tok, gitEnv, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
+	if err := r.runGitAuthEnv(ctx, "", tok, msg.RepoURL, gitEnv, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", msg.RepoURL, dir); err != nil {
 		if tok == "" {
 			// The clone ran with NO forge credential in the run's bundle —
 			// for a private repo that fails on symptoms that never name this
@@ -335,8 +336,19 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 		}
 		return "", "", err
 	}
+	// The credential store is wired right after the clone, so every later
+	// git and git-lfs operation reads it: the checkout below and the
+	// restored chain's checkout and merge smudge LFS objects through
+	// git-lfs, which authenticates from that store and from nothing else.
+	if err := r.installGitCredentialStore(ctx, dir, msg.RepoURL, tok); err != nil {
+		// Fail the clone rather than proceed: the alternative is a workspace
+		// with no credential at all, whose clone worked and whose push fails
+		// authentication hours later — the hardest kind of failure to
+		// attribute.
+		return "", "", fmt.Errorf("runner: wire git credentials for %s: %w", msg.RunID, err)
+	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
-		if err := r.runGitEnv(ctx, dir, tok, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
+		if err := r.runGitAuthEnv(ctx, dir, tok, msg.RepoURL, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
 			return "", "", err
 		}
 		// What arrived is whatever the remote points that NAME at, at fetch
@@ -394,13 +406,6 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 	}
 	if err := r.runGit(ctx, dir, "", "config", "user.email", authorEmail); err != nil {
 		return "", "", fmt.Errorf("runner: seed git author email in %s: %w", dir, err)
-	}
-	if err := r.installGitCredentialStore(ctx, dir, msg.RepoURL, tok); err != nil {
-		// Fail the clone rather than proceed: the alternative is a workspace
-		// whose only credential is the frozen one in remote.origin.url, which
-		// works now and 403s hours later at push time — the exact failure this
-		// removes, and the hardest kind to attribute.
-		return "", "", fmt.Errorf("runner: wire git credentials for %s: %w", msg.RunID, err)
 	}
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
@@ -462,7 +467,7 @@ func (r *Runner) ensureBaseRef(ctx context.Context, dir, tok string, gitEnv []st
 	// makes `origin/<base>` resolve (the shape the review scope anchors on).
 	// The local ref is fetched WITHOUT `+`, so a divergence is refused
 	// instead of silently rewritten.
-	if err := r.runGitEnv(ctx, dir, tok, gitEnv,
+	if err := r.runGitAuthEnv(ctx, dir, tok, msg.RepoURL, gitEnv,
 		"-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin",
 		base+":refs/heads/"+base,
 		"+"+base+":refs/remotes/origin/"+base,
@@ -636,8 +641,11 @@ func defaultGitOpTimeout() time.Duration {
 	return gitOpTimeoutDefault
 }
 
-// runGit runs a git subprocess, redacting tok from any error output so an
-// authed clone URL never leaks into logs. Each invocation is bounded by
+// runGit runs a git subprocess, redacting tok from any error output so a
+// token git echoes never leaks into logs. tok only redacts here: a remote
+// call authenticates through the clone's credential store, installed right
+// after the clone (the clone itself goes through runGitAuthEnv). Each
+// invocation is bounded by
 // gitOpTimeout on top of the caller's ctx.
 func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) error {
 	return r.runGitEnv(ctx, dir, tok, nil, args...)
@@ -651,6 +659,20 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 	return err
 }
 
+// runGitAuthEnv is runGitEnv that also AUTHENTICATES with tok, as an
+// extraHeader bound to remoteURL's origin and carried in git's environment
+// (gitlib.AuthEnv). It serves the clone, which runs before any credential
+// store can exist, and the fetches prepareRepoWorkspace makes while it
+// prepares the workspace, where the store installed right after the clone
+// already answers and the header is redundant. Every call after the
+// preparation (the bank push, its ls-remote, the archive push) goes through
+// runGitEnv / runGitOutEnv and reads the live token from the store, so a
+// header frozen at clone time never reaches them.
+func (r *Runner) runGitAuthEnv(ctx context.Context, dir, tok, remoteURL string, extraEnv []string, args ...string) error {
+	_, err := r.runGitCmd(ctx, dir, tok, tok, remoteURL, extraEnv, args...)
+	return err
+}
+
 // gitDrainBound is this site's default bound on the wait for a git helper
 // that still holds the output pipes (git-remote-https inherits them), once
 // git itself has gone. Overridable through [proc.WaitDelayEnv]; it is the
@@ -660,42 +682,25 @@ const gitDrainBound = 10 * time.Second
 // runGitOutEnv is runGitEnv returning the command's combined output —
 // for the callers that need to READ git (ls-remote, rev-list), with the
 // same timeout, cancellation hardening and token redaction.
-//
-// It is the ONE place this package builds a git subprocess, so the
-// guarantees below hold for every git command the runner runs.
-// NoRunHooks: the per-run clone is the run's tree, its hooks directory and
-// its config the run's to write; a hook there would run inside the bank's
-// push, after every verdict the run's bots took, free to refuse it.
-// NoAutoMaintenance is what makes the return of this function the END of
-// the command: a `git fetch` otherwise detaches `git maintenance run
-// --auto`, which closes its descriptors — the very thing CombinedOutput
-// waits on — and keeps writing under `.git/objects` of the per-run clone.
-// That clone is deleted when the run returns (and again at the next
-// attempt), so the removal would race a process nothing here can wait for,
-// and gitOpTimeout would bound nothing that escaped it.
 func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) (string, error) {
+	return r.runGitCmd(ctx, dir, tok, "", "", extraEnv, args...)
+}
+
+// runGitCmd runs one git command built by newGitCmd and returns its
+// combined output, redacting tok from what it reports. authTok, when set,
+// is the forge token the command authenticates with toward remoteURL's
+// origin (runGitAuthEnv).
+func (r *Runner) runGitCmd(ctx context.Context, dir, tok, authTok, remoteURL string, extraEnv []string, args ...string) (string, error) {
 	parentCtx := ctx
 	if gitOpTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(gitlib.NoRunHooks(args...)...)...)
-	if dir != "" {
-		cmd.Dir = dir
+	cmd, drainBound, err := newGitCmd(ctx, dir, authTok, remoteURL, extraEnv, args...)
+	if err != nil {
+		return "", err
 	}
-	// Cancellation must reach git's helper processes (git-remote-https
-	// inherits our output pipes — killing only the parent leaves
-	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
-	// final unblock if a helper still holds them after the group kill.
-	proc.TerminateGroupOnCancel(cmd)
-	drainBound := proc.SetWaitDelay(cmd, gitDrainBound)
-	// Never prompt for credentials (fail fast instead of hanging), and ignore
-	// any host-level git config in the runner image.
-	// SanitizeEnv drops the variables that would override which repository,
-	// index or object store this runs against — the clone dir is chosen here.
-	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
-	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		detail, shown := strings.TrimSpace(string(out)), strings.Join(args, " ")
@@ -727,6 +732,46 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 	return string(out), nil
 }
 
+// newGitCmd builds one git subprocess of the runner without running it.
+// It is the ONE place this package builds a git subprocess, so the
+// guarantees below hold for every git command the runner runs.
+// NoRunHooks: the per-run clone is the run's tree, its hooks directory and
+// its config the run's to write; a hook there would run inside the bank's
+// push, after every verdict the run's bots took, free to refuse it.
+// NoAutoMaintenance is what makes the return of this function the END of
+// the command: a `git fetch` otherwise detaches `git maintenance run
+// --auto`, which closes its descriptors — the very thing CombinedOutput
+// waits on — and keeps writing under `.git/objects` of the per-run clone.
+// That clone is deleted when the run returns (and again at the next
+// attempt), so the removal would race a process nothing here can wait for,
+// and gitOpTimeout would bound nothing that escaped it.
+// authTok, when set, rides the environment as an extraHeader bound to
+// remoteURL's origin (gitlib.AuthEnv), never argv: argv is world-readable
+// through /proc/<pid>/cmdline while the command runs.
+func newGitCmd(ctx context.Context, dir, authTok, remoteURL string, extraEnv []string, args ...string) (*exec.Cmd, time.Duration, error) {
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(gitlib.NoRunHooks(args...)...)...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	// Cancellation must reach git's helper processes (git-remote-https
+	// inherits our output pipes — killing only the parent leaves
+	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
+	// final unblock if a helper still holds them after the group kill.
+	proc.TerminateGroupOnCancel(cmd)
+	drainBound := proc.SetWaitDelay(cmd, gitDrainBound)
+	// Never prompt for credentials (fail fast instead of hanging), and ignore
+	// any host-level git config in the runner image.
+	// SanitizeEnv drops the variables that would override which repository,
+	// index or object store this runs against — the clone dir is chosen here.
+	env := append(gitlib.SanitizeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+	env, err := gitlib.AuthEnv(append(env, extraEnv...), remoteURL, authTok)
+	if err != nil {
+		return nil, 0, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	cmd.Env = env
+	return cmd, drainBound, nil
+}
+
 // gitCredentialFile is where the clone's live forge token lives, in git's
 // credential-store format. It sits under .git/ (not the worktree) so a bot's
 // `git add -A` can never stage it. The name comes from gitlib because the
@@ -734,34 +779,41 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 // a rename has to move both ends or the refusal stops covering it.
 const gitCredentialFile = gitlib.CredentialStoreFile
 
-// installGitCredentialStore detaches the clone from the token it was cloned
-// with and points git at a credential FILE instead.
+// installGitCredentialStore points the clone's git at a credential FILE for
+// every git operation after the clone.
 //
-// The clone URL has to carry the token for the initial fetch to authenticate,
-// but git persists remote.origin.url verbatim — which freezes that credential
-// into .git/config. A GitHub App installation token lives ONE HOUR, while an
-// app-building run takes several, so the agent's `git push` at the end of the
-// run would authenticate with a long-dead token and fail 403. Writing the
-// credential to a file that the mid-run refresher rewrites means every later
-// git operation re-reads a LIVE token. It also keeps the secret out of
-// .git/config, where the agent (and anything that dumps config) could read it.
+// The clone authenticates with a header carried in git's environment
+// (runGitAuthEnv), which dies with the process; the store is installed right
+// after it, so every later git and git-lfs operation reads it. A GitHub
+// App installation token lives ONE HOUR, while an app-building run takes
+// several, so the agent's `git push` at the end of the run needs a credential
+// that outlives the clone and follows rotation. Writing it to a file that the
+// mid-run refresher rewrites means every later git operation re-reads a LIVE
+// token. It also keeps the secret out of .git/config, where the agent (and
+// anything that dumps config) could read it.
 func (r *Runner) installGitCredentialStore(ctx context.Context, dir, repoURL, token string) error {
 	if token == "" {
 		return nil
-	}
-	if err := r.runGit(ctx, dir, token, "remote", "set-url", "origin", repoURL); err != nil {
-		return fmt.Errorf("clean token out of the origin URL: %w", err)
 	}
 	path := filepath.Join(dir, ".git", gitCredentialFile)
 	if err := writeGitCredentials(path, repoURL, token); err != nil {
 		return err
 	}
 	// --file keeps the store local to this run; git's default would be the
-	// pod-global ~/.git-credentials, which a later run could read.
-	if err := r.runGit(ctx, dir, "", "config", "credential.helper", "store --file="+path); err != nil {
+	// pod-global ~/.git-credentials, which a later run could read. git runs
+	// the helper value through `sh -c` and path carries the caller-chosen
+	// run id, so it is single-quoted: the shell reads it as a literal path.
+	if err := r.runGit(ctx, dir, "", "config", "credential.helper", "store --file="+shellQuote(path)); err != nil {
 		return fmt.Errorf("configure credential helper: %w", err)
 	}
 	return nil
+}
+
+// shellQuote single-quotes s for a POSIX shell: every byte is literal
+// inside single quotes, and an embedded quote is closed, escaped and
+// reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // renderGitCredentialLine renders the single credential-store line
@@ -793,20 +845,6 @@ func writeGitCredentials(path, repoURL, token string) error {
 		return fmt.Errorf("credential store: replace: %w", err)
 	}
 	return nil
-}
-
-// injectGitToken rewrites an https clone URL to carry an oauth2 token in its
-// userinfo (works for GitLab project/personal access tokens and GitHub PATs).
-func injectGitToken(rawURL, token string) string {
-	if token == "" {
-		return rawURL
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" {
-		return rawURL
-	}
-	u.User = url.UserPassword("oauth2", token)
-	return u.String()
 }
 
 // bankRepoWorkspace pushes a repo-targeted run's work to the forge as a

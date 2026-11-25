@@ -587,7 +587,7 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	// Success. A repo-targeted merge only exists once the forge has it:
 	// push first, persist after, then drop the re-creatable clone.
 	if remote {
-		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, token, res.MergedInto); pushErr != nil {
+		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, r.RepoURL, token, res.MergedInto); pushErr != nil {
 			r.MergeStatus = store.MergeStatusFailed
 			upd := mergeUpdateFromRun(r)
 			upd.ExpectClaimedAt = claimToken
@@ -937,7 +937,7 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 				return nil, fmt.Errorf("forge token for the merge of %s: %w", runID, err)
 			}
 		}
-		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, token, target); pushErr != nil {
+		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, r.RepoURL, token, target); pushErr != nil {
 			return nil, fmt.Errorf("conflict resolved and committed in the server-side clone but the push failed — %s does NOT carry the merge: %w", target, pushErr)
 		}
 		resp, perr := s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash, []store.MergeStatus{store.MergeStatusConflicted}, time.Time{})
