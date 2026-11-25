@@ -49,6 +49,7 @@ const (
 	ErrCodeModelUnavailable       = store.FailureModelUnavailable
 	ErrCodeSchemaUnusable         = store.FailureSchemaUnusable
 	ErrCodeProviderRequestInvalid = store.FailureProviderRequestInvalid
+	ErrCodeProviderBudgetExceeded = store.FailureProviderBudgetExceeded
 	ErrCodeCapabilityUnsupported  = store.FailureCapabilityUnsupported
 	// Raised when the workflow requested an EXPLICIT sandbox mode
 	// (`sandbox: { mode: inline, image/build: … }`) but no
@@ -231,6 +232,9 @@ func RemedyOf(err error) Remedy {
 		return Remedy{}
 	}
 	if rt.Hint == "" {
+		if refused, ok := providerRefusalCode(err); ok && refused == rt.Code {
+			return Remedy{Hint: ProviderRefusalRemedy(err)}
+		}
 		if rt.Code == ErrCodeProviderRequestInvalid {
 			return Remedy{Hint: ProviderRequestRemedy(err)}
 		}

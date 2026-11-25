@@ -162,18 +162,37 @@ func AuthFailedRecipe() Recipe {
 // second attempt builds the same request from the same schema and is
 // refused by the same parser.
 func SchemaUnusableRecipe() Recipe {
-	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
 		return Action{
 			Kind:   ActionFailTerminal,
-			Reason: "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume",
+			Reason: refusalReason(err, "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume"),
 		}
 	})
 }
 
 func CapabilityUnsupportedRecipe() Recipe {
-	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
-		return Action{Kind: ActionFailTerminal, Reason: "the selected backend cannot serve a declared capability — change the backend or its transport, then resume"}
+	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
+		return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, "the selected backend cannot serve a declared capability — change the backend or its transport, then resume")}
 	})
+}
+
+// ProviderBudgetRecipe: no retry at all. The provider's or gateway's spend
+// ceiling refused the call; it lives outside iterion, so no attempt can see
+// it raised. The run fails resumable for the operator who raises it.
+func ProviderBudgetRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
+		return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, "the provider's spend budget is exhausted — raise it, then resume")}
+	})
+}
+
+// refusalReason is the remedy a deterministic provider refusal in err names
+// (runtime.ProviderRefusalRemedy), else fallback: a code that a refusal and
+// another cause share says which of the two the operator faces.
+func refusalReason(err *runtime.RuntimeError, fallback string) string {
+	if remedy := runtime.ProviderRefusalRemedy(err); remedy != "" {
+		return remedy
+	}
+	return fallback
 }
 
 // CapabilityDeniedRecipe: no retry at all. The node's declared grant was
@@ -378,11 +397,12 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
 		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
 		runtime.ErrCodeProviderRequestInvalid: RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, _ int) Action {
-			return Action{Kind: ActionFailTerminal, Reason: runtime.ProviderRequestRemedy(err)}
+			return Action{Kind: ActionFailTerminal, Reason: refusalReason(err, runtime.ProviderRequestRemedy(err))}
 		}),
-		runtime.ErrCodeCapabilityUnsupported: CapabilityUnsupportedRecipe(),
-		runtime.ErrCodeCapabilityDenied:      CapabilityDeniedRecipe(),
-		runtime.ErrCodeAmbiguousEffect:       AmbiguousEffectRecipe(),
+		runtime.ErrCodeProviderBudgetExceeded: ProviderBudgetRecipe(),
+		runtime.ErrCodeCapabilityUnsupported:  CapabilityUnsupportedRecipe(),
+		runtime.ErrCodeCapabilityDenied:       CapabilityDeniedRecipe(),
+		runtime.ErrCodeAmbiguousEffect:        AmbiguousEffectRecipe(),
 	}
 }
 

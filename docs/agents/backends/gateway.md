@@ -77,6 +77,12 @@ an older runner sends its text alone, which stays `EXECUTION_FAILED`. The
 list the values, deployment example and Claude Code's untyped-error
 limitation.
 
+A deterministic refusal — an exhausted budget, a model refusing an input
+kind (`not a multimodal model`), a grammar refusal, a non-400 4xx — is read
+from the typed error before its status (`api.ClassifyRefusal`) and stops
+every retry layer, redelivery and automatic resume; budget parks as
+`PROVIDER_BUDGET_EXCEEDED` for an operator to raise ([the table](../../backends.md#the-openai-compatible-gateway-openai_compatible)).
+
 ## Images
 
 A claw node reaches a vision model on the gateway through two channels: an

@@ -125,7 +125,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — |
 | `pkg/claw/hooks` | — | `HookProgressReporter` |
-| `pkg/claw/internal/api` | — | `APIClient`, `EffortWire`, `ImageGenerator`, `Provider` |
+| `pkg/claw/internal/api` | — | `APIClient`, `EffortWire`, `ImageGenerator`, `Provider`, `ProviderRefusal` |
 | `pkg/claw/internal/api/httputil` | holds tiny formatting helpers shared by every HTTP-based provider (openai, foundry, vertex, bedrock-on-HTTP, ...). | — |
 | `pkg/claw/internal/api/providers/anthropic` | implements the Anthropic direct API provider. | — |
 | `pkg/claw/internal/api/providers/bedrock` | implements the AWS Bedrock provider using the Anthropic "Messages" payload shape via InvokeModelWithResponseStream. | — |

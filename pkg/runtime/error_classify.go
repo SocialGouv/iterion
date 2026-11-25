@@ -87,6 +87,14 @@ func ClassifyError(err error) ErrorCode {
 		}
 		return ErrCodeExecutionFailed
 	}
+	// A deterministic provider refusal, read from the typed error the chain
+	// carries (api.RefusalOf) before every status and needle reading below:
+	// a gateway serves a budget as a 400, a 422 or a 429 and a grammar
+	// refusal as a 500, and each of those statuses would otherwise buy
+	// retries, node recoveries and automatic resumes of the same answer.
+	if code, refused := providerRefusalCode(err); refused {
+		return code
+	}
 	// A credential the provider rejected. Checked by TYPE, before any
 	// message matching: the needles below only catch the wordings that
 	// happen to be in the list today, so a backend that reports "upstream

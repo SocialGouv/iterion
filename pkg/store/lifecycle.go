@@ -121,6 +121,14 @@ const (
 	// FailureProviderRequestInvalid is a provider HTTP 400 after recoverable
 	// context overflow and model availability refusals have been classified.
 	FailureProviderRequestInvalid FailureCode = "PROVIDER_REQUEST_INVALID"
+	// FailureProviderBudgetExceeded: the provider or its gateway refused
+	// the call because the spend ceiling of the key, team or account is
+	// reached (LiteLLM "Budget has been exceeded", an exhausted credit
+	// balance, HTTP 402). Distinct from FailureBudgetExceeded, the run's
+	// OWN budget, whose raised cap the engine reads: this ceiling lives
+	// outside iterion, so no automatic attempt can see it raised. The cure
+	// is an operator raising it, then resuming.
+	FailureProviderBudgetExceeded FailureCode = "PROVIDER_BUDGET_EXCEEDED"
 	// The selected backend cannot serve a declared node capability. A
 	// configuration change is needed before the same run can make progress.
 	// Raised before the first node, too, when the run's RESOLVED sandbox
@@ -348,6 +356,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureModelUnavailable,
 	FailureSchemaUnusable,
 	FailureProviderRequestInvalid,
+	FailureProviderBudgetExceeded,
 	FailureCapabilityUnsupported,
 	FailureCapabilityDenied,
 	FailureSandboxDriverUnavailable,

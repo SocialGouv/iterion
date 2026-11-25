@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Keep the parent's context verdicts in one list for both typed API paths.
@@ -58,37 +59,126 @@ var routeLocalCodes = map[ErrorCode]bool{
 	ErrCodeSchemaValidation:       true,
 }
 
+// refusalCodes maps each deterministic provider refusal (api.RefusalKind) to
+// the code a node refused that way fails with. Every one is deterministic in
+// retrypolicy: the same request meets the same refusal, so neither node
+// recovery nor redelivery nor an automatic resume runs it again.
+var refusalCodes = map[api.RefusalKind]ErrorCode{
+	api.RefusalBudget:     ErrCodeProviderBudgetExceeded,
+	api.RefusalCapability: ErrCodeCapabilityUnsupported,
+	api.RefusalGrammar:    ErrCodeSchemaUnusable,
+	api.RefusalRequest:    ErrCodeProviderRequestInvalid,
+}
+
+// refusalPrecedence orders the refusal codes for a chain whose every route
+// was refused, each its own way: the remedy an operator must act on first —
+// money, then the model, then the schema, then the request — whatever order
+// the routes ran in.
+var refusalPrecedence = []ErrorCode{
+	ErrCodeProviderBudgetExceeded,
+	ErrCodeCapabilityUnsupported,
+	ErrCodeSchemaUnusable,
+	ErrCodeProviderRequestInvalid,
+}
+
+// providerRefusalCode reads the deterministic provider refusal err's chain
+// carries (api.RefusalOf) as the code it fails the node with. A
+// request-level refusal that names the context window is left to the
+// context reading, whose compaction can shrink the next request.
+func providerRefusalCode(err error) (ErrorCode, bool) {
+	kind := api.RefusalOf(err)
+	code, ok := refusalCodes[kind]
+	if !ok {
+		return "", false
+	}
+	if kind == api.RefusalRequest && matchesProviderContext(strings.ToLower(err.Error())) {
+		return "", false
+	}
+	return code, true
+}
+
+// ProviderRefusalRemedy is the operator's remedy for a deterministic provider
+// refusal err carries, naming the provider's own words, bounded before it
+// reaches persisted hints; "" when err carries no refusal.
+func ProviderRefusalRemedy(err error) string {
+	var refusal api.ProviderRefusal
+	if !errors.As(err, &refusal) {
+		return ""
+	}
+	var remedy string
+	switch refusal.Refusal() {
+	case api.RefusalBudget:
+		remedy = "the provider refused the call because the spend budget of its key, team or account is exhausted — raise that budget (or add credits) at the provider or gateway, then resume; nothing retries this by itself"
+	case api.RefusalCapability:
+		remedy = "the model cannot take an input this node sends it (e.g. an image to a text-only model) — route the node to a model that accepts it, or stop sending that input, then resume"
+	case api.RefusalGrammar:
+		remedy = "the gateway cannot compile the request's schemas (tool or output) into a decoding grammar — simplify the schema construct it names, or serve the node on a model or gateway that accepts it, then resume"
+	case api.RefusalRequest:
+		remedy = "the provider refused the request itself — fix what it names, then resume"
+	default:
+		return ""
+	}
+	return remedy + "; provider refused: " + iterlog.Truncate(refusalMessage(refusal), 2048)
+}
+
+// refusalMessage is the provider's own explanation a refusal carries: the
+// extracted message, else the raw body.
+func refusalMessage(refusal api.ProviderRefusal) string {
+	typed, ok := refusal.(*api.APIError)
+	switch {
+	case !ok:
+		return refusal.Error()
+	case typed.Message != "":
+		return typed.Message
+	}
+	return typed.Body
+}
+
+// routeLocal reports a route's verdict that condemns that route alone: a
+// route-local code, or a provider refusal (another route — another key,
+// model or gateway — may serve what this one refused).
+func routeLocal(code ErrorCode, cause error) bool {
+	if routeLocalCodes[code] {
+		return true
+	}
+	refused, ok := providerRefusalCode(cause)
+	return ok && refused == code
+}
+
 // classifyRefusedChain decides an exhausted fallback chain that holds at
-// least one route-local verdict (routeLocalCodes). Only a chain whose EVERY
-// route ended that way keeps one of those codes — SCHEMA_VALIDATION when any
-// route's answer stayed off its schema, else PROVIDER_REQUEST_INVALID, in
-// whatever order the routes ran. Otherwise the routes that failed for
-// another reason decide, read like any other chain: a rescue route's
-// transient outage stays transient. It declines (decided=false) a chain with
-// no route-local verdict — the reading of ClassifyError stays the one it
-// always had — and a chain a RuntimeError encloses, whose code is the
-// engine's own verdict on the whole chain.
+// least one route-local verdict (routeLocal). Only a chain whose EVERY route
+// ended that way keeps one of those codes — SCHEMA_VALIDATION when any
+// route's answer stayed off its schema, else the first refusal code of
+// refusalPrecedence a route met, in whatever order the routes ran. Otherwise
+// the routes that failed for another reason decide, read like any other
+// chain: a rescue route's transient outage stays transient. It declines
+// (decided=false) a chain with no route-local verdict — the reading of
+// ClassifyError stays the one it always had — and a chain a RuntimeError
+// encloses, whose code is the engine's own verdict on the whole chain.
 func classifyRefusedChain(err error) (code ErrorCode, decided bool) {
 	chain := exhaustedChainToRead(err)
 	if chain == nil {
 		return "", false
 	}
 	var others []error
-	schema := false
+	met := map[ErrorCode]bool{}
 	for _, cause := range chain.Errs {
 		c := ClassifyError(cause)
-		if !routeLocalCodes[c] {
+		if !routeLocal(c, cause) {
 			others = append(others, cause)
 			continue
 		}
-		if c == ErrCodeSchemaValidation {
-			schema = true
-		}
+		met[c] = true
 	}
 	switch len(others) {
 	case 0:
-		if schema {
+		if met[ErrCodeSchemaValidation] {
 			return ErrCodeSchemaValidation, true
+		}
+		for _, c := range refusalPrecedence {
+			if met[c] {
+				return c, true
+			}
 		}
 		return ErrCodeProviderRequestInvalid, true
 	case len(chain.Errs):

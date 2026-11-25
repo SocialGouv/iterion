@@ -2146,6 +2146,29 @@ context wordings such as `prompt is too long` retain the parent's fresh-sample
 `EXECUTION_FAILED` retry. Tool stderr and model prose never establish this new
 terminal verdict. HTTP 408/5xx, 429 and model-access refusals keep their handling.
 
+**Deterministic provider refusals** (#3048) are read before any status, by one
+classifier on the typed error (`api.ClassifyRefusal`, carried by `api.APIError`
+and the claw stream error, read through `api.RefusalOf`): a gateway serves them
+under any status, so the status alone would retry them.
+
+| Refusal | Provider words (or status) | Code |
+|---|---|---|
+| budget | `Budget has been exceeded`, `ExceededTokenBudget`, `budget_exceeded`, `credit balance is too low`, HTTP 402 | `PROVIDER_BUDGET_EXCEEDED` |
+| capability | `is not a multimodal model`, `image_url is only supported by certain models` | `CAPABILITY_UNSUPPORTED` |
+| grammar | `xgrammar`, `Grammar error` | `SCHEMA_UNUSABLE` |
+| request | any other 4xx except 400, 401, 403, 404, 408, 409, 413, 429 | `PROVIDER_REQUEST_INVALID` |
+
+Every layer stops on them: the claw client's retry (`APIError.IsRetryable`),
+the executor's in-node retries, node recovery (a terminal recipe whose reason
+quotes the provider), the runner's redelivery (acked as a deterministic
+failure) and automatic resume. The run stays `failed_resumable`: an operator
+raises the budget, changes the model or the schema, then resumes. In a
+fallback chain a refusal condemns its route alone; the chain keeps a refusal
+code only when every route was refused. A sandboxed node's refusal crosses
+the runner typed (HTTP errors as before, stream errors naming a refusal too).
+`PROVIDER_BUDGET_EXCEEDED` is not `BUDGET_EXCEEDED`: that one is the run's own
+budget, whose raised cap the engine reads; a gateway's ceiling it cannot see.
+
 Claw preserves typed provider errors through sandbox IPC; pi uses its structured
 provider diagnostics. Claude Code's current result protocol exposes no typed
 HTTP status, so its rendered 400 remains unclassified as a parameter refusal.

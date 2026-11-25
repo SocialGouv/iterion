@@ -162,6 +162,13 @@ var classification = map[store.FailureCode]Disposition{
 	// request WAS served and the next sample may conform.
 	store.FailureSchemaUnusable:         DispositionDeterministic,
 	store.FailureProviderRequestInvalid: DispositionDeterministic,
+	// A spend ceiling outside iterion (a gateway key's budget, an account's
+	// credit): the run's own BUDGET_EXCEEDED is transient because the
+	// engine reads its raised cap; nothing here can read this one. Measured
+	// on 2026-11-25 (run 01a211c3): a LiteLLM 422 "Budget has been
+	// exceeded" redelivered four times, then parked on the DLQ. The run
+	// stays failed_resumable for the operator who raises it.
+	store.FailureProviderBudgetExceeded: DispositionDeterministic,
 	store.FailureCapabilityUnsupported:  DispositionDeterministic,
 	// The node's declared grant was refused (ADR-151): the same IR meets
 	// the same `capabilities:` on every attempt, so a retry hears the same

@@ -108,8 +108,13 @@ func TestR3G9ProviderBadRequestTable(t *testing.T) {
 			case 2, 3, 4, 12:
 				want = runtime.ErrCodeContextLengthExceeded
 			}
+			// A spend ceiling is no sample's doing: the same call meets it
+			// until an operator raises it.
+			if b.kind == "billing" {
+				want = runtime.ErrCodeProviderBudgetExceeded
+			}
 			wantAction := string(want) + "/RetrySameNode"
-			if want == runtime.ErrCodeProviderRequestInvalid {
+			if want == runtime.ErrCodeProviderRequestInvalid || want == runtime.ErrCodeProviderBudgetExceeded {
 				wantAction = string(want) + "/FailTerminal"
 			}
 			if want == runtime.ErrCodeContextLengthExceeded {
