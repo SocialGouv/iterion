@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -295,16 +296,21 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		ParentSandbox: e.activeShare,
 	})
 	if err != nil {
-		// The child says it was stopped (childStopped) and the parent's
-		// context has ended: an operator cancel, a drain or a deadline of
-		// the PARENT reached the child through the context it descends
-		// from. The node then reports the parent's context error, which the
-		// run-level handler settles as the parent's own cancellation,
-		// interruption or timeout — never as a node failure that
-		// auto-resume would re-drive. Any other child verdict stays
-		// authoritative even when the parent's context has also ended, as
-		// on every node; so does an undecided remote effect.
-		if ctxErr := ctx.Err(); ctxErr != nil && childStopped(err) && !IsAmbiguousEffect(err) {
+		// The parent's context has ended by the time the child's verdict is
+		// read: the node was stopped, as a trunk node is at the same
+		// boundary (engine_exec's post-execution ctx check), whatever the
+		// child's words — its engine's ErrRunCancelled / ErrRunInterrupted
+		// for an operator cancel or a drain, its own TIMEOUT RuntimeError
+		// for the parent's deadline, or a failure of its own that the
+		// cancel landed just after. The node reports the parent's context
+		// error (SubbotStoppedError), which the run-level handler settles
+		// as the parent's cancellation, interruption or timeout, keeping
+		// the child's words in the record. Two verdicts stay the node's: an
+		// undecided remote effect, and a failure no resume can change
+		// (retrypolicy.IsDeterministic), which the cancel must not turn
+		// into a resumable or operator-cancelled record.
+		if ctxErr := ctx.Err(); ctxErr != nil && !IsAmbiguousEffect(err) &&
+			(childStopped(err) || !retrypolicy.IsDeterministic(nodeFailureCode(err))) {
 			return nil, &SubbotStoppedError{NodeID: nodeID, Source: sn.Source, Cause: context.Cause(ctx), Child: err, ctxErr: ctxErr}
 		}
 		hint := ""

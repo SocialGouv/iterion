@@ -130,11 +130,14 @@ workflow w:
   and the parent's own verdict wins: an operator cancel ends the child and
   the parent `cancelled` (never auto-resumed), a drain ends them
   `failed_resumable` `INTERRUPTED`, on the main loop and inside a fan-out
-  branch alike. The child's stop reaches the parent typed in the error chain
-  (`runtime.SubbotStoppedError`, which unwraps to the parent's context
-  error); any other child verdict — a budget refusal, a plain failure —
-  stays the subbot node's failure even when the parent's context has also
-  ended.
+  branch alike; the parent's deadline ends it `failed_resumable` `TIMEOUT`.
+  Once the parent's context has ended, the subbot node reports it typed in
+  the error chain (`runtime.SubbotStoppedError`, which unwraps to the
+  parent's context error) whatever the child answered — its own
+  cancellation, or a failure the cancel landed just after — as a trunk node
+  does, and the parent's record keeps the child's words. Only a child
+  verdict no resume can change (a deterministic code of `pkg/retrypolicy`)
+  or an undecided remote effect stays the subbot node's failure.
 - The runtime invokes a host-supplied `SubbotRunner`; both the `iterion run`
   CLI (`pkg/cli/run.go`) and the studio's in-process engine
   (`pkg/runview/subbot.go`, wired for Launch AND Resume) provide one that

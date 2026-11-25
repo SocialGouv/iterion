@@ -91,12 +91,17 @@ func TestCheckpointFailurePublicMatrix(t *testing.T) {
 						ctx, cancel := context.WithCancel(bound)
 						defer cancel()
 						s := &checkpointFailurePublicStore{RunStore: base, t: t, bound: bound, format: format, stage: stage, mode: mode, seen: map[string]int{}}
-						original := errors.New("plain terminal failure")
-						code := ErrCodeExecutionFailed
+						// Only a verdict no resume can change stays the subbot
+						// node's once the parent's context has ended
+						// (runSubbotNode); a resumable one is the parent's
+						// cancellation (TestSubbotChildFailureRacingParentCancel).
+						// The door is exercised with deterministic verdicts.
+						code := ErrCodeToolFailedPermanent
+						var original error = &RuntimeError{Code: code, Message: "plain terminal failure"}
 						switch kind {
 						case "business":
-							code = ErrCodeBudgetExceeded
-							original = &RuntimeError{Code: ErrCodeBudgetExceeded, Message: "established budget verdict"}
+							code = ErrCodeLoopExhausted
+							original = &RuntimeError{Code: ErrCodeLoopExhausted, Message: "established loop verdict"}
 						case "ambiguous":
 							code = ErrCodeAmbiguousEffect
 							original = &RuntimeError{Code: code, Message: "effect outcome unknown"}

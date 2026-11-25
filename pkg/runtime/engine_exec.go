@@ -142,7 +142,7 @@ func (e *Engine) settleLoopPhaseError(rs *runState, nodeID string, err error) er
 		return err
 	}
 	if rs.ctx != nil && rs.ctx.Err() != nil && simpleContextCause(err, rs.ctx.Err()) {
-		return e.handleContextDoneWithCheckpoint(rs, nodeID, rs.ctx.Err())
+		return e.handleContextDoneWithDetail(rs, nodeID, rs.ctx.Err(), stopDetail(err))
 	}
 	return err
 }
