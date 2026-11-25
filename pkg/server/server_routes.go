@@ -289,6 +289,8 @@ func (s *Server) routes() {
 	if s.forgeOrchestrator != nil && s.authSvc != nil {
 		s.registerForgeRoutes()
 		s.registerForgeProvisioningRoutes()
+		// The forge routing switch and the subscription sync (ADR-172).
+		s.registerForgeRoutingRoutes()
 		// Org ex-ante approval queue over provisioning (handlers are
 		// nil-safe when no approval store is wired).
 		s.registerForgeApprovalRoutes()

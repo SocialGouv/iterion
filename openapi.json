@@ -2436,7 +2436,19 @@
             },
             "type": "array"
           },
+          "added_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "exclude_added_labels": {
             "items": {
               "type": "string"
             },
@@ -4463,6 +4475,9 @@
           "cron": {
             "type": "string"
           },
+          "disabled_reason": {
+            "type": "string"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -4474,6 +4489,9 @@
               "type": "array"
             },
             "type": "object"
+          },
+          "forge_binding": {
+            "type": "string"
           },
           "guard": {
             "type": "string"
@@ -4534,6 +4552,9 @@
           "no_live_run": {
             "type": "string"
           },
+          "opens_mr": {
+            "type": "boolean"
+          },
           "origin": {
             "type": "string"
           },
@@ -4551,6 +4572,9 @@
           },
           "poller_since": {
             "type": "integer"
+          },
+          "projection_digest": {
+            "type": "string"
           },
           "repo": {
             "type": "string"
@@ -17809,6 +17833,70 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/forge/repo-bots/{integration_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/repo-bots/{integration_id}/routing": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "integration_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdForgeRepoBotsByIntegrationIdRouting",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/forge/repo-bots/{integration_id}/routing",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/repo-bots/{integration_id}/subscriptions/sync": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "integration_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeRepoBotsByIntegrationIdSubscriptionsSync",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/repo-bots/{integration_id}/subscriptions/sync",
         "tags": [
           "teams"
         ]

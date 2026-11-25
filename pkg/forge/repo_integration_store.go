@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -16,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // RepoIntegration is the join row recording what the orchestrator
@@ -139,9 +141,60 @@ type RepoIntegration struct {
 	// be stamped triage:auto (auto-triage) instead of parked needs:approval.
 	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
+	// ForgeRouting is the per-lane routing switch of this integration
+	// (ADR-172 §8): which router decides the bots a forge delivery starts.
+	// The integration owns it and the webhook config holds its projection,
+	// because Provision rebuilds that config. SpineSince is the instant a
+	// lane first routed spine; it is stamped once and never moved, so a
+	// rollback to legacy keeps reading the claims the spine made.
+	//
+	// The zero routing means nothing was ever chosen and the server default
+	// decides. Read a lane through ForgeRouting.For; only SetForgeRouting
+	// writes either field, through StampForgeRouting.
+	ForgeRouting webhooks.ForgeRouting `bson:"forge_routing,omitempty" json:"forge_routing,omitzero"`
+	SpineSince   *time.Time            `bson:"spine_since,omitempty" json:"spine_since,omitempty"`
+
+	// BotTriggers is the operator's per-bot say over what starts each bot on
+	// the issue lane, keyed by bot id. It lives here and not on the projected
+	// subscriptions: those are rebuilt from the manifests on every projection,
+	// and an entry outlives a manifest edit, a re-provision, and the bot being
+	// removed and enabled again. A bot with no entry follows its manifest and
+	// the enable rule.
+	BotTriggers map[string]BotTrigger `bson:"bot_triggers,omitempty" json:"bot_triggers,omitempty"`
+
+	// SubscriptionsAdoptedAt is the instant the first successful projection
+	// pinned each bot's derived state into BotTriggers. While it is nil the
+	// next projection is an adoption; once set, a label a manifest gains later
+	// neither narrows the winner nor enables a bot without an operator gesture.
+	SubscriptionsAdoptedAt *time.Time `bson:"subscriptions_adopted_at,omitempty" json:"-"`
+	// SubscriptionsSyncError is the refusal of the last projection, empty
+	// after one that succeeded; SubscriptionsSyncedAt dates that projection,
+	// refused or not.
+	SubscriptionsSyncError string     `bson:"subscriptions_sync_error,omitempty" json:"subscriptions_sync_error,omitempty"`
+	SubscriptionsSyncedAt  *time.Time `bson:"subscriptions_synced_at,omitempty" json:"subscriptions_synced_at,omitempty"`
+
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// BotTrigger is one bot's operator-owned trigger state on an integration.
+//
+// Labels has three states, and the tags keep them apart in both stores and on
+// the wire (no omitempty): nil follows the manifest's labels, a non-nil empty
+// slice claims any label, a non-empty one claims exactly those patterns.
+type BotTrigger struct {
+	Labels []string `bson:"labels" json:"labels"`
+	// Enabled forces the bot's issue rows on or off; nil leaves the enable
+	// rule to decide.
+	Enabled *bool `bson:"enabled,omitempty" json:"enabled,omitempty"`
+	// Residual claims every added label no other enabled row of the
+	// integration claims explicitly. The first projection pins it on the bot
+	// the legacy election picks.
+	Residual bool `bson:"residual,omitempty" json:"residual,omitempty"`
+	// LaunchVars are this bot's own operator pins, layered over the
+	// integration's launch vars.
+	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
 }
 
 // ProjectBot records a minted per-repository bot credential: enough to rotate
@@ -185,11 +238,36 @@ type RepoIntegrationStore interface {
 	GetProvision(ctx context.Context, id string) (RepoIntegration, error)
 	GetProvisionByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error)
 	Update(ctx context.Context, ri RepoIntegration) error
-	// WithProvisionVersion fences a local projection against activation/retirement
-	// and advances Version after a successful callback.
-	// The callback performs store writes only, with the supplied context, and must
-	// not call this integration store. Mongo callbacks may retry in a transaction.
+	// WithProvisionVersion fences a local projection against activation/retirement:
+	// it compares Version, advances it by one, and runs the callback; a callback
+	// error leaves the integration as it was, version included.
+	// The callback performs store writes only, with the supplied context. Passed
+	// to this integration store, that context joins the fence: the targeted
+	// stamps (StampSubscriptionSync, StampForgeRouting) land with the callback,
+	// while a whole-document Update of a snapshot read before the fence answers
+	// ErrIntegrationConflict, the version having moved. A single-use fence
+	// follows: a second one on the same version conflicts too, so the caller
+	// counts the advance (version+1) before it writes again.
+	// Mongo callbacks may retry in a transaction.
 	WithProvisionVersion(ctx context.Context, id string, version int64, retired bool, write func(context.Context) error) error
+	// StampSubscriptionSync records the outcome of one subscription projection
+	// and nothing else: the instant, the refusal (empty clears it), and the
+	// adoption pins. A pin lands only for a bot that holds no BotTriggers entry
+	// yet, so it never replaces an operator's choice, and
+	// SubscriptionsAdoptedAt is stamped by the first call that reports a
+	// successful projection (syncErr empty) and never moved afterwards.
+	//
+	// It compares no version: it is meant for the callback of
+	// WithProvisionVersion, with that callback's context, where Update would
+	// conflict. Returns ErrIntegrationNotFound for a missing integration.
+	StampSubscriptionSync(ctx context.Context, id string, pins map[string]BotTrigger, syncedAt time.Time, syncErr string) error
+	// StampForgeRouting writes the routing mode of one lane (a webhooks.Lane*
+	// name) and nothing else of the operator's settings. A mode of
+	// webhooks.RoutingSpine also stamps SpineSince with at when it is unset;
+	// no mode ever clears or moves it. Like StampSubscriptionSync it compares
+	// no version and belongs in the fence's callback. An unknown lane is an
+	// error; ErrIntegrationNotFound reports a missing integration.
+	StampForgeRouting(ctx context.Context, id, lane, mode string, at time.Time) error
 	// RecordProjectBot changes only the credential result while its previous
 	// identity is still current. Unrelated operator writes do not lose a token
 	// the forge has already rotated.
@@ -245,10 +323,46 @@ func NewMemoryRepoIntegrationStore() *MemoryRepoIntegrationStore {
 	return &MemoryRepoIntegrationStore{items: make(map[string]RepoIntegration)}
 }
 
-func (m *MemoryRepoIntegrationStore) Create(_ context.Context, ri RepoIntegration) error {
-	ri = storekit.Snapshot(ri)
+// memoryFence is what WithProvisionVersion places in the context it hands its
+// callback. The store's write lock is held for the whole callback, so a call
+// of the same store carrying that context runs under that lock instead of
+// taking it — the memory twin of a Mongo call joining the fence's transaction.
+// open is false once the fence has returned: a context kept past it takes the
+// lock like any other.
+type memoryFence struct {
+	store *MemoryRepoIntegrationStore
+	open  atomic.Bool
+}
+
+type memoryFenceKey struct{}
+
+func (m *MemoryRepoIntegrationStore) inFence(ctx context.Context) bool {
+	f, ok := ctx.Value(memoryFenceKey{}).(*memoryFence)
+	return ok && f.store == m && f.open.Load()
+}
+
+// lock takes the write lock, unless ctx is the context of a fence this store
+// is running, and returns the matching release.
+func (m *MemoryRepoIntegrationStore) lock(ctx context.Context) func() {
+	if m.inFence(ctx) {
+		return func() {}
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	return m.mu.Unlock
+}
+
+// rlock is lock for a read.
+func (m *MemoryRepoIntegrationStore) rlock(ctx context.Context) func() {
+	if m.inFence(ctx) {
+		return func() {}
+	}
+	m.mu.RLock()
+	return m.mu.RUnlock
+}
+
+func (m *MemoryRepoIntegrationStore) Create(ctx context.Context, ri RepoIntegration) error {
+	ri = storekit.Snapshot(ri)
+	defer m.lock(ctx)()
 	for _, ex := range m.items {
 		if ex.ID == ri.ID || ex.TenantID == ri.TenantID && ex.ConnectionID == ri.ConnectionID && ex.RepoFullName == ri.RepoFullName {
 			return ErrIntegrationConflict
@@ -258,17 +372,16 @@ func (m *MemoryRepoIntegrationStore) Create(_ context.Context, ri RepoIntegratio
 	return nil
 }
 
-func (m *MemoryRepoIntegrationStore) Get(_ context.Context, id string) (RepoIntegration, error) {
-	ri, err := m.GetProvision(context.Background(), id)
+func (m *MemoryRepoIntegrationStore) Get(ctx context.Context, id string) (RepoIntegration, error) {
+	ri, err := m.GetProvision(ctx, id)
 	if err == nil && !integrationVisible(ri) {
 		return RepoIntegration{}, ErrIntegrationNotFound
 	}
 	return ri, err
 }
 
-func (m *MemoryRepoIntegrationStore) GetProvision(_ context.Context, id string) (RepoIntegration, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *MemoryRepoIntegrationStore) GetProvision(ctx context.Context, id string) (RepoIntegration, error) {
+	defer m.rlock(ctx)()
 	ri, ok := m.items[id]
 	if !ok {
 		return RepoIntegration{}, ErrIntegrationNotFound
@@ -276,10 +389,9 @@ func (m *MemoryRepoIntegrationStore) GetProvision(_ context.Context, id string) 
 	return storekit.Snapshot(ri), nil
 }
 
-func (m *MemoryRepoIntegrationStore) Update(_ context.Context, ri RepoIntegration) error {
+func (m *MemoryRepoIntegrationStore) Update(ctx context.Context, ri RepoIntegration) error {
 	ri = storekit.Snapshot(ri)
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer m.lock(ctx)()
 	cur, ok := m.items[ri.ID]
 	if !ok {
 		return ErrIntegrationNotFound
@@ -293,9 +405,8 @@ func (m *MemoryRepoIntegrationStore) Update(_ context.Context, ri RepoIntegratio
 	return nil
 }
 
-func (m *MemoryRepoIntegrationStore) StampSynced(_ context.Context, id string, at time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *MemoryRepoIntegrationStore) StampSynced(ctx context.Context, id string, at time.Time) error {
+	defer m.lock(ctx)()
 	ri, ok := m.items[id]
 	if !ok {
 		return ErrIntegrationNotFound
@@ -305,27 +416,87 @@ func (m *MemoryRepoIntegrationStore) StampSynced(_ context.Context, id string, a
 	return nil
 }
 
+// WithProvisionVersion advances the version BEFORE the callback runs, as the
+// Mongo twin's transaction does, so a call the callback makes with its context
+// sees the version the fence leaves. A callback that fails or panics restores
+// the integration as the fence found it.
 func (m *MemoryRepoIntegrationStore) WithProvisionVersion(ctx context.Context, id string, version int64, retired bool, write func(context.Context) error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer m.lock(ctx)()
+	before, ok := m.items[id]
+	if !ok {
+		return ErrIntegrationNotFound
+	}
+	if before.Version != version || before.Retired != retired {
+		return ErrIntegrationConflict
+	}
+	advanced := before
+	advanced.Version++
+	m.items[id] = advanced
+	fence := &memoryFence{store: m}
+	fence.open.Store(true)
+	committed := false
+	defer func() {
+		fence.open.Store(false)
+		if !committed {
+			m.items[id] = before
+		}
+	}()
+	if err := write(context.WithValue(ctx, memoryFenceKey{}, fence)); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (m *MemoryRepoIntegrationStore) StampSubscriptionSync(ctx context.Context, id string, pins map[string]BotTrigger, syncedAt time.Time, syncErr string) error {
+	defer m.lock(ctx)()
 	ri, ok := m.items[id]
 	if !ok {
 		return ErrIntegrationNotFound
 	}
-	if ri.Version != version || ri.Retired != retired {
-		return ErrIntegrationConflict
+	if len(pins) > 0 {
+		// A new map, never an edit of the stored one: a fence that rolls back
+		// restores the value it found, which shares that map.
+		merged := make(map[string]BotTrigger, len(ri.BotTriggers)+len(pins))
+		for bot, pin := range pins {
+			merged[bot] = storekit.Snapshot(pin)
+		}
+		for bot, held := range ri.BotTriggers {
+			merged[bot] = held
+		}
+		ri.BotTriggers = merged
 	}
-	if err := write(ctx); err != nil {
-		return err
+	if syncErr == "" && ri.SubscriptionsAdoptedAt == nil {
+		adopted := syncedAt
+		ri.SubscriptionsAdoptedAt = &adopted
 	}
-	ri.Version++
+	synced := syncedAt
+	ri.SubscriptionsSyncedAt = &synced
+	ri.SubscriptionsSyncError = syncErr
 	m.items[id] = ri
 	return nil
 }
 
-func (m *MemoryRepoIntegrationStore) RecordProjectBot(_ context.Context, id, secretID, tokenID string, bot *ProjectBot, at time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *MemoryRepoIntegrationStore) StampForgeRouting(ctx context.Context, id, lane, mode string, at time.Time) error {
+	defer m.lock(ctx)()
+	ri, ok := m.items[id]
+	if !ok {
+		return ErrIntegrationNotFound
+	}
+	if !setRoutingLane(&ri.ForgeRouting, lane, mode) {
+		return fmt.Errorf("forge: stamp forge routing: %q is not a routing lane", lane)
+	}
+	if mode == webhooks.RoutingSpine && ri.SpineSince == nil {
+		since := at
+		ri.SpineSince = &since
+	}
+	ri.UpdatedAt = at
+	m.items[id] = ri
+	return nil
+}
+
+func (m *MemoryRepoIntegrationStore) RecordProjectBot(ctx context.Context, id, secretID, tokenID string, bot *ProjectBot, at time.Time) error {
+	defer m.lock(ctx)()
 	ri, ok := m.items[id]
 	if !ok || !integrationVisible(ri) {
 		return ErrIntegrationNotFound
@@ -340,9 +511,8 @@ func (m *MemoryRepoIntegrationStore) RecordProjectBot(_ context.Context, id, sec
 	return nil
 }
 
-func (m *MemoryRepoIntegrationStore) Delete(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *MemoryRepoIntegrationStore) Delete(ctx context.Context, id string) error {
+	defer m.lock(ctx)()
 	if _, ok := m.items[id]; !ok {
 		return ErrIntegrationNotFound
 	}
@@ -350,17 +520,16 @@ func (m *MemoryRepoIntegrationStore) Delete(_ context.Context, id string) error 
 	return nil
 }
 
-func (m *MemoryRepoIntegrationStore) GetByConnRepo(_ context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
-	ri, err := m.GetProvisionByConnRepo(context.Background(), tenantID, connID, repo)
+func (m *MemoryRepoIntegrationStore) GetByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
+	ri, err := m.GetProvisionByConnRepo(ctx, tenantID, connID, repo)
 	if err == nil && !integrationVisible(ri) {
 		return RepoIntegration{}, ErrIntegrationNotFound
 	}
 	return ri, err
 }
 
-func (m *MemoryRepoIntegrationStore) GetProvisionByConnRepo(_ context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *MemoryRepoIntegrationStore) GetProvisionByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
+	defer m.rlock(ctx)()
 	for _, ri := range m.items {
 		if ri.TenantID == tenantID && ri.ConnectionID == connID && ri.RepoFullName == repo {
 			return storekit.Snapshot(ri), nil
@@ -369,19 +538,18 @@ func (m *MemoryRepoIntegrationStore) GetProvisionByConnRepo(_ context.Context, t
 	return RepoIntegration{}, ErrIntegrationNotFound
 }
 
-func (m *MemoryRepoIntegrationStore) ListByTenant(_ context.Context, tenantID string) ([]RepoIntegration, error) {
-	return m.filter(func(ri RepoIntegration) bool { return ri.TenantID == tenantID }), nil
+func (m *MemoryRepoIntegrationStore) ListByTenant(ctx context.Context, tenantID string) ([]RepoIntegration, error) {
+	return m.filter(ctx, func(ri RepoIntegration) bool { return ri.TenantID == tenantID }), nil
 }
 
-func (m *MemoryRepoIntegrationStore) ListByConnection(_ context.Context, tenantID, connID string) ([]RepoIntegration, error) {
-	return m.filter(func(ri RepoIntegration) bool {
+func (m *MemoryRepoIntegrationStore) ListByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error) {
+	return m.filter(ctx, func(ri RepoIntegration) bool {
 		return ri.TenantID == tenantID && ri.ConnectionID == connID
 	}), nil
 }
 
-func (m *MemoryRepoIntegrationStore) ListProvisionsByConnection(_ context.Context, tenantID, connID string) ([]RepoIntegration, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *MemoryRepoIntegrationStore) ListProvisionsByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error) {
+	defer m.rlock(ctx)()
 	var out []RepoIntegration
 	for _, ri := range m.items {
 		if ri.TenantID == tenantID && ri.ConnectionID == connID {
@@ -391,31 +559,30 @@ func (m *MemoryRepoIntegrationStore) ListProvisionsByConnection(_ context.Contex
 	return storekit.Snapshot(out), nil
 }
 
-func (m *MemoryRepoIntegrationStore) ListSyncEnabled(_ context.Context) ([]RepoIntegration, error) {
-	return m.filter(func(ri RepoIntegration) bool { return ri.SyncIssuesEnabled }), nil
+func (m *MemoryRepoIntegrationStore) ListSyncEnabled(ctx context.Context) ([]RepoIntegration, error) {
+	return m.filter(ctx, func(ri RepoIntegration) bool { return ri.SyncIssuesEnabled }), nil
 }
 
-func (m *MemoryRepoIntegrationStore) ListSyncEnabledForRepo(_ context.Context, repo string) ([]RepoIntegration, error) {
-	return m.filter(func(ri RepoIntegration) bool {
+func (m *MemoryRepoIntegrationStore) ListSyncEnabledForRepo(ctx context.Context, repo string) ([]RepoIntegration, error) {
+	return m.filter(ctx, func(ri RepoIntegration) bool {
 		return ri.SyncIssuesEnabled && ri.RepoFullName == repo
 	}), nil
 }
 
-func (m *MemoryRepoIntegrationStore) ListProjectBotsExpiringBefore(_ context.Context, t time.Time) ([]RepoIntegration, error) {
-	return m.filter(func(ri RepoIntegration) bool {
+func (m *MemoryRepoIntegrationStore) ListProjectBotsExpiringBefore(ctx context.Context, t time.Time) ([]RepoIntegration, error) {
+	return m.filter(ctx, func(ri RepoIntegration) bool {
 		return ri.ProjectBot != nil && ri.ProjectBot.ExpiresAt != nil && !ri.ProjectBot.ExpiresAt.After(t)
 	}), nil
 }
 
-func (m *MemoryRepoIntegrationStore) ListByWebhook(_ context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
-	return m.filter(func(ri RepoIntegration) bool {
+func (m *MemoryRepoIntegrationStore) ListByWebhook(ctx context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
+	return m.filter(ctx, func(ri RepoIntegration) bool {
 		return ri.TenantID == tenantID && ri.WebhookID == webhookID
 	}), nil
 }
 
-func (m *MemoryRepoIntegrationStore) filter(keep func(RepoIntegration) bool) []RepoIntegration {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *MemoryRepoIntegrationStore) filter(ctx context.Context, keep func(RepoIntegration) bool) []RepoIntegration {
+	defer m.rlock(ctx)()
 	var out []RepoIntegration
 	for _, ri := range m.items {
 		if integrationVisible(ri) && keep(ri) {
@@ -509,6 +676,50 @@ func (s *MongoRepoIntegrationStore) Update(ctx context.Context, ri RepoIntegrati
 func (s *MongoRepoIntegrationStore) StampSynced(ctx context.Context, id string, at time.Time) error {
 	return mongoutil.UpdateOneChecked(ctx, s.coll, bson.M{"_id": id},
 		bson.M{"$set": bson.M{"last_synced_at": at}}, ErrIntegrationNotFound, "forge: stamp repo integration sync")
+}
+
+// StampSubscriptionSync is one pipeline update, so each field reads the stored
+// value it must respect: a pin merges UNDER the entries the document holds,
+// and the adoption instant is written only where none is. Values go through
+// $literal — a refusal text or a bot id is data, never a field path — and an
+// empty refusal removes the field instead of storing "".
+func (s *MongoRepoIntegrationStore) StampSubscriptionSync(ctx context.Context, id string, pins map[string]BotTrigger, syncedAt time.Time, syncErr string) error {
+	set := bson.M{"subscriptions_synced_at": bson.M{"$literal": syncedAt}}
+	if syncErr == "" {
+		set["subscriptions_sync_error"] = "$$REMOVE"
+		set["subscriptions_adopted_at"] = bson.M{"$ifNull": bson.A{"$subscriptions_adopted_at", bson.M{"$literal": syncedAt}}}
+	} else {
+		set["subscriptions_sync_error"] = bson.M{"$literal": syncErr}
+	}
+	if len(pins) > 0 {
+		set["bot_triggers"] = bson.M{"$mergeObjects": bson.A{
+			bson.M{"$literal": pins},
+			bson.M{"$ifNull": bson.A{"$bot_triggers", bson.M{"$literal": bson.M{}}}},
+		}}
+	}
+	return mongoutil.UpdateOneChecked(ctx, s.coll, bson.M{"_id": id},
+		mongo.Pipeline{bson.D{{Key: "$set", Value: set}}}, ErrIntegrationNotFound, "forge: stamp subscription sync")
+}
+
+// StampForgeRouting merges the lane into the stored routing, which keeps the
+// other lanes, and writes spine_since only where the document holds none.
+func (s *MongoRepoIntegrationStore) StampForgeRouting(ctx context.Context, id, lane, mode string, at time.Time) error {
+	var probe webhooks.ForgeRouting
+	if !setRoutingLane(&probe, lane, mode) {
+		return fmt.Errorf("forge: stamp forge routing: %q is not a routing lane", lane)
+	}
+	set := bson.M{
+		"forge_routing": bson.M{"$mergeObjects": bson.A{
+			bson.M{"$ifNull": bson.A{"$forge_routing", bson.M{"$literal": bson.M{}}}},
+			bson.M{"$literal": bson.M{lane: mode}},
+		}},
+		"updated_at": bson.M{"$literal": at},
+	}
+	if mode == webhooks.RoutingSpine {
+		set["spine_since"] = bson.M{"$ifNull": bson.A{"$spine_since", bson.M{"$literal": at}}}
+	}
+	return mongoutil.UpdateOneChecked(ctx, s.coll, bson.M{"_id": id},
+		mongo.Pipeline{bson.D{{Key: "$set", Value: set}}}, ErrIntegrationNotFound, "forge: stamp forge routing")
 }
 
 func (s *MongoRepoIntegrationStore) WithProvisionVersion(ctx context.Context, id string, version int64, retired bool, write func(context.Context) error) error {

@@ -8,6 +8,11 @@ const (
 	keyTags               = "tags"
 	keyExportsSkills      = "exports.skills"
 	keyDependenciesSkills = "dependencies.skills"
+	// keyInvocationForgeLabels is `labels` under the `forge:` block of any
+	// element of `invocations` — the sequence's elements are read under its
+	// own name, whichever element declares the key.
+	keyInvocationForgeLabels = "invocations.forge.labels"
+	keyForgeLabels           = "forge.labels"
 )
 
 // CatalogTaxonomySince is the release whose manifest decoder knows the
@@ -26,3 +31,12 @@ const CatalogTaxonomySince = "3.225.0"
 // key needs a build that reads it, and any build that does not refuses the
 // whole manifest at its strict decode — the field is not one it knows.
 const SkillSharingSince = "4.6.0"
+
+// ForgeLabelsSince is the release whose manifest decoder knows the label
+// keys that say which issue labels start a bot: `labels` under an
+// invocation's `forge:` block and under the top-level `forge:` block
+// (ADR-172). It is the symbolic pin until the lot that ships them is cut,
+// which keeps it strictly above every released build: a build that does not
+// know either key refuses the whole manifest at its strict decode, so a
+// bundle declaring one owes a floor that says so at authoring time.
+const ForgeLabelsSince = "next"

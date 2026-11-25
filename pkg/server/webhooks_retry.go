@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -150,6 +151,24 @@ func (w *webhookResponseBuffer) Flush() {
 // existing bounded launch context. acknowledgeWebhookLaunch owns the worker
 // and the shutdown join for HTTP callers.
 func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, meta webhookEventMeta, targets []forgeLaunchTarget, hash, ip string) {
+	s.acceptWebhookTargetsCore(ctx, w, r, cfg, meta, targets, nil, hash, ip, true)
+}
+
+// acceptWebhookTargetsWith is the spine router's entry into the tail: the
+// same claim-then-acknowledge flow, plus the outcomes the router already
+// decided (pre — the cards it created, the refusals it judged, the
+// duplicates it found, the board claims it could not decide) beside the
+// targets it hands over, and the answer rules a fan-out the ROUTER resolved
+// owes (ADR-172 §7): a claim that fails answers 503 partial while the
+// claimed targets still launch, and a 202 always renders the launches array.
+func (s *Server) acceptWebhookTargetsWith(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, meta webhookEventMeta, targets []forgeLaunchTarget, pre []webhookLaunchResult, hash, ip string) {
+	s.acceptWebhookTargetsCore(ctx, w, r, cfg, meta, targets, pre, hash, ip, false)
+}
+
+// acceptWebhookTargetsCore is the tail's answer for one delivery's targets.
+// legacyBodies keeps the historical single/multi body shapes for the lanes
+// that predate the spine; the spine entry always renders launches.
+func (s *Server) acceptWebhookTargetsCore(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, meta webhookEventMeta, targets []forgeLaunchTarget, pre []webhookLaunchResult, hash, ip string, legacyBodies bool) {
 	select {
 	case <-s.shutdown:
 		httpError(w, http.StatusServiceUnavailable, "server_draining")
@@ -162,35 +181,126 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 	}
 	ctx, cancel := launchBookingContext(ctx)
 	defer cancel()
-	results := make([]webhookLaunchResult, 0, len(targets))
+	results := make([]webhookLaunchResult, 0, len(pre)+len(targets))
+	results = append(results, pre...)
 	type pendingLaunch struct {
 		idx int
 		fn  func(context.Context) webhookLaunchResult
 	}
 	var launches []pendingLaunch
 	var firstID string
+	var claimFailed []webhookLaunchResult
+	for _, res := range pre {
+		// A claim the router could not decide (a board target whose card
+		// write failed): the same per-bot claim failure as a tail claim row
+		// that could not be written, minus the parked row — no card exists,
+		// so the redelivery claims it afresh.
+		if res.denial == nil && res.httpStatus >= http.StatusInternalServerError {
+			claimFailed = append(claimFailed, res)
+		}
+	}
 	for i, t := range targets {
 		t.durableRetry = true
 		result, launch := s.prepareWebhookTarget(ctx, r, cfg, meta, t, hash, ip)
 		results = append(results, result)
 		if launch != nil {
-			launches = append(launches, pendingLaunch{idx: i, fn: launch})
+			launches = append(launches, pendingLaunch{idx: len(pre) + i, fn: launch})
 			if firstID == "" {
 				firstID = result.DeliveryID
 			}
+			continue
+		}
+		// A claim WRITE failure: the tail failed to create or read the claim
+		// row before any launch existed — no denial, a 5xx, no launch
+		// closure. The partial answer names these bots, and the claim stays
+		// retryable: the row parked under the claim key (without the
+		// attribution a failed claim never earned) lets a redelivery — or
+		// the sweeper — take the claim over instead of losing the bot.
+		if result.denial == nil && result.httpStatus >= http.StatusInternalServerError {
+			claimFailed = append(claimFailed, result)
+			s.parkFailedSpineClaim(ctx, cfg, meta, t, hash, ip, result.Error)
 		}
 	}
+	// The spine's answer rules. A claim that failed — a claim WRITE here, or
+	// a board claim the router could not decide — is a partial, whatever
+	// else the delivery decided: the claimed targets launch anyway (their
+	// rows are durable and dedupe a redelivery), the unclaimed bots are named
+	// in a launch_error audit row, and the forge sees a retryable 503. It
+	// outranks a denial or a duplicate beside it: those are answers for
+	// their own bots, while the unclaimed bot still waits on a redelivery.
+	if !legacyBodies && len(claimFailed) > 0 {
+		claimed := make([]webhookLaunchResult, 0, len(launches))
+		for _, pl := range launches {
+			claimed = append(claimed, results[pl.idx])
+		}
+		for _, res := range pre {
+			if res.Status == webhooks.StatusCarded {
+				// The card is the claim: it stands whatever the tail does.
+				claimed = append(claimed, res)
+			}
+		}
+		sortLaunchResults(claimed)
+		unclaimed := make([]string, 0, len(claimFailed))
+		for _, res := range claimFailed {
+			unclaimed = append(unclaimed, fmt.Sprintf("%s (%s)", res.BotID, res.Error))
+		}
+		reason := "not claimed: " + strings.Join(unclaimed, "; ") +
+			"; GitHub does not retry — Redeliver to start them"
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, hash, ip, reason)
+		s.warnf("webhooks: %s/%s %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, reason)
+		writeJSONStatusRaw(w, http.StatusServiceUnavailable, map[string]any{
+			"status":   "partial",
+			"launches": claimed,
+		})
+		for _, pl := range launches {
+			launchCtx, cancelLaunch := launchBookingContext(ctx)
+			result := pl.fn(launchCtx)
+			cancelLaunch()
+			results[pl.idx] = result
+			if result.Status == webhooks.StatusLaunched {
+				s.scheduleForgeBoardProjection(meta.ProjectPath)
+			}
+		}
+		return
+	}
 	if len(launches) == 0 {
-		if len(results) == 1 {
+		// The spine entry renders a claimed outcome — the router's carded
+		// targets ride pre — as the launches array, whatever their count:
+		// the array is how a fan-out's per-bot outcomes reach the forge.
+		// Denials and duplicates keep the legacy bodies.
+		carded := false
+		if !legacyBodies {
+			for _, res := range results {
+				if res.Status == webhooks.StatusCarded && res.denial == nil {
+					carded = true
+					break
+				}
+			}
+		}
+		if len(results) == 1 && !carded {
 			s.writeSingleLaunchResult(w, r, results[0])
 			return
 		}
-		status, code := webhooks.StatusDuplicate, http.StatusOK
-		for _, res := range results {
+		if carded {
+			body := slices.Clone(results)
+			sortLaunchResults(body)
+			writeWebhookAccepted(w, map[string]any{
+				"status": webhooks.StatusAccepted, "delivery_id": firstID, "launches": body,
+			})
+			return
+		}
+		denials := slices.Clone(results)
+		if !legacyBodies {
+			sortLaunchResults(denials)
+		}
+		for _, res := range denials {
 			if res.denial != nil {
 				s.writeLaunchDenial(w, r, res.denial)
 				return
 			}
+		}
+		status, code := webhooks.StatusDuplicate, http.StatusOK
+		for _, res := range results {
 			if res.Status == webhooks.StatusFiltered && status == webhooks.StatusDuplicate {
 				status = res.Status
 			}
@@ -201,9 +311,15 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 		writeJSONStatus(w, code, map[string]any{"status": status, "launches": results})
 		return
 	}
+	// The spine's array reads in bot order; the legacy lanes keep their
+	// targets' order, the bytes they have always answered.
+	body := slices.Clone(results)
+	if !legacyBodies {
+		sortLaunchResults(body)
+	}
 	response := map[string]any{"status": webhooks.StatusAccepted, "delivery_id": firstID}
-	if len(targets) > 1 {
-		response["launches"] = results
+	if !legacyBodies || len(targets) > 1 {
+		response["launches"] = body
 	}
 	writeWebhookAccepted(w, response)
 	// The post-launch observer (the fork gesture's Q1 note) needs the run
@@ -221,9 +337,51 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 		}
 	}
 	for i, t := range targets {
-		if t.onLaunched != nil && i < len(results) {
-			t.onLaunched(results[i])
+		if t.onLaunched != nil {
+			t.onLaunched(results[len(pre)+i])
 		}
+	}
+}
+
+// sortLaunchResults orders launch results by bot, stable, so a fan-out's
+// array reads in one order whatever order the claims resolved in.
+func sortLaunchResults(results []webhookLaunchResult) {
+	slices.SortStableFunc(results, func(a, b webhookLaunchResult) int {
+		return strings.Compare(a.BotID, b.BotID)
+	})
+}
+
+// parkFailedSpineClaim parks a failed spine claim as a retryable launch_error
+// row under the claim's own key, so the fan-out a mid-write store failure
+// broke is completed by the forge's redelivery or the sweeper: the row is a
+// prior failure the tail's take-over path reclaims (ClaimFailedRetry), and
+// the rewritten row carries the subscription from the parked target. The row
+// carries NO subscription of its own — a failed claim never earned the
+// attribution, and the lane reads never select it as a claim. Best-effort: a
+// store too broken to park the row is the same store the partial answer
+// already named.
+func (s *Server) parkFailedSpineClaim(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta,
+	t forgeLaunchTarget, payloadHash, srcIP, cause string) {
+	if s.webhookDeliveries == nil {
+		return
+	}
+	row := newWebhookDelivery(cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP)
+	row.IdempotencyKey = t.IdemKey
+	row.BotID = t.BotID
+	row.Error = cause
+	row.Attempts = 1
+	now := s.gateNow()
+	row.FailedAt = &now
+	setWebhookRetry(&row, now)
+	row.RetryTarget = &webhooks.DeferredTarget{
+		BotID: t.BotID, IdemKey: t.IdemKey, Vars: cloneWebhookVars(t.Vars),
+		RepoURL: t.RepoURL, RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
+		ForkAuthor:     t.ForkAuthor,
+		SubscriptionID: t.subscriptionID, RoutedBy: t.routedBy,
+	}
+	if err := s.webhookDeliveries.Insert(ctx, row); err != nil && !errors.Is(err, webhooks.ErrDuplicate) {
+		s.warnf("webhooks: %s/%s %s: the failed claim of %s could not be parked for retry (%v)",
+			cfg.Provider, meta.ProjectPath, meta.SubjectID, t.BotID, err)
 	}
 }
 
@@ -316,9 +474,12 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 	// knows the event's later redeliveries by it (laneEvent.claimedBy).
 	meta := webhookEventMeta{Kind: d.EventKind, Action: d.EventAction, ProjectPath: d.ProjectPath,
 		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA, DeliveryID: d.ForgeDeliveryID}
+	// The spine attribution comes from the parked target, with everything
+	// else the launch is rebuilt from: the claim below rewrites the row whole.
 	out, launch := s.prepareWebhookTarget(ctx, syntheticRequestForBase(d.PublicBase), cfg, meta, forgeLaunchTarget{
 		durableRetry: true, retryAttempt: &d.Attempts, BotID: d.BotID, IdemKey: d.IdempotencyKey, Vars: cloneWebhookVars(t.Vars), RepoURL: t.RepoURL,
 		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA, ForkAuthor: t.ForkAuthor,
+		subscriptionID: t.SubscriptionID, routedBy: t.RoutedBy,
 	}, d.PayloadHash, d.SourceIP)
 	if launch == nil {
 		return out, nil

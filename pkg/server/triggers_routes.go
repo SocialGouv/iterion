@@ -235,6 +235,13 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	inv := entry.Invocations[req.Index]
+	// A kind=forge invocation is projected from the repo integration that
+	// binds the bot (ADR-172): enabling it here would author a row no
+	// integration owns, beside the one its projection writes.
+	if inv.Kind == bundle.InvocationKindForge {
+		dispatcher.WriteErr(w, http.StatusConflict, errForgeRowProjected)
+		return
+	}
 	if req.Cron != "" {
 		if inv.Kind != bundle.InvocationKindSchedule || inv.Schedule == nil {
 			dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("cron override only applies to a schedule invocation"))
@@ -720,6 +727,14 @@ type triggerCreated struct {
 	PinsUnreconciled []string `json:"pins_unreconciled,omitempty"`
 }
 
+// errForgeRowProjected refuses every triggers-REST write of a forge-bound row
+// (ADR-172): the row is projected from its repo integration, so an edit here
+// would be overwritten by the next projection — or, until then, leave a row
+// routed by a filter nobody set — and a delete would only strand the label
+// until the integration re-projects it. The operator's lever is the
+// integration's bot_triggers.
+var errForgeRowProjected = errors.New("forge subscriptions are projected from the repo integration; set the bot's triggers on the integration (bot_triggers)")
+
 func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	tenant := s.triggerTenant(r)
 	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
@@ -732,6 +747,10 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if cur.ForgeBinding != "" {
+		dispatcher.WriteErr(w, http.StatusConflict, errForgeRowProjected)
 		return
 	}
 	var req triggerSubscriptionReq
@@ -846,6 +865,10 @@ func (s *Server) handleDeleteTrigger(w http.ResponseWriter, r *http.Request) {
 	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
 	if err == nil && cur.TenantID != s.triggerTenant(r) {
 		err = trigger.ErrSubscriptionNotFound
+	}
+	if err == nil && cur.ForgeBinding != "" {
+		dispatcher.WriteErr(w, http.StatusConflict, errForgeRowProjected)
+		return
 	}
 	// An operator deleting a row derived from a manifest invocation means
 	// it: the tombstone, written before the delete, keeps every later

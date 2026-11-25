@@ -2,25 +2,25 @@ package native
 
 import "github.com/SocialGouv/iterion/pkg/store"
 
-// ReservedLaunchArgs are the reserved `__iterion_*` bot-arg keys that carry a
-// webhook-launched card's launch context: the repo to clone and its ref, the
-// forge slug the run is metered and bounded by, the webhook's BYOK key and
-// secret overrides, and the id of the integration whose launch-policy layers
-// the launch resolves. ensureBoardCard (pkg/server) stamps them from the
-// webhook payload — the server's word about what the card's run targets —
-// and the cloud dispatcher lifts them into the launch. They are launch
-// context, never bot input.
+// ReservedLaunchArgs are the reserved `__iterion_*` bot-arg card launch-context
+// keys: the repo to clone and its ref, the forge slug the run is metered and
+// bounded by, the webhook's BYOK key and secret overrides, the id of the
+// integration whose launch-policy layers the launch resolves, and the marker
+// that says the card carries its own invocation vars. ensureBoardCard
+// (pkg/server) stamps them from the webhook payload — the server's word
+// about what the card's run targets — and the cloud dispatcher lifts them
+// into the launch. They are launch context, never bot input.
 //
 // Every client-facing board write strips them (DropReservedLaunchArgs at
 // create, KeepStoredLaunchContext across a wholesale patch): a principal
 // able to write them would decide what its run clones, which credential it
-// resolves, and which repository meters, bounds and debits it — the repo
-// quota's subject and a BYOK key's repo audience both read off this class
-// (#2371, D33). Symmetric with store.DropServerMintedVars, same doctrine:
-// the route filters the class, the store twins stay writer-agnostic (the
-// deeper funnel cannot tell a card's existing args from args this write
-// supplies, and the server's own stamp — ensureBoardCard — writes through
-// the same store.Create).
+// resolves, which repository meters, bounds and debits it, and whether the
+// integration's launch_vars apply — the repo quota's subject and a BYOK key's
+// repo audience both read off this class (#2371, D33). Symmetric with
+// store.DropServerMintedVars, same doctrine: the route filters the class,
+// the store twins stay writer-agnostic (the deeper funnel cannot tell a
+// card's existing args from args this write supplies, and the server's own
+// stamp — ensureBoardCard — writes through the same store.Create).
 var ReservedLaunchArgs = []string{
 	"__iterion_repo_url",
 	"__iterion_repo_ref",
@@ -28,6 +28,7 @@ var ReservedLaunchArgs = []string{
 	"__iterion_key_overrides",
 	"__iterion_secret_overrides",
 	"__iterion_webhook_id",
+	"__iterion_own_vars",
 }
 
 // IsReservedLaunchArg reports whether k is one of the reserved launch-context

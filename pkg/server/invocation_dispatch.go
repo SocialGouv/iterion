@@ -135,6 +135,14 @@ func (s *Server) boardRouteForLabel(ctx context.Context, teamID, botID string) w
 	return route
 }
 
+// spineHalf returns the lane's spine half when the caller passed one.
+func spineHalf(spine []laneSpineHalf) laneSpineHalf {
+	if len(spine) > 0 {
+		return spine[0]
+	}
+	return laneSpineHalf{}
+}
+
 // dispatchInvocation is the shared sink a comment handler calls once it has a
 // resolved command route + composed vars. It launches by execution mode:
 //
@@ -154,12 +162,18 @@ func (s *Server) boardRouteForLabel(ctx context.Context, teamID, botID string) w
 // nil for a comment command. With a lane, idemKey is the lane's generation
 // zero and both modes re-arm once the lane's latest claim has ended; without
 // one, idemKey and the subject's card label are each claimed once.
+//
+// spine is the lane's spine half, passed by an issue handler whose
+// integration has ever routed by subscription (cfg.SpineSince set): the
+// elected bot whose claims the lane read covers, and per gated added label
+// its bot-scoped base. Empty on a never-flipped config, whose reads stay
+// byte-identical.
 func (s *Server) dispatchInvocation(
 	ctx context.Context, w http.ResponseWriter, r *http.Request,
 	cfg webhooks.Config, meta webhookEventMeta, idemKey string,
 	route webhooks.CommandRoute, vars map[string]string,
 	repoURL, repoRef, payloadHash, srcIP string,
-	prov launchProvenance, lane *triggerLane,
+	prov launchProvenance, lane *triggerLane, spine ...laneSpineHalf,
 ) {
 	// A stored route whose mode no lane honours is refused typed and
 	// launches nothing — the board branch below is the only other effect,
@@ -232,7 +246,7 @@ func (s *Server) dispatchInvocation(
 			// per-comment label only AFTER that. Short-circuit to a "carded"
 			// replay when the card already exists, before gating.
 			if lane != nil {
-				s.cardTriggerLane(ctx, w, r, cfg, meta, idemKey, route, vars, repoURL, repoRef, payloadHash, srcIP, *lane, seed)
+				s.cardTriggerLane(ctx, w, r, cfg, meta, idemKey, route, vars, repoURL, repoRef, payloadHash, srcIP, *lane, seed, spineHalf(spine))
 				return
 			}
 			if s.boardCardExists(cfg, meta) {
@@ -264,28 +278,42 @@ func (s *Server) dispatchInvocation(
 	var onClaimDecided func(bool, *webhooks.Delivery)
 	if lane != nil {
 		ev := laneEvent{PayloadHash: payloadHash, DeliveryID: meta.DeliveryID}
-		claim, err := s.claimTriggerLane(ctx, cfg, idemKey, ev)
+		// Board is where the claim will be WRITTEN - a card under a wired
+		// coordinator - not the route's declared mode: a board route with no
+		// board (or no coordinator) claims a Delivery row through the tail
+		// like any direct target, and a retryable claim of that lane is the
+		// tail's to take over, never one to absorb.
+		rd := laneRead{
+			Lane:  lane,
+			Bases: []string{idemKey},
+			Board: route.Mode == string(bundle.ExecutionBoard) &&
+				s.cfg.CloudBoardFor != nil && s.cfg.CloudBoardCoordinator != nil,
+		}
+		if half := spineHalf(spine); half.Bot != "" {
+			rd.Legacy, rd.Bot, rd.BotTriggers = half.Bases, half.Bot, half.Triggers
+		}
+		verdict, err := s.readTriggerLane(ctx, cfg, rd, ev)
 		if err != nil {
 			s.laneUnavailable(ctx, w, cfg, meta, payloadHash, srcIP, err)
 			return
 		}
-		if claim.answered != nil {
+		if verdict.answered != nil {
 			// The receipt names the row that answers, like the tail's own
 			// duplicate: the serving claim, or the absorption recorded earlier.
 			s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-			if claim.absorb {
+			if verdict.absorb {
 				s.recordLaneAbsorbed(ctx, cfg, meta, idemKey, route.BotID, ev, srcIP,
-					fmt.Sprintf("claim %s (run %q)", claim.answered.ID, claim.answered.RunID))
+					fmt.Sprintf("claim %s (run %q)", verdict.answered.ID, verdict.answered.RunID))
 			}
 			writeJSONStatus(w, http.StatusOK, map[string]string{
-				"status": webhooks.StatusDuplicate, "run_id": claim.answered.RunID, "delivery_id": claim.answered.ID,
+				"status": webhooks.StatusDuplicate, "run_id": verdict.answered.RunID, "delivery_id": verdict.answered.ID,
 			})
 			return
 		}
 		// What the tail decides is recorded once it is decided: the event a
 		// takeover displaces only once the takeover holds, and this event as
 		// absorbed when it loses the claim to ANOTHER event racing it.
-		base, displaced := idemKey, claim.displaced
+		base, displaced := idemKey, verdict.displaced
 		onClaimDecided = func(claimed bool, existing *webhooks.Delivery) {
 			switch {
 			case claimed && displaced != nil:
@@ -296,7 +324,7 @@ func (s *Server) dispatchInvocation(
 					fmt.Sprintf("claim %s (run %q)", existing.ID, existing.RunID))
 			}
 		}
-		idemKey = claim.key
+		idemKey = verdict.nextKey
 	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		// No dispatcher: a tracking card (default inbox state) + direct launch.
@@ -310,88 +338,162 @@ func (s *Server) dispatchInvocation(
 	}}, payloadHash, srcIP)
 }
 
+// laneCardResult is cardTriggerLaneDecide's outcome: the carded lane's
+// claim decided, before any response byte is written. Status carries the
+// semantic verdict — webhooks.StatusCarded once a card was created,
+// webhooks.StatusDuplicate when a record already answers,
+// webhooks.StatusFiltered on a provenance refusal — and the reserved fields
+// carry WHAT answers (a Delivery row or a card), so every writer renders its
+// own bytes: the legacy writer's carded bodies, the router's per-bot results
+// and its `carded` audit rows. denial is a gate refusal, rendered by
+// writeLaunchDenial.
+type laneCardResult struct {
+	webhookLaunchResult
+	cardID  string             // the answering or newly created card
+	row     *webhooks.Delivery // the Delivery row that answers this event
+	absorb  bool               // the caller must record this event as absorbed
+	created bool               // a new card was created: the claim
+}
+
+// cardTriggerLaneDecide is the carded lane's decision, response-free: it
+// walks the lane through readTriggerLane — its own chain and, once the
+// integration has ever routed by subscription (spine.Bot set), the elected
+// bot's spine half — refuses the provenance the card cannot carry, runs the
+// gate pre-check and cards under the lane's next deterministic id. The
+// card IS the claim: a delivery the lane already answers writes no card,
+// and a fresh one collides with a racing twin on the id. extras ride only
+// from the spine (P1): route.ContextVars into BotArgs and the own-vars
+// marker. The legacy writer passes none and a launchProvenance{} its caller
+// already refused on, so the refusal re-check passes without writing.
+func (s *Server) cardTriggerLaneDecide(
+	ctx context.Context,
+	cfg webhooks.Config, meta webhookEventMeta, base string,
+	route webhooks.CommandRoute, vars map[string]string,
+	repoURL, repoRef, payloadHash, srcIP string,
+	prov launchProvenance, lane triggerLane, seed func(),
+	spine laneSpineHalf, extras boardCardExtras,
+) (laneCardResult, error) {
+	if reason := webhookProvenanceRefusal(cfg, prov.Trust, prov.ExpectedSHA); reason != "" {
+		return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusFiltered, Error: reason}}, nil
+	}
+	// The card has no seat for provenance: it carries only BotArgs, which
+	// processBoardCard lifts into a LaunchSpec that hard-codes the trusted
+	// default. A launch that knows something about its code and cannot
+	// carry it must not be laundered into one that claims to know nothing.
+	if !prov.Trust.Trusted() || prov.ExpectedSHA != "" {
+		reason := fmt.Sprintf("board-mode dispatch cannot carry this launch's provenance (trust=%q, pinned_commit=%v): the card holds only bot args, so the run it produces would read as trusted and unpinned",
+			string(prov.Trust), prov.ExpectedSHA != "")
+		return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusFiltered, Error: reason}}, nil
+	}
+	ev := laneEvent{PayloadHash: payloadHash, DeliveryID: meta.DeliveryID}
+	bs := s.cfg.CloudBoardFor(cfg.TenantID)
+	if bs == nil {
+		return laneCardResult{}, fmt.Errorf("no board for team %s", cfg.TenantID)
+	}
+	rd := laneRead{Lane: &lane, Bases: []string{base}, Board: true}
+	if spine.Bot != "" {
+		rd.Legacy, rd.Bot, rd.BotTriggers = spine.Bases, spine.Bot, spine.Triggers
+	}
+	verdict, err := s.readTriggerLane(ctx, cfg, rd, ev)
+	if err != nil {
+		return laneCardResult{}, err
+	}
+	if verdict.answered != nil {
+		// A Delivery row answers — an absorption recorded earlier, or this
+		// event's claim in the other mode's store. absorb carries the
+		// serving-claim case: the event must then be recorded as absorbed
+		// under the caller's own base, so its redelivery stays a duplicate.
+		return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusDuplicate, DeliveryID: verdict.answered.ID}, row: verdict.answered, absorb: verdict.absorb}, nil
+	}
+	if verdict.card != nil {
+		return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusDuplicate}, cardID: verdict.card.ID, absorb: verdict.absorb}, nil
+	}
+	adm, d := s.gateLaunch(ctx, launchSubject{BotID: route.BotID, Repo: meta.ProjectPath})
+	if d != nil {
+		return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusLaunchError, denial: d}}, nil
+	}
+	// A pre-check, not the metering: the dispatcher meters when it claims
+	// the card (processBoardCard).
+	adm.rollback(s.logger)
+	if seed != nil {
+		seed()
+	}
+	card := s.buildBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef, extras)
+	card.ID = verdict.nextCardID
+	card.Labels = append(card.Labels, lane.boardLabel(), boardDeliveryLabel(ev.key()))
+	if _, err := bs.Create(card); err != nil {
+		// Refused on the deterministic id: a racing delivery carded this
+		// lane a moment ago. Any other failure is a real board problem.
+		if won, gerr := bs.Get(verdict.nextCardID); gerr == nil && won != nil {
+			if ev.cardedFor(won) {
+				return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusDuplicate}, cardID: won.ID}, nil
+			}
+			return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusDuplicate}, cardID: won.ID, absorb: true}, nil
+		}
+		return laneCardResult{}, fmt.Errorf("card the trigger: %w", err)
+	}
+	return laneCardResult{webhookLaunchResult: webhookLaunchResult{BotID: route.BotID, Status: webhooks.StatusCarded}, cardID: verdict.nextCardID, created: true}, nil
+}
+
 // cardTriggerLane is the board-dispatcher branch of dispatchInvocation for an
-// issue trigger: the card is the claim. A delivery the lane already answers
-// — redelivered, or absorbed by a card still serving — writes no card; a
-// fresh one cards under the lane's next deterministic id, so a racing twin
-// collides on it instead of carding twice.
+// issue trigger: the card is the claim. It is cardTriggerLaneDecide plus the
+// legacy writer, whose bytes are the ones the legacy label route has always
+// written: a carded replay for anything the lane already answers (naming the
+// answering card, or the Delivery row, by id), the gate denial, and the 503
+// on an unreadable lane.
 func (s *Server) cardTriggerLane(
 	ctx context.Context, w http.ResponseWriter, r *http.Request,
 	cfg webhooks.Config, meta webhookEventMeta, base string,
 	route webhooks.CommandRoute, vars map[string]string,
 	repoURL, repoRef, payloadHash, srcIP string,
-	lane triggerLane, seed func(),
+	lane triggerLane, seed func(), spine laneSpineHalf,
 ) {
-	ev := laneEvent{PayloadHash: payloadHash, DeliveryID: meta.DeliveryID}
-	duplicate := func(cardID string) {
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID, "card_id": cardID})
-	}
-	absorb := func(card *native.Issue) {
-		s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-		s.recordLaneAbsorbed(ctx, cfg, meta, base, route.BotID, ev, srcIP, "card "+card.ID)
-		duplicate(card.ID)
-	}
-	bs := s.cfg.CloudBoardFor(cfg.TenantID)
-	if bs == nil {
-		s.laneUnavailable(ctx, w, cfg, meta, payloadHash, srcIP, fmt.Errorf("no board for team %s", cfg.TenantID))
-		return
-	}
-	if s.webhookDeliveries != nil {
-		absorbed, err := s.laneAbsorbedRow(ctx, base, ev)
-		if err != nil {
-			s.laneUnavailable(ctx, w, cfg, meta, payloadHash, srcIP, err)
-			return
-		}
-		if absorbed != nil {
-			s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-			writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID, "delivery_id": absorbed.ID})
-			return
-		}
-	}
-	answer, err := boardLaneVerdict(bs, cfg.TenantID, lane, ev)
+	res, err := s.cardTriggerLaneDecide(ctx, cfg, meta, base, route, vars, repoURL, repoRef, payloadHash, srcIP, launchProvenance{}, lane, seed, spine, boardCardExtras{})
 	if err != nil {
 		s.laneUnavailable(ctx, w, cfg, meta, payloadHash, srcIP, err)
 		return
 	}
-	if answer.card != nil {
-		if answer.absorb {
-			absorb(answer.card)
-			return
+	ev := laneEvent{PayloadHash: payloadHash, DeliveryID: meta.DeliveryID}
+	carded := func(cardID string) {
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID, "card_id": cardID})
+	}
+	switch {
+	case res.denial != nil:
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, res.denial.reason)
+		s.writeLaunchDenial(w, r, res.denial)
+	case res.Status == webhooks.StatusFiltered:
+		// The provenance refusal, rendered with dispatchInvocation's own
+		// bytes for the callers that decide before their writer (the legacy
+		// writer refuses before it ever reaches here).
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s/%s refused for %s: %s", cfg.Provider, meta.ProjectPath, res.BotID, res.Error)
 		}
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, res.Error)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered, "reason": res.Error})
+	case res.row != nil:
+		// The absorption recorded earlier, or this event's claim in the
+		// other mode's store: named by the row's id, as the lane's
+		// absorbed-row branch always answered. A serving claim that absorbs
+		// the event records it, so a redelivery stays a duplicate for good.
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-		duplicate(answer.card.ID)
-		return
-	}
-	adm, d := s.gateLaunch(ctx, launchSubject{BotID: route.BotID, Repo: meta.ProjectPath})
-	if d != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
-		s.writeLaunchDenial(w, r, d)
-		return
-	}
-	// A pre-check, not the metering: the dispatcher meters when it claims
-	// the card (see the comment-command branch above).
-	adm.rollback(s.logger)
-	seed()
-	card := s.buildBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef)
-	card.ID = answer.nextID
-	card.Labels = append(card.Labels, lane.boardLabel(), boardDeliveryLabel(ev.key()))
-	if _, err := bs.Create(card); err != nil {
-		// Refused on the deterministic id: a racing delivery carded this
-		// lane a moment ago. Any other failure is a real board problem.
-		if won, gerr := bs.Get(answer.nextID); gerr == nil && won != nil {
-			if ev.cardedFor(won) {
-				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-				duplicate(won.ID)
-				return
-			}
-			absorb(won)
-			return
+		if res.absorb {
+			s.recordLaneAbsorbed(ctx, cfg, meta, base, route.BotID, ev, srcIP,
+				fmt.Sprintf("claim %s (run %q)", res.row.ID, res.row.RunID))
 		}
-		s.laneUnavailable(ctx, w, cfg, meta, payloadHash, srcIP, fmt.Errorf("card the trigger: %w", err))
-		return
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID, "delivery_id": res.row.ID})
+	case res.created:
+		// The fresh card IS the claim: the lane's first delivery answers
+		// 202, exactly as the legacy writer always answered it.
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
+		writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "carded", "bot": route.BotID, "card_id": res.cardID})
+	case res.cardID != "" && res.absorb:
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+		s.recordLaneAbsorbed(ctx, cfg, meta, base, route.BotID, ev, srcIP, "card "+res.cardID)
+		carded(res.cardID)
+	case res.cardID != "":
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+		carded(res.cardID)
 	}
-	s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
-	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "carded", "bot": route.BotID, "card_id": answer.nextID})
 }
 
 // boardCardLabel is the subject label every board-mode card carries. For a
@@ -419,28 +521,47 @@ func (s *Server) boardCardExists(cfg webhooks.Config, meta webhookEventMeta) boo
 
 // ensureBoardCard materialises a tracking kanban card for a board-mode
 // command on the tenant's cloud board, idempotently: a card carrying the
-// per-comment label is created at most once, so a webhook retry doesn't
-// duplicate it. Best-effort — a board error never fails the command (the run
-// still launches). The card is assigned to the bot (Assignee + Bot) and
-// carries the command args as bot_args.
-func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route webhooks.CommandRoute, vars map[string]string, meta webhookEventMeta, initialState, repoURL, repoRef string) {
+// per-comment label — or, when a lane is given, the lane's own label — is
+// created at most once, so a webhook retry doesn't duplicate it. Best-effort
+// — a board error never fails the command (the run still launches). The
+// card is assigned to the bot (Assignee + Bot) and carries the command args
+// as bot_args.
+func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route webhooks.CommandRoute, vars map[string]string, meta webhookEventMeta, initialState, repoURL, repoRef string, lane ...*triggerLane) {
 	store := s.cfg.CloudBoardFor(cfg.TenantID)
 	if store == nil {
 		return
 	}
 	label := boardCardLabel(meta)
-	if existing, err := store.List(native.ListFilter{Labels: []string{label}}); err == nil && len(existing) > 0 {
-		return // already materialised for this comment
+	var laneLabels []string
+	if len(lane) > 0 && lane[0] != nil {
+		label = lane[0].boardLabel()
+		laneLabels = []string{lane[0].boardLabel()}
 	}
-	if _, err := store.Create(s.buildBoardCard(ctx, cfg, route, vars, meta, initialState, repoURL, repoRef)); err != nil && s.logger != nil {
+	if existing, err := store.List(native.ListFilter{Labels: []string{label}}); err == nil && len(existing) > 0 {
+		return // already materialised for this comment or this lane
+	}
+	card := s.buildBoardCard(ctx, cfg, route, vars, meta, initialState, repoURL, repoRef, boardCardExtras{})
+	card.Labels = append(card.Labels, laneLabels...)
+	if _, err := store.Create(card); err != nil && s.logger != nil {
 		s.logger.Warn("webhooks: board card create failed (tenant=%s bot=%s): %v", cfg.TenantID, route.BotID, err)
 	}
+}
+
+// boardCardExtras are the extras only a spine caller passes to
+// buildBoardCard: the invocation's context_vars, stamped into BotArgs so
+// the carded run carries them (cloud's processBoardCard launches from
+// BotArgs alone), and the own-vars marker, which tells the launch to skip
+// the integration's cfg.LaunchVars — on a spine-routed config the manifest
+// union, a cross-bot leak (ADR-172 §6).
+type boardCardExtras struct {
+	ContextVars map[string]string
+	OwnVars     bool
 }
 
 // buildBoardCard composes the card a board-mode command or trigger cards: its
 // title and body, the bot args its launch needs, and the subject's "cmd:"
 // label. It writes nothing.
-func (s *Server) buildBoardCard(ctx context.Context, cfg webhooks.Config, route webhooks.CommandRoute, vars map[string]string, meta webhookEventMeta, initialState, repoURL, repoRef string) native.Issue {
+func (s *Server) buildBoardCard(ctx context.Context, cfg webhooks.Config, route webhooks.CommandRoute, vars map[string]string, meta webhookEventMeta, initialState, repoURL, repoRef string, extras boardCardExtras) native.Issue {
 	title := boardCardTitle(route, vars)
 	botArgs := map[string]string{}
 	if route.ArgsVar != "" {
@@ -448,6 +569,11 @@ func (s *Server) buildBoardCard(ctx context.Context, cfg webhooks.Config, route 
 			botArgs[route.ArgsVar] = v
 		}
 	}
+	// The invocation's context_vars, above the issue context and below the
+	// operator layer (the launch's own layering applies them at lift time):
+	// a spine carded run runs the invocation it was routed by, not a bare
+	// default.
+	mergeVarsInto(botArgs, extras.ContextVars)
 	// PR/MR-context vars stamped by the command handlers (resolved PR head/
 	// base, push-back routing, the PR to comment the verdict on). They must
 	// ride BotArgs for the same reason as the opens_mr stamp below: cloud's
@@ -478,6 +604,16 @@ func (s *Server) buildBoardCard(ctx context.Context, cfg webhooks.Config, route 
 	if route.OpensMR && meta.SubjectURL != "" {
 		botArgs["open_mr"] = "true"
 		botArgs["source_issue_ref"] = meta.SubjectURL
+	}
+	// Everything above comes from the event, the route or a manifest (args
+	// var, context_vars, hand-off names); everything below is the server's
+	// own stamp. The reserved launch context and the minted grants are
+	// dropped between the two, so no manifest can plant what only the server
+	// writes — the repo the run clones, the key and secret overrides it
+	// resolves, the own-vars marker.
+	botArgs = native.DropServerMintedLaunchVars(botArgs)
+	if extras.OwnVars {
+		botArgs[boardOwnVarsKey] = "1"
 	}
 	// Repo-bound webhook command (issue-comment → MR): the cloud board
 	// coordinator launches from the card with no RepoURL of its own, so stamp

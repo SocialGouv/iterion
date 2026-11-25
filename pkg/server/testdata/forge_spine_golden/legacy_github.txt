@@ -1,0 +1,20 @@
+== direct lane ==
+deliver d-1 implement @10:00 -> 202 {"delivery_id":"<id-1>","status":"accepted"}
+row key=79191bbe8763a29e5b7b9a62937d783599c4c59ec1a5daed7f8ce9380bb28a61 status=launched bot=feature-dev run=run-1 event=d-1
+deliver d-2 implement @10:05 (fresh application) -> 200 {"delivery_id":"<id-1>","run_id":"run-1","status":"duplicate"}
+row key=0b723b1b02d94bd10362ef4a16134320d4870a9f5eefe43d6f652f82f313d818 status=duplicate bot=feature-dev run= event=d-2
+row key=79191bbe8763a29e5b7b9a62937d783599c4c59ec1a5daed7f8ce9380bb28a61 status=launched bot=feature-dev run=run-1 event=d-1
+redeliver d-1 after run-1 ended -> 200 {"delivery_id":"<id-1>","run_id":"run-1","status":"duplicate"}
+deliver d-3 bug @10:10 -> 202 {"delivery_id":"<id-2>","status":"accepted"}
+row key=00c8ddf55b3a555fb6238ed988ad629ef418c7f379ac5b4830a040e98ad30d74 status=launched bot=feature-dev run=run-2 event=d-3
+row key=0b723b1b02d94bd10362ef4a16134320d4870a9f5eefe43d6f652f82f313d818 status=duplicate bot=feature-dev run= event=d-2
+row key=79191bbe8763a29e5b7b9a62937d783599c4c59ec1a5daed7f8ce9380bb28a61 status=launched bot=feature-dev run=run-1 event=d-1
+== board lane ==
+deliver d-1 implement @10:00 -> 202 {"bot":"feature-dev","card_id":"native:<id-3>","status":"carded"}
+card native:<id-3> state=ready bot=feature-dev labels=[cmd:delivery:delivery:d-1 cmd:issue:42 cmd:lane:acme/widgets#issue:42#implement provider:github source:command]
+deliver d-2 implement @10:05 (fresh application) -> 200 {"bot":"feature-dev","card_id":"native:<id-3>","status":"carded"}
+card native:<id-3> state=ready bot=feature-dev labels=[cmd:delivery:delivery:d-1 cmd:issue:42 cmd:lane:acme/widgets#issue:42#implement provider:github source:command]
+redeliver d-1 after the card ended -> 200 {"bot":"feature-dev","card_id":"native:<id-3>","status":"carded"}
+deliver d-3 bug @10:10 -> 202 {"bot":"feature-dev","card_id":"native:<id-4>","status":"carded"}
+card native:<id-3> state=done bot=feature-dev labels=[cmd:delivery:delivery:d-1 cmd:issue:42 cmd:lane:acme/widgets#issue:42#implement provider:github source:command]
+card native:<id-4> state=ready bot=feature-dev labels=[cmd:delivery:delivery:d-3 cmd:issue:42 cmd:lane:acme/widgets#issue:42#bug provider:github source:command]

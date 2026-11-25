@@ -86,6 +86,10 @@ const (
 	// observers only: the evaluator never evaluates it, whatever else it
 	// carries (ADR-168 §8.5 — readers ship before any publisher sets it).
 	PayloadObservational = "observational"
+	// PayloadForgeKind carries the forge's own name for a forge event
+	// ("issues", "Issue Hook"): Kind holds the manifest vocabulary
+	// (bundle.ForgeEventIssueLabeled), which every provider shares.
+	PayloadForgeKind = "forge_kind"
 )
 
 // Subject is the thing an event is about (a PR, an issue/card, a run, a repo).
@@ -129,6 +133,11 @@ type Event struct {
 	// Labels are the labels on the subject at event time (board card labels,
 	// issue labels). Matched by Matcher.Labels.
 	Labels []string `json:"labels,omitempty" bson:"labels,omitempty"`
+	// AddedLabels are the labels this event added to the subject, in the
+	// source's own spelling and order: one for a forge that reports each
+	// label on its own, several for one that reports a change set. Matched
+	// by Matcher.AddedLabels and Matcher.ExcludeAddedLabels.
+	AddedLabels []string `json:"added_labels,omitempty" bson:"added_labels,omitempty"`
 	// Payload carries source-specific extras used for var templating
 	// (issue title/body, comment args, board from/to state, ...).
 	Payload    map[string]any `json:"payload,omitempty" bson:"payload,omitempty"`

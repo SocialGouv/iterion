@@ -197,3 +197,9 @@ func (f *FileSubscriptionStore) ListByOrigin(ctx context.Context, tenantID, orig
 func (f *FileSubscriptionStore) ListCandidates(ctx context.Context, ev Event) ([]Subscription, error) {
 	return f.list(ctx, func(m *MemorySubscriptionStore) ([]Subscription, error) { return m.ListCandidates(ctx, ev) })
 }
+
+func (f *FileSubscriptionStore) ListByForgeBinding(ctx context.Context, tenantID, binding string) ([]Subscription, error) {
+	return f.list(ctx, func(m *MemorySubscriptionStore) ([]Subscription, error) {
+		return m.ListByForgeBinding(ctx, tenantID, binding)
+	})
+}

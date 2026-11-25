@@ -42,8 +42,10 @@ type ReconcileReport struct {
 //     choices (a disabled row would come back enabled).
 //
 // A connector subscription is never derived, refreshed or removed here: it
-// listens to a connection an operator chose (ADR-168 §6). Every failure is
-// joined into the error and the rest still reconciles.
+// listens to a connection an operator chose (ADR-168 §6). Neither is a
+// subscription bound to a forge binding: its integration's projector derives
+// it under an id no manifest invocation shares. Every failure is joined into
+// the error and the rest still reconciles.
 func ReconcileManifests(ctx context.Context, st SubscriptionStore, tenantID string, bots []ManifestBot, now time.Time) (ReconcileReport, error) {
 	var (
 		rep  ReconcileReport
@@ -109,6 +111,12 @@ func ReconcileManifests(ctx context.Context, st SubscriptionStore, tenantID stri
 	}
 	for _, row := range rows {
 		if !IsDerivedID(row.ID) || row.Invocation == bundle.InvocationKindConnector || !discovered[row.BotID] {
+			continue
+		}
+		// A row bound to a forge binding is its projector's: it is derived
+		// from an integration, which no manifest lists, so it is never
+		// among the wanted rows and never this pass's to remove.
+		if row.ForgeBinding != "" {
 			continue
 		}
 		if _, ok := wanted[row.ID]; ok {

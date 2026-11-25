@@ -123,6 +123,23 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		why: "a static property of the recorded bot set refused before any forge call — the provisioning route's 502 default, the approval arm consumes the dead-end record",
 	},
 
+	// The routing switch and the subscription projection (ADR-172). All
+	// three are iterion's own verdicts on its own state, decided before
+	// any forge call; none wraps forge.ErrNotFound, so none may ever be
+	// answered 404. Their routes answer them with their own typed codes.
+	"forge.ErrRoutingInvalid": {
+		err: forge.ErrRoutingInvalid, wantStatus: 0,
+		why: "the routing PUT named a lane or mode that does not exist — the routing route answers 400 itself",
+	},
+	"forge.ErrRoutingRefused": {
+		err: forge.ErrRoutingRefused, wantStatus: 0,
+		why: "the switch refused a lane (no enabled row, overlapping rows, hand-pinned launch vars) — the routing route answers 409 with the refusal's code and reason",
+	},
+	"forge.ErrSubscriptionProjection": {
+		err: forge.ErrSubscriptionProjection, wantStatus: 0,
+		why: "a subscription projection was refused or failed — SetForgeRouting answers the refusal 409 and a store failure 503, and provisioning fails loudly; it is never a forge answer",
+	},
+
 	// Forge-answered 404s that stay out of the class because their own
 	// caller classifies them. Moving one in is a behaviour change to own.
 	"forge.ErrProjectNotFound": {

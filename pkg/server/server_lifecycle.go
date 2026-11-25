@@ -63,6 +63,10 @@ func (s *Server) Handler() http.Handler {
 // project runtimes alive behind a single public HTTP address.
 func (s *Server) StartEmbedded() error {
 	s.embeddedOnce.Do(func() {
+		if s.forgeRoutingDefaultErr != nil {
+			s.embeddedErr = s.forgeRoutingDefaultErr
+			return
+		}
 		if s.cfg.Mode == "cloud" {
 			s.embeddedErr = fmt.Errorf("server: cloud runtime cannot be embedded in a local workspace host")
 			return
@@ -137,6 +141,11 @@ func (s *Server) StartEmbedded() error {
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe() error {
+	if s.forgeRoutingDefaultErr != nil {
+		// A refused configuration is a boot failure, before the bind.
+		close(s.addrReady)
+		return s.forgeRoutingDefaultErr
+	}
 	ln, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {
 		// Even on error, signal Addr() so callers don't block forever.

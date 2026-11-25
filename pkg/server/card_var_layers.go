@@ -14,9 +14,17 @@ import "github.com/SocialGouv/iterion/pkg/webhooks"
 // warn: a member-writable, payload-derived value never overrides the
 // operator's, and an admin narrowing the integration reaches the cards
 // already sitting in its columns.
-func applyCardIntegrationVarLayers(botArgs map[string]string, cfg webhooks.Config, warn func(format string, args ...any)) (vars map[string]string, trusted []string) {
+//
+// ownVars is the lifted spine marker (boardOwnVarsKey): the card carries the
+// invocation's own context vars, so cfg.LaunchVars is SKIPPED — on a
+// spine-routed config it is the manifest union of every co-enabled bot, a
+// cross-bot leak (ADR-172 §6) — while the live operator layer stays and
+// wins.
+func applyCardIntegrationVarLayers(botArgs map[string]string, cfg webhooks.Config, ownVars bool, warn func(format string, args ...any)) (vars map[string]string, trusted []string) {
 	vars = make(map[string]string, len(cfg.LaunchVars)+len(botArgs)+len(cfg.OperatorLaunchVars))
-	mergeVarsInto(vars, cfg.LaunchVars)
+	if !ownVars {
+		mergeVarsInto(vars, cfg.LaunchVars)
+	}
 	mergeVarsInto(vars, botArgs)
 	for name, operator := range cfg.OperatorLaunchVars {
 		if carried, ok := botArgs[name]; ok && carried != operator && warn != nil {

@@ -90,6 +90,9 @@ import (
 //	  forge.ErrRepoNotEnabled              0  iterion's own state; the launch route and the board lane's writes answer 409
 //	  forge.ErrProvisionBusy               0  local lease contention; provisioning answers 409
 //	  forge.ErrIntegrationConflict         0  local snapshot conflict; provisioning answers 409
+//	  forge.ErrRoutingInvalid              0  the routing PUT named an unknown lane or mode; that route answers 400 itself
+//	  forge.ErrRoutingRefused              0  the switch refused the lane; that route answers 409 with the code and reason
+//	  forge.ErrSubscriptionProjection      0  a projection refused or failed; the switch answers 409/503, provisioning fails loudly
 //	  forge.ErrMintNotApproved             0  the derivation chokepoint refused the credential behind a NEW hook identity's mint; writeForgeProvisionError hands it to derivationError, which answers the credential's own 401/403
 //	  forge.ErrWorkflowNotDispatched       0  a marker beside the forge's answer; the dispatch endpoint answers 422 workflow_dispatch_refused_by_forge itself
 func forgeUpstreamStatus(err error) (int, string) {

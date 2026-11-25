@@ -482,6 +482,15 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		return
 	}
 
+	// The spine router (ADR-172): an integration whose issues lane routes by
+	// subscription answers from its projected rows — every bot a label
+	// claims launches, in its own mode — before any election. The zero-touch
+	// opened lane keeps the legacy election.
+	if labeled && s.forgeRoutingFor(cfg, webhooks.LaneIssues) == webhooks.RoutingSpine {
+		s.routeIssueThroughSpine(ctx, w, r, cfg, meta, githubIssueDelivery(cfg, p), payloadHash, srcIP)
+		return
+	}
+
 	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
@@ -530,8 +539,18 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// branches from there.
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
+	// The lane's spine half (ADR-172 §5): once the integration has ever
+	// routed by subscription, the legacy lane also reads the elected bot's
+	// bot-scoped claims — one per added label the repository gate admits —
+	// so a rollback never launches twice. A never-flipped config passes no
+	// half, and its reads stay byte-identical. The opened lane carries no
+	// added label and passes none.
+	var spine []laneSpineHalf
+	if cfg.SpineSince != nil && labeled {
+		spine = []laneSpineHalf{issueLaneSpineHalf(cfg, githubIssueDelivery(cfg, p), botID)}
+	}
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{},
-		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, trigger))
+		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, trigger), spine...)
 }
 
 // issueLabeledVars composes the launch vars an implementer bot (featurly)
