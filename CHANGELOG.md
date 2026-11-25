@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.38.3](https://github.com/SocialGouv/iterion/compare/v7.38.2...v7.38.3) (2026-11-25)
+
+### Bug Fixes
+
+* **runtime,delegate:** a parent's cancel ends it cancelled; claude_code auth renders detected at any length ([#3717](https://github.com/SocialGouv/iterion/issues/3717)) ([e179134](https://github.com/SocialGouv/iterion/commit/e179134b03e0e89fc7c9d0b712eef5402f3c274f)), closes [#3048](https://github.com/SocialGouv/iterion/issues/3048), references [#3048](https://github.com/SocialGouv/iterion/issues/3048) [#3048](https://github.com/SocialGouv/iterion/issues/3048)
+
+    <details><summary>why</summary>
+
+    isAuthErrorResult capped every reading at 200 bytes, so a CLI auth render carrying the provider's JSON body, a request id or a remediation sentence (3 of 15 real bodies) fell through and shipped as the node's answer. The classifier now decides on three length-free readings: the render's own anchored shapes (an "API Error" line with a 401/403 status or an auth signature, the malformed Authorization header, the "Failed to authenticate. API Error" lead), and the CLI's is_error flag on a…
+
+    </details>
+
 ## [7.38.2](https://github.com/SocialGouv/iterion/compare/v7.38.1...v7.38.2) (2026-11-25)
 
 ### Bug Fixes
