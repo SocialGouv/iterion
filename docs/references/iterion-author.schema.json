@@ -403,6 +403,30 @@
           "minimum": 0,
           "type": "integer"
         },
+        "subagents_concurrent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "How many scripted sub-agents of this node may run at once (default 1, ceiling 4; 0 means inherit). Admission enforces it: a call past the cap is refused until a child settles",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_steps_per_agent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "One scripted child's tool-loop steps (0 = the node's own step budget). A child never outsteps the node that spawned it: a wider declaration is tightened to the node's budget",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "The node's whole sub-agent reserve, in tokens (CM-13, ADR-165): declaring it arms the reserve and makes the agent tool callable from this node's programs. Each child books subagents_tokens_per_agent (default: the whole reserve) until it settles its actual usage. Required for any other subagents_* line to arm (C356); ceiling 4000000. The direct (non-script) agent tool is unchanged",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_tokens_per_agent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "One scripted child's hold on the reserve, in tokens (default: the whole reserve; ceiling 1000000). Above subagents_tokens is refused (C356). A program cannot choose a child's model (ADR-165) — children run on the node's own model",
+          "minimum": 0,
+          "type": "integer"
+        },
         "tool_calls": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal",
@@ -3274,6 +3298,30 @@
         "store_entries": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_concurrent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "How many scripted sub-agents of this node may run at once (default 1, ceiling 4; 0 means inherit). Admission enforces it: a call past the cap is refused until a child settles",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_steps_per_agent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "One scripted child's tool-loop steps (0 = the node's own step budget). A child never outsteps the node that spawned it: a wider declaration is tightened to the node's budget",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "The node's whole sub-agent reserve, in tokens (CM-13, ADR-165): declaring it arms the reserve and makes the agent tool callable from this node's programs. Each child books subagents_tokens_per_agent (default: the whole reserve) until it settles its actual usage. Required for any other subagents_* line to arm (C356); ceiling 4000000. The direct (non-script) agent tool is unchanged",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagents_tokens_per_agent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "One scripted child's hold on the reserve, in tokens (default: the whole reserve; ceiling 1000000). Above subagents_tokens is refused (C356). A program cannot choose a child's model (ADR-165) — children run on the node's own model",
           "minimum": 0,
           "type": "integer"
         },

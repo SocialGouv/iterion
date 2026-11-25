@@ -94,10 +94,10 @@ queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
 rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
-push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`, `golangci`, `brand`, `revi/review`
-(`test` and `race` are aggregator contexts — the work runs in the gated legs
-behind them; see docs/merge-policy.md).
+push / `--squash` without `--auto`). Required checks: `test`,
+`vendor-check`, `golangci`, `brand`, `revi/review`; `race` and
+`mongo-conformance` are held out by ADR-173 (`test`, `race` aggregate — the
+work runs in the gated legs; see docs/merge-policy.md).
 `nats-conformance` remains advisory until an admin adds it to ruleset
 18857412; `fmt-check` reports on the PR and in the queue but is not required
 yet (staged — `internal/ciguard`'s `requiredChecks`). A pull request titled
@@ -169,9 +169,9 @@ request is fine — the credential is not. Waiting for the window to reset is th
    `revi/review`; below it the residual is assumed explicitly, and
    `Adversarial-Rounds:` is where a reader sees which of the two happened.
    `revi/review` stays a required context either way, so the merge is still the
-   admin one and still owes the other six checks green: its conditions and the
-   queue guarantee it gives up are in
-   [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+   admin one and still owes the other six checks green, under `ci:full` on a
+   light pull request: its conditions and the queue guarantee it gives up are
+   in [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
    Steps 1 and 2 stay the first moves; this is for when they are unavailable
    or refused.
 

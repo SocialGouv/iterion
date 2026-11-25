@@ -29,6 +29,10 @@ type GenerationTool struct {
 	// concurrentSafe follows the actual native Execute closure.
 	concurrentSafe bool
 
+	// imageResult follows the ToolDef: Execute's output is a claw image
+	// result, which shapeToolOutcome hands the model as image blocks.
+	imageResult bool
+
 	// authorDeclared follows the ToolDef that resolved this tool: the entry
 	// came from the node's own `tools:` list, not from a runtime append.
 	// Set once at the conversion from ToolDefs, read once at the deferral
@@ -101,7 +105,10 @@ type GenerationOptions struct {
 	// exact failure that let a claw+gpt-5.5 reviewer produce an ungrounded
 	// verdict (0 tool calls) while claude_code read the files. No-op when
 	// Tools is empty. Set by the claw backend for tool-equipped agent/judge
-	// nodes; harmless for models that already use their tools.
+	// nodes; harmless for models that already use their tools. Where the
+	// forced choice cannot be sent — an always-thinking model, a gateway
+	// whose grammar engine refuses the tools' schemas — the loop asks for a
+	// tool in the conversation instead and fails the generation if none ran.
 	ForceInitialToolUse bool
 
 	// SkipUserPromptSubmit suppresses the UserPromptSubmit hook fire for
@@ -244,6 +251,13 @@ type GenerationOptions struct {
 	// post-compaction message count; targetTokens the budget it shrank to.
 	// Lets the backend surface the recovery as an llm_retry event.
 	OnContextCompactRetry func(attempt int, err error, afterMessages, targetTokens int)
+
+	// OnForcedToolChoiceRefused fires when the gateway refused to compile
+	// the forced initial tool_choice into a decoding grammar and the loop
+	// reacted by retrying the turn under an instruction plus the
+	// executed-tool check (ForceInitialToolUse). err is the refusal. Lets the
+	// backend surface the switch as an llm_retry event.
+	OnForcedToolChoiceRefused func(err error)
 
 	// Hooks, when non-nil, is consulted around tool execution and at
 	// session end. PreToolUse fires before each Execute and may Block

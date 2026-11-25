@@ -159,14 +159,15 @@ type IOTask struct {
 	// conversation: a resumed SANDBOXED node rebuilds its loop in the
 	// container, where the bound the paused generation held is otherwise
 	// lost.
-	ResumeCommandNarrowing *CommandNarrowingState `json:"resume_command_narrowing,omitempty"`
-	Memory                 *MemorySpec            `json:"memory,omitempty"`
-	AutoMemoryDir          string                 `json:"auto_memory_dir,omitempty"`
-	AutoMemoryPrompt       string                 `json:"auto_memory_prompt,omitempty"`
-	AmbientContext         string                 `json:"ambient_context,omitempty"`
-	AmbientContextSource   string                 `json:"ambient_context_source,omitempty"`
-	Codemode               bool                   `json:"codemode,omitempty"`
-	CodemodeBounds         *scripthost.Limits     `json:"codemode_bounds,omitempty"`
+	ResumeCommandNarrowing *CommandNarrowingState      `json:"resume_command_narrowing,omitempty"`
+	Memory                 *MemorySpec                 `json:"memory,omitempty"`
+	AutoMemoryDir          string                      `json:"auto_memory_dir,omitempty"`
+	AutoMemoryPrompt       string                      `json:"auto_memory_prompt,omitempty"`
+	AmbientContext         string                      `json:"ambient_context,omitempty"`
+	AmbientContextSource   string                      `json:"ambient_context_source,omitempty"`
+	Codemode               bool                        `json:"codemode,omitempty"`
+	CodemodeBounds         *scripthost.Limits          `json:"codemode_bounds,omitempty"`
+	SubagentReserve        *scripthost.SubagentReserve `json:"codemode_subagents,omitempty"`
 	// CodemodeState requires the matching pre-task capability marker. No
 	// bank identity or storage quota crosses this transport.
 	CodemodeState bool                  `json:"codemode_state,omitempty"`
@@ -368,6 +369,7 @@ func ToIOTask(t Task) IOTask {
 		AmbientContextSource:   t.AmbientContextSource,
 		Codemode:               t.Codemode,
 		CodemodeBounds:         t.CodemodeBounds,
+		SubagentReserve:        t.SubagentReserve,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,
@@ -440,6 +442,7 @@ func FromIOTask(t IOTask) Task {
 		AmbientContextSource:   t.AmbientContextSource,
 		Codemode:               t.Codemode,
 		CodemodeBounds:         t.CodemodeBounds,
+		SubagentReserve:        t.SubagentReserve,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,

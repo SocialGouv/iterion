@@ -210,3 +210,45 @@ func podStartFailure(waitErr error, st podStartState) error {
 	}
 	return fmt.Errorf("sandbox not placed — %s: %w", why, errors.Join(sandbox.ErrCapacity, err))
 }
+
+// quotaRefusalMarker is the ResourceQuota admission plugin's wording for a
+// create refused for lack of room ("exceeded quota: <name>, requested: …,
+// used: …, limited: …"). Its other refusals — "failed quota: … must
+// specify …", "insufficient quota to match these scopes" — and an RBAC
+// Forbidden name a manifest or a role no later attempt changes, so they
+// stay terminal. applyManifest sets LC_ALL=C on kubectl, which keeps the
+// wording stable across user locales.
+const quotaRefusalMarker = "exceeded quota:"
+
+// quotaRefusalTail is the amount list the plugin's refusal always carries
+// ("requested: …"). An echo that stops short of the full canonical line is
+// not evidence of lack of room; a denial quoting the entire line, amounts
+// included, stays text-indistinguishable from a real refusal — the
+// webhookDenialPhrase exclusion below is what tells those apart.
+const quotaRefusalTail = ", requested:"
+
+// webhookDenialPhrase is the apiserver's wrapper around any admission
+// webhook's denial. The built-in ResourceQuota plugin's own refusal never
+// carries it (quota names are DNS labels, the amounts are quantities), so
+// a policy engine echoing the plugin's wording inside its own denial stays
+// terminal like an RBAC Forbidden.
+const webhookDenialPhrase = "admission webhook"
+
+// quotaRefusal re-classifies an apply error whose kubectl output carries
+// the admission-quota refusal — the plugin's own line, marker plus
+// requested-amounts tail, with no webhook wrapper: the namespace had no
+// room for the object — the run executed nothing and a later attempt on a
+// quota with room does the whole thing from scratch — which is the
+// evidence sandbox.ErrCapacity exists for. Anything else passes through
+// unchanged. The sentinel rides errors.Join like podStartFailure's,
+// keeping kubectl's message (quota name, requested, used, limited)
+// reachable for the operator.
+func quotaRefusal(applyErr error) error {
+	if applyErr == nil ||
+		!strings.Contains(applyErr.Error(), quotaRefusalMarker) ||
+		!strings.Contains(applyErr.Error(), quotaRefusalTail) ||
+		strings.Contains(applyErr.Error(), webhookDenialPhrase) {
+		return applyErr
+	}
+	return fmt.Errorf("sandbox not placed — the namespace quota refused it: %w", errors.Join(sandbox.ErrCapacity, applyErr))
+}

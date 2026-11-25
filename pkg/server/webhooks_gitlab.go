@@ -313,6 +313,15 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
+	// The spine router (ADR-172): an integration whose issues lane routes by
+	// subscription answers from its projected rows. The pre-gate above (its
+	// non-empty label IS "some added label passes the gate") already ran
+	// unchanged.
+	if s.forgeRoutingFor(cfg, webhooks.LaneIssues) == webhooks.RoutingSpine {
+		s.routeIssueThroughSpine(ctx, w, r, cfg, meta, gitlabIssueDelivery(cfg, p), payloadHash, srcIP)
+		return
+	}
+
 	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
@@ -331,10 +340,19 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
+	// The lane's spine half (ADR-172 §5): once the integration has ever
+	// routed by subscription, the legacy lane also reads the elected bot's
+	// bot-scoped claims — one per added label the repository gate admits —
+	// so a rollback never launches twice. A never-flipped config passes no
+	// half, and its reads stay byte-identical.
+	var spine []laneSpineHalf
+	if cfg.SpineSince != nil {
+		spine = []laneSpineHalf{issueLaneSpineHalf(cfg, gitlabIssueDelivery(cfg, p), botID)}
+	}
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{},
-		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, label))
+		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, label), spine...)
 }
 
 // gitlabIssueLabeledVars composes the implementer-bot launch vars for a

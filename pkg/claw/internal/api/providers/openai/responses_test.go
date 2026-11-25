@@ -841,7 +841,10 @@ func TestConvertMessagesToResponsesInput_EmptyToolOutput(t *testing.T) {
 		},
 	}
 
-	got := convertMessagesToResponsesInput(messages)
+	got, err := convertMessagesToResponsesInput(messages)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
 
 	body, err := json.Marshal(got)
 	if err != nil {
@@ -881,7 +884,11 @@ func TestConvertMessagesToResponsesInput_EmptyToolOutput(t *testing.T) {
 	// Sanity: a non-empty tool output still round-trips correctly and
 	// carries its text in `output`.
 	messages[1].Content[0] = api.ToolResult{ToolUseID: "call_1", Content: "ok\n"}.ToContentBlock()
-	body, _ = json.Marshal(convertMessagesToResponsesInput(messages))
+	again, err := convertMessagesToResponsesInput(messages)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	body, _ = json.Marshal(again)
 	if !strings.Contains(string(body), `"output":"ok\n"`) {
 		t.Errorf("non-empty tool output failed to round-trip; got %s", body)
 	}
@@ -910,7 +917,11 @@ func TestConvertMessagesToResponsesInput_NoSpuriousOutputField(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(convertMessagesToResponsesInput(messages))
+	input, err := convertMessagesToResponsesInput(messages)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	body, err := json.Marshal(input)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

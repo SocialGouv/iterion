@@ -360,6 +360,9 @@ func TestMongoStore_CAS(t *testing.T) {
 		t.Fatalf("EnsureSchema idempotent: %v", err)
 	}
 	store := NewMongoStore(db)
+	// First, on the still-empty collection: the contract asserts the exact
+	// listing.
+	assertListEnabledContract(t, store)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	sb := ScheduledBot{ID: "sb-1", TenantID: "t1", RepoIntegrationID: "ri-1", BotID: "seki",

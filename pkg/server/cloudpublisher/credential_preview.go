@@ -176,11 +176,11 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	if sovereignPreview && !envFunded {
 		x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
 	}
-	// The launch's own `runnerPool != "" || sovereign`: ONE expression for the
-	// two postures that block the shared tiers, read by every site below that
+	// The launch's own blocksSharedTiers: ONE expression for the two
+	// postures that block the shared tiers, read by every site below that
 	// mirrors one — the tier walk, the fallback door, and therefore the
 	// unfunded verdict those fills feed.
-	sharedTiersBlocked := sovereignPreview || pooledPreview
+	sharedTiersBlocked := blocksSharedTiers(pooledPreview, sovereignPreview)
 	blocked := blockedPosture(sovereignPreview, runnerPool, untrustedPreview)
 	if untrustedPreview {
 		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own API keys fund it (its vendor keys, and its openai_compatible gateway key on the literal gateway routes it serves), on routes decided before the run (no route riding the runner's gateway, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")

@@ -42,6 +42,10 @@ type Drift struct {
 	FeedOut float64
 	OpIn    float64
 	OpOut   float64
+	// FeedCache and OpCache are the cache-read prices per mtok, set when
+	// both sides state one and they disagree; zero otherwise.
+	FeedCache float64
+	OpCache   float64
 }
 
 // Refresh runs one feed's sync: fetch through its own adapter under its
@@ -212,7 +216,9 @@ func boolPtrEqual(a, b *bool) bool {
 // PRICE disagreement is the one that changes what a run is billed, so
 // that is the one surfaced. An entry without the price pair (a window or
 // an effort list alone) states no price and never answers one (Fold), so
-// it never drifts.
+// it never drifts. The cache-read price drifts only when both sides state
+// one: a side without it states none (the modelsdev feed decodes no cache
+// price), and flagging that absence would flag every such entry.
 func DriftReport(feed string, entries, operatorTable map[string]modelspecs.Spec) []Drift {
 	if len(entries) == 0 || len(operatorTable) == 0 {
 		return nil
@@ -231,14 +237,19 @@ func DriftReport(feed string, entries, operatorTable map[string]modelspecs.Spec)
 	for _, id := range ids {
 		e := entries[id]
 		op := operatorTable[NormalizeID(id)]
-		if e.InputCostPerM == op.InputCostPerM && e.OutputCostPerM == op.OutputCostPerM {
+		cacheDrift := e.CacheReadCostPerM > 0 && op.CacheReadCostPerM > 0 && e.CacheReadCostPerM != op.CacheReadCostPerM
+		if e.InputCostPerM == op.InputCostPerM && e.OutputCostPerM == op.OutputCostPerM && !cacheDrift {
 			continue
 		}
-		out = append(out, Drift{
+		d := Drift{
 			ID: id, Feed: feed,
 			FeedIn: e.InputCostPerM, FeedOut: e.OutputCostPerM,
 			OpIn: op.InputCostPerM, OpOut: op.OutputCostPerM,
-		})
+		}
+		if cacheDrift {
+			d.FeedCache, d.OpCache = e.CacheReadCostPerM, op.CacheReadCostPerM
+		}
+		out = append(out, d)
 	}
 	return out
 }
@@ -246,6 +257,10 @@ func DriftReport(feed string, entries, operatorTable map[string]modelspecs.Spec)
 // FormatDrift renders one drift line for the reconciler's and the manual
 // sync's warning channel.
 func FormatDrift(d Drift) string {
+	if d.FeedCache > 0 || d.OpCache > 0 {
+		return fmt.Sprintf("price feed %s: id %q disagrees with the operator table — feed $%.4f/$%.4f/$%.4f per mtok (in/out/cache read) vs operator $%.4f/$%.4f/$%.4f; the feed answers while fresh",
+			d.Feed, d.ID, d.FeedIn, d.FeedOut, d.FeedCache, d.OpIn, d.OpOut, d.OpCache)
+	}
 	return fmt.Sprintf("price feed %s: id %q disagrees with the operator table — feed $%.4f/$%.4f per mtok (in/out) vs operator $%.4f/$%.4f; the feed answers while fresh",
 		d.Feed, d.ID, d.FeedIn, d.FeedOut, d.OpIn, d.OpOut)
 }

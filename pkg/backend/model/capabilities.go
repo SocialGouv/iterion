@@ -193,8 +193,8 @@ var glmGenerationRe = regexp.MustCompile(`glm-(\d+)(?:\.(\d+))?`)
 
 // glmContextWindow returns the context window for a GLM model served via
 // z.ai's Anthropic-compatible endpoint. Within the GLM-5 generation the window
-// is 1M tokens from 5.2 on (GLM-5.3 kept it: same base model, newer
-// post-training); GLM-5.1 / GLM-4.6 and earlier are 200K-class. It reads the
+// is 1M tokens from 5.2 on (GLM-5.3 and GLM-5.4 kept it: same base model,
+// newer post-training); GLM-5.1 / GLM-4.6 and earlier are 200K-class. It reads the
 // minor version rather than matching known ids — an exact "glm-5.2" match
 // sized glm-5.3 at a fifth of its window. A major no one has measured yet, or
 // an unparseable id, stays at the conservative 200K: under-sizing costs an

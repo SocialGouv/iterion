@@ -257,6 +257,10 @@ export const iterDslPropertiesByKind = {
     "script_bytes",
     "store_bytes",
     "store_entries",
+    "subagents_concurrent",
+    "subagents_steps_per_agent",
+    "subagents_tokens",
+    "subagents_tokens_per_agent",
     "tool_calls",
     "tool_result_bytes",
     "wall"

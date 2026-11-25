@@ -91,6 +91,9 @@ var outageCorpus = []struct {
 	{"error: 5 files would be reformatted", counted, "an ordinary failure"},
 	{"fetched http 50 items, expected 51", counted, "an ordinary failure"},
 	{"", counted, "a bare non-zero exit"},
+	// deterministic: a parser's EOF, worded like the engine's streaming needle
+	{"SyntaxError: unexpected EOF while parsing", waitedOut, "LOSS: a parser's wording the engine's network list also holds; the command reading sets it aside and the streak never counts it"},
+	{"tar: Unexpected EOF in archive", waitedOut, "LOSS: an archive tool's wording the engine's network list also holds; the command reading sets it aside and the streak never counts it"},
 	// outages: gh
 	{"HTTP 500: Internal Server Error (https://api.github.com/graphql)", waitedOut, "outage"},
 	{"HTTP 504: Gateway Timeout (https://api.github.com/graphql)", waitedOut, "outage"},
@@ -110,7 +113,7 @@ var outageCorpus = []struct {
 	{"toomanyrequests: You have reached your pull rate limit.", waitedOut, "outage"},
 	// outages: go
 	{"Post \"https://api.osv.dev/v1/querybatch\": dial tcp 34.1.2.3:443: i/o timeout", backedOff, "the engine's own network classification"},
-	{"Post \"https://api.osv.dev/v1/querybatch\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)", backedOff, "the engine's own network classification"},
+	{"Post \"https://api.osv.dev/v1/querybatch\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)", waitedOut, "outage: the command reading sets `context deadline exceeded` aside, and the outage table (Client.Timeout exceeded) waits this failure out"},
 	{"Get \"https://x/\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)", waitedOut, "outage"},
 	// outages: nginx-html
 	{"parse error: Invalid numeric literal at line 1, column 7\nstdout-was: <html><head><title>503 Service Temporarily Unavailable</title></head><body><center><h1>503 Service Temporarily Unavailable</h1></center><hr><center>nginx</center></body></html>", waitedOut, "outage"},
@@ -198,6 +201,8 @@ var outageCorpus = []struct {
 	{"GraphQL: Pull Request is not mergeable (mergePullRequest)", counted, "no wait cures it"},
 	{"X Pull request o/r#12 is not mergeable: the base branch policy prohibits the merge.", counted, "no wait cures it"},
 	{"Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host", backedOff, "the engine's own network classification"},
+	{"Post \"https://api.github.com/graphql\": unexpected EOF", backedOff, "the engine's own network classification: Go's url.Error quotes the URL whose stream was cut"},
+	{"go: github.com/x/y@v1.2.3: Get \"https://proxy.golang.org/github.com/x/y/@v/v1.2.3.zip\": unexpected EOF", backedOff, "the engine's own network classification: Go's url.Error quotes the URL whose stream was cut"},
 	{"Post \"https://api.github.com/graphql\": dial tcp 140.82.121.6:443: i/o timeout", backedOff, "the engine's own network classification"},
 	{"urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>", waitedOut, "outage"},
 	{"URLError: <urlopen error [Errno 111] Connection refused>", backedOff, "the engine's own network classification"},

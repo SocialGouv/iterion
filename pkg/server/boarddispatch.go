@@ -1661,6 +1661,14 @@ const (
 	boardKeyOverridesKey    = "__iterion_key_overrides"
 	boardSecretOverridesKey = "__iterion_secret_overrides"
 	boardWebhookIDKey       = "__iterion_webhook_id"
+	// boardOwnVarsKey marks a card whose BotArgs carry the invocation's own
+	// context vars (a spine card, ADR-172 §6): its launch skips the
+	// integration's cfg.LaunchVars — on a spine-routed config the manifest
+	// union, a cross-bot leak — and keeps the live operator layer. The
+	// marker is reserved (native.ReservedLaunchArgs), so no client board
+	// write can set it, and lifted at launch (liftBoardLaunchContext), so it
+	// never reaches the run as a launch var.
+	boardOwnVarsKey = "__iterion_own_vars"
 	// boardProjectPathKey carries the forge slug the card's repo belongs to
 	// (the webhook payload's own project path, stamped by ensureBoardCard).
 	// It is the run's ProjectPath — the identity pkg/credusage meters and
@@ -1683,6 +1691,10 @@ type boardLaunchContext struct {
 	KeyOverrides    map[string]string
 	SecretOverrides map[string]string
 	WebhookID       string
+	// OwnVars is the lifted boardOwnVarsKey marker: the card carries the
+	// invocation's own context vars, so its launch skips the integration's
+	// cfg.LaunchVars and keeps the live operator layer (ADR-172 §6).
+	OwnVars bool
 }
 
 // cardLaunchPolicyLayers reads the LAUNCH-POLICY layers of the integration a
@@ -1797,6 +1809,7 @@ func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, erro
 		RepoRef:     botArgs[boardRepoRefKey],
 		ProjectPath: botArgs[boardProjectPathKey],
 		WebhookID:   botArgs[boardWebhookIDKey],
+		OwnVars:     botArgs[boardOwnVarsKey] == "1",
 	}
 	if blob := botArgs[boardKeyOverridesKey]; blob != "" {
 		if err := json.Unmarshal([]byte(blob), &lc.KeyOverrides); err != nil {
@@ -1811,7 +1824,7 @@ func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, erro
 	lc.Vars = make(map[string]string, len(botArgs))
 	for k, v := range botArgs {
 		switch k {
-		case boardRepoURLKey, boardRepoRefKey, boardProjectPathKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey:
+		case boardRepoURLKey, boardRepoRefKey, boardProjectPathKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey, boardOwnVarsKey:
 			continue
 		}
 		lc.Vars[k] = v
@@ -2006,10 +2019,11 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	}
 	// The integration's var layers reach the carded run as they reach the
 	// direct lane (#2665 item 1): operator layer over the card's bot_args
-	// over launch_vars, the operator's names trusted for the routing gate.
+	// over launch_vars — unless the card carries its own invocation vars
+	// (lc.OwnVars, the spine's marker), and cfg.LaunchVars is then skipped.
 	var trustedVars []string
 	if integration != nil {
-		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, func(format string, args ...any) {
+		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, lc.OwnVars, func(format string, args ...any) {
 			if s.logger != nil {
 				s.logger.Warn("board dispatcher: card "+iss.ID+": "+format, args...)
 			}

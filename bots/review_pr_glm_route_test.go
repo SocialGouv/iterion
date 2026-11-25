@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait pins the claude slot's
@@ -103,13 +104,14 @@ func assertAnthropicPinnedWithGlmRoute(t *testing.T, bot string, nodeIDs ...stri
 		// written as: `${ITERION_GLM_THING:-claude-opus-5}` carries "glm"
 		// in the variable NAME and resolves to a Claude id. Expanded
 		// against an empty lookup, so neither a developer's env nor the
-		// ADR-093 bot_vars overlay can decide this test. GLM is always 5.3.
+		// ADR-093 bot_vars overlay can decide this test. The GLM is z.ai's
+		// current one, secrets.ZAIDefaultModel.
 		landsOn := ir.ExpandWithDefault(route.Model, func(string) string { return "" })
-		if landsOn != "glm-5.3" {
-			t.Errorf("%s: node %q zai route model %q lands on %q, want glm-5.3 — it must name a GLM id "+
+		if landsOn != secrets.ZAIDefaultModel {
+			t.Errorf("%s: node %q zai route model %q lands on %q, want %s — it must name a GLM id "+
 				"of its own (inheriting a Claude id sends the z.ai facade a model it maps on its own "+
-				"terms, and the node's own model re-uses the credential that just failed), and GLM "+
-				"is always 5.3", bot, nodeID, route.Model, landsOn)
+				"terms, and the node's own model re-uses the credential that just failed), and that "+
+				"GLM is z.ai's current one (secrets.ZAIDefaultModel)", bot, nodeID, route.Model, landsOn, secrets.ZAIDefaultModel)
 		}
 		if route.When != "" {
 			t.Errorf("%s: node %q zai route is gated on when: %q — a `when:` is evaluated at "+

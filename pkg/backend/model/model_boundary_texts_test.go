@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -258,6 +259,15 @@ var modelReadLeaves = map[string]string{
 	"PresetFragment":           redactedLeaf,
 	"UserContent[].Text":       redactedLeaf,
 
+	// A tool definition's description and input schema are text a model
+	// reads three ways downstream of the seam — the wire schema buildRequest
+	// encodes, the codemode catalogue and its description index (whose
+	// 120-rune summary would split a value a wire-side pass could no longer
+	// recognise), and the IOTask wire to the in-container runner. For an MCP
+	// tool both are a remote server's text.
+	"ToolDefs[].Description": redactedLeaf,
+	"ToolDefs[].InputSchema": redactedLeaf,
+
 	// The mounted-secret hints are the guard's OWN composition: it builds
 	// Name/Path/Env from the secret registration itself
 	// (Guard.SecretFileHints over guardState.fileHints), so no node output
@@ -296,6 +306,17 @@ var modelReadLeaves = map[string]string{
 	"UserContent[].URL":       "an image locator the backend fetches",
 	"UserContent[].Path":      "the host path the read_image tool loads",
 	"UserContent[].Name":      "the workflow-declared attachment name, author vocabulary",
+
+	// A tool's name and its qualified name are KEYS, not prose: the tool
+	// map, the permission gate, the hooks and the sandbox placement resolve
+	// the name the model sends back, and the qualified name is the registry
+	// identity read in-process for placement and refusals, carried by no
+	// request. A schema property's name is a dispatch key the same way (the
+	// runners and the validators read the input by it); the sweep cannot
+	// reach INTO the raw schema's keys, so the wire test holds the property
+	// name instead (TestAToolDefinitionReachesTheModelAsItsPlaceholder).
+	"ToolDefs[].Name":          "dispatch key: the tool map, the permission gate, the hooks and the sandbox placement resolve the name the model sends back",
+	"ToolDefs[].QualifiedName": "registry identity read in-process for placement and refusals, carried by no request",
 }
 
 // modelReadComposers are the functions whose bodies decide what a model
@@ -624,6 +645,29 @@ func plantTextLeaves(t *testing.T, v reflect.Value, path, sentinel string, plant
 		// A switch the composer reads, not a text it renders.
 	case reflect.Slice:
 		elem := v.Type().Elem()
+		// A raw JSON document (a tool definition's InputSchema): planted as
+		// a schema whose string leaves — a property description, a default,
+		// an enum member — carry the sentinel. readTextLeaf reads the leaf
+		// back as bytes, so the verdict table judges the document whole.
+		if v.Type() == reflect.TypeOf(json.RawMessage(nil)) {
+			doc, err := json.Marshal(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "search " + sentinel,
+						"default":     sentinel,
+						"enum":        []any{sentinel, "everything"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("build the Task.%s schema document: %v", path, err)
+			}
+			v.SetBytes(doc)
+			planted[path] = sentinel
+			return
+		}
 		if k := elem.Kind(); k != reflect.String && k != reflect.Struct {
 			t.Errorf("the sweep cannot see inside Task.%s (%s): extend plantTextLeaves or the field escapes the boundary unproven", path, v.Type())
 			return
@@ -674,6 +718,11 @@ func readTextLeaf(t *testing.T, v reflect.Value, path string) string {
 		default:
 			t.Fatalf("Task.%s: cannot read leaf %q", path, rest)
 		}
+	}
+	// A raw JSON document (a tool definition's InputSchema) is a byte slice:
+	// its text is the document itself, not reflect's slice rendering.
+	if v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.Uint8 {
+		return string(v.Bytes())
 	}
 	return v.String()
 }

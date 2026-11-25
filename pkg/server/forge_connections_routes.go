@@ -93,13 +93,13 @@ func (s *Server) gatesMergesResolver(ctx context.Context, teamID string) func([]
 		if a, seen := perRequest[bot]; seen {
 			return a
 		}
-		a := s.forgeGatesMemo.answer(teamID, bot, func() gatesMergesAnswer {
-			fr, err := s.forgeOrchestrator.Bots(ctx, teamID, bot)
-			if err != nil {
-				return gatesMergesAnswer{err: err}
-			}
-			return gatesMergesAnswer{gates: forge.BotGatesMerges(fr)}
-		})
+		a, ok := s.botGatesMergesAnswer(ctx, teamID, bot)
+		if !ok {
+			// The resolver is wired (checked above), so only a blank id lands
+			// here: it names no bot, and reads as unresolvable, never as one
+			// that does not gate.
+			a = gatesMergesAnswer{err: errors.New("blank bot id")}
+		}
 		perRequest[bot] = a
 		if a.err != nil {
 			s.logWarn("forge: team %s: bot %q does not resolve, so the repos bound to it report no merge-gate posture: %v", teamID, bot, a.err)
@@ -124,6 +124,30 @@ func (s *Server) gatesMergesResolver(ctx context.Context, teamID string) func([]
 		}
 		return &gates
 	}
+}
+
+// botGatesMergesAnswer resolves ONE bot's merge-gate posture through the
+// server's short-TTL memo: it gates merges when its manifest declares the
+// `statuses` token scope (forge.BotGatesMerges), the provisioner's gating
+// posture: the scope a bot asks for to post the gate's verdict. The ok half is false when no bot resolver is wired (a server without
+// provisioning) or the bot id is blank (an inline launch names no bot): the
+// caller then reads no posture out of the answer, which stays zero — it says
+// nothing about the bot, so it is never memoised or reported as one.
+//
+// Every reader of the posture — the repo listing and the gate-claim stamp —
+// goes through here, so a second copy of the resolution cannot drift.
+func (s *Server) botGatesMergesAnswer(ctx context.Context, teamID, bot string) (gatesMergesAnswer, bool) {
+	if s.forgeOrchestrator == nil || s.forgeOrchestrator.Bots == nil || strings.TrimSpace(bot) == "" {
+		return gatesMergesAnswer{}, false
+	}
+	a := s.forgeGatesMemo.answer(teamID, bot, func() gatesMergesAnswer {
+		fr, err := s.forgeOrchestrator.Bots(ctx, teamID, bot)
+		if err != nil {
+			return gatesMergesAnswer{err: err}
+		}
+		return gatesMergesAnswer{gates: forge.BotGatesMerges(fr)}
+	})
+	return a, true
 }
 
 // handleListTeamForgeRepos is the RepoSwitcher's data source: the team's

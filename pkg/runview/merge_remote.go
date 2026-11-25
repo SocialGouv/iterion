@@ -2,7 +2,6 @@ package runview
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -131,31 +130,43 @@ func (s *Service) removeRepoTargetedMergeRoot(runID string) {
 	}
 }
 
-// mergeGitAuthArgs carries the forge token as a per-invocation header
-// instead of embedding it in the remote URL: this clone can outlive the
-// request (conflict resolution), so no credential may rest in its
-// .git/config. `oauth2` as basic-auth username is accepted by GitLab,
-// GitHub and Forgejo alike.
-func mergeGitAuthArgs(token string) []string {
-	if token == "" {
-		return nil
-	}
-	b := base64.StdEncoding.EncodeToString([]byte("oauth2:" + token))
-	return []string{"-c", "http.extraHeader=AUTHORIZATION: Basic " + b}
-}
-
 // runMergeGit executes one git command for the merge clone, with the
-// forge header injected and the token redacted from any error output.
+// forge credential injected for repoURL's origin and the token redacted
+// from any error output.
 //
 // NoAutoMaintenance keeps the command's lifetime whole: fetch, merge and
 // commit each end by DETACHING a `git maintenance run --auto` that keeps
 // writing under `.git/objects`, and this clone is removed the moment the
 // merge lands (removeRepoTargetedMergeRoot) — a partially removed tree that
 // still has a `.git` reads as a materialised clone to the next request.
-func runMergeGit(ctx context.Context, dir, token string, args ...string) (string, error) {
+func runMergeGit(ctx context.Context, dir, repoURL, token string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, mergeGitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(gitlib.NoRunHooks(append(mergeGitAuthArgs(token), args...)...)...)...)
+	cmd, err := newMergeGitCmd(ctx, dir, repoURL, token, args...)
+	if err != nil {
+		return "", err
+	}
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	if token != "" {
+		text = strings.ReplaceAll(text, token, "***")
+	}
+	if err != nil {
+		return text, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(text))
+	}
+	return text, nil
+}
+
+// newMergeGitCmd builds the merge clone's git subprocess without running it.
+//
+// The forge token rides the environment as a per-invocation extraHeader
+// bound to repoURL's origin (gitlib.AuthEnv), so no other host — an LFS
+// storage host, a foreign lfs.url — receives it; never argv — argv is
+// world-readable through /proc/<pid>/cmdline — and never the remote URL:
+// this clone can outlive the request (conflict resolution), so no
+// credential may rest in its .git/config.
+func newMergeGitCmd(ctx context.Context, dir, repoURL, token string, args ...string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(gitlib.NoRunHooks(args...)...)...)
 	// fetch/push fork git-remote-https, which inherits the pipes
 	// CombinedOutput reads: killing only git leaves the helper holding them
 	// and mergeGitTimeout would bound nothing. Same reason the runner's own
@@ -166,16 +177,12 @@ func runMergeGit(ctx context.Context, dir, token string, args ...string) (string
 	}
 	// SanitizeEnv drops GIT_DIR / GIT_COMMON_DIR / GIT_INDEX_FILE so this
 	// clone's cmd.Dir is the repository, not an inherited redirection.
-	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
-	text := string(out)
-	if token != "" {
-		text = strings.ReplaceAll(text, token, "***")
-	}
+	env, err := gitlib.AuthEnv(append(gitlib.SanitizeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0"), repoURL, token)
 	if err != nil {
-		return text, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(text))
+		return nil, fmt.Errorf("runview: merge clone git %s: %w", strings.Join(args, " "), err)
 	}
-	return text, nil
+	cmd.Env = env
+	return cmd, nil
 }
 
 // ensureRepoTargetedMergeRoot materialises (or reuses) the merge clone for
@@ -204,7 +211,7 @@ func (s *Service) ensureRepoTargetedMergeRoot(ctx context.Context, r *store.Run,
 	}
 	// Same SSRF hardening as the runner's clone: a redirect off the
 	// validated forge host must not be followed.
-	if _, err := runMergeGit(ctx, "", token,
+	if _, err := runMergeGit(ctx, "", r.RepoURL, token,
 		"-c", "http.followRedirects=false",
 		"clone", "--no-tags", "--quiet", "--branch", target, r.RepoURL, dir); err != nil {
 		_ = os.RemoveAll(dir)
@@ -216,7 +223,7 @@ func (s *Service) ensureRepoTargetedMergeRoot(ctx context.Context, r *store.Run,
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", fmt.Errorf("privatise the merge clone: %w", err)
 	}
-	if _, err := runMergeGit(ctx, dir, token,
+	if _, err := runMergeGit(ctx, dir, r.RepoURL, token,
 		"-c", "http.followRedirects=false",
 		"fetch", "--no-tags", "--quiet", "origin",
 		"+refs/heads/"+r.FinalBranch+":refs/heads/"+r.FinalBranch); err != nil {
@@ -225,11 +232,11 @@ func (s *Service) ensureRepoTargetedMergeRoot(ctx context.Context, r *store.Run,
 	}
 	// The clone has no gitconfig; the merge/squash commit needs an
 	// identity. Neutral bot identity, local to this clone.
-	if _, err := runMergeGit(ctx, dir, "", "config", "user.name", "iterion-merge[bot]"); err != nil {
+	if _, err := runMergeGit(ctx, dir, "", "", "config", "user.name", "iterion-merge[bot]"); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
-	if _, err := runMergeGit(ctx, dir, "", "config", "user.email", "iterion-merge@bot.iterion.invalid"); err != nil {
+	if _, err := runMergeGit(ctx, dir, "", "", "config", "user.email", "iterion-merge@bot.iterion.invalid"); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
@@ -239,11 +246,11 @@ func (s *Service) ensureRepoTargetedMergeRoot(ctx context.Context, r *store.Run,
 // pushRepoTargetedMerge publishes the advanced target branch back to the
 // forge. No force: the target moved under us means someone else pushed
 // since the clone, and their work must win a manual look, not a rewrite.
-func (s *Service) pushRepoTargetedMerge(ctx context.Context, root, token, target string) error {
+func (s *Service) pushRepoTargetedMerge(ctx context.Context, root, repoURL, token, target string) error {
 	if target == "" {
 		return fmt.Errorf("push: empty merge target")
 	}
-	if _, err := runMergeGit(ctx, root, token,
+	if _, err := runMergeGit(ctx, root, repoURL, token,
 		"-c", "http.followRedirects=false",
 		"push", "--quiet", "origin", "refs/heads/"+target+":refs/heads/"+target); err != nil {
 		return err

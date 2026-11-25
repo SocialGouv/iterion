@@ -62,6 +62,17 @@ an extra hook chained onto the store hooks without its own attestation.
 The tool events stay readable under overlap: facts travel with each event
 (`tool_use_id`), never with the arrival order.
 
+A node that arms a subagents reserve (CM-13) adds the agent tool to its
+programs' callable set, and it answers concurrent-safe: a scripted child is
+a long synchronous call with no shared state outside the mutex'd spend
+accumulator, and the real width bound is the reserve's `subagents_concurrent`
+cap, enforced at admission — a call past it is refused until a child settles,
+never queued. Every child books its hold before it runs and releases it on
+settle, error or the node-end sweep alike, so a crashed child leaves its
+slot to the next call and the launcher log names the children whose usage
+stayed unknown. What a settled child actually burned depletes the reserve:
+a loop of sequential children is as bounded as a wide batch.
+
 The launcher keeps reading events and session captures while forwarded tools
 run. Forwarded tools and operator questions share a serial lane; its
 admission and reply backlogs are bounded separately. This does not

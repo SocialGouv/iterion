@@ -233,10 +233,11 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — |
 | `pkg/errtrack` | iterion's optional error-tracking seam. | `AmbiguousEffect` |
 | `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` |
-| `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AutoMergeArmer`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `FileClient`, `IssueClient`, `MergeApprover`, `MergeabilityReader`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProjectBotMinter`, `ProvisionApprovalStore`, `PullClient`, `PullReviewerSetter`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `SelfRotator`, `TokenRefresher`, `WorkflowDispatcher` |
+| `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AutoMergeArmer`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `FileClient`, `IssueClient`, `MergeApprover`, `MergeabilityReader`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProjectBotMinter`, `ProvisionApprovalStore`, `PullClient`, `PullReviewerSetter`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `SelfRotator`, `SubscriptionProjector`, `TokenRefresher`, `WorkflowDispatcher` |
 | `pkg/forge/forgejo` | the Forgejo/Gitea implementation of forge.Admin. | — |
 | `pkg/forge/github` | the GitHub implementation of forge.Admin: the outbound write-side client the orchestrator uses to list repos and create/update/delete the iterion… | — |
 | `pkg/forge/gitlab` | the GitLab implementation of forge.Admin: the OUTBOUND write-side client the orchestrator uses to list a connection's projects and… | — |
+| `pkg/forgetrigger` | projects the bots of a forge integration onto the trigger spine (ADR-172). | — |
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — |
 | `pkg/hostmcp` | serves the host-owned MCP HTTP transports a SANDBOXED run reaches over the per-run gateway listener (C082): the board tools (/api/v1/mcp/board) and… | `TokenStore` |
 | `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` |
@@ -286,7 +287,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `CapabilityDenial`, `Compactor`, `EffectiveBackendResolver`, `EffectiveFallbackResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber`, `UndecidedRouteReporter` |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `ObservedEventFeed`, `RunLoader` |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `ObservedEventFeed`, `PlatformTierJudge`, `RunLoader` |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `BoundObservationSource`, `EventCursorSource`, `EventSubscription`, `LogSubscription`, `MongoSelection`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `BindPathIdentity`, `Builder`, `CommandCancellationOwner`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `RootOpener`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
@@ -333,6 +334,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
 | `scripts/ci/inpodbench` | Command inpodbench reports what a codemode child actually confines itself to under the posture it is GIVEN, whether that confinement REFUSES, and… | — |
 | `scripts/ci/testcaps` | Command testcaps publishes a deterministic source census of test skips and sleeps, plus optional observations of the runner's literal prerequisites. | — |
+| `scripts/ci/testquarantine` | Command testquarantine reads the checked-in flake quarantine (scripts/ci/test-quarantine.tsv) and prints what the CI jobs consume: 	testquarantine… | — |
 | `scripts/ci/testshards` | Command testshards prints the Go test packages of one deterministic shard, the mechanism the CI matrix legs use to split `./...` across runners (the… | — |
 | `scripts/clawfold` | Command clawfold plans, applies and proves the fold of claw-code-go into pkg/claw (see internal/clawfold). | — |
 | `scripts/docslinks` | Command docslinks checks every relative link and `#anchor` in the repository's tracked markdown against the real tree, the way GitHub resolves them… | — |

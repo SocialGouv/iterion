@@ -375,7 +375,10 @@ func (e *ClawExecutor) executeToolNodeCommon(
 		return nil, setupErr
 	}
 	if res.runErr != nil {
-		return nil, fmt.Errorf("model: tool node %q: %s: %w\nstdout: %s\nstderr: %s", node.ID, failVerb, res.runErr, res.stdout, res.stderr)
+		// The streams travel apart (ToolCommandFailure): the failure's text
+		// quotes both as always, and a reader that must not take the
+		// command's stdout at face value reads Diagnostics() instead.
+		return nil, &ToolCommandFailure{NodeID: node.ID, Outcome: failVerb, Cause: res.runErr, Stdout: res.stdout, Stderr: res.stderr}
 	}
 	// The recipe succeeded and a file it declared `required=true` did not
 	// reach the run: the node did not do what it says it does.

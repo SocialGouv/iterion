@@ -247,7 +247,11 @@ codemode_prop = "mode" ":" codemode_mode NEWLINE
               | "result_bytes" ":" INT_LIT NEWLINE
               | "tool_result_bytes" ":" INT_LIT NEWLINE
               | "store_entries" ":" INT_LIT NEWLINE
-              | "store_bytes" ":" INT_LIT NEWLINE ;
+              | "store_bytes" ":" INT_LIT NEWLINE
+              | "subagents_tokens" ":" INT_LIT NEWLINE
+              | "subagents_tokens_per_agent" ":" INT_LIT NEWLINE
+              | "subagents_concurrent" ":" INT_LIT NEWLINE
+              | "subagents_steps_per_agent" ":" INT_LIT NEWLINE ;
 loop_budget_guard_mode = "off" | "on" ;
 repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;

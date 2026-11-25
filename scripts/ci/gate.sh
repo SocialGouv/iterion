@@ -191,9 +191,10 @@ mapfile -t MUTATING < <(yq -r '
 #
 # The second clause is why this is not one `select`. "Required but
 # unexpressible, so not my problem" would be a loophole wide enough to drive
-# the whole gate through: `test` and `race` are required and are pure
-# aggregators, so excluding them unconditionally would let a gate call itself
-# complete while test-unit had no member at all. The exclusion has to be
+# the whole gate through: `test` is required and is a pure aggregator (and
+# `race`, held out of the ruleset by docs/adr/173, is another), so excluding
+# them unconditionally would let a gate call itself complete while test-unit
+# had no member at all. The exclusion has to be
 # EARNED by the legs, and it is checked here rather than asserted in a comment.
 mapfile -t UNCOVERED < <(yq -r '
   .jobs as $j

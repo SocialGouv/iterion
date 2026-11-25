@@ -500,3 +500,114 @@ func TestRepoBotsScreen_ACellReachingNoEnabledBotIsWarned(t *testing.T) {
 		}
 	}
 }
+
+// #3532 — a bot that reacts to issue labels behind an EMPTY allowlist must
+// warn at enable time: MatchLabel answers an empty allowlist with "any label
+// triggers", the bot's own classification labels included, each one its own
+// trigger lane. The manifest cannot declare the allowlist, so the enable
+// write is the one surface that sees both halves.
+const labelBotManifest = `name: label-bot
+display_name: Label Bot
+schema_version: 1
+category: operate
+forge:
+  events: [issue_labeled]
+  secret: forge_token
+  token_scopes: { issues: write, pull_requests: write, repository: write }
+invocations:
+  - kind: forge
+    mode: direct
+    forge: { event: issue_labeled }
+`
+
+func seedLabelBot(t *testing.T, s *Server) {
+	t.Helper()
+	botsDir := t.TempDir()
+	dir := filepath.Join(botsDir, "label-bot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(screenProbeBot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(labelBotManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{botsDir}
+}
+
+func connectGitLab(t *testing.T, s *Server, srvURL string) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.handleConnectForge(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/connections",
+		`{"provider":"gitlab","mode":"pat","forge_base_url":"`+srvURL+`","pat":"glpat-token"}`, "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("connect: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var connResp forgeConnectResp
+	if err := json.Unmarshal(w.Body.Bytes(), &connResp); err != nil {
+		t.Fatal(err)
+	}
+	return connResp.Connection.ID
+}
+
+func TestRepoBotsWarnOnEmptyLabelAllowlist(t *testing.T) {
+	gl := newMockGitLab()
+	srv := gl.server()
+	defer srv.Close()
+	s := newForgeTestServer(t)
+	seedLabelBot(t, s)
+	conn := connectGitLab(t, s, srv.URL)
+
+	// Empty allowlist + an issue-label bot: the enable must SUCCEED and WARN.
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots",
+		`{"connection_id":"`+conn+`","repo":"group/api","bot_ids":["label-bot"]}`, "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("enable must warn, not refuse: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		forge.ProvisionResult
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.Warnings, "\n")
+	if !strings.Contains(joined, "issue-label trigger") || !strings.Contains(joined, "label-bot") {
+		t.Fatalf("no empty-allowlist warning naming the bot: %s", joined)
+	}
+	if !strings.Contains(joined, "label_allowlist") {
+		t.Errorf("the warning must name the setting the operator missed: %s", joined)
+	}
+
+	// An explicit allowlist silences it (the PATCH wiring judges the same way).
+	w = patchRepoBots(s, resp.IntegrationID, `{"bot_ids":["label-bot"],"label_allowlist":["maquette"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch with allowlist: code=%d body=%s", w.Code, w.Body.String())
+	}
+	resp.Warnings = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, wn := range resp.Warnings {
+		if strings.Contains(wn, "issue-label trigger") {
+			t.Errorf("an explicit allowlist must not warn: %s", wn)
+		}
+	}
+
+	// A bot that declares no forge events stays silent behind an empty allowlist.
+	w = patchRepoBots(s, resp.IntegrationID, `{"bot_ids":["review-pr"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch review-pr: code=%d body=%s", w.Code, w.Body.String())
+	}
+	resp.Warnings = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, wn := range resp.Warnings {
+		if strings.Contains(wn, "issue-label trigger") {
+			t.Errorf("a bot without issue-label events must not warn: %s", wn)
+		}
+	}
+}

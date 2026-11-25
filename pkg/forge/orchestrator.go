@@ -138,6 +138,12 @@ type Orchestrator struct {
 	// schedule invocation of the enabled bots so the cloud scheduler fires
 	// them. nil = no scheduling (self-hosted uses `iterion schedule`).
 	Schedules cloudsched.Store
+	// Subscriptions, when set, projects the integration's forge-bound trigger
+	// subscriptions (ADR-172): the rows the spine router matches a delivery
+	// against. It runs wherever the schedules are projected, inside the same
+	// provision fence, and from SyncSubscriptions and SetForgeRouting. nil =
+	// no projection, and no lane can be switched to the spine.
+	Subscriptions SubscriptionProjector
 	// AdminFor builds the outbound client for a connection (opens its sealed
 	// token). Injected so the orchestrator stays provider-agnostic and
 	// testable with a fake admin.
@@ -267,6 +273,11 @@ type ProvisionRequest struct {
 	// implementer. Nil means "keep what the repo already has"; a non-nil empty
 	// slice widens it back to any label — the same rule as HoldLabels.
 	LabelAllowlist []string
+	// BotTriggers is the operator's per-bot say over the issue lane (see
+	// RepoIntegration.BotTriggers). A nil map keeps what the repo already has;
+	// an entry replaces that bot's whole stored value, and a bot the map does
+	// not name keeps its own.
+	BotTriggers map[string]BotTrigger
 
 	// AutoFix opts the repo into the zero-touch lane (a red merge gate launches
 	// the repo's fixer). A nil pointer means "leave the repo's current choice
@@ -575,6 +586,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 		desiredPool = existing.Pool
 	}
+	// The per-bot triggers live on the integration alone — the config holds
+	// no copy to diverge from — so they resolve from one store: the stored
+	// map with the request's entries laid over it.
+	desiredTriggers := applyBotTriggers(existing.BotTriggers, req.BotTriggers)
 
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
@@ -582,24 +597,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// forge/command invocation — the events to subscribe come from BOTH
 	// sources, so a command-only bot (no forge: block) is enable-able and
 	// its webhook subscribes to the comment event.
-	frByBot := make(map[string]*bundle.ForgeRequirements, len(desiredBots))
-	invByBot := make(map[string][]bundle.Invocation, len(desiredBots))
-	for _, b := range desiredBots {
-		fr, err := o.Bots(ctx, req.TenantID, b)
-		if err != nil {
-			return ProvisionResult{}, fmt.Errorf("forge: resolve bot %q: %w", b, err)
-		}
-		var invs []bundle.Invocation
-		if o.Invocations != nil {
-			if invs, err = o.Invocations(ctx, req.TenantID, b); err != nil {
-				return ProvisionResult{}, fmt.Errorf("forge: resolve invocations for %q: %w", b, err)
-			}
-		}
-		if fr == nil && !hasForgeReachableInvocation(invs) {
-			return ProvisionResult{}, fmt.Errorf("%w: bot %q declares neither a forge: block nor a forge/command invocation; cannot auto-provision", ErrBotNotProvisionable, b)
-		}
-		frByBot[b] = fr
-		invByBot[b] = invs
+	frByBot, invByBot, err := o.resolveBotManifests(ctx, req.TenantID, desiredBots)
+	if err != nil {
+		return ProvisionResult{}, err
 	}
 	eventsNormalized := unionAllEvents(desiredBots, frByBot, invByBot)
 	nativeEvents := ToNativeEvents(conn.Provider, eventsNormalized)
@@ -624,8 +624,28 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// has none, so the board-launch path can't authenticate until a
 	// re-provision backfills them. Cheap and idempotent (ensureBotBinding
 	// no-ops when the binding already matches).
-	if hasExisting && !existing.ProvisionPending && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
-		existing.HookURL == desiredHookURL {
+	shortCircuit := hasExisting && !existing.ProvisionPending && equalStringSet(existing.BotIDs, desiredBots) &&
+		equalStringSet(existing.EventsNormalized, eventsNormalized) && existing.HookURL == desiredHookURL
+
+	// On an integration that routes a lane by the spine, a refused
+	// projection fails the provision. It is judged here, on the input the
+	// provision will project, before anything — config, integration, hook,
+	// binding, minted credential — is written: a refusal after those writes
+	// would leave the integration holding a bot set and bot_triggers its
+	// rows do not route.
+	if hasExisting && o.Subscriptions != nil && AnyLaneRoutesSpine(existing.ForgeRouting) {
+		in := o.provisionProjectionInput(existing, prevCfg, shortCircuit, desiredBots, desiredTriggers, frByBot, invByBot,
+			operatorVars, operatorOverlap, operatorHold, operatorLabels)
+		err := absentConfigRefusal(in)
+		if err == nil {
+			_, err = o.Subscriptions.Check(ctx, in)
+		}
+		if err != nil {
+			return ProvisionResult{}, fmt.Errorf("%w: integration %s: %w", ErrSubscriptionProjection, existing.ID, err)
+		}
+	}
+
+	if shortCircuit {
 		// A project-bot repo has no team binding to backfill: its token is
 		// its own (see the binding step of the rebuild path).
 		if !conn.MintsProjectBots() {
@@ -650,7 +670,8 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) ||
 			!slices.Equal(operatorLabels, existing.LabelAllowlist) ||
 			!policiesEqualRouting(desiredRouting, existing.Routing) ||
-			!desiredPool.Equal(existing.Pool)
+			!desiredPool.Equal(existing.Pool) ||
+			!botTriggersEqual(desiredTriggers, existing.BotTriggers)
 		if hasPrevCfg {
 			changed = changed || !slices.Equal(operatorLabels, prevCfg.LabelAllowlist) ||
 				!slices.Equal(operatorHold, prevCfg.HoldLabels) ||
@@ -694,6 +715,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			existing.AutoFixOnGateFailure = operatorAutoFix
 			existing.Routing = nilIfEmptyRouting(desiredRouting)
 			existing.Pool = desiredPool
+			existing.BotTriggers = desiredTriggers
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, uerr, ErrProvisionDivergedRetry)
@@ -726,7 +748,16 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// overlap/guard, retry, stale-after, ref and routing.
 		// An earlier activation may have succeeded while its projection failed.
 		// Reconcile even an otherwise identical retry; the carry preserves tuning.
-		if err := o.syncProvisionSchedules(ctx, existing, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting), desiredPool); err != nil {
+		//
+		// The subscriptions are projected here too, in the same fence: a
+		// changed per-bot trigger is a row mutation the same way a changed
+		// cron is a schedule mutation, and the already-provisioned repo
+		// reaches this path, never the rebuild.
+		projCfg, err := o.configForProjection(ctx, existing.WebhookID)
+		if err != nil {
+			return ProvisionResult{}, err
+		}
+		if existing.Version, err = o.syncProvisionProjections(ctx, existing, projCfg, CloneURLFor(conn.BaseURL(), req.RepoFullName), desiredBots, invByBot, frByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting), desiredPool); err != nil {
 			return ProvisionResult{}, err
 		}
 		return ProvisionResult{
@@ -1031,6 +1062,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		AutoFixOnGateFailure: operatorAutoFix,
 		Routing:              nilIfEmptyRouting(desiredRouting),
 		Pool:                 desiredPool,
+		BotTriggers:          desiredTriggers,
 		CreatedBy:            req.ActorID,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -1056,6 +1088,16 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ri.SyncIssuesEnabled = existing.SyncIssuesEnabled
 		ri.LastSyncedAt = existing.LastSyncedAt
 		ri.MinAuthorRole = existing.MinAuthorRole
+		// The routing switch and the projection's own stamps belong to
+		// SetForgeRouting and to the subscription sync. Dropping the switch
+		// reverts a flip to the server default with no error; dropping the
+		// adoption stamp makes the next projection adopt again, over
+		// whatever the manifests say by then.
+		ri.ForgeRouting = existing.ForgeRouting
+		ri.SpineSince = existing.SpineSince
+		ri.SubscriptionsAdoptedAt = existing.SubscriptionsAdoptedAt
+		ri.SubscriptionsSyncedAt = existing.SubscriptionsSyncedAt
+		ri.SubscriptionsSyncError = existing.SubscriptionsSyncError
 	}
 	if err := o.Integrations.Update(ctx, ri); err != nil {
 		// Same divergence as the operator-settings write: the config
@@ -1083,7 +1125,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
 	// The repo clone URL rides along so a stateful scheduled bot gets a git
 	// workspace (#219) — without it the run lands in the pod's bare WorkDir.
-	if err := o.syncProvisionSchedules(ctx, ri, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting), desiredPool); err != nil {
+	// The forge subscriptions are projected in the same fence, from the config
+	// and the integration as they were just written.
+	if ri.Version, err = o.syncProvisionProjections(ctx, ri, cfg, CloneURLFor(conn.BaseURL(), req.RepoFullName), desiredBots, invByBot, frByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting), desiredPool); err != nil {
 		return ProvisionResult{}, err
 	}
 
@@ -1369,12 +1413,25 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 	ri.Version++
 	// Retirement waits for an earlier version-fenced projection to finish.
 	// Capture its complete rows before slow cleanup; later epochs use new IDs.
+	// The forge subscriptions go in the same fence, and at once: a retired
+	// integration admits no delivery, so no router reads its rows again, and
+	// a later activation of the row projects its own.
 	var oldSchedules []cloudsched.ScheduledBot
-	if o.Schedules != nil {
+	if o.Schedules != nil || o.Subscriptions != nil {
 		err = o.Integrations.WithProvisionVersion(ctx, ri.ID, ri.Version, true, func(ctx context.Context) error {
-			var err error
-			oldSchedules, err = o.Schedules.ListByIntegration(ctx, ri.TenantID, ri.ID)
-			return err
+			if o.Schedules != nil {
+				rows, err := o.Schedules.ListByIntegration(ctx, ri.TenantID, ri.ID)
+				if err != nil {
+					return err
+				}
+				oldSchedules = rows
+			}
+			if o.Subscriptions != nil {
+				if err := o.Subscriptions.DropIntegration(ctx, ri.TenantID, ri.ID); err != nil {
+					return fmt.Errorf("forge: drop the forge subscriptions of integration %s: %w", ri.ID, err)
+				}
+			}
+			return nil
 		})
 		if err != nil {
 			return err
@@ -1436,6 +1493,103 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 	return o.Integrations.Update(ctx, ri)
 }
 
+// syncProvisionProjections writes everything a provisioned integration
+// projects — its scheduled rows, then its forge subscriptions and the sync
+// stamp — inside ONE provision fence, and returns the version that fence
+// leaves the integration at, which the caller assigns before it writes again.
+//
+// One fence, because a fence is single-use: it compares the version and
+// advances it, so a second one on the same version, or a whole-document
+// Update inside it, answers ErrIntegrationConflict. That is also why the
+// stamp is a targeted write (StampSubscriptionSync).
+//
+// ri and cfg are the integration and its webhook config as stored now. With
+// neither a schedule store nor a projector wired there is nothing to fence,
+// and the version comes back unchanged.
+//
+// A refused subscription projection fails the provision only on an
+// integration that routes a lane by the spine: there the rows decide what a
+// delivery starts, and the fence rolls back, schedules included. Everywhere
+// else the rows are inert, so the refusal is recorded on the integration
+// (SubscriptionsSyncError), warned, and the schedules commit.
+func (o *Orchestrator) syncProvisionProjections(ctx context.Context, ri RepoIntegration, cfg webhooks.Config, repoURL string, bots []string, invByBot map[string][]bundle.Invocation, frByBot map[string]*bundle.ForgeRequirements, crons map[string]string, actor string, routing *llmroute.Policy, pool *credpool.Binding) (newVersion int64, err error) {
+	if o.Schedules == nil && o.Subscriptions == nil {
+		return ri.Version, nil
+	}
+	err = o.Integrations.WithProvisionVersion(ctx, ri.ID, ri.Version, false, func(ctx context.Context) error {
+		if err := o.syncSchedulesWithPool(ctx, ri.TenantID, ri.ID, repoURL, invByBot, crons, actor, routing, pool); err != nil {
+			return err
+		}
+		if o.Subscriptions == nil {
+			return nil
+		}
+		in := SubscriptionInput{Integration: ri, Config: cfg, Bots: bots, InvByBot: invByBot, FrByBot: frByBot}
+		_, _, err := o.projectSubscriptions(ctx, in, AnyLaneRoutesSpine(ri.ForgeRouting))
+		return err
+	})
+	if err != nil {
+		return ri.Version, err
+	}
+	return ri.Version + 1, nil
+}
+
+// provisionProjectionInput is the subscription input a provision of
+// existing will project, built before the provision writes anything: the
+// integration with the desired bots and bot_triggers, and the webhook config
+// as the provision leaves it — the stored one with the operator settings
+// laid over it on the short-circuit path, the rebuilt bot scope (the desired
+// bots, the single-bot default) otherwise. It reads only what the projection
+// reads of a config: the bot scope the legacy election runs on and the
+// launch vars the hand-pinned report compares.
+//
+// The short-circuit path projects the stored config, so a config that does
+// not exist stays absent here (a zero ID), and absentConfigRefusal refuses
+// the input as the projection would. The rebuild writes the config the
+// projection then reads, so a missing stored one is named by the
+// integration's webhook id until the rebuild writes it.
+func (o *Orchestrator) provisionProjectionInput(existing RepoIntegration, prevCfg webhooks.Config, shortCircuit bool,
+	bots []string, triggers map[string]BotTrigger, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation,
+	operatorVars map[string]string, overlap string, hold, labels []string) SubscriptionInput {
+	ri := existing
+	ri.BotIDs = bots
+	ri.BotTriggers = triggers
+	cfg := prevCfg
+	if cfg.ID == "" && !shortCircuit {
+		cfg.ID = existing.WebhookID
+	}
+	cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(bots, frByBot))
+	cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
+	cfg.Overlap = overlap
+	cfg.HoldLabels = hold
+	cfg.LabelAllowlist = labels
+	if !shortCircuit {
+		cfg.BotIDs = bots
+		cfg.DefaultBotID = singleBotDefault(bots)
+		cfg.WildcardBots = false
+	}
+	return SubscriptionInput{Integration: ri, Config: cfg, Bots: bots, InvByBot: invByBot, FrByBot: frByBot}
+}
+
+// configForProjection reads the webhook config a subscription projection
+// starts from, after the writes of the path that calls it. It reads nothing
+// when no projector is wired. A config that does not exist comes back zero:
+// the projection reports it as its own refusal, under the policy of
+// syncProvisionProjections, instead of this read failing a provision whose
+// schedules can still be reconciled.
+func (o *Orchestrator) configForProjection(ctx context.Context, webhookID string) (webhooks.Config, error) {
+	if o.Subscriptions == nil {
+		return webhooks.Config{}, nil
+	}
+	cfg, err := o.Webhooks.Get(ctx, webhookID)
+	switch {
+	case err == nil:
+		return cfg, nil
+	case errors.Is(err, webhooks.ErrNotFound):
+		return webhooks.Config{}, nil
+	}
+	return webhooks.Config{}, fmt.Errorf("forge: read webhook %s before projecting its subscriptions: %w", webhookID, err)
+}
+
 // syncSchedules replaces the integration's ScheduledBot rows with one per
 // schedule invocation (with a suggested cron) of the enabled bots, so the
 // cloud scheduler fires them. Clean-slate (delete-then-create) keeps it
@@ -1451,15 +1605,6 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // would silently postpone the row past the slot it is due for), the
 // keepalive silence cutoff and the pinned checkout ref.
 // No-op when no schedule store is wired.
-func (o *Orchestrator) syncProvisionSchedules(ctx context.Context, ri RepoIntegration, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, routing *llmroute.Policy, pool *credpool.Binding) error {
-	if o.Schedules == nil {
-		return nil
-	}
-	return o.Integrations.WithProvisionVersion(ctx, ri.ID, ri.Version, false, func(ctx context.Context) error {
-		return o.syncSchedulesWithPool(ctx, ri.TenantID, ri.ID, repoURL, invByBot, crons, actor, routing, pool)
-	})
-}
-
 func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, integRouting *llmroute.Policy) error {
 	return o.syncSchedulesWithPool(ctx, tenantID, integrationID, repoURL, invByBot, crons, actor, integRouting, nil)
 }
@@ -1880,6 +2025,17 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	// "when did this webhook last receive anything" — the one field an
 	// operator reads to tell a silent hook from an idle repo.
 	cfg.LastUsedAt = prev.LastUsedAt
+
+	// The routing switch (ADR-172 §8) is the one field here with an
+	// integration half: SetForgeRouting writes it on the integration, which
+	// owns it, and on this config, which deliveries are routed by. A
+	// provision has no opinion about it, so the rebuilt config keeps what the
+	// previous one enforces. Dropping it reverts a flipped repo to the server
+	// default with no error; dropping SpineSince makes legacy stop reading
+	// the claims the spine made, so a redelivery after a rollback launches
+	// again.
+	cfg.ForgeRouting = prev.ForgeRouting
+	cfg.SpineSince = prev.SpineSince
 
 	// Rate limit: enforced by the inbound middleware, so losing an operator's
 	// raise means deliveries silently 429 and reviews never launch — but an
@@ -2399,14 +2555,17 @@ func (o *Orchestrator) verifyOperatorSettings(ctx context.Context, wantInteg Rep
 		!slices.Equal(integ.HoldLabels, wantInteg.HoldLabels),
 		!slices.Equal(integ.LabelAllowlist, wantInteg.LabelAllowlist),
 		!policiesEqualRouting(integ.Routing, wantInteg.Routing),
-		!integ.Pool.Equal(wantInteg.Pool):
+		!integ.Pool.Equal(wantInteg.Pool),
+		!botTriggersEqual(integ.BotTriggers, wantInteg.BotTriggers),
+		integ.ForgeRouting != wantInteg.ForgeRouting:
 		return fmt.Errorf("%w: the integration does not read back what was written — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, ErrProvisionDivergedRetry)
 	case !maps.Equal(cfg.OperatorLaunchVars, wantCfg.OperatorLaunchVars),
 		cfg.Overlap != wantCfg.Overlap,
 		!slices.Equal(cfg.HoldLabels, wantCfg.HoldLabels),
 		!slices.Equal(cfg.LabelAllowlist, wantCfg.LabelAllowlist),
 		!policiesEqualRouting(cfg.Routing, wantCfg.Routing),
-		!cfg.Pool.Equal(wantCfg.Pool):
+		!cfg.Pool.Equal(wantCfg.Pool),
+		cfg.ForgeRouting != wantCfg.ForgeRouting:
 		return fmt.Errorf("%w: the webhook config does not read back what was written — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, ErrProvisionDivergedRetry)
 	}
 	return nil

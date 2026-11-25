@@ -37,6 +37,14 @@ func (s *MemoryConfigStore) Update(_ context.Context, c Config) error {
 		}
 		c.Version++
 		c.LastUsedAt = cur.LastUsedAt
+		// A snapshot that says nothing about routing keeps what the store
+		// holds — the twin of the Mongo update's first merge operand.
+		if c.ForgeRouting.IsZero() {
+			c.ForgeRouting = cur.ForgeRouting
+		}
+		if c.SpineSince == nil {
+			c.SpineSince = cur.SpineSince
+		}
 		*cur = c
 		return true
 	})
@@ -241,7 +249,7 @@ func (s *MemoryDeliveryStore) CountLaunched(_ context.Context, tenantID, webhook
 	return len(s.kit.List(func(d Delivery) bool {
 		return d.TenantID == tenantID && d.WebhookID == webhookID &&
 			d.EventKind == eventKind && d.ProjectPath == projectPath &&
-			d.SubjectID == subjectID && d.RunID != ""
+			d.SubjectID == subjectID && d.RunID != "" && d.Status != StatusCarded
 	})), nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
@@ -18,19 +19,14 @@ import (
 // The script host's tool server: a nested call IS a direct call.
 // ---------------------------------------------------------------------------
 
-// ScriptHostToolName is the name the codemode tool will carry when a later
-// slice registers it on a node.
+// ScriptHostToolName is the name the codemode tool carries on a node.
 //
-// Declared now, and already honoured by [keepsPlaceholders] and by the
-// withheld class, because the two defects it guards are both the kind that
-// pass unnoticed: a materialised secret in the script source, and a script
-// nesting another script host. Naming it here means the slice that registers
-// the tool inherits both rather than rediscovering them — and a constant one
-// `grep` finds beats a string literal in three files.
-//
-// No tool answers to it yet. CM-1b is driven by tests, which is why nothing
-// model-facing opens with it.
-const ScriptHostToolName = "codemode"
+// It is honoured by [keepsPlaceholders] and by the withheld class, because the
+// two defects it guards are both the kind that pass unnoticed: a materialised
+// secret in the script source, and a script nesting another script host. It
+// IS the compiler's ir.CodemodeToolName, so the tool the C358 warning asks the
+// permission gate about is the one the dispatcher gates.
+const ScriptHostToolName = ir.CodemodeToolName
 
 // scriptToolServer answers a script's tool call by dispatching it through the
 // NODE'S OWN DOOR.
@@ -79,6 +75,11 @@ type scriptToolServer struct {
 	// was not started through the door, and its calls then read as
 	// top-level ones.
 	parent string
+
+	// subagentsArmed mirrors the node's armed reserve at server build time:
+	// the one fact the withhold verdict, the concurrency answer and the
+	// catalogue all read, snapshotted before any worker starts.
+	subagentsArmed bool
 }
 
 // newScriptToolServer takes the dispatcher and the context from the ctx of the
@@ -111,6 +112,18 @@ func newScriptToolServer(ctx context.Context, withheld string) (*scriptToolServe
 		withheld: strings.TrimSpace(withheld),
 		idPrefix: "codemode_" + rand.Text(),
 		parent:   executingToolUseIDFrom(ctx),
+		// The reserve arms the script route of the agent tool (CM-13): read
+		// from the node's spend accumulator on this dispatch context, so a
+		// server built for an unarmed node keeps the tool withheld, whatever
+		// `withheld` names.
+		subagentsArmed: func() bool {
+			spend := SubagentSpendFromContext(ctx)
+			if spend == nil {
+				return false
+			}
+			_, armed := spend.ArmedSubagentReserve()
+			return armed
+		}(),
 	}
 
 	// Snapshot any inherited narrowing before workers start. Dispatch pins
@@ -126,6 +139,16 @@ func newScriptToolServer(ctx context.Context, withheld string) (*scriptToolServe
 	s.ctx = tool.WithExecutableToolFilter(withAsksDenied(ctx), func(name string) bool {
 		return allowed[name]
 	})
+	// The script admission lives HERE and nowhere else (CM-13): nested
+	// dispatches derive from this context, so a program's agent call admits
+	// against the reserve, while a DIRECT agent call from the model's own
+	// turn — dispatched from a context this server never touches — stays on
+	// today's route (ADR-161).
+	if spend := SubagentSpendFromContext(ctx); spend != nil {
+		if _, armed := spend.ArmedSubagentReserve(); armed {
+			s.ctx = WithSubagentScriptAdmission(s.ctx, spend)
+		}
+	}
 	return s, nil
 }
 
@@ -134,6 +157,13 @@ func newScriptToolServer(ctx context.Context, withheld string) (*scriptToolServe
 func (s *scriptToolServer) ConcurrentSafe(name string) bool {
 	if !s.d.parallel {
 		return false
+	}
+	if s.subagentsArmed && isAgentTool(name) {
+		// A scripted child is a long synchronous call with no shared state
+		// outside the mutex'd spend accumulator; the reserve's Concurrent
+		// cap, enforced at admission, is the real width bound — wider here
+		// would only queue refusals past it.
+		return true
 	}
 	if _, denied := s.withhold(name); denied {
 		return false
@@ -270,6 +300,11 @@ func (s *scriptToolServer) nestedToolUse(frame scripthost.CallFrame, name string
 //     quota.
 //   - the script host's own tool, so a script cannot nest another.
 func (s *scriptToolServer) withhold(name string) (string, bool) {
+	if s.subagentsArmed && isAgentTool(name) {
+		// The reserve is armed: the script route exists, the tool is served
+		// and admitted against the node's reserve by its own executor.
+		return "", false
+	}
 	return scriptWithheld(name, s.withheld)
 }
 
@@ -331,20 +366,28 @@ func isAgentTool(name string) bool {
 //
 // A block that carries several text parts is joined rather than truncated to
 // the first: "the first one wins" is a verdict reconstructed from order, which
-// this repo has paid for.
+// this repo has paid for. A program receives text only, so an image block
+// (read_image, screenshot) becomes an explicit marker: a bare success would
+// let the program — and the model reading its result — believe it saw an
+// image it never received.
 func toolResultText(block api.ContentBlock) string {
 	if len(block.Content) == 0 {
 		return ""
 	}
-	if len(block.Content) == 1 {
-		return block.Content[0].Text
-	}
 	parts := make([]string, 0, len(block.Content))
 	for _, c := range block.Content {
+		if c.Type == "image" {
+			parts = append(parts, scriptImageOmitted)
+			continue
+		}
 		parts = append(parts, c.Text)
 	}
 	return strings.Join(parts, "\n")
 }
+
+// scriptImageOmitted stands for an image block in a tool result a program
+// receives.
+const scriptImageOmitted = "[image omitted: a program receives text only — call the tool directly for the model to see the image]"
 
 // normaliseInput makes an empty or absent input the empty object.
 //

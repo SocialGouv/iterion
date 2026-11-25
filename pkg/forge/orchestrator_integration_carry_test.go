@@ -89,23 +89,14 @@ func TestReprovisionDropsNoIntegrationFieldItDoesNotOwn(t *testing.T) {
 		if !f.CanSet() || !f.IsZero() {
 			continue
 		}
-		switch f.Kind() {
-		case reflect.String:
-			f.SetString("sentinel")
-		case reflect.Bool:
-			f.SetBool(true)
-		case reflect.Slice:
-			f.Set(reflect.Append(f, reflect.ValueOf("sentinel").Convert(f.Type().Elem())))
-		case reflect.Map:
-			m := reflect.MakeMap(f.Type())
-			m.SetMapIndex(reflect.ValueOf("k").Convert(f.Type().Key()),
-				reflect.ValueOf("v").Convert(f.Type().Elem()))
-			f.Set(m)
-		case reflect.Struct:
-			if f.Type() == reflect.TypeOf(time.Time{}) {
-				f.Set(reflect.ValueOf(time.Unix(1700000000, 0).UTC()))
-			}
+		filled, ok := carrySentinel(f.Type())
+		if !ok {
+			// A field left zero proves nothing: it reads "erased" before the
+			// re-provision as much as after it.
+			t.Fatalf("the sweep cannot fill RepoIntegration.%s (%s): teach carrySentinel that type, "+
+				"or name the field in provisionerOwnedIntegrationFields", typ.Field(i).Name, f.Type())
 		}
+		f.Set(filled)
 	}
 	// Keep the identity coherent so the re-provision finds this record.
 	integ.TenantID, integ.ConnectionID, integ.RepoFullName = "t1", "conn-1", "group/api"
@@ -159,6 +150,59 @@ func TestReprovisionDropsNoIntegrationFieldItDoesNotOwn(t *testing.T) {
 			"beside SyncIssuesEnabled/LastSyncedAt/MinAuthorRole, or add it to "+
 			"provisionerOwnedIntegrationFields with the reason.", name)
 	}
+}
+
+// carrySentinel builds a non-zero value of t for the sweep above, descending
+// into pointers, slices, maps and structs so a field of any of those shapes is
+// filled whole — a struct with one field set would still let the rebuild drop
+// the others unseen. ok is false for a type it does not know how to fill.
+func carrySentinel(t reflect.Type) (reflect.Value, bool) {
+	if t == reflect.TypeOf(time.Time{}) {
+		return reflect.ValueOf(time.Unix(1700000000, 0).UTC()), true
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return reflect.ValueOf("sentinel").Convert(t), true
+	case reflect.Bool:
+		return reflect.ValueOf(true).Convert(t), true
+	case reflect.Pointer:
+		elem, ok := carrySentinel(t.Elem())
+		if !ok {
+			return reflect.Value{}, false
+		}
+		p := reflect.New(t.Elem())
+		p.Elem().Set(elem)
+		return p, true
+	case reflect.Slice:
+		elem, ok := carrySentinel(t.Elem())
+		if !ok {
+			return reflect.Value{}, false
+		}
+		return reflect.Append(reflect.MakeSlice(t, 0, 1), elem), true
+	case reflect.Map:
+		key, kok := carrySentinel(t.Key())
+		elem, eok := carrySentinel(t.Elem())
+		if !kok || !eok {
+			return reflect.Value{}, false
+		}
+		m := reflect.MakeMap(t)
+		m.SetMapIndex(key, elem)
+		return m, true
+	case reflect.Struct:
+		out := reflect.New(t).Elem()
+		for i := 0; i < t.NumField(); i++ {
+			if !out.Field(i).CanSet() {
+				return reflect.Value{}, false
+			}
+			field, ok := carrySentinel(t.Field(i).Type)
+			if !ok {
+				return reflect.Value{}, false
+			}
+			out.Field(i).Set(field)
+		}
+		return out, true
+	}
+	return reflect.Value{}, false
 }
 
 // TestReprovisionKeepsIssueSyncAndItsTrustThreshold is the concrete case the

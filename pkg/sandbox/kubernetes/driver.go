@@ -590,6 +590,15 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 // image is built with.
 const defaultPodUser = "1000:1000"
 
+// applyAtStart applies one of Start's per-run manifests through
+// quotaRefusal: Start's applies run before the first node, so a refusal
+// for lack of room is a placement failure the run may retry.
+// RefreshSecretFile runs mid-run and keeps the raw applyManifest — a
+// quota refusal there is not a placement.
+func (d *Driver) applyAtStart(ctx context.Context, phase string, manifest []byte) error {
+	return quotaRefusal(d.kubectl.applyManifest(ctx, d.logger, d.namespace, phase, manifest))
+}
+
 // Start applies the pod manifest, waits for Ready, optionally runs
 // post-create, and returns a live [Run] handle.
 func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
@@ -635,7 +644,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
-		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
+		if err := d.applyAtStart(ctx, "apply file-secrets secret", secretManifest); err != nil {
 			return nil, fmt.Errorf("kubernetes: apply file secrets secret: %w", err)
 		}
 	}
@@ -653,7 +662,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			}
 			return nil, fmt.Errorf("kubernetes: build CA secret: %w", err)
 		}
-		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
+		if err := d.applyAtStart(ctx, "apply CA secret", caSecret); err != nil {
 			if secretFilesSecretName != "" {
 				_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
@@ -699,7 +708,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// unbounded one hangs the run before the first bounded phase.
 	_ = d.kubectl.deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
 
-	if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
+	if err := d.applyAtStart(ctx, "apply pod", manifest); err != nil {
 		if caSecretName != "" {
 			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
@@ -756,7 +765,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
 		}
-		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
+		if err := d.applyAtStart(ctx, "apply networkpolicy", netpolicy); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
 		}
@@ -1686,7 +1695,9 @@ func readArchiveTail(archive io.Reader) error {
 //     For a worktree run the pod workspace lives at the WORKTREE path
 //     while the copied content is the clone — so the recorded absolute
 //     path doesn't exist in the pod and every authenticated push would
-//     fail credential-less. Re-point it at the pod-local file.
+//     fail credential-less. Re-point it at the pod-local file,
+//     single-quoted because git runs the helper value through `sh -c`;
+//     a workspace path holding a single quote is refused.
 //   - .git/worktrees/: the engine's per-run worktree registration.
 //     Inside the pod the workspace is a standalone clone; the stale
 //     registration claims the storage branch is checked out elsewhere
@@ -1700,7 +1711,10 @@ ws=$1
 if [ -d "$ws/.git" ]; then
   cred="$ws/.git/iterion-credentials"
   if [ -f "$cred" ]; then
-    git -C "$ws" config credential.helper "store --file=$cred"
+    case $ws in
+      *\'*) echo "fixup: workspace path $ws holds a single quote, which the quoted credential.helper cannot carry" >&2; exit 1 ;;
+    esac
+    git -C "$ws" config credential.helper "store --file='$cred'"
   fi
   rm -rf "$ws/.git/worktrees"
 fi`

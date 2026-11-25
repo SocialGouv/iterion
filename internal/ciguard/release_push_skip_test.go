@@ -12,7 +12,9 @@ import (
 
 // releaseWrittenPaths is what a release commit writes, each entry named by the
 // writer that writes it. tests.yml's `push` trigger ignores exactly these, so
-// a release creates no run and cancels no merge's witness (#3161).
+// a release creates no run: push runs are keyed by commit (ADR-173), so a
+// release run would cancel nothing, but it would cost a full heavy Tests run
+// on main for a commit that changes no code (#3161).
 //
 // The pairing is the point: a path here with no writer is a path that stopped
 // being part of a release, and ignoring it then costs a real run for nothing.
@@ -40,8 +42,8 @@ const (
 //
 // The dangerous direction is a path that stops existing — renamed, moved,
 // regenerated elsewhere. `paths-ignore` matches on a string GitHub never
-// validates, so a stale entry silently stops matching, the release resumes
-// cancelling, and nothing anywhere says so. That is what this pins.
+// validates, so a stale entry silently stops matching, each release resumes
+// costing a full heavy Tests run on main, and nothing anywhere says so. That is what this pins.
 //
 // Mutations seen red, each on its own message: renaming an ignored path in the
 // workflow (the tree check names it); dropping one from the workflow (the
@@ -75,8 +77,8 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 
 	// (0) FIRST, because it is the only direction that breaks a merge rather
 	// than a convenience: a path filter on the events that produce the
-	// REQUIRED checks. `test`, `race`, `vendor-check`, `mongo-conformance`,
-	// `golangci` and `brand` are required by ruleset 18857412, and GitHub's
+	// REQUIRED checks. `test`, `vendor-check`, `golangci` and `brand` are
+	// required by ruleset 18857412, and GitHub's
 	// own workflow-syntax page says it outright — "You should not use path or
 	// branch filtering to skip workflow runs if the workflow is required to
 	// pass before merging", because a skipped run never reports and the check
@@ -91,15 +93,21 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 	// requests whose entire diff is one of these paths are real and recurring:
 	// #2603, #2608 and #2617 each changed committed-reading.txt alone.
 	var triggers struct {
-		On map[string]map[string]any `yaml:"on"`
+		On map[string]any `yaml:"on"`
 	}
 	if err := yaml.Unmarshal(src, &triggers); err != nil {
 		t.Fatalf("parse %s trigger map: %v", testsWorkflowPath, err)
 	}
 	for _, event := range []string{"pull_request", "merge_group"} {
+		// A trigger with no filters parses as nil; anything else that is not
+		// a mapping is a shape this check does not read.
+		filters, ok := triggers.On[event].(map[string]any)
+		if triggers.On[event] != nil && !ok {
+			t.Fatalf("tests.yml's %s trigger is %T, want a mapping or nothing", event, triggers.On[event])
+		}
 		for _, filter := range []string{"paths", "paths-ignore"} {
-			if _, present := triggers.On[event][filter]; present {
-				t.Errorf("tests.yml's %s trigger carries %q. Six REQUIRED checks come from this workflow, and a run a path filter skips never reports them: "+
+			if _, present := filters[filter]; present {
+				t.Errorf("tests.yml's %s trigger carries %q. The REQUIRED checks come from this workflow, and a run a path filter skips never reports them: "+
 					"the check stays Pending, the pull request is blocked, and a queue entry dequeues after sixty minutes. The release skip belongs to `push` ALONE — "+
 					"on push there is no check to withhold, only a run to not create", event, filter)
 			}
@@ -108,7 +116,7 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 
 	ignored := wf.On.Push.PathsIgnore
 	if len(ignored) == 0 {
-		t.Fatalf("tests.yml's push trigger carries no paths-ignore: the release commit then shares the ref-keyed concurrency group with the merge it followed and cancels its run (#3161). "+
+		t.Fatalf("tests.yml's push trigger carries no paths-ignore: every release commit then creates a full heavy Tests run on main for a commit that changes no code (#3161). "+
 			"Restore the list, or if this is deliberate say so here and delete this guard — a fix nobody can see failing is worse than none. Expected at least: %v", sortedKeys(releaseWrittenPaths))
 	}
 
@@ -119,12 +127,12 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 		}
 		if _, statErr := os.Stat(filepath.Join(repoRoot, p)); statErr != nil {
 			t.Errorf("tests.yml ignores %q on push, but the tree has no such file (%v): paths-ignore matches a string GitHub never validates, "+
-				"so this entry stops matching in silence and the release resumes cancelling the merge's witness. Point it at the file's new name", p, statErr)
+				"so this entry stops matching in silence and each release resumes costing a full heavy Tests run on main. Point it at the file's new name", p, statErr)
 		}
 	}
 
 	// (2) Every path a release writes must be ignored, or the fix is partial
-	// in a way no one notices until a witness goes missing again.
+	// in a way no one notices until release runs reappear on main.
 	ignoredSet := map[string]bool{}
 	for _, p := range ignored {
 		ignoredSet[p] = true
@@ -132,7 +140,7 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 	for p, writer := range releaseWrittenPaths {
 		if !ignoredSet[p] {
 			t.Errorf("a release writes %q (%s) and tests.yml's push trigger does NOT ignore it: the release commit then changes a file outside the list, "+
-				"so its run is created and cancels the run of the merge it followed (#3161)", p, writer)
+				"so each release creates a full heavy Tests run on main (#3161)", p, writer)
 		}
 	}
 
@@ -175,7 +183,7 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 	// unfiltered push would skip these files on every branch, which is not
 	// what #3161 asked for.
 	if len(wf.On.Push.Branches) != 1 || wf.On.Push.Branches[0] != "main" {
-		t.Errorf("tests.yml's push trigger is scoped to %v, want exactly [main]: the release skip is reasoned about main's ref-keyed concurrency group alone", wf.On.Push.Branches)
+		t.Errorf("tests.yml's push trigger is scoped to %v, want exactly [main]: the release skip is reasoned about main's release commits alone", wf.On.Push.Branches)
 	}
 }
 

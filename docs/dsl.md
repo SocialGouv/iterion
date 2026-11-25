@@ -441,6 +441,10 @@ agent surveyor:
     script_bytes: 524288     ## bytes of program source (default 262144)
     result_bytes: 2097152    ## bytes it may return (default 1048576)
     tool_result_bytes: 131072 ## bytes of ONE tool result (default 65536)
+    subagents_tokens: 200000  ## the node's whole sub-agent reserve (CM-13) — declaring it makes the agent tool callable from this node's programs
+    subagents_tokens_per_agent: 50000 ## one child's hold until it settles its actual usage (default: the whole reserve)
+    subagents_concurrent: 2   ## children of this node in flight (default 1, ceiling 4)
+    subagents_steps_per_agent: 10 ## one child's tool-loop steps (default: the node's own step budget)
 ```
 
 A duration is **quoted**, the spelling `timeout:` uses; a byte size and a
@@ -450,6 +454,26 @@ rung chooses `tool_calls`, the default is sixty-four calls. Similarly,
 `concurrent_tool_calls` defaults to serial execution (`1`); it limits the calls
 in flight, not the total number a program may make. The launch flag
 `--codemode-concurrent-tool-calls` overrides it for one run.
+
+`subagents_tokens` arms the node's **sub-agent reserve** (CM-13, ADR-165):
+a program of this node may then start `agent` children, each admitted
+against the reserve before it runs — a hold of `subagents_tokens_per_agent`
+(the whole reserve when unset) that the child's actual usage settles, and at
+most `subagents_concurrent` children in flight. A script cannot choose a
+child's model: children run on the node's own model (ADR-165), and a `model:`
+in a program's agent call is refused. A node that declares no
+`subagents_tokens` keeps the agent tool withheld from its programs, exactly
+as before; the direct (non-script) agent tool is unchanged. A reserve
+without a size is not finite: any `subagents_*` line without
+`subagents_tokens` is refused (**C356**), as is a per-agent hold wider than
+the reserve. Beside `mode: off` the reserve arms nothing as written
+(**C357**), the reach **C348** names for the bounds.
+
+A permission gate judges the program itself: under `permission: deny` or
+`ask`, the `codemode` tool needs an allow rule like any tool, or every
+program is refused (deny) or pauses the run (ask) — **C358** warns at compile
+time. Listing `"codemode"` in `allow:` widens nothing the rules do not already
+allow: each call a program makes is judged one by one, by the same gate.
 
 Use `store_entries` and `store_bytes` in the **workflow** `codemode:` block,
 not on an agent or judge. They bound the bank shared by all codemode programs

@@ -16,7 +16,7 @@ import (
 
 // pinNames are the syntax floors, by the name of the constant that pins each
 // — bundle.SyntaxFloors spells them the same way.
-var pinNames = []string{"ProfileSince", "ImportSince", "ContractSince", "VarMatchingSince", "ToolAliasesSince", "DeclaredEmptyToolsSince", "CatalogTaxonomySince", "SkillSharingSince"}
+var pinNames = []string{"ProfileSince", "ImportSince", "ContractSince", "VarMatchingSince", "ToolAliasesSince", "DeclaredEmptyToolsSince", "CatalogTaxonomySince", "SkillSharingSince", "ForgeLabelsSince"}
 
 // The list above is the registry's, held to it here: a pin added to the
 // floors table and forgotten in pinNames is a pin the sweep below cannot

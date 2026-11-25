@@ -33,36 +33,37 @@ import (
 // backendFields holds the common fields extracted from AgentNode or JudgeNode
 // for the executeBackend unified path.
 type backendFields struct {
-	id               string
-	kind             string // what the id names in an error subject: "" = "node", "llm router" for the router path
-	inChain          bool   // the correction runs inside the chain, before the attempt's own delegate event
-	model            string
-	backend          string
-	provider         string
-	command          string // node-level `command:` CLI binary override (honored by claude_code)
-	systemPrompt     string
-	userPrompt       string
-	reasoningEffort  string
-	outputSchema     string
-	tools            []string
-	toolMaxSteps     int
-	maxTokens        int
-	session          ir.SessionMode
-	sessionSlot      string
-	interaction      ir.InteractionMode
-	activeMCPServers []string
-	compaction       *ir.Compaction
-	memory           *ir.Memory
-	capabilities     []string
-	skills           []string
-	cursors          *ir.CursorInvocation
-	compress         string             // node-level `compress:` value ("" = unset)
-	autoMemory       string             // node-level `auto_memory:` value ("" = inherit workflow)
-	ambientContext   string             // node-level `ambient_context:` value ("" = inherit workflow)
-	codemode         string             // node-level `codemode:` value ("" = inherit workflow)
-	codemodeDefer    string             // node-level `codemode:` defer value ("" = inherit workflow)
-	codemodeBounds   *ir.CodemodeBounds // node-level `codemode:` bounds (nil = inherit workflow, field by field)
-	permission       string             // node-level `permission:` mode override ("" = inherit)
+	id                string
+	kind              string // what the id names in an error subject: "" = "node", "llm router" for the router path
+	inChain           bool   // the correction runs inside the chain, before the attempt's own delegate event
+	model             string
+	backend           string
+	provider          string
+	command           string // node-level `command:` CLI binary override (honored by claude_code)
+	systemPrompt      string
+	userPrompt        string
+	reasoningEffort   string
+	outputSchema      string
+	tools             []string
+	toolMaxSteps      int
+	maxTokens         int
+	session           ir.SessionMode
+	sessionSlot       string
+	interaction       ir.InteractionMode
+	activeMCPServers  []string
+	compaction        *ir.Compaction
+	memory            *ir.Memory
+	capabilities      []string
+	skills            []string
+	cursors           *ir.CursorInvocation
+	compress          string                // node-level `compress:` value ("" = unset)
+	autoMemory        string                // node-level `auto_memory:` value ("" = inherit workflow)
+	ambientContext    string                // node-level `ambient_context:` value ("" = inherit workflow)
+	codemode          string                // node-level `codemode:` value ("" = inherit workflow)
+	codemodeDefer     string                // node-level `codemode:` defer value ("" = inherit workflow)
+	codemodeBounds    *ir.CodemodeBounds    // node-level `codemode:` bounds (nil = inherit workflow, field by field)
+	codemodeSubagents *ir.CodemodeSubagents // node-level `codemode:` subagents reserve (nil = inherit workflow, field by field)
+	permission        string                // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
 	// ir.EffectivePermissionRules, the single implementation of that rule.
@@ -100,30 +101,31 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
-			maxTokens:        n.MaxTokens,
-			session:          n.Session,
-			sessionSlot:      n.SessionSlot,
-			interaction:      n.Interaction,
-			activeMCPServers: n.ActiveMCPServers,
-			compaction:       n.Compaction,
-			memory:           n.Memory,
-			capabilities:     n.Capabilities,
-			skills:           n.Skills,
-			cursors:          n.Cursors,
-			compress:         n.Compress,
-			autoMemory:       n.AutoMemory,
-			ambientContext:   n.AmbientContext,
-			codemode:         n.Codemode,
-			codemodeDefer:    n.CodemodeDefer,
-			codemodeBounds:   n.CodemodeBounds,
-			permission:       n.Permission,
-			permAllow:        n.PermissionAllow,
-			permAsk:          n.PermissionAsk,
-			permDeny:         n.PermissionDeny,
-			timeout:          n.Timeout,
-			readonly:         n.Readonly,
-			fullAccess:       n.FullAccess,
-			images:           n.Images,
+			maxTokens:         n.MaxTokens,
+			session:           n.Session,
+			sessionSlot:       n.SessionSlot,
+			interaction:       n.Interaction,
+			activeMCPServers:  n.ActiveMCPServers,
+			compaction:        n.Compaction,
+			memory:            n.Memory,
+			capabilities:      n.Capabilities,
+			skills:            n.Skills,
+			cursors:           n.Cursors,
+			compress:          n.Compress,
+			autoMemory:        n.AutoMemory,
+			ambientContext:    n.AmbientContext,
+			codemode:          n.Codemode,
+			codemodeDefer:     n.CodemodeDefer,
+			codemodeBounds:    n.CodemodeBounds,
+			codemodeSubagents: n.CodemodeSubagents,
+			permission:        n.Permission,
+			permAllow:         n.PermissionAllow,
+			permAsk:           n.PermissionAsk,
+			permDeny:          n.PermissionDeny,
+			timeout:           n.Timeout,
+			readonly:          n.Readonly,
+			fullAccess:        n.FullAccess,
+			images:            n.Images,
 		}, nil
 	case *ir.JudgeNode:
 		return backendFields{
@@ -132,30 +134,31 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
-			maxTokens:        n.MaxTokens,
-			session:          n.Session,
-			sessionSlot:      n.SessionSlot,
-			interaction:      n.Interaction,
-			activeMCPServers: n.ActiveMCPServers,
-			compaction:       n.Compaction,
-			memory:           n.Memory,
-			capabilities:     n.Capabilities,
-			skills:           n.Skills,
-			cursors:          n.Cursors,
-			compress:         n.Compress,
-			autoMemory:       n.AutoMemory,
-			ambientContext:   n.AmbientContext,
-			codemode:         n.Codemode,
-			codemodeDefer:    n.CodemodeDefer,
-			codemodeBounds:   n.CodemodeBounds,
-			permission:       n.Permission,
-			permAllow:        n.PermissionAllow,
-			permAsk:          n.PermissionAsk,
-			permDeny:         n.PermissionDeny,
-			timeout:          n.Timeout,
-			readonly:         n.Readonly,
-			fullAccess:       n.FullAccess,
-			images:           n.Images,
+			maxTokens:         n.MaxTokens,
+			session:           n.Session,
+			sessionSlot:       n.SessionSlot,
+			interaction:       n.Interaction,
+			activeMCPServers:  n.ActiveMCPServers,
+			compaction:        n.Compaction,
+			memory:            n.Memory,
+			capabilities:      n.Capabilities,
+			skills:            n.Skills,
+			cursors:           n.Cursors,
+			compress:          n.Compress,
+			autoMemory:        n.AutoMemory,
+			ambientContext:    n.AmbientContext,
+			codemode:          n.Codemode,
+			codemodeDefer:     n.CodemodeDefer,
+			codemodeBounds:    n.CodemodeBounds,
+			codemodeSubagents: n.CodemodeSubagents,
+			permission:        n.Permission,
+			permAllow:         n.PermissionAllow,
+			permAsk:           n.PermissionAsk,
+			permDeny:          n.PermissionDeny,
+			timeout:           n.Timeout,
+			readonly:          n.Readonly,
+			fullAccess:        n.FullAccess,
+			images:            n.Images,
 		}, nil
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
@@ -1451,7 +1454,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if err != nil {
 		return delegate.Task{}, err
 	}
-	codemodePolicy, codemodeBounds, err := e.codemodePolicy(f, backendName)
+	codemodePolicy, codemodeBounds, subagentReserve, err := e.codemodePolicy(f, backendName)
 	if err != nil {
 		return delegate.Task{}, err
 	}
@@ -1524,6 +1527,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Codemode:              codemodePolicy.On,
 		CodemodeDefer:         codemodeDefer,
 		CodemodeBounds:        codemodeBounds,
+		SubagentReserve:       subagentReserve,
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,
@@ -1705,6 +1709,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// facts once the node is going to run on THIS route, and the last thing
 	// that can take that away is several statements below.
 	var degraded []mcpDegradeReport
+	// The grant families a prompt command's `allowed-tools:` left with no
+	// tool, reported once the task is built (see the Warn at the end).
+	var grantsNarrowedAway []string
 	if len(effectiveTools) > 0 && backendName == delegate.BackendClaw {
 		clawTools := effectiveTools
 		// Ambient plugin-MCP parity with claude_code (the claude_code branch
@@ -1830,6 +1837,8 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		if sess != nil && sess.commandNarrowing != nil {
 			narrowed := tool.CommandNarrowedSet(sess.commandNarrowing)
 			declared := len(toolDefs)
+			// Cloned: the filter below reuses toolDefs' backing array.
+			before := slices.Clone(toolDefs)
 			kept := toolDefs[:0]
 			for _, td := range toolDefs {
 				if narrowed(td.Name) {
@@ -1841,6 +1850,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 				e.logger.Info("[%s#%d/claw] /%s allowed-tools narrows this node's tools to %d of %d",
 					f.id, LoopIterationFromContext(ctx), sess.commandNarrowingBy, len(toolDefs), declared)
 			}
+			grantsNarrowedAway = grantFamiliesNarrowedAway(before, toolDefs, effectiveCaps)
 		}
 		task.ToolDefs = toolDefs
 		// Carried, not raised. A build error aborts the node before its
@@ -1938,6 +1948,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// is never replaced in silence.
 	if codemodeDefer && task.Sandbox != nil && e.logger != nil && sess.claimWithdrawal("codemode-defer") {
 		e.logger.Warn("[%s] codemode: `defer: on` is not applied on this route — the node runs in a sandbox, and the sandboxed runner declares every tool to the model; the deferral applies only to unsandboxed execution", f.id)
+	}
+	// A capability grant whose every tool the prompt command's
+	// `allowed-tools:` narrowed away runs inert: the node keeps the grant
+	// and the model is offered none of its tools. The narrowing is the
+	// command author's explicit choice and stands; the Warn names it, once
+	// per node execution, taken here so a build that fails above does not
+	// spend it.
+	if len(grantsNarrowedAway) > 0 && e.logger != nil && sess.claimWithdrawal("grant-narrowed") {
+		e.logger.Warn("[%s#%d/claw] /%s allowed-tools narrows away every tool of the node's %s grant — the grant is held and none of its tools is offered; name them in the command's allowed-tools (mcp__iterion_board__* / mcp__iterion_runs__*) to serve it",
+			f.id, LoopIterationFromContext(ctx), sess.commandNarrowingBy, strings.Join(grantsNarrowedAway, " and "))
 	}
 	return task, nil
 }

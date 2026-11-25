@@ -20,9 +20,11 @@ type releaseWorkflow struct {
 	} `yaml:"concurrency"`
 	Jobs map[string]struct {
 		Steps []struct {
-			ID   string `yaml:"id"`
-			Name string `yaml:"name"`
-			If   string `yaml:"if"`
+			ID   string            `yaml:"id"`
+			Name string            `yaml:"name"`
+			If   string            `yaml:"if"`
+			Env  map[string]string `yaml:"env"`
+			Run  string            `yaml:"run"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
 }
@@ -62,19 +64,22 @@ func TestReleaseRunsNeverOverlap(t *testing.T) {
 	}
 }
 
-// TestReleaseReadsTheQueueBeforeMovingToMainsTip holds the three steps that
+// TestReleaseReadsTheQueueBeforeMovingToMainsTip holds the four steps that
 // decide what a merged pull request releases: their order, and the condition
 // each runs under. The queue is read FIRST: a group in flight at that read is
 // the only queue merge that could land before release-it pushes, and it holds
 // the release; whatever lands before the move to main's tip is in the tree
 // release-it commits onto. Read after that move, a queue merge could land
 // between the two — the queue then reads empty, release-it commits onto a
-// tree older than main and its push is rejected, a red run on main.
+// tree older than main and its push is rejected, a red run on main. The major
+// hold runs after the move, over the very tree release-it would release, and
+// its verdict gates release-it.
 //
 // The conditions are compared byte for byte, like the routing expressions in
 // routing_test.go: one token flipped in any of them skips every merged pull
-// request's release in silence, releases while a group builds, or skips the
-// move to main's tip — each a green-looking run.
+// request's release in silence, releases while a group builds, skips the
+// move to main's tip, or cuts a release the major hold refused — each a
+// green-looking run.
 func TestReleaseReadsTheQueueBeforeMovingToMainsTip(t *testing.T) {
 	job, ok := readReleaseWorkflow(t).Jobs["version"]
 	if !ok {
@@ -83,33 +88,38 @@ func TestReleaseReadsTheQueueBeforeMovingToMainsTip(t *testing.T) {
 	const (
 		holdID     = "queue"
 		tipName    = "Release main's tip as it is now"
+		majorID    = "major"
 		releaseRun = "Run release-it"
 	)
-	hold, tip, release := -1, -1, -1
-	var holdIf, tipIf, releaseIf string
+	hold, tip, major, release := -1, -1, -1, -1
+	var holdIf, tipIf, majorIf, releaseIf string
 	for i, st := range job.Steps {
 		switch {
 		case st.ID == holdID:
 			hold, holdIf = i, st.If
 		case st.Name == tipName:
 			tip, tipIf = i, st.If
+		case st.ID == majorID:
+			major, majorIf = i, st.If
 		case st.Name == releaseRun:
 			release, releaseIf = i, st.If
 		}
 	}
-	if hold < 0 || tip < 0 || release < 0 {
-		t.Fatalf("the version job lost a step this guard reads (step id %q at %d, %q at %d, %q at %d) — renamed? Keep the names in step with this test", holdID, hold, tipName, tip, releaseRun, release)
+	if hold < 0 || tip < 0 || major < 0 || release < 0 {
+		t.Fatalf("the version job lost a step this guard reads (step id %q at %d, %q at %d, id %q at %d, %q at %d) — renamed? Keep the names in step with this test", holdID, hold, tipName, tip, majorID, major, releaseRun, release)
 	}
-	if hold >= tip || tip >= release {
-		t.Errorf("the version job runs the queue hold at step %d, the move to main's tip at step %d and release-it at step %d — the hold must come first and release-it last", hold, tip, release)
+	if hold >= tip || tip >= major || major >= release {
+		t.Errorf("the version job runs the queue hold at step %d, the move to main's tip at step %d, the major hold at step %d and release-it at step %d — the queue hold must come first, the major hold must judge the tree the move produced, and release-it must run last", hold, tip, major, release)
 	}
 	for _, c := range []struct{ step, got, want, why string }{
 		{"the queue hold", holdIf, "github.event_name == 'pull_request'",
 			"only a merged pull request's release waits for the queue; the nightly and a dispatch never read it"},
 		{"the move to main's tip", tipIf, "steps.queue.outputs.busy != 'true'",
 			"every run that may release moves to main's tip first — the nightly and a dispatch, whose hold is skipped, included"},
-		{"release-it", releaseIf, "steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false')",
-			"a merged pull request releases only once the hold answered busy=false, the nightly and a dispatch only when something changed since the last tag"},
+		{"the major hold", majorIf, "steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false')",
+			"the major hold judges exactly the runs release-it would run — the same condition, so a skipped hold can never gate a release-it that runs"},
+		{"release-it", releaseIf, "steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false') && steps.major.outputs.verdict == 'release'",
+			"a merged pull request releases only once the hold answered busy=false, the nightly and a dispatch only when something changed since the last tag, and no run cuts unless the major hold answered release"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s runs under `if: %s`, want `if: %s` — %s. If the change is deliberate, update this test with it", c.step, c.got, c.want, c.why)

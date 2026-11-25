@@ -35,11 +35,12 @@ type EntryWithSchema struct {
 	SchemaError string        `json:"schema_error,omitempty"`
 
 	// InvocationWarnings flags manifest invocations whose args_var or
-	// connector vars name a var the bot's workflow doesn't declare, or whose
-	// mode no effect honours — soft authoring mistakes the studio surfaces,
-	// never a hard error. Empty when the schema couldn't
-	// be parsed (vars unknown) so a parse failure isn't reported as a
-	// missing-var warning.
+	// connector vars name a var the bot's workflow doesn't declare, whose
+	// mode no effect honours, or whose forge key an earlier invocation
+	// already derives (the later one is ignored) — soft authoring mistakes
+	// the studio surfaces, never a hard error. Empty when the schema
+	// couldn't be parsed (vars unknown) so a parse failure isn't reported as
+	// a missing-var warning.
 	InvocationWarnings []string `json:"invocation_warnings,omitempty"`
 }
 
@@ -258,9 +259,11 @@ func ListWithSchemaDiagnostics(opts ListOptions) ([]EntryWithSchema, []Discovery
 // invocationVarWarnings flags each invocation whose ArgsVar or connector
 // vars name a var the bot's workflow does not declare — a manifest authoring
 // mistake that would silently drop the trigger payload — or whose mode no
-// effect honours (every path refuses it). Soft: surfaced to the studio, never
-// fails the list. Only called when the schema parsed cleanly, so a nil vars
-// block here means the bot genuinely declares no vars.
+// effect honours (every path refuses it), then each kind=forge invocation
+// that repeats an earlier one's key: the manifest loads, the later one
+// derives nothing, and this is the surface that says so. Soft: surfaced to
+// the studio, never fails the list. Only called when the schema parsed
+// cleanly, so a nil vars block here means the bot genuinely declares no vars.
 func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 	if len(e.Invocations) == 0 {
 		return nil
@@ -283,7 +286,7 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 			warns = append(warns, d.Message)
 		}
 	}
-	return warns
+	return append(warns, bundle.ForgeDuplicateKeyWarnings(e.Invocations)...)
 }
 
 // LoadSchema parses the bot's main file, compiles to AST, and returns

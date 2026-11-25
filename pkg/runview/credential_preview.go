@@ -171,6 +171,31 @@ type CredentialPreviewer interface {
 
 var ErrCredentialPreviewUnavailable = errors.New("credential preview is unavailable")
 
+// PlatformTierJudge is the publisher's answer to whether a trusted launch of
+// a team consults the platform credential tier, judged by the walk's own
+// gate (team posture and platform credential audience). The cloud model
+// catalog reads it before counting the platform's credentials as the team's.
+type PlatformTierJudge interface {
+	PlatformTierConsulted(ctx context.Context, teamID string) (bool, error)
+}
+
+// ErrPlatformTierUnjudged is returned when the service's launch publisher
+// does not judge the platform credential tier (no publisher, or one that
+// seals no credential), so nobody can say whether a team's launch would
+// consult it.
+var ErrPlatformTierUnjudged = errors.New("no launch publisher judges the platform credential tier")
+
+// PlatformTierConsulted asks the launch publisher whether a trusted launch
+// of teamID consults the platform credential tier. It returns
+// ErrPlatformTierUnjudged when the publisher does not answer the question.
+func (s *Service) PlatformTierConsulted(ctx context.Context, teamID string) (bool, error) {
+	j, ok := s.publisher.(PlatformTierJudge)
+	if !ok {
+		return false, ErrPlatformTierUnjudged
+	}
+	return j.PlatformTierConsulted(ctx, teamID)
+}
+
 // ErrFundingUnjudgeable marks a funding verdict nobody can reach because the
 // program the launch or the resume would run cannot be built: a bot gone
 // from its catalog, a source that no longer compiles, an input or an

@@ -101,6 +101,17 @@ func TestRelayClient(t *testing.T) {
 		os.Exit(97)
 	}
 }
+
+// relayStartBound is the startup bound of a fixture whose verdict needs the
+// client to start: the host helper and the client are two launches of this test
+// binary, race-instrumented in CI, on a possibly loaded runner. Only a case
+// whose subject is the startup timeout itself keeps a short bound.
+const relayStartBound = 5 * time.Second
+
+// relayFixtureWait bounds a wait that spans the whole fixture: both launches,
+// then the behaviour under test.
+const relayFixtureWait = 2 * relayStartBound
+
 func fixtureCommand(t *testing.T, mode, pid string, start time.Duration) *exec.Cmd {
 	t.Helper()
 	self, e := os.Executable()
@@ -117,7 +128,7 @@ func TestRelayExitAndOpenSDKStdin(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"exit", "early"} {
 		t.Run(mode, func(t *testing.T) {
-			cmd := fixtureCommand(t, mode, "", time.Second)
+			cmd := fixtureCommand(t, mode, "", relayStartBound)
 			in, e := cmd.StdinPipe()
 			if e != nil {
 				t.Fatal(e)
@@ -133,7 +144,7 @@ func TestRelayExitAndOpenSDKStdin(t *testing.T) {
 			go func() { done <- cmd.Wait() }()
 			select {
 			case e = <-done:
-			case <-time.After(3 * time.Second):
+			case <-time.After(relayFixtureWait):
 				_ = cmd.Process.Kill()
 				t.Fatal("host waited for SDK stdin EOF")
 			}
@@ -175,7 +186,7 @@ func (w *readinessAckWriter) String() string {
 }
 func TestRelayStartupTimeoutStopsAtReadiness(t *testing.T) {
 	t.Parallel()
-	cmd := fixtureCommand(t, "stream", "", 300*time.Millisecond)
+	cmd := fixtureCommand(t, "stream", "", relayStartBound)
 	in, e := cmd.StdinPipe()
 	if e != nil {
 		t.Fatal(e)
@@ -192,12 +203,14 @@ func TestRelayStartupTimeoutStopsAtReadiness(t *testing.T) {
 	// The watchdog is a fixture prerequisite, not evidence about workload time.
 	select {
 	case <-out.ack:
-	case <-time.After(5 * time.Second):
+	case <-time.After(relayFixtureWait):
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		t.Fatalf("startup never reached ACK: %q", stderr.String())
 	}
-	time.Sleep(700 * time.Millisecond)
+	// The watchdog is armed no later than the ACK, or it finds readiness
+	// already reached: a sleep past the bound outlives its deadline.
+	time.Sleep(relayStartBound + 500*time.Millisecond)
 	if _, e = in.Write([]byte{0xff}); e != nil {
 		t.Fatalf("startup capped acknowledged workload: %v", e)
 	}
@@ -207,9 +220,9 @@ func TestRelayStartupTimeoutStopsAtReadiness(t *testing.T) {
 }
 func TestRelayRejectsMissingReadinessAndSilentClient(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"old-help", "silent"} {
+	for mode, start := range map[string]time.Duration{"old-help": relayStartBound, "silent": 300 * time.Millisecond} {
 		t.Run(mode, func(t *testing.T) {
-			cmd := fixtureCommand(t, mode, "", 300*time.Millisecond)
+			cmd := fixtureCommand(t, mode, "", start)
 			var out, stderr bytes.Buffer
 			cmd.Stdout = &out
 			cmd.Stderr = &stderr
@@ -230,7 +243,7 @@ func TestRelayRejectsMissingReadinessAndSilentClient(t *testing.T) {
 }
 func waitPID(t *testing.T, path string) int {
 	t.Helper()
-	limit := time.After(3 * time.Second)
+	limit := time.After(relayFixtureWait)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -300,7 +313,7 @@ func TestRelayControlledCancelAndDirectParentDeath(t *testing.T) {
 	for _, hard := range []bool{false, true} {
 		t.Run(strconv.FormatBool(hard), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "pid")
-			cmd := fixtureCommand(t, "sleep", path, time.Second)
+			cmd := fixtureCommand(t, "sleep", path, relayStartBound)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			if e := cmd.Start(); e != nil {

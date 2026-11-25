@@ -1,0 +1,35 @@
+{
+  "data": [
+    {
+      "model_name": "Scaleway/GLM-5.3",
+      "litellm_params": {"model": "openai/glm-5.3", "api_base": "https://gateway.example/v1"},
+      "model_info": {
+        "id": "deployment-1",
+        "key": "scaleway/glm-5.3",
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "max_tokens": 32768,
+        "max_input_tokens": 262144,
+        "max_output_tokens": 32768,
+        "input_cost_per_token": 6.1e-7,
+        "output_cost_per_token": 1.8e-6,
+        "cache_creation_input_token_cost": 1.5e-7,
+        "cache_read_input_token_cost": 1.2e-7,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": false,
+        "supports_vision": false,
+        "supports_prompt_caching": true,
+        "supported_openai_params": ["max_tokens", "temperature", "tools"]
+      }
+    },
+    {"model_name": "legacy", "model_info": {"max_tokens": 131072}},
+    {"model_name": "legacy-null", "model_info": {"max_tokens": 131072, "max_input_tokens": null, "max_output_tokens": null}},
+    {"model_name": "output-only", "model_info": {"max_tokens": 32768, "max_output_tokens": 32768}},
+    {"model_name": "output-zero", "model_info": {"max_tokens": 32768, "max_output_tokens": 0}},
+    {"model_name": "input-zero", "model_info": {"max_tokens": 32768, "max_input_tokens": 0}},
+    {"model_name": "input-only", "model_info": {"max_tokens": 262144, "max_input_tokens": 262144}},
+    {"model_name": "null-prices", "model_info": {"max_tokens": 65536, "input_cost_per_token": null, "output_cost_per_token": null, "cache_read_input_token_cost": null}},
+    {"model_name": "no-limits", "model_info": {}},
+    {"model_name": "no-info"}
+  ]
+}

@@ -18,30 +18,81 @@ import (
 //   - User tool_result blocks → separate role "tool" messages (one per
 //     result), so the model sees them as conversation history.
 //   - Assistant tool_use blocks → tool_calls array on the assistant message.
+//   - User image blocks → `image_url` parts (a base64 source as a data URL),
+//     the user message's content becoming a parts array.
+//   - Images inside a tool_result → the tool message keeps the text and
+//     announces the images, which travel in the user message that follows
+//     the run of tool messages.
+//   - A user message right after a tool message is preceded by a bridging
+//     assistant message (see toolResultsBridge).
 //
 // When system is non-empty it is emitted as the first message; passing ""
-// is the supported way to skip it.
-func ConvertMessages(system string, messages []api.Message) []Message {
+// is the supported way to skip it. An image block with neither base64 data
+// nor a URL is refused (*api.RequestValidationError): dropping it would send
+// the model a turn without the image it was handed.
+func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 	var result []Message
 
 	if system != "" {
 		result = append(result, Message{Role: "system", Content: StrPtr(system)})
 	}
 
-	for _, msg := range messages {
+	// toolImages holds the captioned images of the tool results emitted since
+	// the last user or assistant message. They wait for the end of the run of
+	// tool messages — which may span several input messages, and which a user
+	// message in between would break — then ride in the next user message,
+	// merged with its text, or alone before the next assistant turn or at the
+	// end of the conversation.
+	var toolImages []ContentPart
+	emitUser := func(parts []ContentPart) {
+		parts = append(toolImages, parts...)
+		toolImages = nil
+		if len(parts) == 0 {
+			return
+		}
+		if n := len(result); n > 0 && result[n-1].Role == "tool" {
+			result = append(result, Message{Role: "assistant", Content: StrPtr(toolResultsBridge)})
+		}
+		texts := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p.Type != "text" {
+				result = append(result, Message{Role: "user", Parts: parts})
+				return
+			}
+			texts = append(texts, p.Text)
+		}
+		result = append(result, Message{Role: "user", Content: StrPtr(strings.Join(texts, "\n"))})
+	}
+
+	for i, msg := range messages {
 		switch msg.Role {
 		case "user":
-			// Split text content from tool results; tool results become
-			// role "tool".
-			var texts []string
+			// Tool results become role "tool" messages; text and images
+			// go to the user message that follows them.
+			var parts []ContentPart
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "text":
 					if block.Text != "" {
-						texts = append(texts, block.Text)
+						parts = append(parts, ContentPart{Type: "text", Text: block.Text})
 					}
+				case "image":
+					part, err := ImagePart(block)
+					if err != nil {
+						return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: err.Error()}
+					}
+					parts = append(parts, part)
 				case "tool_result":
 					content := httputil.ExtractText(block.Content)
+					images, err := toolResultImages(block)
+					if err != nil {
+						return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: fmt.Sprintf("tool result %s: %v", block.ToolUseID, err)}
+					}
+					if len(images) > 0 {
+						content = strings.TrimSpace(content + "\n" + fmt.Sprintf(ToolImageNotice, len(images)))
+						toolImages = append(toolImages, ContentPart{Type: "text", Text: fmt.Sprintf(ToolImageCaption, block.ToolUseID)})
+						toolImages = append(toolImages, images...)
+					}
 					result = append(result, Message{
 						Role:       "tool",
 						Content:    StrPtr(content),
@@ -49,14 +100,12 @@ func ConvertMessages(system string, messages []api.Message) []Message {
 					})
 				}
 			}
-			if len(texts) > 0 {
-				result = append(result, Message{
-					Role:    "user",
-					Content: StrPtr(strings.Join(texts, "\n")),
-				})
+			if len(parts) > 0 {
+				emitUser(parts)
 			}
 
 		case "assistant":
+			emitUser(nil)
 			var texts []string
 			var toolCalls []ToolCall
 			for _, block := range msg.Content {
@@ -88,8 +137,65 @@ func ConvertMessages(system string, messages []api.Message) []Message {
 			})
 		}
 	}
+	emitUser(nil)
 
-	return result
+	return result, nil
+}
+
+// The wording that carries tool results across the chat protocol. A tool
+// message's content is text only, so a tool's images ride in the user
+// message that follows; and the chat templates of the Mistral family refuse
+// a user message right after a tool message ("Unexpected role 'user' after
+// role 'tool'"), text-only or not, so an assistant message bridges the two.
+// tool → assistant → user is the one sequence every model measured on a vLLM
+// gateway accepted (pixtral, mistral-small/-medium, gemma, qwen, deepseek).
+// ToolImageNotice and ToolImageCaption are shared with the Responses API
+// converter, whose function_call_output is text only as well.
+const (
+	ToolImageNotice   = "[%d image(s) returned by this tool are attached in the next user message]"
+	ToolImageCaption  = "Image(s) returned by tool call %s:"
+	toolResultsBridge = "Tool results received."
+)
+
+// toolResultImages returns the image parts of a tool_result's content.
+func toolResultImages(block api.ContentBlock) ([]ContentPart, error) {
+	var parts []ContentPart
+	for _, c := range block.Content {
+		if c.Type != "image" {
+			continue
+		}
+		part, err := ImagePart(c)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
+	}
+	return parts, nil
+}
+
+// ImagePart maps an image content block to an `image_url` part.
+func ImagePart(block api.ContentBlock) (ContentPart, error) {
+	url, err := ImageURLOf(block)
+	if err != nil {
+		return ContentPart{}, err
+	}
+	return ContentPart{Type: "image_url", ImageURL: &ImageURL{URL: url}}, nil
+}
+
+// ImageURLOf returns the URL an OpenAI-protocol request carries for an image
+// block: the source URL, or a data URL built from the base64 source.
+func ImageURLOf(block api.ContentBlock) (string, error) {
+	src := block.Source
+	switch {
+	case src == nil:
+		return "", fmt.Errorf("image block has no source")
+	case src.Type == "url" && src.URL != "":
+		return src.URL, nil
+	case src.Type == "base64" && src.Data != "" && src.MediaType != "":
+		return "data:" + src.MediaType + ";base64," + src.Data, nil
+	default:
+		return "", fmt.Errorf("image block source %q carries neither a URL nor base64 data with a media type", src.Type)
+	}
 }
 
 // ConvertTools maps our Tool definitions to OpenAI function-calling format.

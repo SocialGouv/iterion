@@ -556,4 +556,29 @@ const (
 	// the reason C348 states: the workflow's defer is a default every node
 	// that turns codemode on itself inherits.
 	DiagCodemodeDeferWithModeOff DiagCode = "C355" // codemode defer: on declared beside `mode: off` on a node — no program runs, so the deferral is inert (warning)
+
+	// A subagents bound that cannot arm the reserve it names: an unsized
+	// reserve (no subagents_tokens) or a per-agent hold wider than the
+	// reserve it draws against. An ERROR rather than a warning — every
+	// admission would refuse, so the declaration can only describe a run
+	// that never happens; leaving it silent would read the block as armed
+	// where the door reads it as withheld.
+	DiagCodemodeSubagentsUnsized DiagCode = "C356" // codemode subagents bound arms nothing: no subagents_tokens, or a per-agent hold above the reserve (error)
+
+	// The reserve's own C348: subagents bounds declared beside `mode: off`
+	// on a node. As written no program runs and the reserve arms nothing; a
+	// launch override that turns codemode on makes it live, the same reach
+	// C348 has for the bounds and C355 for the defer. Workflow rung exempt —
+	// the workflow's reserve is a default every node that turns codemode on
+	// itself inherits.
+	DiagCodemodeSubagentsWithModeOff DiagCode = "C357" // codemode subagents reserve declared beside `mode: off` on a node — no program runs, so the reserve arms nothing (warning)
+
+	// A node whose authored codemode resolves on, under a permission gate
+	// (deny or ask) that does not allow the `codemode` tool itself: the gate
+	// judges the program's vehicle like any tool, so under deny every program
+	// is refused and under ask every program pauses the run. The nested calls
+	// are judged one by one anyway; listing "codemode" in `allow` is the
+	// author's explicit opt-in (#3647). A warning: a launch rung can still
+	// change codemode, and a grant can still change the gate.
+	DiagCodemodeRefusedByPermissionGate DiagCode = "C358" // codemode on under a deny/ask permission gate that does not allow the `codemode` tool — every program is refused (deny) or pauses the run (ask) (warning)
 )

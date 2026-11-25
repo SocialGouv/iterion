@@ -61,12 +61,14 @@ func (TrackerSink) Notify(_ context.Context, a Alert) {
 		// unwired relaunch, exhausted claim) stops the run's automation
 		// outright — error, same weight as the failure it stems from.
 		errtrack.CaptureMessage(sentry.LevelError, msg, fields)
-	case KindStall, KindBudgetWarning, KindRunParked, KindRouteEscalated:
+	case KindStall, KindBudgetWarning, KindRunParked, KindRouteEscalated, KindScheduleStalled:
 		// Parked is a real incident for the operator (a run waiting out a
 		// window or a resume) — a breadcrumb alone is never sent to the
 		// tracker, and the webhook must not be the only channel. An
 		// escalated route decision is the same shape: a run waiting on a
-		// human, which is exactly what must not stay silent.
+		// human, which is exactly what must not stay silent. A stalled
+		// schedule is the same: a bot that stopped delivering, which only
+		// an operator told about it notices.
 		errtrack.CaptureMessage(sentry.LevelWarning, msg, fields)
 	default:
 		// A recovery (stall_recovered) closes an episode; it is context

@@ -53,7 +53,7 @@ func deferredToolDefs() []delegate.ToolDef {
 // stripped, which is what ParentLoop.Tools and the witnesses below read.
 func wireTools(defs []delegate.ToolDef) []GenerationTool {
 	opts := GenerationOptions{Tools: toolDefsToGeneration(defs)}
-	if err := installCodemode(&opts, true, nil, nil, nil); err != nil {
+	if err := installCodemode(&opts, true, nil, nil, nil, nil); err != nil {
 		panic(err)
 	}
 	return opts.Tools[:len(opts.Tools)-1]
@@ -186,7 +186,7 @@ func TestAProgramDiscoversADeferredToolThroughTheDoor(t *testing.T) {
 		}
 	}
 	opts := GenerationOptions{Tools: tools}
-	if err := installCodemodeOn(&opts, childHost(), false, &scripthost.Limits{Memory: 1 << 30}); err != nil {
+	if err := installCodemodeOn(&opts, childHost(), false, &scripthost.Limits{Memory: 1 << 30}, nil); err != nil {
 		t.Fatalf("installCodemodeOn: %v", err)
 	}
 	cm := opts.Tools[len(opts.Tools)-1]
@@ -382,7 +382,7 @@ func demotedDiscoveryTools() []GenerationTool {
 func installedDescription(t *testing.T, tools []GenerationTool) string {
 	t.Helper()
 	opts := GenerationOptions{Tools: append([]GenerationTool(nil), tools...)}
-	if err := installCodemode(&opts, false, nil, nil, nil); err != nil {
+	if err := installCodemode(&opts, false, nil, nil, nil, nil); err != nil {
 		t.Fatalf("installCodemode: %v", err)
 	}
 	return opts.Tools[len(opts.Tools)-1].Description

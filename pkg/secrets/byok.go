@@ -156,6 +156,14 @@ const (
 // registry agree without re-deriving the URL.
 const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 
+// ZAIDefaultModel is the GLM id iterion routes z.ai to by default: the model
+// detect suggests for a z.ai credential and the id every GLM route of the
+// shipped catalogue names. The catalogue spells it literally (a `.bot` reads
+// no Go constant); bots/catalog_zai_default_model_test.go holds every z.ai
+// route of the catalogue to this value, so moving to a newer GLM is this line
+// plus the routes that test names.
+const ZAIDefaultModel = "glm-5.4"
+
 // ZAIChinaBaseURL is the mainland endpoint of the z.ai family's
 // Anthropic-compatible surface — Zhipu's open.bigmodel.cn, the GLM Coding
 // Plan's own path. The tree already classifies the host into the z.ai

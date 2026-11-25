@@ -137,6 +137,78 @@ func ResolveCodemodeStoreLimits(run, workflow *CodemodeBounds) (entries, bytes i
 	return min(entries, ceiling.StoreEntries), min(bytes, ceiling.StoreBytes)
 }
 
+// CodemodeSubagents is the node-level sub-agent reserve, in the shape the
+// task envelope carries (scripthost, which the delegate wire already imports;
+// the alias keeps the IR's reading of it in one place, the way
+// CodemodeBounds does).
+type CodemodeSubagents = scripthost.SubagentReserve
+
+// ResolveCodemodeSubagents decides the node's sub-agent reserve, field by
+// field over the same three rungs ResolveCodemodeBounds walks. There is
+// deliberately no run rung filled today — no launch surface carries the
+// value — but the rung exists because a launch override is the same
+// configuration kind, and the resolver is the shape a second bound beside
+// the bounds must take. Declaring `subagents_tokens` at ANY rung arms the
+// reserve for the node.
+func ResolveCodemodeSubagents(run, node, workflow *CodemodeSubagents) *CodemodeSubagents {
+	if run == nil && node == nil && workflow == nil {
+		return nil
+	}
+	pick := func(r, n, w int64) int64 {
+		if r > 0 {
+			return r
+		}
+		if n > 0 {
+			return n
+		}
+		return w
+	}
+	var r, n, w CodemodeSubagents
+	if run != nil {
+		r = *run
+	}
+	if node != nil {
+		n = *node
+	}
+	if workflow != nil {
+		w = *workflow
+	}
+	out := CodemodeSubagents{
+		Tokens:         pick(r.Tokens, n.Tokens, w.Tokens),
+		TokensPerAgent: pick(r.TokensPerAgent, n.TokensPerAgent, w.TokensPerAgent),
+		Concurrent:     pick(r.Concurrent, n.Concurrent, w.Concurrent),
+		StepsPerAgent:  pick(r.StepsPerAgent, n.StepsPerAgent, w.StepsPerAgent),
+	}
+	if out.Tokens <= 0 {
+		// No rung sized the reserve: nothing is armed, and the per-field
+		// defaults picked above bound nothing.
+		return nil
+	}
+	return &out
+}
+
+// CodemodeSubagentsAboveCeiling names every field of the reserve above the
+// platform ceiling, as "<property> <declared> > <ceiling>" phrases, the twin
+// of CodemodeBoundsAboveCeiling for the reserve: the compile-time half of a
+// bound the platform clamps anyway, warned rather than refused.
+func CodemodeSubagentsAboveCeiling(b *CodemodeSubagents) []string {
+	if b == nil {
+		return nil
+	}
+	ceil := scripthost.SubagentCeiling()
+	var over []string
+	num := func(name string, v, c int64) {
+		if v > c {
+			over = append(over, fmt.Sprintf("%s %d > %d", name, v, c))
+		}
+	}
+	num("subagents_tokens", b.Tokens, ceil.Tokens)
+	num("subagents_tokens_per_agent", b.TokensPerAgent, ceil.TokensPerAgent)
+	num("subagents_concurrent", b.Concurrent, ceil.Concurrent)
+	num("subagents_steps_per_agent", b.StepsPerAgent, ceil.StepsPerAgent)
+	return over
+}
+
 // ReplayCodemodeBounds keeps existing replacement semantics when a restatement
 // includes a per-program bound. Restating only bank quotas leaves per-program
 // bounds untouched, and each omitted quota keeps its previous value. The

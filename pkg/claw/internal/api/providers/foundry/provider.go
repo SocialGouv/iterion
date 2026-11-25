@@ -221,9 +221,13 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	messages, err := openaiwire.ConvertMessages(req.System, req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("foundry: %w", err)
+	}
 
 	r := oaiRequest{
-		Messages:         openaiwire.ConvertMessages(req.System, req.Messages),
+		Messages:         messages,
 		Tools:            tools,
 		ResponseFormat:   format,
 		Stream:           true,
@@ -276,13 +280,8 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 		defer resp.Body.Close()
 		errBody, _ := io.ReadAll(resp.Body)
 		bodyStr := string(errBody)
-		return nil, &api.APIError{
-			Provider:   "foundry",
-			StatusCode: resp.StatusCode,
-			Message:    extractFoundryErrorMessage(bodyStr),
-			Body:       httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog),
-			Retryable:  api.IsRetryableStatus(resp.StatusCode),
-		}
+		return nil, api.NewHTTPError("foundry", resp.StatusCode, extractFoundryErrorMessage(bodyStr),
+			httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog))
 	}
 
 	ch := make(chan api.StreamEvent, 64)

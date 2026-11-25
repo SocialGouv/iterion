@@ -7,30 +7,25 @@ name: 🧪 Tests
 # worse, doubled the exposure to a timing-sensitive test: one run green, the
 # other red on the same commit is enough to redden the PR and disarm auto-merge.
 #
-# `merge_group` is load-bearing: test/race/vendor-check/mongo-conformance/
-# golangci/brand are REQUIRED checks, and the queue branch
+# `merge_group` is load-bearing: test/vendor-check/golangci/brand are
+# REQUIRED checks, and the queue branch
 # (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
 # queue build with no checks waits for a context that never arrives and
 # dequeues the PR after the 60-minute timeout.
-# A release commit does not cancel the merge it followed (#3161). The
-# concurrency group below is keyed by ref, which on `main` is the SAME ref for
-# every commit — so each push kills the run before it. A merge is immediately
-# followed by the release bot's `chore: release`, landing with no PR, so that
-# release cancelled the witness of the merge that triggered it, every time.
-# Measured over the last 100 `main` pushes: 51 runs cancelled, of which 26 were
-# cancelled by a release push and 25 by an ordinary merge. So this removes HALF
-# the cancellations and no more — the other half is merge-on-merge, whose fix is
-# the concurrency key itself (`cancel-in-progress: ${{ github.event_name !=
-# 'push' }}`, or a group keyed by sha on push), which costs runner time on a
-# pool that is already the bottleneck and is therefore a separate decision.
-# Worth doing anyway because of WHERE the release lands: release-cancelled runs
-# died at a median of ~3 minutes, the youngest and cheapest-to-finish of all of
-# them. In the worst drought of the window — 14 consecutive pushes, 2.1 h, zero
-# verdict — this alone would have produced about four verdicts instead of none.
+# A release commit does not cancel the merge it followed (#3161). A
+# concurrency group keyed by ref is the SAME group for every commit on `main`,
+# so each push kills the run before it. A merge is immediately followed by the
+# release bot's `chore: release`, landing with no PR, so that release cancelled
+# the witness of the merge that triggered it. Measured over 100 `main` pushes
+# under a ref-keyed group: 51 runs cancelled, 26 by a release push and 25 by an
+# ordinary merge. The concurrency group below keys a push by its sha, so no
+# push to `main` cancels another — release or merge — at the runner cost of one
+# heavy run per merge (ADR-173 makes the push run each merge's only heavy
+# witness before the nightly).
 #
-# `paths-ignore` is the surgical half of the fix: no run is CREATED for a
-# release commit, so it joins no concurrency group and cancels nothing. It is
-# scoped to `push` alone — a pull request or a queue build touching these files
+# `paths-ignore` keeps a release from costing a heavy run: no run is CREATED
+# for a release commit. It is scoped to `push` alone — a pull request or a
+# queue build touching these files
 # still runs the full suite, and the nine other workflows that fire on push
 # (images, release, docs) are untouched, which `[skip ci]` in the release
 # message could not have said.
@@ -45,12 +40,11 @@ name: 🧪 Tests
 # too. Exactly two releases ever carried a fifth path, both from
 # `cmd/release-floors --apply` realigning syntax-floor pins.
 #
-# A release touching anything outside the list simply creates its run as it
-# does today: the failure mode of this filter is "no improvement", never a new
-# defect. What WOULD break it silently is renaming one of these paths, so
+# A release touching anything outside the list simply creates its own run: the
+# failure mode of this filter is one extra run, never a new defect. What WOULD break it silently is renaming one of these paths, so
 # internal/ciguard pins them against the tree — and pins the one direction that
 # breaks a MERGE rather than a convenience: a path filter must never reach
-# `pull_request:` or `merge_group:`, which produce six required checks.
+# `pull_request:` or `merge_group:`, which produce the required checks.
 #
 # The residual, measured at push level because that is what GitHub filters: of
 # the last 55 pushes to `main`, 17 would be skipped and all 17 are
@@ -71,28 +65,63 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
+  # The nightly full suite (ADR-173): the heavy layer the merge queue no
+  # longer runs, on `main` once a day even when no push gave it a witness.
+  # 01:47 UTC — off the :00/:30 marks where every scheduled workflow in the
+  # fleet lands, and away from test-quarantine's 03:17.
+  schedule:
+    - cron: "47 1 * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
+# Keyed by event as well as ref: the nightly and a dispatch run on `main`'s
+# ref, and sharing push's group would let a merge cancel the nightly — or the
+# nightly cancel a merge's witness. A push is keyed by its commit instead of
+# its ref: under ADR-173 the push run is the only heavy witness a merge gets
+# before the nightly, so a merge landing on top of another must not cancel it.
+# That costs one heavy run per merge on the runner pool; cancel-in-progress
+# then only cancels a re-run of the same sha. Every other event keeps its ref
+# key, so a newer commit of a pull request still cancels the older run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
+# EXPERIMENTAL DELIVERY MODE (docs/adr/173-experimental-delivery-mode.md,
+# #3691): while the project is experimental the merge queue gates on the
+# LIGHT layer — unit, studio, native exec, lint, vendor, brand, fmt and Revi —
+# and the HEAVY layer (`race-shard`, `test-e2e`, `mongo-conformance`,
+# `cloud-e2e`) runs after the merge instead: on every push to `main` (the
+# witness of each merge), on the nightly schedule above, on a dispatch and on a
+# pull request labelled `ci:full`. ONE literal decides it, the heavy jobs' own
+# condition:
+#
+#   ((github.event_name != 'pull_request' && github.event_name != 'merge_group')
+#     || contains(github.event.pull_request.labels.*.name, 'ci:full'))
+#
+# true on push, schedule and dispatch — any event that is neither a pull
+# request nor a queue build, so a trigger added later runs the full suite by
+# default — and on a labelled pull request; false in `merge_group` and on an
+# unlabelled pull request, the LIGHT runs.
+#
 # Jobs pick one of THREE sides of the merge queue, and internal/ciguard holds
 # each side to its contract:
 #
-#   1. REQUIRED — the names ruleset 18857412 requires: test, race,
-#      vendor-check, mongo-conformance, golangci, brand, revi/review, plus the
-#      STAGED `fmt-check` (in the queue from day one, so its context exists
-#      the day the ruleset names it). `test` and `race` are AGGREGATORS: they
-#      run no tests, they `needs:` their legs and re-verify every leg's
-#      conclusion, so the required NAME survives while the work scales
-#      sideways. The ruleset lives outside this repo and keeps its names — a
-#      PR that renamed a required job could never pass its own queue build
-#      (the check would never report and the entry would hang 60 minutes).
-#   2. GATED LEGS — `test-unit`, `test-e2e`, `studio`, `race-shard`: the real
-#      work. They run in the queue and are deliberately NOT required — their
+#   1. REQUIRED — the names ruleset 18857412 requires: test, vendor-check,
+#      golangci, brand, revi/review, plus the STAGED `fmt-check` (in the
+#      queue from day one, so its context exists the day the ruleset names
+#      it). `test` is an AGGREGATOR: it runs no tests, it `needs:` its legs
+#      and re-verifies every leg's conclusion, so the required NAME survives
+#      while the work scales sideways. The ruleset lives outside this repo and
+#      keeps its names — a PR that renamed a required job could never pass its
+#      own queue build (the check would never report and the entry would hang
+#      60 minutes). `race` and `mongo-conformance` left the ruleset with this
+#      mode and return to it when the mode ends (ADR-173's exit criteria):
+#      `race` stays an aggregator of the same shape, so its context keeps
+#      reporting, and `mongo-conformance` runs with the heavy layer.
+#   2. GATED LEGS — `test-unit`, `test-e2e`, `studio`, `test-native-exec`,
+#      `race-shard`: the real work. They are deliberately NOT required — their
 #      aggregator speaks for them. The only `if:` a leg carries is the tap
 #      skip below, byte for byte, which its aggregator carries too: a leg
 #      that grew any other `if:` would skip silently in the queue while its
@@ -100,11 +129,22 @@ concurrency:
 #      guarantee would die without any queue signal — which is why ciguard
 #      refuses any other `if:` on a leg outright, and refuses a leg without
 #      the skip (it would spend the heavy minutes the skip exists to save).
-#   3. ADVISORY — the eight jobs that cannot block a merge. Running one
-#      inside the queue buys a verdict nobody can act on while holding a
-#      runner slot the queue needs, so they run on the pull request and on
-#      main and skip in `merge_group`.
-#
+#      The HEAVY legs, `race-shard` and `test-e2e`, carry one more clause,
+#      also byte for byte: the heavy literal above, so a LIGHT run skips them
+#      (#3683 for the pull request, #3691 for the queue). Their aggregators
+#      read LIGHT_RUN, the negation of that same literal evaluated by GitHub,
+#      and forgive a heavy leg's `skipped` only when it is `true`: on `push`,
+#      `schedule`, a dispatch and a `ci:full` pull request it is `false`, and
+#      a skipped heavy leg is red like a failed one. ciguard runs each
+#      aggregator under both. To run the heavy legs on a pull request, add
+#      the `ci:full` label and push (a label alone starts no run: `labeled`
+#      is not among the triggers).
+#   3. ADVISORY — the jobs that cannot block a merge. Running one inside the
+#      queue buys a verdict nobody can act on while holding a runner slot the
+#      queue needs, so they run on the pull request and on main and skip in
+#      `merge_group`. `cloud-e2e` and `mongo-conformance`, heavy, carry the
+#      heavy literal alone: it skips the queue and a light pull request both.
+
 # The trap the aggregator design answers, twice over: a job skipped by a
 # job-level `if:` reports SUCCESS, so a required check that never ran
 # satisfies the gate — every queue entry would merge green on a check that
@@ -131,9 +171,10 @@ concurrency:
 # (internal/ciguard's tap tests rewrite them); running them would spend ~57
 # minutes of compute on each pass, on the pull request and again in the queue
 # (measured on #2314). So the gated legs (`test-unit`, `test-e2e`, `studio`,
-# `race-shard`), the aggregators `test` and `race` that speak for them,
-# `mongo-conformance`, `golangci`, `vendor-check` and `fmt-check` skip it. A
-# title is only a claim, and a
+# `test-native-exec`, `race-shard`), the aggregators `test` and `race` that
+# speak for them, `golangci`, `vendor-check` and `fmt-check` skip it.
+# (`mongo-conformance` carries the heavy literal alone: no light run reaches
+# it.) A title is only a claim, and a
 # skipped job reports SUCCESS: `brand` — required, never skipped, and a
 # reader of both tap files — receives the same predicate, evaluated, and
 # scripts/ci/tap-entry-check.sh fails the pull request or the queue entry
@@ -187,7 +228,12 @@ concurrency:
 #
 # Two jobs carry a GitHub-hosted label whatever the ref: desktop-vet-linux
 # (the platform-specific build) and docs-links (advisory and outside the queue).
-# Every REQUIRED job routes through the expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
+# Every REQUIRED job routes through the expression below. One gated leg,
+# test-native-exec, ends it on `vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest'`
+# instead of the scale set: its Bubblewrap mount needs a namespace-capable VM,
+# which ARC pods are not; its other clauses are this expression's, byte for
+# byte (internal/ciguard's native_exec_runner_test.go).
+# Measured 2026-09-08, on the six jobs routed self-hosted at
 # the time: all six passed there, nine runner pods starting at once with no
 # queueing.
 #
@@ -218,7 +264,8 @@ jobs:
     # SHARDED three ways, like race-shard (#3402). Unsharded, the suite grew
     # to a 24.5-min `go test` step under a 30-min job ceiling: a slow runner
     # cut the next step and a suite whose every package passed read red in the
-    # merge queue. Every package still runs: `./...` minus e2e, partitioned by
+    # merge queue. Every package still runs: `./...` minus e2e and
+    # pkg/sandbox/kubernetes (each proved by its own leg), partitioned by
     # scripts/ci/testshards with the UNIT weights table, a pure function of the
     # commit, so the three legs of one entry pick complementary sets. LPT seats
     # the heaviest row (`bots`) on shard 0; the one-time steps — the freshness
@@ -227,10 +274,10 @@ jobs:
     # together, that shard still fits the ceiling.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    # Nested read-only mount witnesses need a namespace-capable runner.
-    # ARC pods refuse that mount; a qualified private runner may override
-    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
+    # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
+    # excluded from the partition and proved by test-native-exec instead.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
@@ -392,15 +439,6 @@ jobs:
             sh scripts/chart-check-deps.sh charts/iterion
           fi
 
-      - name: Native exec environment prerequisites
-        # The native transport tests execute the real pair on a read-only mount.
-        # Missing isolation is a failure, not permission to skip the witness.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap build-essential
-          bwrap --version
-          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
-
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
         # with its own budget; running it here too doubled the wall-clock AND
@@ -421,12 +459,15 @@ jobs:
         # The partition goes through an ASSIGNMENT, never inline `$( )`:
         # inline substitution loses the splitter's exit code, and an
         # empty-shard refusal would degrade into `go test` with no package.
+        # pkg/sandbox/kubernetes is test-native-exec's; the quarantined flakes
+        # (scripts/ci/test-quarantine.tsv) are skipped here and run nightly.
         shell: bash
         run: |
           set -euo pipefail
-          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes)$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
           echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          go test -mod=vendor -count=1 -timeout 1500s $pkgs
+          go test -mod=vendor -count=1 -timeout 1500s -skip "$quarantine" $pkgs
 
       - name: Live e2e compile check
         if: matrix.shard == 2
@@ -454,19 +495,34 @@ jobs:
     # frontend because `pkg/server/static/` is gitignored and embedded with
     # `//go:embed all:static` — the e2e server boots against nothing without
     # it, and artifact-sharing would serialize this job behind `studio`
-    # through the cache service ADR-105 measured at 1-3 MB/s. Runs in the
-    # merge queue behind the required `test` aggregator; carries the tap skip
-    # and nothing else.
-    # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    # through the cache service ADR-105 measured at 1-3 MB/s. Feeds the
+    # required `test` aggregator.
+    #
+    # UNDER -race (#3664): this is the package's only run, so the data-race
+    # detector proves it here, on the scale set, and race-shard leaves it out
+    # of its partition. The `test` aggregator speaks for it: a race this leg
+    # finds reddens `test`. -race needs cgo, which the scale set's image
+    # (ci/arc-runner) and ubuntu-latest both build with. The whole package
+    # ran under -race in 1468-1785 s (2026-11-23) on GitHub-hosted
+    # ubuntu-latest (race-shard, runs 45180564490 and 45186345093), not on
+    # ARC; the shards are hash-split and uneven (the heaviest holds about a
+    # third of the package). So each shard keeps race-shard's proven -race
+    # bounds, 2400 s per package and a 50-minute job, until ARC -race shard
+    # walls are measured.
+    # HEAVY (#3683, #3691): a light run — a merge-queue build or a pull
+    # request without `ci:full` — skips this leg; push to main, the nightly
+    # and a dispatch run it. `test` forgives that skip on a light run only.
+    # A Homebrew tap update skips it too: the header says why, and `brand`
+    # verifies it.
+    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 25
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
     env:
-      CGO_ENABLED: "0"
+      CGO_ENABLED: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -518,12 +574,19 @@ jobs:
         # Discovery includes Test, Example and Fuzz corpus names. Subtests
         # stay with their parent. All legs use one commit and Go's own
         # inventory; a discovery failure must stop before running any test.
+        # Discovery is the cold -race compile on an ARC pod with no Go cache:
+        # its bound is ten minutes, and the run below reuses the compile.
         # The per-shard hang bound and e2e/main_test.go's parallel cap stay.
+        # The quarantined flakes (scripts/ci/test-quarantine.tsv) are skipped
+        # here and run nightly.
         shell: bash
         run: |
           set -euo pipefail
-          pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 5m)
-          go test -mod=vendor -count=1 -v -run "$pattern" -timeout 900s ./e2e
+          # Discovery lists under -race, the build execution runs: a file
+          # tagged `//go:build race` exists only in that variant.
+          pattern=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 10m)
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          go test -race -mod=vendor -count=1 -v -run "$pattern" -skip "$quarantine" -timeout 2400s ./e2e
 
   studio:
     # The studio half: eslint + tsc -b + vitest, plus the two drift checks
@@ -596,11 +659,65 @@ jobs:
             exit 1
           fi
 
+  test-native-exec:
+    # The one package the scale set cannot prove: pkg/sandbox/kubernetes's
+    # native transport witnesses run the real host/guest pair under a
+    # Bubblewrap read-only mount, and ARC pods refuse that mount (#3189). So
+    # test-unit and race-shard leave the package out of their partitions and
+    # this small job proves ALL of it — plain, as test-unit would, then under
+    # -race, as race-shard would — on a namespace-capable VM
+    # (CI_NATIVE_EXEC_RUNNER may select a qualified private runner). Fork,
+    # dependency-bot and global-off guards still win. Both required
+    # aggregators `needs:` it: `test` for the plain run, `race` for the race
+    # run, so neither verdict loses the package (#3662).
+    # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
+
+      - name: Native exec tests
+        # test-unit's flags: -count=1, CGO_ENABLED=0, 1500 s per package.
+        shell: bash
+        run: |
+          set -euo pipefail
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          go test -mod=vendor -count=1 -timeout 1500s -skip "$quarantine" ./pkg/sandbox/kubernetes/
+
+      - name: Native exec tests under -race
+        # race-shard's flags: -race (cgo on), -count=1, 2400 s per package.
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" ./pkg/sandbox/kubernetes/
+
   # ---- required aggregator: the name the ruleset requires, no tests of its own ----
 
   test:
     # REQUIRED — the ruleset requires the NAME `test`, and this job is what
-    # reports it. It runs no tests: the three legs above do the work, and
+    # reports it. It runs no tests: the four legs above do the work, and
     # this job turns their conclusions into one required verdict.
     #
     # `!cancelled()` is load-bearing. With plain `needs:` and no `if:`,
@@ -614,7 +731,15 @@ jobs:
     # byte for byte. The step then re-verifies each leg's result rather than
     # trusting the needs-graph, so a red leg can only ever produce a red
     # required check.
-    needs: [test-unit, test-e2e, studio]
+    #
+    # ONE forgiven result (#3683, #3691): on a LIGHT run — a merge-queue
+    # build, or a pull request without the `ci:full` label — test-e2e skips by
+    # design and runs after the merge instead, so `skipped` from it is
+    # accepted there and nowhere else. LIGHT_RUN is the negation of the very
+    # expression the heavy leg runs on, evaluated by GitHub: `false` on push,
+    # schedule, dispatch and a `ci:full` pull request, where a skipped
+    # test-e2e is as red as a failed one.
+    needs: [test-unit, test-e2e, studio, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 5
@@ -622,15 +747,21 @@ jobs:
       TEST_UNIT_RESULT: ${{ needs.test-unit.result }}
       TEST_E2E_RESULT: ${{ needs.test-e2e.result }}
       STUDIO_RESULT: ${{ needs.studio.result }}
+      TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
+      LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every leg reported success
         shell: bash
         run: |
           set -euo pipefail
           fail=0
-          for pair in "test-unit:${TEST_UNIT_RESULT}" "test-e2e:${TEST_E2E_RESULT}" "studio:${STUDIO_RESULT}"; do
+          for pair in "test-unit:${TEST_UNIT_RESULT}" "test-e2e:${TEST_E2E_RESULT}" "studio:${STUDIO_RESULT}" "test-native-exec:${TEST_NATIVE_EXEC_RESULT}"; do
             leg="${pair%%:*}"
             result="${pair#*:}"
+            if [ "$leg" = "test-e2e" ] && [ "$result" = "skipped" ] && [ "$LIGHT_RUN" = "true" ]; then
+              echo "::notice::leg ${leg} skipped on a light run (merge queue, or a pull request without ci:full) — push to main and the nightly run it, so this green is not admin-mergeable; label the pull request ci:full and push to run it there."
+              continue
+            fi
             if [ "$result" != "success" ]; then
               echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."
               fail=1
@@ -650,29 +781,38 @@ jobs:
     # developer's machine.
     #
     # Sharding is purely mechanical and the guarantee is untouched: EVERY
-    # package still runs under -race, `./...` partitioned three ways by
-    # scripts/ci/testshards — a pure function of the commit, so the three
+    # package still runs under -race — `./...` minus e2e (under -race in
+    # test-e2e, #3664) and pkg/sandbox/kubernetes (under -race in
+    # test-native-exec, #3662) — partitioned three ways by
+    # scripts/ci/testshards, pkg/server by test name and every other package
+    # whole (#3684) — a pure function of the commit, so the three
     # legs of one merge-queue entry always pick complementary sets. The
     # partition goes through an ASSIGNMENT (`pkgs=$(...)`), never inline
     # `$( )`: inline substitution loses the splitter's exit code, and an
     # empty-shard refusal would degrade into `go test` with no package
     # arguments. The weights table carries measured -race package durations;
-    # `bots` is the heaviest row and one sequential test binary — LPT places
-    # it first, nothing beats its wall, and the remaining rows pack the three
-    # shards to near-equal weight; bots' co-packages run concurrently beside
-    # it and finish long before it.
+    # LPT packs the three shards to near-equal weight, and the three heaviest
+    # rows (bots, internal/fswatch, pkg/runtime) each lead one shard; a third
+    # of pkg/server's tests runs beside them on every shard. The leg's
+    # wall is the larger of its heaviest package (bots, one sequential test
+    # binary) and its shard's load spread over the runner's parallel test
+    # slots; LPT balances the second, only splitting bots lowers the first.
     #
     # -race REQUIRES cgo, so this leg overrides the repo-wide CGO_ENABLED=0;
     # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
     # `runs-on` stays at the JOB level, outside the matrix, where the
     # ciguard regex and the fork guard can read it (the desktop-vet-cross
     # lesson: a matrix over runs-on diverges from its id silently).
-    # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    # Nested read-only mount witnesses need a namespace-capable runner.
-    # ARC pods refuse that mount; a qualified private runner may override
-    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    # HEAVY (#3683, #3691): a light run — a merge-queue build or a pull
+    # request without `ci:full` — skips this leg; push to main, the nightly
+    # and a dispatch run it. `race` forgives that skip on a light run only.
+    # A Homebrew tap update skips it too: the header says why, and `brand`
+    # verifies it.
+    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
+    # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
+    # excluded from the partition and proved by test-native-exec instead.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 50
     env:
       CGO_ENABLED: "1"
@@ -731,37 +871,55 @@ jobs:
             sh scripts/chart-check-deps.sh charts/iterion
           fi
 
-      - name: Native exec environment prerequisites
-        # The native transport tests execute the real pair on a read-only mount.
-        # Missing isolation is a failure, not permission to skip the witness.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap build-essential
-          bwrap --version
-          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
-
       - name: Race tests (shard ${{ matrix.shard }} of 3)
-        # 1800s bounds a HANG, not a slow machine — the same bound the
-        # unsharded job carried; with the suite split three ways it now
-        # carries ~3x the headroom it had. The 40-minute leg budget caps the
-        # run. See the scripts/ci/testshards doc for why the assignment form
-        # is load-bearing.
+        # Each package gets 2400 s under -race, inside the job's 50-minute
+        # ceiling (#2789). See the scripts/ci/testshards doc for why the
+        # assignment form is load-bearing. The quarantined flakes
+        # (scripts/ci/test-quarantine.tsv) are skipped here and run nightly.
+        #
+        # pkg/server is split by TEST NAME, not packed whole (#3684): alone it
+        # ran ~1434 s under -race on ARC, the largest package after bots
+        # (~1630-1715 s), which still runs whole and stays the race floor.
+        # It leaves the package partition (its
+        # sub-packages stay in it) and each shard runs its hash slice of the
+        # package's top-level tests — test-e2e's discovery, under -race so a
+        # race-tagged test is listed — in the background, beside its packages,
+        # the way go test runs a package beside its siblings. Discovery is
+        # bounded at ten minutes, the cold -race compile the slice reuses. A
+        # discovery failure stops the shard before any test; either run's
+        # failure reddens it. The slice's output is printed after both end.
+        shell: bash
         run: |
           set -euo pipefail
-          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -weights scripts/ci/test-shards-weights.tsv)
-          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          # bots alone under -race is the wall of this leg: 1556 s on 1591e1911, over 1800 s on
-          # 69f2f501d (2026-10-29). 2400 s is the stopgap; the t.Parallel campaign (#2564 P2)
-          # and the next floor (#2789) are the fix.
-          go test -race -mod=vendor -count=1 -timeout 2400s $pkgs
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes|pkg/server)$' -weights scripts/ci/test-shards-weights.tsv)
+          server=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./pkg/server -n 3 -i ${{ matrix.shard }} -list-timeout 10m)
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages and $(echo "$server" | tr '|' '\n' | wc -l) pkg/server tests"
+          server_log="$RUNNER_TEMP/race-pkg-server.log"
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" -run "$server" ./pkg/server > "$server_log" 2>&1 &
+          server_pid=$!
+          pkgs_status=0
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" $pkgs || pkgs_status=$?
+          server_status=0
+          wait "$server_pid" || server_status=$?
+          echo "::group::pkg/server slice (exit ${server_status})"
+          cat "$server_log"
+          echo "::endgroup::"
+          [ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard ${{ matrix.shard }} failed (exit ${server_status})"
+          [ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
 
-  # ---- required aggregator: the name the ruleset requires ----
+  # ---- held aggregator: a name the ruleset requires again when ADR-173 ends ----
 
   race:
-    # REQUIRED — the ruleset requires the NAME `race`; this job reports it and
-    # re-verifies the three shards' conclusions. The full suite still runs
-    # under -race (see race-shard); sharding changed where it runs, not
-    # whether it does.
+    # HELD — ruleset 18857412 required the NAME `race` until the experimental
+    # delivery mode (ADR-173) and requires it again when the mode ends, so
+    # the context keeps reporting, held to the required aggregator's contract.
+    # In the merge queue it vouches for test-native-exec alone: race-shard
+    # skips there, and a notice says so. This job reports the name and
+    # re-verifies the three shards' conclusions and test-native-exec's, whose
+    # second step runs pkg/sandbox/kubernetes under -race. Every package but
+    # e2e runs under -race behind this verdict; e2e runs under -race in
+    # test-e2e, behind `test` (#3664).
     #
     # A matrix `needs:` aggregates its legs' results: `success` only when
     # EVERY leg succeeded. `!cancelled()` is load-bearing — a plain `needs:`
@@ -769,21 +927,38 @@ jobs:
     # (the header's catastrophe, one level up). Combined with the tap skip
     # the shards carry, so this job skips exactly the entries they skip and
     # re-verifies every other one; ciguard pins the spelling byte for byte.
-    needs: [race-shard]
+    #
+    # ONE forgiven result (#3683, #3691): on a light run race-shard skips by
+    # design, so `skipped` from it is accepted there and nowhere else — the
+    # `test` aggregator's rule, through the same LIGHT_RUN. test-native-exec
+    # is not heavy: it runs on every event.
+    needs: [race-shard, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 5
     env:
       RACE_SHARD_RESULT: ${{ needs.race-shard.result }}
+      TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
+      LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every shard reported success
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${RACE_SHARD_RESULT}" != "success" ]; then
-            echo "::error::race-shard reported ${RACE_SHARD_RESULT} — the required verdict is red because a shard is red."
-            exit 1
-          fi
+          fail=0
+          for pair in "race-shard:${RACE_SHARD_RESULT}" "test-native-exec:${TEST_NATIVE_EXEC_RESULT}"; do
+            leg="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$leg" = "race-shard" ] && [ "$result" = "skipped" ] && [ "$LIGHT_RUN" = "true" ]; then
+              echo "::notice::leg ${leg} skipped on a light run (merge queue, or a pull request without ci:full) — push to main and the nightly run it, so this green is not admin-mergeable; label the pull request ci:full and push to run it there."
+              continue
+            fi
+            if [ "$result" != "success" ]; then
+              echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."
+              fail=1
+            fi
+          done
+          exit "$fail"
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
@@ -797,8 +972,13 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
-    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
-    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    # HEAVY (#3691): out of the merge queue and of a light pull request, it
+    # runs on push to main, the nightly, a dispatch and a `ci:full` pull
+    # request — the heavy literal, byte for byte, alone: no light run reaches
+    # it, so the tap skip has nothing left to skip. Out of ruleset 18857412
+    # while the experimental delivery mode lasts (ADR-173); a regression in
+    # the Mongo store lands on `main` and the push run is what reddens.
+    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full'))"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
     # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
@@ -885,7 +1065,7 @@ jobs:
             ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
-            ./pkg/botsource/... \
+            ./pkg/botsource/... ./pkg/pricefeed/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... ./pkg/usernotify/... ./pkg/configshare/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
@@ -1010,8 +1190,11 @@ jobs:
 
   cloud-e2e:
     # Advisory: not a required check, so it cannot block a merge — see the
-    # merge-queue note at the top of this file.
-    if: github.event_name != 'merge_group'
+    # merge-queue note at the top of this file. Heavy too (#3683, #3691): the
+    # heavy literal alone keeps it out of the merge queue and of a light pull
+    # request, so it runs on push to main, the nightly, a dispatch and a pull
+    # request that carries the `ci:full` label.
+    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full'))"
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with its dev Mongo + NATS + SeaweedFS (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →
@@ -1562,10 +1745,27 @@ jobs:
           if ! python3 -c 'import json; json.load(open("govulncheck.sarif"))' 2>/dev/null; then
             printf '%s' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[]}' > govulncheck.sarif
           fi
+      - name: Deduplicate SARIF stacks
+        # govulncheck emits the same call stack twice for some findings; the
+        # SARIF schema requires uniqueItems and upload-sarif validates the
+        # whole file before publishing, refusing it with "stacks contains
+        # duplicate item". Deduplicate (unique sorts; the UI order does not
+        # matter) so the file passes validation. The update is scoped to the
+        # result, not to `.stacks`: assigning through a missing key would
+        # create `"stacks": null` on every stack-less result, which the
+        # schema refuses just as hard. `results[]?`: a run's `results` key is
+        # optional in SARIF 2.1.0 (only `tool` is required), and iterating a
+        # missing one would abort jq and red the job with nothing to publish.
+        run: |
+          jq '.runs[].results[]? |= (if (.stacks | type) == "array" then .stacks |= unique else . end)' \
+            govulncheck.sarif > govulncheck.dedup.sarif && mv govulncheck.dedup.sarif govulncheck.sarif
       - name: Upload SARIF
-        # Advisory-only (see job header): a SARIF-upload hiccup must not red
-        # the suite, so the result is informational, not a gate.
-        continue-on-error: true
+        # The job is advisory (not a required check): findings themselves
+        # never red it — the run step above swallows govulncheck's exit code.
+        # The upload is the opposite concern and stays LOUD: a red here means
+        # vulnerabilities were found and their results are not published, the
+        # one failure nobody would notice otherwise. It still cannot block a
+        # merge — the job is not in the ruleset.
         uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           sarif_file: govulncheck.sarif
@@ -1638,6 +1838,11 @@ jobs:
           # archive is pure overhead against this job's 10-minute budget.
           cache: false
       - name: Links broken by this change
+        # Only pull_request and push carry a base (base.sha, before): on the
+        # nightly and a dispatch SINCE would render empty and docslinks would
+        # report the whole backlog as broken by this change. The whole-tree
+        # step below covers those runs.
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         # Step-level rather than job-level on purpose: a job-level
         # continue-on-error still paints the job red on the pull request,
         # which is the one thing an advisory verdict must not do. Here the

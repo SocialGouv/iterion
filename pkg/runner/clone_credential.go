@@ -61,7 +61,6 @@ func cloneCredentialToken(ctx context.Context) (name, token string) {
 // workflow's and the token is the sealed bundle's, both in hand before any
 // workspace exists, so a refused run spends no clone, no workspace
 // directory and no forge connection, and its token is never written to
-// disk — neither into the clone URL git persists in .git/config nor into
 // the credential store. There is nothing to take back.
 //
 // A secret that declares no `sinks:` grants every sink, `file` included,

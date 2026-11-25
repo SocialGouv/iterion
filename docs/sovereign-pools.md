@@ -251,7 +251,7 @@ comments spell out:
 - the merge step runs on claw BY DEFAULT, and on claw the merge node
   writes no report file under `report_path` and files no board issue — it
   returns its merged findings, which is what the publish step consumes.
-- The authored rescue route (`glm-5.3`, `provider: zai`) is a vendor route
+- The authored rescue route (`glm-5.4`, `provider: zai`) is a vendor route
   a pool pod holds no credential for: without its cell it cannot serve,
   which is the design — a pool must fail rather than leak. A gateway outage
   fails the node.

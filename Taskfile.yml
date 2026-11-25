@@ -652,6 +652,11 @@ tasks:
     cmds:
       - golangci-lint run
 
+  vuln:
+    desc: Scan the Go module for vulnerabilities reachable from this code (needs the network for the vuln DB — advisory, run by hand; never a member of `task check` or `task ci:gate`)
+    cmds:
+      - govulncheck ./...
+
   run:
     desc: Build and run iterion (pass args after --)
     deps: [build]
@@ -684,10 +689,11 @@ tasks:
       - ./{{.BINARY}} diagram {{.CLI_ARGS}}
 
   check:
-    desc: Run all checks (lint + test + golden replay + studio + pi extension + chart render gate)
+    desc: Run all checks (bot format + lint + test + golden replay + studio + pi extension + chart render gate)
     cmds:
       - task: gen:check
       - task: chart:check
+      - task: fmt:check
       - task: lint
       - task: test
       - task: test:goldens
@@ -806,7 +812,7 @@ tasks:
       - bash scripts/ci/vendor-check.sh
 
   ci:mongo-conformance:
-    desc: "The local member of CI's `mongo-conformance` required check — a real one-member mongo:8.0 replica set (change streams + transactions), then BOTH `go test` invocations READ FROM the job itself rather than restated here. Needs docker; `ITERION_CI_GATE_EVIDENCE=<dir>` keeps the per-invocation logs and the exit-code matrix"
+    desc: "The local member of CI's held `mongo-conformance` job (heavy layer: push, nightly, dispatch, ci:full) — a real one-member mongo:8.0 replica set (change streams + transactions), then BOTH `go test` invocations READ FROM the job itself rather than restated here. Needs docker; `ITERION_CI_GATE_EVIDENCE=<dir>` keeps the per-invocation logs and the exit-code matrix"
     cmds:
       - bash scripts/ci/mongo-conformance.sh
 

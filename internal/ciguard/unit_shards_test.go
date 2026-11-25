@@ -51,9 +51,12 @@ func TestUnitShardsRunEveryIndexAndPropagateSelectionFailure(t *testing.T) {
 		for _, selectionExit := range []int{0, 7} {
 			t.Run(fmt.Sprintf("shard%d/selection%d", index, selectionExit), func(t *testing.T) {
 				dir := t.TempDir()
+				// The quarantine call answers on its own branch, so RUN_ARGS keeps
+				// the partition's arguments (quarantine_gate_test.go owns the skip).
 				goScript := `#!/bin/sh
 case "$1" in
   run)
+    case "$*" in *./scripts/ci/testquarantine*) printf '%s\n' '^TestQuarantined$'; exit 0 ;; esac
     printf '%s\n' "$@" > "$RUN_ARGS"
     printf '%s\n' "` + chosen + `"
     exit "$SELECTION_EXIT"
@@ -107,9 +110,11 @@ esac
 					t.Fatalf("selection %v does not match matrix %v", selection, indices)
 				}
 				skip, err := regexp.Compile(flagValue(selection, "-skip"))
-				if err != nil || !skip.MatchString("github.com/SocialGouv/iterion/e2e") || skip.MatchString("github.com/SocialGouv/iterion/pkg/e2ehelpers") {
+				if err != nil || !skip.MatchString("github.com/SocialGouv/iterion/e2e") || slices.ContainsFunc([]string{"pkg/e2ehelpers", "pkg/x/e2e", "studio/e2e"}, func(other string) bool { return skip.MatchString("github.com/SocialGouv/iterion/" + other) }) {
 					t.Fatalf("the partition does not exclude exactly the e2e package, which test-e2e owns: %v", selection)
 				}
+				// native_exec_runner_test.go holds the Bubblewrap-driven
+				// packages out of this partition and into test-native-exec.
 				weights := flagValue(selection, "-weights")
 				if _, err := os.Stat(filepath.Join("..", "..", weights)); err != nil {
 					t.Fatalf("the unit weights table %s is not committed: %v", weights, err)

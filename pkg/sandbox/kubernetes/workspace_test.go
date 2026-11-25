@@ -92,7 +92,7 @@ func TestFixupWorkspaceGitScript(t *testing.T) {
 		t.Fatalf("fixup script: %v\n%s", err, out)
 	}
 
-	want := "store --file=" + credPath
+	want := "store --file='" + credPath + "'"
 	if got := gittest.Run(t, dir, "config", "credential.helper"); got != want {
 		t.Errorf("credential.helper = %q, want %q", got, want)
 	}
@@ -105,6 +105,57 @@ func TestFixupWorkspaceGitScript(t *testing.T) {
 	cmd = exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", plain)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("fixup on non-git dir: %v\n%s", err, out)
+	}
+}
+
+// TestFixupWorkspaceGitScript_ShellSyntaxInPath pins the quoting of the
+// re-pointed helper: git runs credential.helper through `sh -c`, so shell
+// syntax in the workspace path must stay a literal path while the helper
+// still answers with the stored credential; a path holding a single quote,
+// which that quoting cannot carry, is refused.
+func TestFixupWorkspaceGitScript_ShellSyntaxInPath(t *testing.T) {
+	isolateExecEnvironment(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	newClone := func(name string) string {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gittest.Run(t, dir, "init", "-q")
+		cred := filepath.Join(dir, ".git", "iterion-credentials")
+		if err := os.WriteFile(cred, []byte("https://oauth2:tok-fixup@example.com\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	dir := newClone("x$(touch${IFS}PWNED)")
+	if out, err := exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", dir).CombinedOutput(); err != nil {
+		t.Fatalf("fixup script: %v\n%s", err, out)
+	}
+	fill := exec.Command("git", gitlib.NoAutoMaintenance("credential", "fill")...)
+	fill.Dir = dir
+	fill.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	fill.Stdin = strings.NewReader("protocol=https\nhost=example.com\n\n")
+	out, fillErr := fill.CombinedOutput()
+	for _, d := range []string{dir, filepath.Dir(dir)} {
+		if _, err := os.Stat(filepath.Join(d, "PWNED")); err == nil {
+			t.Fatalf("the workspace path was executed as shell by the credential helper: %s/PWNED exists\n%s", d, out)
+		}
+	}
+	if fillErr != nil || !strings.Contains(string(out), "password=tok-fixup") {
+		t.Errorf("the re-pointed helper did not answer with the stored credential: %v\n%s", fillErr, out)
+	}
+
+	quoted := newClone("x'q")
+	out, err := exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", quoted).CombinedOutput()
+	if err == nil {
+		t.Errorf("fixup accepted a workspace path holding a single quote:\n%s", out)
+	} else if !strings.Contains(string(out), "single quote") {
+		t.Errorf("fixup refused the single-quote path without naming the cause: %v\n%s", err, out)
 	}
 }
 
@@ -180,7 +231,7 @@ func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read credential.helper: %v", err)
 	}
-	if want := "store --file=" + credPath; strings.TrimSpace(string(got)) != want {
+	if want := "store --file='" + credPath + "'"; strings.TrimSpace(string(got)) != want {
 		t.Errorf("credential.helper = %q, want %q", strings.TrimSpace(string(got)), want)
 	}
 }

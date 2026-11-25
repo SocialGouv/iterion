@@ -97,3 +97,17 @@ func TestSplitEngineInjectedInputsPinsTheMintedForgeVars(t *testing.T) {
 		t.Errorf("refused = %v, want only the typo", refused)
 	}
 }
+
+// TestSplitEngineInjectedInputsPinsTheStampedLaunchVars: the launch vars the
+// server stamps (store.ServerStampedLaunchVars — gate_advisory_bot) classify
+// engine-injected, so no strict door refuses a launch over a name the server
+// wrote and its caller never sent; a typo beside them is still refused.
+func TestSplitEngineInjectedInputsPinsTheStampedLaunchVars(t *testing.T) {
+	injected, refused := SplitEngineInjectedInputs([]string{"gate_advisory_bot", "gate_advisory_bots"})
+	if !slices.Equal(injected, []string{"gate_advisory_bot"}) {
+		t.Errorf("injected = %v, want the server-stamped gate_advisory_bot", injected)
+	}
+	if !slices.Equal(refused, []string{"gate_advisory_bots"}) {
+		t.Errorf("refused = %v, want only the typo", refused)
+	}
+}

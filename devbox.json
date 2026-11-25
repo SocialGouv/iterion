@@ -4,6 +4,7 @@
     "delve":           "latest",
     "go":              "1.26",
     "go-task":         "latest",
+    "govulncheck":     "latest",
     "kubernetes-helm": "latest",
     "kubectl":         "latest",
     "kind":            "latest",

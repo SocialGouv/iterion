@@ -33,7 +33,16 @@ call(name, input) runs one of this node's tools and returns {text, isError, trun
 
 call.parallel([{name, input}, …]) accepts up to four independent calls and returns entries in input order. Each entry has {status, text, isError, truncated, remaining}; an ok entry from a tool with a structured result also carries structured. status is "ok", "error", or "budget". Tool failures and budget refusals are entries, not exceptions. Every entry reports the same remaining budget after admitting the batch. Like call(), call.parallel() is synchronous. Only audited native glob and workspace_grep can overlap, where policy, hooks and limits allow it; other calls run exclusively. Cancellation does not undo effects that have already started.
 
-Prefer this when the work is many calls, or one call whose output you only need a part of; call a tool directly when you need exactly one result.`
+When a program pays: every direct call costs a turn that re-reads the whole conversation, and a program costs one turn for all the calls it makes. So write ONE program for a dependent chain — search, read what matched, keep what matters — and return the conclusion, not one program per step; and batch independent calls with call.parallel in ONE program, returning only the part you need from each (a title, the matching lines, a count), never the raw output. A program that makes one call and returns all of its output saves nothing: call that tool directly. For example, with a search tool and a read tool (use this node's own tool names):
+
+` + codemodeExample
+
+// codemodeExample is the program the description shows. It is a constant of
+// its own so a test can RUN it through the real host: an example the host
+// refuses would teach the model a form that costs it the whole program.
+const codemodeExample = `const hits = call("grep", {pattern: "TODO"}).text.split("\n").filter(Boolean).slice(0, 4);
+const pages = call.parallel(hits.map(h => ({name: "read_file", input: {path: h.split(":")[0]}})));
+pages.map((p, i) => ({hit: hits[i], head: p.status === "ok" ? p.text.slice(0, 300) : p.status}))`
 
 // codemodeDeferredComplement is appended to the description of a node that
 // DEMOTED at least one tool to catalogue-only, after the constant preamble
@@ -98,19 +107,23 @@ var codemodeInputSchema = json.RawMessage(`{
 // catalogue each script receives both come from this one snapshot, through
 // the same withheld predicate the door narrows by, so the index cannot list a
 // tool the door refuses.
-func installCodemode(opts *GenerationOptions, deferred bool, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
-	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, deferred, want)
+func installCodemode(opts *GenerationOptions, deferred bool, want *scripthost.Limits, reserve *scripthost.SubagentReserve, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
+	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, deferred, want, reserve)
 }
 
 // installCodemodeOn is installCodemode on a given host: production passes the
 // host above, tests pass one whose child is the test binary — so the wiring a
 // test drives is the wiring that ships, catalogue included.
-func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred bool, want *scripthost.Limits) error {
+func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred bool, want *scripthost.Limits, reserve *scripthost.SubagentReserve) error {
 	var limits scripthost.Limits
 	if want != nil {
 		limits = *want
 	}
-	catalog := scriptCatalog(opts.Tools, ScriptHostToolName)
+	// The reserve arms the script route of the agent tool (CM-13): the
+	// catalogue keeps the tool, the description tells the program the
+	// bounds it draws against, and the door serves it. A node that declared
+	// no reserve keeps the tool withheld exactly as before.
+	catalog := scriptCatalog(opts.Tools, ScriptHostToolName, reserve != nil)
 	// The ONE bound of this snapshot: the index is composed from it, the
 	// deferral reads it, and Host.Run bounds the same catalogue with the
 	// same deterministic function, so all three see one set.
@@ -122,6 +135,17 @@ func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred b
 		markCatalogueOnly(opts.Tools, bounded, opts.Permission)
 	}
 	description := codemodeToolDescription(bounded, omitted, anyCatalogueOnly(opts.Tools))
+	if reserve != nil {
+		per := reserve.TokensPerAgent
+		if per <= 0 {
+			per = reserve.Tokens
+		}
+		concurrent := reserve.Concurrent
+		if concurrent <= 0 {
+			concurrent = 1
+		}
+		description += fmt.Sprintf("\n\nagent: a program may start sub-agents of this node. Each child admits against the node's reserve of %d tokens (a child books %d until it settles its actual usage) and at most %d may run at once. A program cannot choose a child's model — children run on the node's own model.", reserve.Tokens, per, concurrent)
+	}
 	if opts.codemodeState != nil {
 		description += "\n\ncall.store(key, value) writes a JSON value to this run’s shared state; call.load(key) reads it. A missing key returns undefined, not null. Both are synchronous, count against the script call budget, and cannot dispatch tools. The bank is bounded; handle invalid input and quota errors without retrying the same write."
 	}
@@ -132,10 +156,18 @@ func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred b
 
 // scriptCatalog is the node's tools a program can call, as the catalogue
 // entries discovery answers from.
-func scriptCatalog(tools []GenerationTool, self string) []toolindex.Tool {
+func scriptCatalog(tools []GenerationTool, self string, subagentsArmed bool) []toolindex.Tool {
 	out := make([]toolindex.Tool, 0, len(tools))
 	for _, t := range tools {
-		if _, withheld := scriptWithheld(t.Name, self); withheld {
+		if isAgentTool(t.Name) {
+			// Armed or not, the agent tool never reaches scriptWithheld:
+			// that predicate refuses it UNCONDITIONALLY (the reserve refusal
+			// is one of its cases), so falling through would drop the tool
+			// from the catalogue of an armed node whose door serves it.
+			if !subagentsArmed {
+				continue
+			}
+		} else if _, withheld := scriptWithheld(t.Name, self); withheld {
 			continue
 		}
 		out = append(out, toolindex.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})

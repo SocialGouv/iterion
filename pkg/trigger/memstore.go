@@ -36,7 +36,9 @@ func (m *MemorySubscriptionStore) EnsureDerived(_ context.Context, s Subscriptio
 	if !IsDerivedID(s.ID) {
 		return false, fmt.Errorf("trigger: %q is not a derived subscription id", s.ID)
 	}
-	s.normalize()
+	if err := s.normalize(); err != nil {
+		return false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// A tombstone outranks a standing row: an operator's delete may have
@@ -73,7 +75,9 @@ func (m *MemorySubscriptionStore) ClearTombstone(_ context.Context, tenantID, id
 }
 
 func (m *MemorySubscriptionStore) Create(_ context.Context, s Subscription) error {
-	s.normalize()
+	if err := s.normalize(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// One binding, one row (ErrDuplicateConnectorBinding): the scan and the
@@ -103,7 +107,9 @@ func (m *MemorySubscriptionStore) Get(_ context.Context, id string) (Subscriptio
 }
 
 func (m *MemorySubscriptionStore) Update(_ context.Context, s Subscription) error {
-	s.normalize()
+	if err := s.normalize(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.items[s.ID]
@@ -227,18 +233,32 @@ func (m *MemorySubscriptionStore) ListCandidates(_ context.Context, ev Event) ([
 	if ev.Source == SourceConnector {
 		key := ConnectorKey(ev.ConnectionID, ev.Kind)
 		out := m.filter(func(s Subscription) bool {
-			return s.Enabled && s.TenantID == ev.TenantID && key != "" && s.ConnectorKey == key && s.Poller == ev.PollerID
+			return s.Enabled && s.TenantID == ev.TenantID && key != "" && s.ConnectorKey == key && s.Poller == ev.PollerID &&
+				s.ForgeBinding == ""
 		})
 		sortByID(out)
 		return out, nil
 	}
 	return m.filter(func(s Subscription) bool {
-		return s.Enabled && s.TenantID == ev.TenantID && (s.Repo == ev.Repo || s.Repo == "") && s.ConnectorKey == ""
+		return s.Enabled && s.TenantID == ev.TenantID && (s.Repo == ev.Repo || s.Repo == "") && s.ConnectorKey == "" &&
+			s.ForgeBinding == ""
 	}), nil
 }
 
+func (m *MemorySubscriptionStore) ListByForgeBinding(_ context.Context, tenantID, binding string) ([]Subscription, error) {
+	if binding == "" {
+		return nil, ErrEmptyForgeBinding
+	}
+	out := m.filter(func(s Subscription) bool {
+		return s.TenantID == tenantID && s.ForgeBinding == binding
+	})
+	sortByID(out)
+	return out, nil
+}
+
 // sortByID is the stable order connector candidates are judged in (ADR-168
-// §8.2): one pair per candidate, written in an order every replica shares.
+// §8.2), and the one a forge binding's rows are listed in: an order every
+// replica shares.
 func sortByID(subs []Subscription) {
 	sort.Slice(subs, func(i, j int) bool { return subs[i].ID < subs[j].ID })
 }

@@ -6,6 +6,14 @@ not green. Record rerun timing beside the first failure. Fix the class and
 prove a reverted fix fails. Fixtures own scratch directories, HOME, config
 and children; see [hermetic gates](../../adr/137-local-gate-hermetic-by-default.md).
 
+## Quarantine
+
+A ticketed flake that keeps costing reruns leaves the gate: a row of
+`scripts/ci/test-quarantine.tsv` (package, test, open ticket) makes every gating
+`go test` skip it, and the nightly `test-quarantine` workflow runs only those
+tests, plain and under `-race`, red on a failure or a closed ticket. The fix
+removes the row. Keep the list small.
+
 ## Register
 
 | Test / check | Machine class | Evidence (log / SHA) | Disposition | Re-check |

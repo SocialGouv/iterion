@@ -930,18 +930,18 @@ hint and the wire model:
 ```iter fragment
 agent reviewer:
   backend: "claude_code"
-  provider: "zai:glm-5.3,anthropic:claude-opus-5-5"   # glm-5.3 on z.ai, claude-opus-5-5 on Anthropic
+  provider: "zai:glm-5.4,anthropic:claude-opus-5-5"   # glm-5.4 on z.ai, claude-opus-5-5 on Anthropic
 ```
 
 This is the case where the chain's two providers serve **different model
-ids over the same Anthropic-wire API** — `glm-5.3` is a z.ai model that
+ids over the same Anthropic-wire API** — `glm-5.4` is a z.ai model that
 Anthropic would reject, so a hint-only swap would break on fall-through.
 The token is split on the **first** colon (a model id that itself
 contains a colon survives intact). An element **without** a model
-(`anthropic` in `zai:glm-5.3,anthropic`) inherits the node's `model:`
+(`anthropic` in `zai:glm-5.4,anthropic`) inherits the node's `model:`
 baseline; an inheriting element after a model-bearing one restores the
 baseline rather than carrying the previous override. A malformed element
-— a colon with an empty provider (`:glm-5.3`) or empty model (`zai:`) —
+— a colon with an empty provider (`:glm-5.4`) or empty model (`zai:`) —
 warns **C172** at compile time. Env expansion still runs on the whole
 field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 `provider:model` separator.
@@ -1921,7 +1921,8 @@ run to the runner** — the operator table stays the floor.
   catalog entry with an unpriced one; a declared one answers unpriced
   only where nothing prices the id (below). When a fresh
   feed and the operator table disagree on price, the sync says so: one
-  line per drifting id per refresh, naming both values. A fetched
+  line per drifting id per refresh, naming both values; the cache-read
+  price drifts only when both sides state one. A fetched
   price that is not a finite number — a `litellm` per-token cost
   scaled past what a number holds — fails its refresh, naming the id
   and the field; one a state already holds is left out of the fold,
@@ -1931,7 +1932,15 @@ run to the runner** — the operator table stays the floor.
   `modelsdev` (the aggregator's shape, `provider` qualifier, optional
   `url`), `scaleway` (that adapter with its qualifier pinned; every
   entry keyed both `scaleway/<id>` and `<id>`), `litellm` (a proxy's
-  `model_info` listing, per-token costs scaled to per-mtok), `exec` — a
+  `model_info` listing: input, output and `cache_read_input_token_cost`
+  per-token costs scaled to per-mtok once; `max_input_tokens` is the
+  window and `max_output_tokens` the output cap; the legacy
+  `max_tokens` stands in for the window only when both are absent or
+  null — LiteLLM derives it from the output cap, or from the input
+  window when the cap is 0 — else the window stays unknown; deployments
+  sharing a `model_name` fold their limits (a stated limit beats an
+  absent one, two stated limits keep the smaller); an absent cache price
+  stays unknown, so cached input meters at the input rate), `exec` — a
   command printing the feed-entry JSON on stdout (the operator-table
   shape plus `reasoning_efforts`; no shell; `args` splits on spaces;
   stdout bounded; a descendant holding the pipe cannot stall the
@@ -3166,7 +3175,7 @@ sensible default for the first available provider (the detector's
 `SuggestedModel` for the first available provider, in this priority
 order) — currently
 `anthropic/claude-opus-5-5` for Anthropic,
-`anthropic/glm-5.3` for z.ai,
+`anthropic/glm-5.4` for z.ai,
 `moonshot/kimi-k2` for Moonshot,
 `openai/gpt-6-sol` for OpenAI, and
 `xai/grok-3` for xAI (the `SuggestedModel` fields of

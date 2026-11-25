@@ -15,7 +15,7 @@ change needs.
 
 | layer | proves | cost | runs |
 |---|---|---|---|
-| **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** (`go test ./e2e/...` + `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
+| **deterministic** | the real seams, credential-free, stub executor | free | **main**; PR and queue [split](../../merge-policy.md#light-runs-heavy-main) (e2e under `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
 | **live** (`-tags live`) | what a real harness actually does | real LLM spend | only when a human or an agent asks — **no CI job carries the tag** |
 
 The free layer carries **361 of the 387 rows** of
@@ -79,7 +79,7 @@ has cost money and bought nothing.
 
 Full reference for the live layer (harness, judge panel, env knobs, authoring
 a new target): [`docs/live-e2e-coverage.md`](../../live-e2e-coverage.md).
-Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/issues/1421).
+Chantier and current state: [epic #1410](https://github.com/SocialGouv/iterion/issues/1410).
 
 ## Testing Patterns
 

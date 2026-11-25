@@ -315,6 +315,13 @@ type ToolDef struct {
 	// In-process only: it does not cross the sandbox IPC, where the runner
 	// serves every tool declared.
 	AuthorDeclared bool
+
+	// ImageResult attests that Execute's output is a claw image result
+	// (tool.ImageResultContent's input): the tool loop hands the model its
+	// image blocks rather than their JSON text. Set from the native
+	// registration; it does not cross the sandbox IPC — the runner reads it
+	// off its own registration of a sandbox-placed tool.
+	ImageResult bool
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
@@ -824,6 +831,20 @@ type Task struct {
 	// safe to transport and is why the refusal it produces — "the script has
 	// spent its budget of 64 tool calls" — is loud rather than silent.
 	CodemodeBounds *scripthost.Limits
+
+	// SubagentReserve is the node-level budget the node's programs'
+	// sub-agent calls draw against (CM-13, ADR-165): a finite reserve booked
+	// before a child runs, settled with the child's actual usage. Arming it
+	// — the author declared subagents_tokens and the executor resolved the
+	// ladder — is what makes the agent tool callable from this node's
+	// programs; nil keeps it withheld. nil here and nil at the node are the
+	// same thing on purpose, like CodemodeBounds: a backend that drops the
+	// field keeps the tool withheld, the tighter direction.
+	//
+	// Admission control, not durable accounting: the reserve lives as long
+	// as the node execution that declared it. The durable reservation
+	// machinery (ADR-155) is a different, credential-sized lane.
+	SubagentReserve *scripthost.SubagentReserve
 
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the

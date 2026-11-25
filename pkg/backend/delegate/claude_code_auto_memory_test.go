@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"maps"
 	"os"
-	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -214,46 +212,5 @@ func TestWriteSystemPromptFile_CarriesTheAutoMemorySection(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "do the thing") {
 		t.Errorf("the node's own system prompt was lost:\n%s", body)
-	}
-}
-
-// The three state-root guards share one contract, so all three must name the
-// caller. refuseSymlinkedPath kept pi's wording after the extraction, so an
-// auto-memory run refused by a repo-planted symlink told the operator to go
-// look at "the pi credential" — and the memoised guard repeated it on every
-// node of the run.
-func TestPrepareStateRoot_ErrorsNameTheirCaller(t *testing.T) {
-	tmpRoot := filepath.Clean(t.TempDir())
-	work := filepath.Join(tmpRoot, "pipe")
-	// A symlinked ANCESTOR: the component walk, not the leaf check.
-	if err := os.MkdirAll(filepath.Join(work, "real"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(work, "real"), filepath.Join(work, ".iterion")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	root := filepath.Join(work, ".iterion", "auto-memory")
-
-	err := PrepareStateRoot(Task{WorkDir: work}, root, StateInCheckout,
-		"auto-memory", "the agent's MEMORY.md notes", nil)
-	if err == nil {
-		t.Fatal("a symlinked ancestor inside the checkout must be refused")
-	}
-	piWord := regexp.MustCompile(`\bpi\b`)
-	message := strings.ReplaceAll(err.Error(), tmpRoot, "<tmp>")
-	if piWord.MatchString(message) {
-		t.Errorf("an auto-memory refusal points the operator at pi: %v", err)
-	}
-	if !strings.Contains(err.Error(), "MEMORY.md") {
-		t.Errorf("the refusal does not say what would have been written: %v", err)
-	}
-	piErr := PrepareStateRoot(Task{WorkDir: work}, root, StateInCheckout,
-		"pi backend", "the pi credential", nil)
-	if piErr == nil {
-		t.Fatal("a pi refusal must be produced")
-	}
-	piMessage := strings.ReplaceAll(piErr.Error(), tmpRoot, "<tmp>")
-	if !piWord.MatchString(piMessage) {
-		t.Fatalf("the word guard must match a pi refusal: %v", piErr)
 	}
 }

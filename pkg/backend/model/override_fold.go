@@ -900,9 +900,8 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	}
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
-		if a.chainDecides(prov, m) {
+		if a.chainDecides(prov, m, true) {
 			a.hintDecidesDeferral(prov)
-			a.prefixSlotForClaw(m)
 			return
 		}
 		// The override named no resolvable hint ("auto", or a ${VAR} this
@@ -915,9 +914,8 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 		return
 	}
 	a.noteWireDefault(chain, m)
-	if a.chainDecides(chain, m) {
+	if a.chainDecides(chain, m, true) {
 		a.hintDecidesDeferral(chain)
-		a.prefixSlotForClaw(m)
 		return
 	}
 	a.prefixOrWiden(m)
@@ -963,14 +961,17 @@ func (a *providerAccumulator) hintDecidesDeferral(chain string) {
 // by the node's own rows or by no spend at all, never by this reading;
 // widening it would nil the plans of runs whose other routes are perfectly
 // readable.
-func (a *providerAccumulator) prefixSlotForClaw(mdl string) {
+//
+// raw is whether mdl is the gateway spelling as written (rawGatewayPrefix),
+// false for a model this process expanded out of a `${…}` field.
+func (a *providerAccumulator) prefixSlotForClaw(mdl string, raw bool) {
 	if a.backend != delegate.BackendClaw {
 		return
 	}
 	if providerFromModelPrefix(mdl) == "" {
 		return
 	}
-	a.prefixOrWiden(mdl)
+	a.prefixOrWidenRead(mdl, raw)
 }
 
 // resolveRoute is the fallback-route half, with the same precedence: the
@@ -985,8 +986,7 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 	a.envDeferred("model", mdl)
 	a.deferAt(provider, mdl)
 	a.noteWireDefault(provider, mdl)
-	if a.chainDecides(provider, mdl) {
-		a.prefixSlotForClaw(mdl)
+	if a.chainDecides(provider, mdl, false) {
 		return
 	}
 	a.prefixOrWiden(mdl)
@@ -1061,25 +1061,56 @@ func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 // looks no further. A chain with hints AND an unresolved step ("auto", an
 // empty ${VAR}) still decides, and still widens.
 //
-// mdl is the route's effective model: an openai_compatible hint is only the
-// gateway route when the model carries the gateway prefix — a bare model
-// behind the hint spends a process-held credential (the backends that do not
-// honour the hint), so it widens as an unknown name, whatever the caller's
-// vocabulary, and OnlyEnvFunded reads false. A gateway route a sealed key
-// funds (gatewayKeyed) records the provider like any vendor hint.
-func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
-	hints, unresolved := chainHints(raw)
-	if len(hints) == 0 {
+// Each step is judged on the model dispatch sends for it. With stepModels
+// (the node's own `provider:` field, a provider cell, a launch var — the
+// fields parseProviderChain splits) that is the step's own `hint:model`
+// model when it carries one, else mdl, the route's effective model. Without
+// it (a `fallbacks:` route, a run-level stage — fields resolveChainUnder
+// sends whole beside the route's model) every step is judged on mdl. An openai_compatible hint is only
+// the gateway route when that model carries the gateway prefix — a bare
+// model behind the hint spends a process-held credential (the backends that
+// do not honour the hint), so it widens as an unknown name, whatever the
+// caller's vocabulary, and OnlyEnvFunded reads false. A gateway route a
+// sealed key funds (gatewayKeyed) records the provider like any vendor hint.
+// A step model from a field that reads the environment (`${…}`) is this
+// process's expansion, never the raw spelling rawGatewayPrefix answers on,
+// so it never makes the step a gateway route.
+//
+// On claw, every step's model then records its prefix's slot
+// (prefixSlotForClaw) once per distinct model, after all the hints so the
+// chain's order leads ProviderResolution.Sites. A step whose hint the
+// allowlist forbids reads no slot: dispatch drops it on its hint alone
+// (AllowlistDrops) and never sends its model, so its slot must not mark the
+// route servable inside the list.
+func (a *providerAccumulator) chainDecides(raw, mdl string, stepModels bool) bool {
+	steps, unresolved := chainSteps(raw)
+	if len(steps) == 0 {
 		return false
+	}
+	if !stepModels {
+		for i := range steps {
+			steps[i].model = ""
+		}
 	}
 	if unresolved {
 		a.widen()
 		a.unreadableAt("provider", raw)
 	}
-	for _, h := range hints {
+	// stepRoute is the model dispatch sends for the step and whether it is
+	// the gateway spelling as written.
+	envStepModels := strings.Contains(raw, "${")
+	stepRoute := func(s providerStep) (model string, rawGateway bool) {
+		if s.model != "" {
+			return s.model, !envStepModels && rawGatewayPrefix(s.model)
+		}
+		return mdl, rawGatewayPrefix(mdl)
+	}
+	for _, s := range steps {
+		h := s.hint
 		if h == modelroute.OpenAICompatible {
+			_, gateway := stepRoute(s)
 			switch {
-			case !rawGatewayPrefix(mdl):
+			case !gateway:
 				a.unknownHint(h)
 			case len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible]:
 				a.forbid(modelroute.OpenAICompatible)
@@ -1099,6 +1130,21 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 		}
 		a.hint(h)
 	}
+	type slotRead struct {
+		model string
+		raw   bool
+	}
+	read := map[slotRead]bool{}
+	for _, s := range steps {
+		if len(a.allowed) > 0 && !a.allowed[s.hint] {
+			continue
+		}
+		m, rawGateway := stepRoute(s)
+		if r := (slotRead{m, rawGateway}); !read[r] {
+			read[r] = true
+			a.prefixSlotForClaw(m, rawGateway)
+		}
+	}
 	return true
 }
 
@@ -1115,6 +1161,14 @@ func rawGatewayPrefix(mdl string) bool {
 // prefixOrWiden routes on a model spec's `provider/` prefix, or widens
 // when it has none.
 func (a *providerAccumulator) prefixOrWiden(mdl string) {
+	a.prefixOrWidenRead(mdl, rawGatewayPrefix(mdl))
+}
+
+// prefixOrWidenRead is prefixOrWiden with the gateway spelling's rawness
+// given: rawGateway is false for a model whose text reads the environment,
+// whether its own (`${…}` in mdl) or its field's (a `hint:model` step
+// expanded out of a `${…}` provider field).
+func (a *providerAccumulator) prefixOrWidenRead(mdl string, rawGateway bool) {
 	// A GLM id on the anthropic wire is a z.ai model — claw spells it
 	// `anthropic/glm-*`, claude_code takes it bare — so the credential it
 	// spends is z.ai's, never the Claude forfait api.anthropic.com would
@@ -1142,7 +1196,7 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 				a.forbid(modelroute.OpenAICompatible)
 				return
 			}
-			if rawGatewayPrefix(mdl) && a.gatewayKeyed() {
+			if rawGateway && a.gatewayKeyed() {
 				a.hint(p)
 				return
 			}
@@ -1151,7 +1205,7 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 			}
 			a.envFunded[p] = true
 			a.gatewayAt()
-			if !rawGatewayPrefix(mdl) {
+			if !rawGateway {
 				a.widen()
 			}
 			return
@@ -1242,12 +1296,28 @@ func (a *providerAccumulator) recordSiteProvider(provider string) {
 	a.siteProviders[a.site] = append(a.siteProviders[a.site], provider)
 }
 
-// chainHints splits a `provider:` field into its lower-cased hints the
-// way the executor's resolveProviderChain does: env expansion on the whole
-// field first, then `,`, then the `provider:model` step form. Reports
-// unresolved=true when the field is empty or any step is "auto" — a step
-// that defers to whatever the process holds.
+// chainHints is chainSteps' hints alone, in chain order.
 func chainHints(raw string) (hints []string, unresolved bool) {
+	steps, unresolved := chainSteps(raw)
+	for _, s := range steps {
+		hints = append(hints, s.hint)
+	}
+	return hints, unresolved
+}
+
+// providerStep is one named step of a `provider:` chain: its lower-cased
+// hint, and the model its `hint:model` form carries ("" when it carries
+// none — dispatch then sends the route's model).
+type providerStep struct {
+	hint, model string
+}
+
+// chainSteps splits a `provider:` field into its named steps the way the
+// executor's parseProviderChain does: env expansion on the whole field
+// first, then `,`, then the `provider:model` step form (ir.SplitProviderStep).
+// Reports unresolved=true when the field is empty or any step is "auto" — a
+// step that defers to whatever the process holds.
+func chainSteps(raw string) (steps []providerStep, unresolved bool) {
 	expanded := strings.TrimSpace(ir.ExpandEnvWithDefault(raw))
 	if expanded == "" {
 		return nil, true
@@ -1257,7 +1327,7 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 		if token == "" {
 			continue // stray, leading or trailing comma
 		}
-		hint, _, _ := ir.SplitProviderStep(token)
+		hint, model, _ := ir.SplitProviderStep(token)
 		hint = strings.ToLower(strings.TrimSpace(hint))
 		if hint == "" || hint == "auto" {
 			unresolved = true
@@ -1274,12 +1344,12 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 		if strings.Contains(hint, "{{") {
 			unresolved = true
 		}
-		hints = append(hints, hint)
+		steps = append(steps, providerStep{hint: hint, model: model})
 	}
-	if len(hints) == 0 {
+	if len(steps) == 0 {
 		unresolved = true
 	}
-	return hints, unresolved
+	return steps, unresolved
 }
 
 // providerFromModelPrefix extracts the provider half of a

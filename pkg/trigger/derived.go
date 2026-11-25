@@ -39,9 +39,12 @@ func IsDerivedID(id string) bool { return strings.HasPrefix(id, DerivedIDPrefix)
 // bot's manifest, intrinsic to what the invocation says (a reorder or an
 // insertion of another invocation never moves it): the package trigger id
 // for a connector invocation, the normalized cron for a schedule, the
-// canonical interval for a keepalive, a digest of the board block. ""
-// derives no subscription (the builders refuse it); two invocations of one
-// kind sharing a key derive the same subscription and are refused at parse.
+// canonical interval for a keepalive, a digest of the board block, and for
+// a forge invocation its event, its actions and a digest of its labels. ""
+// derives no subscription (the builders refuse it). Two invocations of one
+// kind sharing a key derive the same subscription: the manifest decoder
+// refuses the pair, except for two forge invocations, where the first one
+// derives and the second is warned (bundle.ForgeDuplicateKeyWarnings).
 func DerivedInvocationKey(invs []bundle.Invocation, index int) string {
 	return bundle.InvocationKey(invs, index)
 }

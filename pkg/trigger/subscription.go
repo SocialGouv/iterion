@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // Matcher is the declarative filter on an Event. It is the union of the four
@@ -23,47 +25,132 @@ import (
 // dimensions). Labels is the exception — it requires ALL listed labels to be
 // present (the board "all_labels" gate), which is what implementer triggers
 // like {state: ready, labels: [feature]} need.
+//
+// AddedLabels and ExcludeAddedLabels are one dimension over the labels the
+// event ADDED (Event.AddedLabels), each pattern read with the grammar of
+// webhooks.MatchLabel: "*" is any label, a leading "*" is a suffix wildcard
+// ("*-chaos"), anything else is a literal compared case-insensitively.
+// There is no prefix wildcard: "chaos-*" is the literal label "chaos-*". An
+// added label is claimed when it matches one AddedLabels pattern (any label,
+// when AddedLabels is empty) and no ExcludeAddedLabels pattern; the event
+// passes when one of its added labels is claimed. With both lists empty the
+// dimension is off and an event that added no label passes too.
 type Matcher struct {
-	Sources       []Source `json:"sources,omitempty" bson:"sources,omitempty"`
-	Kinds         []string `json:"kinds,omitempty" bson:"kinds,omitempty"`
-	Actions       []string `json:"actions,omitempty" bson:"actions,omitempty"`
-	Repos         []string `json:"repos,omitempty" bson:"repos,omitempty"`
-	Authors       []string `json:"authors,omitempty" bson:"authors,omitempty"`
-	Labels        []string `json:"labels,omitempty" bson:"labels,omitempty"`
-	SubjectStates []string `json:"subject_states,omitempty" bson:"subject_states,omitempty"`
+	Sources            []Source `json:"sources,omitempty" bson:"sources,omitempty"`
+	Kinds              []string `json:"kinds,omitempty" bson:"kinds,omitempty"`
+	Actions            []string `json:"actions,omitempty" bson:"actions,omitempty"`
+	Repos              []string `json:"repos,omitempty" bson:"repos,omitempty"`
+	Authors            []string `json:"authors,omitempty" bson:"authors,omitempty"`
+	Labels             []string `json:"labels,omitempty" bson:"labels,omitempty"`
+	SubjectStates      []string `json:"subject_states,omitempty" bson:"subject_states,omitempty"`
+	AddedLabels        []string `json:"added_labels,omitempty" bson:"added_labels,omitempty"`
+	ExcludeAddedLabels []string `json:"exclude_added_labels,omitempty" bson:"exclude_added_labels,omitempty"`
 }
 
 // Match reports whether ev satisfies every dimension of m. It is pure and
 // total (no I/O, no panics) so it is cheap to call on the hot path and trivial
 // to unit-test against each family's allowlist shape. All string comparisons
 // are case-insensitive except Kind/Source/State, which are machine-generated
-// enums compared exactly.
+// enums compared exactly. It is Explain without its reason, so the two
+// cannot disagree; a refused event costs the formatting of that reason.
 func (m Matcher) Match(ev Event) bool {
+	ok, _ := m.Explain(ev)
+	return ok
+}
+
+// Explain is Match with its reason: ok reports whether ev satisfies every
+// dimension of m, and when it does not, failed names the first dimension
+// that refused it, with what the matcher wants and what the event carries
+// ("added_labels: wants [nestor] got [bug]"). The dimension's name is its
+// JSON key. failed is empty when ok is true.
+func (m Matcher) Explain(ev Event) (ok bool, failed string) {
 	if len(m.Sources) > 0 && !containsExact(m.Sources, ev.Source) {
-		return false
+		return false, fmt.Sprintf("sources: wants %v got %s", m.Sources, ev.Source)
 	}
 	if len(m.Kinds) > 0 && !containsStr(m.Kinds, ev.Kind, false) {
-		return false
+		return false, fmt.Sprintf("kinds: wants %v got %s", m.Kinds, ev.Kind)
 	}
 	if len(m.Actions) > 0 && !containsStr(m.Actions, ev.Action, true) {
-		return false
+		return false, fmt.Sprintf("actions: wants %v got %s", m.Actions, ev.Action)
 	}
 	if len(m.Repos) > 0 && !containsStr(m.Repos, ev.Repo, true) {
-		return false
+		return false, fmt.Sprintf("repos: wants %v got %s", m.Repos, ev.Repo)
 	}
 	if len(m.Authors) > 0 && !containsStr(m.Authors, ev.Actor, true) {
-		return false
+		return false, fmt.Sprintf("authors: wants %v got %s", m.Authors, ev.Actor)
 	}
 	if len(m.SubjectStates) > 0 && !containsStr(m.SubjectStates, ev.Subject.State, false) {
-		return false
+		return false, fmt.Sprintf("subject_states: wants %v got %s", m.SubjectStates, ev.Subject.State)
 	}
 	// Labels: every required label must be present on the event (AND).
 	for _, want := range m.Labels {
 		if !containsStr(ev.Labels, want, true) {
-			return false
+			return false, fmt.Sprintf("labels: wants all of %v got %v", m.Labels, ev.Labels)
 		}
 	}
-	return true
+	if m.filtersAddedLabels() && !slices.ContainsFunc(ev.AddedLabels, m.claimsAddedLabel) {
+		wants := "any"
+		if len(m.AddedLabels) > 0 {
+			wants = fmt.Sprint(m.AddedLabels)
+		}
+		if len(m.ExcludeAddedLabels) > 0 {
+			wants += fmt.Sprintf(" except %v", m.ExcludeAddedLabels)
+		}
+		return false, fmt.Sprintf("added_labels: wants %s got %v", wants, ev.AddedLabels)
+	}
+	return true, ""
+}
+
+// filtersAddedLabels reports whether m narrows the labels an event added.
+func (m Matcher) filtersAddedLabels() bool {
+	return len(m.AddedLabels) > 0 || len(m.ExcludeAddedLabels) > 0
+}
+
+// claimsAddedLabel reports whether m claims one label an event added: it
+// matches an AddedLabels pattern, or AddedLabels is empty, and it matches no
+// ExcludeAddedLabels pattern.
+func (m Matcher) claimsAddedLabel(label string) bool {
+	if len(m.AddedLabels) > 0 && !matchesLabelPattern(m.AddedLabels, label) {
+		return false
+	}
+	return !matchesLabelPattern(m.ExcludeAddedLabels, label)
+}
+
+// matchesLabelPattern reports whether label matches one of patterns. Each
+// pattern is handed to webhooks.MatchLabel on its own, which owns the
+// grammar: an empty pattern list matches nothing here, where an empty
+// allowlist handed over whole would match every label.
+func matchesLabelPattern(patterns []string, label string) bool {
+	for _, pat := range patterns {
+		if webhooks.MatchLabel([]string{pat}, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchedAddedLabel names the label that started a subscription: of the
+// labels ev added that m claims, the one with the smallest lower-cased
+// value, in the event's own spelling. It reads the added-label dimension
+// only, and answers "" when m claims none of them. The choice depends on
+// the set of added labels, never on their order, so two replicas reading
+// one change set in two orders name the same label; two spellings of one
+// lower-cased value are ordered by their bytes.
+func MatchedAddedLabel(m Matcher, ev Event) string {
+	var (
+		best, bestKey string
+		found         bool
+	)
+	for _, label := range ev.AddedLabels {
+		if !m.claimsAddedLabel(label) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(label))
+		if !found || key < bestKey || (key == bestKey && label < best) {
+			best, bestKey, found = label, key, true
+		}
+	}
+	return best
 }
 
 func containsExact(set []Source, v Source) bool {
@@ -188,14 +275,34 @@ type Subscription struct {
 	// manifest. nil = the level says nothing.
 	Routing *llmroute.Policy `json:"routing,omitempty" bson:"routing,omitempty"`
 	// Origin records where this subscription came from so dedup and cleanup
-	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
-	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
-	// / "dispatcher.yaml" (local config load).
-	Origin    string    `json:"origin,omitempty" bson:"origin,omitempty"`
-	Enabled   bool      `json:"enabled" bson:"enabled"`
-	CreatedBy string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
-	CreatedAt time.Time `json:"created_at" bson:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+	// are possible: "forge:<repo_integration_id>" (ForgeOrigin: projected
+	// from a forge integration, deleted by Origin on deprovision, and
+	// always bound to that integration — a store write refuses any other
+	// binding), "webhook:<config_id>" (the row of a hand-created webhook),
+	// "operator" (studio), "schedule.yaml" / "dispatcher.yaml" (local
+	// config load).
+	Origin string `json:"origin,omitempty" bson:"origin,omitempty"`
+	// ForgeBinding binds the subscription to the forge integration, or the
+	// hand-created webhook, whose deliveries it answers
+	// (ForgeBindingForIntegration, ForgeBindingForWebhook). A bound
+	// subscription is selected by its binding only (ListByForgeBinding,
+	// MatchForgeBound): no bus event fires it and no manifest
+	// reconciliation removes it.
+	ForgeBinding string `json:"forge_binding,omitempty" bson:"forge_binding,omitempty"`
+	// OpensMR reports that the bot a forge subscription starts opens a
+	// merge request its issue is back-linked from.
+	OpensMR bool `json:"opens_mr,omitempty" bson:"opens_mr,omitempty"`
+	// DisabledReason says why a projected subscription is derived disabled,
+	// in words its operator reads; empty on an enabled one.
+	DisabledReason string `json:"disabled_reason,omitempty" bson:"disabled_reason,omitempty"`
+	// ProjectionDigest is the digest of the planner inputs a projected
+	// subscription was derived from: a reader that recomputes another one
+	// from the live manifests holds a stale row.
+	ProjectionDigest string    `json:"projection_digest,omitempty" bson:"projection_digest,omitempty"`
+	Enabled          bool      `json:"enabled" bson:"enabled"`
+	CreatedBy        string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
+	CreatedAt        time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" bson:"updated_at"`
 
 	// Version is the row's optimistic-concurrency stamp: server-managed and
 	// never in the API payload. A full-document Update commits only against
@@ -302,11 +409,15 @@ func ConnectorKey(connectionID, triggerID string) string {
 	return connectionID + "/" + triggerID
 }
 
-// normalize derives what a subscription's own fields determine: the
-// connector key of a connector subscription. Every store write runs it, so
-// the key cannot disagree with the two fields it is made of.
-func (s *Subscription) normalize() {
+// normalize is what every store write runs on the row before it lands. It
+// derives what the subscription's own fields determine — the connector key
+// of a connector subscription — so the key cannot disagree with the two
+// fields it is made of, and it refuses a row whose fields contradict each
+// other with an *InvalidError: a row of a forge integration's origin that
+// is not bound to that integration would be read as a bus subscription.
+func (s *Subscription) normalize() error {
 	s.ConnectorKey = ConnectorKey(s.ConnectionID, s.TriggerID)
+	return s.checkForgeOrigin()
 }
 
 // EffectiveMode returns the subscription's execution mode through the one

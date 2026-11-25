@@ -36,11 +36,48 @@ type StreamOpts struct {
 // Message is a single OpenAI chat message. Content is a pointer so an empty
 // content (e.g. assistant turns that only contain tool_calls) can be omitted
 // from the wire payload.
+//
+// Parts, when non-empty, replaces Content on the wire: the message's content
+// is then the array of typed parts the protocol requires for an image.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    *string    `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string
+	Content    *string
+	Parts      []ContentPart
+	ToolCalls  []ToolCall
+	ToolCallID string
+}
+
+// MarshalJSON emits `content` as a string, or as the parts array when the
+// message carries parts. Field order, omission and the package's unescaped
+// encoding (MarshalJSON) match the plain struct's, so a text-only message
+// serialises byte for byte as it always has.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Role       string     `json:"role"`
+		Content    any        `json:"content,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+	}
+	w := wire{Role: m.Role, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID}
+	switch {
+	case len(m.Parts) > 0:
+		w.Content = m.Parts
+	case m.Content != nil:
+		w.Content = *m.Content
+	}
+	return MarshalJSON(w)
+}
+
+// ContentPart is one typed element of a multimodal message content array.
+type ContentPart struct {
+	Type     string    `json:"type"` // "text" | "image_url"
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL carries an image by URL; a base64 image travels as a data URL.
+type ImageURL struct {
+	URL string `json:"url"`
 }
 
 // Tool is the OpenAI function-tool definition envelope. Type is always

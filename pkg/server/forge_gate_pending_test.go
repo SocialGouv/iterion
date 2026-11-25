@@ -2,12 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // inFlightVars is a review-shaped launch: the repo pinned a gate context and
@@ -286,5 +291,195 @@ func TestForgePublishGrantOutlivesTheLongestRetryWait(t *testing.T) {
 	// And with room for the resumed run itself, not merely one second more.
 	if margin := forgePublishDefaultTTL - retrypolicy.DefaultMaxWait; margin < 6*time.Hour {
 		t.Errorf("margin over the max retry wait is %s — too tight for the resumed run to finish and publish", margin)
+	}
+}
+
+// gateAdvisoryFixture wires the shared fixture with a bot resolver whose
+// manifest declarations decide the stamp: review-pr declares the statuses
+// scope, revi-converse only pull_requests, and broken-bot does not resolve.
+func gateAdvisoryFixture(t *testing.T, gc forgeGateClient) *Server {
+	t.Helper()
+	s := inFlightFixture(t, gc)
+	s.forgeOrchestrator = &forge.Orchestrator{
+		Bots: func(_ context.Context, _, botID string) (*bundle.ForgeRequirements, error) {
+			switch botID {
+			case "review-pr":
+				return &bundle.ForgeRequirements{
+					TokenScopes: map[string]string{bundle.ForgeScopeStatuses: "write"},
+				}, nil
+			case "revi-converse":
+				return &bundle.ForgeRequirements{
+					TokenScopes: map[string]string{"pull_requests": "write"},
+				}, nil
+			case "broken-bot":
+				return nil, errors.New("bot source unreachable")
+			}
+			return nil, nil
+		},
+	}
+	return s
+}
+
+// The stamp follows the DECLARED capability, never the bot id: a bot that
+// declares the statuses scope gates, one that declares only pull_requests (a
+// review-thread converse, a reply lane) is not relied on to answer the gate and
+// is marked advisory, and a server-stamped name cannot be smuggled in by a
+// caller — a gating bot's launch loses a stale value, and a bot that does not
+// resolve keeps today's armed behaviour rather than a guess.
+func TestGateAdvisoryBot_StampFollowsTheDeclaredStatusesScope(t *testing.T) {
+	t.Run("a statuses-scoped bot gates and carries no stamp", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		vars := inFlightVars()
+		vars[gateAdvisoryBotVar] = "true" // a stale or caller-sent value
+		if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustDefault); err != nil {
+			t.Fatalf("inject: %v", err)
+		}
+		if _, stamped := vars[gateAdvisoryBotVar]; stamped {
+			t.Errorf("vars carry %s=%q — a gating bot must not be marked advisory, and the server owns the name",
+				gateAdvisoryBotVar, vars[gateAdvisoryBotVar])
+		}
+	})
+	t.Run("a pull_requests-only bot is marked advisory", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		vars := inFlightVars()
+		if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "revi-converse", vars, nil, store.RunTrustDefault); err != nil {
+			t.Fatalf("inject: %v", err)
+		}
+		if vars[gateAdvisoryBotVar] != "true" {
+			t.Errorf("%s = %q, want \"true\" — a bot without the statuses scope can never answer the gate",
+				gateAdvisoryBotVar, vars[gateAdvisoryBotVar])
+		}
+	})
+	t.Run("a bot that does not resolve keeps the gate armed", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		vars := inFlightVars()
+		if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "broken-bot", vars, nil, store.RunTrustDefault); err != nil {
+			t.Fatalf("inject: %v", err)
+		}
+		if _, stamped := vars[gateAdvisoryBotVar]; stamped {
+			t.Errorf("vars carry %s — an unresolvable bot is not known to be advisory, and stamping it would silence a live gate",
+				gateAdvisoryBotVar)
+		}
+	})
+	t.Run("an inline launch names no bot and stays armed", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		vars := inFlightVars()
+		if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "", vars, nil, store.RunTrustDefault); err != nil {
+			t.Fatalf("inject: %v", err)
+		}
+		if _, stamped := vars[gateAdvisoryBotVar]; stamped {
+			t.Errorf("vars carry %s — no bot, no declared posture, no stamp", gateAdvisoryBotVar)
+		}
+	})
+	t.Run("a launch without a gate costs no stamp", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		vars := map[string]string{"pr_url": "https://github.com/o/r/pull/42"}
+		if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "revi-converse", vars, nil, store.RunTrustDefault); err != nil {
+			t.Fatalf("inject: %v", err)
+		}
+		if _, stamped := vars[gateAdvisoryBotVar]; stamped {
+			t.Errorf("vars carry %s on a gate-less launch — the stamp is a gate fact, not a bot fact", gateAdvisoryBotVar)
+		}
+	})
+}
+
+// The repo's gate context is shared, and the converse lane launches on the
+// review's own head: a launch whose bot declares no statuses scope must claim
+// nothing, in whichever order the two launches land — its claim would
+// overwrite the review's own pending marker (target URL and all), and a
+// review that then dies under it gets no repair.
+func TestMarkGateInFlight_AdvisoryBotClaimsNothing(t *testing.T) {
+	converseVars := func(t *testing.T, s *Server) map[string]string {
+		t.Helper()
+		vars := inFlightVars()
+		_, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "revi-converse", vars, nil, store.RunTrustDefault)
+		if err != nil {
+			t.Fatalf("inject: %v", err)
+		}
+		if vars[gateAdvisoryBotVar] != "true" {
+			t.Fatalf("the converse launch was not stamped advisory — the fixture no longer exercises the guard")
+		}
+		return vars
+	}
+
+	t.Run("converse launched after the review", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		s.markGateInFlight(context.Background(), "team1", "review-pr", inFlightVars(), "run-review")
+		if gc.setCalls != 1 {
+			t.Fatalf("the review claimed %d statuses, want 1", gc.setCalls)
+		}
+		s.markGateInFlight(context.Background(), "team1", "revi-converse", converseVars(t, s), "run-converse")
+		if gc.setCalls != 1 {
+			t.Fatalf("posted %d statuses, want 1 — the converse bot declares no statuses scope, and its launch must not overwrite the review's claim", gc.setCalls)
+		}
+		if gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/run-review" {
+			t.Errorf("the claim points at %q — the review's own run must keep it", gc.last.TargetURL)
+		}
+	})
+	t.Run("converse launched before the review", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := gateAdvisoryFixture(t, gc)
+		s.markGateInFlight(context.Background(), "team1", "revi-converse", converseVars(t, s), "run-converse")
+		if gc.setCalls != 0 {
+			t.Fatalf("posted %d statuses, want 0 — the first write on this head is already one the converse bot can never replace", gc.setCalls)
+		}
+		s.markGateInFlight(context.Background(), "team1", "review-pr", inFlightVars(), "run-review")
+		if gc.setCalls != 1 || gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/run-review" {
+			t.Errorf("the review could not claim the head it was handed (set=%d, target=%q)", gc.setCalls, gc.last.TargetURL)
+		}
+	})
+}
+
+// The advisory posture is a claim-and-repair decision, not a publish refusal:
+// the publish endpoint does not read the declared scope, so a bot without the
+// `statuses` scope that still posts a gate verdict through its publish node is
+// honoured — what it loses is the claim and the repair, nothing it sends.
+func TestGateAdvisoryBot_PublishedVerdictIsStillHonoured(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	s.forgeOrchestrator = &forge.Orchestrator{
+		Bots: func(context.Context, string, string) (*bundle.ForgeRequirements, error) {
+			return &bundle.ForgeRequirements{TokenScopes: map[string]string{"pull_requests": "write"}}, nil
+		},
+	}
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r", Bot: "team-reviewer"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	a, ok := s.botGatesMergesAnswer(context.Background(), "team1", "team-reviewer")
+	if !ok || a.err != nil || a.gates {
+		t.Fatalf("posture = (gates=%v ok=%v err=%v), want a resolved non-gating bot", a.gates, ok, a.err)
+	}
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"context":"iterion/review","blocking_count":0}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("publish = %d %s, want 200", w.Code, w.Body.String())
+	}
+	if gc.setCalls != 1 || gc.last.Context != "iterion/review" || gc.last.State != forge.CommitStateSuccess {
+		t.Fatalf("gate verdict = %d posts, %s=%s — the publish endpoint must not refuse a verdict on the declared scope", gc.setCalls, gc.last.Context, gc.last.State)
+	}
+}
+
+// A blank bot id says nothing about any bot: the repo listing counts it as
+// unreadable (the row omits gates_merges), never as a bot that does not gate.
+func TestGatesMergesResolver_BlankBotIsUnreadableNotNonGating(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	calls := 0
+	s.forgeOrchestrator = &forge.Orchestrator{
+		Bots: func(context.Context, string, string) (*bundle.ForgeRequirements, error) {
+			calls++
+			return &bundle.ForgeRequirements{TokenScopes: map[string]string{"pull_requests": "write"}}, nil
+		},
+	}
+	if got := s.gatesMergesResolver(context.Background(), "team1")([]string{""}); got != nil {
+		t.Fatalf("a blank bot id reported gates_merges=%v, want the posture omitted", *got)
+	}
+	if calls != 0 {
+		t.Fatalf("the bot resolver was called %d times for a blank id, want none", calls)
 	}
 }
