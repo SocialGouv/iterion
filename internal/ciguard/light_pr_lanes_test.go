@@ -13,11 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	reviewAndMergePath = "../../docs/agents/workflow/review-and-merge.md"
-	raceWeightsPath    = "../../scripts/ci/test-shards-weights.tsv"
-	modulePrefix       = "github.com/SocialGouv/iterion/"
-)
+const reviewAndMergePath = "../../docs/agents/workflow/review-and-merge.md"
 
 // minDiscoveryBound is the least -list-timeout a CI test discovery may pass.
 // Discovery is the cold -race compile of the package's test binary on an ARC
@@ -45,8 +41,8 @@ func TestTestDiscoveryBoundCoversColdCompile(t *testing.T) {
 			t.Error(p)
 		}
 	}
-	if calls < 2 {
-		t.Fatalf("found %d by-name discoveries, want at least test-e2e's and race-shard's", calls)
+	if calls < 1 {
+		t.Fatalf("found %d by-name discoveries, want at least test-e2e's", calls)
 	}
 	if !strings.Contains(string(mustRead(t, mergePolicyPath)), "CI passes ten minutes") {
 		t.Errorf("%s does not state the discovery bound CI passes (ten minutes)", mergePolicyPath)
@@ -225,68 +221,6 @@ func TestLightGreenIsNotAdminMergeable(t *testing.T) {
 		}
 		if strings.Contains(section, "nothing else") {
 			t.Errorf("%s %q says the bypass gives up nothing else, but on a light pull request it also gives up the heavy legs", lane.path, lane.heading)
-		}
-	}
-}
-
-// TestRaceFloorIsNamed keeps the race split's justification true against the
-// committed race weights: the heaviest package race-shard still packs whole
-// bounds every race run, so the policy names it as the remaining floor rather
-// than crediting the name split with removing the floor.
-func TestRaceFloorIsNamed(t *testing.T) {
-	heaviest, weight := "", -1
-	for _, line := range strings.Split(string(mustRead(t, raceWeightsPath)), "\n") {
-		fields := strings.Split(line, "\t")
-		if strings.HasPrefix(line, "#") || len(fields) != 2 {
-			continue
-		}
-		var w int
-		if _, err := fmt.Sscanf(fields[1], "%d", &w); err != nil {
-			t.Fatalf("%s: weight %q: %v", raceWeightsPath, fields[1], err)
-		}
-		if w > weight {
-			heaviest, weight = fields[0], w
-		}
-	}
-	if heaviest == "" {
-		t.Fatalf("%s lists no package", raceWeightsPath)
-	}
-	var wf struct {
-		Jobs map[string]struct {
-			Steps []struct {
-				Run string `yaml:"run"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
-		t.Fatal(err)
-	}
-	var step string
-	for _, s := range wf.Jobs["race-shard"].Steps {
-		if strings.Contains(s.Run, "./scripts/ci/testshards") {
-			step = s.Run
-		}
-	}
-	if step == "" {
-		t.Fatal("race-shard runs no partition step")
-	}
-	if splitterSkip(t, "race-shard", step).MatchString(heaviest) {
-		t.Skipf("%s, the heaviest race package, leaves the package partition", heaviest)
-	}
-	short := "`" + strings.TrimPrefix(heaviest, modulePrefix) + "`"
-	section := mdSection(t, mergePolicyPath, "## Light runs, heavy main")
-	named := false
-	for _, sentence := range strings.Split(section, ". ") {
-		if strings.Contains(sentence, "floor") && strings.Contains(sentence, short) {
-			named = true
-		}
-	}
-	if !named {
-		t.Errorf("%s does not name %s, the heaviest package race-shard still packs whole (weight %d), as the race floor", mergePolicyPath, short, weight)
-	}
-	for _, path := range []string{workflowPaths[0], mergePolicyPath} {
-		if strings.Contains(strings.Join(strings.Fields(string(mustRead(t, path))), " "), "floor of every race run") {
-			t.Errorf("%s calls pkg/server the floor of every race run, but %s weighs more and still runs whole", path, short)
 		}
 	}
 }

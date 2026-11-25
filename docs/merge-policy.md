@@ -243,13 +243,6 @@ untriaged red `main`) are in the ADR, and ending it puts `race` and
 `mongo-conformance` back in the ruleset and the heavy legs back in the queue,
 in one change.
 
-`race-shard` splits `pkg/server` by test name (#3684): alone it ran ~1434 s
-under `-race` on ARC, the largest package after `bots`. At ~1630-1715 s,
-`bots` still runs whole and stays the floor of the race wall. The package leaves the weights partition, and each shard runs its
-hash slice of the package's top-level tests
-(`scripts/ci/testshards -tests ./pkg/server -n 3 -i <shard>` under
-`GOFLAGS=-race`) beside its packages; a discovery failure reddens the shard.
-
 ## main-watch: a red main is rerun, quarantined or reverted
 
 Decided 2026-11-25 (#3692). The queue lets the heavy layer reach `main`

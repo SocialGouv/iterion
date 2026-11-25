@@ -167,14 +167,9 @@ jobs:
       three shards; the job leaves `./e2e` (test-e2e's) and
       `./pkg/sandbox/kubernetes` (test-native-exec's) out of its partition and
       skips the flake quarantine, both of which `task test:race` runs; the job
-      also pins yq by digest and builds the ultra11y engine first. It leaves
-      `./pkg/server` out of its package partition too and runs a test-name
-      slice of it per shard (`scripts/ci/testshards -tests ./pkg/server -n 3
-      -i <shard>` under `GOFLAGS=-race`, beside the packages; #3684), which
-      `task test:race` runs whole; internal/ciguard's
-      race_server_split_test.go exercises the split. The job skips a light
-      run — the merge queue and an unlabelled pull request — and runs on push
-      to `main`, the nightly and a dispatch (#3683, #3691).
+      also pins yq by digest and builds the ultra11y engine first. The job skips
+      a light run — the merge queue and an unlabelled pull request — and runs
+      on push to `main`, the nightly and a dispatch (#3683, #3691).
 
   # ---- the other required contexts, and the held mongo-conformance ----
   vendor-check:
