@@ -178,8 +178,8 @@ func (c *compiler) propertySpan(scope, id, prop string) (ast.Span, bool) {
 // not built by the parser — the diagnostic goes to the declaration (the
 // workflow's header, or the node by its id through attachPositions) and
 // names no property: a property the declaration has no line for is not
-// claimed.
-func (c *compiler) emitAtProperty(sev Severity, code DiagCode, scope, id, prop string, format string, args ...any) {
+// claimed. An empty hint is the catalog's fix for code (emit).
+func (c *compiler) emitAtProperty(sev Severity, code DiagCode, scope, id, prop, hint string, format string, args ...any) {
 	sp, ok := c.propertySpan(scope, id, prop)
 	if !ok {
 		prop = ""
@@ -191,7 +191,7 @@ func (c *compiler) emitAtProperty(sev Severity, code DiagCode, scope, id, prop s
 			sp = c.workflowSpan(id)
 		}
 	}
-	c.emit(sev, code, nodeID, "", sp, prop, "", format, args...)
+	c.emit(sev, code, nodeID, "", sp, prop, hint, format, args...)
 }
 
 // firstWrittenProperty is, of the properties named, the one the workflow
@@ -214,12 +214,18 @@ func (c *compiler) firstWrittenProperty(workflow string, props []string) string 
 
 // errorfAtProperty is emitAtProperty for an error.
 func (c *compiler) errorfAtProperty(code DiagCode, scope, id, prop string, format string, args ...any) {
-	c.emitAtProperty(SeverityError, code, scope, id, prop, format, args...)
+	c.emitAtProperty(SeverityError, code, scope, id, prop, "", format, args...)
 }
 
 // warnfAtProperty is emitAtProperty for a warning.
 func (c *compiler) warnfAtProperty(code DiagCode, scope, id, prop string, format string, args ...any) {
-	c.emitAtProperty(SeverityWarning, code, scope, id, prop, format, args...)
+	c.emitAtProperty(SeverityWarning, code, scope, id, prop, "", format, args...)
+}
+
+// warnfAtPropertyWithHint is warnfAtProperty for a site whose fix differs
+// from the catalog's: one code whose arms need different remedies.
+func (c *compiler) warnfAtPropertyWithHint(code DiagCode, scope, id, prop, hint string, format string, args ...any) {
+	c.emitAtProperty(SeverityWarning, code, scope, id, prop, hint, format, args...)
 }
 
 // workflowSpan is the source span of the workflow declaration named `name`
