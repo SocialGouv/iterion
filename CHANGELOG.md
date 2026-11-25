@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.38.1](https://github.com/SocialGouv/iterion/compare/v7.38.0...v7.38.1) (2026-11-25)
+
+### Bug Fixes
+
+* **security:** bump the image CLI binaries, track them with renovate, and stop scanning non-shipping trees ([#3706](https://github.com/SocialGouv/iterion/issues/3706)) ([18572f4](https://github.com/SocialGouv/iterion/commit/18572f465a6512fcdc0f505c6d4628febcddec57))
+
+    <details><summary>why</summary>
+
+    Trivy finds 549 open HIGH/CRITICAL alerts on CLI binaries built with old Go stdlibs: gh (iterion image, 149), and k9s 165, yq 93, kubectl 85 and glab 57 in iterion-sandbox-full (code scanning, 2026-11-25). None of these pins was visible to renovate. Their ARGs carried no `# renovate:` comment, and Dockerfile and sandbox/full/Dockerfile were outside the inline-pin manager's file list. So they only moved by hand: kubectl sat on v1.31.4 in sandbox/full while the runner images were on v1.36.0.
+
+    </details>
+
 ## [7.38.0](https://github.com/SocialGouv/iterion/compare/v7.37.0...v7.38.0) (2026-11-25)
 
 ### Features
