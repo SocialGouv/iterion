@@ -21,37 +21,61 @@ var workflowPaths = []string{
 	"../../.github/workflows/merge-queue-gate.yml",
 }
 
-// The two scale sets a self-hosted job routes to. Both expressions share
-// every clause byte for byte and differ in their last alternative only:
+// The three routing classes a self-hosted job belongs to. Every class
+// expression shares every clause byte for byte and differs from the others in
+// the variable of its last alternative only, each ending on
+// `vars.CI_<CLASS>_RUNNER || 'arc-runners'`: the repository variable names the
+// class's scale set, and while it is unset the job lands on `arc-runners`, so
+// an unset variable changes no routing.
 //
-//   - large ends on `'arc-runners'`, the 2 CPU / 4 Gi scale set;
-//   - small ends on `vars.CI_SMALL_RUNNER || 'arc-runners'`: the repository
-//     variable names the small scale set, and while it is unset the job lands
-//     on `arc-runners` exactly as a large job does.
+//   - small: aggregators and seconds-long scripts;
+//   - large: the heavy jobs the merge queue requires (test-unit, golangci,
+//     studio);
+//   - heavy: the non-required heavy layer, which runs on push to main, the
+//     nightly, a dispatch and `ci:full` (ADR-173).
 const (
-	largeRunner = "large"
 	smallRunner = "small"
+	largeRunner = "large"
+	heavyRunner = "heavy"
 
-	largeRoutingTail = "&& 'ubuntu-latest' || 'arc-runners' }}"
-	smallRoutingTail = "&& 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}"
+	// routingTailHead opens the last alternatives of every routing
+	// expression, the self-hosted one and test-native-exec's alike: what
+	// precedes it is the shared base, the clauses.
+	routingTailHead = "&& 'ubuntu-latest' || "
 )
 
-// runnerClasses pins, per workflow file and job id, which scale set each
+// runnerClassOrder lists the classes in a stable order for reports.
+var runnerClassOrder = []string{smallRunner, largeRunner, heavyRunner}
+
+// routingTails are the three canonical tails, one per class.
+var routingTails = map[string]string{
+	smallRunner: routingTailHead + "vars.CI_SMALL_RUNNER || 'arc-runners' }}",
+	largeRunner: routingTailHead + "vars.CI_LARGE_RUNNER || 'arc-runners' }}",
+	heavyRunner: routingTailHead + "vars.CI_HEAVY_RUNNER || 'arc-runners' }}",
+}
+
+// routingVariables are the repository variables that send a job to a
+// self-hosted scale set; any of them in a `runs-on` makes the job self-hosted
+// for this guard, whatever else the expression says.
+var routingVariables = []string{"CI_SMALL_RUNNER", "CI_LARGE_RUNNER", "CI_HEAVY_RUNNER"}
+
+// runnerClasses pins, per workflow file and job id, which class each
 // self-hosted job routes to. It is the classification of #3694, measured on
 // peak memory and CPU: a job on the wrong expression either starves on 500m
-// or holds a 2 CPU pod for a seconds-long script. A self-hosted job absent
+// or holds a large pod for a seconds-long script. A self-hosted job absent
 // from this table is red: a new job is classified, never silently accepted.
 // test-native-exec carries its own runner variable and is pinned by
 // native_exec_runner_test.go; GitHub-hosted jobs are not listed.
 var runnerClasses = map[string]map[string]string{
 	"../../.github/workflows/tests.yml": {
-		"test-unit":         largeRunner,
-		"test-e2e":          largeRunner,
-		"studio":            largeRunner,
-		"race-shard":        largeRunner,
-		"mongo-conformance": largeRunner,
-		"cloud-e2e":         largeRunner,
-		"golangci":          largeRunner,
+		"test-unit": largeRunner,
+		"studio":    largeRunner,
+		"golangci":  largeRunner,
+
+		"race-shard":        heavyRunner,
+		"test-e2e":          heavyRunner,
+		"mongo-conformance": heavyRunner,
+		"cloud-e2e":         heavyRunner,
 
 		"test":              smallRunner,
 		"race":              smallRunner,
@@ -74,8 +98,24 @@ type routedJob struct {
 	path, id, runsOn string
 }
 
+// namesSelfHostedRunner reports whether a `runs-on` value can reach a
+// self-hosted scale set: it names `arc-runners` or a routing variable.
+func namesSelfHostedRunner(runsOn string) bool {
+	// GitHub resolves `vars` names and runner labels case-insensitively, so
+	// `vars.ci_heavy_runner` routes like `vars.CI_HEAVY_RUNNER`.
+	if strings.Contains(strings.ToLower(runsOn), "arc-runners") {
+		return true
+	}
+	for _, v := range routingVariables {
+		if strings.Contains(strings.ToUpper(runsOn), v) {
+			return true
+		}
+	}
+	return false
+}
+
 // selfHostedJobs reads every job of workflowPaths whose `runs-on:` names the
-// scale set or the small-runner variable.
+// scale set or a routing variable.
 func selfHostedJobs(t *testing.T) []routedJob {
 	t.Helper()
 	var jobs []routedJob
@@ -94,7 +134,7 @@ func selfHostedJobs(t *testing.T) []routedJob {
 		}
 		for id, job := range wf.Jobs {
 			value := strings.TrimSpace(job.RunsOn)
-			if strings.Contains(value, "arc-runners") || strings.Contains(value, "CI_SMALL_RUNNER") {
+			if namesSelfHostedRunner(value) {
 				jobs = append(jobs, routedJob{path: path, id: id, runsOn: value})
 			}
 		}
@@ -108,21 +148,30 @@ func selfHostedJobs(t *testing.T) []routedJob {
 	return jobs
 }
 
-// routingClass names the scale set an expression's tail selects, or "" for
-// a spelling that is neither canonical tail.
+// routingClass names the class an expression's tail selects, or "" for a
+// spelling that is none of the canonical tails.
 func routingClass(runsOn string) string {
-	switch {
-	case strings.HasSuffix(runsOn, smallRoutingTail):
-		return smallRunner
-	case strings.HasSuffix(runsOn, largeRoutingTail):
-		return largeRunner
+	for _, class := range runnerClassOrder {
+		if strings.HasSuffix(runsOn, routingTails[class]) {
+			return class
+		}
 	}
 	return ""
 }
 
+// routingBase is an expression with its canonical class tail removed: the
+// clauses every class shares. ok is false for a non-canonical spelling.
+func routingBase(runsOn string) (base string, ok bool) {
+	class := routingClass(runsOn)
+	if class == "" {
+		return "", false
+	}
+	return strings.TrimSuffix(runsOn, routingTails[class]), true
+}
+
 // TestSelfHostedRoutingExpressionsAgree pins every copy of one security
-// decision against each other, in exactly two canonical spellings — large
-// and small — and pins which job carries which.
+// decision against each other, in exactly three canonical spellings — small,
+// large and heavy — and pins which job carries which.
 //
 // `runs-on` cannot read a workflow-level `env`, and routing the choice
 // through a `needs:` job would put every job behind a single GitHub-hosted
@@ -132,10 +181,10 @@ func routingClass(runsOn string) string {
 // five jobs is loud, removed from one it is invisible.
 //
 // The assertion is deliberately byte equality, not a parse of what each
-// copy means: within a class every copy is identical, and the small
-// expression is the large one with its last alternative replaced and nothing
-// else. Any other difference — a clause dropped, a bot login changed, an
-// operator lever added to five of six — is a difference the reviewer must see.
+// copy means: within a class every copy is identical, and the three class
+// expressions are one base with only the tail swapped. Any other difference
+// — a clause dropped, a bot login changed, an operator lever added to five of
+// six — is a difference the reviewer must see.
 func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
 	jobs := selfHostedJobs(t)
 	if len(jobs) == 0 {
@@ -145,7 +194,10 @@ func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
 	}
 
 	seen := map[string]map[string]bool{}
-	byClass := map[string]map[string][]string{largeRunner: {}, smallRunner: {}}
+	byClass := map[string]map[string][]string{}
+	for _, class := range runnerClassOrder {
+		byClass[class] = map[string][]string{}
+	}
 	for _, job := range jobs {
 		if seen[job.path] == nil {
 			seen[job.path] = map[string]bool{}
@@ -154,14 +206,14 @@ func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
 		want, classified := runnerClasses[job.path][job.id]
 		if !classified {
 			t.Errorf("%s: job %q routes to a self-hosted runner but runnerClasses does not "+
-				"classify it: add it as %q or %q, from its measured peak", job.path, job.id, largeRunner, smallRunner)
+				"classify it: add it as one of %q, from its measured peak", job.path, job.id, runnerClassOrder)
 			continue
 		}
 		got := routingClass(job.runsOn)
 		switch {
 		case got == "":
-			t.Errorf("%s: job %q carries a third routing spelling, neither the large tail %q nor the small tail %q:\n  %s",
-				job.path, job.id, largeRoutingTail, smallRoutingTail, job.runsOn)
+			t.Errorf("%s: job %q carries a routing spelling outside the three canonical tails %q:\n  %s",
+				job.path, job.id, routingTails, job.runsOn)
 			continue
 		case got != want:
 			t.Errorf("%s: job %q is classified %s but carries the %s expression", job.path, job.id, want, got)
@@ -170,6 +222,9 @@ func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
 	}
 	for path, classes := range runnerClasses {
 		for id, class := range classes {
+			if _, known := routingTails[class]; !known {
+				t.Errorf("%s: job %q is classified %q, which is none of %q", path, id, class, runnerClassOrder)
+			}
 			if !seen[path][id] {
 				t.Errorf("%s: job %q is classified %s but no longer routes to a self-hosted runner "+
 					"(renamed, deleted or moved to a hosted label): update runnerClasses in the same change", path, id, class)
@@ -177,14 +232,15 @@ func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
 		}
 	}
 
-	canonical := map[string]string{}
-	for _, class := range []string{largeRunner, smallRunner} {
+	bases := map[string][]string{}
+	for _, class := range runnerClassOrder {
 		switch len(byClass[class]) {
 		case 0:
 			// A class with no job is reported per job above whenever runnerClasses expects one.
 		case 1:
 			for value := range byClass[class] {
-				canonical[class] = value
+				base, _ := routingBase(value)
+				bases[base] = append(bases[base], class)
 			}
 		default:
 			t.Errorf("the %s jobs do NOT all carry the same expression, so one security decision "+
@@ -195,11 +251,10 @@ func TestSelfHostedRoutingExpressionsAgree(t *testing.T) {
 			}
 		}
 	}
-	large, small := canonical[largeRunner], canonical[smallRunner]
-	if large != "" && small != "" {
-		if want := strings.TrimSuffix(large, largeRoutingTail) + smallRoutingTail; small != want {
-			t.Errorf("the small expression differs from the large one in more than its last alternative:\n"+
-				"  large: %s\n  small: %s\n  want:  %s", large, small, want)
+	if len(bases) > 1 {
+		t.Errorf("the class expressions differ in more than their last alternative: %d different bases", len(bases))
+		for base, classes := range bases {
+			t.Errorf("  %v: %s", classes, base)
 		}
 	}
 }

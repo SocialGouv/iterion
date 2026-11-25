@@ -161,7 +161,7 @@ func TestE2ERunsUnderRaceOnceOnTheScaleSet(t *testing.T) {
 	if got := e2e.Env["CGO_ENABLED"]; got != "1" {
 		t.Errorf("test-e2e sets CGO_ENABLED=%q: -race needs cgo", got)
 	}
-	if !strings.HasSuffix(e2e.RunsOn, "|| 'arc-runners' }}") || e2e.RunsOn != wf.Jobs["golangci"].RunsOn {
+	if routingClass(e2e.RunsOn) == "" {
 		t.Errorf("test-e2e no longer runs on the scale set (runs-on %q)", e2e.RunsOn)
 	}
 	var partition string
