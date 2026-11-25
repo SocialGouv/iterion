@@ -745,7 +745,7 @@ func TestGateRelaunch(t *testing.T) {
 			if *w.launched != 0 {
 				t.Fatalf("relaunched a review the provider refused deterministically (%d launches) — the relaunch meets the same refusal", *w.launched)
 			}
-			if desc := gateInterruptedDescriptionFor(run); !strings.HasSuffix(desc, gateProviderRefusalRemedy) || utf8.RuneCountInString(desc) > 140 {
+			if desc := gateInterruptedDescriptionFor(run); !(strings.HasSuffix(desc, gateProviderRefusalRemedy) || strings.HasSuffix(desc, gateDeterministicRefusalRemedy)) || utf8.RuneCountInString(desc) > 140 {
 				t.Errorf("status description %q does not name the remedy of a provider refusal within 140 runes", desc)
 			}
 		})

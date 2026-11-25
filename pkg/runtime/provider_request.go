@@ -112,7 +112,7 @@ func providerRefusalCode(err error) (ErrorCode, bool) {
 
 // refusalRemedies is the operator's remedy for each provider refusal.
 var refusalRemedies = map[api.RefusalKind]string{
-	api.RefusalBudget:     "the provider refused the call because the spend budget of its key, team or account is exhausted — raise that budget (or add credits) at the provider or gateway; the run parks, the credential is routed around, and an hourly probe resumes it once the budget reopens",
+	api.RefusalBudget:     "the provider refused the call because the spend budget of its key, team or account is exhausted — raise that budget (or add credits) at the provider or gateway; a declared fallback route is taken within the run; the run then parks, and the hourly probe relaunches it — the relaunch reuses the same key until the budget clears",
 	api.RefusalCapability: "the model cannot take an input this node sends it (e.g. an image to a text-only model) — route the node to a model that accepts it, or stop sending that input, then resume",
 	api.RefusalGrammar:    "the gateway cannot compile the request's schemas (tool or output) into a decoding grammar — simplify the schema construct it names, or serve the node on a model or gateway that accepts it, then resume",
 	api.RefusalRequest:    "the provider refused the request itself — fix what it names, then resume",

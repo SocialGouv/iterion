@@ -98,10 +98,13 @@ const (
 // cost: 150.18, Max budget: 150.0", "ExceededBudget: User=… over budget",
 // "ExceededBudget: Key over 1d budget", "exceeded budget for model=…", its
 // ExceededTokenBudget form) and Anthropic's exhausted credit balance.
-// LiteLLM's budget_exceeded error TYPE is read from the envelope's type field
-// alone (errorEnvelope), never as a substring: a message may quote the
-// request's own identifiers ("function 'notify_budget_exceeded'").
-var budgetRefusalMarkers = []string{"budget has been exceeded", "exceededbudget", "exceededtokenbudget", "exceeded budget for model", "credit balance is too low"}
+// Each is anchored on the punctuation LiteLLM prints after it ("!", ":",
+// "="): a gateway that echoes the request — a prompt quoting the words, a
+// tool named onExceededBudget — must not read as a budget. LiteLLM's
+// budget_exceeded error TYPE is read from the envelope's type field alone
+// (errorEnvelope), never as a substring: a message may quote the request's
+// own identifiers ("function 'notify_budget_exceeded'").
+var budgetRefusalMarkers = []string{"budget has been exceeded!", "exceededbudget:", "exceededtokenbudget:", "exceeded budget for model=", "credit balance is too low"}
 
 // budgetRefusalType is LiteLLM's error.type for every budget refusal.
 const budgetRefusalType = "budget_exceeded"

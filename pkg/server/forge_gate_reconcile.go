@@ -106,11 +106,17 @@ const gatePreflightUnavailableRemedy = ") — the run's reason names the cure, t
 // developer told each time to reproduce it.
 const gateBudgetRemedy = ") — needs a human reviewer, or a higher budget"
 
-// gateProviderRefusalRemedy replaces the generic remedy when the provider
-// refused the review deterministically (runtime.IsProviderRefusalCode): a
-// push or a re-run meets the same refusal, so the way out is the bot's model
-// or schema, which the run's own error names.
-const gateProviderRefusalRemedy = ") — refused by the provider; change the bot's model or schema"
+// gateProviderRefusalRemedy and gateDeterministicRefusalRemedy replace the
+// generic remedy when the review died on a deterministic refusal
+// (runtime.IsProviderRefusalCode): a push or a re-run meets the same refusal,
+// so the way out is what the run's own error names. Only
+// PROVIDER_REQUEST_INVALID can come from a provider alone; the other codes
+// iterion raises too (an image without the backend's CLI, a schema it cannot
+// parse), so their remedy blames no one.
+const (
+	gateProviderRefusalRemedy      = ") — refused by the provider; change the bot's model or schema"
+	gateDeterministicRefusalRemedy = ") — deterministic: a re-run meets the same refusal"
+)
 
 // gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
 // the run doc can say (budget exceeded, provider error, …). GitHub truncates
@@ -159,8 +165,11 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 	if run != nil && run.FailureCode == store.FailureBudgetExceeded {
 		return gateDiedDescriptionPrefix + reason + gateBudgetRemedy
 	}
-	if run != nil && runtime.IsProviderRefusalCode(run.FailureCode) {
+	if run != nil && run.FailureCode == store.FailureProviderRequestInvalid {
 		return gateDiedDescriptionPrefix + reason + gateProviderRefusalRemedy
+	}
+	if run != nil && runtime.IsProviderRefusalCode(run.FailureCode) {
+		return gateDiedDescriptionPrefix + reason + gateDeterministicRefusalRemedy
 	}
 	if run != nil && run.FailureCode == forgePreflightUnavailableFailureCode {
 		return gateDiedDescriptionPrefix + reason + gatePreflightUnavailableRemedy

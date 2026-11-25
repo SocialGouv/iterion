@@ -96,6 +96,13 @@ func TestProviderRefusalStopsEveryLayer(t *testing.T) {
 					t.Errorf("the remedy does not name the cause: %s", action.Reason)
 				}
 				if code == runtime.ErrCodeUsageLimitBlocked {
+					// The remedy promises only what the machinery does: a
+					// declared fallback route within the run; across runs
+					// the meter keeps no gateway-key evidence, so the
+					// relaunch spends the same key until the budget clears.
+					if !strings.Contains(action.Reason, "the relaunch reuses the same key") || strings.Contains(action.Reason, "routed around") {
+						t.Errorf("the budget remedy promises a cross-run credential skip the meter does not make: %s", action.Reason)
+					}
 					// The spend ceiling parks as an account refusal: the
 					// runner arms the usage park, the hourly probe relaunches.
 					if !delegate.IsAccountRefusal(err) || retrypolicy.IsDeterministic(code) {

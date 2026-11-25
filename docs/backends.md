@@ -2157,18 +2157,22 @@ it echoes.
 
 | Refusal | Provider words (or status) | Code |
 |---|---|---|
-| budget | `Budget has been exceeded`, `ExceededBudget`, `ExceededTokenBudget`, `exceeded budget for model`, `credit balance is too low`, `error.type: budget_exceeded`, HTTP 402 | `USAGE_LIMIT_BLOCKED` |
+| budget | `Budget has been exceeded!`, `ExceededBudget:`, `ExceededTokenBudget:`, `exceeded budget for model=`, `credit balance is too low`, `error.type: budget_exceeded`, HTTP 402 | `USAGE_LIMIT_BLOCKED` |
 | capability | `is not a multimodal model`, `image_url is only supported by certain models` | `CAPABILITY_UNSUPPORTED` |
 | grammar | `xgrammar`, `Grammar error` | `SCHEMA_UNUSABLE` |
 | request | HTTP 405, 410, 411, 414, 415, 422, 431 | `PROVIDER_REQUEST_INVALID` |
 
 A **budget** refusal is a spend ceiling, read like claude_code's spend limit:
 claw and pi type it as an account refusal (`delegate.SpendCeilingRefusal`, a
-usage window naming no reset). The run parks, the credential is routed
-around, and the hourly probe of the run's credential window relaunches it — a
-LiteLLM budget often reopens by itself (a windowed budget, a released
-reservation); the remedy names the budget to raise. claude_code reports text,
-not a typed refusal: its spend-limit wording keeps its own reading.
+usage window naming no reset). A declared fallback route (`on:
+[usage_window]`) is taken within the run; then the run parks and the hourly
+probe of the run's credential window relaunches it — a LiteLLM budget often
+reopens by itself (a windowed budget, a released reservation). The usage
+meter keeps no reading for a gateway key (it meters the anthropic wire), so
+the relaunch reuses the same key until the budget clears; the remedy names
+the budget to raise. claude_code reports text, not a typed refusal: its
+spend-limit wording keeps its own reading, and a %v-flattened budget is read
+as a spend ceiling too.
 
 The **other three** are deterministic, and every layer stops on them: the claw
 client's retry (`APIError.IsRetryable`), the executor's in-node retries, node

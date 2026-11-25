@@ -137,10 +137,13 @@ func ClassifyFallback(err error, retryable bool) FallbackCategory {
 // SpendCeilingRefusal types the budget refusal cause carries
 // (api.RefusalBudget: a gateway key's or team's budget, an exhausted credit
 // balance) as the account refusal a spend ceiling is everywhere else — a
-// usage window naming no reset, read by IsAccountRefusal: the run parks, the
-// resolver routes around the credential, and the parked run's hourly probe
-// finds out when the ceiling reopened (a windowed budget resets by itself,
-// a raised one at once). ok is false when cause names no budget refusal.
+// usage window naming no reset, read by IsAccountRefusal: a declared fallback
+// route is taken within the run, then the run parks and the parked run's
+// hourly probe finds out when the ceiling reopened (a windowed budget resets
+// by itself, a raised one at once). No meter reading is recorded for a
+// gateway key (UsageMeterBackendForProvider meters the anthropic wire only),
+// so the relaunch reuses the same key until the budget clears. ok is false
+// when cause names no budget refusal.
 // cause rides as the refusal's Cause.
 func SpendCeilingRefusal(provider string, cause error) (refusal *ErrRateLimited, ok bool) {
 	for _, r := range api.RefusalsOf(cause) {

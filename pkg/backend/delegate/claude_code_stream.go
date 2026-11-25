@@ -1656,15 +1656,18 @@ func isAccountRefusalText(lower string) bool {
 }
 
 // isSpendLimitText reports whether already-lowercased text carries the
-// account spend-ceiling shape. One definition, shared by the classifier
-// and the flattened-error fallback for the same reason as its siblings.
+// account spend-ceiling shape: the signals above, or a provider budget
+// refusal in the words the provider classifier reads (api.ClassifyRefusal —
+// a gateway budget whose type a %v hop flattened). One definition, shared by
+// the classifier and the flattened-error fallback for the same reason as its
+// siblings.
 func isSpendLimitText(lower string) bool {
 	for _, sig := range spendLimitSignals {
 		if strings.Contains(lower, sig) {
 			return true
 		}
 	}
-	return false
+	return api.ClassifyRefusal(0, lower, "") == api.RefusalBudget
 }
 
 // isUsageWindowText reports whether already-lowercased text carries one of the
