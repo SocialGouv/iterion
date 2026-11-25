@@ -18,6 +18,7 @@
 # and fails on a closed or missing one.
 github.com/SocialGouv/iterion/pkg/backend/model	TestSandboxSeed_AnUnboundableSessionIsLeftBehindNotFailed	#3512
 github.com/SocialGouv/iterion/pkg/backend/model	TestSandboxRelay_AnUnshrinkablePayloadIsRefusedAndReported	#3512
+github.com/SocialGouv/iterion/pkg/server	TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries/every_resume_unreachable	#3675
 github.com/SocialGouv/iterion/pkg/runview	TestAlertsOfASuccessorNeverReachAPredecessorsStream	#3624
 github.com/SocialGouv/iterion/pkg/runview	TestAlertRotationReregistersTheSuccessor	#3624
 github.com/SocialGouv/iterion/pkg/runview	TestAlertEpochEndRetiredQueueAndResume	#3624
