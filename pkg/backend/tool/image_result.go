@@ -78,7 +78,7 @@ func ImageResultContent(toolName, output string, policy ImagePolicy) ([]api.Cont
 			}
 			src, note := b.Source, ""
 			w, h, format, headerOK := ImageHeader(src)
-			if mt := "image/" + format; headerOK && src.MediaType != mt {
+			if mt := "image/" + format; format != "" && src.MediaType != mt {
 				fixed := *src
 				fixed.MediaType = mt
 				src = &fixed
@@ -88,6 +88,8 @@ func ImageResultContent(toolName, output string, policy ImagePolicy) ([]api.Cont
 				over, env = fmt.Sprintf("is %d bytes of base64, over the %d this model route accepts per image", len(src.Data), max), knobs
 			} else if side := policy.MaxImageSide; side > 0 && headerOK && (w > side || h > side) {
 				over, env = fmt.Sprintf("is %dx%d pixels, over the %d-pixel side this model route accepts", w, h, side), EnvImageMaxSide
+			} else if side > 0 && !headerOK && format != "" {
+				over, env = fmt.Sprintf("is a %s whose size its header does not give within %d bytes, so it cannot be held to the %d-pixel side this model route accepts", format, headerPrefixBytes, side), EnvImageMaxSide
 			}
 			if over != "" {
 				if !reducibleImageProducers[toolName] {

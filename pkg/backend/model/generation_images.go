@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -75,7 +76,11 @@ const (
 	requestImageNeverFits = "[image omitted from this request: it does not fit this model route's budget per request beside the prompt's own images (%s, %s) — calling the tool again will not help]"
 	// requestImageManyImages: an image over the side every image of a
 	// request carrying many images is held to.
-	requestImageManyImages = "[image omitted from this request: a request of more than %d images holds each to %d pixels a side on this model route (%s, %s) — call the tool again for a smaller image]"
+	requestImageManyImages = "[image omitted from this request: a request of more than %d images holds each to %d pixels a side on this model route (%s, %s); the newest images are kept — call the tool again to see this one]"
+	// requestImageManyImagesLastRun: an image of the last tool run, dropped
+	// because the prompt's images and that run's carry more than the
+	// threshold with one over the side.
+	requestImageManyImagesLastRun = "[image omitted from this request: with the prompt's images and the last tool calls' other images, the request carries more than %d images, one over %d pixels a side, which this model route refuses (%s, %s) — calling the tool again will not help; ask for fewer images at a time]"
 )
 
 // requestBudgetHysteresis is the share of the per-request budget a request
@@ -131,14 +136,18 @@ func imageBytes(b api.ContentBlock) int {
 	return len(b.Source.Data) + len(b.Source.URL)
 }
 
-// headerSide is the longer side an image's header declares, 0 when the
-// header is unreadable.
+// headerSide is the longer side an image's header declares: math.MaxInt for
+// a known format whose size cannot be read (an image the route may refuse
+// counts as over any side bound), 0 for an unknown format.
 func headerSide(src *api.ImageSource) int {
-	w, h, _, ok := tool.ImageHeader(src)
-	if !ok {
-		return 0
+	w, h, format, ok := tool.ImageHeader(src)
+	switch {
+	case ok:
+		return max(w, h)
+	case format != "":
+		return math.MaxInt
 	}
-	return max(w, h)
+	return 0
 }
 
 // toolImageRef locates one image inside a tool_result of the conversation.
@@ -202,9 +211,8 @@ func boundRequestImages(messages []api.Message, policy tool.ImagePolicy) ([]api.
 					continue
 				}
 				r := toolImageRef{msg: i, block: j, inner: k, bytes: imageBytes(c), lastRun: i > lastAssistant}
-				if w, h, format, ok := tool.ImageHeader(c.Source); ok {
-					r.side, r.format = max(w, h), format
-				}
+				r.side = headerSide(c.Source)
+				_, _, r.format, _ = tool.ImageHeader(c.Source)
 				refs = append(refs, r)
 			}
 		}
@@ -258,25 +266,41 @@ func boundRequestImages(messages []api.Message, policy tool.ImagePolicy) ([]api.
 	}
 
 	if thr > 0 && manySide > 0 && count > thr {
-		marker := fmt.Sprintf(requestImageManyImages, thr, manySide, tool.EnvRequestManyImagesThreshold, tool.EnvRequestManyImagesMaxSide)
-		var rest []int
-		for _, idx := range window {
-			if count > thr && refs[idx].side > manySide {
-				markers[idx] = marker
-				count--
-				continue
+		older := fmt.Sprintf(requestImageManyImages, thr, manySide, tool.EnvRequestManyImagesThreshold, tool.EnvRequestManyImagesMaxSide)
+		lastRun := fmt.Sprintf(requestImageManyImagesLastRun, thr, manySide, tool.EnvRequestManyImagesThreshold, tool.EnvRequestManyImagesMaxSide)
+		dropped := map[int]bool{}
+		overSideKept := func() bool {
+			if promptMaxSide > manySide {
+				return true
 			}
-			rest = append(rest, idx)
-		}
-		if count > thr && promptMaxSide > manySide {
-			for _, idx := range rest {
-				if count <= thr {
-					break
+			for _, idx := range window {
+				if !dropped[idx] && refs[idx].side > manySide {
+					return true
 				}
+			}
+			return false
+		}
+		drop := func(keep func(idx int) bool, marker string) {
+			for _, idx := range window {
+				if count <= thr || !overSideKept() {
+					return
+				}
+				if dropped[idx] || keep(idx) {
+					continue
+				}
+				dropped[idx] = true
 				markers[idx] = marker
 				count--
 			}
 		}
+		// The newest screen the model asked for goes last: older over-side
+		// images first, then older images whatever their side, and only then
+		// the last run's — over-side first — under a marker that promises no
+		// smaller image, which no image tool can produce.
+		drop(func(idx int) bool { return refs[idx].lastRun || refs[idx].side <= manySide }, older)
+		drop(func(idx int) bool { return refs[idx].lastRun }, older)
+		drop(func(idx int) bool { return refs[idx].side <= manySide }, lastRun)
+		drop(func(int) bool { return false }, lastRun)
 	}
 
 	// The media type a kept image goes out under is its header's.

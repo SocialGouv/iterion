@@ -9,7 +9,6 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -36,9 +35,12 @@ var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 // ImageHeader reads an image's format and dimensions from its header alone,
 // never a pixel: a PNG's from its IHDR (the first chunk, by the format's
 // rule) without walking the chunks after it, a WebP's from its first chunk
-// (VP8X, VP8L or VP8), a JPEG's and a GIF's through their DecodeConfig over a
-// stream of at most headerPrefixBytes. ok is false for a source that is not
-// base64 data, or a header it cannot read within that prefix.
+// (VP8X, VP8L or VP8), a JPEG's through its DecodeConfig and a GIF's from its
+// logical screen and first frame (the larger of the two), over a stream of
+// at most headerPrefixBytes. format names the format the magic bytes
+// declare even when the size cannot be read; ok says the size was read. A
+// caller treats a known format of unreadable size as over any side bound:
+// the image is one the route may refuse.
 func ImageHeader(src *api.ImageSource) (width, height int, format string, ok bool) {
 	if src == nil || src.Type != "base64" {
 		return 0, 0, "", false
@@ -47,43 +49,96 @@ func ImageHeader(src *api.ImageSource) (width, height int, format string, ok boo
 	head, _ := r.Peek(30)
 	le24 := func(b []byte) int { return int(b[0]) | int(b[1])<<8 | int(b[2])<<16 }
 	switch {
-	case len(head) >= 24 && bytes.Equal(head[:8], pngSignature) && string(head[12:16]) == "IHDR" && binary.BigEndian.Uint32(head[8:12]) == 13:
+	case len(head) >= 8 && bytes.Equal(head[:8], pngSignature):
+		if len(head) < 24 || string(head[12:16]) != "IHDR" || binary.BigEndian.Uint32(head[8:12]) != 13 {
+			return 0, 0, "png", false
+		}
 		w, h := binary.BigEndian.Uint32(head[16:20]), binary.BigEndian.Uint32(head[20:24])
 		if w > 1<<31-1 || h > 1<<31-1 {
-			return 0, 0, "", false
+			return 0, 0, "png", false
 		}
 		return int(w), int(h), "png", true
-	case len(head) >= 30 && string(head[:4]) == "RIFF" && string(head[8:12]) == "WEBP":
+	case len(head) >= 12 && string(head[:4]) == "RIFF" && string(head[8:12]) == "WEBP":
+		if len(head) < 30 {
+			return 0, 0, "webp", false
+		}
 		switch string(head[12:16]) {
 		case "VP8X":
 			return 1 + le24(head[24:27]), 1 + le24(head[27:30]), "webp", true
 		case "VP8L":
 			if head[20] != 0x2f {
-				return 0, 0, "", false
+				return 0, 0, "webp", false
 			}
 			bits := binary.LittleEndian.Uint32(head[21:25])
 			return 1 + int(bits&0x3fff), 1 + int(bits>>14&0x3fff), "webp", true
 		case "VP8 ":
 			if head[23] != 0x9d || head[24] != 0x01 || head[25] != 0x2a {
-				return 0, 0, "", false
+				return 0, 0, "webp", false
 			}
 			return int(binary.LittleEndian.Uint16(head[26:28]) & 0x3fff), int(binary.LittleEndian.Uint16(head[28:30]) & 0x3fff), "webp", true
 		}
-		return 0, 0, "", false
+		return 0, 0, "webp", false
 	case len(head) >= 2 && head[0] == 0xff && head[1] == 0xd8:
 		cfg, err := jpeg.DecodeConfig(r)
 		if err != nil {
-			return 0, 0, "", false
+			return 0, 0, "jpeg", false
 		}
 		return cfg.Width, cfg.Height, "jpeg", true
 	case len(head) >= 6 && (string(head[:6]) == "GIF87a" || string(head[:6]) == "GIF89a"):
-		cfg, err := gif.DecodeConfig(r)
-		if err != nil {
-			return 0, 0, "", false
-		}
-		return cfg.Width, cfg.Height, "gif", true
+		w, h, ok := gifHeader(r)
+		return w, h, "gif", ok
 	}
 	return 0, 0, "", false
+}
+
+// gifHeader reads a GIF's logical screen and its first frame's size, and
+// returns the larger of each: a frame may exceed the screen it is declared
+// on, and a decoder draws the frame.
+func gifHeader(r *bufio.Reader) (width, height int, ok bool) {
+	var lsd [13]byte
+	if _, err := io.ReadFull(r, lsd[:]); err != nil {
+		return 0, 0, false
+	}
+	width, height = int(binary.LittleEndian.Uint16(lsd[6:8])), int(binary.LittleEndian.Uint16(lsd[8:10]))
+	if lsd[10]&0x80 != 0 {
+		if _, err := r.Discard(3 << (int(lsd[10]&7) + 1)); err != nil {
+			return 0, 0, false
+		}
+	}
+	for {
+		intro, err := r.ReadByte()
+		if err != nil {
+			return 0, 0, false
+		}
+		switch intro {
+		case 0x2c: // image descriptor
+			var d [9]byte
+			if _, err := io.ReadFull(r, d[:]); err != nil {
+				return 0, 0, false
+			}
+			fw := int(binary.LittleEndian.Uint16(d[0:2])) + int(binary.LittleEndian.Uint16(d[4:6]))
+			fh := int(binary.LittleEndian.Uint16(d[2:4])) + int(binary.LittleEndian.Uint16(d[6:8]))
+			return max(width, fw), max(height, fh), true
+		case 0x21: // extension: a label, then data sub-blocks
+			if _, err := r.ReadByte(); err != nil {
+				return 0, 0, false
+			}
+			for {
+				n, err := r.ReadByte()
+				if err != nil {
+					return 0, 0, false
+				}
+				if n == 0 {
+					break
+				}
+				if _, err := r.Discard(int(n)); err != nil {
+					return 0, 0, false
+				}
+			}
+		default:
+			return 0, 0, false
+		}
+	}
 }
 
 // fitImageBase64 reduces a capture the tool loop produced itself — a PNG,
@@ -125,7 +180,7 @@ func fitImageBase64(src *api.ImageSource, maxBytes, maxSide int, maxPixels int64
 	halveOnce := func() error {
 		w, h := img.Bounds().Dx()/2, img.Bounds().Dy()/2
 		if w < fitMinSide || h < fitMinSide {
-			return fmt.Errorf("still over the bound at %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+			return fmt.Errorf("the reduction stopped at the %d-pixel minimum side, at %dx%d, still over the route's bound", fitMinSide, img.Bounds().Dx(), img.Bounds().Dy())
 		}
 		img = halve(img, w, h)
 		return nil

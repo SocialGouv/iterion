@@ -221,8 +221,10 @@ func (e *ImageTooLargeError) Error() string {
 	switch e.Tool {
 	case "read_image":
 		advice = "convert or downscale the file to a smaller PNG or JPEG (fewer pixels) and read that file"
-	case "screenshot", "computer_use":
+	case "screenshot":
 		advice = "the capture is too large for this route: lower the display resolution before capturing again"
+	case "computer_use":
+		advice = "the capture is too large for this route and computer_use does not reduce it (its clicks are in the capture's coordinates): call screenshot, whose capture is reduced to fit, to see the screen, or lower the display resolution"
 	default:
 		advice = "ask the tool for a smaller image"
 	}

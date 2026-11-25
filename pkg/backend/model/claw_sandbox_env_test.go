@@ -8,12 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -899,51 +901,47 @@ func TestHostCodexForfait_AStampedRunIsRefusedTheHostLogin(t *testing.T) {
 	}
 }
 
-// The route image bounds' escape hatches cross into the container: the
-// sandboxed generation shapes tool images and bounds requests as the host
-// does. Mutant — the knobs left off providerCredentialEnvVars: the twin
-// would run on the route defaults while the host honours the override.
+// The route image bounds' escape hatches cross into the container, every
+// one of tool.ImagePolicyEnvVars: the sandboxed generation shapes tool
+// images and bounds requests as the host does.
 func TestTheImageBoundEscapeHatchesCrossIntoTheSandbox(t *testing.T) {
-	want := map[string]string{
-		"ITERION_IMAGE_MAX_BASE64_BYTES":  "12345",
-		"ITERION_IMAGE_MAX_SIDE":          "4000",
-		"ITERION_IMAGE_MAX_DECODE_PIXELS": "1000000",
-		"ITERION_REQUEST_IMAGE_MAX_BYTES": "0",
-		"ITERION_REQUEST_IMAGE_MAX_COUNT": "20",
-	}
-	for k, v := range want {
-		t.Setenv(k, v)
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	for i, name := range tool.ImagePolicyEnvVars {
+		t.Setenv(name, strconv.Itoa(1000+i))
 	}
 	env := envFor(t, context.Background())
-	for k, v := range want {
-		if env[k] != v {
-			t.Errorf("%s crossed as %q, want the host's %q", k, env[k], v)
+	for i, name := range tool.ImagePolicyEnvVars {
+		if want := strconv.Itoa(1000 + i); env[name] != want {
+			t.Errorf("%s crossed as %q, want the host's %q", name, env[name], want)
 		}
 	}
 }
 
 // A knob a project .env planted has no authority, on the host as in the
-// container: a malformed planted value never fails a host generation, and the
-// crossing carries the host's planted-as-unset answer as an explicit empty, so
-// the runner's workspace .env cannot fill it in-container.
+// container — each of tool.ImagePolicyEnvVars: a malformed planted value
+// never fails a host generation, and the crossing carries the host's
+// planted-as-unset answer as an explicit empty, so the runner's workspace
+// .env cannot fill it in-container.
 func TestImageBoundKnobsReadAndCrossPlantedAsUnset(t *testing.T) {
-	envtrust.ResetForTest()
-	t.Cleanup(envtrust.ResetForTest)
-	t.Setenv(envtrust.EnvPlantedNames, "")
-	t.Setenv("ITERION_IMAGE_MAX_SIDE", "lots")
-	envtrust.MarkPlanted("ITERION_IMAGE_MAX_SIDE")
-	opts := GenerationOptions{Model: "anthropic/claude-sonnet-4-6"}
-	if _, err := withRouteImagePolicy(context.Background(), &opts); err != nil {
-		t.Fatalf("a planted malformed knob failed the host generation: %v", err)
-	}
-	if opts.images.MaxImageSide != 8000 {
-		t.Errorf("planted side honoured: MaxImageSide = %d, want the route default 8000", opts.images.MaxImageSide)
-	}
-	env := envFor(t, context.Background())
-	if got, ok := env["ITERION_IMAGE_MAX_SIDE"]; !ok || got != "" {
-		t.Errorf("planted side crossed as %q (present=%v), want an explicit empty", got, ok)
-	}
-	if got, ok := env["ITERION_REQUEST_IMAGE_MAX_COUNT"]; !ok || got != "" {
-		t.Errorf("an unset knob crossed as %q (present=%v), want an explicit empty", got, ok)
+	for _, name := range tool.ImagePolicyEnvVars {
+		t.Run(name, func(t *testing.T) {
+			envtrust.ResetForTest()
+			t.Cleanup(envtrust.ResetForTest)
+			t.Setenv(envtrust.EnvPlantedNames, "")
+			t.Setenv(name, "lots")
+			envtrust.MarkPlanted(name)
+			opts := GenerationOptions{Model: "anthropic/claude-sonnet-4-6"}
+			if _, err := withRouteImagePolicy(context.Background(), &opts); err != nil {
+				t.Fatalf("a planted malformed %s failed the host generation: %v", name, err)
+			}
+			env := envFor(t, context.Background())
+			for _, other := range tool.ImagePolicyEnvVars {
+				if got, ok := env[other]; !ok || got != "" {
+					t.Errorf("%s crossed as %q (present=%v), want an explicit empty", other, got, ok)
+				}
+			}
+		})
 	}
 }

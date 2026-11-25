@@ -116,17 +116,21 @@ knobs and crossed into the sandbox the same way (`tool.ImagePolicyEnvVars`):
 `ITERION_IMAGE_MAX_DECODE_PIXELS` (50 MP). An image is held to the smaller
 of the per-image and per-request byte bounds. Headers are read, never
 pixels (`tool.ImageHeader`: a PNG's IHDR, WebP's first chunk, a bounded
-JPEG/GIF stream); the header's format is the media type sent. `read_image`
+JPEG stream, a GIF's screen and first frame); the header's format is the
+media type sent, and a known format of unreadable size counts as over any
+side bound. `read_image`
 bytes are never decoded: over a bound, a recoverable tool error advising to
 convert the file. Only a `screenshot` PNG is reduced (halved to the side,
 JPEG, halved to the bytes; transparency flattened onto white) with a note;
-`computer_use` is refused instead (the model clicks in the capture's
-coordinates). Each request re-checks the per-image bounds and its budget:
+`computer_use` is refused instead, naming `screenshot` (the model clicks
+in the capture's coordinates). Each request re-checks the per-image bounds and its budget:
 the oldest tool images are replaced, in that request only, by a marker
 (their reduction note dropped along); once over, down to 75% so the cut
 moves every few turns; a last-run image says calling again will not help
 only when it cannot fit beside the prompt's images, else to ask for fewer at
-a time. Over 20 images, the oldest tool images over 2000 px go first.
+a time. Over 20 images, the oldest tool images over 2000 px go first, then
+older ones whatever their side; the last run's go last, never promised a
+smaller image.
 Prompt images are never dropped — breaking a rule alone, the request is
 refused. Consecutive user messages join on the chat wire. A codemode
 program gets the description and the image-omitted marker, no bytes.
