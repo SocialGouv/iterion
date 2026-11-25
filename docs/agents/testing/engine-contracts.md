@@ -48,7 +48,7 @@ point at an untrusted tree; the bot points it at the engine's own package.
 The dependency closure is pinned at install time by the lockfile, not at
 load time.
 
-## Contract facts the tests pin (ultra11y 9.6.5)
+## Contract facts the tests pin (ultra11y 9.6.6)
 
 - `verify --apply` folds **partially by default**: every accepted verdict
   lands, refusals named in `issues` / `rejectedCriteria` (each line opens
@@ -137,20 +137,22 @@ beside the 4.14.0 `@axe-core/playwright` brings) and records it as
 Its route inventory (`pages discover
 --write` → `.ultra11y/routes.json`, `scan --all-routes`, annex section F,
 `scope.routes`) is not called by the bot yet.
-The 7.2.0–9.6.5 migration moved three: 9.6.1 makes an incomplete fold exit
+The 7.2.0–9.6.6 migration moved three: 9.6.1 makes an incomplete fold exit
 1 (SocialGouv/ultra11y#223) and writes the verdict contract once as
 `ADJUDICATE.contract.md`; `scan --sample` exits 1 on a partial sample with
 its result written; 9.0.1 decides 1.1 on a missing `alt`. 8.0.0 removed
 `capture write`, `render --setup` / `--scaffold` and the `.snap` audit;
 9.0.0 made RGAA the only shown standard (engine result under `core`,
 `--standard wcag` exits 2) and removed `pack`, `--pack`, `--override` and
-`--guidance`. The bot called none of them and already read `core`. 9.6.2–9.6.5 moved
+`--guidance`. The bot called none of them and already read `core`. 9.6.2–9.6.6 moved
 nothing the bot reads: page verdicts on still-manual criteria (with a
 `notShownHere` field), absence-grounded page NA, a missing default ledger
 exiting 0 on `verify --apply` (the bot always passes an explicit one),
 sample pages counted with their journey states folded in, decision
 protocols in the briefs, and (9.6.5) distinct no-page labels in the report
-and a French default fix text. The tests passed unchanged.
+and a French default fix text, and (9.6.6) axe-core's own French locale
+under `--lang fr` — rendered findings' messages are French, their identity
+unchanged. The tests passed unchanged.
 The workflow retains its count/rate comparison, relevance gate, literal
 citation restoration and once-only mutation records. They provide independent
 checks and preserve replay behavior; historical defect tests are not treated

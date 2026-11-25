@@ -9,13 +9,13 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
-## 2026-11-25 — 3.3.0: ultra11y 9.6.5 (#3705)
+## 2026-11-25 — 3.3.0: ultra11y 9.6.6 (#3705)
 
 - Status: **engine-proven, no run**. The contract, node and page-grid
-  tests run on the real 9.6.5 (`task test:contract:rgaa`); no LLM run was
+  tests run on the real 9.6.6 (`task test:contract:rgaa`); no LLM run was
   paid.
 - Three contracts moved between 7.2.0 and 9.6.1, all intended upstream
-  (9.6.2–9.6.5 moved none the bot reads; see below):
+  (9.6.2–9.6.6 moved none the bot reads; see below):
   - `verify --apply` exits 1 as soon as the gate refused anything, with
     the accepted verdicts still written and `ok: false`
     (SocialGouv/ultra11y#223). The fold nodes read every result through
@@ -38,13 +38,14 @@ of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
   `render --setup` / `--scaffold` and the `.snap` audit; 9.0.0 dropped
   `pack`, `--pack`, `--override`, `--guidance` and the WCAG output (engine
   result under `core`, which `static_audit` already read).
-- 9.6.1 → 9.6.5, repinned before merge: page verdicts on still-manual
+- 9.6.1 → 9.6.6, repinned before merge: page verdicts on still-manual
   criteria (`notShownHere`), absence-grounded page NA, `verify --apply`
   exiting 0 on a missing *default* ledger (the bot always passes an
   explicit `--ledger`), sample pages counted with their journey states
   folded in, distinct no-page labels, the French default fix text
   « Corrigez la non-conformité relevée. » and decision protocols in the
-  briefs. The RgaaAudit tests passed unchanged.
+  briefs; 9.6.6 renders axe-core's findings in French under `--lang fr`
+  (finding identity unchanged). The RgaaAudit tests passed unchanged.
 
 ## 2026-11-23 — 3.2.1: ultra11y 7.2.0, and the bot becomes ultra11y's documented CI path
 

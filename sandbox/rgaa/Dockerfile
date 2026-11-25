@@ -30,7 +30,7 @@ USER root
 # ultra11y, globally so the bot's npm-global resolution arm (`npm root -g`)
 # finds it without a per-run install.
 # renovate: datasource=npm depName=ultra11y versioning=npm
-ARG ULTRA11Y_VERSION=9.6.5
+ARG ULTRA11Y_VERSION=9.6.6
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g "ultra11y@${ULTRA11Y_VERSION}"
 
