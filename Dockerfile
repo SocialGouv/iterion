@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/app/studio/node_modules/.vite \
 # --platform=$BUILDPLATFORM: run the Go toolchain on the builder's native arch and
 # CROSS-compile to the target (CGO is off, so this is free) — never emulate the Go
 # compile for an arm64 target. TARGETOS/TARGETARCH are injected by buildx.
-FROM --platform=$BUILDPLATFORM golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34 AS go-builder
 WORKDIR /src
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
@@ -93,7 +93,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 # The capsule has no libc or dynamic loader. Compile on TARGETPLATFORM;
 # TARGETARCH must agree with the compiler, including on native ARM CI workers.
-FROM --platform=$TARGETPLATFORM golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466 AS capsule-builder
+FROM --platform=$TARGETPLATFORM golang:1.27-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34 AS capsule-builder
 ARG TARGETARCH
 WORKDIR /src
 COPY native/execenv/capsule.c native/execenv/capsule.c
