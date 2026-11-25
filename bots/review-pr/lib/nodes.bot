@@ -94,7 +94,7 @@ judge reviewer_alternate:
   ## silence, under the claude label, with the GLM route below never
   ## firing. Pinned, the primary spends the sealed Anthropic credential,
   ## else the runner's ambient Anthropic auth, else fails "Not logged in"
-  ## and the route takes it, stamped `_fallback_used` and `glm-5.3`.
+  ## and the route takes it, stamped `_fallback_used` and `glm-5.4`.
   ## The hint forces Anthropic-direct: the anthropic key if sealed, else
   ## the claude_code forfait — skipping the facade branches entirely
   ## (selectedAnthropicCredEnvForCLI). An operator who wants the slot on
@@ -149,7 +149,7 @@ judge reviewer_alternate:
     ## which on claude_code is NOT inert, it installs --disallowedTools
     ## and takes Task/WebFetch/Skill off the PRIMARY path. The hint keeps
     ## the whole thing on one backend. (claw DOES reach GLM its own way —
-    ## model `anthropic/glm-5.3`, provider read from the spec prefix, as
+    ## model `anthropic/glm-5.4`, provider read from the spec prefix, as
     ## the bundle README documents — that is just not this route.)
     ##
     ## What each trigger is FOR — the primary is forced Anthropic-direct,
@@ -179,7 +179,7 @@ judge reviewer_alternate:
     ## repoints it with a routing cell on `reviewer_alternate#glm`,
     ## without re-releasing the bot.
     glm:
-      model: "glm-5.3"
+      model: "glm-5.4"
       provider: "zai"
       on: [usage_window, auth, unavailable]
       metered: true
@@ -201,7 +201,7 @@ judge reviewer:
   ##   claude family: backend claude_code, model claude-opus-5-5, provider
   ##     anthropic (without the hint a z.ai key holding the wire answers
   ##     the claude id with GLM — see reviewer_alternate);
-  ##   GLM: backend claude_code, model glm-5.3, provider zai.
+  ##   GLM: backend claude_code, model glm-5.4, provider zai.
   ## No `provider:` hint here: on claw the model's `openai/` prefix is the
   ## route.
   backend: "claw"

@@ -495,7 +495,7 @@ agent converse_agent:
   reasoning_effort: medium
   fallbacks:
     glm:
-      model: "glm-5.3"
+      model: "glm-5.4"
       provider: "zai"
       on: [usage_window, auth, unavailable]
       metered: true

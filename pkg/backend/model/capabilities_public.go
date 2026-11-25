@@ -154,6 +154,7 @@ func KnownModelSpecs() []string {
 		"anthropic/claude-opus-4-8",
 		"anthropic/claude-sonnet-4-6",
 		"anthropic/claude-haiku-4-5",
+		"anthropic/glm-5.4",
 		"anthropic/glm-5.3",
 		"anthropic/glm-5.2",
 		"anthropic/glm-5.1",

@@ -385,7 +385,9 @@ func TestStructuredExtractionKnownZeroPriceCollector(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(map[string]any{"entries": []any{map[string]any{"canonical": "glm-5.3", "provider": "zai", "input_usd_per_million": 0, "output_usd_per_million": 2}}, "fetched_at": time.Now().UTC().Format(time.RFC3339Nano), "source": "test"})
+	// The extraction runs on the detector's z.ai pick, anthropic/<ZAIDefaultModel>:
+	// the cache prices that id, at a known zero input rate.
+	raw, _ := json.Marshal(map[string]any{"entries": []any{map[string]any{"canonical": secrets.ZAIDefaultModel, "provider": "zai", "input_usd_per_million": 0, "output_usd_per_million": 2}}, "fetched_at": time.Now().UTC().Format(time.RFC3339Nano), "source": "test"})
 	if err := os.WriteFile(filepath.Join(dir, "models-cache.json"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
