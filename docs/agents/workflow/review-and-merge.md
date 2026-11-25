@@ -41,7 +41,7 @@ For operator-led chantiers where the queue's wall clock is the bottleneck, the
 operator (admin) may land a change **without a PR**, by push to `main`. This
 amends the sentence above for that lane only — every existing PR keeps
 `revi/review` as its blocking gate, save where a parked gate opens the admin
-merge (§ below), and the queue keeps serialising
+merge or a burst lands end to end (below), and the queue keeps serialising
 the PRs that exist. The lane's blocking proof replaces the PR's:
 
 1. **The gate, locally reproduced.** The full required-check set a workflow
