@@ -20,6 +20,21 @@
 #   scripts/board-epics-sync.sh            # report only (default)
 #   scripts/board-epics-sync.sh --apply    # report, then fix the projection
 #
+# --apply writes the parent's Epic on DIVERGENT items (the field disagrees
+# with the parent) and UNSET items (the field is empty, the parent's is
+# known). NO EPIC (no value, and no parent whose Epic is known), ORPHAN (the
+# parent carries no Epic) and UNMAPPED (an epic issue without an option of
+# its own) need a hand and are reported only. An epic issue is never written:
+# its own value is the option it owns. A refused update is named on stderr
+# and the remaining corrections still run.
+#
+# Exit: 0 when the board is consistent, 2 when --apply had a correction
+# refused, 1 when anything else is left to report or the run applied fixes.
+#
+# Every GraphQL string variable is bound with `gh -f`: `-F` turns an
+# integer-looking value into a JSON number, and an all-digit option id (the
+# board has one) then fails the mutation's `String!` declaration.
+#
 # Closed items generally carry the field WITHOUT a parent: sub-issues are
 # attached to open work only, so the progress bar means "what is left" rather
 # than a truncated history. Those are reported as `field-only`, which is the
@@ -49,7 +64,7 @@ read -r PROJECT_ID EPIC_FIELD_ID < <(
         id
         field(name:"Epic"){ ... on ProjectV2SingleSelectField { id } }
       } }
-    }' -F org="$ORG" -F num="$PROJECT_NUMBER" \
+    }' -f org="$ORG" -F num="$PROJECT_NUMBER" \
     --jq '.data.organization.projectV2 | "\(.id) \(.field.id)"'
 )
 [[ -n "$PROJECT_ID" && -n "$EPIC_FIELD_ID" ]] || {
@@ -60,7 +75,7 @@ gh api graphql -f query='
     organization(login:$org){ projectV2(number:$num){
       field(name:"Epic"){ ... on ProjectV2SingleSelectField { options { id name } } }
     } }
-  }' -F org="$ORG" -F num="$PROJECT_NUMBER" \
+  }' -f org="$ORG" -F num="$PROJECT_NUMBER" \
   --jq '.data.organization.projectV2.field.options[] | "\(.name)\t\(.id)"' > "$work/options.tsv"
 
 # ------------------------------------------------------------- board contents
@@ -95,7 +110,7 @@ query($org: String!, $num: Int!, $endCursor: String) {
 }
 GQL
 
-gh api graphql --paginate -F org="$ORG" -F num="$PROJECT_NUMBER" \
+gh api graphql --paginate -f org="$ORG" -F num="$PROJECT_NUMBER" \
   -F query=@"$work/items.graphql" > "$work/raw.json"
 
 jq -s '
@@ -119,6 +134,7 @@ echo
 # --------------------------------------------------------------------- checks
 
 divergent=0
+unset_epic=0
 missing=0
 unmapped=0
 
@@ -130,20 +146,42 @@ while IFS=$'\t' read -r num opt; do
 done < "$work/epicmap.tsv"
 
 : > "$work/fix.tsv"
-while IFS=$'\t' read -r item num parent epic; do
+while IFS=$'\t' read -r item num isepic parent epic; do
+  # An epic's own value is its ownership declaration: only UNMAPPED reports it.
+  [[ "$isepic" == "true" ]] && continue
+  # The rule holds at any depth: an item's Epic is its PARENT's EFFECTIVE Epic.
+  # When the parent is an epic issue, that is the epic's own value; when the
+  # parent is an ordinary ticket (a legitimate two-level chain, e.g. #1209 →
+  # #1072 → the Connectors epic), it is that ticket's own parent's effective
+  # Epic, resolved up the chain, falling back to the ticket's field when the
+  # chain leaves the board. One pass then writes a whole chain consistently.
+  expected=""
+  if [[ -n "$parent" && "$parent" != "null" ]]; then
+    expected=$(jq -r --argjson p "$parent" '
+      (map({key: (.num | tostring), value: .}) | from_entries) as $by |
+      def eff($n; $d):
+        $by[$n | tostring] as $x |
+        if $x == null or $d > 8 then null
+        elif $x.isEpic then $x.epic
+        elif $x.parent != null then (eff($x.parent; $d + 1) // $x.epic)
+        else $x.epic end;
+      eff($p; 0) // ""' "$work/items.json")
+  fi
+
   if [[ -z "$epic" || "$epic" == "null" ]]; then
-    echo "NO EPIC   #$num carries no Epic value"
-    missing=$((missing + 1))
+    if [[ -n "$expected" ]]; then
+      echo "UNSET     #$num carries no Epic value; parent #$parent says '$expected'"
+      printf '%s\t%s\t%s\n' "$item" "$num" "$expected" >> "$work/fix.tsv"
+      unset_epic=$((unset_epic + 1))
+    else
+      echo "NO EPIC   #$num carries no Epic value"
+      missing=$((missing + 1))
+    fi
     continue
   fi
   [[ "$parent" == "null" || -z "$parent" ]] && continue
 
-  # The rule holds at any depth: an item's Epic is its PARENT's Epic. When the
-  # parent is an epic issue, that is the epic itself; when the parent is an
-  # ordinary ticket (a legitimate two-level chain, e.g. #1209 → #1072 → the
-  # Connectors epic), it is whatever that ticket carries.
-  expected=$(jq -r --argjson p "$parent" '.[] | select(.num == $p) | .epic // ""' "$work/items.json")
-  if [[ -z "$expected" || "$expected" == "null" ]]; then
+  if [[ -z "$expected" ]]; then
     echo "ORPHAN    #$num has parent #$parent, which carries no Epic (off the board?)"
     missing=$((missing + 1))
     continue
@@ -153,36 +191,59 @@ while IFS=$'\t' read -r item num parent epic; do
     printf '%s\t%s\t%s\n' "$item" "$num" "$expected" >> "$work/fix.tsv"
     divergent=$((divergent + 1))
   fi
-done < <(jq -r '.[] | [.item, .num, (.parent // "null"), (.epic // "")] | @tsv' "$work/items.json")
+done < <(jq -r '.[] | [.item, .num, .isEpic, (.parent // "null"), (.epic // "")] | @tsv' "$work/items.json")
 
 fieldonly=$(jq '[.[] | select(.parent == null and .epic != null and (.isEpic | not))] | length' "$work/items.json")
 
 echo
 echo "field-only (no parent — expected for closed work): $fieldonly"
-echo "divergent: $divergent   missing an epic: $missing   unmapped epics: $unmapped"
+echo "divergent: $divergent   unset (parent known): $unset_epic   missing an epic: $missing   unmapped epics: $unmapped"
 
 # ---------------------------------------------------------------------- apply
 
-if (( divergent > 0 )) && (( APPLY )); then
+fixable=$((divergent + unset_epic))
+failed=0
+if (( fixable > 0 )) && (( APPLY )); then
   echo
-  echo "applying $divergent correction(s) — the parent wins"
+  echo "applying $fixable correction(s) — the parent wins"
   while IFS=$'\t' read -r item num expected; do
     optid=$(awk -F'\t' -v n="$expected" '$1 == n { print $2 }' "$work/options.tsv")
-    [[ -n "$optid" ]] || { echo "  #$num: no option named '$expected'" >&2; continue; }
-    gh api graphql -f query='
+    if [[ -z "$optid" ]]; then
+      echo "  #$num: no option named '$expected'" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if ! gh api graphql -f query='
       mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
         updateProjectV2ItemFieldValue(input:{
           projectId:$p, itemId:$i, fieldId:$f, value:{singleSelectOptionId:$o}
         }){ projectV2Item { id } }
-      }' -F p="$PROJECT_ID" -F i="$item" -F f="$EPIC_FIELD_ID" -F o="$optid" >/dev/null
+      }' -f p="$PROJECT_ID" -f i="$item" -f f="$EPIC_FIELD_ID" -f o="$optid" >/dev/null </dev/null; then
+      echo "  #$num: the update to '$expected' was refused" >&2
+      failed=$((failed + 1))
+      continue
+    fi
     echo "  #$num -> $expected"
   done < "$work/fix.tsv"
-  echo "re-run without --apply: it must report 0 divergent."
+  if (( failed > 0 )); then
+    echo "$failed correction(s) failed" >&2
+  fi
+  echo "re-run without --apply: it must report 0 divergent and 0 unset."
 fi
 
-if (( divergent > 0 || missing > 0 || unmapped > 0 )); then
-  (( APPLY )) || echo
-  (( APPLY )) || echo "run with --apply to fix the projection (or attach the missing parents first)"
+if (( failed > 0 )); then
+  exit 2
+fi
+if (( fixable > 0 || missing > 0 || unmapped > 0 )); then
+  if (( ! APPLY )); then
+    echo
+    if (( fixable > 0 )); then
+      echo "run with --apply to fix the projection"
+    fi
+    if (( missing > 0 || unmapped > 0 )); then
+      echo "NO EPIC, ORPHAN and UNMAPPED need a hand: attach a parent that carries an Epic (or give the parent one), or give the epic its own Epic value"
+    fi
+  fi
   exit 1
 fi
 

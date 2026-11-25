@@ -853,6 +853,35 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// every exit path (subagentSpendFold).
 	subagentSpend := &SubagentSpend{}
 	ctx = WithSubagentSpend(ctx, subagentSpend)
+	// The node's declared subagents reserve (CM-13) arms on the SAME
+	// accumulator, and the script admission rides the context every nested
+	// dispatch descends from. The applied policy is returned clamped; a
+	// reduction names itself the way a clamp always does, through the
+	// OnClamp-style warn the reserve's arm site keeps to itself until the
+	// runner reports it. The sweep runs on every exit path: children whose
+	// goroutine never returned release their hold here, and the count is
+	// folded into the result so the node names its unfinished bookings
+	// rather than leaking slots silently.
+	appliedReserve := subagentSpend.ArmReserve(task.SubagentReserve)
+	if task.SubagentReserve != nil && appliedReserve != *task.SubagentReserve {
+		if b.logger != nil {
+			b.logger.Warn("[%s] codemode: the platform clamped this node's subagents reserve (requested %+v, applied %+v)", task.NodeID, *task.SubagentReserve, appliedReserve)
+		}
+	}
+	if task.SubagentReserve != nil {
+		// The sweep runs on every exit path: children whose goroutine never
+		// returned release their hold here, and the warn names them. The
+		// SCRIPT admission key is deliberately NOT armed here — it lives on
+		// the script server's nested-dispatch context only
+		// (newScriptToolServer), so a DIRECT agent call from the model's own
+		// turn never reads it and keeps today's behaviour (ADR-161): no
+		// reserve admission, no model-choice refusal.
+		defer func() {
+			if lost := subagentSpend.SweepUnsettled(); lost > 0 && b.logger != nil {
+				b.logger.Warn("[%s] codemode: %d scripted sub-agent(s) of this node never settled their reserve hold — their usage is unknown, their slots are released", task.NodeID, lost)
+			}
+		}()
+	}
 	defer func() { subagentSpendFold(&result, task.Model, subagentSpend) }()
 
 	// Wire the operator-chatbox inbox if the runtime configured one.
@@ -914,7 +943,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// so the only question left here is whether the task says so.
 	if task.Codemode {
 		opts.codemodeState = codemodeStateFrom(ctx)
-		if err := installCodemode(&opts, task.CodemodeDefer, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
+		if err := installCodemode(&opts, task.CodemodeDefer, task.CodemodeBounds, task.SubagentReserve, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
 				// Both directions travel this seam (#3290): the ceiling REDUCES
 				// an over-reaching bound, the floor RAISES one the child could
@@ -4365,6 +4394,7 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 			InputSchema:    d.InputSchema,
 			Execute:        d.Execute,
 			concurrentSafe: d.ConcurrentSafe,
+			imageResult:    d.ImageResult,
 			// The authorship travels with the definition: a deferring node
 			// demotes exactly the tools the author's own `tools:` list
 			// contributed, and never one the runtime appended.

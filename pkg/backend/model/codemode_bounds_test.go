@@ -136,7 +136,7 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 	}
 
 	var opts GenerationOptions
-	if err := installCodemode(&opts, false, &scripthost.Limits{ScriptBytes: 10}, nil, nil); err != nil {
+	if err := installCodemode(&opts, false, &scripthost.Limits{ScriptBytes: 10}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(opts.Tools) != 1 {
@@ -162,7 +162,7 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 	// the spawn, so what this arm asserts is that it is not refused FOR ITS
 	// SIZE — the error, if any, comes from somewhere else.
 	var plain GenerationOptions
-	if err := installCodemode(&plain, false, nil, nil, nil); err != nil {
+	if err := installCodemode(&plain, false, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, err = plain.Tools[0].Execute(ctx, in)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // inputGatedBot declares one var and pauses on a human entry node (no LLM,
@@ -155,6 +156,41 @@ func TestLaunch_RidesAnEngineInjectedInput(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "ITERION_VIBE_BACKEND_EMIT") {
 		t.Fatalf("error = %v, must not name the engine-injected dial as unknown", err)
+	}
+}
+
+// TestLaunch_RidesTheServerStampedGateAdvisoryMark pins the strict door's
+// classification of store.ServerStampedLaunchVars: the forge launch writes
+// gate_advisory_bot=true on a bot without the `statuses` scope, no workflow
+// declares it, and a strict launch (the studio form, the API without
+// allow_unknown_inputs) must accept it rather than refuse a name its caller
+// never sent. The mark stays on the run doc, where the gate reconciler reads
+// it.
+func TestLaunch_RidesTheServerStampedGateAdvisoryMark(t *testing.T) {
+	dir := t.TempDir()
+	botPath := writeInputBot(t, dir)
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	res, err := svc.Launch(context.Background(), LaunchSpec{
+		FilePath: botPath,
+		Vars:     map[string]string{"engine": "pg", store.GateAdvisoryBotVar: "true"},
+	})
+	if err != nil {
+		t.Fatalf("strict launch carrying the server's own %s stamp refused: %v", store.GateAdvisoryBotVar, err)
+	}
+	select {
+	case <-res.Done:
+	case <-runWaitContext(t).Done():
+		t.Fatal("run goroutine did not exit (expected immediate human pause)")
+	}
+	r, err := svc.store.LoadRun(context.Background(), res.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got := r.Inputs[store.GateAdvisoryBotVar]; got != "true" {
+		t.Fatalf("run inputs = %v, want %s=true on the doc for the gate reconciler", r.Inputs, store.GateAdvisoryBotVar)
 	}
 }
 

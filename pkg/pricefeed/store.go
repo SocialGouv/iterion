@@ -87,9 +87,17 @@ func TeamConfigDocID(teamID string) string { return "team:" + teamID }
 func StateDocID(scopeDocID, feed string) string { return scopeDocID + "/" + feed }
 
 // ConfigStore is the feed-list surface: read, CAS write, clear, and the
-// list the reconciler walks. The CAS token is the record's UpdatedAt —
-// a client that read stale state loses the race as a loud 409, never
-// silently drops a concurrent editor's feed list.
+// list the reconciler walks. The CAS token is the record's UpdatedAt,
+// owned by the store: every successful write strictly advances it at the
+// twin's own precision (nanoseconds in memory, the BSON millisecond in
+// Mongo), so a write landing inside the stored stamp's tick still moves
+// the token and a stale editor loses the race as a loud 409, never
+// silently drops a concurrent editor's feed list. One known limit: a
+// recreate after a delete stamps from the wall clock, so it can reissue
+// any token the deleted document carried whose tick the clock has not yet
+// passed. The window is the stamp's lead over the wall clock, which bursts
+// of writes or a faster-clock writer extend. Closing it needs a tombstone
+// or version field, a persisted-format change left out of scope.
 type ConfigStore interface {
 	Get(ctx context.Context, docID string) (*ConfigRecord, error)
 	Put(ctx context.Context, docID string, rec *ConfigRecord) error
@@ -105,6 +113,19 @@ type StateStore interface {
 	Get(ctx context.Context, docID string) (*StateRecord, error)
 	Put(ctx context.Context, docID string, rec *StateRecord) error
 	List(ctx context.Context) (map[string]*StateRecord, error)
+}
+
+// nextConfigStamp advances an existing document's CAS token even when two
+// writers share a clock tick or their clocks disagree. Mongo needs BSON's
+// millisecond precision; memory keeps nanoseconds so rapid delete/recreate
+// cycles do not start reusing tokens by rounding away its native precision.
+// The caller passes the clock reading, so the same-tick branch is testable.
+func nextConfigStamp(previous, now time.Time, precision time.Duration) time.Time {
+	now = now.UTC().Truncate(precision)
+	if !now.After(previous) {
+		return previous.UTC().Truncate(precision).Add(precision)
+	}
+	return now
 }
 
 // MemoryConfigStore is the config surface's in-process twin: tests and
@@ -140,7 +161,11 @@ func (m *MemoryConfigStore) Put(_ context.Context, docID string, rec *ConfigReco
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := cloneConfigRecord(rec)
-	cp.UpdatedAt = time.Now().UTC()
+	var previous time.Time
+	if old := m.configs[docID]; old != nil {
+		previous = old.UpdatedAt
+	}
+	cp.UpdatedAt = nextConfigStamp(previous, time.Now(), time.Nanosecond)
 	m.configs[docID] = cp
 	return nil
 }
@@ -154,7 +179,7 @@ func (m *MemoryConfigStore) PutIfUnchanged(_ context.Context, docID string, rec 
 		return false, nil
 	}
 	cp := cloneConfigRecord(rec)
-	cp.UpdatedAt = time.Now().UTC()
+	cp.UpdatedAt = nextConfigStamp(prevUpdatedAt, time.Now(), time.Nanosecond)
 	m.configs[docID] = cp
 	return true, nil
 }

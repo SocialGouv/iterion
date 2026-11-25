@@ -86,16 +86,18 @@ func TestScalewaySourceIsThePinnedPreset(t *testing.T) {
 	}
 }
 
-// The litellm adapter scales per-token costs to per-mtok once, and keeps
-// the window figures the proxy publishes.
+// The litellm adapter scales per-token costs to per-mtok once, reads the
+// input window from max_input_tokens, and lets the legacy max_tokens stand
+// in only while no output limit is stated.
 func TestLiteLLMSourceScalesPerToken(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/litellm-model-info.json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var gotAuth string
 	stubHTTP(t, func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"data":[
-			{"model_name":"scaleway/glm-5.3","model_info":{"max_tokens":131072,"max_output_tokens":8192,"input_cost_per_token":6.1e-7,"output_cost_per_token":1.8e-6}},
-			{"model_name":"no-info"}
-		]}`))
+		_, _ = w.Write(fixture)
 	})
 	src, _ := SourceFor(TypeLiteLLM)
 	if err := src.ValidateParams(map[string]string{}); err == nil {
@@ -109,14 +111,71 @@ func TestLiteLLMSourceScalesPerToken(t *testing.T) {
 	if e.InputCostPerM != 0.61 || e.OutputCostPerM < 1.79 || e.OutputCostPerM > 1.81 {
 		t.Fatalf("per-token costs not scaled to per-mtok: %+v", e)
 	}
-	if e.ContextWindow != 131072 || e.MaxOutputTokens != 8192 {
+	if e.ContextWindow != 262144 || e.MaxOutputTokens != 32768 {
 		t.Fatalf("window figures lost: %+v", e)
+	}
+	if e.CacheReadCostPerM < 0.119999 || e.CacheReadCostPerM > 0.120001 {
+		t.Fatalf("cache-read price not scaled to per-mtok: %+v", e)
+	}
+	for _, tc := range []struct {
+		id             string
+		window, output int
+	}{
+		{"legacy", 131072, 0}, {"legacy-null", 131072, 0},
+		{"output-only", 0, 32768}, {"output-zero", 0, 0},
+		{"input-zero", 0, 0}, {"input-only", 262144, 0},
+		{"null-prices", 65536, 0}, {"no-limits", 0, 0},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			spec, ok := table[tc.id]
+			if !ok || spec.ContextWindow != tc.window || spec.MaxOutputTokens != tc.output || spec.CacheReadCostPerM != 0 {
+				t.Fatalf("limits/cache = %+v (present %v), want window %d output %d and unknown cache", spec, ok, tc.window, tc.output)
+			}
+		})
+	}
+	if p := table["null-prices"]; p.InputCostPerM != 0 || p.OutputCostPerM != 0 {
+		t.Fatalf("null prices decode as unknown (0), got %+v", p)
 	}
 	if _, ok := table["no-info"]; ok {
 		t.Error("an entry with no model_info folded")
 	}
 	if gotAuth != "Bearer k3" {
 		t.Errorf("token not sent as a trimmed bearer: %q", gotAuth)
+	}
+}
+
+// A load-balanced LiteLLM group lists one deployment per item under one
+// model_name, in no guaranteed order. Its limits fold by a stable rule: a
+// known limit beats an unknown one, and two known limits keep the smaller,
+// which every deployment of the group honours.
+func TestLiteLLMSourceFoldsDuplicateDeploymentLimits(t *testing.T) {
+	wide := `{"model_name":"m","model_info":{"max_input_tokens":262144,"max_output_tokens":32768,"max_tokens":32768}}`
+	bare := `{"model_name":"M","model_info":{"max_tokens":32768,"max_output_tokens":32768}}`
+	narrow := `{"model_name":"m","model_info":{"max_input_tokens":131072,"max_output_tokens":16384}}`
+	for _, tc := range []struct {
+		name           string
+		items          []string
+		window, output int
+	}{
+		{"known window first", []string{wide, bare}, 262144, 32768},
+		{"known window last", []string{bare, wide}, 262144, 32768},
+		{"smaller known first", []string{narrow, wide}, 131072, 16384},
+		{"smaller known last", []string{wide, narrow}, 131072, 16384},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"data":[` + strings.Join(tc.items, ",") + `]}`
+			stubHTTP(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			})
+			src, _ := SourceFor(TypeLiteLLM)
+			table, err := src.Fetch(context.Background(), map[string]string{"url": os.Getenv("PRICEFEED_TEST_URL")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e := table["m"]; e.ContextWindow != tc.window || e.MaxOutputTokens != tc.output {
+				t.Fatalf("folded limits = %+v, want window %d output %d", e, tc.window, tc.output)
+			}
+		})
 	}
 }
 
@@ -236,6 +295,30 @@ func TestDriftReport(t *testing.T) {
 	}
 	if line := FormatDrift(drift[0]); !strings.Contains(line, "scw") || !strings.Contains(line, `"b"`) {
 		t.Fatalf("the drift line does not name the feed and the id: %q", line)
+	}
+}
+
+// A cache-read price both sides state and disagree on changes what a cached
+// step is billed: it drifts even when the input/output pair agrees, and the
+// line names the cache prices. A side without a cache price states none,
+// so it never drifts on that price alone.
+func TestDriftReportCacheReadPrice(t *testing.T) {
+	feed := map[string]modelspecs.Spec{
+		"cached":    {InputCostPerM: 0.61, OutputCostPerM: 1.8, CacheReadCostPerM: 0.12},
+		"feed-only": {InputCostPerM: 0.61, OutputCostPerM: 1.8, CacheReadCostPerM: 0.12},
+		"same":      {InputCostPerM: 0.61, OutputCostPerM: 1.8, CacheReadCostPerM: 0.12},
+	}
+	operator := map[string]modelspecs.Spec{
+		"cached":    {InputCostPerM: 0.61, OutputCostPerM: 1.8, CacheReadCostPerM: 0.5},
+		"feed-only": {InputCostPerM: 0.61, OutputCostPerM: 1.8},
+		"same":      {InputCostPerM: 0.61, OutputCostPerM: 1.8, CacheReadCostPerM: 0.12},
+	}
+	drift := DriftReport("litellm", feed, operator)
+	if len(drift) != 1 || drift[0].ID != "cached" || drift[0].FeedCache != 0.12 || drift[0].OpCache != 0.5 {
+		t.Fatalf("only the cache-read disagreement both sides state is drift, got %+v", drift)
+	}
+	if line := FormatDrift(drift[0]); !strings.Contains(line, "$0.1200") || !strings.Contains(line, "$0.5000") || !strings.Contains(line, "cache read") {
+		t.Fatalf("the drift line does not name the cache prices: %q", line)
 	}
 }
 

@@ -104,6 +104,57 @@ const (
 // no way to bound the child. It carries [RefusalUnavailable].
 var ErrConfinementUnsupported = errors.New("scripthost: this platform cannot confine a script host child")
 
+// SubagentReserve is the node-level budget a program's sub-agent calls draw
+// against: a FINITE reserve booked before a child runs, settled with the
+// child's actual usage when it returns (CM-13, ADR-165 — "a scriptable
+// tools.agent requires a finite reserve, booked before the child runs rather
+// than recorded when it returns"). It is node-wide, not per-program: several
+// programs of one node spend the one reserve, which is why it is not a
+// Limits field.
+//
+// Declaring any of it through the DSL arms the reserve; a node that declares
+// no `subagents_tokens` keeps the agent tool withheld from its scripts. A
+// declared value is admission control, not durable accounting — a reserve
+// lives as long as the node execution that declared it, and the durable
+// reservation machinery (ADR-155) is a different, credential-sized lane.
+//
+// Zero means UNSET on every field, exactly like Limits: TokensPerAgent unset
+// reads as "one child may draw the whole reserve", Concurrent unset reads as
+// one child in flight, StepsPerAgent unset reads as the node's own step
+// budget. Tokens itself is the arming field and must be positive to mean
+// anything — the compile side refuses a per-agent bound that names no reserve
+// at all (C356), because a reserve without a size is not finite.
+type SubagentReserve struct {
+	// Tokens is the node's whole reserve, in tokens, its children draw
+	// against: the sum of holds in flight can never pass it, and each child
+	// settles its hold with the usage it actually burned.
+	Tokens int64 `json:"tokens,omitempty"`
+	// TokensPerAgent is one child's hold — the estimate its admission books.
+	// Settled against the child's real usage, whatever it turns out to be.
+	TokensPerAgent int64 `json:"tokens_per_agent,omitempty"`
+	// Concurrent is how many children of this node may be in flight at once.
+	// A hold occupies one slot from admission to settlement, success, error
+	// or sweep.
+	Concurrent int64 `json:"concurrent,omitempty"`
+	// StepsPerAgent caps one child's tool loop. Zero inherits the node's own
+	// step budget — the behaviour the direct (non-script) agent tool already
+	// has.
+	StepsPerAgent int64 `json:"steps_per_agent,omitempty"`
+}
+
+// SubagentCeiling is the platform bound a tenant cannot raise, the twin of
+// [Ceiling] for the reserve. Concurrent shares the batch ceiling: a node
+// whose children run wider than its own tool batches would is a bound the
+// dispatcher could not honour anyway.
+func SubagentCeiling() SubagentReserve {
+	return SubagentReserve{
+		Tokens:         4_000_000,
+		TokensPerAgent: 1_000_000,
+		Concurrent:     MaxParallelBatch,
+		StepsPerAgent:  64,
+	}
+}
+
 // Limits are the bounds a script runs under. Every field has a platform
 // ceiling in [Ceiling] that a tenant cannot raise, and a default in
 // [DefaultLimits] that an operator can lower or raise up to that ceiling —

@@ -200,8 +200,13 @@ func repeatsAsPermanent(node ir.Node) bool {
 //   - sandbox.ErrExecStatusUnknown — the exec session ended without the
 //     command's completion line, so the status in the chain is the exec
 //     CLIENT's, and the command may never have started;
-//   - a transient outage's wording (namesTransientOutage) — the failure that
-//     repeats word for word and heals by waiting.
+//   - a transient outage's wording — the failure that repeats word for word
+//     and heals by waiting. Two readings, both on the command's OUTPUT and
+//     never on the wrapper (a node id names nothing): the outage table
+//     (namesTransientOutage), and the engine's full network list
+//     (matchesNetworkTransient) — the FULL list, stdout included, so a
+//     failure that was NETWORK_TRANSIENT before the command reading existed
+//     stays out of every streak.
 func countedToolFailure(node ir.Node, code ErrorCode, execErr error) (failure *model.ToolExecutionError, status int, ok bool) {
 	if code != ErrCodeExecutionFailed || !repeatsAsPermanent(node) {
 		return nil, 0, false
@@ -209,8 +214,16 @@ func countedToolFailure(node ir.Node, code ErrorCode, execErr error) (failure *m
 	if !errors.As(execErr, &failure) || failure == nil || errors.Is(execErr, sandbox.ErrExecStatusUnknown) {
 		return nil, 0, false
 	}
+	// What the readings judge: a command's failure carries its streams apart
+	// (model.ToolCommandFailure), and their text is its diagnostics first,
+	// then stdout — without the wrapper's node id and outcome. A failure
+	// with no command in its chain keeps its whole text.
+	text := failure.Error()
+	if cmd, ok := failure.CommandFailure(); ok {
+		text = cmd.Output()
+	}
 	status, proven := failure.ExitStatus()
-	if !proven || namesTransientOutage(failure.Error()) {
+	if !proven || namesTransientOutage(text) || matchesNetworkTransient(strings.ToLower(text)) {
 		return nil, 0, false
 	}
 	return failure, status, true

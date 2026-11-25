@@ -3,6 +3,7 @@ package reliability
 import (
 	"context"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -389,6 +390,121 @@ func TestModeFromEnvIsTheFloorWithNoLevel(t *testing.T) {
 	}
 }
 
+// TestLegacyTenantsFromEnvIsCanonical pins the canonical form the report
+// prints: trimmed of spaces, empties dropped, deduplicated, sorted — so two
+// reports never differ by the operator's own punctuation.
+func TestLegacyTenantsFromEnvIsCanonical(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "unset", want: nil},
+		{name: "blank means none", raw: "   ", want: nil},
+		{name: "one tenant", raw: "team-a", want: []string{"team-a"}},
+		{name: "spaces, empties and a duplicate collapse", raw: " b , a ,,a,,", want: []string{"a", "b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvLegacyTenants, tc.raw)
+			if got := LegacyTenantsFromEnv(); !slices.Equal(got, tc.want) {
+				t.Fatalf("LegacyTenantsFromEnv = %q, want %q", got, tc.want)
+			}
+			if got := FromEnv().LegacyTenants; !slices.Equal(got, tc.want) {
+				t.Fatalf("FromEnv().LegacyTenants = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFloorForTenantCapsOnlyListedTenants is the tenant-scoped rollback
+// lever: a listed tenant reads as an explicit legacy rollback even under an
+// enforcing deployment, every other tenant keeps the process floor, and an
+// empty tenant id is NEVER listed — a surface with no tenant in scope
+// resolves exactly as the floor alone resolves.
+func TestFloorForTenantCapsOnlyListedTenants(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		mode, alias     string
+		tenants, tenant string
+		want            ModeFloor
+	}{
+		{name: "no env, no list", tenants: "", tenant: "team-a", want: ModeFloor{Mode: ModeLegacy}},
+		{name: "enforce floor stands without a list", mode: "enforce", tenants: "", tenant: "team-a", want: ModeFloor{Mode: ModeEnforce}},
+		{name: "a listed tenant is capped to legacy", mode: "enforce", tenants: "team-a", tenant: "team-a", want: ModeFloor{Mode: ModeLegacy, Rollback: true}},
+		{name: "an unlisted tenant keeps the floor", mode: "enforce", tenants: "team-a", tenant: "team-b", want: ModeFloor{Mode: ModeEnforce}},
+		{name: "an empty tenant is never listed", mode: "enforce", tenants: "team-a", tenant: "", want: ModeFloor{Mode: ModeEnforce}},
+		{name: "a listed tenant caps an invalid mode too", mode: "nonsense", alias: "report", tenants: "team-a", tenant: "team-a", want: ModeFloor{Mode: ModeLegacy, Rollback: true}},
+		{name: "the cap never flows to an unlisted sibling", mode: "enforce", alias: "", tenants: " team-a , team-a ,", tenant: "team-c", want: ModeFloor{Mode: ModeEnforce}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvMode, tc.mode)
+			t.Setenv(EnvContextPolicyAlias, tc.alias)
+			t.Setenv(EnvLegacyTenants, tc.tenants)
+			if got := FloorForTenant(tc.tenant); got != tc.want {
+				t.Fatalf("FloorForTenant(%q) with mode=%q alias=%q tenants=%q = %+v, want %+v", tc.tenant, tc.mode, tc.alias, tc.tenants, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestContextPolicyForTenantWithoutATenantIsTheEnvResolution keeps the live
+// path and the tenant cap in one piece: with no tenant in scope the
+// resolution must BE ContextPolicyFromEnv, not a second implementation
+// beside it — the same law TestModeFromEnvIsTheFloorWithNoLevel holds one
+// level up.
+func TestContextPolicyForTenantWithoutATenantIsTheEnvResolution(t *testing.T) {
+	for _, tc := range []struct{ mode, alias string }{
+		{},
+		{mode: "report"},
+		{mode: "enforce", alias: "legacy"},
+		{mode: "legacy", alias: "enforce"},
+		{alias: "report"},
+		{mode: "nonsense", alias: "enforce"},
+	} {
+		t.Setenv(EnvMode, tc.mode)
+		t.Setenv(EnvContextPolicyAlias, tc.alias)
+		t.Setenv(EnvLegacyTenants, "team-a")
+		for _, tenant := range []string{"", "team-zzz"} {
+			if got, want := ContextPolicyForTenant(tenant), ContextPolicyFromEnv(); got != want {
+				t.Fatalf("mode=%q alias=%q tenant=%q: ContextPolicyForTenant = %q, ContextPolicyFromEnv = %q", tc.mode, tc.alias, tenant, got, want)
+			}
+		}
+	}
+}
+
+// TestSummarizeCountsAdmissionsTheGateWouldDeny is the census A15 asks for
+// and the dry-run half of the cloud migration note: under legacy and report
+// the admission gate records violations it does not refuse, so the number a
+// promotion decides on is "how many would enforce deny at admission", not
+// only "how many did it". The census counts admission verdicts only —
+// resume-time artifact-contract refusals live in per-run events outside
+// this sum.
+func TestSummarizeCountsAdmissionsTheGateWouldDeny(t *testing.T) {
+	b := Summarize([]*store.Run{
+		// The two allowances-over-a-violation the census counts.
+		{Status: store.RunStatusFinished, Admission: &store.AdmissionDecision{Decision: "allowed", Code: admissionWouldDenyLegacy}},
+		{Status: store.RunStatusFinished, Admission: &store.AdmissionDecision{Decision: "allowed", Code: admissionWouldDenyReport}},
+		// An actual refusal counts on the denying side, not twice.
+		{Status: store.RunStatusFailed, Admission: &store.AdmissionDecision{Decision: "denied", Code: "context_mismatch"}},
+		// Clean allowances and the waived hatch are not violations.
+		{Status: store.RunStatusFinished, Admission: &store.AdmissionDecision{Decision: "allowed", Code: "context_match"}},
+		{Status: store.RunStatusFinished, Admission: &store.AdmissionDecision{Decision: "allowed", Code: "context_store_optional"}},
+		// An unreadable verdict is named by the recorded/denied gap, not
+		// silently joined to the census.
+		{Status: store.RunStatusQueued, Admission: &store.AdmissionDecision{Decision: "", Code: "partially_written"}},
+		// Never gated at all.
+		{Status: store.RunStatusQueued},
+	})
+	if b.AdmissionsWouldDeny != 2 {
+		t.Fatalf("admissions_would_deny = %d, want 2 — the launches enforce would deny at admission are the population the dry-run census counts (baseline = %+v)", b.AdmissionsWouldDeny, b)
+	}
+	if b.AdmissionsDenied != 1 {
+		t.Fatalf("admissions_denied = %d, want 1: a refusal stays on the denying side", b.AdmissionsDenied)
+	}
+	if b.AdmissionsRecorded != 6 {
+		t.Fatalf("admissions_recorded = %d, want 6", b.AdmissionsRecorded)
+	}
+}
 func TestR2TerminalCorrectionsAreRollbackSafe(t *testing.T) {
 	for _, status := range []string{"exhausted", "unchanged"} {
 		if report := ReportForRun(&store.Run{OutputCorrections: map[string]store.OutputCorrectionEpisode{"n": {Status: status}}}); !report.RollbackSafe {

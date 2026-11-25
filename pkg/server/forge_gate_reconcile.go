@@ -348,6 +348,14 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
 		args = append([]any{runID, via, prURL}, args...)
 		switch {
+		case !runAwaitsGateRepair(run):
+			// No check is owed or none will be repaired (no pinned context,
+			// the gate pinned off, an advisory bot, or a run naming no
+			// reviewed revision, which is settled unpinned below): its grant
+			// is read only so that a deferred verdict can be replayed, and a
+			// Warn that "the check it owes stays unanswered" would send an
+			// operator after a check nobody repairs.
+			s.logger.Debug(msg, args...)
 		case via != gateTriggerSweep:
 			s.logger.Warn(msg, args...)
 		case s.gateSweepIsLastPass(run):

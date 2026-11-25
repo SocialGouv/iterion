@@ -210,6 +210,10 @@ nodes:
       script_bytes: 524288
       result_bytes: 2097152
       tool_result_bytes: 131072
+      subagents_tokens: 200000
+      subagents_tokens_per_agent: 50000
+      subagents_concurrent: 2
+      subagents_steps_per_agent: 10
     permission: ask
     allow: [Read(**)]
     ask: [Bash(git *)]

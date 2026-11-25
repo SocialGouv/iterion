@@ -1,15 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,9 +22,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/modelcatalog"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func getModels(t *testing.T, srv *Server, query string, ctxs ...context.Context) (*httptest.ResponseRecorder, modelcatalog.Catalog) {
@@ -294,7 +303,42 @@ func TestDedupeSpecs(t *testing.T) {
 	}
 }
 
+// newCloudModelsServer builds a cloud server whose run service is driven by
+// a real cloud publisher, as production wires it: the publisher is the
+// catalog's judge of the platform credential tier. This default publisher
+// has no identity seam and no audience, so every team consults the
+// platform tier.
 func newCloudModelsServer(t *testing.T, queue ...QueueBackend) (*Server, *secrets.MemoryApiKeyStore, *secrets.MemoryOAuthStore) {
+	t.Helper()
+	return newCloudModelsServerWith(t, cloudpublisher.Config{}, queue...)
+}
+
+// newCloudModelsServerWith is newCloudModelsServer with the publisher's
+// identity seam and platform credential audience taken from pubCfg.
+func newCloudModelsServerWith(t *testing.T, pubCfg cloudpublisher.Config, queueBackends ...QueueBackend) (*Server, *secrets.MemoryApiKeyStore, *secrets.MemoryOAuthStore) {
+	t.Helper()
+	srv, keys, oauth := newCloudModelsServerWithoutPublisher(t, queueBackends...)
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("run store: %v", err)
+	}
+	pubCfg.Store = rs
+	pubCfg.Logger = iterlog.New(iterlog.LevelError, io.Discard)
+	pub := cloudpublisher.NewForTesting(pubCfg, func(context.Context, *queue.RunMessage) error { return nil })
+	prev := srv.runs
+	srv.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	if prev != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		prev.Stop(ctx)
+	}
+	return srv, keys, oauth
+}
+
+// newCloudModelsServerWithoutPublisher is the cloud server with the run
+// service New builds from its work dir: no launch publisher judges the
+// platform credential tier.
+func newCloudModelsServerWithoutPublisher(t *testing.T, queue ...QueueBackend) (*Server, *secrets.MemoryApiKeyStore, *secrets.MemoryOAuthStore) {
 	t.Helper()
 	keys := secrets.NewMemoryApiKeyStore()
 	oauth := secrets.NewMemoryOAuthStore()
@@ -476,6 +520,160 @@ func TestGetModels_CloudPlatformKeyIsProven(t *testing.T) {
 	grok, _ := cat.Find("xai/grok-3")
 	if !grok.Usable || grok.Reachability != modelcatalog.ReachabilityCloud {
 		t.Errorf("platform xAI key is injected into the run, so grok must be cloud-proven: %+v", grok)
+	}
+}
+
+// seedPlatformModelKey stores a platform-tier key the catalog lists for
+// every team the platform tier serves.
+func seedPlatformModelKey(t *testing.T, keys *secrets.MemoryApiKeyStore, p secrets.Provider, baseURL string) {
+	t.Helper()
+	if err := keys.Create(context.Background(), secrets.ApiKey{
+		ID:           secrets.NewApiKeyID(),
+		TenantID:     secrets.PlatformTenantID,
+		ScopeTeamID:  secrets.PlatformTenantID,
+		Provider:     p,
+		BaseURL:      baseURL,
+		Name:         "platform " + string(p),
+		SealedSecret: []byte("sealed:platform-" + string(p)),
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("platform %s key: %v", p, err)
+	}
+}
+
+// backendLit reports whether the catalog offers backend as available.
+func backendLit(cat modelcatalog.Catalog, backend string) bool {
+	for _, b := range cat.Backends {
+		if b.Name == backend {
+			return b.Available
+		}
+	}
+	return false
+}
+
+// The platform tier proves a model only for a team the launch walk lends it
+// to: the catalog reads the publisher's own gate (PlatformTierConsulted). A
+// team outside an enforced platform credential audience, a sovereign team
+// (llm_fallback=none) and a runner-pool team never receive a platform
+// credential, so the specs only the platform funds read unknown for them —
+// the gateway key, a vendor key and the platform forfait alike. The
+// sovereign and pool teams are named by the audience, so only their posture
+// keeps them out.
+func TestGetModels_CloudPlatformTierFollowsTheWalkGate(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
+	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	ids := identity.NewMemoryStore()
+	for _, team := range []identity.Team{
+		{ID: "team-in", Slug: "team-in", OrgID: "org-1"},
+		{ID: "team-out", Slug: "team-out", OrgID: "org-1"},
+		{ID: "team-sovereign", Slug: "team-sovereign", OrgID: "org-1", LLMFallback: identity.LLMFallbackNone},
+		{ID: "team-pool", Slug: "team-pool", OrgID: "org-1", RunnerPool: "pool-a"},
+	} {
+		if _, err := ids.CreateTeam(context.Background(), team); err != nil {
+			t.Fatalf("create team %s: %v", team.ID, err)
+		}
+	}
+	enforce := true
+	audience := platformcfg.NewResolverFunc(func(context.Context) (*platformcfg.PlatformCredentials, error) {
+		return &platformcfg.PlatformCredentials{Enforce: &enforce, Teams: []string{"team-in", "team-sovereign", "team-pool"}}, nil
+	}, nil)
+	srv, keys, oauth := newCloudModelsServerWith(t, cloudpublisher.Config{Identity: ids, PlatformCredentialAudience: audience}, newFakeDLQQueue())
+	seedPlatformModelKey(t, keys, secrets.ProviderOpenAICompatible, "https://gw.example.com")
+	seedPlatformModelKey(t, keys, secrets.ProviderXAI, "")
+	seedOAuthKind(t, oauth, secrets.PlatformOwnerKey, secrets.OAuthKindClaudeCode, "sk-ant-oat-platform")
+
+	const gatewaySpec, vendorSpec, forfaitSpec = "openai_compatible/scaleway/glm-5.3", "xai/grok-3", "anthropic/claude-opus-5"
+	for _, tc := range []struct {
+		team      string
+		consulted bool
+	}{
+		{"team-in", true},
+		{"team-out", false},
+		{"team-sovereign", false},
+		{"team-pool", false},
+	} {
+		t.Run(tc.team, func(t *testing.T) {
+			rec, cat := getModels(t, srv, "?spec="+gatewaySpec+"&spec="+vendorSpec+"&spec="+forfaitSpec, cloudIdentity(tc.team, "alice"))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			for _, spec := range []string{gatewaySpec, vendorSpec, forfaitSpec} {
+				e, ok := cat.Find(spec)
+				if !ok {
+					t.Fatalf("missing %s: %v", spec, cat.SortedSpecs())
+				}
+				if tc.consulted {
+					if !e.Usable || e.Reachability != modelcatalog.ReachabilityCloud {
+						t.Errorf("%s for %s = usable %v, reachability %q — want cloud-proven: the walk lends this team the platform key", spec, tc.team, e.Usable, e.Reachability)
+					}
+					continue
+				}
+				if e.Usable || e.Reachability != modelcatalog.ReachabilityUnknown {
+					t.Errorf("%s for %s = usable %v, reachability %q — want unknown: the walk never lends this team the platform key", spec, tc.team, e.Usable, e.Reachability)
+				}
+			}
+			if lit := backendLit(cat, detect.BackendClaw); lit != tc.consulted {
+				t.Errorf("claw lit = %v for %s, want %v — only the platform keys or forfait could light it", lit, tc.team, tc.consulted)
+			}
+			if lit := backendLit(cat, detect.BackendClaudeCode); lit != tc.consulted {
+				t.Errorf("claude_code lit = %v for %s, want %v — only the platform forfait could light it", lit, tc.team, tc.consulted)
+			}
+		})
+	}
+}
+
+// A cloud server whose run service has no publisher judging the platform
+// tier cannot say whether a team's launch would receive a platform key:
+// the platform's credentials are left uncounted, and the spec they alone
+// fund reads unknown rather than proven.
+func TestGetModels_CloudPlatformTierUnjudgedIsUnknown(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "")
+	srv, keys, _ := newCloudModelsServerWithoutPublisher(t)
+	var logBuf bytes.Buffer
+	srv.logger = iterlog.New(iterlog.LevelWarn, &logBuf)
+	seedPlatformModelKey(t, keys, secrets.ProviderXAI, "")
+
+	_, cat := getModels(t, srv, "?spec=xai/grok-3", cloudIdentity("team-a", "alice"))
+	grok, ok := cat.Find("xai/grok-3")
+	if !ok {
+		t.Fatalf("missing xai/grok-3: %v", cat.SortedSpecs())
+	}
+	if grok.Usable || grok.Reachability != modelcatalog.ReachabilityUnknown {
+		t.Errorf("xai/grok-3 = usable %v, reachability %q — want unknown: no publisher judged the platform tier", grok.Usable, grok.Reachability)
+	}
+	if !strings.Contains(logBuf.String(), "platform tier gate for team team-a") {
+		t.Errorf("no platform tier warning in the server log: %q", logBuf.String())
+	}
+}
+
+// A cloud server with no run service at all cannot judge the platform tier
+// either: the platform's credentials are left uncounted and the spec they
+// alone fund reads unknown.
+func TestGetModels_CloudPlatformTierWithoutRunServiceIsUnknown(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "")
+	srv, keys, _ := newCloudModelsServerWithoutPublisher(t)
+	if srv.runs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		srv.runs.Stop(ctx)
+		srv.runs = nil
+	}
+	var logBuf bytes.Buffer
+	srv.logger = iterlog.New(iterlog.LevelWarn, &logBuf)
+	seedPlatformModelKey(t, keys, secrets.ProviderXAI, "")
+
+	_, cat := getModels(t, srv, "?spec=xai/grok-3", cloudIdentity("team-a", "alice"))
+	grok, ok := cat.Find("xai/grok-3")
+	if !ok {
+		t.Fatalf("missing xai/grok-3: %v", cat.SortedSpecs())
+	}
+	if grok.Usable || grok.Reachability != modelcatalog.ReachabilityUnknown {
+		t.Errorf("xai/grok-3 = usable %v, reachability %q — want unknown: no run service judged the platform tier", grok.Usable, grok.Reachability)
+	}
+	if !strings.Contains(logBuf.String(), "platform tier gate for team team-a") {
+		t.Errorf("no platform tier warning in the server log: %q", logBuf.String())
 	}
 }
 

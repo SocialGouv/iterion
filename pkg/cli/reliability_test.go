@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -268,5 +269,48 @@ func TestReliabilityReportSingleRunReadsTheSourceItIsGiven(t *testing.T) {
 	}
 	if got.Baseline != nil {
 		t.Fatalf("a single-run report must not also carry a baseline: %+v", *got.Baseline)
+	}
+}
+
+// TestReliabilityReportNamesTheLegacyTenantExemption is the report half of
+// the tenant-scoped cap: an operator deciding promote-vs-rollback names the
+// escape hatch that is active, in its canonical form, and can read the
+// would-deny census beside the denial count.
+func TestReliabilityReportNamesTheLegacyTenantExemption(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tenants     string
+		wantTenants []string
+		wantMention string
+	}{
+		{name: "unset", tenants: "", wantTenants: nil, wantMention: ""},
+		{name: "named in canonical form", tenants: " b , a ,,a,,", wantTenants: []string{"a", "b"}, wantMention: "legacy tenants:  a, b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(reliability.EnvMode, "")
+			t.Setenv(reliability.EnvContextPolicyAlias, "")
+			t.Setenv(reliability.EnvLegacyTenants, tc.tenants)
+			got := reliabilityJSON(t, ReliabilityOptions{StoreDir: seedReliabilityStore(t)})
+			if !slices.Equal(got.LegacyTenants, tc.wantTenants) {
+				t.Fatalf("legacy_tenants = %q, want %q", got.LegacyTenants, tc.wantTenants)
+			}
+			var buf bytes.Buffer
+			if err := RunReliabilityReport(context.Background(), ReliabilityOptions{StoreDir: seedReliabilityStore(t)}, &Printer{W: &buf, Format: OutputHuman}); err != nil {
+				t.Fatalf("RunReliabilityReport: %v", err)
+			}
+			human := buf.String()
+			if !strings.Contains(human, "ADMISSIONS_WOULD_DENY") {
+				t.Fatalf("the admission table lost the would-deny census column:\n%s", human)
+			}
+			if tc.wantMention != "" && !strings.Contains(human, tc.wantMention) {
+				t.Fatalf("the report does not name the tenant exemption %q:\n%s", tc.wantMention, human)
+			}
+			if tc.wantMention == "" && strings.Contains(human, "legacy tenants") {
+				t.Fatalf("the report names an exemption list that is not set:\n%s", human)
+			}
+			if !strings.Contains(human, "ADMISSIONS_DENIED") {
+				t.Fatalf("the admission table lost the denial column:\n%s", human)
+			}
+		})
 	}
 }

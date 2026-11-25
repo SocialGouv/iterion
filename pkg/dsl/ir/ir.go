@@ -73,6 +73,11 @@ type Workflow struct {
 	// judge nodes inherit field by field (ResolveCodemodeBounds). nil = none
 	// declared, which leaves every field to scripthost.DefaultLimits.
 	CodemodeBounds *CodemodeBounds
+	// CodemodeSubagents is the workflow-level DEFAULT sub-agent reserve its
+	// agent and judge nodes inherit field by field
+	// (ResolveCodemodeSubagents). nil = none declared: the agent tool stays
+	// withheld from every node's scripts that declares none of its own.
+	CodemodeSubagents *CodemodeSubagents
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -317,7 +322,11 @@ type AgentNode struct {
 	// is a seam that rots untested. One line adds it back the day a reader
 	// holds an LLMNode rather than the node.
 	CodemodeBounds *CodemodeBounds
-	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	// CodemodeSubagents is this node's declared sub-agent reserve; nil
+	// inherits the workflow's, field by field. Arming it is what makes the
+	// agent tool callable from this node's programs (CM-13).
+	CodemodeSubagents *CodemodeSubagents
+	Permission        string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —
@@ -369,7 +378,11 @@ type JudgeNode struct {
 	// workflow's, field by field. Clamped to scripthost.Ceiling in the
 	// parent at spawn, with C347 at compile where a value is above it.
 	CodemodeBounds *CodemodeBounds
-	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	// CodemodeSubagents is this node's declared sub-agent reserve; nil
+	// inherits the workflow's, field by field. Arming it is what makes the
+	// agent tool callable from this node's programs (CM-13).
+	CodemodeSubagents *CodemodeSubagents
+	Permission        string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —

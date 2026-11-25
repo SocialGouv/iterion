@@ -259,6 +259,7 @@ type ClawExecutor struct {
 	wfCodemode               string
 	wfCodemodeDefer          string
 	wfCodemodeBounds         *ir.CodemodeBounds
+	wfCodemodeSubagents      *ir.CodemodeSubagents
 	codemodeOverride         string
 	codemodeBoundsOverride   *ir.CodemodeBounds
 	ambientContextOverride   string
@@ -1195,6 +1196,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCodemode:               wf.Codemode,
 		wfCodemodeDefer:          wf.CodemodeDefer,
 		wfCodemodeBounds:         wf.CodemodeBounds,
+		wfCodemodeSubagents:      wf.CodemodeSubagents,
 		ambientContextEnvDefault: envGetenv(context.Background(), ambient.PolicyEnv),
 		wfPermission:             wf.Permission,
 		wfPermAllow:              wf.PermissionAllow,

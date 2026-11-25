@@ -684,10 +684,11 @@ tasks:
       - ./{{.BINARY}} diagram {{.CLI_ARGS}}
 
   check:
-    desc: Run all checks (lint + test + golden replay + studio + pi extension + chart render gate)
+    desc: Run all checks (bot format + lint + test + golden replay + studio + pi extension + chart render gate)
     cmds:
       - task: gen:check
       - task: chart:check
+      - task: fmt:check
       - task: lint
       - task: test
       - task: test:goldens

@@ -665,3 +665,83 @@ workflow w:
 		t.Errorf("an unmet postcondition after a zero exit was counted in a streak: %+v", streak)
 	}
 }
+
+// A command whose network wording sits on STDOUT — its data, not its report —
+// keeps the EXECUTION_FAILED reading: one in-process retry, then the queue's
+// redeliveries, never the six-retry network backoff replaying the side
+// effects (#3058).
+func TestAToolWhoseStdoutCarriesNetworkWordsIsNotBackedOff(t *testing.T) {
+	r := newToolRun(t, toolBot("echo run >> executions.log; echo 'dial tcp 127.0.0.1:5432: connect: connection refused'; exit 1"))
+	err := r.launch(production())
+	if err == nil {
+		t.Fatal("scenario broken: the run did not fail")
+	}
+	if got := codeOf(t, err); got != runtime.ErrCodeExecutionFailed {
+		t.Errorf("code = %s, want %s — a needle on the command's stdout decided the run's connectivity", got, runtime.ErrCodeExecutionFailed)
+	}
+	if got := r.executions(); got != firstLife {
+		t.Errorf("the command ran %d time(s), want %d — the network recipe replayed it", got, firstLife)
+	}
+	if _, ok := r.streak(); ok {
+		t.Error("the failure was counted in a streak — a stdout needle keeps the redeliveries, not the verdict")
+	}
+}
+
+// A parser's EOF on stderr is a deterministic failure, not a stream cut: the
+// command's wording `unexpected EOF` is set aside from the network reading.
+func TestAToolWhoseStderrCarriesAParsersEOFIsNotBackedOff(t *testing.T) {
+	r := newToolRun(t, toolBot("echo run >> executions.log; echo 'SyntaxError: unexpected EOF while parsing' >&2; exit 1"))
+	err := r.launch(production())
+	if err == nil {
+		t.Fatal("scenario broken: the run did not fail")
+	}
+	if got := codeOf(t, err); got != runtime.ErrCodeExecutionFailed {
+		t.Errorf("code = %s, want %s — a parser's wording decided the run's connectivity", got, runtime.ErrCodeExecutionFailed)
+	}
+	if got := r.executions(); got != firstLife {
+		t.Errorf("the command ran %d time(s), want %d — the network recipe replayed it", got, firstLife)
+	}
+	if _, ok := r.streak(); ok {
+		t.Error("the failure was counted in a streak — a set-aside needle keeps the redeliveries, not the verdict")
+	}
+}
+
+// A Verified Action whose recipe prints a network wording on STDOUT and
+// leaves its postcondition unmet keeps the EXECUTION_FAILED reading, whether
+// the recipe exited non-zero or 0: the recipe's stdout is its data, never the
+// run's connectivity.
+func TestAnUnmetPostconditionWhoseRecipeStdoutCarriesNetworkWordsIsNotBackedOff(t *testing.T) {
+	for _, tc := range []struct{ name, end string }{
+		{"the recipe exits 1", "exit 1"},
+		{"the recipe exits 0", "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newToolRun(t, `tool gate:
+  command: "echo run >> executions.log; echo 'dial tcp 127.0.0.1:5432: connect: connection refused'; `+tc.end+`"
+  postcondition: "test -f never-written"
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: gate
+  gate -> done
+`)
+			err := r.launch(production())
+			if err == nil {
+				t.Fatal("scenario broken: the run did not fail")
+			}
+			if !strings.Contains(err.Error(), "postcondition not met") {
+				t.Fatalf("scenario broken: the failure is not the unmet postcondition's:\n%v", err)
+			}
+			if got := codeOf(t, err); got != runtime.ErrCodeExecutionFailed {
+				t.Errorf("code = %s, want %s — a needle on the recipe's stdout decided the run's connectivity", got, runtime.ErrCodeExecutionFailed)
+			}
+			if got := r.executions(); got != firstLife {
+				t.Errorf("the recipe ran %d time(s), want %d — the network recipe replayed it", got, firstLife)
+			}
+			if streak, ok := r.streak(); ok {
+				t.Errorf("the failure was counted in a streak: %+v", streak)
+			}
+		})
+	}
+}

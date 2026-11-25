@@ -342,10 +342,14 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 	if err != nil {
 		return nil, err
 	}
+	messages, err := openaiwire.ConvertMessages(req.System, req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
+	}
 
 	r := &oaiRequest{
 		Model:            wireModel,
-		Messages:         openaiwire.ConvertMessages(req.System, req.Messages),
+		Messages:         messages,
 		Tools:            tools,
 		ResponseFormat:   format,
 		Stream:           true,

@@ -34,6 +34,14 @@ func (s *Server) noticeGateDLQParked(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || run.FailureCode != store.FailureDLQParked {
 		return
 	}
+	// The notice promises a failed check and a relaunch on the run's head:
+	// only a run the reconciler may still repair gets it (runAwaitsGateRepair
+	// — necessary, not sufficient: the head, the PR state and the live status
+	// are read after the notice; an advisory bot's run, or one that names no
+	// reviewed revision, is repaired by nobody).
+	if !runAwaitsGateRepair(run) {
+		return
+	}
 	target, ok := s.gateNoticeTarget(ctx, run, "DLQ notice")
 	if !ok {
 		return
@@ -75,7 +83,11 @@ func (s *Server) gateNoticeTarget(ctx context.Context, run *store.Run, what stri
 		return gateNoticeTarget{}, false // holds no publish grant: nothing to tell anyone
 	}
 	// Holding a grant is NOT owing a verdict — the server mints one for ANY
-	// bot launched with a pr_url. Same two conditions the reconciler uses.
+	// bot launched with a pr_url. These are two of runOwesGateVerdict's
+	// conditions; its third, gate_advisory_bot, is left to the DLQ caller,
+	// whose notice promises a repair and so also requires a reviewed revision
+	// (runAwaitsGateRepair): the decline and pause notices promise none, so
+	// they still reach an advisory bot's run.
 	if strings.TrimSpace(runInputString(run, "gate_context")) == "" || runGateDisabled(run) {
 		return gateNoticeTarget{}, false
 	}

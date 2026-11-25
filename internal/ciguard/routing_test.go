@@ -180,10 +180,11 @@ var requiredChecks = map[string]bool{
 //     RequiredAggregator) — an orphan leg is red on pull requests only, and
 //     the queue would stay green on work nothing aggregates.
 var gatedJobs = map[string]bool{
-	"test-unit":  true,
-	"test-e2e":   true,
-	"studio":     true,
-	"race-shard": true,
+	"test-unit":        true,
+	"test-e2e":         true,
+	"studio":           true,
+	"test-native-exec": true,
+	"race-shard":       true,
 }
 
 // aggregatorIf is the ONE spelling a required aggregator may carry: the

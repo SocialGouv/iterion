@@ -34,7 +34,7 @@ func TestTheOverrideRunsUnderClampLikeAnyAuthor(t *testing.T) {
 			Memory:    1 << 20, // below the 64 MiB floor
 		},
 	}
-	_, bounds, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backendcaps.Claw)
+	_, bounds, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backendcaps.Claw)
 	if err != nil {
 		t.Fatalf("codemodePolicy: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestANegativeOverrideFieldDropsToAuthored(t *testing.T) {
 		codemodeOverride:       "on",
 		codemodeBoundsOverride: &ir.CodemodeBounds{ToolCalls: -5},
 	}
-	_, bounds, err := e.codemodePolicy(backendFields{
+	_, bounds, _, err := e.codemodePolicy(backendFields{
 		id:             "n",
 		codemode:       "on",
 		codemodeBounds: &ir.CodemodeBounds{ToolCalls: 64},
@@ -110,7 +110,7 @@ func TestANegativeOverrideFieldDropsToAuthored(t *testing.T) {
 func TestAGarbageModeOnTheExecutorResolvesOff(t *testing.T) {
 	t.Parallel()
 	e := &ClawExecutor{codemodeOverride: "maybe"}
-	policy, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backendcaps.Claw)
+	policy, _, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backendcaps.Claw)
 	if err != nil {
 		t.Fatalf("codemodePolicy: %v", err)
 	}

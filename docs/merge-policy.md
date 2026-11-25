@@ -59,7 +59,7 @@ green.
   `nats-conformance` once an admin adds it to ruleset 18857412.
   `test` and `race` are AGGREGATOR CONTEXTS, not test-running jobs: the work
   lives in the gated legs (the `test-unit` matrix, the `test-e2e` matrix,
-  `studio`, the `race-shard` matrix) that run in the queue behind them, and each aggregator
+  `studio`, `test-native-exec`, the `race-shard` matrix) that run in the queue behind them, and each aggregator
   re-verifies every leg's conclusion under `if: ${{ !cancelled() && <tap skip> }}`
   — the run-state clause combined with the one verified skip
   ([below](#the-one-verified-skip-the-homebrew-tap-update)), so an aggregator
@@ -67,10 +67,12 @@ green.
   required NAMES stay stable — a PR that renamed one could never pass its own
   queue build — while work scales sideways (shards, new legs). `test-e2e`
   partitions Go's discovered top-level Test, Example and Fuzz corpus names
-  into four shards; subtests follow their parent, and each shard keeps the
-  900-second test timeout. Reproduce one with
-  `pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i 0)`
-  then `go test -mod=vendor -count=1 -run "$pattern" -timeout 900s ./e2e`,
+  into four shards; subtests follow their parent, and each shard runs under
+  `-race` with a 2400-second test timeout — the package's only run, so
+  `race-shard` leaves it out of its partition and `test` speaks for e2e under
+  the detector (#3664). Reproduce one with
+  `pattern=$(CGO_ENABLED=1 GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i 0)`
+  then `CGO_ENABLED=1 go test -race -mod=vendor -count=1 -run "$pattern" -timeout 2400s ./e2e`,
   in the same devbox and build environment, under `set -euo pipefail`.
   Discovery has its own configurable `-list-timeout` (five minutes; zero
   disables it); its failure stops execution. Discovery owns a Unix process
@@ -78,6 +80,14 @@ green.
   `ITERION_PROC_WAIT_DELAY` override; a descendant starting another session
   escapes that group. This new test-discovery mode refuses Windows, whose
   process helper cannot provide group ownership. Package sharding is unchanged.
+  `test-native-exec` is the one leg off the scale set: `pkg/sandbox/kubernetes`'s
+  native witnesses need a Bubblewrap mount ARC pods refuse, so `test-unit` and
+  `race-shard` leave that package out and this job proves it, plain and under
+  `-race`, on `vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest'` behind the same
+  fork, dependency-bot and `CI_SELF_HOSTED` guards; both aggregators `needs:` it
+  (#3662). Every gating `go test` skips the flake quarantine
+  (`scripts/ci/test-quarantine.tsv`, one open ticket per row), which the
+  nightly `test-quarantine` workflow runs instead (#3663).
   The legs
   themselves carry the tap skip and nothing else, a contract `internal/ciguard`'s
   `gatedJobs` enforces: a leg any other condition skips reports Success on the
@@ -164,7 +174,8 @@ queue, where the entry held one of the three build slots for ~25 minutes
 (`test` 24.1, `race` 22.3, `mongo-conformance` 4.0, `golangci` 3.2,
 `fmt-check` 1.8, `vendor-check` 1.0 min, measured on #2314).
 
-So the gated legs (`test-unit`, `test-e2e`, `studio`, `race-shard`), the
+So the gated legs (`test-unit`, `test-e2e`, `studio`, `test-native-exec`,
+`race-shard`), the
 aggregators `test` and `race` that speak for them (combined with their
 `!cancelled()` clause), `mongo-conformance`, `golangci`, `vendor-check` and
 `fmt-check` carry one condition, the only `if:` a required check may carry
@@ -261,7 +272,7 @@ gate.** What it owes:
    the one you are waiting on. The required set is exactly `test`, `race`,
    `vendor-check`, `mongo-conformance`, `golangci`, `brand` and `revi/review`
    (ruleset 18857412); the legs behind the two aggregators (`test-unit (n)`,
-   `test-e2e (n)`, `studio`, `race-shard (n)`) are deliberately **not** required and
+   `test-e2e (n)`, `studio`, `test-native-exec`, `race-shard (n)`) are deliberately **not** required and
    are where the work is. Queued, cancelled, missing **or skipped** is not
    success: a job skipped by a job-level `if:` reports SUCCESS, so a required
    check that never ran satisfies the gate
@@ -432,6 +443,30 @@ that is the other run's tag. `queue: max` is there because a group otherwise
 keeps a single pending run and silently replaces it with the next one: a merged
 pull request's run could replace a pending nightly or dispatch, then hold its
 release while the queue builds.
+
+## The major hold
+
+release-it cuts a major from a single `feat!:` commit, and an explicit
+dispatch increment overrides the bump its changelog recommends — so the first
+breaking change after a `v7` tag would auto-cut `v8`, and a dispatched `minor`
+would ship the breaking changes under a 7.x minor. `version.yml` therefore
+asks a **major hold** before release-it; the decision lives in
+[`scripts/ci/release-major-hold.sh`](../scripts/ci/release-major-hold.sh),
+exercised by `internal/ciguard/release_major_hold_test.go`:
+
+- an **automatic run** — a merged pull request or the nightly — whose
+  recommended version is the next major ends **green** with a notice naming
+  the version: no tag is cut, main keeps carrying the breaking change;
+- a **dispatch** of `patch`, `minor`, an explicit same-major version or a
+  blank input on `main` is **refused** (red) while a major is pending;
+- only the dispatch of the **exact** `N+1.0.0` cuts the major; the word
+  `major` and any higher version are refused with that message;
+- a ref other than `main` is not guarded here — the hold protects main alone,
+  and the `release/*` line owns its own rules.
+
+With no breaking change pending, every run releases exactly as before. The
+release hold decides *whether this run may tag* — how the major is cut, and
+when, is a separate decision, not this hold's.
 
 ## A rebuilt group's older runs are cancelled
 

@@ -2028,6 +2028,18 @@ func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
 	if cb.StoreBytes != 0 {
 		fmt.Fprintf(b, "%sstore_bytes: %d\n", inner, cb.StoreBytes)
 	}
+	if cb.SubagentsTokens != 0 {
+		fmt.Fprintf(b, "%ssubagents_tokens: %d\n", inner, cb.SubagentsTokens)
+	}
+	if cb.SubagentsTokensPerAgent != 0 {
+		fmt.Fprintf(b, "%ssubagents_tokens_per_agent: %d\n", inner, cb.SubagentsTokensPerAgent)
+	}
+	if cb.SubagentsConcurrent != 0 {
+		fmt.Fprintf(b, "%ssubagents_concurrent: %d\n", inner, cb.SubagentsConcurrent)
+	}
+	if cb.SubagentsStepsPerAgent != 0 {
+		fmt.Fprintf(b, "%ssubagents_steps_per_agent: %d\n", inner, cb.SubagentsStepsPerAgent)
+	}
 }
 
 func writeSandboxBlock(b *buf, sb *ast.SandboxBlock, indent string) {

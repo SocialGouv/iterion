@@ -1,21 +1,76 @@
 # Weights for scripts/ci/testshards -weights: import-path<TAB>seconds.
 # Rows are `ok`-line durations (s) under -race from merge_group run
-# 39133360570 (2026-10-18) — measured under that run's packing (bots solo),
-# so treat them as relative weights, not walls; refresh when the mix drifts.
-# Unlisted packages weigh 1, so a stale or missing row only degrades the
-# balance — it never errors.
-github.com/SocialGouv/iterion/bots	1288
-github.com/SocialGouv/iterion/pkg/backend/model	1051
-github.com/SocialGouv/iterion/e2e	685
-github.com/SocialGouv/iterion/pkg/server	437
-github.com/SocialGouv/iterion/pkg/backend/delegate	412
-github.com/SocialGouv/iterion/internal/fswatch	299
-github.com/SocialGouv/iterion/cmd/iterion	276
-github.com/SocialGouv/iterion/pkg/cli	262
-github.com/SocialGouv/iterion/pkg/assistantmission	208
-github.com/SocialGouv/iterion/pkg/runtime	189
-github.com/SocialGouv/iterion/pkg/runview	179
-github.com/SocialGouv/iterion/pkg/auth	148
-github.com/SocialGouv/iterion/internal/automaintguard	112
-github.com/SocialGouv/iterion/internal/docsguard	106
-github.com/SocialGouv/iterion/pkg/backend/mcp	94
+# 45186345093 (2026-11-23) on GitHub-hosted ubuntu-latest, measured under the
+# previous table's packing (e2e, pkg/server and internal/fswatch on one
+# shard), so treat them as relative weights, not walls; refresh when the mix
+# drifts. Packages under 10 s are left out: unlisted packages weigh 1, so a
+# stale or missing row only degrades the balance — it never errors.
+# race-shard leaves out e2e (under -race in test-e2e) and pkg/sandbox/kubernetes
+# (under -race in test-native-exec), so neither carries a row here.
+github.com/SocialGouv/iterion/bots	1564
+github.com/SocialGouv/iterion/pkg/server	1070
+github.com/SocialGouv/iterion/internal/fswatch	945
+github.com/SocialGouv/iterion/pkg/runtime	745
+github.com/SocialGouv/iterion/pkg/auth	607
+github.com/SocialGouv/iterion/pkg/cli	583
+github.com/SocialGouv/iterion/pkg/backend/model	559
+github.com/SocialGouv/iterion/pkg/backend/delegate	489
+github.com/SocialGouv/iterion/pkg/runview	407
+github.com/SocialGouv/iterion/cmd/iterion	403
+github.com/SocialGouv/iterion/pkg/scripthost	352
+github.com/SocialGouv/iterion/internal/floortest	271
+github.com/SocialGouv/iterion/internal/docsguard	205
+github.com/SocialGouv/iterion/pkg/store	158
+github.com/SocialGouv/iterion/pkg/backend/secretguard	157
+github.com/SocialGouv/iterion/cmd/iterion-desktop	155
+github.com/SocialGouv/iterion/pkg/runner	147
+github.com/SocialGouv/iterion/pkg/git	124
+github.com/SocialGouv/iterion/internal/isolationenv	116
+github.com/SocialGouv/iterion/internal/automaintguard	99
+github.com/SocialGouv/iterion/pkg/dsl/canon	95
+github.com/SocialGouv/iterion/pkg/dryrun	87
+github.com/SocialGouv/iterion/pkg/repomap	87
+github.com/SocialGouv/iterion/pkg/knowledge	81
+github.com/SocialGouv/iterion/pkg/dsl/ir	76
+github.com/SocialGouv/iterion/pkg/assistantmission	71
+github.com/SocialGouv/iterion/pkg/dsl/unit	71
+github.com/SocialGouv/iterion/pkg/dsl/author	59
+github.com/SocialGouv/iterion/scripts/ci/testcaps	58
+github.com/SocialGouv/iterion/pkg/store/mongo	53
+github.com/SocialGouv/iterion/charts/iterion	49
+github.com/SocialGouv/iterion/pkg/backend/mcp	48
+github.com/SocialGouv/iterion/pkg/botreplay	48
+github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools	47
+github.com/SocialGouv/iterion/pkg/dsl/parser	47
+github.com/SocialGouv/iterion/pkg/claw/internal/tools	44
+github.com/SocialGouv/iterion/pkg/cloud/orgsweep	44
+github.com/SocialGouv/iterion/pkg/backend/compatgw	37
+github.com/SocialGouv/iterion/internal/tenantguard	36
+github.com/SocialGouv/iterion/internal/mdcode	30
+github.com/SocialGouv/iterion/pkg/lease	30
+github.com/SocialGouv/iterion/pkg/reliability	30
+github.com/SocialGouv/iterion/pkg/runwatch	28
+github.com/SocialGouv/iterion/internal/layerguard	27
+github.com/SocialGouv/iterion/pkg/internal/proc	25
+github.com/SocialGouv/iterion/pkg/dsl/unparse	24
+github.com/SocialGouv/iterion/pkg/runtime/recovery	24
+github.com/SocialGouv/iterion/internal/ciguard	23
+github.com/SocialGouv/iterion/pkg/secrets	21
+github.com/SocialGouv/iterion/internal/pricingtest	20
+github.com/SocialGouv/iterion/pkg/runview/runstream	20
+github.com/SocialGouv/iterion/pkg/server/cloudpublisher	20
+github.com/SocialGouv/iterion/internal/envtrust	16
+github.com/SocialGouv/iterion/pkg/backend/tool	16
+github.com/SocialGouv/iterion/pkg/connection	16
+github.com/SocialGouv/iterion/pkg/dsl/spec	16
+github.com/SocialGouv/iterion/connectors	15
+github.com/SocialGouv/iterion/internal/clawfold	14
+github.com/SocialGouv/iterion/pkg/backend/auxllm	13
+github.com/SocialGouv/iterion/pkg/dispatcher	13
+github.com/SocialGouv/iterion/pkg/botinstall	12
+github.com/SocialGouv/iterion/pkg/dsl/workflowfile	12
+github.com/SocialGouv/iterion/pkg/liveledger	12
+github.com/SocialGouv/iterion/pkg/botregistry	11
+github.com/SocialGouv/iterion/pkg/dsl/expr	11
+github.com/SocialGouv/iterion/pkg/sandbox	11
+github.com/SocialGouv/iterion/pkg/store/blob	10

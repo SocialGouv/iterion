@@ -680,6 +680,10 @@ A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
 | `tool_result_bytes` | int | Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports |
 | `store_entries` | int | Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit) |
 | `store_bytes` | int | Workflow scope only: total UTF-8 key and stored JSON bytes in the run's codemode bank (default 131072, ceiling 524288; 0 means inherit) |
+| `subagents_tokens` | int | The node's whole sub-agent reserve, in tokens (CM-13, ADR-165): declaring it arms the reserve and makes the agent tool callable from this node's programs. Each child books subagents_tokens_per_agent (default: the whole reserve) until it settles its actual usage. Required for any other subagents_* line to arm (C356); ceiling 4000000. The direct (non-script) agent tool is unchanged |
+| `subagents_tokens_per_agent` | int | One scripted child's hold on the reserve, in tokens (default: the whole reserve; ceiling 1000000). Above subagents_tokens is refused (C356). A program cannot choose a child's model (ADR-165) — children run on the node's own model |
+| `subagents_concurrent` | int | How many scripted sub-agents of this node may run at once (default 1, ceiling 4; 0 means inherit). Admission enforces it: a call past the cap is refused until a child settles |
+| `subagents_steps_per_agent` | int | One scripted child's tool-loop steps (0 = the node's own step budget). A child never outsteps the node that spawned it: a wider declaration is tightened to the node's budget |
 
 ### sandbox
 

@@ -92,6 +92,14 @@ nothing here either: the catalog request names neither, and a launch outside
 the audience never receives the key, so the models only it would fund read
 `unknown`.
 
+The platform tier counts through the launch walk's own gate (the cloud
+publisher's `PlatformTierConsulted`). A team outside an enforced platform
+credential audience, a sovereign team (`llm_fallback=none`) or a team mapped
+to a runner pool never receives a platform credential, so the models only a
+platform key or forfait funds read `unknown` for it. When no publisher can
+answer (a team read that fails), the platform tier is left uncounted with a
+warning in the server log.
+
 The catalog envelope also stamps `reachability: "local"|"cloud"` for the
 surface that was evaluated.
 

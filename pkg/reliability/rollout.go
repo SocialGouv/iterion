@@ -6,6 +6,8 @@ package reliability
 
 import (
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +24,17 @@ const (
 	// keeps working, but EnvMode is AUTHORITATIVE: the documented rollback
 	// (EnvMode=legacy) has to take effect on exactly those hosts, and a lever
 	// the older variable can silently shadow is not an emergency lever.
-	EnvContextPolicyAlias      = "ITERION_EXECUTION_CONTEXT_POLICY"
-	ModeLegacy            Mode = "legacy"
-	ModeReport            Mode = "report"
-	ModeEnforce           Mode = "enforce"
+	EnvContextPolicyAlias = "ITERION_EXECUTION_CONTEXT_POLICY"
+	// EnvLegacyTenants is the tenant-scoped form of the EnvMode=legacy cap:
+	// tenants named in this comma-separated list keep the legacy stamp while
+	// the rest of the deployment applies the resolved mode. It exists so one
+	// straggling tenant cannot hold the whole pilot back, and it is pilot
+	// scaffolding like legacy itself: it leaves with the legacy mode.
+	EnvLegacyTenants = "ITERION_RELIABILITY_LEGACY_TENANTS"
+
+	ModeLegacy  Mode = "legacy"
+	ModeReport  Mode = "report"
+	ModeEnforce Mode = "enforce"
 )
 
 // Mode controls the compatibility gate during rollout. Legacy is the safe
@@ -133,6 +142,61 @@ func ModeFromEnv() Mode {
 	return FloorFromEnv().Resolve(ModeUnset)
 }
 
+// LegacyTenantsFromEnv reads the tenant exemption list: comma-separated
+// tenant ids, trimmed of surrounding spaces, empties dropped, deduplicated
+// and sorted. The canonical form is what a report prints, so an operator
+// comparing two reports never diffs their own punctuation.
+func LegacyTenantsFromEnv() []string {
+	raw := os.Getenv(EnvLegacyTenants)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	seen := make(map[string]struct{}, strings.Count(raw, ",")+1)
+	tenants := make([]string, 0, strings.Count(raw, ",")+1)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, dup := seen[part]; dup {
+			continue
+		}
+		seen[part] = struct{}{}
+		tenants = append(tenants, part)
+	}
+	sort.Strings(tenants)
+	return tenants
+}
+
+// FloorForTenant folds the per-tenant exemption onto the process floor: a
+// listed tenant reads as an explicit legacy rollback — the same cap
+// EnvMode=legacy pulls, scoped to the tenants it names — every other
+// tenant as the floor the process already resolves.
+func FloorForTenant(tenantID string) ModeFloor {
+	if legacyTenantListed(tenantID) {
+		return ModeFloor{Mode: ModeLegacy, Rollback: true}
+	}
+	return FloorFromEnv()
+}
+
+// ContextPolicyForTenant resolves the ONE rollout policy a launch in
+// tenantID's scope must stamp, through the same tiered resolution every
+// surface shares. An empty tenant id is never listed, so a surface with no
+// tenant in scope resolves exactly what ContextPolicyFromEnv resolves.
+func ContextPolicyForTenant(tenantID string) store.ContextPolicy {
+	return FloorForTenant(tenantID).Resolve(ModeUnset).ContextPolicy()
+}
+
+// legacyTenantListed reports whether tenantID is named in the exemption
+// list. The list is a handful of tenants; a linear scan over the canonical
+// form beats a second parser beside LegacyTenantsFromEnv.
+func legacyTenantListed(tenantID string) bool {
+	if tenantID == "" {
+		return false
+	}
+	return slices.Contains(LegacyTenantsFromEnv(), tenantID)
+}
+
 func parseMode(raw string) (Mode, bool) {
 	mode := Mode(strings.ToLower(strings.TrimSpace(raw)))
 	switch mode {
@@ -188,14 +252,23 @@ func (m Mode) ContextPolicy() store.ContextPolicy {
 // runtime correctors. It is independent of the reliability pilot controls
 // reported by Config.
 type Config struct {
-	Mode                  Mode
+	Mode Mode
+	// LegacyTenants is the canonical form of the per-tenant exemption list
+	// (EnvLegacyTenants): the escape hatch that is actually active, named in
+	// the report the promotion decision reads.
+	LegacyTenants         []string
 	RetryCircuitThreshold int
 	RetryCircuitCooldown  time.Duration
 }
 
 func FromEnv() Config {
 	circuit := retrycoord.FromEnv()
-	return Config{Mode: ModeFromEnv(), RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown}
+	return Config{
+		Mode:                  ModeFromEnv(),
+		LegacyTenants:         LegacyTenantsFromEnv(),
+		RetryCircuitThreshold: circuit.Threshold,
+		RetryCircuitCooldown:  circuit.Cooldown,
+	}
 }
 
 func (c Config) ContextPolicy() store.ContextPolicy { return c.Mode.ContextPolicy() }
@@ -294,7 +367,19 @@ type Baseline struct {
 	// design and the pilot has nothing to say about them.
 	AdmissionsRecorded int `json:"admissions_recorded"`
 	AdmissionsDenied   int `json:"admissions_denied"`
-	LegacyContextRuns  int `json:"legacy_context_runs"`
+	// AdmissionsWouldDeny is the census A15 asks for: recorded decisions
+	// where the launch admission gate SAW a violation and did not refuse
+	// it — context_report_only under a report floor,
+	// legacy_context_unvalidated under legacy. These are the launches a
+	// promotion to enforce would deny at admission, readable today instead
+	// of being discovered as denied runs afterwards. The census covers the
+	// launch admission gate only, not the resume-time artifact-contract
+	// refusals enforce also adds: report windows record those as per-run
+	// artifact_contract_violation events, and enforce additionally requires
+	// exact checkpoint availability on resume. Scoped per tenant by
+	// --tenant on the cloud report.
+	AdmissionsWouldDeny int `json:"admissions_would_deny"`
+	LegacyContextRuns   int `json:"legacy_context_runs"`
 }
 
 func Summarize(runs []*store.Run) Baseline {
@@ -342,6 +427,10 @@ func Summarize(runs []*store.Run) Baseline {
 			if run.Admission.Decision == admissionDenied {
 				b.AdmissionsDenied++
 			}
+			switch run.Admission.Code {
+			case admissionWouldDenyReport, admissionWouldDenyLegacy:
+				b.AdmissionsWouldDeny++
+			}
 		}
 		if run.ExecutionContext == nil {
 			b.LegacyContextRuns++
@@ -354,6 +443,16 @@ func Summarize(runs []*store.Run) Baseline {
 // writes (store.AdmissionDecision.Decision). The field is a plain string
 // on the record, so this is a literal by necessity, not by choice.
 const admissionDenied = "denied"
+
+// The two allowance verdicts the runtime writes over a violation it did not
+// refuse: a report floor records context_report_only, legacy records
+// legacy_context_unvalidated (pkg/runtime/admission.go). Plain strings on
+// the record, so literals by necessity, not by choice — same justification
+// as admissionDenied above.
+const (
+	admissionWouldDenyReport = "context_report_only"
+	admissionWouldDenyLegacy = "legacy_context_unvalidated"
+)
 
 // RollbackPlan describes the non-destructive rollback contract. Rollback
 // disables new enforcement but retains evidence already written, so a pilot

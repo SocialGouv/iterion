@@ -144,6 +144,49 @@ unset the older variable. An unrecognised value emits a one-time warning; an
 invalid new mode falls back to the older valid policy, while an invalid or
 absent value in both variables resolves to `legacy`.
 
+A third variable scopes that legacy lever to tenants:
+`ITERION_RELIABILITY_LEGACY_TENANTS` is a comma-separated list of tenant ids
+that keep the legacy stamp while the rest of the deployment applies the
+resolved mode. It is the tenant-scoped form of `legacy`, temporary like the
+mode it caps into — it leaves with legacy itself, not a fourth mode.
+
+#### Cloud launches: a migration note
+
+Cloud launches went through `pkg/server/cloudpublisher`, which used to stamp
+`legacy` on the queued row and the wire message whatever the variables said —
+a deployment carrying `ITERION_RELIABILITY_MODE` or its alias at `report` or
+`enforce` had them silently ignored by every queued run, and the resolved
+mode named by `iterion reliability report` was not the one cloud runs
+applied. The publisher now resolves the same policy every other launch
+surface applies, per tenant.
+
+Before flipping the mode on a deployment whose server pods carry either
+variable at `report` or `enforce`, read what each roll changes:
+
+1. read the deployment values of both variables (`ITERION_RELIABILITY_MODE`,
+   `ITERION_EXECUTION_CONTEXT_POLICY`) on the server pods — that is the
+   population this note applies to; if both are unset, nothing changes at
+   the roll;
+2. census: `iterion reliability report --cloud [--tenant <id>] --json` and
+   read `baseline.admissions_would_deny` — the recorded decisions where the
+   launch admission gate saw a violation and did not refuse it, i.e. the
+   launches a switch to `enforce` would deny at admission. The census
+   measures the admission gate only: a clean census does not cover
+   resume-time artifact-contract refusals, which a `report` window records
+   per run as `artifact_contract_violation` events and which `enforce`
+   turns into refusals (it additionally requires exact checkpoint
+   availability on resume);
+3. dry-run: the census **is** the dry-run for the admission gate. `report`
+   records the same admission violations without refusing anything, so a
+   window at `report` measures what `enforce` would deny at admission;
+   there is no separate dry-run flag. Resume-time artifact-contract
+   refusals are not in the census — read their `artifact_contract_violation`
+   events on the same window instead;
+4. escapes: `ITERION_RELIABILITY_MODE=legacy` (the documented lever,
+   authoritative) to stop everywhere, or `ITERION_RELIABILITY_LEGACY_TENANTS`
+   with the tenant ids to keep only stragglers on legacy — a temporary list
+   that leaves with the legacy mode.
+
 ### The tiers above those variables: a level, and the env as a floor
 
 The promotion step is `enforce` **by level**: a run-affecting setting belongs

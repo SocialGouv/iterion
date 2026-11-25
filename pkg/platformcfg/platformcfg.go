@@ -492,9 +492,17 @@ func EngineInjectedVarName(name string) bool { return botVarNameOK(name) }
 // declares no var for it, and the IR drops it at wiring time, which is the
 // opt-in the mint documents. The names are the mint's complete list, so the
 // classification cannot drift from what is actually injected.
+//
+// The launch vars the server stamps (store.ServerStampedLaunchVars — the
+// gate_advisory_bot mark the forge launch writes on a bot without the
+// `statuses` scope) classify engine-injected for the same reason: no
+// workflow declares them, and refusing them would refuse a launch over a
+// name its caller never sent.
 func SplitEngineInjectedInputs(names []string) (injected, refused []string) {
 	for _, name := range names {
-		if EngineInjectedVarName(name) || slices.Contains(store.ServerMintedLaunchVars[:], name) {
+		if EngineInjectedVarName(name) ||
+			slices.Contains(store.ServerMintedLaunchVars[:], name) ||
+			slices.Contains(store.ServerStampedLaunchVars[:], name) {
 			injected = append(injected, name)
 		} else {
 			refused = append(refused, name)

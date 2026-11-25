@@ -128,3 +128,81 @@ func TestGateSweepIsLastPass_UndatableRunIsNeverTheLastPass(t *testing.T) {
 		t.Error("a run with no UpdatedAt must not be reported as the last pass")
 	}
 }
+
+// A run that owes no verdict (gate_advisory_bot: its bot declares no
+// `statuses` scope) is still offered to the sweep, and once the reaper has cut
+// its grant back the abstain branch is reached on every pass. Neither the
+// event path nor the last pass may then Warn that "the check it owes stays
+// unanswered": it owes none, and the Warn would send an operator after a
+// check nobody broke.
+func TestGateSweepAbstain_AdvisoryRunNeverWarnsOfAnOwedCheck(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	inputs := gatingInputs()
+	inputs[gateAdvisoryBotVar] = "true"
+	s, runID := gateReconcileFixture(t, inputs, gc)
+	logs := &bytes.Buffer{}
+	s.logger = iterlog.New(iterlog.LevelWarn, logs)
+
+	// The grant is gone (the reaper's post-run grace has run out), so both
+	// passes below walk the abstain branch.
+	s.forgePublishTokens.expireIn("tok-gate", -time.Hour)
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+		t.Fatalf("reconcile (event): %v", err)
+	}
+	at := runUpdatedAt(t, s, runID)
+	s.gateClock = func() time.Time { return at.Add(gateSweepHorizon - gateDeepSweepEvery*gateSweepInterval) }
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
+		t.Fatalf("reconcile (last pass): %v", err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("a run that owes no verdict logged above debug: %s", logs)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("posted %d statuses for a run that owes no verdict", gc.setCalls)
+	}
+}
+
+// A run that names no reviewed revision (no head_sha) is repaired by nobody:
+// the reconciler settles it unpinned and posts nothing, and the reaper does
+// not hold its grant for a repair. Once the grant is gone, neither the event
+// path nor the last pass may Warn that "the check it owes stays unanswered".
+func TestGateSweepAbstain_UnpinnedRunNeverWarnsOfAnOwedCheck(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	inputs := gatingInputs()
+	delete(inputs, "head_sha")
+	s, runID := gateReconcileFixture(t, inputs, gc)
+	logs := &bytes.Buffer{}
+	s.logger = iterlog.New(iterlog.LevelWarn, logs)
+
+	s.forgePublishTokens.expireIn("tok-gate", -time.Hour)
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+		t.Fatalf("reconcile (event): %v", err)
+	}
+	at := runUpdatedAt(t, s, runID)
+	s.gateClock = func() time.Time { return at.Add(gateSweepHorizon - gateDeepSweepEvery*gateSweepInterval) }
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
+		t.Fatalf("reconcile (last pass): %v", err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("a run nobody repairs logged above debug: %s", logs)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("posted %d statuses for a run that names no reviewed revision", gc.setCalls)
+	}
+}
+
+// The quiet abstain is the advisory run's alone: the same expired grant on a
+// run that owes a verdict still Warns on the event path.
+func TestGateSweepAbstain_OwedRunStillWarnsOnTheEventPath(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+	logs := &bytes.Buffer{}
+	s.logger = iterlog.New(iterlog.LevelWarn, logs)
+	s.forgePublishTokens.expireIn("tok-gate", -time.Hour)
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !strings.Contains(logs.String(), "expired or revoked") {
+		t.Fatalf("an owed run's abstain must Warn on the event path, got: %q", logs)
+	}
+}

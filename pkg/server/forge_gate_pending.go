@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // A required check has three states an operator can act on — green, red, and
@@ -24,6 +25,59 @@ import (
 // run URL, so the operator lands on the live console instead of guessing which
 // run owes the check.
 const gateInFlightDescription = "review in progress — the verdict will replace this"
+
+// gateAdvisoryBotVar rides the launch vars of a run whose bot declares no
+// `statuses` token scope — the provisioner's gating posture
+// (forge.BotGatesMerges). Such a bot is not relied on to answer the repo's
+// gate, so it neither claims it nor owes it a verdict. The server writes the
+// name at launch (stampGateAdvisoryBot) and both gate readers — the in-flight
+// claim here and runOwesGateVerdict over the stored inputs — honour it, so a
+// launch of such a bot leaves the review's own claim, repair and relaunch
+// untouched. The publish endpoint does not read the declared scope: a bot
+// that still posts a gate verdict through its publish node is honoured, but
+// gets no claim and no repair.
+const gateAdvisoryBotVar = store.GateAdvisoryBotVar
+
+// stampGateAdvisoryBot marks a PR-targeted launch whose bot declares no
+// `statuses` token scope, so neither the claim nor the repair machinery reads
+// it as a verdict owed. The server owns the name: a stale, forked or caller-sent
+// value is deleted first, so a gating bot never carries it (and a bot
+// flipping to gating loses a stale mark on its next launch).
+//
+// Best-effort, same posture as markGateInFlight: no gate vars on the launch,
+// no bot named, no resolver wired, or a bot that does not resolve leaves the
+// gate armed — today's behaviour — because the claim is only an absence of
+// status made readable, never a harm a missing stamp can cause. Only a
+// resolution FAILURE is warned about: it is a fact about the store or the
+// manifest read, not about the bot, and silencing it would hide why a
+// converse launch still claims.
+func (s *Server) stampGateAdvisoryBot(ctx context.Context, teamID, botID string, vars map[string]string) {
+	if s == nil || vars == nil {
+		return
+	}
+	delete(vars, gateAdvisoryBotVar)
+	if strings.TrimSpace(vars["gate_context"]) == "" || strings.TrimSpace(vars["pr_url"]) == "" {
+		return
+	}
+	a, ok := s.botGatesMergesAnswer(ctx, teamID, botID)
+	if !ok {
+		return
+	}
+	if a.err != nil {
+		if s.logger != nil {
+			s.logger.Warn("forge gate: team %s: bot %q does not resolve, so the launch keeps the gate armed: %v", teamID, botID, a.err)
+		}
+		return
+	}
+	if a.gates {
+		return
+	}
+	vars[gateAdvisoryBotVar] = "true"
+	if s.logger != nil {
+		s.logger.Info("forge gate: bot %q declares no statuses scope, so its launch on %s carries %s=true — it claims no gate and owes no verdict",
+			botID, vars["gate_context"], gateAdvisoryBotVar)
+	}
+}
 
 // isGateInFlight reports whether a status is this server's own in-flight
 // marker rather than a verdict a bot posted.
@@ -52,6 +106,11 @@ func isGateInFlight(st forge.CommitStatus) bool {
 // The run URL is built from cfg.PublicURL rather than the request, so a claim
 // and the reconciler's later failure name the run identically — the target URL
 // is what tells "already answered" from "must escalate" over there.
+//
+// A launch whose bot declares no `statuses` token scope (marked
+// gate_advisory_bot by stampGateAdvisoryBot) claims nothing: it is not relied
+// on to replace its own claim with a verdict, and its claim would overwrite
+// the live review's own — leaving a review that dies under it unrepaired.
 func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, vars map[string]string, runID string) {
 	if s == nil || s.forgeConnections == nil || vars == nil {
 		return
@@ -72,6 +131,15 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 	// the claim would be the only status the run leaves — on a pull request
 	// it was launched not to touch. Same predicate as runGateDisabled.
 	if forge.PublishModeWithholds(vars[forge.PublishModeVar]) {
+		return
+	}
+	// A bot that declares no `statuses` scope is not relied on to post the
+	// verdict that would replace the claim, and the repo's gate context is
+	// shared: its
+	// claim would overwrite the live review's own pending marker (target URL
+	// and all) and stand the reconciler down on a review that then dies. The
+	// stamp rides the same vars map, so the claim reads what the stamp wrote.
+	if strings.TrimSpace(vars[gateAdvisoryBotVar]) == "true" {
 		return
 	}
 	// The revision, not the PR. A status is posted on a sha, and the head can

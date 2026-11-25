@@ -38,9 +38,9 @@ import (
 // that pkg/queue's v32 rationale calls the correctness bug the additive-field
 // rule exists for — and dropping `mode: off` turned codemode on for the whole
 // bot. TestTheWorkflowRungsBoundsAreADefaultNotDeadText holds it.
-func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (string, string, *CodemodeBounds) {
+func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (string, string, *CodemodeBounds, *CodemodeSubagents) {
 	if cb == nil {
-		return "", "", nil
+		return "", "", nil, nil
 	}
 	mode := normCodemode(cb.Mode)
 	// The same vocabulary mode: is held to, judged the same way: a value the
@@ -93,7 +93,80 @@ func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (s
 			"%s %q declares codemode defer: on beside `mode: off`: as written no program of this node runs, so the deferral is inert and the tools stay declared — unless a launch override turns codemode on, which makes this defer live. Drop `mode: off` to use the deferral, or drop the defer line",
 			scope, name)
 	}
-	return mode, deferMode, bounds
+	// The sub-agent reserve (CM-13): declared bounds arm the node's reserve
+	// and make the agent tool callable from this node's programs. Judged
+	// beside the bounds, with the same two inert-honesty rules: a reserve
+	// beside `mode: off` on a node arms nothing as written (a launch
+	// override that turns codemode on makes it live, the reach C348 names
+	// for the bounds and C355 for the defer), and a per-agent hold that
+	// names no reserve at all, or one wider than the reserve it draws
+	// against, arms nothing and is REFUSED — a reserve without a size is
+	// not finite, and the door reads an unsized reserve as withheld.
+	subagents := c.codemodeSubagents(cb, scope, name, !inert)
+	if inert && subagents != nil {
+		c.warnfAtProperty(DiagCodemodeSubagentsWithModeOff, scope, name, "codemode",
+			"%s %q declares a codemode subagents reserve beside `mode: off`: no program of this node runs, so the reserve arms nothing. Drop `mode: off` to use it, or drop the subagents lines",
+			scope, name)
+	}
+	return mode, deferMode, bounds, subagents
+}
+
+// codemodeSubagents reads the sub-agent reserve properties and validates the
+// shape a reserve can take. nil when the block declared none — the agent
+// tool stays withheld from this node's scripts.
+func (c *compiler) codemodeSubagents(cb *ast.CodemodeBlock, scope, name string, reportCeiling bool) *CodemodeSubagents {
+	if cb.SubagentsTokens == 0 && cb.SubagentsTokensPerAgent == 0 && cb.SubagentsConcurrent == 0 && cb.SubagentsStepsPerAgent == 0 {
+		return nil
+	}
+	// The C356 checks judge the declaration against the size the CASCADE
+	// would give it: a node may tighten ONE field under a workflow-sized
+	// reserve (field-by-field inheritance, ResolveCodemodeSubagents), so a
+	// node rung without its own tokens is sized by the workflow's — refusing
+	// it here would break the cascade this block shares with the bounds.
+	// The workflow rung has nothing above it to inherit.
+	effectiveTokens := cb.SubagentsTokens
+	if effectiveTokens <= 0 && scope != "workflow" && c.file != nil && len(c.file.Workflows) > 0 && c.file.Workflows[0].Codemode != nil {
+		// The workflow rung may have compiled AFTER this node (agents first),
+		// so the size the cascade would give reads off the AST — the same
+		// declaration the workflow compile judges, raw as written.
+		effectiveTokens = c.file.Workflows[0].Codemode.SubagentsTokens
+	}
+	// An unsized reserve arms nothing and is refused out loud: every other
+	// bound has a DEFAULT, but a reserve's whole meaning is its size —
+	// "finite" is the property the ADR demands and zero is not finite.
+	if effectiveTokens <= 0 {
+		c.errorfAtProperty(DiagCodemodeSubagentsUnsized, scope, name, "codemode",
+			"%s %q declares a subagents bound without subagents_tokens: a reserve without a size is not finite, so nothing is armed and the agent tool stays withheld from this node's scripts. Declare subagents_tokens (the node's whole reserve, in tokens)",
+			scope, name)
+		return nil
+	}
+	// A hold wider than the reserve it draws against arms nothing: every
+	// admission would refuse, so the declaration can only describe a run
+	// that never happens.
+	if cb.SubagentsTokensPerAgent > effectiveTokens {
+		c.errorfAtProperty(DiagCodemodeSubagentsUnsized, scope, name, "codemode",
+			"%s %q declares subagents_tokens_per_agent: %d above the reserve it draws against (%d tokens) — no admission would ever pass, so nothing is armed. Lower the per-agent hold, or raise the reserve",
+			scope, name, cb.SubagentsTokensPerAgent, effectiveTokens)
+		return nil
+	}
+	if reportCeiling {
+		for _, phrase := range CodemodeSubagentsAboveCeiling(&CodemodeSubagents{
+			Tokens:         cb.SubagentsTokens,
+			TokensPerAgent: cb.SubagentsTokensPerAgent,
+			Concurrent:     cb.SubagentsConcurrent,
+			StepsPerAgent:  cb.SubagentsStepsPerAgent,
+		}) {
+			c.warnfAtProperty(DiagCodemodeBoundAboveCeiling, scope, name, "codemode",
+				"%s %q declares a codemode subagents bound above the platform ceiling (%s): it is clamped to the ceiling before use, not refused. Lower the value to say what will happen",
+				scope, name, phrase)
+		}
+	}
+	return &CodemodeSubagents{
+		Tokens:         cb.SubagentsTokens,
+		TokensPerAgent: cb.SubagentsTokensPerAgent,
+		Concurrent:     cb.SubagentsConcurrent,
+		StepsPerAgent:  cb.SubagentsStepsPerAgent,
+	}
 }
 
 // codemodeBounds reads the bound properties, parsing the two durations.

@@ -705,18 +705,22 @@ func recoveryBlockFromJSON(j *jsonRecoveryBlock) *RecoveryBlock {
 // refuse every stored document, and a writer that only emitted it would churn
 // every golden to say the same thing.
 type jsonCodemodeBlock struct {
-	Mode                string `json:"mode,omitempty"`
-	Defer               string `json:"defer,omitempty"`
-	ToolCalls           int64  `json:"tool_calls,omitempty"`
-	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
-	Wall                string `json:"wall,omitempty"`
-	CPU                 string `json:"cpu,omitempty"`
-	Memory              int64  `json:"memory,omitempty"`
-	ScriptBytes         int64  `json:"script_bytes,omitempty"`
-	ResultBytes         int64  `json:"result_bytes,omitempty"`
-	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
-	StoreEntries        int64  `json:"store_entries,omitempty"`
-	StoreBytes          int64  `json:"store_bytes,omitempty"`
+	Mode                    string `json:"mode,omitempty"`
+	Defer                   string `json:"defer,omitempty"`
+	ToolCalls               int64  `json:"tool_calls,omitempty"`
+	ConcurrentToolCalls     int64  `json:"concurrent_tool_calls,omitempty"`
+	Wall                    string `json:"wall,omitempty"`
+	CPU                     string `json:"cpu,omitempty"`
+	Memory                  int64  `json:"memory,omitempty"`
+	ScriptBytes             int64  `json:"script_bytes,omitempty"`
+	ResultBytes             int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes         int64  `json:"tool_result_bytes,omitempty"`
+	StoreEntries            int64  `json:"store_entries,omitempty"`
+	StoreBytes              int64  `json:"store_bytes,omitempty"`
+	SubagentsTokens         int64  `json:"subagents_tokens,omitempty"`
+	SubagentsTokensPerAgent int64  `json:"subagents_tokens_per_agent,omitempty"`
+	SubagentsConcurrent     int64  `json:"subagents_concurrent,omitempty"`
+	SubagentsStepsPerAgent  int64  `json:"subagents_steps_per_agent,omitempty"`
 }
 
 // bounded mirrors ast.CodemodeBlock.Bounded: any bound declared. A declared
@@ -727,7 +731,8 @@ func (c *jsonCodemodeBlock) bounded() bool {
 		return false
 	}
 	return c.Defer != "" || c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
-		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0 ||
+		c.SubagentsTokens != 0 || c.SubagentsTokensPerAgent != 0 || c.SubagentsConcurrent != 0 || c.SubagentsStepsPerAgent != 0
 }
 
 // MarshalJSON writes the short form while there is nothing but a mode to say.
@@ -762,18 +767,22 @@ func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
 		return nil
 	}
 	return &jsonCodemodeBlock{
-		Mode:                c.Mode,
-		Defer:               c.Defer,
-		ToolCalls:           c.ToolCalls,
-		ConcurrentToolCalls: c.ConcurrentToolCalls,
-		Wall:                c.Wall,
-		CPU:                 c.CPU,
-		Memory:              c.Memory,
-		ScriptBytes:         c.ScriptBytes,
-		ResultBytes:         c.ResultBytes,
-		ToolResultBytes:     c.ToolResultBytes,
-		StoreEntries:        c.StoreEntries,
-		StoreBytes:          c.StoreBytes,
+		Mode:                    c.Mode,
+		Defer:                   c.Defer,
+		ToolCalls:               c.ToolCalls,
+		ConcurrentToolCalls:     c.ConcurrentToolCalls,
+		Wall:                    c.Wall,
+		CPU:                     c.CPU,
+		Memory:                  c.Memory,
+		ScriptBytes:             c.ScriptBytes,
+		ResultBytes:             c.ResultBytes,
+		ToolResultBytes:         c.ToolResultBytes,
+		StoreEntries:            c.StoreEntries,
+		StoreBytes:              c.StoreBytes,
+		SubagentsTokens:         c.SubagentsTokens,
+		SubagentsTokensPerAgent: c.SubagentsTokensPerAgent,
+		SubagentsConcurrent:     c.SubagentsConcurrent,
+		SubagentsStepsPerAgent:  c.SubagentsStepsPerAgent,
 	}
 }
 
@@ -808,18 +817,22 @@ func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
 		mode = "on"
 	}
 	return &CodemodeBlock{
-		Mode:                mode,
-		Defer:               j.Defer,
-		ToolCalls:           j.ToolCalls,
-		ConcurrentToolCalls: j.ConcurrentToolCalls,
-		Wall:                j.Wall,
-		CPU:                 j.CPU,
-		Memory:              j.Memory,
-		ScriptBytes:         j.ScriptBytes,
-		ResultBytes:         j.ResultBytes,
-		ToolResultBytes:     j.ToolResultBytes,
-		StoreEntries:        j.StoreEntries,
-		StoreBytes:          j.StoreBytes,
+		Mode:                    mode,
+		Defer:                   j.Defer,
+		ToolCalls:               j.ToolCalls,
+		ConcurrentToolCalls:     j.ConcurrentToolCalls,
+		Wall:                    j.Wall,
+		CPU:                     j.CPU,
+		Memory:                  j.Memory,
+		ScriptBytes:             j.ScriptBytes,
+		ResultBytes:             j.ResultBytes,
+		ToolResultBytes:         j.ToolResultBytes,
+		StoreEntries:            j.StoreEntries,
+		StoreBytes:              j.StoreBytes,
+		SubagentsTokens:         j.SubagentsTokens,
+		SubagentsTokensPerAgent: j.SubagentsTokensPerAgent,
+		SubagentsConcurrent:     j.SubagentsConcurrent,
+		SubagentsStepsPerAgent:  j.SubagentsStepsPerAgent,
 	}
 }
 

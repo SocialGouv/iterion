@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // parentPermissionCtxKey carries the parent loop's tool-permission policy to
@@ -119,10 +120,174 @@ type subagentSpendCtxKey struct{}
 //
 // Safe for concurrent use: a parent loop may execute several tool calls at
 // once, and each delegation debits from its own goroutine.
+//
+// A node whose author declared a subagents reserve (CM-13) arms it here too,
+// on the ONE counter the node already keeps — a second ledger would be the
+// competing counter the arbitration forbids. The reserve is admission
+// control, not accounting: a hold books the right to START a child (its
+// size is the per-child estimate), Record still books the tokens the child
+// actually burned, and a hold is released on settle, error or sweep alike.
 type SubagentSpend struct {
 	mu      sync.Mutex
 	usage   Usage
 	costUSD float64
+
+	// reserve is the armed policy, nil until ArmReserve. holds is the sum of
+	// per-child holds in flight; inFlight counts those children; consumed is
+	// what settled children ACTUALLY burned — admission reads
+	// consumed + holds, so a reserve is finite across sequential children
+	// too, not only across the ones in flight. lostHolds is what
+	// SweepUnsettled had to release — children whose goroutine never
+	// returned, named honestly instead of leaking as silently-spent budget.
+	reserve   *scripthost.SubagentReserve
+	holds     int64
+	inFlight  int
+	lostHolds int
+	consumed  int64
+}
+
+// subagentHold is one admitted child's booking. Release is idempotent: a
+// caller that settles and releases on every return path, and a sweep that
+// releases what never returned, must not double-free a slot.
+type subagentHold struct {
+	s      *SubagentSpend
+	tokens int64
+	done   bool
+}
+
+// ArmReserve arms the node's declared reserve on this accumulator, clamped
+// to the platform ceiling; the applied policy is returned so the arming site
+// can report a reduction the author did not declare. Arming twice replaces —
+// the task's reserve is decided once per node execution, and a second arm
+// would be a second opinion.
+func (s *SubagentSpend) ArmReserve(declared *scripthost.SubagentReserve) scripthost.SubagentReserve {
+	if declared == nil {
+		return scripthost.SubagentReserve{}
+	}
+	ceil := scripthost.SubagentCeiling()
+	applied := *declared
+	if applied.Tokens > ceil.Tokens {
+		applied.Tokens = ceil.Tokens
+	}
+	if applied.TokensPerAgent > ceil.TokensPerAgent || applied.TokensPerAgent > applied.Tokens {
+		applied.TokensPerAgent = min(ceil.TokensPerAgent, applied.Tokens)
+	}
+	if applied.Concurrent > ceil.Concurrent {
+		applied.Concurrent = ceil.Concurrent
+	}
+	if applied.StepsPerAgent > ceil.StepsPerAgent {
+		applied.StepsPerAgent = ceil.StepsPerAgent
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reserve = &applied
+	return applied
+}
+
+// ReserveSubagent admits one scripted child: it books the per-child hold and
+// an in-flight slot, or refuses with the typed reason the caller reports
+// back to the program. The hold is the per-child estimate — the reserve's
+// own bound, or the whole reserve when no per-agent bound is declared — and
+// it never enters the usage accounting: Record books what the child actually
+// spent.
+func (s *SubagentSpend) ReserveSubagent() (*subagentHold, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reserve == nil {
+		return nil, fmt.Errorf("subagent reserve: this node armed no reserve, so its scripts cannot start a child")
+	}
+	perChild := s.reserve.TokensPerAgent
+	if perChild <= 0 {
+		perChild = s.reserve.Tokens
+	}
+	concurrent := s.reserve.Concurrent
+	if concurrent <= 0 {
+		concurrent = 1
+	}
+	if s.consumed+s.holds+perChild > s.reserve.Tokens {
+		return nil, fmt.Errorf("subagent reserve spent: admitting one child books %d tokens, %d of %d remain (children already settled consumed %d) — the node's reserve cannot fund another child",
+			perChild, max(int64(0), s.reserve.Tokens-s.consumed-s.holds), s.reserve.Tokens, s.consumed)
+	}
+	if s.inFlight >= int(concurrent) {
+		return nil, fmt.Errorf("subagent reserve saturated: %d children of this node are in flight and its reserve allows %d — settle a child before starting another",
+			s.inFlight, concurrent)
+	}
+	s.holds += perChild
+	s.inFlight++
+	return &subagentHold{s: s, tokens: perChild}, nil
+}
+
+// Release frees the hold and the in-flight slot. Idempotent: the sweep and
+// the settle path may both reach for the same hold.
+func (h *subagentHold) Release() {
+	if h == nil {
+		return
+	}
+	h.s.mu.Lock()
+	defer h.s.mu.Unlock()
+	if h.done {
+		return
+	}
+	h.done = true
+	h.s.holds -= h.tokens
+	h.s.inFlight--
+}
+
+// SweepUnsettled releases every hold still open — children whose goroutine
+// never returned — and reports how many there were. Called where the node's
+// execution ends, so a crash mid-child names its unfinished booking instead
+// of leaking the slot for the rest of the node.
+func (s *SubagentSpend) SweepUnsettled() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.inFlight
+	if n > 0 {
+		s.lostHolds += n
+		s.holds = 0
+		s.inFlight = 0
+	}
+	return n
+}
+
+// ArmedSubagentReserve reports the armed policy, for the runner to read the
+// per-child step cap and the door to know the script route exists.
+func (s *SubagentSpend) ArmedSubagentReserve() (scripthost.SubagentReserve, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reserve == nil {
+		return scripthost.SubagentReserve{}, false
+	}
+	return *s.reserve, true
+}
+
+// SubagentReserveState reports the reserve's live counters: holds and
+// in-flight children, and the children the sweep had to release.
+func (s *SubagentSpend) SubagentReserveState() (holds int64, inFlight int, lostHolds int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holds, s.inFlight, int64(s.lostHolds)
+}
+
+// subagentScriptAdmissionCtxKey arms the SCRIPT route of the agent tool: its
+// presence marks the node whose programs may start children, carries the
+// reserve they draw against, and is what the runner reads to refuse a
+// scripted model choice (ADR-165: a script cannot choose a child's model).
+// The direct route — the model calling agent from its own turn — never sees
+// this key and keeps today's behaviour.
+type subagentScriptAdmissionCtxKey struct{}
+
+// WithSubagentScriptAdmission arms the script route on the node's context.
+// Every value a program's nested call dispatch descends from — the
+// dispatcher's, the script server's, the worker's — carries it.
+func WithSubagentScriptAdmission(ctx context.Context, s *SubagentSpend) context.Context {
+	return context.WithValue(ctx, subagentScriptAdmissionCtxKey{}, s)
+}
+
+// subagentScriptAdmissionFrom returns the accumulator a scripted child
+// admits against, and whether this call came from a program at all.
+func subagentScriptAdmissionFrom(ctx context.Context) (*SubagentSpend, bool) {
+	s, ok := ctx.Value(subagentScriptAdmissionCtxKey{}).(*SubagentSpend)
+	return s, ok && s != nil
 }
 
 // WithSubagentSpend attaches the accumulator the delegations of one node
@@ -152,6 +317,13 @@ func (s *SubagentSpend) Record(ctx context.Context, modelSpec string, u Usage) {
 	defer s.mu.Unlock()
 	accumulateUsage(&s.usage, u)
 	s.costUSD += cost.EstimateUSDWithCacheInEnv(ctx, modelSpec, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
+	// The settle half of the reserve (CM-13): what the child actually
+	// burned depletes it — the hold only ever booked the right to START.
+	// Whole tokens, cache reads included: the estimate a hold books is
+	// coarse, so the settled charge may exceed it, and the excess counts.
+	if s.reserve != nil {
+		s.consumed += int64(u.InputTokens) + int64(u.OutputTokens)
+	}
 }
 
 // Total is what the children of this node consumed: the summed usage, and the
@@ -214,6 +386,25 @@ func NewSubagentRunner(
 		spec, err := clawtools.ValidateAgentInput(input)
 		if err != nil {
 			return "", err
+		}
+
+		// The SCRIPT route (CM-13): a program's call admits against the
+		// node's armed reserve before anything resolves, and cannot choose a
+		// child's model — ADR-165 refuses it in the same sentence that
+		// demands the reserve. The refusal is typed and names both halves,
+		// so the program reads the rule and not a generic failure.
+		spend, scripted := subagentScriptAdmissionFrom(ctx)
+		var hold *subagentHold
+		if scripted {
+			if m, _ := input["model"].(string); strings.TrimSpace(m) != "" {
+				return "", fmt.Errorf("tool %q called from a program cannot choose a child's model: a script runs its children on the node's own model (ADR-165). Call the agent tool directly from your turn to choose a model", spec.AgentID)
+			}
+			h, err := spend.ReserveSubagent()
+			if err != nil {
+				return "", err
+			}
+			hold = h
+			defer hold.Release()
 		}
 
 		// claw's ValidateAgentInput substitutes a hard-coded default
@@ -309,6 +500,14 @@ func NewSubagentRunner(
 		if parent.MaxSteps > 0 {
 			maxSteps = parent.MaxSteps
 		}
+		// A scripted child never outsteps the node that spawned it: the
+		// declared per-agent bound tightens what inheritance gives, never
+		// widens it — the child runs INSIDE the node's own budget.
+		if scripted {
+			if policy, ok := spend.ArmedSubagentReserve(); ok && policy.StepsPerAgent > 0 {
+				maxSteps = min(maxSteps, int(policy.StepsPerAgent))
+			}
+		}
 
 		// The child conversation's system prompt is the agent file's body
 		// when one resolved — the file IS the agent's definition — and the
@@ -392,12 +591,14 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 	defs := reg.List()
 	tools := make([]GenerationTool, 0, len(defs))
 	for _, td := range defs {
+		def := td.ToDelegateDef()
 		tools = append(tools, GenerationTool{
 			Name:           td.QualifiedName,
 			Description:    td.Description,
 			InputSchema:    td.InputSchema,
 			Execute:        td.Execute,
-			concurrentSafe: td.ToDelegateDef().ConcurrentSafe,
+			concurrentSafe: def.ConcurrentSafe,
+			imageResult:    def.ImageResult,
 		})
 	}
 	return filterSubagentTools(tools, allowed)

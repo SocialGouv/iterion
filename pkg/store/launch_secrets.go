@@ -24,6 +24,19 @@ const (
 // live grant at a host of its choosing.
 var ServerMintedLaunchVars = [...]string{ForgePublishURLVar, ForgePublishTokenVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar, ForgeDispatchURLVar}
 
+// GateAdvisoryBotVar is the launch var the server stamps "true" on a
+// PR-targeted launch of a bot that declares no `statuses` token scope: the
+// merge-gate claim and repair machinery reads it to leave such a run out of
+// the repo's gate.
+const GateAdvisoryBotVar = "gate_advisory_bot"
+
+// ServerStampedLaunchVars are launch vars the server writes at launch that no
+// workflow declares. They are facts about the launch for the server's own
+// readers, never secrets: no read surface masks them and no egress guard
+// scopes them. A strict launch check classifies them as injected rather than
+// refusing them as inputs naming no var of the workflow.
+var ServerStampedLaunchVars = [...]string{GateAdvisoryBotVar}
+
 // ServerMintedEndpointVars are the ServerMintedLaunchVars that name an
 // endpoint the bearer is presented to — every one but the bearer itself. The
 // run's secret guard scopes the bearer to their hosts, so an endpoint missing

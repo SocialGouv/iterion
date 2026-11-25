@@ -163,6 +163,15 @@ func testForgeBotLookup(_ context.Context, _, botID string) (*bundle.ForgeRequir
 			Secret:      "forge_token",
 		}, nil
 	}
+	// #3532's label-bot fixture (forge_provisioning_routes_test.go): a bot
+	// that reacts to issue labels, what the catalog would answer for it.
+	if botID == "label-bot" {
+		return &bundle.ForgeRequirements{
+			Events:      []string{bundle.ForgeEventIssueLabeled},
+			TokenScopes: map[string]string{"issues": "write"},
+			Secret:      "forge_token",
+		}, nil
+	}
 	return nil, nil
 }
 

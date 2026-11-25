@@ -1,0 +1,116 @@
+# The flake quarantine's nightly witness (#3663). scripts/ci/test-quarantine.tsv
+# names the ticketed flakes the gating jobs of tests.yml skip (`go test -skip`
+# built by scripts/ci/testquarantine); this workflow runs ONLY those tests,
+# under the gating flags — plain as test-unit runs them, then -race as
+# race-shard does — on the scale set where they flake, and goes red when one
+# fails, skips or is no longer selected.
+#
+# ADVISORY on purpose: it never runs on a pull request or in the merge queue,
+# so a flake stops costing every PR a rerun while it still costs this run a
+# red. The `tickets` job is the list's other guard: every row names the open
+# issue that owns its fix, and a row whose ticket is closed or missing turns
+# this run red until the row leaves the list (the offline half — format, a
+# ticket on every row, a name that exists in its package only — is
+# scripts/ci/testquarantine's own test, run by `test`).
+name: test-quarantine
+
+on:
+  schedule:
+    # 03:17 UTC — before the European workday, off the :00/:30 marks where
+    # every scheduled workflow in the fleet lands.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  tickets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Every quarantined test has an open ticket
+        shell: bash
+        run: |
+          set -euo pipefail
+          tickets=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -tickets)
+          fail=0
+          for n in $tickets; do
+            state=$(gh api "repos/$GH_REPO/issues/$n" --jq 'if .pull_request then "pull-request" else .state end') || { echo "::error::ticket #$n of scripts/ci/test-quarantine.tsv cannot be read: missing, or not an issue of $GH_REPO"; fail=1; continue; }
+            if [ "$state" = "pull-request" ]; then
+              echo "::error::ticket #$n of scripts/ci/test-quarantine.tsv is a pull request, not an issue: a row names the open issue that owns its fix"
+              fail=1
+            elif [ "$state" != "open" ]; then
+              echo "::error::ticket #$n is $state: its fix landed or was abandoned, so its rows leave scripts/ci/test-quarantine.tsv and the tests go back into the gate"
+              fail=1
+            else
+              echo "#$n open"
+            fi
+          done
+          exit "$fail"
+
+  quarantined:
+    runs-on: ${{ vars.CI_SELF_HOSTED == 'off' && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 60
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: Quarantined tests (test-unit's flags)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkgs=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -pkgs)
+          if [ -z "$pkgs" ]; then
+            echo "the quarantine is empty: nothing to run"
+            exit 0
+          fi
+          pattern=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -run)
+          log="$RUNNER_TEMP/quarantine.log"
+          status=0
+          go test -mod=vendor -count=1 -v -timeout 1500s -run "$pattern" $pkgs > "$log" 2>&1 || status=$?
+          cat "$log"
+          [ "$status" -eq 0 ] || exit "$status"
+          go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -verify "$log"
+
+      - name: Quarantined tests under -race (race-shard's flags)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          pkgs=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -pkgs)
+          if [ -z "$pkgs" ]; then
+            echo "the quarantine is empty: nothing to run"
+            exit 0
+          fi
+          pattern=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -run)
+          log="$RUNNER_TEMP/quarantine-race.log"
+          status=0
+          go test -race -mod=vendor -count=1 -v -timeout 2400s -run "$pattern" $pkgs > "$log" 2>&1 || status=$?
+          cat "$log"
+          [ "$status" -eq 0 ] || exit "$status"
+          go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -verify "$log"
