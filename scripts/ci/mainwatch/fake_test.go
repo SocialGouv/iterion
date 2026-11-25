@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,19 +28,22 @@ import (
 type fixtureGitHub struct {
 	t *testing.T
 
-	runs     map[int64]Run       // overrides of testdata/runs
-	attempts map[string]Run      // "<id>/<n>"
-	jobsOf   map[string][]Job    // "<id>/<n>" overrides of testdata/jobs
-	issues   []Issue             // the open issues
-	comments map[int][]Comment   // per issue
-	branches map[string]bool     // existing branches
-	onBranch map[string]string   // the quarantine list on each branch
-	pulls    map[int]PullRequest // overrides of testdata/pulls
-	notPulls map[int]bool        // numbers that are issues: 404 on pulls/N
-	byHead   map[string]int      // pull request number by head branch
-	mainRuns []Run               // override of testdata/main-runs.json
-	list     string              // the quarantine list on main
-	failOnce map[string]error    // a write kind ("comment #N" for a comment) that fails once
+	runs     map[int64]Run            // overrides of testdata/runs
+	attempts map[string]Run           // "<id>/<n>"
+	jobsOf   map[string][]Job         // "<id>/<n>" overrides of testdata/jobs
+	issues   []Issue                  // the open issues
+	comments map[int][]Comment        // per issue
+	branches map[string]bool          // existing branches
+	onBranch map[string]string        // the quarantine list on each branch
+	pulls    map[int]PullRequest      // overrides of testdata/pulls
+	notPulls map[int]bool             // numbers that are issues: 404 on pulls/N
+	byHead   map[string]int           // pull request number by head branch
+	mainRuns []Run                    // override of testdata/main-runs.json
+	list     string                   // the quarantine list on main
+	history  map[int][]AutoMergeEvent // the auto-merge timeline of each pull request
+	subs     map[int][]int64          // the sub-issue ids of each issue
+	failOnce map[string]error         // a write kind ("comment #N" for a comment) that fails once
+	failAll  map[string]error         // a write kind that fails every time
 	mu       sync.Mutex
 	writes   []string
 	next     int
@@ -54,10 +58,13 @@ var (
 // ownComment is a comment main-watch wrote.
 func ownComment(body string) Comment { return Comment{Body: body, User: own} }
 
-// fail returns the injected failure of a write kind, once.
+// fail returns the injected failure of a write kind: always, or once.
 func (f *fixtureGitHub) fail(kind string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failAll[kind]; err != nil {
+		return err
+	}
 	err := f.failOnce[kind]
 	delete(f.failOnce, kind)
 	return err
@@ -73,7 +80,8 @@ func newFixture(t *testing.T) *fixtureGitHub {
 	return &fixtureGitHub{
 		t: t, runs: map[int64]Run{}, attempts: map[string]Run{}, jobsOf: map[string][]Job{},
 		comments: map[int][]Comment{}, branches: map[string]bool{}, onBranch: map[string]string{},
-		pulls: map[int]PullRequest{}, notPulls: map[int]bool{}, byHead: map[string]int{}, failOnce: map[string]error{},
+		pulls: map[int]PullRequest{}, notPulls: map[int]bool{}, byHead: map[string]int{}, failOnce: map[string]error{}, failAll: map[string]error{},
+		history: map[int][]AutoMergeEvent{}, subs: map[int][]int64{},
 		list: string(list), next: 7001,
 	}
 }
@@ -175,9 +183,15 @@ func (f *fixtureGitHub) OpenIssues(context.Context) ([]Issue, error) {
 	return append([]Issue(nil), f.issues...), nil
 }
 
+// Comments answers for a known issue only, as GitHub answers 404 for a
+// number it never gave out.
 func (f *fixtureGitHub) Comments(_ context.Context, n int) ([]Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	_, commented := f.comments[n]
+	if !commented && !slices.ContainsFunc(f.issues, func(is Issue) bool { return is.Number == n }) {
+		return nil, &httpError{Method: "GET", Path: fmt.Sprintf("/repos/SocialGouv/iterion/issues/%d/comments", n), Status: 404, Body: `{"message":"Not Found"}`}
+	}
 	return append([]Comment(nil), f.comments[n]...), nil
 }
 
@@ -207,6 +221,25 @@ func (f *fixtureGitHub) PullRequestFrom(_ context.Context, b string) (PullReques
 	return f.pulls[n], true, nil
 }
 
+func (f *fixtureGitHub) AutoMergeHistory(_ context.Context, n int) ([]AutoMergeEvent, error) {
+	if _, ok := f.pulls[n]; !ok {
+		return nil, fmt.Errorf("auto-merge history of #%d: no such pull request in the fixture", n)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.history[n]), nil
+}
+
+func (f *fixtureGitHub) SubIssues(_ context.Context, n int) ([]Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Issue
+	for _, id := range f.subs[n] {
+		out = append(out, Issue{ID: id})
+	}
+	return out, nil
+}
+
 func (f *fixtureGitHub) RerunFailedJobs(_ context.Context, id int64) error {
 	f.record("rerun %d", id)
 	return nil
@@ -229,6 +262,12 @@ func (f *fixtureGitHub) CreateIssue(_ context.Context, title, body string, label
 }
 
 func (f *fixtureGitHub) AddSubIssue(_ context.Context, epic int, id int64) error {
+	if err := f.fail("sub-issue"); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.subs[epic] = append(f.subs[epic], id)
+	f.mu.Unlock()
 	f.record("sub-issue %d of #%d", id, epic)
 	return nil
 }
@@ -244,7 +283,12 @@ func (f *fixtureGitHub) Comment(_ context.Context, n int, body string) error {
 	return nil
 }
 
+// CloseIssue drops the issue from the open ones, as GitHub's open-issue
+// listing does.
 func (f *fixtureGitHub) CloseIssue(_ context.Context, n int) error {
+	f.mu.Lock()
+	f.issues = slices.DeleteFunc(f.issues, func(is Issue) bool { return is.Number == n })
+	f.mu.Unlock()
 	f.record("close #%d", n)
 	return nil
 }
@@ -279,6 +323,9 @@ func (f *fixtureGitHub) CreatePullRequest(_ context.Context, head, title, body s
 	pr.Head.Ref = head
 	f.pulls[pr.Number] = pr
 	f.byHead[head] = pr.Number
+	// A pull request's head branch exists: Git.Revert pushed it, or
+	// CreateBranch made it.
+	f.branches[head] = true
 	f.record("pr %s %s\n%s", head, title, body)
 	return pr, nil
 }
@@ -290,6 +337,9 @@ func (f *fixtureGitHub) EnableAutoMerge(_ context.Context, pr PullRequest) error
 	stored := f.pulls[pr.Number]
 	stored.AutoMerge = &struct{}{}
 	f.pulls[pr.Number] = stored
+	f.mu.Lock()
+	f.history[pr.Number] = append(f.history[pr.Number], AutoMergeEvent{Kind: AutoMergeEnabled, Actor: selfLogin})
+	f.mu.Unlock()
 	f.record("auto-merge #%d", pr.Number)
 	return nil
 }

@@ -8,17 +8,45 @@ import (
 )
 
 // dryRun reads through the real client and prints every write instead of
-// making it. An issue it "creates" gets a placeholder number from 900001 up,
-// so the decisions that follow (the quarantine rows, their validation) run
-// exactly as they would live.
+// making it. An issue or pull request it "creates" gets a placeholder number
+// from 900001 up, so the decisions that follow (the quarantine rows, their
+// validation) run exactly as they would live; a read of a placeholder is
+// answered here, as GitHub would answer it for the fresh one, since the real
+// client knows no such number.
 type dryRun struct {
 	GitHub
-	out  io.Writer
-	next int
+	out          io.Writer
+	next         int
+	placeholders map[int]bool
 }
 
 func newDryRun(gh GitHub, out io.Writer) *dryRun {
-	return &dryRun{GitHub: gh, out: out, next: 900001}
+	return &dryRun{GitHub: gh, out: out, next: 900001, placeholders: map[int]bool{}}
+}
+
+// placeholder hands out the next placeholder number.
+func (d *dryRun) placeholder() int {
+	n := d.next
+	d.next++
+	d.placeholders[n] = true
+	return n
+}
+
+// Comments of a placeholder issue are none: it was just "opened".
+func (d *dryRun) Comments(ctx context.Context, number int) ([]Comment, error) {
+	if d.placeholders[number] {
+		return nil, nil
+	}
+	return d.GitHub.Comments(ctx, number)
+}
+
+// AutoMergeHistory of a placeholder pull request is empty: it was just
+// "opened".
+func (d *dryRun) AutoMergeHistory(ctx context.Context, number int) ([]AutoMergeEvent, error) {
+	if d.placeholders[number] {
+		return nil, nil
+	}
+	return d.GitHub.AutoMergeHistory(ctx, number)
 }
 
 func (d *dryRun) would(format string, a ...any) {
@@ -40,8 +68,7 @@ func (d *dryRun) EnsureLabel(_ context.Context, name, _, _ string) error {
 }
 
 func (d *dryRun) CreateIssue(_ context.Context, title, body string, labels []string) (Issue, error) {
-	n := d.next
-	d.next++
+	n := d.placeholder()
 	d.would("open issue (placeholder #%d) %q labelled %v:\n%s", n, title, labels, indent(body))
 	return Issue{ID: int64(n), Number: n, Title: title, Body: body, HTMLURL: fmt.Sprintf("(placeholder #%d)", n), User: User{Login: selfLogin}}, nil
 }
@@ -72,8 +99,9 @@ func (d *dryRun) PutFile(_ context.Context, branch, path, message string, conten
 }
 
 func (d *dryRun) CreatePullRequest(_ context.Context, head, title, body string) (PullRequest, error) {
-	d.would("open a pull request %s -> main %q:\n%s", head, title, indent(body))
-	return PullRequest{Number: 0, Title: title, State: "open", HTMLURL: "(pull request from " + head + ")"}, nil
+	n := d.placeholder()
+	d.would("open a pull request (placeholder #%d) %s -> main %q:\n%s", n, head, title, indent(body))
+	return PullRequest{Number: n, Title: title, State: "open", HTMLURL: fmt.Sprintf("(placeholder pull request #%d from %s)", n, head)}, nil
 }
 
 func (d *dryRun) EnableAutoMerge(_ context.Context, pr PullRequest) error {
