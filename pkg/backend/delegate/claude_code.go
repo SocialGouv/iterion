@@ -1326,13 +1326,14 @@ func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.R
 	// refuses the rotated token at once while the runner writes it within
 	// its follow interval, so the file is watched for a bounded while before
 	// the credential is called dead.
-	if rm.Result != nil && isAuthErrorResult(*rm.Result) && spawn.renewedWithin(ctx, b.forfaitRenewalWait()) {
+	cliError := cliErrorRender(rm)
+	if rm.Result != nil && isAuthErrorResult(*rm.Result, cliError) && spawn.renewedWithin(ctx, b.forfaitRenewalWait()) {
 		detail := redactAuthRender(strings.TrimSpace(*rm.Result))
 		b.Logger.Warn("[%s#%d/claude-code %s] the forfait token was renewed under the running CLI — retrying on the new token, no auth evidence filed: %.160s",
 			task.NodeID, task.Iteration, pass, detail)
 		return &ErrTransient{Provider: BackendClaudeCode, Reason: "forfait token renewed under the running CLI", Detail: detail}
 	}
-	if authErr := authFailureFast(rm.Result, task, spawn); authErr != nil {
+	if authErr := authFailureFast(rm.Result, cliError, task, spawn); authErr != nil {
 		b.Logger.Error("[%s#%d/claude-code %s] authentication failed — failing fast: %.160s",
 			task.NodeID, task.Iteration, pass, redactAuthRender(strings.TrimSpace(*rm.Result)))
 		return authErr
@@ -1376,6 +1377,13 @@ func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.R
 	}
 
 	return nil
+}
+
+// cliErrorRender reports the CLI's own flag that a completed result is its
+// render of a failed request: is_error=true on subtype=success. An error
+// subtype is handleCLIErrorSubtype's, and its text is not a render.
+func cliErrorRender(rm *claudesdk.ResultMessage) bool {
+	return rm != nil && rm.IsError && rm.Subtype == claudesdk.ResultSuccess
 }
 
 // hasRenderPrefix reports the CLI's own render form of an upstream failure:

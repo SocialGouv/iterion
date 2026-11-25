@@ -39,7 +39,7 @@ func TestIsAuthErrorResult(t *testing.T) {
 		"API Error: [403][Request blocked][abc]",
 	}
 	for _, s := range authy {
-		if !isAuthErrorResult(s) {
+		if !isAuthErrorResult(s, false) {
 			t.Errorf("isAuthErrorResult(%q) = false, want true", s)
 		}
 	}
@@ -60,7 +60,7 @@ func TestIsAuthErrorResult(t *testing.T) {
 		"API Error: [500][Operation failed][2026090610430471b2ed5a5eaa4de7]",
 	}
 	for _, s := range notAuthy {
-		if isAuthErrorResult(s) {
+		if isAuthErrorResult(s, false) {
 			t.Errorf("isAuthErrorResult(%q) = true, want false", s)
 		}
 	}
@@ -79,11 +79,11 @@ func TestIsAuthErrorResult_malformedCredential(t *testing.T) {
 	if len(long) <= 200 {
 		t.Fatalf("fixture is %d bytes — it must exceed the 200-byte prose cap to guard the branch ordering", len(long))
 	}
-	if !isAuthErrorResult(long) {
+	if !isAuthErrorResult(long, false) {
 		t.Fatal("the malformed-Authorization render must classify as an auth failure")
 	}
 	quoted := "The run failed because the log said: API Error: Header '14' has invalid value: 'Bearer x'. We should investigate the credential store."
-	if isAuthErrorResult(quoted) {
+	if isAuthErrorResult(quoted, false) {
 		t.Fatal("prose quoting the error mid-answer must not classify")
 	}
 }
@@ -98,7 +98,7 @@ func TestAuthFailureFast_recordsEvidence(t *testing.T) {
 	task.Hooks.OnUsageWindow = func(r usagecap.Reading) error { got = append(got, r); return nil }
 
 	res := "Failed to authenticate. API Error: 401 Invalid bearer token"
-	err := authFailureFast(&res, task, credSpawn{})
+	err := authFailureFast(&res, false, task, credSpawn{})
 	var auth *ErrAuthFailed
 	if !errors.As(err, &auth) {
 		t.Fatalf("err = %v, want ErrAuthFailed", err)
@@ -108,10 +108,10 @@ func TestAuthFailureFast_recordsEvidence(t *testing.T) {
 	}
 
 	ok := "All done, docs aligned."
-	if authFailureFast(&ok, task, credSpawn{}) != nil || len(got) != 1 {
+	if authFailureFast(&ok, false, task, credSpawn{}) != nil || len(got) != 1 {
 		t.Fatal("a normal result must produce neither error nor evidence")
 	}
-	if authFailureFast(nil, task, credSpawn{}) != nil {
+	if authFailureFast(nil, false, task, credSpawn{}) != nil {
 		t.Fatal("a nil result must be a no-op")
 	}
 }
@@ -123,7 +123,7 @@ func TestIsAuthErrorResult_shortMalformedCredential(t *testing.T) {
 		"API Error: Header '14' has invalid value: 'Bearer abc'",
 		"API Error: Header '1' has invalid value: 'Bearer '",
 	} {
-		if !isAuthErrorResult(s) {
+		if !isAuthErrorResult(s, false) {
 			t.Errorf("isAuthErrorResult(%q) = false, want true", s)
 		}
 	}
@@ -139,7 +139,7 @@ func TestAuthFailureFast_looseSignatureFailsWithoutEvidence(t *testing.T) {
 	task.Hooks.OnUsageWindow = func(r usagecap.Reading) error { got = append(got, r); return nil }
 
 	prose := "The deploy step failed: the gh CLI says you are not logged in."
-	if authFailureFast(&prose, task, credSpawn{}) == nil {
+	if authFailureFast(&prose, false, task, credSpawn{}) == nil {
 		t.Fatal("the loose signature must still fail the node fast")
 	}
 	if len(got) != 0 {
@@ -152,7 +152,7 @@ func TestAuthFailureFast_looseSignatureFailsWithoutEvidence(t *testing.T) {
 	// (claudeForfaitEnv's documented precedent), and benching the
 	// credential for it would skip a key that works everywhere else.
 	cli := "Not logged in · Please run /login"
-	if authFailureFast(&cli, task, credSpawn{}) == nil {
+	if authFailureFast(&cli, false, task, credSpawn{}) == nil {
 		t.Fatal("the CLI render must fail the node")
 	}
 	if len(got) != 0 {
@@ -161,7 +161,7 @@ func TestAuthFailureFast_looseSignatureFailsWithoutEvidence(t *testing.T) {
 
 	// A provider verdict on the credential itself does arm the skip.
 	verdict := "Failed to authenticate. API Error: 401 Invalid bearer token"
-	if authFailureFast(&verdict, task, credSpawn{}) == nil {
+	if authFailureFast(&verdict, false, task, credSpawn{}) == nil {
 		t.Fatal("the provider verdict must fail the node")
 	}
 	if len(got) != 1 {
@@ -174,7 +174,7 @@ func TestAuthFailureFast_looseSignatureFailsWithoutEvidence(t *testing.T) {
 // redactAuthRender, which drops everything after the identifying prefix.
 func TestAuthFailureFast_redactsTheQuotedCredential(t *testing.T) {
 	res := "API Error: Header '14' has invalid value: 'Bearer sk-ant-oat01-SECRETSECRETSECRET'"
-	err := authFailureFast(&res, Task{}, credSpawn{})
+	err := authFailureFast(&res, false, Task{}, credSpawn{})
 	if err == nil {
 		t.Fatal("want an auth failure")
 	}
@@ -209,7 +209,7 @@ func TestAuthFailureFast_FacadePinIsNamedByTheRouteItStamped(t *testing.T) {
 				t.Fatalf("a funded facade pin was refused: %v", refusal)
 			}
 
-			err := authFailureFast(&res, task, credSpawnOf(ctx, credEnv, selected, false))
+			err := authFailureFast(&res, false, task, credSpawnOf(ctx, credEnv, selected, false))
 			var auth *ErrAuthFailed
 			if !errors.As(err, &auth) {
 				t.Fatalf("err = %v, want ErrAuthFailed", err)
@@ -245,7 +245,7 @@ func TestAuthFailureFast_FacadePinIsNamedByTheRouteItStamped(t *testing.T) {
 	}
 
 	// Unpinned, and no channel the engine bound: the legacy wording stands.
-	err := authFailureFast(&res, Task{}, credSpawn{})
+	err := authFailureFast(&res, false, Task{}, credSpawn{})
 	var auth *ErrAuthFailed
 	if !errors.As(err, &auth) {
 		t.Fatalf("err = %v, want ErrAuthFailed", err)
@@ -560,7 +560,7 @@ func TestAuthFailureFast_AmbientChannelsNameWhatTheSpawnCarried(t *testing.T) {
 			}
 			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
 
-			err := authFailureFast(&res, task, credSpawnOf(ctx, credEnv, selected, taskSandboxed(task)))
+			err := authFailureFast(&res, false, task, credSpawnOf(ctx, credEnv, selected, taskSandboxed(task)))
 			var auth *ErrAuthFailed
 			if !errors.As(err, &auth) {
 				t.Fatalf("err = %v, want ErrAuthFailed", err)
@@ -656,7 +656,7 @@ func TestAuthFailureFast_UnpinnedFacadeRouteNamesTheChannelThatRan(t *testing.T)
 			got := authEvidenceRecorder(&task)
 
 			res := "Failed to authenticate. API Error: 401 Invalid bearer token"
-			err := authFailureFast(&res, task, spawn)
+			err := authFailureFast(&res, false, task, spawn)
 			var auth *ErrAuthFailed
 			if !errors.As(err, &auth) {
 				t.Fatalf("err = %v, want ErrAuthFailed", err)
@@ -682,7 +682,7 @@ func TestAuthFailureFast_UnpinnedFacadeRouteNamesTheChannelThatRan(t *testing.T)
 			// proved live — a fresh one would read "none filed" from a hook
 			// that never fired.
 			cli := "Not logged in · Please run /login"
-			err2 := authFailureFast(&cli, task, spawn)
+			err2 := authFailureFast(&cli, false, task, spawn)
 			var auth2 *ErrAuthFailed
 			if !errors.As(err2, &auth2) {
 				t.Fatalf("err = %v, want ErrAuthFailed", err2)

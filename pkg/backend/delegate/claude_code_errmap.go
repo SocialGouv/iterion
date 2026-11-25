@@ -102,39 +102,67 @@ func isModelUnavailableResult(s string) bool {
 // Error: 401 Invalid bearer token". Untyped, that flows into the formatting
 // passes and surfaces as an opaque schema "missing required field" error,
 // masking a simply-dead credential (this cost a full debugging session once).
-// Bounded length + distinctive auth markers keep an agent quoting these phrases
-// mid-answer from false-positiving. Non-transient — a retry can't revive a dead
-// credential; the caller fails fast with a legible auth error.
-func isAuthErrorResult(s string) bool {
+// Non-transient — a retry can't revive a dead credential; the caller fails
+// fast with a legible auth error.
+//
+// cliError is the result message's own verdict: is_error=true on a
+// subtype=success result is the CLI saying the text is its render of a failed
+// request, not an answer. The render's LENGTH says nothing — the provider's
+// JSON body, a request id and a remediation sentence quoted back push a real
+// render past any cap — so three readings decide, none of them on length:
+//
+//   - the render's own anchored shapes: the whole result is an "API Error"
+//     line carrying a 401/403 status or an auth signature, a malformed
+//     Authorization header quoted back, or the CLI's "Failed to authenticate.
+//     API Error" lead. An answer does not begin that way.
+//   - cliError: the text is an error render, so an auth signature anywhere in
+//     it is the verdict.
+//   - otherwise a SHORT text carrying an auth signature: the CLI's bare
+//     one-liners ("Not logged in · Please run /login") come with no other
+//     mark. Only there does length count, and only to keep a long answer
+//     that discusses authentication an answer.
+func isAuthErrorResult(s string, cliError bool) bool {
 	t := strings.TrimSpace(s)
-	if isModelUnavailableResult(t) {
+	if t == "" || isModelUnavailableResult(t) {
 		return false
 	}
 	// A malformed Authorization value (a secret that is not a token at
 	// all — the paid case embedded a whole CLI login transcript) renders
-	// as an API Error whose length is unbounded because the garbage value
-	// is quoted back. Prefix-anchored: the WHOLE result must be the API
-	// error, so an agent merely quoting one mid-answer cannot match.
+	// as an API Error that quotes the garbage value back.
 	if strings.HasPrefix(t, "API Error: Header '") && strings.Contains(t, "has invalid value") {
 		return true
 	}
-	// Real auth renders are short one-liners (like a rate-limit notice); the cap
-	// keeps an agent discussing auth in a long answer from false-positiving.
-	if t == "" || len(t) > 200 {
-		return false
-	}
 	// A 401/403 status is the provider's own verdict on the credential,
-	// whatever prose (or none) follows it: a facade renders "API Error:
-	// [401][Unauthorized][<id>]", which matches no signature below and would
-	// otherwise flow on as the node's answer. Prefix-anchored by the regex,
-	// short by the cap. 403 is in the class as the pi backend mints it from
-	// the upstream status: a permission error is per-key and the pool's
-	// rotation is the right first move; a facade block fails the next key
-	// the same way and surfaces then, no worse than surfacing now.
+	// whatever prose or body follows it: a facade renders "API Error:
+	// [401][Unauthorized][<id>]", which matches no signature below.
+	// Prefix-anchored by the regex. 403 is in the class as the pi backend
+	// mints it from the upstream status: a permission error is per-key and
+	// the pool's rotation is the right first move; a facade block fails the
+	// next key the same way and surfaces then, no worse than surfacing now.
 	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil && (m[1] == "401" || m[1] == "403") {
 		return true
 	}
 	low := strings.ToLower(t)
+	if cliError || hasRenderPrefix(t) || failedToAuthenticateRenderRe.MatchString(t) {
+		return hasAuthSignature(low)
+	}
+	if len(t) > authProseCap {
+		return false
+	}
+	return hasAuthSignature(low)
+}
+
+// authProseCap bounds the unmarked reading of isAuthErrorResult: a text with
+// neither an anchored render shape nor the CLI's is_error flag is classified
+// on its signatures only when it is a one-liner.
+const authProseCap = 200
+
+// failedToAuthenticateRenderRe anchors the CLI's auth-failure lead: the whole
+// result is "Failed to authenticate. API Error: …", whatever body follows.
+var failedToAuthenticateRenderRe = regexp.MustCompile(`(?i)^failed to authenticate\.?\s*api error`)
+
+// hasAuthSignature reports an auth-failure phrase in a lowered text.
+func hasAuthSignature(low string) bool {
 	for _, sig := range []string{
 		"invalid bearer token",
 		"failed to authenticate",
@@ -214,10 +242,13 @@ func isHighConfidenceAuthRender(t string) bool {
 // every auth render fails the node legibly, but only the CLI's own
 // high-confidence shapes bench the credential.
 //
+// cliError is the result message's is_error flag on a subtype=success result
+// (cliErrorRender): see isAuthErrorResult.
+//
 // spawn names the credential channel the CLI that produced result was handed;
 // it decides the remediation, never the evidence.
-func authFailureFast(result *string, task Task, spawn credSpawn) error {
-	if result == nil || !isAuthErrorResult(*result) {
+func authFailureFast(result *string, cliError bool, task Task, spawn credSpawn) error {
+	if result == nil || !isAuthErrorResult(*result, cliError) {
 		return nil
 	}
 	t := strings.TrimSpace(*result)
