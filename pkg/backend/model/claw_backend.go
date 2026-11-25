@@ -2945,7 +2945,10 @@ var providerCredentialEnvVars = []string{
 	// generation that shapes tool images and builds requests runs in the
 	// container for a sandboxed node, which must bound them as the host does.
 	tool.EnvImageMaxBase64Bytes,
+	tool.EnvImageMaxSide,
+	tool.EnvImageMaxDecodePixels,
 	tool.EnvRequestImageMaxBytes,
+	tool.EnvRequestImageMaxCount,
 	// A header block, so it crosses FILTERED and EXPLICIT (the
 	// headerBlockEnvName branch of forwardableProviderEnv): its identity
 	// lines are the operator's, its credential lines would authenticate the

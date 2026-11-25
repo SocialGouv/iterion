@@ -904,10 +904,20 @@ func TestHostCodexForfait_AStampedRunIsRefusedTheHostLogin(t *testing.T) {
 // does. Mutant — the knobs left off providerCredentialEnvVars: the twin
 // would run on the route defaults while the host honours the override.
 func TestTheImageBoundEscapeHatchesCrossIntoTheSandbox(t *testing.T) {
-	t.Setenv("ITERION_IMAGE_MAX_BASE64_BYTES", "12345")
-	t.Setenv("ITERION_REQUEST_IMAGE_MAX_BYTES", "0")
+	want := map[string]string{
+		"ITERION_IMAGE_MAX_BASE64_BYTES":  "12345",
+		"ITERION_IMAGE_MAX_SIDE":          "4000",
+		"ITERION_IMAGE_MAX_DECODE_PIXELS": "1000000",
+		"ITERION_REQUEST_IMAGE_MAX_BYTES": "0",
+		"ITERION_REQUEST_IMAGE_MAX_COUNT": "20",
+	}
+	for k, v := range want {
+		t.Setenv(k, v)
+	}
 	env := envFor(t, context.Background())
-	if env["ITERION_IMAGE_MAX_BASE64_BYTES"] != "12345" || env["ITERION_REQUEST_IMAGE_MAX_BYTES"] != "0" {
-		t.Fatalf("crossed image bounds = %q, %q; want the host's 12345 and 0", env["ITERION_IMAGE_MAX_BASE64_BYTES"], env["ITERION_REQUEST_IMAGE_MAX_BYTES"])
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("%s crossed as %q, want the host's %q", k, env[k], v)
+		}
 	}
 }

@@ -103,18 +103,27 @@ the tool's.
 The bounds are the route's, one seam: `tool.ImagePolicy`, resolved from the
 spec once per generation (`tool.RouteImagePolicy`) and carried to the tool
 door and to `buildRequest`. The Anthropic family (anthropic, bedrock,
-vertex, a bare `claude-*`) bounds an image at 5 MiB of base64 and a
-request's images at 24 MiB (its 32 MB request cap, less the text); every
-other route at 20 MiB and 40 MiB. Escape hatches, a byte count, `0` for no
-bound: `ITERION_IMAGE_MAX_BASE64_BYTES`, `ITERION_REQUEST_IMAGE_MAX_BYTES`.
-An image over the per-image bound is reduced to fit (JPEG, then halved) and
-the model told so; one Go cannot decode is a recoverable tool error advising
-its producer (`read_image`: convert the file; `screenshot`/`computer_use`:
-lower the display resolution). Over the request budget the oldest tool
-images are replaced, in that request only, by a marker saying the tool can
-be called again; prompt images are never dropped — over the budget alone,
-the request is refused. A codemode program gets the description and the
-image-omitted marker, unbounded, no bytes. The policy's `Acceptance` is
-where a route that takes no image refuses image tools (#3707).
+vertex, or any route whose model id names a Claude model, a gateway's
+included) bounds an image at 5 MiB of base64 and 8000 pixels a side, a
+request's images at 24 MiB (its 32 MB cap, less the text) and 100 images;
+every other route at 20 MiB per image and 40 MiB per request, no side or
+count bound. Escape hatches, `0` for no bound:
+`ITERION_IMAGE_MAX_BASE64_BYTES`, `ITERION_IMAGE_MAX_SIDE`,
+`ITERION_REQUEST_IMAGE_MAX_BYTES`, `ITERION_REQUEST_IMAGE_MAX_COUNT`,
+`ITERION_IMAGE_MAX_DECODE_PIXELS` (50 MP); a per-image byte bound over the
+per-request one is refused. `read_image` bytes are never decoded — a
+crafted JPEG costs minutes of CPU — only their header is read (the side);
+over a bound they are a recoverable tool error advising to convert the file.
+A capture (`screenshot`, `computer_use`, a PNG the tool encodes) over a
+bound is reduced (halved to the side, JPEG, halved to the bytes;
+transparency flattened onto white) and the model told so. Each request
+re-checks the per-image bounds (a history replayed from another route) and
+its budget: the oldest tool images are replaced, in that request only, by a
+marker; once over, down to 75% so the cut moves every few turns; a last-run
+image that cannot fit beside the prompt's says calling again will not help.
+Prompt images are never dropped — over the budget alone, the request is
+refused. Consecutive user messages join on the chat wire. A codemode program
+gets the description and the image-omitted marker, no bytes. `Acceptance`
+is where a route that takes no image refuses image tools (#3707).
 `claude_code` serves Anthropic models through its own CLI, which bounds its
 own images: none of this applies there.

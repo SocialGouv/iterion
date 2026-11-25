@@ -12,8 +12,8 @@ import (
 // route a generation talks to, or a codemode program reading text only. It
 // is resolved once per generation from the route (RouteImagePolicy) and
 // carried to every place that hands images on — the tool-result shaping
-// (ImageResultContent) and the request builder's per-request bound — so no
-// call site re-derives it.
+// (ImageResultContent) and the request builder's per-request bounds — so no
+// call site re-derives it. Every bound reads 0 as no bound.
 type ImagePolicy struct {
 	// Route is the model spec the policy was resolved for, named in the
 	// errors a refused image produces.
@@ -23,15 +23,23 @@ type ImagePolicy struct {
 	// is ImagesUnknown, under which images are sent.
 	Acceptance ImageAcceptance
 
-	// MaxImageBase64Bytes bounds one image, in bytes of base64. An image
-	// over it is reduced to fit (ImageResultContent) or refused with an
-	// error the model reads. 0 means no per-image bound.
+	// MaxImageBase64Bytes bounds one image, in bytes of base64.
 	MaxImageBase64Bytes int
 
+	// MaxImageSide bounds the longer side of one image, in pixels, read from
+	// the image header (PNG, JPEG, GIF; a format Go cannot read the header
+	// of is not measured).
+	MaxImageSide int
+
+	// MaxDecodePixels bounds the pixels a reduction decodes, read from the
+	// header before any decode.
+	MaxDecodePixels int64
+
 	// MaxRequestImageBytes bounds the base64 bytes of every image one
-	// request carries. Over it, the oldest tool images are replaced by a
-	// marker saying so (BoundRequestImages). 0 means no request bound.
+	// request carries; MaxRequestImages their count. Over either, the oldest
+	// tool images are replaced by a marker saying so (the request builder).
 	MaxRequestImageBytes int
+	MaxRequestImages     int
 
 	// TextOnly says the receiver reads text only — a codemode program. An
 	// image becomes TextOnlyImageMarker: no bound applies, and the image
@@ -53,22 +61,32 @@ const (
 	ImagesRefused
 )
 
-// The escape hatches of the route image bounds: a non-negative byte count,
-// 0 for no bound. They override every route's default, for the routes whose
+// The escape hatches of the route image bounds: a non-negative integer, 0
+// for no bound. They override every route's default, for the routes whose
 // real limits differ from the family default (a gateway configured for
 // larger bodies, a provider that raised its cap).
 const (
-	EnvImageMaxBase64Bytes     = "ITERION_IMAGE_MAX_BASE64_BYTES"
-	EnvRequestImageMaxBytes    = "ITERION_REQUEST_IMAGE_MAX_BYTES"
-	anthropicImageBase64Bytes  = 5 << 20
-	anthropicRequestImageBytes = 24 << 20
-	openAIImageBase64Bytes     = 20 << 20
-	openAIRequestImageBytes    = 40 << 20
+	EnvImageMaxBase64Bytes   = "ITERION_IMAGE_MAX_BASE64_BYTES"
+	EnvImageMaxSide          = "ITERION_IMAGE_MAX_SIDE"
+	EnvImageMaxDecodePixels  = "ITERION_IMAGE_MAX_DECODE_PIXELS"
+	EnvRequestImageMaxBytes  = "ITERION_REQUEST_IMAGE_MAX_BYTES"
+	EnvRequestImageMaxCount  = "ITERION_REQUEST_IMAGE_MAX_COUNT"
+	anthropicImageBase64     = 5 << 20
+	anthropicImageSide       = 8000
+	anthropicRequestImageB64 = 24 << 20
+	anthropicRequestImages   = 100
+	openAIImageBase64        = 20 << 20
+	openAIRequestImageB64    = 40 << 20
+	// defaultDecodePixels bounds a reduction's decode: a few-byte PNG can
+	// declare 100000×100000, whose RGBA buffer alone is 40 GB. 50 megapixels
+	// covers an 8K capture (7680×4320 ≈ 33 MP) with room, at 200 MB of RGBA.
+	defaultDecodePixels = 50_000_000
 )
 
-// anthropicImageProviders are the routes Anthropic's Messages API limits
-// apply to: 5 MiB of base64 per image (a 400 the conversation cannot recover
-// from past it) and 32 MB per request.
+// anthropicImageProviders are the routing prefixes Anthropic's Messages API
+// serves: 5 MiB of base64 and 8000 pixels a side per image (a 400 the
+// conversation cannot recover from past either), 100 images and 32 MB per
+// request.
 var anthropicImageProviders = map[string]bool{
 	"anthropic": true,
 	"bedrock":   true,
@@ -77,31 +95,42 @@ var anthropicImageProviders = map[string]bool{
 
 // RouteImagePolicy resolves the image policy of a model spec.
 //
-// The Anthropic family (anthropic, bedrock, vertex, and a bare claude-* id,
-// which the claw registry routes to anthropic) bounds an image at 5 MiB of
-// base64 and a request's images at 24 MiB — the 32 MB request cap, less room
-// for a full context of text. Every other route — openai, xai, foundry, an
-// OpenAI-compatible gateway — bounds an image at 20 MiB and a request's
-// images at 40 MiB, under the 50 MB request OpenAI documents. getenv reads
-// the escape hatches (EnvImageMaxBase64Bytes, EnvRequestImageMaxBytes); a
-// value that is not a non-negative integer is an error, never ignored.
+// The Anthropic family — an anthropic, bedrock or vertex route, or any
+// route whose model id names a Claude model (a bare claude-*, a gateway
+// serving one) — bounds an image at 5 MiB of base64 and 8000 pixels a side,
+// a request's images at 24 MiB (the 32 MB request cap, less room for a full
+// context of text) and 100 images. Every other route — openai, xai,
+// foundry, an OpenAI-compatible gateway — bounds an image at 20 MiB and a
+// request's images at 40 MiB, under the 50 MB request OpenAI documents, with
+// no side or count bound. A reduction decodes at most 50 megapixels.
+//
+// getenv reads the escape hatches; a value that is not a non-negative
+// integer is an error, never ignored, and so is a per-image bound over the
+// per-request one: no image could ever be sent.
 func RouteImagePolicy(spec string, getenv func(string) string) (ImagePolicy, error) {
 	policy := ImagePolicy{
 		Route:                spec,
-		MaxImageBase64Bytes:  openAIImageBase64Bytes,
-		MaxRequestImageBytes: openAIRequestImageBytes,
+		MaxImageBase64Bytes:  openAIImageBase64,
+		MaxDecodePixels:      defaultDecodePixels,
+		MaxRequestImageBytes: openAIRequestImageB64,
 	}
 	route := modelroute.Parse(spec)
-	if anthropicImageProviders[route.Provider] || (route.Provider == "" && strings.HasPrefix(route.Wire, "claude")) {
-		policy.MaxImageBase64Bytes = anthropicImageBase64Bytes
-		policy.MaxRequestImageBytes = anthropicRequestImageBytes
+	if anthropicImageProviders[route.Provider] || strings.Contains(strings.ToLower(route.Wire), "claude") {
+		policy.MaxImageBase64Bytes = anthropicImageBase64
+		policy.MaxImageSide = anthropicImageSide
+		policy.MaxRequestImageBytes = anthropicRequestImageB64
+		policy.MaxRequestImages = anthropicRequestImages
 	}
+	var decodePixels = int(policy.MaxDecodePixels)
 	for _, o := range []struct {
 		name string
 		dst  *int
 	}{
 		{EnvImageMaxBase64Bytes, &policy.MaxImageBase64Bytes},
+		{EnvImageMaxSide, &policy.MaxImageSide},
+		{EnvImageMaxDecodePixels, &decodePixels},
 		{EnvRequestImageMaxBytes, &policy.MaxRequestImageBytes},
+		{EnvRequestImageMaxCount, &policy.MaxRequestImages},
 	} {
 		raw := strings.TrimSpace(getenv(o.name))
 		if raw == "" {
@@ -109,9 +138,14 @@ func RouteImagePolicy(spec string, getenv func(string) string) (ImagePolicy, err
 		}
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 0 {
-			return ImagePolicy{}, fmt.Errorf("%s=%q: want a non-negative byte count (0 for no bound)", o.name, raw)
+			return ImagePolicy{}, fmt.Errorf("%s=%q: want a non-negative integer (0 for no bound)", o.name, raw)
 		}
 		*o.dst = n
+	}
+	policy.MaxDecodePixels = int64(decodePixels)
+	if per, req := policy.MaxImageBase64Bytes, policy.MaxRequestImageBytes; per > 0 && req > 0 && per > req {
+		return ImagePolicy{}, fmt.Errorf("%s: the per-image bound (%d, %s) is over the per-request one (%d, %s): no image over %d bytes could ever be sent — lower the first or raise the second",
+			spec, per, EnvImageMaxBase64Bytes, req, EnvRequestImageMaxBytes, req)
 	}
 	return policy, nil
 }
@@ -127,15 +161,17 @@ func (e *ImagesRefusedError) Error() string {
 	return fmt.Sprintf("%s returned an image, and the model route %q does not accept images", e.Tool, e.Route)
 }
 
-// ImageTooLargeError is a tool image over the route's per-image bound that
-// could not be reduced to fit it. Its message tells the model what its
-// producer can do about it.
+// ImageTooLargeError is a tool image over one of the route's per-image
+// bounds. Its message tells the model what its producer can do about it.
 type ImageTooLargeError struct {
 	Tool  string
 	Block int
-	Bytes int
-	Max   int
-	// Cause says why the image could not be reduced.
+	// Over says which bound the image is over ("is N bytes of base64, over
+	// the M …"), and Env names that bound's escape hatch.
+	Over string
+	Env  string
+	// Cause, when set, says why a reduction failed; nil when none was tried
+	// (a producer whose bytes are never decoded).
 	Cause error
 }
 
@@ -143,14 +179,17 @@ func (e *ImageTooLargeError) Error() string {
 	var advice string
 	switch e.Tool {
 	case "read_image":
-		advice = "convert the file to a smaller PNG or JPEG (fewer pixels) and read that file"
+		advice = "convert or downscale the file to a smaller PNG or JPEG (fewer pixels) and read that file"
 	case "screenshot", "computer_use":
 		advice = "the capture is too large for this route: lower the display resolution before capturing again"
 	default:
 		advice = "ask the tool for a smaller image"
 	}
-	return fmt.Sprintf("image result block %d is %d bytes of base64, over the %d this model route accepts per image, and could not be reduced (%v) — %s, or raise %s if the route accepts larger images",
-		e.Block, e.Bytes, e.Max, e.Cause, advice, EnvImageMaxBase64Bytes)
+	reduced := ""
+	if e.Cause != nil {
+		reduced = fmt.Sprintf(", and could not be reduced (%v)", e.Cause)
+	}
+	return fmt.Sprintf("image result block %d %s%s — %s, or raise %s if the route accepts larger images", e.Block, e.Over, reduced, advice, e.Env)
 }
 
 func (e *ImageTooLargeError) Unwrap() error { return e.Cause }

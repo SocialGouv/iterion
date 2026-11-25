@@ -24,7 +24,8 @@ import (
 //     announces the images, which travel in the user message that follows
 //     the run of tool messages.
 //   - A user message right after a tool message is preceded by a bridging
-//     assistant message (see toolResultsBridge).
+//     assistant message (see toolResultsBridge); one right after another
+//     user message joins it.
 //
 // When system is non-empty it is emitted as the first message; passing ""
 // is the supported way to skip it. An image block with neither base64 data
@@ -52,6 +53,17 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 		}
 		if n := len(result); n > 0 && result[n-1].Role == "tool" {
 			result = append(result, Message{Role: "assistant", Content: StrPtr(toolResultsBridge)})
+		}
+		// A user message right after another joins it: the Mistral family's
+		// templates refuse user after user, as they refuse user after tool.
+		if n := len(result); n > 0 && result[n-1].Role == "user" {
+			prev := result[n-1]
+			result = result[:n-1]
+			if prev.Parts != nil {
+				parts = append(append([]ContentPart(nil), prev.Parts...), parts...)
+			} else if prev.Content != nil {
+				parts = append([]ContentPart{{Type: "text", Text: *prev.Content}}, parts...)
+			}
 		}
 		texts := make([]string, 0, len(parts))
 		for _, p := range parts {
