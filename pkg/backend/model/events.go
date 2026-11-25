@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
@@ -487,6 +488,12 @@ func applyHooks(nodeID string, iteration int, h EventHooks, opts *GenerationOpti
 		fn := h.OnLLMRetry
 		opts.OnContextCompactRetry = func(attempt int, err error, _, _ int) {
 			fn(nodeID, RetryInfo{Attempt: attempt, Error: err})
+		}
+		// The forced tool choice the gateway's grammar engine refused: the
+		// turn retries asking for a tool in the conversation instead.
+		opts.OnForcedToolChoiceRefused = func(err error) {
+			fn(nodeID, RetryInfo{Attempt: 1, StatusCode: statusCodeOf(err), Error: fmt.Errorf(
+				"the gateway refused to compile the forced tool choice into a grammar; the turn retries with tool_choice auto and an instruction to use a tool, and fails if none runs: %w", err)})
 		}
 	}
 }
