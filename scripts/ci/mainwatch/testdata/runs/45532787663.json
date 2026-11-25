@@ -1,0 +1,16 @@
+{
+    "conclusion": "failure",
+    "created_at": "2026-11-25T02:25:05Z",
+    "event": "push",
+    "head_branch": "main",
+    "head_repository": {
+        "full_name": "SocialGouv/iterion"
+    },
+    "head_sha": "e600fd2f37668d0378808c8488c9624adde27c4b",
+    "html_url": "https://github.com/SocialGouv/iterion/actions/runs/45532787663",
+    "id": 45532787663,
+    "path": ".github/workflows/tests.yml",
+    "run_attempt": 1,
+    "run_number": 11513,
+    "status": "completed"
+}

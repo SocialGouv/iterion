@@ -1,0 +1,5 @@
+2026-11-25T11:58:14.0813028Z [36;1m  fi[0m
+2026-11-25T11:58:14.0813779Z [36;1m  if [ "$result" != "success" ]; then[0m
+2026-11-25T11:58:14.0815492Z [36;1m    echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."[0m
+2026-11-25T11:58:14.0816902Z [36;1m    fail=1[0m
+2026-11-25T11:58:14.0817610Z [36;1m  fi[0m

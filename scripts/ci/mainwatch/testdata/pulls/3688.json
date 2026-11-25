@@ -1,0 +1,12 @@
+{
+    "head": {
+        "ref": "ci/3683-light-pr-split-server"
+    },
+    "html_url": "https://github.com/SocialGouv/iterion/pull/3688",
+    "merge_commit_sha": "294110a7b4d4aa276f412b47a15a250e2ae25ec5",
+    "merged_at": "2026-11-25T11:25:41Z",
+    "node_id": "PR_kwDORsIvts8AAAABRzabmA",
+    "number": 3688,
+    "state": "closed",
+    "title": "ci: run race/e2e legs in the merge queue only and split pkg/server across race shards"
+}

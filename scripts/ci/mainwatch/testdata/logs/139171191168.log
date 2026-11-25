@@ -1,0 +1,152 @@
+2026-11-25T11:28:28.4704373Z ##[debug]cat "$server_log"
+2026-11-25T11:28:28.4704771Z ##[debug]echo "::endgroup::"
+2026-11-25T11:28:28.4705827Z ##[debug][ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard {3} failed (exit ${{server_status}})"
+2026-11-25T11:28:28.4706902Z ##[debug][ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
+2026-11-25T11:28:28.4707608Z ##[debug]', matrix.shard, matrix.shard, matrix.shard, matrix.shard)
+2026-11-25T11:28:28.4722031Z ##[debug]cat "$server_log"
+2026-11-25T11:28:28.4722430Z ##[debug]echo "::endgroup::"
+2026-11-25T11:28:28.4723596Z ##[debug][ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard {3} failed (exit ${{server_status}})"
+2026-11-25T11:28:28.4724536Z ##[debug][ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
+2026-11-25T11:28:28.4725079Z ##[debug]'
+2026-11-25T11:28:28.4752422Z ##[debug]cat "$server_log"
+2026-11-25T11:28:28.4752925Z ##[debug]echo "::endgroup::"
+2026-11-25T11:28:28.4753658Z ##[debug][ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard 2 failed (exit ${server_status})"
+2026-11-25T11:28:28.4754534Z ##[debug][ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
+2026-11-25T11:28:28.4755070Z ##[debug]'
+2026-11-25T11:28:28.4767941Z ##[debug]cat "$server_log"
+2026-11-25T11:28:28.4768351Z ##[debug]echo "::endgroup::"
+2026-11-25T11:28:28.4769088Z ##[debug][ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard 2 failed (exit ${server_status})"
+2026-11-25T11:28:28.4769978Z ##[debug][ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ]
+2026-11-25T11:28:28.4770622Z ##[debug]'
+2026-11-25T11:28:28.4800305Z [36;1mcat "$server_log"[0m
+2026-11-25T11:28:28.4800747Z [36;1mecho "::endgroup::"[0m
+2026-11-25T11:28:28.4801504Z [36;1m[ "$server_status" -eq 0 ] || echo "::error::pkg/server slice of shard 2 failed (exit ${server_status})"[0m
+2026-11-25T11:28:28.4802398Z [36;1m[ "$pkgs_status" -eq 0 ] && [ "$server_status" -eq 0 ][0m
+2026-11-25T11:28:28.4822933Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-25T11:28:28.4848545Z ##[debug]/usr/bin/bash --noprofile --norc -e -o pipefail /home/runner/_work/_temp/9e96fcef-fb2a-4608-9b05-1d860b695374.sh
+2026-11-25T11:33:29.7705857Z shard 2 runs 111 packages and 1307 pkg/server tests
+2026-11-25T11:33:50.4893752Z ok  	github.com/SocialGouv/iterion/charts/iterion	8.620s
+2026-11-25T11:33:50.4895151Z ?   	github.com/SocialGouv/iterion/cmd/corpus-reading	[no test files]
+2026-11-25T11:58:09.9856028Z ok  	github.com/SocialGouv/iterion/cmd/iterion	1360.353s
+2026-11-25T11:58:09.9857294Z ok  	github.com/SocialGouv/iterion/cmd/iterion-desktop	444.660s
+2026-11-25T11:58:09.9865490Z ?   	github.com/SocialGouv/iterion/cmd/iterion-execenv-guest	[no test files]
+2026-11-25T11:58:09.9867495Z ?   	github.com/SocialGouv/iterion/cmd/release-floors	[no test files]
+2026-11-25T11:58:09.9868719Z ?   	github.com/SocialGouv/iterion/cmd/skill-share	[no test files]
+2026-11-25T11:58:09.9870147Z ?   	github.com/SocialGouv/iterion/examples/mcp_test_server	[no test files]
+2026-11-25T11:58:09.9871419Z ok  	github.com/SocialGouv/iterion/internal/ciguard	122.644s
+2026-11-25T11:58:09.9872561Z ok  	github.com/SocialGouv/iterion/internal/credheader	1.334s
+2026-11-25T11:58:09.9873499Z ok  	github.com/SocialGouv/iterion/internal/detecttest	1.261s
+2026-11-25T11:58:09.9874513Z ok  	github.com/SocialGouv/iterion/internal/floorsalign	5.249s
+2026-11-25T11:58:09.9875535Z ok  	github.com/SocialGouv/iterion/internal/goroutinetest	1.539s
+2026-11-25T11:58:09.9876602Z ok  	github.com/SocialGouv/iterion/internal/httpx	8.322s
+2026-11-25T11:58:09.9877568Z ok  	github.com/SocialGouv/iterion/internal/proctest	5.060s
+2026-11-25T11:58:09.9878494Z ok  	github.com/SocialGouv/iterion/internal/safepath	1.150s
+2026-11-25T11:58:09.9879752Z ?   	github.com/SocialGouv/iterion/internal/subbottest	[no test files]
+2026-11-25T11:58:09.9881066Z ok  	github.com/SocialGouv/iterion/internal/testparallel	1.192s
+2026-11-25T11:58:09.9882582Z ok  	github.com/SocialGouv/iterion/pkg/alert	2.164s
+2026-11-25T11:58:09.9883387Z ok  	github.com/SocialGouv/iterion/pkg/audit	1.151s
+2026-11-25T11:58:09.9885523Z ok  	github.com/SocialGouv/iterion/pkg/auth	1179.593s
+2026-11-25T11:58:09.9886387Z ok  	github.com/SocialGouv/iterion/pkg/auth/orgsso	1.166s
+2026-11-25T11:58:09.9887549Z ok  	github.com/SocialGouv/iterion/pkg/backend/ambient	1.229s
+2026-11-25T11:58:09.9889251Z ok  	github.com/SocialGouv/iterion/pkg/backend/auxllm	43.964s
+2026-11-25T11:58:09.9890554Z ok  	github.com/SocialGouv/iterion/pkg/backend/cost	1.285s
+2026-11-25T11:58:09.9893985Z ?   	github.com/SocialGouv/iterion/pkg/backend/delegate/piext	[no test files]
+2026-11-25T11:58:09.9895130Z ?   	github.com/SocialGouv/iterion/pkg/backend/effortlevel	[no test files]
+2026-11-25T12:02:35.7950873Z 11:36:10 ⚠️  claw: using the anthropic subscription OAuth token: third-party apps bill against your EXTRA USAGE balance, not your plan limits (top up at the provider's usage settings). Set ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to refuse this instead, or supply a metered API key.
+2026-11-25T12:02:35.7953464Z bash warning: Command may leak sensitive environment variable containing 'SECRET'
+2026-11-25T12:02:35.7955040Z --- FAIL: TestSandboxRelay_ABulkyStepStillDeliversItsTokenCounts (10.15s)
+2026-11-25T12:02:35.7957608Z     sandbox_relay_tools_test.go:369: multiplexer: context deadline exceeded
+2026-11-25T12:02:35.7959262Z 11:50:19 ❌ Tool error [final_report]: script:sh:final_report — exit status 3 (56ms)
+2026-11-25T12:02:35.7963189Z 11:50:25 ❌ Tool error [final_report]: postcondition:final_report — exit status 1 (22ms)
+2026-11-25T12:02:35.7964760Z 11:50:25 ❌ Tool error [final_report]: postcondition:final_report — exit status 1 (22ms)
+2026-11-25T12:02:35.7965611Z FAIL
+2026-11-25T12:02:35.7966378Z FAIL	github.com/SocialGouv/iterion/pkg/backend/model	1585.413s
+2026-11-25T12:02:35.7967641Z ok  	github.com/SocialGouv/iterion/pkg/backend/modelroute	1.115s
+2026-11-25T12:02:35.7968975Z ok  	github.com/SocialGouv/iterion/pkg/backend/permissionhook	1.291s
+2026-11-25T12:02:35.7970132Z ok  	github.com/SocialGouv/iterion/pkg/backend/sessionpack	1.216s
+2026-11-25T12:02:35.7971242Z ok  	github.com/SocialGouv/iterion/pkg/backend/tool	40.662s
+2026-11-25T12:02:35.7972299Z ok  	github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector	3.841s
+2026-11-25T12:02:35.7973507Z ok  	github.com/SocialGouv/iterion/pkg/benchmark	3.311s
+2026-11-25T12:02:35.7974847Z ok  	github.com/SocialGouv/iterion/pkg/benchmark/quality	1.366s
+2026-11-25T12:02:35.7975680Z ok  	github.com/SocialGouv/iterion/pkg/botimport	1.569s
+2026-11-25T12:02:35.7977540Z ok  	github.com/SocialGouv/iterion/pkg/botsource	1.599s
+2026-11-25T12:02:35.7978637Z ok  	github.com/SocialGouv/iterion/pkg/bundle	60.656s
+2026-11-25T12:02:35.7979532Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/api	17.109s
+2026-11-25T12:02:35.7981213Z ?   	github.com/SocialGouv/iterion/pkg/claw/internal/api/providers/anthropic	[no test files]
+2026-11-25T12:02:35.7982619Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/api/providers/moonshot	1.138s
+2026-11-25T12:02:35.7984304Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/api/providers/vertex	8.307s
+2026-11-25T12:02:35.7985489Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/apikit	5.522s
+2026-11-25T12:02:35.7986675Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/commands	36.076s
+2026-11-25T12:02:35.7987801Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/hooks	1.471s
+2026-11-25T12:02:35.7988853Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/mcp	2.130s
+2026-11-25T12:02:35.7990223Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/plugins	2.870s
+2026-11-25T12:02:35.7992022Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/runtime/task	1.441s
+2026-11-25T12:02:35.7993292Z ok  	github.com/SocialGouv/iterion/pkg/claw/internal/runtime/worker	2.218s
+2026-11-25T12:02:35.7994495Z ?   	github.com/SocialGouv/iterion/pkg/claw/internal/testutil/schematest	[no test files]
+2026-11-25T12:02:35.7997216Z ok  	github.com/SocialGouv/iterion/pkg/claw/pkg/api/commands	1.307s
+2026-11-25T12:02:35.8351852Z ?   	github.com/SocialGouv/iterion/pkg/claw/pkg/api/mcp	[no test files]
+2026-11-25T12:02:35.8354506Z ?   	github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/bedrock	[no test files]
+2026-11-25T12:02:35.8373915Z ?   	github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/openai	[no test files]
+2026-11-25T12:02:35.8411671Z ?   	github.com/SocialGouv/iterion/pkg/claw/pkg/api/team	[no test files]
+2026-11-25T12:02:35.8705174Z ok  	github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools	139.887s
+2026-11-25T12:02:35.8707058Z ok  	github.com/SocialGouv/iterion/pkg/claw/pkg/apikit/telemetry/otlpgrpc	1.586s
+2026-11-25T12:02:35.8708205Z ok  	github.com/SocialGouv/iterion/pkg/claw/plugin	3.034s
+2026-11-25T12:02:35.8709400Z ok  	github.com/SocialGouv/iterion/pkg/cloud/orgsweep	314.519s
+2026-11-25T12:02:35.8710551Z ok  	github.com/SocialGouv/iterion/pkg/cloud/tracing	1.880s
+2026-11-25T12:02:35.8711583Z ok  	github.com/SocialGouv/iterion/pkg/configshare	1.791s
+2026-11-25T12:02:35.8712644Z ok  	github.com/SocialGouv/iterion/pkg/connector/facade	15.642s
+2026-11-25T12:02:35.8713872Z ok  	github.com/SocialGouv/iterion/pkg/connector/ingress	38.810s
+2026-11-25T12:02:35.8715008Z ok  	github.com/SocialGouv/iterion/pkg/connector/poller	5.286s
+2026-11-25T12:02:35.8715988Z ok  	github.com/SocialGouv/iterion/pkg/credpool	83.630s
+2026-11-25T12:02:35.8717222Z ok  	github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo	16.674s
+2026-11-25T12:02:35.8718340Z ok  	github.com/SocialGouv/iterion/pkg/dispatcher/tracker	2.584s
+2026-11-25T12:02:35.8719326Z ok  	github.com/SocialGouv/iterion/pkg/dryrun	453.389s
+2026-11-25T12:02:35.8720320Z ok  	github.com/SocialGouv/iterion/pkg/dsl/canon	347.366s
+2026-11-25T12:02:35.8721398Z ok  	github.com/SocialGouv/iterion/pkg/dsl/docfences	33.524s
+2026-11-25T12:02:35.8722963Z ok  	github.com/SocialGouv/iterion/pkg/dsl/expr	41.310s
+2026-11-25T12:02:35.8724009Z ok  	github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite	1.117s
+2026-11-25T12:02:35.8724979Z ok  	github.com/SocialGouv/iterion/pkg/dsl/ir	200.781s
+2026-11-25T12:02:35.8725984Z ?   	github.com/SocialGouv/iterion/pkg/dsl/readbudget	[no test files]
+2026-11-25T12:02:35.8727101Z ok  	github.com/SocialGouv/iterion/pkg/dsl/spec	48.135s
+2026-11-25T12:02:35.8728527Z ?   	github.com/SocialGouv/iterion/pkg/dsl/unit/unittest	[no test files]
+2026-11-25T12:02:35.8729882Z ok  	github.com/SocialGouv/iterion/pkg/dsl/workflowfile	147.035s
+2026-11-25T12:02:35.8730972Z ok  	github.com/SocialGouv/iterion/pkg/forge	9.201s
+2026-11-25T12:02:35.8732039Z ok  	github.com/SocialGouv/iterion/pkg/forge/gitlab	7.052s
+2026-11-25T12:02:35.8778897Z ok  	github.com/SocialGouv/iterion/pkg/internal/appinfo	1.106s
+2026-11-25T12:02:35.8780983Z ?   	github.com/SocialGouv/iterion/pkg/internal/mongotest	[no test files]
+2026-11-25T12:02:35.8782115Z ok  	github.com/SocialGouv/iterion/pkg/internal/proc	50.214s
+2026-11-25T12:02:35.8783311Z ok  	github.com/SocialGouv/iterion/pkg/internal/storekit	1.448s
+2026-11-25T12:02:35.8784638Z ok  	github.com/SocialGouv/iterion/pkg/llmroute	1.667s
+2026-11-25T12:02:35.8785789Z ok  	github.com/SocialGouv/iterion/pkg/marketplace	2.301s
+2026-11-25T12:02:35.8786893Z ok  	github.com/SocialGouv/iterion/pkg/modelcatalog	1.911s
+2026-11-25T12:02:35.8787827Z ok  	github.com/SocialGouv/iterion/pkg/numeric	3.387s
+2026-11-25T12:02:35.8788714Z ok  	github.com/SocialGouv/iterion/pkg/pat	1.284s
+2026-11-25T12:02:35.8790139Z ok  	github.com/SocialGouv/iterion/pkg/pluginsource	6.317s
+2026-11-25T12:02:35.8791447Z ok  	github.com/SocialGouv/iterion/pkg/queue	1.495s
+2026-11-25T12:02:35.8792599Z ok  	github.com/SocialGouv/iterion/pkg/reliability	104.440s
+2026-11-25T12:02:35.8793789Z ok  	github.com/SocialGouv/iterion/pkg/repograph	1.799s
+2026-11-25T12:02:35.8794881Z ok  	github.com/SocialGouv/iterion/pkg/reviewtopology	1.601s
+2026-11-25T12:02:35.8795850Z ok  	github.com/SocialGouv/iterion/pkg/runshell	1.299s
+2026-11-25T12:05:44.5671250Z ok  	github.com/SocialGouv/iterion/pkg/runtime	1174.358s
+2026-11-25T12:05:44.5672578Z ok  	github.com/SocialGouv/iterion/pkg/runview/runstream	25.832s
+2026-11-25T12:05:44.5673937Z ok  	github.com/SocialGouv/iterion/pkg/sandbox/execenv	8.131s
+2026-11-25T12:05:44.5675001Z ok  	github.com/SocialGouv/iterion/pkg/sandbox/netproxy	14.109s
+2026-11-25T12:05:44.5676079Z ok  	github.com/SocialGouv/iterion/pkg/schedgate	2.394s
+2026-11-25T12:05:44.5677425Z ok  	github.com/SocialGouv/iterion/pkg/secure/httpdial	1.195s
+2026-11-25T12:05:44.5680584Z ok  	github.com/SocialGouv/iterion/pkg/skilllib	1.602s
+2026-11-25T12:05:44.5681597Z ok  	github.com/SocialGouv/iterion/pkg/store	308.842s
+2026-11-25T12:05:44.5682666Z ok  	github.com/SocialGouv/iterion/pkg/store/mongo	239.076s
+2026-11-25T12:05:44.5683836Z ok  	github.com/SocialGouv/iterion/pkg/subbotsource	1.547s
+2026-11-25T12:05:44.5685049Z ok  	github.com/SocialGouv/iterion/pkg/treenoise	1.184s
+2026-11-25T12:05:44.5686029Z ok  	github.com/SocialGouv/iterion/pkg/usernotify	2.839s
+2026-11-25T12:05:44.5690176Z ok  	github.com/SocialGouv/iterion/pkg/valuecodec	17.479s
+2026-11-25T12:05:44.5691367Z ok  	github.com/SocialGouv/iterion/pkg/webhooks/gitlab	1.391s
+2026-11-25T12:05:44.5693278Z ok  	github.com/SocialGouv/iterion/pkg/worktreepool	61.097s
+2026-11-25T12:05:44.5694865Z ok  	github.com/SocialGouv/iterion/scripts/ci/testshards	38.759s
+2026-11-25T12:05:44.5696450Z ok  	github.com/SocialGouv/iterion/scripts/modelsnapshot	1.278s
+2026-11-25T12:05:44.5697541Z FAIL
+2026-11-25T12:07:43.1895443Z ::group::pkg/server slice (exit 0)
+2026-11-25T12:07:43.1896338Z ##[group]pkg/server slice (exit 0)
+2026-11-25T12:07:43.1909662Z ok  	github.com/SocialGouv/iterion/pkg/server	2025.968s
+2026-11-25T12:07:43.1918230Z ::endgroup::
+2026-11-25T12:07:43.1924444Z ##[endgroup]

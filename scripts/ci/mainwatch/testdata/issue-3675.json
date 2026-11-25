@@ -1,0 +1,1 @@
+{"author_association":"MEMBER","body":"(body elided in the fixture)","created_at":"2026-11-25T07:54:39Z","html_url":"https://github.com/SocialGouv/iterion/issues/3675","id":6599852046,"number":3675,"title":"flaky: pkg/server TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries hands over one pass early under -race load","user":{"login":"devthejo"}}

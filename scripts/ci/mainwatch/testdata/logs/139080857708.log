@@ -1,0 +1,25 @@
+2026-11-25T08:49:58.3834631Z ##[debug]
+2026-11-25T08:49:58.3928637Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-e23b9b8c\-1383\-4f8a\-8fa6\-547001834f25\.config
+2026-11-25T08:49:58.4071826Z ##[debug]0
+2026-11-25T08:49:58.4072624Z ##[debug]
+2026-11-25T08:49:58.4129436Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-11-25T08:49:58.4212536Z /github/runner_temp/git-credentials-e23b9b8c-1383-4f8a-8fa6-547001834f25.config
+2026-11-25T08:49:58.4214034Z ##[debug]0
+2026-11-25T08:49:58.4215155Z ##[debug]/github/runner_temp/git-credentials-e23b9b8c-1383-4f8a-8fa6-547001834f25.config
+2026-11-25T08:49:58.4215966Z ##[debug]
+2026-11-25T08:49:58.4223375Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-e23b9b8c\-1383\-4f8a\-8fa6\-547001834f25\.config
+2026-11-25T08:49:58.4391592Z ##[debug]0
+2026-11-25T08:49:58.4392513Z ##[debug]
+2026-11-25T08:49:58.4394155Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-25T08:49:58.5711783Z ##[debug]0
+2026-11-25T08:49:58.5720770Z ##[debug]
+2026-11-25T08:49:58.5768633Z Removing credentials config '/home/runner/_work/_temp/git-credentials-e23b9b8c-1383-4f8a-8fa6-547001834f25.config'
+2026-11-25T08:49:58.5814440Z ##[debug]Skipping removal of credentials config '/github/runner_temp/git-credentials-e23b9b8c-1383-4f8a-8fa6-547001834f25.config' - not under RUNNER_TEMP
+2026-11-25T08:49:58.5832780Z ##[debug]Unsetting HOME override
+2026-11-25T08:49:58.6553731Z ##[debug]Node Action run completed with exit code 0
+2026-11-25T08:49:58.6563737Z ##[debug]Finishing: Post Checkout
+2026-11-25T08:49:58.6725541Z ##[debug]Starting: Complete job
+2026-11-25T08:49:58.6731782Z Cleaning up orphan processes
+2026-11-25T08:49:58.6911644Z ##[debug]Finishing: Complete job
+2026-11-25T08:49:58.6993190Z ##[debug]Finishing: test-e2e (0)
+

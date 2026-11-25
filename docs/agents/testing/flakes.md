@@ -12,7 +12,9 @@ A ticketed flake that keeps costing reruns leaves the gate: a row of
 `scripts/ci/test-quarantine.tsv` (package, test, open ticket) makes every gating
 `go test` skip it, and the nightly `test-quarantine` workflow runs only those
 tests, plain and under `-race`, red on a failure or a closed ticket. The fix
-removes the row. Keep the list small.
+removes the row. Keep the list small. On `main`, main-watch files the
+ticket and the row itself when a rerun goes green
+([merge policy](../../merge-policy.md#main-watch-a-red-main-is-rerun-quarantined-or-reverted)).
 
 ## Register
 

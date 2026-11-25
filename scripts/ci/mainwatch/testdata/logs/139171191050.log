@@ -1,0 +1,25 @@
+2026-11-25T11:56:01.7114210Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-35662adc\-ce06\-43e4\-8f21\-9bd19f9cc2e4\.config
+2026-11-25T11:56:01.7327395Z ##[debug]0
+2026-11-25T11:56:01.7328216Z ##[debug]
+2026-11-25T11:56:01.7349848Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-11-25T11:56:01.7544669Z /github/runner_temp/git-credentials-35662adc-ce06-43e4-8f21-9bd19f9cc2e4.config
+2026-11-25T11:56:01.7592652Z ##[debug]0
+2026-11-25T11:56:01.7627005Z ##[debug]/github/runner_temp/git-credentials-35662adc-ce06-43e4-8f21-9bd19f9cc2e4.config
+2026-11-25T11:56:01.7627863Z ##[debug]
+2026-11-25T11:56:01.7694792Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-35662adc\-ce06\-43e4\-8f21\-9bd19f9cc2e4\.config
+2026-11-25T11:56:01.7804921Z ##[debug]0
+2026-11-25T11:56:01.7806633Z ##[debug]
+2026-11-25T11:56:01.7912581Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-25T11:56:01.9131037Z ##[debug]0
+2026-11-25T11:56:01.9134427Z ##[debug]
+2026-11-25T11:56:01.9137817Z Removing credentials config '/home/runner/_work/_temp/git-credentials-35662adc-ce06-43e4-8f21-9bd19f9cc2e4.config'
+2026-11-25T11:56:01.9241333Z ##[debug]Skipping removal of credentials config '/github/runner_temp/git-credentials-35662adc-ce06-43e4-8f21-9bd19f9cc2e4.config' - not under RUNNER_TEMP
+2026-11-25T11:56:01.9246014Z ##[debug]Unsetting HOME override
+2026-11-25T11:56:01.9433228Z ##[debug]Node Action run completed with exit code 0
+2026-11-25T11:56:01.9444228Z ##[debug]Finishing: Post Checkout
+2026-11-25T11:56:01.9706450Z ##[debug]Starting: Complete job
+2026-11-25T11:56:01.9715058Z Cleaning up orphan processes
+2026-11-25T11:56:01.9867068Z Terminate orphan process: pid (1822) (go)
+2026-11-25T11:56:01.9923188Z Terminate orphan process: pid (56280) (server.test)
+2026-11-25T11:56:02.0173099Z ##[debug]Finishing: Complete job
+2026-11-25T11:56:02.0307056Z ##[debug]Finishing: test-unit (1)

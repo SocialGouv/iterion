@@ -1,0 +1,12 @@
+2026-11-25T11:37:28.1259945Z     prod_watch_gate_test.go:123: decide failed: exit status 1
+2026-11-25T11:37:28.1299975Z         stderr: prod-watch: every configured lane failed this tick (sentry) -- refusing to report a quiet tick: sentry new: TimeoutError: timed out; sentry transition: TimeoutError: timed out
+2026-11-25T11:37:28.1301862Z --- FAIL: TestProdWatch_SentryAnOversizedPageFloodsNoChannel (33.66s)
+2026-11-25T11:37:28.1302980Z === CONT  TestPlanReview_OnRunsAuthorPeerRevise
+2026-11-25T11:37:33.3304314Z --- PASS: TestPlanReview_OnRunsAuthorPeerRevise (5.23s)
+2026-11-25T11:39:51.7895661Z     --- PASS: TestProdWatch_SentryHistoryAfterTheArmingIsSaid/the_check_cap_going_to_regressions_watched_before_it (39.27s)
+2026-11-25T11:41:16.4743314Z --- PASS: TestRunnerCommandRefusesLocalMode (257.77s)
+2026-11-25T11:41:16.5195866Z FAIL
+2026-11-25T11:41:16.6746757Z FAIL	github.com/SocialGouv/iterion/e2e	406.172s
+2026-11-25T11:41:16.7202694Z FAIL
+2026-11-25T11:41:16.8453868Z ##[error]Process completed with exit code 1.
+2026-11-25T11:41:16.8500317Z ##[debug]Finishing: E2E tests (shard 3 of 4)
