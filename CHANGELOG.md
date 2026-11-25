@@ -3,6 +3,49 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.36.1](https://github.com/SocialGouv/iterion/compare/v7.36.0...v7.36.1) (2026-11-25)
+
+### Features
+
+* **codemode:** tell the model when a program pays ([#3653](https://github.com/SocialGouv/iterion/issues/3653)) ([#3661](https://github.com/SocialGouv/iterion/issues/3661)) ([cb24842](https://github.com/SocialGouv/iterion/commit/cb24842cab819d861878d4c9b5ebf29542fcd816)), references [#3643](https://github.com/SocialGouv/iterion/issues/3643) [#3650](https://github.com/SocialGouv/iterion/issues/3650) [#3524](https://github.com/SocialGouv/iterion/issues/3524)
+
+    <details><summary>why</summary>
+
+    Two CM-17 measurements on the production model of the PLIAGE route (deepseek-v4.1-flash) found codemode misused: one small program per turn and never call.parallel on Vigie (#3643), never called at all on Revi (#3650). The description explained the mechanics at length and gave one sentence of usage guidance.
+
+    </details>
+* **devbox:** ship govulncheck and a task vuln advisory scan ([#3604](https://github.com/SocialGouv/iterion/issues/3604)) ([5e338ab](https://github.com/SocialGouv/iterion/commit/5e338ab5589d9adedf246620062100cff42b950f)), references [#3602](https://github.com/SocialGouv/iterion/issues/3602)
+
+    <details><summary>why</summary>
+
+    devbox gains govulncheck; `task vuln` runs `govulncheck ./...` by hand. The scan needs the network and is advisory: it is not a member of `task check` or `task ci:gate`. The ci-gate-map row stays `unwritten` on purpose, with a residual explaining why: scripts/ci/gate.sh runs every row's members whatever their `required`. docs/development.md lists the task. The reading golden is regenerated.
+
+    </details>
+* **dsl:** warn (C358) when a permission gate refuses the codemode tool ([#3647](https://github.com/SocialGouv/iterion/issues/3647)) ([#3668](https://github.com/SocialGouv/iterion/issues/3668)) ([a0a1b68](https://github.com/SocialGouv/iterion/commit/a0a1b68ad6586f0bbfe2a6946d0b3f20883b7feb)), references [#3643](https://github.com/SocialGouv/iterion/issues/3643)
+
+    <details><summary>why</summary>
+
+    A node whose authored codemode resolves on, under a permission gate in deny or ask mode whose rules do not allow the `codemode` tool, can never run a program: the dispatcher judges the program's vehicle like any tool before any program starts, so under deny every program is refused and under ask every one pauses the run. Vigie's anti-injection boundary (`permission: deny`, an allow-list naming WebFetch and TodoWrite) is the shape that surfaced it while preparing its opt-in (#3643), and nothing…
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** retry a grammar-refused forced tool choice by instruction ([#3687](https://github.com/SocialGouv/iterion/issues/3687)) ([657e206](https://github.com/SocialGouv/iterion/commit/657e206567f9baf26c846586f7fbb09a409f43d3)), closes [#3679](https://github.com/SocialGouv/iterion/issues/3679), references [#3645](https://github.com/SocialGouv/iterion/issues/3645)
+
+    <details><summary>why</summary>
+
+    qwen3.6 on the PLIAGE gateway refused claw's first agentic turn. The forced tool_choice makes vLLM compile a grammar over every tool's schema, and its engine cannot decide whether a hostname pattern with length bounds is empty ("Grammar error: Unable to determine if regex is empty"). It is the class of #3645 (xgrammar, propertyNames) again: a third message, from a second engine. Chasing constructs schema by schema does not close it.
+
+    </details>
+* **model:** tool definitions cross the model boundary at the task seam ([#3622](https://github.com/SocialGouv/iterion/issues/3622)) ([7f2e81e](https://github.com/SocialGouv/iterion/commit/7f2e81e3f3f95474aad9ca41b77ad8ef3f074703)), closes [#2946](https://github.com/SocialGouv/iterion/issues/2946), references [#3596](https://github.com/SocialGouv/iterion/issues/3596)
+
+    <details><summary>why</summary>
+
+    A tool definition's description and input schema — for an MCP tool, a remote server's text — reached the model unscreened three ways: the wire schema buildRequest encodes, the codemode catalogue and its description index (whose 120-rune summary splits a value a wire-side pass could no longer recognise), and the IOTask wire to the sandboxed runner. taskForModel now redacts both at the seam every backend Execute crosses, copying the slice so the executor's own record keeps the definitions as…
+
+    </details>
+
 ## [7.36.0](https://github.com/SocialGouv/iterion/compare/v7.35.0...v7.36.0) (2026-11-25)
 
 ### Features
