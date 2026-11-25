@@ -92,6 +92,8 @@ func ClearRemoteConfig() (string, error) {
 type RemoteClient struct {
 	cfg  RemoteConfig
 	http *http.Client
+	// gate caches the instance's version for the major gate (checkMajor).
+	gate majorGate
 }
 
 func NewRemoteClient() (*RemoteClient, error) {
@@ -256,8 +258,16 @@ func (c *RemoteClient) doRequest(ctx context.Context, method, path string, body 
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set(RemoteClientHeader, RawVersion())
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	// The major gate reads serverInfoPath through this same function, so
+	// that route is exempt: the probe never waits on itself.
+	if !isServerInfoPath(path) {
+		if err := c.checkMajor(ctx); err != nil {
+			return 0, nil, err
+		}
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -265,6 +275,9 @@ func (c *RemoteClient) doRequest(ctx context.Context, method, path string, body 
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err := c.afterResponse(ctx, method, path, resp.StatusCode, b); err != nil {
+		return resp.StatusCode, b, err
+	}
 	return resp.StatusCode, b, nil
 }
 

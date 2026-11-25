@@ -25,7 +25,9 @@ type RemoteServerBuild = server.ServerBuild
 // ServerInfoError says why (an unreachable route, an error status, an answer
 // that is not the server's info, a timeout). The status itself still
 // succeeds: the version is an addition to the account check, not a
-// condition of it.
+// condition of it. MajorMismatch is the major gate's refusal when the
+// instance runs another major release: the status then answers both
+// versions and leaves the account unread.
 type RemoteStatus struct {
 	Instance        string               `json:"instance"`
 	Email           string               `json:"email"`
@@ -37,6 +39,7 @@ type RemoteStatus struct {
 	ClientVersion   string               `json:"client_version"`
 	Server          *RemoteServerBuild   `json:"server,omitempty"`
 	ServerInfoError string               `json:"server_info_error,omitempty"`
+	MajorMismatch   string               `json:"major_mismatch,omitempty"`
 }
 
 // serverInfoTimeoutEnv raises (or lowers) the bound of the version probe.
@@ -66,7 +69,7 @@ func serverInfoTimeout() (time.Duration, error) {
 // error: a server older than the route answers 404, a non-iterion host or
 // a dispatcher's loopback mux answers without one.
 func (c *RemoteClient) ServerBuild(ctx context.Context) (RemoteServerBuild, error) {
-	const path = "/api/server/info"
+	const path = serverInfoPath
 	var build RemoteServerBuild
 	timeout, err := serverInfoTimeout()
 	if err != nil {
@@ -86,29 +89,39 @@ func (c *RemoteClient) ServerBuild(ctx context.Context) (RemoteServerBuild, erro
 	return build, nil
 }
 
-// Status reads the account (GET /api/auth/me) and what the instance runs
-// (ServerBuild). Only the account read fails it.
+// Status reads what the instance runs (ServerBuild), then the account
+// (GET /api/auth/me). A failed version read leaves ServerInfoError; a
+// version of another major leaves MajorMismatch and the account unread,
+// since the gate refuses to send to that instance. Only the account read
+// fails it.
 func (c *RemoteClient) Status(ctx context.Context) (RemoteStatus, error) {
+	st := RemoteStatus{Instance: c.BaseURL(), ClientVersion: RawVersion()}
+	build, err := c.ServerBuild(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return RemoteStatus{}, ctx.Err()
+		}
+		st.ServerInfoError = err.Error()
+		c.gate.seed("")
+	} else {
+		st.Server = &build
+		c.gate.seed(build.Version)
+	}
 	me, err := c.Me(ctx)
+	var mm *MajorMismatchError
+	if errors.As(err, &mm) {
+		st.MajorMismatch = mm.Error()
+		return st, nil
+	}
 	if err != nil {
 		return RemoteStatus{}, err
 	}
-	st := RemoteStatus{
-		Instance:      c.BaseURL(),
-		Email:         me.User.Email,
-		Name:          me.User.Name,
-		IsSuperAdmin:  me.User.IsSuperAdmin,
-		ActiveOrgID:   me.ActiveOrg,
-		ActiveTeamID:  me.ActiveTeam,
-		Orgs:          me.Orgs,
-		ClientVersion: RawVersion(),
-	}
-	build, err := c.ServerBuild(ctx)
-	if err != nil {
-		st.ServerInfoError = err.Error()
-	} else {
-		st.Server = &build
-	}
+	st.Email = me.User.Email
+	st.Name = me.User.Name
+	st.IsSuperAdmin = me.User.IsSuperAdmin
+	st.ActiveOrgID = me.ActiveOrg
+	st.ActiveTeamID = me.ActiveTeam
+	st.Orgs = me.Orgs
 	return st, nil
 }
 
@@ -128,7 +141,11 @@ func RemoteStatusPrint(ctx context.Context, c *RemoteClient, p *Printer) error {
 		role = " (super-admin)"
 	}
 	p.Line("Instance: %s", st.Instance)
-	p.Line("Account:  %s%s", st.Email, role)
+	if st.MajorMismatch != "" {
+		p.Line("Account:  not read (%s)", st.MajorMismatch)
+	} else {
+		p.Line("Account:  %s%s", st.Email, role)
+	}
 	switch {
 	case st.Server == nil:
 		p.Line("Server:   version unknown (%s)", st.ServerInfoError)

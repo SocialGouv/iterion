@@ -413,6 +413,7 @@ func TestRemoteStatus_serverInfoFailureLeavesTheStatusStanding(t *testing.T) {
 		name    string
 		info    http.HandlerFunc // nil: no route, the mux answers 404
 		timeout string           // ITERION_REMOTE_SERVER_INFO_TIMEOUT
+		client  string           // appinfo.Version for the case; empty keeps the test binary's
 		reason  string
 	}{
 		{name: "a server older than the route", reason: "HTTP 404 GET /api/server/info"},
@@ -430,7 +431,7 @@ func TestRemoteStatus_serverInfoFailureLeavesTheStatusStanding(t *testing.T) {
 		}, timeout: "150ms", reason: "GET /api/server/info: no answer within 150ms (ITERION_REMOTE_SERVER_INFO_TIMEOUT raises it)"},
 		{name: "an unparsable timeout", info: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"version":"v7.21.0"}`))
-		}, timeout: "soon", reason: `ITERION_REMOTE_SERVER_INFO_TIMEOUT="soon" is not a positive Go duration`},
+		}, timeout: "soon", client: "v7.34.0", reason: `ITERION_REMOTE_SERVER_INFO_TIMEOUT="soon" is not a positive Go duration`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mux := http.NewServeMux()
@@ -440,6 +441,11 @@ func TestRemoteStatus_serverInfoFailureLeavesTheStatusStanding(t *testing.T) {
 			}
 			newRemoteStub(t, mux)
 			t.Setenv("ITERION_REMOTE_SERVER_INFO_TIMEOUT", tc.timeout)
+			if tc.client != "" {
+				prev := appinfo.Version
+				t.Cleanup(func() { appinfo.Version = prev })
+				appinfo.Version = tc.client
+			}
 
 			got := remoteStatusAnswer(t)
 			if srv, has := got["server"]; has {
