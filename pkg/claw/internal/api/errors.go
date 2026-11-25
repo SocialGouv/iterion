@@ -1,6 +1,9 @@
 package api
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // APIError is the canonical typed error returned by provider clients
 // (anthropic, openai, ...) when an upstream API call returns a non-2xx
@@ -58,6 +61,44 @@ func IsRetryableStatus(statusCode int) bool {
 		return true
 	}
 	return statusCode >= 500 && statusCode <= 599
+}
+
+// grammarRefusalMarkers name a gateway's constrained-decoding engine refusing
+// to compile a request's JSON schemas into a grammar — what a forced
+// tool_choice or a structured output makes vLLM do: xgrammar ("features not
+// supported by xgrammar") and the "Grammar error:" family ("Unimplemented
+// keys", llguidance's "Unable to determine if regex is empty"). LiteLLM serves
+// some of them as a 500.
+var grammarRefusalMarkers = []string{"xgrammar", "grammar error"}
+
+// IsGrammarRefusal reports whether the gateway refused to compile the
+// request's schemas into a decoding grammar. The refusal is deterministic:
+// the same request meets it again, so it is never retryable as such; what
+// can succeed is a request that asks for no grammar.
+func (e *APIError) IsGrammarRefusal() bool {
+	if e == nil {
+		return false
+	}
+	return containsAnyFold(e.Message, grammarRefusalMarkers) || containsAnyFold(e.Body, grammarRefusalMarkers)
+}
+
+// NewHTTPError builds the APIError of an OpenAI-wire provider's non-2xx
+// response. Retryable follows the status, except for a grammar refusal: a
+// status alone does not tell it from a transient fault.
+func NewHTTPError(provider string, statusCode int, message, body string) *APIError {
+	e := &APIError{Provider: provider, StatusCode: statusCode, Message: message, Body: body}
+	e.Retryable = IsRetryableStatus(statusCode) && !e.IsGrammarRefusal()
+	return e
+}
+
+func containsAnyFold(s string, markers []string) bool {
+	s = strings.ToLower(s)
+	for _, m := range markers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // RequestValidationError reports an invalid or unsupported local request before

@@ -280,13 +280,8 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 		defer resp.Body.Close()
 		errBody, _ := io.ReadAll(resp.Body)
 		bodyStr := string(errBody)
-		return nil, &api.APIError{
-			Provider:   "foundry",
-			StatusCode: resp.StatusCode,
-			Message:    extractFoundryErrorMessage(bodyStr),
-			Body:       httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog),
-			Retryable:  api.IsRetryableStatus(resp.StatusCode),
-		}
+		return nil, api.NewHTTPError("foundry", resp.StatusCode, extractFoundryErrorMessage(bodyStr),
+			httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog))
 	}
 
 	ch := make(chan api.StreamEvent, 64)

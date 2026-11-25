@@ -143,13 +143,17 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	// the notice already rides the conversation.
 	messages = tool.EnsureNarrowingNotice(ctx, messages)
 
-	// Always-thinking models reject tool_choice:any. Keep the grounding
-	// contract in the executor: an announced, malformed or denied call is
-	// not an executed tool. Chain the observer rather than replacing it.
-	requireExecutedTool := opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model)
+	// Where ForceInitialToolUse cannot ride the request as a forced
+	// tool_choice — always-thinking models reject tool_choice:any, and a
+	// gateway's grammar engine may refuse the tools' schemas — the loop asks
+	// for a tool in the conversation and keeps the grounding contract in the
+	// executor: an announced, malformed or denied call is not an executed
+	// tool. Chain the observer rather than replacing it.
+	requireExecutedTool := false
 	observerless := opts.OnToolStarted == nil && opts.OnToolCall == nil
 	var executedTool atomic.Bool
-	if requireExecutedTool {
+	requireToolByInstruction := func() {
+		requireExecutedTool = true
 		observer := opts.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {
 			executedTool.Store(true)
@@ -157,7 +161,10 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 				observer(info)
 			}
 		}
-		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Before giving your final answer, execute at least one of the available tools to ground your answer in observed evidence."}}})
+		messages = withToolUseInstruction(messages)
+	}
+	if opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model) {
+		requireToolByInstruction()
 	}
 
 	var steps []StepResult
@@ -189,7 +196,23 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		// and retries — so a backend whose real window is smaller than the
 		// model's advertised one (ChatGPT-forfait) recovers instead of
 		// killing the run.
-		agg, err := callWithContextRetry(ctx, client, opts, &messages, forcedInitialToolChoice(opts, toolCallsSoFar))
+		choice := forcedInitialToolChoice(opts, toolCallsSoFar)
+		if requireExecutedTool {
+			choice = nil
+		}
+		agg, err := callWithContextRetry(ctx, client, opts, &messages, choice)
+		if err != nil && choice != nil && isGrammarRefusal(err) {
+			// The refusal is deterministic, and it comes before any token:
+			// the same turn, asked without a grammar, can succeed.
+			if agg != nil {
+				accumulateUsage(&totalUsage, agg.usage)
+			}
+			requireToolByInstruction()
+			if opts.OnForcedToolChoiceRefused != nil {
+				opts.OnForcedToolChoiceRefused(err)
+			}
+			agg, err = callWithContextRetry(ctx, client, opts, &messages, nil)
+		}
 		if err != nil {
 			// A call the provider served before failing was billed: its
 			// partial usage, reported or not, joins the total the failure
@@ -272,6 +295,37 @@ func forcedInitialToolChoice(opts GenerationOptions, toolCallsSoFar int) *api.To
 		return &api.ToolChoice{Type: "any"}
 	}
 	return nil
+}
+
+// toolUseInstruction is what the conversation says when ForceInitialToolUse
+// cannot be a forced tool_choice.
+const toolUseInstruction = "Before giving your final answer, execute at least one of the available tools to ground your answer in observed evidence."
+
+// withToolUseInstruction adds toolUseInstruction to the conversation. It
+// joins the trailing user message rather than following it: chat templates
+// that require strict role alternation (the Mistral family) refuse two user
+// messages in a row. The trailing message is copied, never extended in
+// place: its content may share the caller's backing array.
+func withToolUseInstruction(messages []api.Message) []api.Message {
+	instruction := api.ContentBlock{Type: "text", Text: toolUseInstruction}
+	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
+		last := messages[n-1]
+		content := make([]api.ContentBlock, 0, len(last.Content)+1)
+		content = append(content, last.Content...)
+		last.Content = append(content, instruction)
+		out := make([]api.Message, n)
+		copy(out, messages)
+		out[n-1] = last
+		return out
+	}
+	return append(messages, api.Message{Role: "user", Content: []api.ContentBlock{instruction}})
+}
+
+// isGrammarRefusal reports whether err is a gateway refusing to compile the
+// request's schemas into a decoding grammar (api.APIError.IsGrammarRefusal).
+func isGrammarRefusal(err error) bool {
+	var apiErr *api.APIError
+	return errors.As(err, &apiErr) && apiErr.IsGrammarRefusal()
 }
 
 // requiresAdaptiveThinking reads the vendor's adaptive-thinking profile on

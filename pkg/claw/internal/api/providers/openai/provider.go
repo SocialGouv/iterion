@@ -299,13 +299,8 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 		defer resp.Body.Close()
 		errBody := readErrorBody(resp.Body)
 		bodyStr := string(errBody)
-		return nil, &api.APIError{
-			Provider:   "openai",
-			StatusCode: resp.StatusCode,
-			Message:    extractOpenAIErrorMessage(bodyStr),
-			Body:       httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog),
-			Retryable:  api.IsRetryableStatus(resp.StatusCode),
-		}
+		return nil, api.NewHTTPError("openai", resp.StatusCode, extractOpenAIErrorMessage(bodyStr),
+			httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog))
 	}
 
 	ch := make(chan api.StreamEvent, 64)
