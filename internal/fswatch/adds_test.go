@@ -1,3 +1,10 @@
+//go:build !race
+
+// The inventory is static: export data and a type-check of every package, a
+// verdict the race detector cannot change. Under -race the module is built
+// race-instrumented, so `go list -export` would pay a second, cold, whole-module
+// build inside the race leg; the non-race legs (test-unit) are where it gates.
+
 package fswatch
 
 import (
