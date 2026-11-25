@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -154,7 +155,7 @@ func TestAGreenRerunFilesAFlakeTicketAndAQuarantinePullRequest(t *testing.T) {
 	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"label", "issue", "sub-issue", "issue", "sub-issue", "branch", "commit", "pr", "auto-merge", "comment", "comment"}
+	want := []string{"label", "issue", "issue", "branch", "commit", "pr", "auto-merge", "comment", "comment", "sub-issue", "sub-issue"}
 	if got := f.kinds(); !slices.Equal(got, want) {
 		t.Fatalf("writes = %v, want %v", got, want)
 	}
@@ -207,7 +208,7 @@ func TestAFlakeOutsideTheQuarantinedJobsIsTicketedNotQuarantined(t *testing.T) {
 	if err := w.HandleRun(context.Background(), redMongoRun); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"label", "issue", "sub-issue", "comment"}
+	want := []string{"label", "issue", "comment", "sub-issue"}
 	if got := f.kinds(); !slices.Equal(got, want) {
 		t.Fatalf("writes = %v, want %v (no branch, no pull request)", got, want)
 	}
@@ -316,8 +317,8 @@ func TestMainRedForFourHoursRevertsTheMostRecentSuspect(t *testing.T) {
 	if !slices.Equal(git.reverts, []string{"294110a7b4d4aa276f412b47a15a250e2ae25ec5 main-watch/revert-3688"}) {
 		t.Fatalf("reverts = %v, want #3688, the last merged suspect", git.reverts)
 	}
-	if got := f.kinds(); !slices.Equal(got, []string{"pr", "comment", "auto-merge", "comment"}) {
-		t.Fatalf("writes = %v, want the ticket to record the revert before it is armed", got)
+	if got := f.kinds(); !slices.Equal(got, []string{"pr", "auto-merge", "comment", "comment"}) {
+		t.Fatalf("writes = %v, want the revert armed before the ticket records it", got)
 	}
 	if pr := f.write("pr main-watch/revert-3688 revert: ci: run race/e2e legs"); !strings.Contains(pr, "Reverts #3688") {
 		t.Errorf("revert body:\n%s", pr)
@@ -920,5 +921,433 @@ func TestAMaintainersFlakyTicketNamingThePackageIsReused(t *testing.T) {
 			}
 			f.write("comment #3675")
 		})
+	}
+}
+
+// A person who disables the quarantine pull request's auto-merge has the last
+// word: a later pass of the same run neither re-arms it nor writes anything
+// else, and says why.
+func TestAQuarantineAutoMergeAPersonDisabledIsNotReArmed(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	w, out := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AutoMergeDisabled, Actor: "someone"})
+	f.writes = nil
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("writes = %v after a person disabled the auto-merge", f.kinds())
+	}
+	if !strings.Contains(out.String(), "pull/8001 was disabled by `someone`: main-watch does not re-arm it") {
+		t.Errorf("the decision is not reported:\n%s", out)
+	}
+}
+
+// A flake seen first after its auto-merge was disabled tells the ticket so.
+func TestAFlakeTicketSaysTheQuarantineAutoMergeWasDisabled(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	branch := "main-watch/quarantine-run-45604352729"
+	pr := PullRequest{Number: 8001, NodeID: "PR_node", Title: "test(quarantine)", State: "open", HTMLURL: "https://github.com/SocialGouv/iterion/pull/8001"}
+	pr.Head.Ref = branch
+	f.pulls[8001], f.byHead[branch] = pr, 8001
+	f.history[8001] = []AutoMergeEvent{{Kind: AutoMergeEnabled, Actor: selfLogin}, {Kind: AutoMergeDisabled, Actor: "someone", Reason: "disabled by a user"}}
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(f.kinds(), "auto-merge") || slices.Contains(f.kinds(), "pr") {
+		t.Fatalf("writes = %v: the existing pull request is reused and left unarmed", f.kinds())
+	}
+	if c := f.write("comment #7001"); !strings.Contains(c, "(auto-merge disabled by `someone` (disabled by a user), main-watch leaves it to a person)") {
+		t.Errorf("the ticket does not say the auto-merge is disabled:\n%s", c)
+	}
+}
+
+// A quarantine pull request that lost its arming without a disable (here a
+// person removed it from the merge queue, the shape of #3680's timeline) is
+// not re-armed: once armed, any loss of arming stands.
+func TestAQuarantinePullRequestAPersonDequeuedIsNotReArmed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		after []AutoMergeEvent
+		says  string
+		note  string
+	}{
+		"dequeued by a person": {
+			after: []AutoMergeEvent{{Kind: AddedToQueue, Actor: "devthejo"}, {Kind: RemovedFromQueue, Actor: "devthejo", Reason: "manual"}},
+			says:  "pull/8001 was removed from the merge queue by `devthejo` (manual): main-watch does not re-arm it",
+			note:  "(removed from the merge queue by `devthejo` (manual), main-watch leaves it to a person)",
+		},
+		"in the queue": {
+			after: []AutoMergeEvent{{Kind: AddedToQueue, Actor: "devthejo"}},
+			says:  "pull/8001 was added to the merge queue by `devthejo`: main-watch does not re-arm it",
+			note:  "(in the merge queue, added by `devthejo`)",
+		},
+		"armed once, no longer": {
+			says: "pull/8001 was armed once and is no longer, the timeline names no disable: main-watch does not re-arm it",
+			note: "(auto-merge armed once and no longer armed, main-watch leaves it to a person)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			recorded(t, f, redRaceRun, 2, "success")
+			w, out := newWatcher(t, f, &recordingGit{})
+			w.ValidateQuarantine = func([]byte) error { return nil }
+			if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+				t.Fatal(err)
+			}
+			pr := f.pulls[8001]
+			pr.AutoMerge = nil
+			f.pulls[8001] = pr
+			f.history[8001] = append(f.history[8001], tc.after...)
+			f.writes = nil
+			if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.writes) != 0 {
+				t.Fatalf("writes = %v after the quarantine pull request lost its arming", f.kinds())
+			}
+			if !strings.Contains(out.String(), tc.says) {
+				t.Errorf("the decision is not reported as %q:\n%s", tc.says, out)
+			}
+			// A ticket seen first after the loss says so.
+			g := newFixture(t)
+			recorded(t, g, redRaceRun, 2, "success")
+			g.pulls[8001], g.byHead[pr.Head.Ref] = pr, 8001
+			g.history[8001] = slices.Clone(f.history[8001])
+			v, _ := newWatcher(t, g, &recordingGit{})
+			v.ValidateQuarantine = func([]byte) error { return nil }
+			if err := v.HandleRun(context.Background(), redRaceRun); err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(g.kinds(), "auto-merge") {
+				t.Fatalf("writes = %v: the pull request is re-armed", g.kinds())
+			}
+			if c := g.write("comment #7001"); !strings.Contains(c, tc.note) {
+				t.Errorf("the ticket does not say %q:\n%s", tc.note, c)
+			}
+		})
+	}
+}
+
+// A quarantine pull request a person closed, branch deleted, gets nothing
+// pushed: the pull request is read before any branch or commit.
+func TestAClosedQuarantinePullRequestGetsNoPushEvenWithItsBranchGone(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	branch := "main-watch/quarantine-run-45604352729"
+	pr := f.pulls[8001]
+	pr.State = "closed"
+	f.pulls[8001] = pr
+	delete(f.branches, branch)
+	delete(f.onBranch, branch)
+	f.writes = nil
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("writes = %v for a closed quarantine pull request whose branch is gone", f.kinds())
+	}
+}
+
+// A revert whose auto-merge cannot be armed is recorded on the ticket for a
+// person, marker included: the sweep fails loudly, the revert step does not
+// run again, and main's next green run closes the unarmed revert.
+func TestARevertThatCannotBeArmedIsHandedToAPerson(t *testing.T) {
+	f := newFixture(t)
+	redEpisode(t, f, []int{3644, 3655, 3688})
+	redMain(t, f)
+	f.failOnce["auto-merge"] = errors.New("enable auto-merge on #8001: Pull request is in clean status")
+	git := &recordingGit{}
+	w, _ := newWatcher(t, f, git)
+	w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
+	if err := w.Sweep(context.Background()); err == nil || !strings.Contains(err.Error(), "clean status") {
+		t.Fatalf("sweep err = %v, want the arming failure", err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"pr", "comment"}) {
+		t.Fatalf("writes = %v, want the revert opened and the ticket told, nothing on the suspect", got)
+	}
+	c := f.write("comment #7000")
+	if !strings.Contains(c, "could NOT arm its auto-merge") || !strings.Contains(c, revertOpenedMarker(8001)) {
+		t.Errorf("the ticket does not hand the unarmed revert to a person:\n%s", c)
+	}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.writes) != 0 || len(git.reverts) != 1 {
+		t.Fatalf("a second sweep wrote %v and reverted %v", f.kinds(), git.reverts)
+	}
+	recorded(t, f, redRaceRun, 1, "success")
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	if pr := f.pulls[8001]; pr.State != "closed" {
+		t.Fatalf("the unarmed revert after main's green run: state %q; writes %v", pr.State, f.kinds())
+	}
+}
+
+// A revert the ticket never recorded (its comment failed) is still found by
+// main's next green run, through its branch, closed and named on the ticket.
+func TestAGreenMainClosesARevertTheTicketNeverRecorded(t *testing.T) {
+	f := newFixture(t)
+	redEpisode(t, f, []int{3644, 3655, 3688})
+	redMain(t, f)
+	f.failOnce["comment #7000"] = errors.New("POST /repos/SocialGouv/iterion/issues/7000/comments: HTTP 502")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
+	if err := w.Sweep(context.Background()); err == nil {
+		t.Fatal("the sweep hides the failed record")
+	}
+	for _, c := range f.comments[7000] {
+		if revertMarker.MatchString(c.Body) {
+			t.Fatalf("the ticket records the revert despite the injected failure:\n%s", c.Body)
+		}
+	}
+	f.writes = nil
+	recorded(t, f, redRaceRun, 1, "success")
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	if pr := f.pulls[8001]; pr.State != "closed" {
+		t.Fatalf("the unrecorded revert after main's green run: state %q; writes %v", pr.State, f.kinds())
+	}
+	if c := f.write("comment #7000"); !strings.Contains(c, "Closed the revert https://github.com/SocialGouv/iterion/pull/8001") {
+		t.Errorf("the closing comment does not name the revert:\n%s", c)
+	}
+}
+
+// A revert step whose ticket record failed after the revert was armed is
+// finished by the next sweep: the ticket records the revert that is open and
+// armed, the suspect is told, and nothing is re-armed nor refused.
+func TestARevertWhoseRecordFailedIsRecordedByTheNextSweep(t *testing.T) {
+	f := newFixture(t)
+	redEpisode(t, f, []int{3644, 3655, 3688})
+	redMain(t, f)
+	f.failOnce["comment #7000"] = errors.New("POST /repos/SocialGouv/iterion/issues/7000/comments: HTTP 502")
+	git := &recordingGit{}
+	w, _ := newWatcher(t, f, git)
+	w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
+	if err := w.Sweep(context.Background()); err == nil {
+		t.Fatal("the sweep hides the failed record")
+	}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment", "comment"}) {
+		t.Fatalf("writes = %v, want the ticket and the suspect told, nothing re-armed", got)
+	}
+	c := f.write("comment #7000")
+	if strings.Contains(c, "revert-refused") || !strings.Contains(c, revertOpenedMarker(8001)) || !strings.Contains(c, "Opened https://github.com/SocialGouv/iterion/pull/8001, reverting #3688") {
+		t.Errorf("the ticket does not record the armed revert:\n%s", c)
+	}
+	if s := f.write("comment #3688"); !strings.Contains(s, "with auto-merge armed") {
+		t.Errorf("the suspect is not told of its armed revert:\n%s", s)
+	}
+	if len(git.reverts) != 1 {
+		t.Fatalf("reverts = %v, want the first one only", git.reverts)
+	}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil || len(f.writes) != 0 {
+		t.Fatalf("a third sweep: err %v, writes %v", err, f.kinds())
+	}
+}
+
+// A revert whose arming a person stopped before the next sweep recorded it is
+// recorded unarmed, for a person: never re-armed, never refused.
+func TestARevertDisarmedBeforeItsRecordIsHandedToAPerson(t *testing.T) {
+	f := newFixture(t)
+	redEpisode(t, f, []int{3644, 3655, 3688})
+	redMain(t, f)
+	f.failOnce["comment #7000"] = errors.New("POST /repos/SocialGouv/iterion/issues/7000/comments: HTTP 502")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
+	if err := w.Sweep(context.Background()); err == nil {
+		t.Fatal("the sweep hides the failed record")
+	}
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment"}) {
+		t.Fatalf("writes = %v, want the ticket told only", got)
+	}
+	c := f.write("comment #7000")
+	if strings.Contains(c, "revert-refused") || !strings.Contains(c, revertOpenedMarker(8001)) || !strings.Contains(c, "its auto-merge is not armed") {
+		t.Errorf("the ticket does not hand the unarmed revert to a person:\n%s", c)
+	}
+}
+
+// A revert branch whose pull request is closed or merged, or that has none,
+// still refuses the revert: the earlier attempt is a person's to judge.
+func TestARevertBranchWithoutAnOpenPullRequestRefuses(t *testing.T) {
+	for name, state := range map[string]string{"no pull request": "", "closed": "closed"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			redEpisode(t, f, []int{3644, 3655, 3688})
+			redMain(t, f)
+			f.branches["main-watch/revert-3688"] = true
+			if state != "" {
+				pr := PullRequest{Number: 8001, State: state, HTMLURL: "https://github.com/SocialGouv/iterion/pull/8001"}
+				pr.Head.Ref = "main-watch/revert-3688"
+				f.pulls[8001], f.byHead[pr.Head.Ref] = pr, 8001
+			}
+			w, _ := newWatcher(t, f, &recordingGit{})
+			w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
+			if err := w.Sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if c := f.write("comment #7000"); !strings.Contains(c, "revert-refused") || !strings.Contains(c, "already exists") {
+				t.Errorf("the ticket does not refuse:\n%s", c)
+			}
+		})
+	}
+}
+
+// A sub-issue filing that failed is made by the next pass: every ticket
+// main-watch filed ends up under the CI-health epic, once.
+func TestAFailedSubIssueFilingIsRetriedByTheNextPass(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	f.failOnce["sub-issue"] = errors.New("POST /repos/SocialGouv/iterion/issues/1410/sub_issues: HTTP 502")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err == nil || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("pass 1: err = %v, want the failed filing", err)
+	}
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	got := slices.Sorted(slices.Values(f.subs[flakeEpic]))
+	if !slices.Equal(got, []int64{70010, 70020}) {
+		t.Fatalf("sub-issues of #%d = %v, want both tickets once", flakeEpic, got)
+	}
+}
+
+// A flake pass that keeps failing (here every sub-issue filing: the epic is
+// full, or a person moved the ticket under another epic) still lets a green
+// rerun close the red episode and its armed revert.
+func TestAFlakePassThatKeepsFailingStillClosesTheRedEpisode(t *testing.T) {
+	f, w := openedRevert(t)
+	quarantine := PullRequest{Number: 8002, State: "closed", HTMLURL: "https://github.com/SocialGouv/iterion/pull/8002"}
+	merged := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	quarantine.MergedAt = &merged
+	quarantine.Head.Ref = "main-watch/quarantine-run-45604352729"
+	f.pulls[8002], f.byHead[quarantine.Head.Ref] = quarantine, 8002
+	f.failAll["sub-issue"] = errors.New("POST /repos/SocialGouv/iterion/issues/1410/sub_issues: HTTP 422: Sub issue may only have one parent")
+	recorded(t, f, redRaceRun, 2, "success")
+	if err := w.HandleRun(context.Background(), redRaceRun); err == nil || !strings.Contains(err.Error(), "HTTP 422") {
+		t.Fatalf("pass 1: err = %v, want the failed filing reported", err)
+	}
+	if pr := f.pulls[8001]; pr.State != "closed" {
+		t.Fatalf("pass 1: armed revert #8001 is %q on a green main; writes %v", pr.State, f.kinds())
+	}
+	f.write("close #7000")
+	// The red episode is closed: a second pass still reports the failed
+	// filing and leaves the closed ticket alone.
+	f.writes = nil
+	if err := w.HandleRun(context.Background(), redRaceRun); err == nil || !strings.Contains(err.Error(), "HTTP 422") {
+		t.Fatalf("pass 2: err = %v, want the failed filing reported", err)
+	}
+	if slices.ContainsFunc(f.writes, func(w string) bool {
+		return strings.HasPrefix(w, "close #7000") || strings.HasPrefix(w, "comment #7000")
+	}) {
+		t.Fatalf("pass 2 writes on the closed red ticket #7000: %v", f.writes)
+	}
+}
+
+// A flake in a gating job off the scale set (test-native-exec) is ticketed
+// without a row: the nightly witness runs on the scale set, without the
+// environment that job exists for.
+func TestAFlakeOffTheScaleSetIsTicketedNotQuarantined(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	js, err := f.Jobs(context.Background(), redRaceRun, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js = slices.Clone(js)
+	for i := range js {
+		if js[i].Name == "race-shard (2)" {
+			js[i].Name = "test-native-exec"
+		}
+	}
+	f.jobsOf[fmt.Sprintf("%d/1", redRaceRun)] = js
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	commit := f.write("commit")
+	if strings.Contains(commit, "TestSandboxRelay_ABulkyStepStillDeliversItsTokenCounts") {
+		t.Errorf("a test-native-exec flake got a quarantine row:\n%s", commit)
+	}
+	if !strings.Contains(commit, "TestProdWatch_SentryAnOversizedPageFloodsNoChannel\t#7001\n") {
+		t.Errorf("the scale-set flake lost its row:\n%s", commit)
+	}
+	if c := f.write("comment #7002"); !strings.Contains(c, "not quarantined: job `test-native-exec` runs off the scale set") {
+		t.Errorf("the ticket does not say why there is no row:\n%s", c)
+	}
+}
+
+// Every write of the GitHub interface is replaced by the dry run: called
+// through it, none reaches the client underneath, and each is printed. A
+// method added to the interface is a write here until listed as a read, so a
+// write without its dry-run twin fails.
+func TestTheDryRunReplacesEveryWrite(t *testing.T) {
+	reads := map[string]bool{
+		"Run": true, "Attempt": true, "Jobs": true, "JobLog": true, "MainRuns": true, "Compare": true,
+		"PullRequest": true, "OpenIssues": true, "Comments": true, "MainSHA": true, "File": true,
+		"BranchExists": true, "PullRequestFrom": true, "AutoMergeHistory": true, "SubIssues": true,
+	}
+	f := newFixture(t)
+	out := &bytes.Buffer{}
+	d := reflect.ValueOf(newDryRun(f, out))
+	iface := reflect.TypeFor[GitHub]()
+	writes := 0
+	for i := range iface.NumMethod() {
+		m := iface.Method(i)
+		if reads[m.Name] {
+			continue
+		}
+		writes++
+		fn := d.MethodByName(m.Name)
+		args := make([]reflect.Value, fn.Type().NumIn())
+		for j := range args {
+			args[j] = reflect.Zero(fn.Type().In(j))
+		}
+		args[0] = reflect.ValueOf(context.Background())
+		before := out.Len()
+		res := fn.Call(args)
+		if errv := res[len(res)-1]; !errv.IsNil() {
+			t.Errorf("dry-run %s: %v", m.Name, errv.Interface())
+		}
+		if !strings.Contains(out.String()[before:], "DRY RUN — would") {
+			t.Errorf("dry-run %s printed nothing", m.Name)
+		}
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("the dry run reached the client: %v", f.kinds())
+	}
+	if writes == 0 {
+		t.Fatal("no write method found on the GitHub interface")
 	}
 }

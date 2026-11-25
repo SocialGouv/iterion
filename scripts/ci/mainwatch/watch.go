@@ -150,9 +150,9 @@ func (w *Watcher) handle(ctx context.Context, run Run) error {
 				return err
 			}
 			if red(first.Conclusion) {
-				if err := w.flake(ctx, run); err != nil {
-					return err
-				}
+				// The run concluded green whatever its flake pass did: a
+				// failed pass never keeps the red episode or its revert open.
+				return errors.Join(w.flake(ctx, run), w.green(ctx, run))
 			}
 		}
 		return w.green(ctx, run)
@@ -244,14 +244,27 @@ func (w *Watcher) failures(ctx context.Context, run Run, attempt int) ([]jobFail
 	return out, nil
 }
 
+// filed is one failing test of a flake run and what main-watch made of it.
+type filed struct {
+	jobFailure
+	ticket Issue
+	own    bool   // main-watch filed the ticket
+	row    string // the quarantine row, empty when none is added
+	why    string // why no row is added
+}
+
 // flake files what a red-then-green run leaves behind: a ticket per failing
 // test and one pull request adding the quarantine rows.
 //
 // Every step is resumable, so a pass that failed half-way is finished by the
-// next one: tickets are found again by their marker, the branch's list is
-// read before the rows are committed, the pull request is found by its head
-// branch and armed if it is not, and a ticket comment is skipped once its run
-// marker is there.
+// next one: tickets are found again by their marker, the pull request is
+// found by its head branch before anything is pushed (a merged or closed one
+// gets no commit), the branch's list is read before the rows are committed,
+// the pull request is armed only if it was never armed nor queued (a loss of
+// arming is a person's, GitHub's or the queue's, and main-watch does not
+// overrule it), a ticket
+// comment is skipped once its run marker is there, and main-watch's own
+// tickets missing from the CI-health epic are filed under it.
 func (w *Watcher) flake(ctx context.Context, run Run) error {
 	branch := fmt.Sprintf("%squarantine-run-%d", branchPrefix, run.ID)
 	fails, err := w.failures(ctx, run, 1)
@@ -279,12 +292,6 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 	if err != nil {
 		return err
 	}
-	type filed struct {
-		jobFailure
-		ticket Issue
-		row    string // the quarantine row, empty when none is added
-		why    string // why no row is added
-	}
 	var all []filed
 	var rows []string
 	for _, f := range fails {
@@ -296,16 +303,19 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 			w.say("run %d: %s failed outside any test in job %s: no test to quarantine", run.ID, f.Package, f.Job.Name)
 			continue
 		}
-		ticket, err := w.flakeTicket(ctx, issues, run, f)
+		ticket, own, err := w.flakeTicket(ctx, issues, run, f)
 		if err != nil {
 			return err
 		}
 		issues = append(issues, ticket)
-		fl := filed{jobFailure: f, ticket: ticket}
+		fl := filed{jobFailure: f, ticket: ticket, own: own}
 		path := quarantinePath(f.Test)
+		job, isGating := gatingJobOf(f.Job.Name, gating)
 		switch {
-		case !jobIn(f.Job.Name, gating):
+		case !isGating:
 			fl.why = fmt.Sprintf("job `%s` does not skip the quarantine list, so a row would not take the test out of it", f.Job.Name)
+		case job.OffScaleSet:
+			fl.why = fmt.Sprintf("job `%s` runs off the scale set (`%s`), for an environment the nightly quarantine witness, which runs there with checkout and Go only, does not have: a row would turn the nightly red instead of curing the flake", f.Job.Name, scaleSet)
 		case listed[f.Package+"\t"+path]:
 			fl.why = "the test is already quarantined"
 		default:
@@ -318,81 +328,31 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 	var pr *PullRequest
 	prNote := ""
 	if len(rows) > 0 {
-		msg := fmt.Sprintf("test(quarantine): quarantine %d flaky test(s) seen on main run %d", len(rows), run.ID)
-		exists, err := w.GH.BranchExists(ctx, branch)
-		if err != nil {
-			return err
-		}
-		base, baseBlob := list, blob
-		if exists {
-			// An earlier pass created the branch; its commit may be missing.
-			base, baseBlob, err = w.GH.File(ctx, quarantineFile, branch)
-			if err != nil {
-				return err
-			}
-		}
-		onBranch := quarantinedRows(base)
-		var missing []string
-		for _, r := range rows {
-			f := strings.SplitN(r, "\t", 3)
-			if !onBranch[f[0]+"\t"+f[1]] {
-				missing = append(missing, r)
-			}
-		}
-		if len(missing) > 0 {
-			next := appendRows(base, missing)
-			if err := w.ValidateQuarantine(next); err != nil {
-				return fmt.Errorf("the quarantine list with %d new row(s) is refused: %w", len(missing), err)
-			}
-			if !exists {
-				if err := w.GH.CreateBranch(ctx, branch, mainSHA); err != nil {
-					return err
-				}
-			}
-			if err := w.GH.PutFile(ctx, branch, quarantineFile, msg, next, baseBlob); err != nil {
-				return err
-			}
-		}
 		opened, found, err := w.GH.PullRequestFrom(ctx, branch)
 		if err != nil {
 			return err
 		}
-		if !found {
-			var b strings.Builder
-			fmt.Fprintf(&b, "Run %s failed on main, then passed when its failed jobs were rerun: these tests flake. Each row takes one out of the gating jobs into the nightly quarantine witness, under its ticket.\n\n", run.HTMLURL)
-			for _, fl := range all {
-				if fl.row != "" {
-					fmt.Fprintf(&b, "- `%s` `%s` — #%d (job [%s](%s))\n", fl.Package, quarantinePath(fl.Test), fl.ticket.Number, fl.Job.Name, fl.Job.HTMLURL)
-				}
-			}
-			fmt.Fprintf(&b, "\nOpened by main-watch: %s\n", w.SelfURL)
-			if opened, err = w.GH.CreatePullRequest(ctx, branch, msg, b.String()); err != nil {
-				return err
-			}
-		}
 		switch {
-		case opened.MergedAt != nil:
+		case found && opened.MergedAt != nil:
 			prNote = "merged"
 			pr = &opened
 			w.say("run %d: %s is merged, its flakes are filed", run.ID, opened.HTMLURL)
-		case opened.State == "closed":
-			w.say("run %d: %s was closed unmerged: main-watch does not reopen it", run.ID, opened.HTMLURL)
+		case found && opened.State == "closed":
+			w.say("run %d: %s was closed unmerged: main-watch does not reopen it nor push to its branch", run.ID, opened.HTMLURL)
 			for i := range all {
 				if all[i].row != "" {
 					all[i].why = fmt.Sprintf("its quarantine pull request %s was closed unmerged", opened.HTMLURL)
 					all[i].row = ""
 				}
 			}
-		case opened.AutoMerge == nil:
-			if err := w.GH.EnableAutoMerge(ctx, opened); err != nil {
+		default:
+			if opened, err = w.quarantinePR(ctx, run, branch, mainSHA, list, blob, rows, all, opened, found); err != nil {
 				return err
 			}
-			prNote = "auto-merge armed"
 			pr = &opened
-		default:
-			prNote = "auto-merge armed"
-			pr = &opened
-			w.say("run %d: %s exists with auto-merge armed, its flakes are already filed", run.ID, opened.HTMLURL)
+			if prNote, err = w.armQuarantine(ctx, run, opened); err != nil {
+				return err
+			}
 		}
 	}
 	// One comment per ticket, listing every failure of this run it owns: two
@@ -429,7 +389,137 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 			return err
 		}
 	}
+	var own []Issue
+	for _, fl := range all {
+		if fl.own && !slices.ContainsFunc(own, func(is Issue) bool { return is.Number == fl.ticket.Number }) {
+			own = append(own, fl.ticket)
+		}
+	}
+	return w.fileUnderEpic(ctx, run, own)
+}
+
+// fileUnderEpic files main-watch's own flake tickets under the CI-health
+// epic, those already there aside: a filing that failed on an earlier pass
+// is made by the next one.
+func (w *Watcher) fileUnderEpic(ctx context.Context, run Run, tickets []Issue) error {
+	if len(tickets) == 0 {
+		return nil
+	}
+	subs, err := w.GH.SubIssues(ctx, flakeEpic)
+	if err != nil {
+		return err
+	}
+	for _, is := range tickets {
+		if slices.ContainsFunc(subs, func(s Issue) bool { return s.ID == is.ID }) {
+			continue
+		}
+		if err := w.GH.AddSubIssue(ctx, flakeEpic, is.ID); err != nil {
+			return fmt.Errorf("file #%d under epic #%d: %w", is.Number, flakeEpic, err)
+		}
+		w.say("run %d: filed #%d under epic #%d", run.ID, is.Number, flakeEpic)
+	}
 	return nil
+}
+
+// quarantinePR commits the rows the branch lacks, creating the branch from
+// main when no earlier pass did, and opens the pull request when none is
+// found. It runs only when no pull request from the branch is merged or
+// closed.
+func (w *Watcher) quarantinePR(ctx context.Context, run Run, branch, mainSHA string, list []byte, blob string, rows []string, all []filed, opened PullRequest, found bool) (PullRequest, error) {
+	msg := fmt.Sprintf("test(quarantine): quarantine %d flaky test(s) seen on main run %d", len(rows), run.ID)
+	exists, err := w.GH.BranchExists(ctx, branch)
+	if err != nil {
+		return PullRequest{}, err
+	}
+	base, baseBlob := list, blob
+	if exists {
+		// An earlier pass created the branch; its commit may be missing.
+		base, baseBlob, err = w.GH.File(ctx, quarantineFile, branch)
+		if err != nil {
+			return PullRequest{}, err
+		}
+	}
+	onBranch := quarantinedRows(base)
+	var missing []string
+	for _, r := range rows {
+		f := strings.SplitN(r, "\t", 3)
+		if !onBranch[f[0]+"\t"+f[1]] {
+			missing = append(missing, r)
+		}
+	}
+	if len(missing) > 0 {
+		next := appendRows(base, missing)
+		if err := w.ValidateQuarantine(next); err != nil {
+			return PullRequest{}, fmt.Errorf("the quarantine list with %d new row(s) is refused: %w", len(missing), err)
+		}
+		if !exists {
+			if err := w.GH.CreateBranch(ctx, branch, mainSHA); err != nil {
+				return PullRequest{}, err
+			}
+		}
+		if err := w.GH.PutFile(ctx, branch, quarantineFile, msg, next, baseBlob); err != nil {
+			return PullRequest{}, err
+		}
+	}
+	if found {
+		return opened, nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Run %s failed on main, then passed when its failed jobs were rerun: these tests flake. Each row takes one out of the gating jobs into the nightly quarantine witness, under its ticket.\n\n", run.HTMLURL)
+	for _, fl := range all {
+		if fl.row != "" {
+			fmt.Fprintf(&b, "- `%s` `%s` — #%d (job [%s](%s))\n", fl.Package, quarantinePath(fl.Test), fl.ticket.Number, fl.Job.Name, fl.Job.HTMLURL)
+		}
+	}
+	fmt.Fprintf(&b, "\nOpened by main-watch: %s\n", w.SelfURL)
+	return w.GH.CreatePullRequest(ctx, branch, msg, b.String())
+}
+
+// armQuarantine arms the open quarantine pull request's auto-merge and
+// returns what the tickets say of it. Only a pull request that was never
+// armed nor queued is armed: main-watch arms it once, so any later loss of
+// arming (a disable, a removal from the merge queue, the queue holding it) is
+// someone else's decision, or the queue's, and stands.
+func (w *Watcher) armQuarantine(ctx context.Context, run Run, pr PullRequest) (string, error) {
+	if pr.AutoMerge != nil {
+		w.say("run %d: %s exists with auto-merge armed, its flakes are already filed", run.ID, pr.HTMLURL)
+		return "auto-merge armed", nil
+	}
+	history, err := w.GH.AutoMergeHistory(ctx, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	if len(history) == 0 {
+		if err := w.GH.EnableAutoMerge(ctx, pr); err != nil {
+			return "", err
+		}
+		return "auto-merge armed", nil
+	}
+	last := history[len(history)-1]
+	by := "GitHub or a person the timeline does not name"
+	if last.Actor != "" {
+		by = "`" + last.Actor + "`"
+	}
+	if last.Reason != "" {
+		by += " (" + last.Reason + ")"
+	}
+	var says, note string
+	switch last.Kind {
+	case AutoMergeDisabled:
+		says = fmt.Sprintf("the auto-merge of %s was disabled by %s", pr.HTMLURL, by)
+		note = "auto-merge disabled by " + by + ", main-watch leaves it to a person"
+	case RemovedFromQueue:
+		says = fmt.Sprintf("%s was removed from the merge queue by %s", pr.HTMLURL, by)
+		note = "removed from the merge queue by " + by + ", main-watch leaves it to a person"
+	case AddedToQueue:
+		says = fmt.Sprintf("%s was added to the merge queue by %s", pr.HTMLURL, by)
+		note = "in the merge queue, added by " + by
+	default:
+		says = fmt.Sprintf("%s was armed once and is no longer, the timeline names no disable", pr.HTMLURL)
+		note = "auto-merge armed once and no longer armed, main-watch leaves it to a person"
+	}
+	w.say("run %d: %s: main-watch does not re-arm it", run.ID, says)
+	return note, nil
 }
 
 var flakeMarker = regexp.MustCompile(`<!-- main-watch:flake (\S+) (\S+) -->`)
@@ -455,10 +545,10 @@ func titleNames(title, pkg, top string) bool {
 
 // flakeTicket finds the open ticket of a flaking test — one main-watch filed
 // (its marker names the package and the test) or one a maintainer filed (a
-// `flaky:` title naming the package and the top-level test) — or files it
-// under the CI-health epic. Several matches resolve to the lowest number: the
-// oldest ticket.
-func (w *Watcher) flakeTicket(ctx context.Context, issues []Issue, run Run, f jobFailure) (Issue, error) {
+// `flaky:` title naming the package and the top-level test) — or files it.
+// own says main-watch filed the ticket: flake files those under the CI-health
+// epic. Several matches resolve to the lowest number: the oldest ticket.
+func (w *Watcher) flakeTicket(ctx context.Context, issues []Issue, run Run, f jobFailure) (ticket Issue, own bool, err error) {
 	top := strings.SplitN(f.Test, "/", 2)[0]
 	var byMarker, byTitle []Issue
 	for _, is := range issues {
@@ -472,13 +562,13 @@ func (w *Watcher) flakeTicket(ctx context.Context, issues []Issue, run Run, f jo
 		return slices.MinFunc(is, func(a, b Issue) int { return a.Number - b.Number })
 	}
 	if len(byMarker) > 0 {
-		return lowest(byMarker), nil
+		return lowest(byMarker), true, nil
 	}
 	if len(byTitle) > 0 {
-		return lowest(byTitle), nil
+		return lowest(byTitle), false, nil
 	}
 	if err := w.ensureLabel(ctx); err != nil {
-		return Issue{}, err
+		return Issue{}, false, err
 	}
 	title := fmt.Sprintf("flaky: %s %s", strings.TrimPrefix(f.Package, modulePath), f.Test)
 	body := fmt.Sprintf("main-watch saw `%s` (`%s`) fail on main in job [%s](%s) of run %s (commit %s), then pass when the failed jobs were rerun.\n\n"+
@@ -487,13 +577,10 @@ func (w *Watcher) flakeTicket(ctx context.Context, issues []Issue, run Run, f jo
 		f.Test, f.Package, f.Job.Name, f.Job.HTMLURL, run.HTMLURL, short(run.HeadSHA), quarantineFile, w.SelfURL, f.Package, f.Test)
 	is, err := w.GH.CreateIssue(ctx, title, body, []string{label})
 	if err != nil {
-		return Issue{}, err
-	}
-	if err := w.GH.AddSubIssue(ctx, flakeEpic, is.ID); err != nil {
-		return Issue{}, err
+		return Issue{}, false, err
 	}
 	w.say("run %d: filed #%d for %s %s", run.ID, is.Number, f.Package, f.Test)
-	return is, nil
+	return is, true, nil
 }
 
 // redState is what a main-red ticket records for the revert check, in its
@@ -729,8 +816,8 @@ func (w *Watcher) lastGreen(ctx context.Context, run Run) (Run, bool, error) {
 }
 
 // green closes the open main-red ticket when a run started no earlier than
-// the red one it records comes back green, and first closes the revert pull
-// request the episode opened if it is still open: main is green without it.
+// the red one it records comes back green, and first closes every revert pull
+// request of the episode still open, armed or not: main is green without it.
 func (w *Watcher) green(ctx context.Context, run Run) error {
 	issues, err := w.GH.OpenIssues(ctx)
 	if err != nil {
@@ -748,16 +835,12 @@ func (w *Watcher) green(ctx context.Context, run Run) error {
 	if err != nil {
 		return err
 	}
+	reverts, err := w.episodeReverts(ctx, ticket, st, comments)
+	if err != nil {
+		return err
+	}
 	reverted := ""
-	for _, c := range ownComments(comments) {
-		m := revertMarker.FindStringSubmatch(c)
-		if m == nil || m[1] == "" {
-			continue
-		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			return fmt.Errorf("#%d: revert marker %q: %w", ticket.Number, m[0], err)
-		}
+	for _, n := range reverts {
 		pr, err := w.GH.PullRequest(ctx, n)
 		if err != nil {
 			return err
@@ -784,6 +867,41 @@ func (w *Watcher) green(ctx context.Context, run Run) error {
 	}
 	w.say("run %d: main green again, closing #%d", run.ID, ticket.Number)
 	return w.GH.CloseIssue(ctx, ticket.Number)
+}
+
+// episodeReverts lists, by number, the revert pull requests of a red
+// episode: those its ticket's markers name, and those opened from the revert
+// branch of one of its suspects (the only branches revert pushes), which a
+// marker that failed to post leaves unnamed.
+func (w *Watcher) episodeReverts(ctx context.Context, ticket Issue, st redState, comments []Comment) ([]int, error) {
+	var out []int
+	for _, c := range ownComments(comments) {
+		m := revertMarker.FindStringSubmatch(c)
+		if m == nil || m[1] == "" {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return nil, fmt.Errorf("#%d: revert marker %q: %w", ticket.Number, m[0], err)
+		}
+		out = append(out, n)
+	}
+	for _, s := range st.Suspects {
+		pr, found, err := w.GH.PullRequestFrom(ctx, revertBranch(s))
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			out = append(out, pr.Number)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+// revertBranch is the branch revert pushes to undo a suspect.
+func revertBranch(suspect int) string {
+	return fmt.Sprintf("%srevert-%d", branchPrefix, suspect)
 }
 
 // revertMarker records the revert step of a red episode: opened (with the
@@ -903,12 +1021,22 @@ func (w *Watcher) revert(ctx context.Context, ticket Issue, st redState) error {
 	if mainWatchChange(suspect) {
 		return w.refuseRevert(ctx, ticket, fmt.Sprintf("the most recent suspect #%d is itself a revert or a main-watch change.", suspect.Number))
 	}
-	branch := fmt.Sprintf("%srevert-%d", branchPrefix, suspect.Number)
+	branch := revertBranch(suspect.Number)
 	exists, err := w.GH.BranchExists(ctx, branch)
 	if err != nil {
 		return err
 	}
 	if exists {
+		// An earlier pass that opened and armed the revert, then failed to
+		// record it, left an open pull request: the record is finished, and
+		// its arming is never redone, since a person may have stopped it.
+		pr, found, err := w.GH.PullRequestFrom(ctx, branch)
+		if err != nil {
+			return err
+		}
+		if found && pr.State == "open" && pr.MergedAt == nil {
+			return w.recordRevert(ctx, ticket, suspect, pr)
+		}
 		return w.refuseRevert(ctx, ticket, fmt.Sprintf("branch %s already exists: an earlier revert attempt of #%d did not finish.", branch, suspect.Number))
 	}
 	if err := w.Git.Revert(ctx, suspect.MergeCommitSHA, branch); err != nil {
@@ -924,13 +1052,39 @@ func (w *Watcher) revert(ctx context.Context, ticket Issue, st redState) error {
 	if err != nil {
 		return err
 	}
-	// The ticket records the revert before it is armed: green closes the
-	// pull requests these markers name, so a write failing after this one
-	// still leaves an armed revert that main's next green run closes.
-	if err := w.GH.Comment(ctx, ticket.Number, fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, w.SelfURL, revertOpenedMarker(pr.Number))); err != nil {
-		return err
+	// The revert is armed before the ticket records it, so the marker that
+	// ends the revert step never stands for a revert that is not armed. An
+	// arming failure is recorded for a person instead, with the marker: the
+	// revert step stops, and main's next green run closes the pull request.
+	// A revert whose record failed is found again through its branch: by
+	// the next sweep, which finishes the record, and by green, so a lost
+	// marker never leaves it open on a green main.
+	if armErr := w.GH.EnableAutoMerge(ctx, pr); armErr != nil {
+		armErr = fmt.Errorf("arm auto-merge on the revert %s: %w", pr.HTMLURL, armErr)
+		body := fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect, but main-watch could NOT arm its auto-merge: %v. A person takes it from here: merge it, or close it and fix main. main-watch closes it on main's next green run.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, armErr, w.SelfURL, revertOpenedMarker(pr.Number))
+		if err := w.GH.Comment(ctx, ticket.Number, body); err != nil {
+			return errors.Join(armErr, fmt.Errorf("record the unarmed revert on #%d: %w", ticket.Number, err))
+		}
+		w.say("#%d: opened %s reverting #%d, NOT armed: handed to a person", ticket.Number, pr.HTMLURL, suspect.Number)
+		return armErr
 	}
-	if err := w.GH.EnableAutoMerge(ctx, pr); err != nil {
+	pr.AutoMerge = &struct{}{}
+	return w.recordRevert(ctx, ticket, suspect, pr)
+}
+
+// recordRevert records an open revert on the ticket, with the marker that
+// ends the revert step, as pr's arming stands: armed, the suspect is told
+// too; unarmed, it is handed to a person.
+func (w *Watcher) recordRevert(ctx context.Context, ticket Issue, suspect, pr PullRequest) error {
+	if pr.AutoMerge == nil {
+		body := fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect, but its auto-merge is not armed, and main-watch does not arm it again. A person takes it from here: merge it, or close it and fix main. main-watch closes it on main's next green run.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, w.SelfURL, revertOpenedMarker(pr.Number))
+		if err := w.GH.Comment(ctx, ticket.Number, body); err != nil {
+			return err
+		}
+		w.say("#%d: recorded %s reverting #%d, NOT armed: handed to a person", ticket.Number, pr.HTMLURL, suspect.Number)
+		return nil
+	}
+	if err := w.GH.Comment(ctx, ticket.Number, fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, w.SelfURL, revertOpenedMarker(pr.Number))); err != nil {
 		return err
 	}
 	if err := w.GH.Comment(ctx, suspect.Number, fmt.Sprintf("main has been red for more than %s since this pull request landed (#%d): main-watch opened its revert, %s, with auto-merge armed. If a fix turns main green first, main-watch closes the revert.\n\nmain-watch: %s\n", revertDelay, ticket.Number, pr.HTMLURL, w.SelfURL)); err != nil {

@@ -58,6 +58,26 @@ type PullRequest struct {
 	AutoMerge *struct{} `json:"auto_merge"`
 }
 
+// AutoMergeEvent is one step of a pull request's auto-merge on its timeline:
+// armed, taken into the merge queue, removed from it, or disabled.
+type AutoMergeEvent struct {
+	Kind AutoMergeEventKind
+	// Actor is the login behind the step, empty when the timeline names none.
+	Actor string
+	// Reason is GitHub's reason for a removal from the queue or a disable.
+	Reason string
+}
+
+// AutoMergeEventKind names an AutoMergeEvent by its GraphQL timeline type.
+type AutoMergeEventKind string
+
+const (
+	AutoMergeEnabled  AutoMergeEventKind = "AutoMergeEnabledEvent"
+	AddedToQueue      AutoMergeEventKind = "AddedToMergeQueueEvent"
+	RemovedFromQueue  AutoMergeEventKind = "RemovedFromMergeQueueEvent"
+	AutoMergeDisabled AutoMergeEventKind = "AutoMergeDisabledEvent"
+)
+
 // User is the author of an issue or a comment.
 type User struct {
 	Login string `json:"login"`
@@ -91,7 +111,7 @@ type Commit struct {
 }
 
 // GitHub is every call main-watch makes. The reads come first; every method
-// after CreateIssue writes, and dryRun replaces exactly those.
+// from RerunFailedJobs on writes, and dryRun replaces exactly those.
 type GitHub interface {
 	Run(ctx context.Context, id int64) (Run, error)
 	Attempt(ctx context.Context, id int64, attempt int) (Run, error)
@@ -112,6 +132,12 @@ type GitHub interface {
 	// PullRequestFrom returns the newest pull request, in any state, whose
 	// head is branch of this repository, or ok=false when there is none.
 	PullRequestFrom(ctx context.Context, branch string) (pr PullRequest, ok bool, err error)
+	// AutoMergeHistory lists every arming of a pull request's auto-merge,
+	// every entry into and removal from the merge queue, and every disable,
+	// oldest first.
+	AutoMergeHistory(ctx context.Context, number int) ([]AutoMergeEvent, error)
+	// SubIssues lists the sub-issues of an issue, in any state.
+	SubIssues(ctx context.Context, number int) ([]Issue, error)
 
 	RerunFailedJobs(ctx context.Context, id int64) error
 	EnsureLabel(ctx context.Context, name, color, description string) error
@@ -408,6 +434,89 @@ func (c *restClient) PullRequestFrom(ctx context.Context, branch string) (PullRe
 		return PullRequest{}, false, nil
 	}
 	return prs[0], true, nil
+}
+
+// graphQL posts a read query under the job's token and fails on any error
+// the answer carries.
+func (c *restClient) graphQL(ctx context.Context, query string, vars map[string]any, data any) error {
+	var v struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := c.do(ctx, c.token, http.MethodPost, c.graphql, map[string]any{"query": query, "variables": vars}, &v); err != nil {
+		return err
+	}
+	if len(v.Errors) > 0 {
+		msgs := make([]string, len(v.Errors))
+		for i, e := range v.Errors {
+			msgs[i] = e.Message
+		}
+		return fmt.Errorf("GraphQL: %s", strings.Join(msgs, "; "))
+	}
+	if err := json.Unmarshal(v.Data, data); err != nil {
+		return fmt.Errorf("GraphQL: decode data: %w", err)
+	}
+	return nil
+}
+
+// AutoMergeHistory reads the auto-merge and merge-queue items of the pull
+// request's timeline; more than 100 is refused rather than read in part.
+// filteredCount counts the items of the requested types, where totalCount
+// counts the whole timeline.
+func (c *restClient) AutoMergeHistory(ctx context.Context, number int) ([]AutoMergeEvent, error) {
+	owner, name, _ := strings.Cut(c.repo, "/")
+	var v struct {
+		Repository struct {
+			PullRequest *struct {
+				TimelineItems struct {
+					FilteredCount int `json:"filteredCount"`
+					Nodes         []struct {
+						Typename string `json:"__typename"`
+						Actor    *struct {
+							Login string `json:"login"`
+						} `json:"actor"`
+						Reason string `json:"reason"`
+					} `json:"nodes"`
+				} `json:"timelineItems"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	const q = `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { timelineItems(itemTypes: [AUTO_MERGE_ENABLED_EVENT, ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT, AUTO_MERGE_DISABLED_EVENT], first: 100) { filteredCount nodes { __typename ... on AutoMergeEnabledEvent { actor { login } } ... on AddedToMergeQueueEvent { actor { login } } ... on RemovedFromMergeQueueEvent { actor { login } reason } ... on AutoMergeDisabledEvent { actor { login } reason } } } } } }`
+	if err := c.graphQL(ctx, q, map[string]any{"owner": owner, "name": name, "number": number}, &v); err != nil {
+		return nil, fmt.Errorf("auto-merge history of #%d: %w", number, err)
+	}
+	pr := v.Repository.PullRequest
+	if pr == nil {
+		return nil, fmt.Errorf("auto-merge history of #%d: no such pull request", number)
+	}
+	items := pr.TimelineItems
+	if items.FilteredCount != len(items.Nodes) {
+		return nil, fmt.Errorf("auto-merge history of #%d: %d listed of %d: refusing a partial timeline", number, len(items.Nodes), items.FilteredCount)
+	}
+	out := make([]AutoMergeEvent, len(items.Nodes))
+	for i, n := range items.Nodes {
+		switch k := AutoMergeEventKind(n.Typename); k {
+		case AutoMergeEnabled, AddedToQueue, RemovedFromQueue, AutoMergeDisabled:
+			out[i].Kind = k
+		default:
+			return nil, fmt.Errorf("auto-merge history of #%d: item %d is a %q, not one of the requested types", number, i, n.Typename)
+		}
+		out[i].Reason = n.Reason
+		if n.Actor != nil {
+			out[i].Actor = n.Actor.Login
+		}
+	}
+	return out, nil
+}
+
+func (c *restClient) SubIssues(ctx context.Context, number int) ([]Issue, error) {
+	return pages(ctx, c, c.repoPath("/issues/%d/sub_issues", number), 5, func(raw json.RawMessage) ([]Issue, error) {
+		var v []Issue
+		err := json.Unmarshal(raw, &v)
+		return v, err
+	})
 }
 
 func (c *restClient) RerunFailedJobs(ctx context.Context, id int64) error {

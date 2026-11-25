@@ -74,7 +74,8 @@ func TestAQuarantinePathStopsAtTheFirstLevelARowCannotSpell(t *testing.T) {
 // The jobs main-watch may quarantine for are read from the workflow itself:
 // on the committed tests.yml they are exactly the gating legs that skip the
 // list (internal/ciguard's TestEveryGatingGoTestSkipsTheQuarantine pins the
-// skip in each of them).
+// skip in each of them), and test-native-exec alone runs off the scale set
+// where the nightly witness runs.
 func TestTheQuarantinedJobsAreTheGatingLegsThatSkipTheList(t *testing.T) {
 	src, err := os.ReadFile("../../../" + watchedPath)
 	if err != nil {
@@ -84,13 +85,13 @@ func TestTheQuarantinedJobsAreTheGatingLegsThatSkipTheList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"race-shard", "test-e2e", "test-native-exec", "test-unit"}
+	want := []gatingJob{{Name: "race-shard"}, {Name: "test-e2e"}, {Name: "test-native-exec", OffScaleSet: true}, {Name: "test-unit"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("quarantinedJobs = %v, want %v", got, want)
 	}
 	for name, in := range map[string]bool{"race-shard (2)": true, "test-unit": true, "test-unit-extra": false, "mongo-conformance": false, "test": false} {
-		if jobIn(name, got) != in {
-			t.Errorf("jobIn(%q) = %v, want %v", name, !in, in)
+		if _, found := gatingJobOf(name, got); found != in {
+			t.Errorf("gatingJobOf(%q) found = %v, want %v", name, found, in)
 		}
 	}
 	if _, err := quarantinedJobs([]byte("jobs:\n  a:\n    steps:\n      - run: go test ./...\n")); err == nil {
