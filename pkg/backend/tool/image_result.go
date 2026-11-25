@@ -8,26 +8,25 @@ import (
 	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 )
 
-// MaxImageBase64Bytes bounds one image a tool hands the model: Anthropic
-// refuses an image over 5 MiB of base64 with a 400 the conversation cannot
-// recover from — the image stays in the history and every retry fails the
-// same way. Refused here, the tool result is an error the model reads and
-// recovers from by downscaling. read_image itself accepts up to 5 MB raw,
-// which is ~6.7 MB of base64.
-const MaxImageBase64Bytes = 5 << 20
-
 // ImageResultContent decodes the output of a tool registered with an image
 // result (read_image, screenshot, computer_use: clawImageResultAdapter's
 // JSON) into the content of its tool_result — the description as a text
 // block, then the image blocks, so a vision model reads the image itself
 // rather than its base64 as text.
 //
+// policy is what the receiver accepts. A text-only receiver gets
+// TextOnlyImageMarker in place of each image, unbounded, the image bytes
+// dropped. Otherwise a route that refuses images makes any image an
+// *ImagesRefusedError, and an image over the route's per-image bound is
+// reduced to fit it (fitImageBase64), a text block saying so following it;
+// one that cannot be reduced is an *ImageTooLargeError advising toolName's
+// producer.
+//
 // A computer_use action other than a capture returns its description alone.
 // The output is the tool's own encoding, so a decode failure, a block that
 // is neither text nor image, or an empty result is a defect of the
-// producer, reported as an error rather than passed on as text; so is an
-// image over MaxImageBase64Bytes.
-func ImageResultContent(output string) ([]api.ContentBlock, error) {
+// producer, reported as an error rather than passed on as text.
+func ImageResultContent(toolName, output string, policy ImagePolicy) ([]api.ContentBlock, error) {
 	var res clawtools.ReadImageResult
 	if err := json.Unmarshal([]byte(output), &res); err != nil {
 		return nil, fmt.Errorf("decode image result: %w", err)
@@ -46,10 +45,26 @@ func ImageResultContent(output string) ([]api.ContentBlock, error) {
 			if b.Source == nil {
 				return nil, fmt.Errorf("image result block %d has no source", i)
 			}
-			if n := len(b.Source.Data); n > MaxImageBase64Bytes {
-				return nil, fmt.Errorf("image result block %d is %d bytes of base64, over the %d a vision request accepts per image — downscale the image and read the smaller file", i, n, MaxImageBase64Bytes)
+			if policy.TextOnly {
+				content = append(content, api.ContentBlock{Type: "text", Text: TextOnlyImageMarker})
+				continue
 			}
-			content = append(content, api.ContentBlock{Type: "image", Source: b.Source})
+			if policy.Acceptance == ImagesRefused {
+				return nil, &ImagesRefusedError{Tool: toolName, Route: policy.Route}
+			}
+			src, note := b.Source, ""
+			if max := policy.MaxImageBase64Bytes; max > 0 && len(src.Data) > max {
+				fitted, desc, err := fitImageBase64(src, max)
+				if err != nil {
+					return nil, &ImageTooLargeError{Tool: toolName, Block: i, Bytes: len(src.Data), Max: max, Cause: err}
+				}
+				src = fitted
+				note = fmt.Sprintf("[image %d was reduced to fit this model route's limit of %d bytes of base64 per image: %s]", i, max, desc)
+			}
+			content = append(content, api.ContentBlock{Type: "image", Source: src})
+			if note != "" {
+				content = append(content, api.ContentBlock{Type: "text", Text: note})
+			}
 		default:
 			return nil, fmt.Errorf("image result block %d has type %q, want text or image", i, b.Type)
 		}

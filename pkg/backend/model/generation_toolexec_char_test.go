@@ -53,7 +53,7 @@ func TestShapeToolOutcome_DiagnosticNonzeroPreservesCapturedOutput(t *testing.T)
 
 	block, err := shapeToolOutcome(context.Background(), r,
 		toolUseBlock{ID: "diagnostic-1", Name: "diagnostic_shell"}, nil,
-		"stdout line\nstderr line", errors.New("command exited with error: exit status 7"), false)
+		"stdout line\nstderr line", errors.New("command exited with error: exit status 7"), false, tool.ImagePolicy{})
 	if err != nil {
 		t.Fatalf("shape diagnostic outcome: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestShapeToolOutcome_DiagnosticOnlySoftensKnownCompletedExit(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			block, err := shapeToolOutcome(context.Background(), hooks.NewRunner(),
-				toolUseBlock{ID: "tool-1", Name: tc.toolName}, nil, tc.output, tc.err, false)
+				toolUseBlock{ID: "tool-1", Name: tc.toolName}, nil, tc.output, tc.err, false, tool.ImagePolicy{})
 			if err != nil {
 				t.Fatalf("shape outcome: %v", err)
 			}
@@ -787,7 +787,7 @@ func TestMultiplexerHandler_PinsTheNodesExecutableToolsOnTheForwardedCall(t *tes
 func TestShapeToolOutcome_UnreadableImageResultIsAnError(t *testing.T) {
 	t.Parallel()
 	block, err := shapeToolOutcome(context.Background(), hooks.NewRunner(),
-		toolUseBlock{ID: "img-1", Name: "read_image"}, nil, "iVBORw0KGgo", nil, true)
+		toolUseBlock{ID: "img-1", Name: "read_image"}, nil, "iVBORw0KGgo", nil, true, tool.ImagePolicy{})
 	if err != nil {
 		t.Fatalf("shape outcome: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestShapeToolOutcome_ImageResultBecomesImageBlocks(t *testing.T) {
 	t.Parallel()
 	block, err := shapeToolOutcome(context.Background(), hooks.NewRunner(),
 		toolUseBlock{ID: "img-1", Name: "read_image"}, nil,
-		`{"description":"s.png","blocks":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}`, nil, true)
+		`{"description":"s.png","blocks":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}`, nil, true, tool.ImagePolicy{})
 	if err != nil || block.IsError {
 		t.Fatalf("shape outcome: err=%v block=%+v", err, block)
 	}

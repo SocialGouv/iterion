@@ -95,4 +95,26 @@ qwen3.5, qwen3.6, deepseek-v4.1-flash, 24/11/2026). `glm-5.3` is not
 multimodal: an image turn fails `400 … is not a multimodal model`. A tool
 emits images only when its registration attests `imageResult`
 (`tool.ImageResultContent` decodes its output); every other tool output
-stays text.
+stays text. The held images wait for the end of the run of tool results on
+both wires, and a user message they join keeps its own content under its own
+caption (`openaiwire.UserContentCaption`), so a user image never reads as
+the tool's.
+
+The bounds are the route's, one seam: `tool.ImagePolicy`, resolved from the
+spec once per generation (`tool.RouteImagePolicy`) and carried to the tool
+door and to `buildRequest`. The Anthropic family (anthropic, bedrock,
+vertex, a bare `claude-*`) bounds an image at 5 MiB of base64 and a
+request's images at 24 MiB (its 32 MB request cap, less the text); every
+other route at 20 MiB and 40 MiB. Escape hatches, a byte count, `0` for no
+bound: `ITERION_IMAGE_MAX_BASE64_BYTES`, `ITERION_REQUEST_IMAGE_MAX_BYTES`.
+An image over the per-image bound is reduced to fit (JPEG, then halved) and
+the model told so; one Go cannot decode is a recoverable tool error advising
+its producer (`read_image`: convert the file; `screenshot`/`computer_use`:
+lower the display resolution). Over the request budget the oldest tool
+images are replaced, in that request only, by a marker saying the tool can
+be called again; prompt images are never dropped — over the budget alone,
+the request is refused. A codemode program gets the description and the
+image-omitted marker, unbounded, no bytes. The policy's `Acceptance` is
+where a route that takes no image refuses image tools (#3707).
+`claude_code` serves Anthropic models through its own CLI, which bounds its
+own images: none of this applies there.

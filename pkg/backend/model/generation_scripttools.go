@@ -226,7 +226,10 @@ func (s *scriptToolServer) CallTool(worker context.Context, name string, input j
 	if s.budget > 0 {
 		ctx = scripthost.WithScriptResultBudget(ctx, s.budget)
 	}
-	block, abort := s.d.dispatch(ctx, tu)
+	// A program reads text only: an image tool's result reaches it as its
+	// description and the image-omitted marker, never as image bytes the
+	// route's image bounds would weigh.
+	block, abort := s.d.dispatchTextOnly(ctx, tu)
 	if abort != nil {
 		if err := worker.Err(); err != nil && errors.Is(abort, ctx.Err()) {
 			return scripthost.ToolOutcome{}, err
@@ -386,8 +389,9 @@ func toolResultText(block api.ContentBlock) string {
 }
 
 // scriptImageOmitted stands for an image block in a tool result a program
-// receives.
-const scriptImageOmitted = "[image omitted: a program receives text only — call the tool directly for the model to see the image]"
+// receives — the marker the text-only door already puts in place of a tool's
+// images.
+const scriptImageOmitted = tool.TextOnlyImageMarker
 
 // normaliseInput makes an empty or absent input the empty object.
 //

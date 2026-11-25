@@ -963,9 +963,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if err != nil || pending.Name != approval.toolName || len(opts.Messages) == 0 {
 			return delegate.Result{}, fmt.Errorf("claw: exact approval has no matching pending conversation")
 		}
-		dispatcher, dispatchCtx := newToolDispatcher(WithoutExactClawApproval(ctx), buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		// The approved call's result joins the conversation the route
+		// receives: its images are shaped under the route's policy, like
+		// every call GenerateTextDirect dispatches.
+		imagesCtx, err := withRouteImagePolicy(WithoutExactClawApproval(ctx), &opts)
+		if err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
+		dispatcher, dispatchCtx := newToolDispatcher(imagesCtx, buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
 		call := toolUseBlock{ID: task.ResumePendingToolUseID, Name: pending.Name, PartialJSON: string(pending.Input)}
-		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval)
+		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval, dispatcher.images)
 		if err != nil {
 			return delegate.Result{}, err
 		}
@@ -2934,6 +2941,11 @@ var providerCredentialEnvVars = []string{
 	// (docs/backends.md § Client identity).
 	"ITERION_LLM_USER_AGENT",
 	"CLAW_USER_AGENT",
+	// The route image bounds' escape hatches (tool.RouteImagePolicy): the
+	// generation that shapes tool images and builds requests runs in the
+	// container for a sandboxed node, which must bound them as the host does.
+	tool.EnvImageMaxBase64Bytes,
+	tool.EnvRequestImageMaxBytes,
 	// A header block, so it crosses FILTERED and EXPLICIT (the
 	// headerBlockEnvName branch of forwardableProviderEnv): its identity
 	// lines are the operator's, its credential lines would authenticate the
