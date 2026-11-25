@@ -388,6 +388,13 @@ func TestNoWorktreeLeaks_JudgesItsOwnRootAliveAndTheInheritedRootDeadOnly(t *tes
 		t.Fatal(err)
 	}
 
+	// An entry predating the run is the baseline: concurrent suites share
+	// this registry, so the guard judges only entries that appeared during
+	// ITS OWN m.Run() — never a registration a crashed session left behind
+	// before it started, which may be a concurrent guarded process's to
+	// judge.
+	writeAdmin(t, root, "pre-existing-entry", filepath.Join(resolvedShared, "TestPreExisting9", "001", "wt", ".git"))
+
 	var processRoot string
 	report := &bytes.Buffer{}
 	code := noWorktreeLeaks(root, func() int {
@@ -441,8 +448,77 @@ func TestNoWorktreeLeaks_JudgesItsOwnRootAliveAndTheInheritedRootDeadOnly(t *tes
 	if _, err := os.Stat(filepath.Join(root, "sibling-live-entry")); err != nil {
 		t.Errorf("a sibling process's live registration was reclaimed: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "pre-existing-entry")); err != nil {
+		t.Errorf("an entry predating the run was reclaimed — the guard judges only entries that appeared during its own run: %v", err)
+	}
+	if strings.Contains(out, "TestPreExisting") {
+		t.Errorf("the report names an entry that predates the run — not this suite's leak:\n%s", out)
+	}
 	if _, err := os.Stat(processRoot); !os.IsNotExist(err) {
 		t.Errorf("the per-process temp root %s was not removed at the end of the suite: %v", processRoot, err)
+	}
+}
+
+// A first reclaim pass that fails and a second pass that succeeds must read
+// as one SUCCESS line, not as the stale failure: the report says the entry
+// was reclaimed, and the registry agrees — keeping the pass-1 "(reclaim
+// failed: …)" line would describe an entry that is gone. The seam injected
+// here fails exactly the first removal of the flaky entry; the second pass
+// re-judges it (its admin dir survived) and removes it for real.
+func TestNoWorktreeLeaks_ARetryThatReclaimsReplacesTheFailureLine(t *testing.T) {
+	repo := SourceRepo(t)
+	common, err := commonDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(common, "worktrees")
+
+	shared := t.TempDir()
+	t.Setenv("TMPDIR", shared)
+	t.Setenv("TMP", shared)
+	t.Setenv("TEMP", shared)
+	t.Setenv("GOTMPDIR", "")
+
+	// The residue is recorded the way git records paths — resolved.
+	resolvedShared, err := filepath.EvalSymlinks(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	real := removeAdminEntry
+	failed := false
+	t.Cleanup(func() { removeAdminEntry = real })
+	removeAdminEntry = func(path string) error {
+		if strings.Contains(path, "flaky-entry") && !failed {
+			failed = true
+			return errors.New("injected first-pass reclaim failure")
+		}
+		return real(path)
+	}
+
+	report := &bytes.Buffer{}
+	code := noWorktreeLeaks(root, func() int {
+		// Dead under the shared root: judged on every pass, and the first
+		// removal fails by injection.
+		writeAdmin(t, root, "flaky-entry", filepath.Join(resolvedShared, "TestFlakyRetry2", "001", "wt", ".git"))
+		return 0
+	}, report)
+
+	if code != 1 {
+		t.Errorf("noWorktreeLeaks = %d, want 1 — a registration that appeared during the run is a leak however its removal goes:\n%s", code, report.String())
+	}
+	out := report.String()
+	if !strings.Contains(out, "TestFlakyRetry") {
+		t.Errorf("the report does not name the retried entry's test:\n%s", out)
+	}
+	if strings.Contains(out, "reclaim failed") {
+		t.Errorf("the report keeps a failure line for an entry the pass-2 retry reclaimed:\n%s", out)
+	}
+	if n := strings.Count(out, " -> TestFlakyRetry"); n != 1 {
+		t.Errorf("the owner column names the retried entry %d times, want one line per recorded path:\n%s", n, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "flaky-entry")); !os.IsNotExist(err) {
+		t.Errorf("the retried entry survived the second pass: %v", err)
 	}
 }
 
