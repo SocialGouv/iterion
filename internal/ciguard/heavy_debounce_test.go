@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -123,20 +125,44 @@ func TestHeavyLayerRunsOnTheDebouncedPush(t *testing.T) {
 	}
 }
 
-// heavyHistory is one canned run history of tests.yml on main: run ids with
-// their last update, and per run the jobs of its latest attempt.
+// heavyRun is one canned tests.yml run on main: its trigger, the repository
+// its head lives in, its latest attempt's conclusion, the ages of its
+// created_at and updated_at, and the jobs of its latest attempt.
+type heavyRun struct {
+	event, repo, conclusion string
+	created, updated        time.Duration
+	jobs                    []heavyJob
+}
+
+type heavyJob struct {
+	name, conclusion string
+	age              time.Duration // age of completed_at
+}
+
+// heavyHistory is one canned run history, keyed by run id.
 type heavyHistory struct {
-	runs map[int]time.Duration // run id -> age of updated_at
-	jobs map[int][]heavyJob
+	runs map[int]heavyRun
 	// broken, when set, is the API path fragment the stand-in gh fails on.
 	broken string
 	// garbled, when set, is the API path fragment answered with non-JSON.
 	garbled string
 }
 
-type heavyJob struct {
-	name, conclusion string
-	age              time.Duration // age of completed_at
+// heavyRepo is the repository the stand-in gh serves.
+const heavyRepo = "SocialGouv/iterion"
+
+// greenRun is a push run of this repository whose latest attempt passed with
+// its three race shards green, every timestamp age ago, alongside the `race`
+// aggregator and a light leg.
+func greenRun(age time.Duration) heavyRun {
+	return heavyRun{
+		event: "push", repo: heavyRepo, conclusion: "success", created: age, updated: age,
+		jobs: []heavyJob{
+			{"test-unit (0)", "success", age},
+			{"race-shard (0)", "success", age}, {"race-shard (1)", "success", age}, {"race-shard (2)", "success", age},
+			{"race", "success", age},
+		},
+	}
 }
 
 // runHeavyGate runs the shipped script with a stand-in gh that serves h,
@@ -156,10 +182,17 @@ func runHeavyGate(t *testing.T, window string, h heavyHistory) (decision, out st
 	now := time.Now().UTC()
 	stamp := func(age time.Duration) string { return now.Add(-age).Format(time.RFC3339) }
 	var runs []string
-	for id, age := range h.runs {
-		runs = append(runs, fmt.Sprintf(`{"id":%d,"updated_at":%q}`, id, stamp(age)))
+	ids := make([]int, 0, len(h.runs))
+	for id := range h.runs {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		r := h.runs[id]
+		runs = append(runs, fmt.Sprintf(`{"id":%d,"event":%q,"conclusion":%q,"created_at":%q,"updated_at":%q,"head_repository":{"full_name":%q}}`,
+			id, r.event, r.conclusion, stamp(r.created), stamp(r.updated), r.repo))
 		var jobs []string
-		for _, j := range h.jobs[id] {
+		for _, j := range r.jobs {
 			jobs = append(jobs, fmt.Sprintf(`{"name":%q,"conclusion":%q,"completed_at":%q}`, j.name, j.conclusion, stamp(j.age)))
 		}
 		writeFile(t, filepath.Join(docs, fmt.Sprintf("jobs-%d.json", id)), `{"jobs":[`+strings.Join(jobs, ",")+`]}`)
@@ -188,7 +221,7 @@ esac
 	env := []string{
 		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(),
-		"GITHUB_OUTPUT=" + output, "GITHUB_REPOSITORY=SocialGouv/iterion",
+		"GITHUB_OUTPUT=" + output, "GITHUB_REPOSITORY=" + heavyRepo,
 		"DOCS=" + docs, "BROKEN=" + h.broken, "GARBLED=" + h.garbled,
 	}
 	if window != "-" {
@@ -216,47 +249,96 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 // TestHeavyGateDecidesFromTheRunHistory RUNS the decider against canned
-// histories. A push stays light only when a run of the window's latest
-// attempts holds a `race-shard` job that concluded success or failure and
-// completed inside the window; a skipped or cancelled heavy leg, one that
-// completed before the window, or no run at all decides heavy. Every path
-// that cannot read the history or the window warns and decides heavy —
-// failing toward more testing, never silently toward less — and a window of 0
-// decides heavy without reading anything.
+// histories. A push stays light only behind a GREEN HEAVY RUN inside the
+// window: a push, schedule or dispatch run of this repository, created inside
+// the window plus two hours, whose latest attempt concluded success with every
+// `race-shard (N)` job a success completed inside the window. A red or partial
+// heavy run, a fork's `main`, a pull request's run, a rerun of an old run, a
+// run whose only race job is the aggregator, or no run at all decides heavy —
+// while the heavy layer is red every push stays heavy. Every path that cannot
+// read the history or the window warns and decides heavy — failing toward
+// more testing, never silently toward less — and a window of 0 decides heavy
+// without reading anything.
 func TestHeavyGateDecidesFromTheRunHistory(t *testing.T) {
-	ran := func(conclusion string, age time.Duration) heavyHistory {
-		return heavyHistory{
-			runs: map[int]time.Duration{7: age, 8: 30 * time.Minute},
-			jobs: map[int][]heavyJob{
-				7: {{"test-unit (0)", "success", age}, {"race-shard (0)", conclusion, age}, {"race-shard (1)", conclusion, age}},
-				8: {{"test-unit (0)", "success", 30 * time.Minute}, {"race-shard (0)", "skipped", 30 * time.Minute}},
-			},
+	// with edits a copy: the jobs slice is cloned, so no case mutates another's.
+	with := func(r heavyRun, edit func(*heavyRun)) heavyRun { r.jobs = slices.Clone(r.jobs); edit(&r); return r }
+	one := func(r heavyRun) heavyHistory { return heavyHistory{runs: map[int]heavyRun{7: r}} }
+	shards := func(conclusions ...string) []heavyJob {
+		jobs := []heavyJob{{"test-unit (0)", "success", time.Hour}, {"race", "success", time.Hour}}
+		for i, c := range conclusions {
+			jobs = append(jobs, heavyJob{fmt.Sprintf("race-shard (%d)", i), c, time.Hour})
 		}
+		return jobs
 	}
+	green := greenRun(time.Hour)
 	for _, tc := range []struct {
 		name, window string
 		history      heavyHistory
 		heavy        bool
 		warns        bool
 	}{
-		{"a heavy run that passed an hour ago", "6", ran("success", time.Hour), false, false},
-		{"a heavy run that failed an hour ago still ran", "6", ran("failure", time.Hour), false, false},
-		{"heavy legs skipped inside the window", "6", ran("skipped", time.Hour), true, false},
-		{"heavy legs cancelled inside the window", "6", ran("cancelled", time.Hour), true, false},
-		{"the last heavy run is older than the window", "6", ran("success", 7*time.Hour), true, false},
-		{"a wider window reaches it", "24", ran("success", 7*time.Hour), false, false},
-		{"the window defaults to nothing in the script", "-", ran("success", time.Hour), true, true},
-		{"a run updated inside the window whose heavy leg completed before it", "6", heavyHistory{
-			runs: map[int]time.Duration{7: time.Hour},
-			jobs: map[int][]heavyJob{7: {{"race-shard (0)", "success", 7 * time.Hour}}},
-		}, true, false},
+		{"a green heavy push run an hour ago", "6", one(green), false, false},
+		{"a green heavy nightly", "6", one(with(green, func(r *heavyRun) { r.event = "schedule" })), false, false},
+		{"a green heavy dispatch", "6", one(with(green, func(r *heavyRun) { r.event = "workflow_dispatch" })), false, false},
+		{"a red heavy run keeps the push heavy", "6", one(with(green, func(r *heavyRun) {
+			r.conclusion, r.jobs = "failure", shards("success", "failure", "success")
+		})), true, false},
+		// The shard check alone, isolated from the run's conclusion that
+		// would otherwise cover it.
+		{"a failed shard in a run reported success", "6", one(with(green, func(r *heavyRun) { r.jobs = shards("success", "failure", "success") })), true, false},
+		{"green shards in a run that concluded failure", "6", one(with(green, func(r *heavyRun) { r.conclusion = "failure" })), true, false},
+		{"one green shard and two cancelled", "6", one(with(green, func(r *heavyRun) { r.jobs = shards("success", "cancelled", "cancelled") })), true, false},
+		{"a timed-out shard", "6", one(with(green, func(r *heavyRun) { r.jobs = shards("success", "timed_out", "success") })), true, false},
+		{"skipped shards in a green light run", "6", one(with(green, func(r *heavyRun) { r.jobs = shards("skipped", "skipped", "skipped") })), true, false},
+		{"a run whose only race job is the aggregator", "6", one(with(green, func(r *heavyRun) { r.jobs = shards() })), true, false},
+		{"a fork's run from its own main", "6", one(with(green, func(r *heavyRun) { r.repo = "someone/iterion" })), true, false},
+		{"a pull request run", "6", one(with(green, func(r *heavyRun) { r.event = "pull_request" })), true, false},
+		{"a merge-queue run", "6", one(with(green, func(r *heavyRun) { r.event = "merge_group" })), true, false},
+		{"a rerun of an old run proves an old sha", "6", one(with(green, func(r *heavyRun) { r.created = 30 * time.Hour })), true, false},
+		{"a run created just inside the window plus two hours", "6", one(with(green, func(r *heavyRun) { r.created = 7 * time.Hour })), false, false},
+		{"the last green heavy run is older than the window", "6", one(greenRun(7 * time.Hour)), true, false},
+		{"a wider window reaches it", "24", one(greenRun(7 * time.Hour)), false, false},
+		{"a run updated inside the window whose shards completed before it", "6", one(with(green, func(r *heavyRun) {
+			for i := range r.jobs {
+				r.jobs[i].age = 7 * time.Hour
+			}
+		})), true, false},
+		// The newest heavy run decides whatever order the API lists runs in:
+		// the stand-in lists them by ascending id, so each pair is served in
+		// both orders.
+		{"a red heavy run is not hidden by an older green one (red listed first)", "6", heavyHistory{runs: map[int]heavyRun{
+			8: with(green, func(r *heavyRun) { r.conclusion, r.jobs = "failure", shards("failure", "success", "success") }),
+			9: greenRun(3 * time.Hour),
+		}}, true, false},
+		{"a red heavy run is not hidden by an older green one (green listed first)", "6", heavyHistory{runs: map[int]heavyRun{
+			8: greenRun(3 * time.Hour),
+			9: with(green, func(r *heavyRun) { r.conclusion, r.jobs = "failure", shards("failure", "success", "success") }),
+		}}, true, false},
+		{"a green heavy run after a red one (green listed first)", "6", heavyHistory{runs: map[int]heavyRun{
+			8: green,
+			9: with(greenRun(3*time.Hour), func(r *heavyRun) { r.conclusion = "failure" }),
+		}}, false, false},
+		{"a green heavy run after a red one (red listed first)", "6", heavyHistory{runs: map[int]heavyRun{
+			8: with(greenRun(3*time.Hour), func(r *heavyRun) { r.conclusion = "failure" }),
+			9: green,
+		}}, false, false},
+		{"light runs after a green heavy run pass over to it", "6", heavyHistory{runs: map[int]heavyRun{
+			8: with(greenRun(20*time.Minute), func(r *heavyRun) { r.jobs = shards("skipped", "skipped", "skipped") }),
+			9: green,
+		}}, false, false},
 		{"no run on main", "6", heavyHistory{}, true, false},
+		{"the window defaults to nothing in the script", "-", one(green), true, true},
 		{"the run list is unreadable", "6", heavyHistory{broken: "/actions/workflows/"}, true, true},
-		{"a run's jobs are unreadable", "6", func() heavyHistory { h := ran("success", time.Hour); h.broken = "/jobs"; return h }(), true, true},
+		{"a run's jobs are unreadable", "6", func() heavyHistory { h := one(green); h.broken = "/jobs"; return h }(), true, true},
 		{"the run list is not JSON", "6", heavyHistory{garbled: "/actions/workflows/"}, true, true},
-		{"a run's jobs are not JSON", "6", func() heavyHistory { h := ran("success", time.Hour); h.garbled = "/jobs"; return h }(), true, true},
-		{"a window that is not a number", "six", ran("success", time.Hour), true, true},
-		{"a negative window", "-1", ran("success", time.Hour), true, true},
+		{"a run's jobs are not JSON", "6", func() heavyHistory { h := one(green); h.garbled = "/jobs"; return h }(), true, true},
+		{"a window that is not a number", "six", one(green), true, true},
+		{"a negative window", "-1", one(green), true, true},
+		{"a window past a month", "721", one(green), true, true},
+		{"the longest window", "720", one(green), false, false},
+		{"a window that overflows bash's integers", "99999999999999999999", one(green), true, true},
+		// 2^64 + 6: bash wraps it to a plausible 6.
+		{"a window that wraps to a plausible one", "18446744073709551622", one(green), true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decision, out, _ := runHeavyGate(t, tc.window, tc.history)
@@ -274,4 +356,46 @@ func TestHeavyGateDecidesFromTheRunHistory(t *testing.T) {
 			t.Errorf("decision %q after %d gh calls, want heavy=true after none, without a warning\n%s", decision, calls, out)
 		}
 	})
+}
+
+// TestRaceShardLegsAreNamedAsTheGateReadsThem ties the decider's job-name
+// predicate to the workflow: heavy-gate.sh counts exactly the jobs GitHub
+// names `race-shard (N)`, which holds while tests.yml's `race-shard` job
+// carries no `name:` override and one matrix axis whose values are the shard
+// numbers. A renamed leg would never match, and every push would run heavy
+// for no reason anyone could read; the script must also spell that exact
+// predicate.
+func TestRaceShardLegsAreNamedAsTheGateReadsThem(t *testing.T) {
+	var wf struct {
+		Jobs map[string]struct {
+			Name     *string `yaml:"name"`
+			Strategy struct {
+				Matrix map[string][]any `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
+		t.Fatalf("parse %s: %v", workflowPaths[0], err)
+	}
+	job, ok := wf.Jobs["race-shard"]
+	if !ok {
+		t.Fatalf("%s has no race-shard job", workflowPaths[0])
+	}
+	if job.Name != nil {
+		t.Errorf("race-shard carries `name: %s`: its legs would no longer be named `race-shard (N)`, the only names %s counts", *job.Name, heavyGateScript)
+	}
+	if len(job.Strategy.Matrix) != 1 {
+		t.Errorf("race-shard's matrix has %d axes, want exactly one: GitHub names a leg after every axis value, `race-shard (0, x)` is not a shard to %s", len(job.Strategy.Matrix), heavyGateScript)
+	}
+	for axis, values := range job.Strategy.Matrix {
+		for _, v := range values {
+			if _, ok := v.(int); !ok {
+				t.Errorf("race-shard matrix axis %s value %v is not a shard number: its leg would not be named `race-shard (N)`", axis, v)
+			}
+		}
+	}
+	const predicate = `test("^race-shard \\([0-9]+\\)$")`
+	if !strings.Contains(string(mustRead(t, heavyGateScriptPath)), predicate) {
+		t.Errorf("%s no longer selects shards with %s: the legs tests.yml names would drift from what the gate counts", heavyGateScript, predicate)
+	}
 }

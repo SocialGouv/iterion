@@ -73,8 +73,8 @@ serialising the PRs that exist. The lane's blocking proof replaces the PR's:
    directory — a bypass that cannot be grepped is a bypass that did not happen.
 5. **The witnesses, post-hoc.** CI fires on every push to `main`; a cancelled
    or missing witness run is NOT success in the landing record; a red `main`
-   outranks all other work. A push run is light unless first after
-   `CI_HEAVY_EVERY_HOURS` (6 h) without a heavy run
+   outranks all other work. A push run is heavy unless a green heavy run
+   landed in `CI_HEAVY_EVERY_HOURS` (6 h)
    ([ADR-173](../../adr/173-experimental-delivery-mode.md)). **Never read
    your sha's own run**: one concurrency group keeps the run in progress, a
    newer push replaces the pending one. The witness is the first run that

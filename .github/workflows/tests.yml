@@ -288,16 +288,18 @@ jobs:
   # ---- the heavy decider: does this push to main run the heavy layer? ----
 
   heavy-gate:
-    # The DEBOUNCED PUSH (ADR-173, #3737): the first push to main after
-    # CI_HEAVY_EVERY_HOURS hours (default 6) without a completed heavy run on
-    # main runs the heavy layer; every other push stays light. GitHub's crons
-    # are delayed by hours or dropped on this repository, so the push itself
-    # carries the heavy cadence and the nightly stays a backstop.
-    # scripts/ci/heavy-gate.sh reads the run history: a run counts when one of
-    # its `race-shard` jobs concluded success or failure inside the window. On
-    # an unreadable history or window it warns and decides heavy — failing
-    # toward more testing. CI_HEAVY_EVERY_HOURS=0 runs the heavy layer on
-    # every push.
+    # The DEBOUNCED PUSH (ADR-173, #3737): a push to main stays light only
+    # behind a GREEN heavy run on main inside the last CI_HEAVY_EVERY_HOURS
+    # hours (default 6, at most 720); every other push runs the heavy layer.
+    # GitHub's crons are delayed by hours or dropped on this repository, so
+    # the push itself carries the heavy cadence and the nightly stays a
+    # backstop. scripts/ci/heavy-gate.sh reads the run history; the newest
+    # run whose heavy legs ran decides: a push, schedule or dispatch run of
+    # this repository, created inside the window plus two hours, concluded
+    # success, every `race-shard (N)` job a success. A red heavy run keeps
+    # every push heavy until a green one lands. On an unreadable history or
+    # window it warns and decides heavy — failing toward more testing.
+    # CI_HEAVY_EVERY_HOURS=0 runs the heavy layer on every push.
     #
     # Push only: every other event decides by itself (the heavy literal reads
     # this job's output only under `github.event_name == 'push'`), and the

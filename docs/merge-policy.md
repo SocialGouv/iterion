@@ -242,14 +242,18 @@ debounced push (#3737). So each layer gates where it pays:
 | other advisory jobs | runs | skipped | runs | runs |
 | `revi/review` | runs | mirrored | — | — |
 
-A push to `main` is **heavy** when it is the first after
-`CI_HEAVY_EVERY_HOURS` hours (a repository variable, 6 by default) without a
-completed heavy run on `main`, and **light** otherwise. The `heavy-gate` job,
-on push only, decides it from the run history (`scripts/ci/heavy-gate.sh`): a
-run counts when one of its `race-shard` jobs concluded success or failure
-inside the window, whatever its event. When it cannot read the history or the
-window it warns and decides heavy; a gate that fails leaves no answer, and the
-push runs heavy too. `CI_HEAVY_EVERY_HOURS=0` makes every push heavy. The
+A push to `main` is **light** only behind a **green heavy run** on `main`
+inside the last `CI_HEAVY_EVERY_HOURS` hours (a repository variable, 6 by
+default, at most 720), and **heavy** otherwise. The `heavy-gate` job, on push
+only, decides it from the run history (`scripts/ci/heavy-gate.sh`), and the
+newest run whose heavy legs ran decides: green means a push, schedule or
+dispatch run of this repository, created inside the window plus two hours
+(a rerun of an old run proves an old sha), whose latest attempt concluded
+success with every `race-shard (N)` job a success. **A red heavy run keeps
+every push heavy until a green heavy run lands**: it never buys a light
+window. When the gate cannot read the history or the window it warns and
+decides heavy; a gate that fails leaves no answer, and the push runs heavy
+too. `CI_HEAVY_EVERY_HOURS=0` makes every push heavy. The
 heavy layer thus runs about as often as a nightly would, and only when `main`
 moved: GitHub delays this repository's crons by hours or drops them, so the
 cadence cannot rest on a schedule.
