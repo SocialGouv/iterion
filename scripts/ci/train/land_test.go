@@ -435,7 +435,7 @@ func TestLandStopsWhenGhMergesNothing(t *testing.T) {
 	gh := newFakeGitHub(t, f, prs)
 	gh.queued[2] = true
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !strings.Contains(err.Error(), "#2 reads not merged") || !strings.Contains(err.Error(), "sits in the merge queue") || !strings.Contains(err.Error(), "nothing of it landed") || !errors.Is(err, errPartial) {
+	if err == nil || !strings.Contains(err.Error(), "#2: gh exited 0, it does not read merged") || !strings.Contains(err.Error(), "sits in the merge queue") || !strings.Contains(err.Error(), "nothing of it landed") || !errors.Is(err, errPartial) {
 		t.Fatalf("err %v, want #2 named as not merged, as a partial landing", err)
 	}
 	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || !rep.Landed[0].Verified || fmt.Sprint(gh.merges) != "[1]" {
@@ -530,26 +530,26 @@ func TestLandChecksMainRightBeforeEachMerge(t *testing.T) {
 	}
 }
 
-// gh can report a failure after the merge went through: main is read back,
-// and the landing is recorded, unverified, as a partial one.
+// gh can report a failure after the merge went through: GitHub's merged
+// state, read back, makes it an ordinary landing — verified, and the lot
+// goes on.
 func TestLandRecordsAMergeThatWentThroughBehindAnError(t *testing.T) {
 	f := newFixture(t, map[string]string{"a.txt": "a\n"})
 	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"}), f.pr(2, map[string]string{"c.txt": "c\n"})}
 	rep := greenLot(t, f, prs)
 	gh := newFakeGitHub(t, f, prs)
 	gh.errAfterMerge[1] = true
-	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "recorded as an unverified landing") {
-		t.Fatalf("err %v, want a partial landing that records #1", err)
+	if err := lander(f, gh).Land(context.Background(), rep); err != nil {
+		t.Fatalf("a merge GitHub completed behind a 502 stopped the lot: %v", err)
 	}
-	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || rep.Landed[0].Verified || rep.Landed[0].Merge != gh.merged[1] {
-		t.Fatalf("landed %+v — want #1 recorded unverified, as main's new tip %s", rep.Landed, short(gh.merged[1]))
+	if len(rep.Landed) != 2 || rep.Landed[0].Merge != gh.merged[1] || !rep.Landed[0].Verified {
+		t.Fatalf("landed %+v — want #1 verified as %s and the lot complete", rep.Landed, short(gh.merged[1]))
 	}
 }
 
-// GitHub refuses a merge because another push landed on main meanwhile: the
-// push is not the pull request's landing — never recorded, commented or
-// charged to it.
+// GitHub refuses a merge because another push landed on main meanwhile:
+// nothing is credited to the pull request — it is UNCERTAIN, uncommented,
+// its runs untouched, and the exit says main changed.
 func TestLandNeverCreditsAForeignPushToARefusedMerge(t *testing.T) {
 	for _, at := range []int{1, 2} {
 		f := newFixture(t, map[string]string{"a.txt": "a\n"})
@@ -558,22 +558,22 @@ func TestLandNeverCreditsAForeignPushToARefusedMerge(t *testing.T) {
 		gh := newFakeGitHub(t, f, prs)
 		gh.refuseWithPush[at] = true
 		err := lander(f, gh).Land(context.Background(), rep)
-		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("nothing of #%d landed", at)) || !strings.Contains(err.Error(), "chore(release): v9.9.9") {
-			t.Fatalf("at=%d: err %v, want the foreign push named and nothing of #%d landed", at, err, at)
+		if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), fmt.Sprintf("#%d is UNCERTAIN", at)) || !strings.Contains(err.Error(), "chore(release): v9.9.9") {
+			t.Fatalf("at=%d: err %v, want #%d uncertain with the foreign push named, partial", at, err, at)
 		}
 		for _, l := range rep.Landed {
 			if l.PR == at {
 				t.Fatalf("at=%d: #%d recorded as landed: %+v", at, at, rep.Landed)
 			}
 		}
+		if !slices.Contains(rep.Uncertain, at) {
+			t.Fatalf("at=%d: uncertain %v, want #%d", at, rep.Uncertain, at)
+		}
 		if _, commented := gh.comments[at]; commented {
 			t.Fatalf("at=%d: a comment was posted on the unmerged #%d", at, at)
 		}
 		if slices.Contains(gh.cancels, prs[at-1].HeadSHA) {
 			t.Fatalf("at=%d: #%d's runs were cancelled", at, at)
-		}
-		if partial := errors.Is(err, errPartial); partial != (at == 2) {
-			t.Fatalf("at=%d: partial=%v — want partial only once the train itself landed something", at, partial)
 		}
 	}
 }
@@ -584,18 +584,17 @@ func TestLandWaitsForAMergeGitHubFinishesAfterATimeout(t *testing.T) {
 	rep := greenLot(t, f, prs)
 	gh := newFakeGitHub(t, f, prs)
 	gh.lateMerge[1] = true
-	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "#1 reads merged") {
-		t.Fatalf("err %v, want the late merge found and recorded", err)
+	if err := lander(f, gh).Land(context.Background(), rep); err != nil {
+		t.Fatalf("a merge GitHub finished after a timeout stopped the landing: %v", err)
 	}
-	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] {
-		t.Fatalf("landed %+v, want #1 recorded as %s", rep.Landed, short(gh.merged[1]))
+	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] || !rep.Landed[0].Verified {
+		t.Fatalf("landed %+v, want #1 verified as %s", rep.Landed, short(gh.merged[1]))
 	}
 }
 
-// GitHub squashed, but its read-back still says not merged: main's tip IS
-// the pull request's squash, and that is what is recorded.
-func TestLandRecognisesItsOwnSquashOnMainWhenTheReadBackLags(t *testing.T) {
+// GitHub never reports the merge although main moved to what looks like
+// the squash: nothing is inferred from main's shape — UNCERTAIN.
+func TestLandInfersNothingFromMainsShape(t *testing.T) {
 	f := newFixture(t, map[string]string{"a.txt": "a\n"})
 	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
 	rep := greenLot(t, f, prs)
@@ -603,11 +602,38 @@ func TestLandRecognisesItsOwnSquashOnMainWhenTheReadBackLags(t *testing.T) {
 	gh.errAfterMerge[1] = true
 	gh.mergedReadLag[1] = true
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "is #1's squash") {
-		t.Fatalf("err %v, want main's tip recognised as #1's squash", err)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "#1 is UNCERTAIN") {
+		t.Fatalf("err %v, want #1 uncertain", err)
 	}
-	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] {
-		t.Fatalf("landed %+v, want #1 recorded as %s", rep.Landed, short(gh.merged[1]))
+	if len(rep.Landed) != 0 || !slices.Equal(rep.Uncertain, []int{1}) {
+		t.Fatalf("landed %+v uncertain %v — want nothing credited from main's shape", rep.Landed, rep.Uncertain)
+	}
+}
+
+// An ungated squash GitHub made behind an error is still a landing GitHub
+// reports — and the verification names its tree.
+func TestLandNamesAnUngatedSquashBehindAnError(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep := greenLot(t, f, prs)
+	gh := newFakeGitHub(t, f, prs)
+	gh.errAfterMerge[1] = true
+	gh.tamper = true
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "UNGATED") {
+		t.Fatalf("err %v, want the ungated tree named", err)
+	}
+}
+
+func TestLandRefusesToRelandAnUncertainReport(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep := greenLot(t, f, prs)
+	rep.Uncertain = []int{1}
+	gh := newFakeGitHub(t, f, prs)
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !strings.Contains(err.Error(), "1 uncertain") || len(gh.merges) != 0 {
+		t.Fatalf("err %v, merges %v — want an uncertain report refused", err, gh.merges)
 	}
 }
 
@@ -644,7 +670,7 @@ func TestLandRecordsTheBranchUpdateWhereverItStops(t *testing.T) {
 		}
 	}
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !strings.Contains(err.Error(), "stopped before #2") || !strings.Contains(err.Error(), "its branch already carries the train's resolution") {
+	if err == nil || !strings.Contains(err.Error(), "stopped before #2") || !strings.Contains(err.Error(), "branches already carrying the train's resolution: #2") {
 		t.Fatalf("err %v, want the stop to name #2's rewritten branch", err)
 	}
 	if len(rep.BranchUpdates) != 1 || rep.BranchUpdates[0].PR != 2 || rep.BranchUpdates[0].From != prs[1].HeadSHA {
@@ -680,11 +706,11 @@ func TestLandRecordsAMergeItCouldNotVerify(t *testing.T) {
 	l := lander(f, gh)
 	l.Save = func(*Report) error { saves++; return nil }
 	err := l.Land(context.Background(), rep)
-	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "reading it back failed") {
-		t.Fatalf("err %v, want a partial landing that says the read-back failed", err)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "reading it back failed") || !strings.Contains(err.Error(), "#1 is UNCERTAIN") {
+		t.Fatalf("err %v, want a partial landing that says the read-back failed and #1 is uncertain", err)
 	}
-	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || rep.Landed[0].Verified || saves == 0 {
-		t.Fatalf("landed %+v, saves %d — want #1 recorded as merged and unverified, and saved", rep.Landed, saves)
+	if len(rep.Landed) != 0 || !slices.Equal(rep.Uncertain, []int{1}) || saves == 0 {
+		t.Fatalf("landed %+v, uncertain %v, saves %d — want #1 recorded as uncertain, and saved", rep.Landed, rep.Uncertain, saves)
 	}
 }
 
@@ -712,7 +738,7 @@ func TestLandReportsAMergeRefusedByGitHub(t *testing.T) {
 	rep := greenLot(t, f, prs)
 	gh := &refusingMerge{fakeGitHub: newFakeGitHub(t, f, prs)}
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !strings.Contains(err.Error(), "gh reported the merge failed") || !strings.Contains(err.Error(), "nothing of it landed") || errors.Is(err, errPartial) {
+	if err == nil || !strings.Contains(err.Error(), "gh failed: GraphQL: Pull request is not mergeable") || !strings.Contains(err.Error(), "nothing of it landed") || errors.Is(err, errPartial) {
 		t.Fatalf("err %v, want the refusal named, and not as a partial landing (nothing reached main)", err)
 	}
 }
