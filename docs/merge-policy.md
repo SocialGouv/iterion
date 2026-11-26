@@ -335,7 +335,7 @@ to a person on the ticket.
 A half-hour schedule runs the revert clock and judges `main`'s newest run, so
 a missed event is caught; markers in the tickets and branch names keyed by run
 and by pull request make a second judgement a no-op, and a flake pass that failed
-half-way is finished by the next, its sub-issue filing included; a quarantine
+half-way is finished by the next, its sub-issue filing included, a ticket a person filed under another issue left there; a quarantine
 pull request merged or closed gets nothing pushed. A marker counts only in an issue or comment
 written by `github-actions[bot]`, and a person's `flaky:` ticket only when its
 author is an owner, member or collaborator: anyone can open an issue here. The job's

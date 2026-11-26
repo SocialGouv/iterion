@@ -400,7 +400,8 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 
 // fileUnderEpic files main-watch's own flake tickets under the CI-health
 // epic, those already there aside: a filing that failed on an earlier pass
-// is made by the next one.
+// is made by the next one. A ticket a person filed under another issue stays
+// there: GitHub refuses a second parent, and main-watch never replaces one.
 func (w *Watcher) fileUnderEpic(ctx context.Context, run Run, tickets []Issue) error {
 	if len(tickets) == 0 {
 		return nil
@@ -411,6 +412,14 @@ func (w *Watcher) fileUnderEpic(ctx context.Context, run Run, tickets []Issue) e
 	}
 	for _, is := range tickets {
 		if slices.ContainsFunc(subs, func(s Issue) bool { return s.ID == is.ID }) {
+			continue
+		}
+		parented, err := w.GH.HasParent(ctx, is.Number)
+		if err != nil {
+			return err
+		}
+		if parented {
+			w.say("run %d: #%d is filed under another issue: left there", run.ID, is.Number)
 			continue
 		}
 		if err := w.GH.AddSubIssue(ctx, flakeEpic, is.ID); err != nil {

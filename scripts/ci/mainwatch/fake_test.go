@@ -42,6 +42,7 @@ type fixtureGitHub struct {
 	list     string                   // the quarantine list on main
 	history  map[int][]AutoMergeEvent // the auto-merge timeline of each pull request
 	subs     map[int][]int64          // the sub-issue ids of each issue
+	parents  map[int]int              // the parent of each issue filed under another one
 	failOnce map[string]error         // a write kind ("comment #N" for a comment) that fails once
 	failAll  map[string]error         // a write kind that fails every time
 	mu       sync.Mutex
@@ -81,7 +82,7 @@ func newFixture(t *testing.T) *fixtureGitHub {
 		t: t, runs: map[int64]Run{}, attempts: map[string]Run{}, jobsOf: map[string][]Job{},
 		comments: map[int][]Comment{}, branches: map[string]bool{}, onBranch: map[string]string{},
 		pulls: map[int]PullRequest{}, notPulls: map[int]bool{}, byHead: map[string]int{}, failOnce: map[string]error{}, failAll: map[string]error{},
-		history: map[int][]AutoMergeEvent{}, subs: map[int][]int64{},
+		history: map[int][]AutoMergeEvent{}, subs: map[int][]int64{}, parents: map[int]int{},
 		list: string(list), next: 7001,
 	}
 }
@@ -238,6 +239,12 @@ func (f *fixtureGitHub) SubIssues(_ context.Context, n int) ([]Issue, error) {
 		out = append(out, Issue{ID: id})
 	}
 	return out, nil
+}
+
+func (f *fixtureGitHub) HasParent(_ context.Context, n int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.parents[n] != 0, nil
 }
 
 func (f *fixtureGitHub) RerunFailedJobs(_ context.Context, id int64) error {

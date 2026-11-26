@@ -153,3 +153,35 @@ func TestAutoMergeHistoryReadsTheTimeline(t *testing.T) {
 		})
 	}
 }
+
+// An issue's parent is read from /issues/N/parent: a 404 is no parent, any
+// other failure is an error rather than "no parent".
+func TestHasParentReadsTheParentIssue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		want   bool
+		err    bool
+	}{
+		"parent":    {status: http.StatusOK, want: true},
+		"no parent": {status: http.StatusNotFound},
+		"failure":   {status: http.StatusBadGateway, err: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var path string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path = r.URL.Path
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"number":3000}`))
+			}))
+			defer srv.Close()
+			c := &restClient{api: srv.URL, repo: "SocialGouv/iterion", http: srv.Client()}
+			got, err := c.HasParent(context.Background(), 7001)
+			if path != "/repos/SocialGouv/iterion/issues/7001/parent" {
+				t.Fatalf("path = %q", path)
+			}
+			if (err != nil) != tc.err || got != tc.want {
+				t.Fatalf("HasParent = %v, %v; want %v, error %v", got, err, tc.want, tc.err)
+			}
+		})
+	}
+}
