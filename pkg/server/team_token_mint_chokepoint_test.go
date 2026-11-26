@@ -89,6 +89,7 @@ var teamTokenMintPrimitives = []mintPrimitive{
 	{verb: "webhooks.MintToken", dir: "pkg/webhooks", name: "MintToken"},
 	{verb: "configshare.MintToken", dir: "pkg/configshare", name: "MintToken"},
 	{verb: "auth.Service.CreateInvitation", dir: "pkg/auth", recv: "*Service", name: "CreateInvitation"},
+	{verb: "auth.Service.CreateEmailedInvitation", dir: "pkg/auth", recv: "*Service", name: "CreateEmailedInvitation"},
 }
 
 // requireMintVerdict is the call whose presence in a primitive's body IS the
@@ -612,6 +613,12 @@ func gateMintOf(e ast.Expr) string {
 	}
 	if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "gateDerivation" && len(call.Args) == 2 {
 		return exprText(call.Args[0])
+	}
+	// gateInvitationMint asks gateDerivation for the mint the presented
+	// credential may make (invitationMint): the team token for a session, the
+	// emailed invitation for a personal access token.
+	if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "gateInvitationMint" && len(call.Args) == 1 {
+		return "invitationMint(id)"
 	}
 	if m := gateMintOf(call.Fun); m != "" {
 		return m

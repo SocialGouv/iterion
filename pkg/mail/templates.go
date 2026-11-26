@@ -19,6 +19,11 @@ type ResetData struct {
 type InviteData struct {
 	TeamName string
 	Role     string
+	// OrgName and OrgRole are the team's parent org and the org membership
+	// accepting writes there. The message names them only for a role above
+	// member — the one an invitee must know they are being handed.
+	OrgName string
+	OrgRole string
 	// AcceptURL is the SPA link carrying the invitation token.
 	AcceptURL string
 	// InvitedBy is a display hint (email of the inviting admin).
@@ -46,16 +51,28 @@ func RenderInvitation(to string, d InviteData) Message {
 	if d.InvitedBy != "" {
 		by = fmt.Sprintf(" by %s", d.InvitedBy)
 	}
-	text := fmt.Sprintf(`You've been invited%s to join the iterion org %q as %s.
+	orgText, orgHTML := "", ""
+	if d.OrgRole == "admin" || d.OrgRole == "owner" {
+		org := strings.TrimSpace(d.OrgName)
+		if org == "" {
+			org = "its organization"
+		} else {
+			org = fmt.Sprintf("its organization %q", org)
+		}
+		orgText = fmt.Sprintf("\n\nAccepting also makes you %s of %s: every team in it, its members and its sign-in.", d.OrgRole, org)
+		orgHTML = fmt.Sprintf("<p>Accepting also makes you <b>%s</b> of %s: every team in it, its members and its sign-in.</p>\n",
+			template.HTMLEscapeString(d.OrgRole), template.HTMLEscapeString(org))
+	}
+	text := fmt.Sprintf(`You've been invited%s to join the iterion team %q as %s.%s
 
 Accept the invitation: %s
 
 If you don't have an account yet, the link lets you register with
-this email address.`, by, d.TeamName, d.Role, d.AcceptURL)
-	html := fmt.Sprintf(`<p>You've been invited%s to join the iterion org <b>%s</b> as <b>%s</b>.</p>
-<p><a href="%s">Accept the invitation</a></p>
+this email address.`, by, d.TeamName, d.Role, orgText, d.AcceptURL)
+	html := fmt.Sprintf(`<p>You've been invited%s to join the iterion team <b>%s</b> as <b>%s</b>.</p>
+%s<p><a href="%s">Accept the invitation</a></p>
 <p>If you don't have an account yet, the link lets you register with this email address.</p>`,
 		template.HTMLEscapeString(by), template.HTMLEscapeString(d.TeamName),
-		template.HTMLEscapeString(d.Role), template.HTMLEscapeString(d.AcceptURL))
+		template.HTMLEscapeString(d.Role), orgHTML, template.HTMLEscapeString(d.AcceptURL))
 	return Message{To: to, Subject: fmt.Sprintf("Invitation to join %s on iterion", strings.TrimSpace(d.TeamName)), TextBody: text, HTMLBody: html}
 }

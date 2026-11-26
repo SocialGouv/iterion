@@ -529,7 +529,7 @@ func TestEraseUser_NoInvitationReachesAnAddressUnderErasure(t *testing.T) {
 	inviteCtx := mintVerdictCtx(ctx)
 	_, err = svc.EraseUser(ctx, jade.User.ID, EraseOptions{PersonalOrgGrace: time.Hour, BeforeAnonymize: func(context.Context, identity.User) error {
 		// The row is marked erased and still carries the address here.
-		if _, _, ierr := svc.CreateInvitation(inviteCtx, jade.ActiveTeamID, "jade@example.org", identity.RoleMember, "someone-else"); !errors.Is(ierr, ErrGrantRefused) {
+		if _, _, ierr := svc.CreateInvitation(inviteCtx, InvitationRequest{TeamID: jade.ActiveTeamID, Email: "jade@example.org", Role: identity.RoleMember, InvitedBy: "someone-else"}); !errors.Is(ierr, ErrGrantRefused) {
 			t.Errorf("an invitation to the address under erasure = %v, want ErrGrantRefused", ierr)
 		}
 		return nil

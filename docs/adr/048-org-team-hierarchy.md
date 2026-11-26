@@ -166,3 +166,32 @@ org-only is the monthly run/cost + memory budget and the soft-delete
 `PurgeAfter`; `MaxConcurrentRuns` and `LaunchRatePerMin` stay on `Team` as the
 decision says. The team route refuses `pending_deletion` — no sweeper resolves
 it at team level.
+
+## Amendment (2026-11-26) — a team rank never makes an org admin
+
+The as-built mirror wrote org **admin** for a team admin or owner
+(`identity.OrgRoleForTeamRole`), on every path that writes a team grant into
+an org: an accepted invitation, an SSO grant. Inviting someone as admin of
+one team therefore made them admin of its whole org — every team in it, its
+roster, its sign-in and its usage — and the org invitation, which reuses the
+team invitation, could not say the two apart.
+
+The operator decided (SocialGouv/iterion#3744) that the team role and the org
+role are two decisions:
+
+- **A team grant mirrors an org member**, whatever its rank, owner included
+  (`identity.OrgRoleForTeamRole`). `config_editor` still mirrors to nothing
+  (ADR-078). An existing higher org role is never lowered.
+- **An invitation names its org role** (`identity.Invitation.OrgRole`, read
+  through `OrgRoleOnAccept`). A team invitation names `member`: the team
+  route refuses any other value with a 400 that points at the org route. An
+  org invitation names `member` by default, or `admin`/`owner` on purpose,
+  capped at the minter's own org standing. Every cap, post-mint confirmation
+  and sweep measures that role. A row minted before the field existed reads
+  as `member`.
+- **The `iterion migrate orgs` backfill keeps its own mapping**
+  (`backfillOrgRole`, team admin/owner → org admin): the org it creates is
+  that one team, whose admins already ran everything the org now holds.
+
+Org admins that the old mirror already wrote are left as they are. Reviewing
+them is an operator's call, not a migration's.

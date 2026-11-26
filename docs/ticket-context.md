@@ -171,7 +171,8 @@ and left `Team.Status` readable by the launch gate but writable by nothing:
 | Delete an EMPTY team | org admin | `iterion remote teams delete` |
 | Place an EXISTING account in a team | team admin | `iterion remote teams add-member <user-id> --role admin`, or `teams members add <user-id> admin` |
 | Place an EXISTING account in the org | **super-admin** | `iterion remote orgs add-member <user-id> --role member`, or `orgs members add <user-id> member` |
-| Add someone to the org as an org admin | org admin | Studio: Org → Members → Invite. (`iterion remote orgs invitations create <email> --role member` does the same by address, from a CLI holding a session credential: the invitation is a team token, which the personal access token a login stores does not mint.) |
+| Invite someone by email into a team | team admin | `iterion remote teams invitations create <email> --role admin --team <team-id>` — the instance emails the invitation (from the personal access token a login stores, the token reaches the mailbox alone and the response carries none). Accepting makes them a member of the team's org, never an org admin. Studio: Team → Members → Invite. |
+| Add someone to the org as an org admin | org admin | `iterion remote orgs invitations create <email> --role member --org-role admin [--team <team-id>]`, emailed the same way; the org role is capped at your own. Studio: Org → Members → Invite, with its "org role" picker. |
 
 The `<scope> members add` spelling is the same call under the noun it acts
 on, so `members` alone lists and `add` / `set-role` / `remove` complete it.
@@ -258,7 +259,8 @@ personal org ⇒ it was not that path. The direct evidence (`password_hash`,
 
 One row worth reading closely if you ever see it: a team grant marked **"no
 org membership — this grant should not exist"**. The invariant covers the four
-ladder roles — viewer through owner each mirror up to an org membership — and
+ladder roles — viewer through owner each mirror up to an org membership (an
+org member: a team rank never makes an org admin) — and
 the drawer flags a break rather than smoothing it over. `config_editor` sits
 outside it by design: it mirrors to nothing (ADR-078 — an org-member row would
 hand it the org roster).

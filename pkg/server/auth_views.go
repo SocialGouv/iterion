@@ -133,6 +133,9 @@ type createTeamReq struct {
 type createInvitationReq struct {
 	Email string `json:"email"`
 	Role  string `json:"role"`
+	// OrgRole is accepted only as "member" (or absent): a team invitation
+	// names no org rank above it (handleCreateInvitation).
+	OrgRole string `json:"org_role,omitempty"`
 }
 
 type updateMemberReq struct {
@@ -419,17 +422,21 @@ func mapAuthErrorStatus(err error) int {
 		errors.Is(err, identity.ErrInvitationUsed),
 		errors.Is(err, auth.ErrLastOrgOwner):
 		return http.StatusConflict
-	case errors.Is(err, identity.ErrInvitationExpired):
+	case errors.Is(err, identity.ErrInvitationExpired),
+		errors.Is(err, auth.ErrInvitationCredentialGone):
 		return http.StatusGone
 	case errors.Is(err, auth.ErrNotAMember),
 		errors.Is(err, auth.ErrNotAnOrgMember),
 		errors.Is(err, auth.ErrNoTeamInOrg),
 		errors.Is(err, auth.ErrPasswordChangeRequired),
 		errors.Is(err, auth.ErrSSORestricted),
-		errors.Is(err, auth.ErrNotDerivable):
+		errors.Is(err, auth.ErrNotDerivable),
+		errors.Is(err, auth.ErrInvitationNeedsEmail):
 		// 403: a GitHub login whose teams match no allow-listed org (and the
 		// deployment uses GitHub team-gating); a credential that may never
-		// mint what the route mints (a personal access token at a switch).
+		// mint what the route mints (a personal access token at a switch); an
+		// invitation a personal access token asked for on an instance with no
+		// mailer, which could deliver it nowhere.
 		return http.StatusForbidden
 	case errors.Is(err, auth.ErrGrantRefused):
 		return http.StatusUnprocessableEntity

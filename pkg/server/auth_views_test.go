@@ -394,6 +394,13 @@ func newAuthRouteFixture(t *testing.T) *authRouteFixture {
 // access tokens' are only mounted when their store is configured).
 func newAuthRouteFixtureWith(t *testing.T, configure func(*Config)) *authRouteFixture {
 	t.Helper()
+	return newAuthRouteFixtureWithAuth(t, nil, configure)
+}
+
+// newAuthRouteFixtureWithAuth is newAuthRouteFixtureWith with authConfigure
+// applied to the auth service's Config too (a mailer, a public URL).
+func newAuthRouteFixtureWithAuth(t *testing.T, authConfigure func(*auth.Config), configure func(*Config)) *authRouteFixture {
+	t.Helper()
 	ctx := context.Background()
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -410,10 +417,14 @@ func newAuthRouteFixtureWith(t *testing.T, configure func(*Config)) *authRouteFi
 		tickets:  &ticketGate{MemoryStore: desktopsso.NewMemoryStore(time.Minute)},
 		logs:     &syncBuffer{},
 	}
-	svc, err := auth.NewService(auth.Config{
+	authCfg := auth.Config{
 		Store: f.ids, Sessions: f.sessions, Signer: signer,
 		SignupMode: auth.SignupOpen, RefreshTTL: time.Hour, Resets: f.resets,
-	})
+	}
+	if authConfigure != nil {
+		authConfigure(&authCfg)
+	}
+	svc, err := auth.NewService(authCfg)
 	if err != nil {
 		t.Fatalf("auth service: %v", err)
 	}

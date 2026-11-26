@@ -1964,6 +1964,9 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if !inv.AddressedTo(email) {
 		return LoginResult{}, ErrInvitationMismatch
 	}
+	if err := s.mintingCredentialStands(ctx, inv); err != nil {
+		return LoginResult{}, err
+	}
 	hash, err := HashPassword(password)
 	if err != nil {
 		return LoginResult{}, err
@@ -1980,7 +1983,7 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	}
 	// Every read the registration needs runs before the account is written:
 	// a read that fails leaves no account behind and the invitation unspent.
-	grant, err := s.planOrgGrantForTeam(ctx, u.ID, inv.TeamID, inv.Role, now)
+	grant, err := s.planOrgGrantForTeam(ctx, u.ID, inv.TeamID, inv.OrgRoleOnAccept(), now)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -2083,11 +2086,12 @@ func (s *Service) claimInvitation(ctx context.Context, inv identity.Invitation, 
 }
 
 // grantOrgMembershipForTeam ensures the user holds an org membership in
-// the parent org of teamID, with at least the org-role implied by their
-// team role (never downgrades an existing higher org-role). Returns the
-// resolved orgID (empty if the team has no parent org yet).
+// the parent org of teamID, at least the one a team grant at teamRole
+// mirrors (identity.OrgRoleForTeamRole: member, whatever the team rank —
+// never downgrades an existing higher org-role). Returns the resolved orgID
+// (empty if the team has no parent org yet).
 func (s *Service) grantOrgMembershipForTeam(ctx context.Context, userID, teamID string, teamRole identity.Role, now time.Time) (string, error) {
-	grant, err := s.planOrgGrantForTeam(ctx, userID, teamID, teamRole, now)
+	grant, err := s.planOrgGrantForTeam(ctx, userID, teamID, identity.OrgRoleForTeamRole(teamRole), now)
 	if err != nil {
 		return "", err
 	}
@@ -2106,12 +2110,14 @@ type orgGrant struct {
 	write *identity.OrgMembership
 }
 
-// planOrgGrantForTeam reads what mirroring a team grant in teamID up to its
-// parent org takes. An existing org role at least the one the team role
-// implies is kept, never downgraded — so a read of it that FAILS is returned,
-// never taken for "no membership": writing over a role the read could not
-// see would demote it.
-func (s *Service) planOrgGrantForTeam(ctx context.Context, userID, teamID string, teamRole identity.Role, now time.Time) (orgGrant, error) {
+// planOrgGrantForTeam reads what writing the org membership want in the
+// parent org of teamID takes, for a team grant there: want is the org role
+// the grant carries up — identity.OrgRoleForTeamRole for an SSO grant, the
+// invitation's own (identity.Invitation.OrgRoleOnAccept) for an accept. An
+// existing org role at least want is kept, never downgraded — so a read of
+// it that FAILS is returned, never taken for "no membership": writing over a
+// role the read could not see would demote it.
+func (s *Service) planOrgGrantForTeam(ctx context.Context, userID, teamID string, want identity.OrgRole, now time.Time) (orgGrant, error) {
 	t, err := s.store.GetTeam(ctx, teamID)
 	if err != nil {
 		return orgGrant{}, err
@@ -2119,7 +2125,6 @@ func (s *Service) planOrgGrantForTeam(ctx context.Context, userID, teamID string
 	if t.OrgID == "" {
 		return orgGrant{}, nil
 	}
-	want := identity.OrgRoleForTeamRole(teamRole)
 	if want == "" {
 		// A team capability outside the ladder (config_editor) confers no org
 		// membership — never mirror it up (an org-member row would pass
@@ -2185,6 +2190,9 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	if !inv.AddressedTo(u.Email) {
 		return identity.Membership{}, ErrInvitationMismatch
 	}
+	if err := s.mintingCredentialStands(ctx, inv); err != nil {
+		return identity.Membership{}, err
+	}
 	now := s.now().UTC()
 	mb := identity.Membership{
 		UserID:    u.ID,
@@ -2228,7 +2236,7 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	// here leaves the invitation unspent and every row as it was — and once
 	// again after the claim, below, which is where the boundary is decided
 	// from (see this function's own doc for the price of that second read).
-	if _, err := s.planOrgGrantForTeam(ctx, u.ID, inv.TeamID, inv.Role, now); err != nil {
+	if _, err := s.planOrgGrantForTeam(ctx, u.ID, inv.TeamID, inv.OrgRoleOnAccept(), now); err != nil {
 		return identity.Membership{}, err
 	}
 	// The invitation is CLAIMED before either access row: it is this
@@ -2243,7 +2251,7 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	// back with the grant, never a grant left outside its org. A read that
 	// fails here fails the accept with the invitation spent, the price
 	// claimInvitation names.
-	grant, err := s.planOrgGrantForTeam(ctx, u.ID, inv.TeamID, inv.Role, now)
+	grant, err := s.planOrgGrantForTeam(ctx, u.ID, inv.TeamID, inv.OrgRoleOnAccept(), now)
 	if err != nil {
 		return identity.Membership{}, err
 	}
@@ -2605,6 +2613,64 @@ func (s *Service) RestoreOrg(ctx context.Context, orgID string) (identity.Org, e
 	return o, nil
 }
 
+// InvitationRequest is what an invitation is minted from: the team it joins,
+// the address it is for, the team role accepting it grants, and the org role
+// it writes in the team's parent org. OrgRole empty names an org member
+// (identity.InvitationOrgRole); a capability off the ladder (config_editor)
+// names none and refuses one (ADR-078).
+type InvitationRequest struct {
+	TeamID    string
+	Email     string
+	Role      identity.Role
+	OrgRole   identity.OrgRole
+	InvitedBy string
+}
+
+// ErrInvitationNeedsEmail refuses an invitation minted for delivery by email
+// only (CreateEmailedInvitation) on an instance that sends no email: its
+// token would reach nobody.
+var ErrInvitationNeedsEmail = errors.New("auth: this instance sends no email, so an invitation minted from a personal access token has no way to reach its address: invite from the studio (team → Members → Invite), which shows the link to hand over")
+
+// ErrInvitationCredentialGone refuses the accept of an invitation whose
+// minting personal access token no longer stands (Invitation.MintedWith):
+// revoked, expired, its row gone, or its account disabled, erased or pending
+// a password change. What a token sent ends with it.
+var ErrInvitationCredentialGone = errors.New("auth: the personal access token that sent this invitation does not stand (revoked or expired, or its owner's account is not active): ask for a new invitation")
+
+// mintingCredentialStands answers whether the personal access token that
+// minted inv (Invitation.MintedWith) still stands, by the reading every
+// request it presents is held to (standing): nil for an invitation a session
+// minted, ErrInvitationCredentialGone for a token that does not stand — its
+// row revoked, expired or gone (ErrTokenRevoked), its account gone
+// (ErrSessionNotFound), disabled or erased (ErrAccountDisabled, which an
+// erased account answers too) or pending a password change
+// (ErrSessionRevoked) — and the read's own error when its standing could not
+// be read.
+//
+// InvitationCredentialStands exports it for the anonymous lookup, so an
+// invitee hears it before filling the registration form.
+func (s *Service) InvitationCredentialStands(ctx context.Context, inv identity.Invitation) error {
+	return s.mintingCredentialStands(ctx, inv)
+}
+
+func (s *Service) mintingCredentialStands(ctx context.Context, inv identity.Invitation) error {
+	if inv.MintedWith == "" {
+		return nil
+	}
+	// The cause stays out of the answer: whoever holds the invitation link
+	// learns that it does not stand, not the state of its sender's account.
+	_, err := s.standing(ctx, Identity{UserID: inv.InvitedBy, Credential: CredentialPAT, CredentialID: inv.MintedWith})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrTokenRevoked), errors.Is(err, ErrSessionNotFound),
+		errors.Is(err, ErrSessionRevoked), errors.Is(err, ErrAccountDisabled):
+		return ErrInvitationCredentialGone
+	default:
+		return fmt.Errorf("auth: confirm the personal access token that sent invitation %s: %w", inv.ID, err)
+	}
+}
+
 // CreateInvitation issues a fresh invitation. The plaintext token is
 // returned (caller emails it) and only its hash is persisted.
 //
@@ -2612,32 +2678,145 @@ func (s *Service) RestoreOrg(ctx context.Context, orgID string) (identity.Org, e
 // credential it is minted from, so the context must carry the derivation
 // chokepoint's verdict for it — the gate stamped it after its ask granted —
 // and a call whose context carries none is refused, whatever calls this.
-func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, role identity.Role, invitedBy string) (token string, inv identity.Invitation, err error) {
+func (s *Service) CreateInvitation(ctx context.Context, req InvitationRequest) (token string, inv identity.Invitation, err error) {
 	if _, err := RequireMintVerdict(ctx, MintTeamToken, "auth.Service.CreateInvitation"); err != nil {
 		return "", identity.Invitation{}, err
 	}
-	if !role.Valid() {
+	return s.mintInvitation(ctx, req, time.Time{}, "")
+}
+
+// SealedInvitation is an invitation minted for delivery by email only
+// (CreateEmailedInvitation). Its token stays in this package: the caller
+// holds the row — to confirm its caps against once it has landed — and hands
+// it to DeliverInvitation, and nothing outside pkg/auth can read the token
+// or put one in.
+type SealedInvitation struct {
+	Invitation identity.Invitation
+	seal       *invitationSeal
+}
+
+// invitationSeal is what a SealedInvitation keeps from its holder: the token
+// and the address it was minted for. Behind a pointer, a %v or %+v of the
+// sealed value prints an address rather than the token, and the delivery
+// reads the address sealed at the mint — an edit of the exported row's Email
+// redirects nothing.
+type invitationSeal struct {
+	token string
+	to    string
+}
+
+// CreateEmailedInvitation issues an invitation whose token only the invited
+// address's mailbox receives (MintEmailedInvitation): the minter gets the
+// row and never the token, and DeliverInvitation sends it. Accepting it is
+// bound to that address (identity.Invitation.AddressedTo), so the credential
+// that minted it holds nothing it could join with. It lives no longer than
+// that credential: it expires no later (FromContext's ExpiresAt; a personal
+// access token with no expiry leaves the invitation's own TTL), and the row
+// names the token (Invitation.MintedWith) so an accept refuses it once the
+// token no longer stands — revoked, expired, its account disabled
+// (mintingCredentialStands). An instance that sends no email refuses it
+// (ErrInvitationNeedsEmail).
+func (s *Service) CreateEmailedInvitation(ctx context.Context, req InvitationRequest) (SealedInvitation, error) {
+	if _, err := RequireMintVerdict(ctx, MintEmailedInvitation, "auth.Service.CreateEmailedInvitation"); err != nil {
+		return SealedInvitation{}, err
+	}
+	if !s.EmailEnabled() {
+		return SealedInvitation{}, ErrInvitationNeedsEmail
+	}
+	var notAfter time.Time
+	var mintedWith string
+	if id, ok := FromContext(ctx); ok {
+		notAfter = id.ExpiresAt
+		if id.Credential == CredentialPAT {
+			mintedWith = id.CredentialID
+		}
+	}
+	tok, inv, err := s.mintInvitation(ctx, req, notAfter, mintedWith)
+	if err != nil {
+		return SealedInvitation{}, err
+	}
+	return SealedInvitation{Invitation: inv, seal: &invitationSeal{token: tok, to: inv.Email}}, nil
+}
+
+// InvitationMail is what an invitation email names besides the invitation
+// itself: the team's and org's display names, and who invited.
+type InvitationMail struct {
+	TeamName  string
+	OrgName   string
+	InvitedBy string
+}
+
+// InvitationMessage renders the email that carries an invitation's token to
+// its address.
+func (s *Service) InvitationMessage(inv identity.Invitation, token string, d InvitationMail) mail.Message {
+	return mail.RenderInvitation(inv.Email, mail.InviteData{
+		TeamName:  d.TeamName,
+		Role:      string(inv.Role),
+		OrgName:   d.OrgName,
+		OrgRole:   string(inv.OrgRoleOnAccept()),
+		AcceptURL: s.publicURL + "/invitations/accept?token=" + token,
+		InvitedBy: d.InvitedBy,
+	})
+}
+
+// DeliverInvitation sends a sealed invitation's token to its address, and
+// answers whether the mail relay took it: an invitation it could not deliver
+// reaches nobody, so the caller takes the row back.
+func (s *Service) DeliverInvitation(ctx context.Context, sealed SealedInvitation, d InvitationMail) error {
+	if sealed.seal == nil || sealed.seal.token == "" {
+		return fmt.Errorf("auth: invitation %s carries no token to deliver: only CreateEmailedInvitation seals one", sealed.Invitation.ID)
+	}
+	if !s.EmailEnabled() {
+		return ErrInvitationNeedsEmail
+	}
+	inv := sealed.Invitation
+	inv.Email = sealed.seal.to
+	if err := s.mailer.Send(ctx, s.InvitationMessage(inv, sealed.seal.token, d)); err != nil {
+		return fmt.Errorf("auth: send invitation %s to %s: %w", inv.ID, inv.Email, err)
+	}
+	return nil
+}
+
+// mintInvitation writes the invitation req names and answers its plaintext
+// token. Its callers are the two primitives above, each of which demanded
+// its own verdict first. notAfter, when set, is the latest the invitation
+// may expire at.
+func (s *Service) mintInvitation(ctx context.Context, req InvitationRequest, notAfter time.Time, mintedWith string) (token string, inv identity.Invitation, err error) {
+	if !req.Role.Valid() {
 		return "", identity.Invitation{}, identity.ErrInvalidRole
 	}
-	if _, err := s.store.GetTeam(ctx, teamID); errors.Is(err, identity.ErrNotFound) {
+	if req.OrgRole != "" && !req.OrgRole.Valid() {
+		return "", identity.Invitation{}, fmt.Errorf("%w: org role %q", identity.ErrInvalidRole, req.OrgRole)
+	}
+	orgRole := identity.InvitationOrgRole(req.Role, req.OrgRole)
+	if req.OrgRole != "" && orgRole == "" {
+		return "", identity.Invitation{}, fmt.Errorf("%w: a %s invitation carries no org role (ADR-078), so it cannot name org %s", identity.ErrInvalidRole, req.Role, req.OrgRole)
+	}
+	if _, err := s.store.GetTeam(ctx, req.TeamID); errors.Is(err, identity.ErrNotFound) {
 		return "", identity.Invitation{}, ErrTeamNotFound
 	} else if err != nil {
-		return "", identity.Invitation{}, fmt.Errorf("auth: read team %s: %w", teamID, err)
+		return "", identity.Invitation{}, fmt.Errorf("auth: read team %s: %w", req.TeamID, err)
 	}
 	tok, _, err := GenerateRandomToken(32)
 	if err != nil {
 		return "", identity.Invitation{}, err
 	}
 	now := s.now().UTC()
+	expires := now.Add(InvitationTTL)
+	if !notAfter.IsZero() && notAfter.Before(expires) {
+		expires = notAfter.UTC()
+	}
 	inv = identity.Invitation{
-		ID:        uuid.NewString(),
-		TeamID:    teamID,
-		Email:     identity.NormalizeEmail(email),
-		Role:      role,
-		TokenHash: hashInvitationToken(tok),
-		InvitedBy: invitedBy,
-		CreatedAt: now,
-		ExpiresAt: now.Add(InvitationTTL),
+		ID:         uuid.NewString(),
+		TeamID:     req.TeamID,
+		Email:      identity.NormalizeEmail(req.Email),
+		Role:       req.Role,
+		OrgRole:    orgRole,
+		MintedWith: mintedWith,
+		TokenHash:  hashInvitationToken(tok),
+		InvitedBy:  req.InvitedBy,
+		CreatedAt:  now,
+		ExpiresAt:  expires,
 	}
 	// An invitation addressed to an account under erasure would outlive the
 	// erasure's sweep by address: refused before the write, and taken back

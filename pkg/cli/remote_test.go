@@ -762,3 +762,46 @@ func TestRemoteRunsResumeSendsOnlyRestatedCodemodeStoreQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestRemoteTeamsSwitch_ListsTheInvitationsTheRevokedTokenEnded: the switch
+// revokes the token it replaces, which ends the invitations that token
+// emailed (ADR-174) — the operator is told who to invite again.
+func TestRemoteTeamsSwitch_ListsTheInvitationsTheRevokedTokenEnded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ITERION_REMOTE_URL", "")
+
+	oldToken := remoteSessionToken
+	oldFP := secrets.FingerprintSHA256(oldToken)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"team-b","team_name":"Team B","team_slug":"team-b"}]}]}`)
+	})
+	mux.HandleFunc("POST /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"pat":{"id":"p-new"},"token":"iap_new","org_id":"o1"}`)
+	})
+	mux.HandleFunc("GET /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":%q}]}`, oldFP)
+	})
+	mux.HandleFunc("DELETE /api/me/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"invitations_revoked":[{"id":"i1","email":"lucas@example.org","team_id":"team-a","role":"admin"}],"invitations_error":"revoking invitation i2 failed"}`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	if err := cli.SaveRemoteConfig(cli.RemoteConfig{BaseURL: ts.URL, Token: oldToken}); err != nil {
+		t.Fatal(err)
+	}
+	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: oldToken})
+	p, buf := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-b", "cli", nil); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"1 pending invitation(s)", "lucas@example.org (team team-a, role admin)", "Warning: revoking invitation i2 failed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the switch output does not name %q:\n%s", want, out)
+		}
+	}
+}

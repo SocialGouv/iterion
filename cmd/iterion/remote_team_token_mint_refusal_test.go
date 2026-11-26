@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,7 +25,10 @@ import (
 //
 // The repo-bot provisioning is NOT in this list and must not be: whether it
 // mints depends on state only the instance holds, so it sends and the
-// instance answers (the test below).
+// instance answers (the test below). Neither are the team and org
+// invitations: from a personal access token the instance emails them
+// (auth.MintEmailedInvitation), so they send
+// (TestRemoteInvitationsCreate_SendsFromAStoredToken).
 func TestRemoteTeamTokenMints_EveryAlwaysMintingCommandRefusesAStoredTokenBeforeSendingAnything(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("a command whose route always mints a team token sent %s %s with a personal access token stored: the refusal must come first", r.Method, r.URL.Path)
@@ -50,8 +55,6 @@ func TestRemoteTeamTokenMints_EveryAlwaysMintingCommandRefusesAStoredTokenBefore
 	}{
 		{"webhooks create", remoteWebhooksCreateCmd, nil},
 		{"webhooks rotate", remoteWebhooksRotateCmd, []string{"w1"}},
-		{"teams invitations create", remoteTeamsInvitationsCmd, []string{"create", "invitee@example.test"}},
-		{"orgs invitations create", remoteOrgsInvitationsCmd, []string{"create", "invitee@example.test"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cmd.SetContext(ctx)
@@ -253,5 +256,73 @@ func TestRemoteForgeRepoBots_AVerbWithoutItsIdAnswersTheUsage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "usage:") {
 		t.Errorf("the refusal reads %q — it must state the usage", err)
+	}
+}
+
+// TestRemoteInvitationsCreate_SendsFromAStoredToken: `teams|orgs invitations
+// create` send with a personal access token stored — the instance emails
+// the invitation — and the body carries the team role, and the org role only
+// where the org command names one.
+func TestRemoteInvitationsCreate_SendsFromAStoredToken(t *testing.T) {
+	var posted []map[string]string
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/auth/me") {
+			_, _ = w.Write([]byte(`{"user":{"id":"u1","email":"a@example.test"},"active_team_id":"11111111-2222-3333-4444-555555555555","active_org_id":"o1"}`))
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/invitations") {
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]string
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Errorf("decode the invitation body %q: %v", raw, err)
+			}
+			posted = append(posted, body)
+			paths = append(paths, r.URL.Path)
+			_, _ = w.Write([]byte(`{"id":"i1","delivery":"email","email":"invitee@example.test","role":"admin","org_role":"member","team_id":"t1"}`))
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		http.Error(w, `{"error":"unexpected"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ITERION_REMOTE_URL", srv.URL)
+	t.Setenv("ITERION_REMOTE_TOKEN", "iap_stored_token")
+	t.Setenv("ITERION_REMOTE_TEAM", "11111111-2222-3333-4444-555555555555")
+	t.Setenv("ITERION_REMOTE_ORG", "o1")
+	ctx := context.Background()
+
+	remoteInviteRole = "admin"
+	t.Cleanup(func() { remoteInviteRole, remoteInviteOrgRole = "", "" })
+	remoteTeamsInvitationsCmd.SetContext(ctx)
+	if err := remoteTeamsInvitationsCmd.RunE(remoteTeamsInvitationsCmd, []string{"create", "invitee@example.test"}); err != nil {
+		t.Fatalf("teams invitations create: %v", err)
+	}
+	remoteInviteRole, remoteInviteOrgRole, remoteInviteTeam = "member", "admin", "t9"
+	t.Cleanup(func() { remoteInviteTeam = "" })
+	remoteOrgsInvitationsCmd.SetContext(ctx)
+	if err := remoteOrgsInvitationsCmd.RunE(remoteOrgsInvitationsCmd, []string{"create", "invitee@example.test"}); err != nil {
+		t.Fatalf("orgs invitations create: %v", err)
+	}
+	if len(posted) != 2 {
+		t.Fatalf("posted %d invitations, want 2: %v", len(posted), paths)
+	}
+	if want := "/api/teams/11111111-2222-3333-4444-555555555555/invitations"; paths[0] != want {
+		t.Errorf("the team command posted to %s, want %s", paths[0], want)
+	}
+	if posted[0]["role"] != "admin" || posted[0]["org_role"] != "" {
+		t.Errorf("the team command sent %v, want role admin and no org_role", posted[0])
+	}
+	if want := "/api/orgs/o1/invitations"; paths[1] != want {
+		t.Errorf("the org command posted to %s, want %s", paths[1], want)
+	}
+	if posted[1]["role"] != "member" || posted[1]["org_role"] != "admin" || posted[1]["team_id"] != "t9" {
+		t.Errorf("the org command sent %v, want role member, org_role admin and team_id t9", posted[1])
+	}
+	if _, has := posted[0]["team_id"]; has {
+		t.Errorf("the team command sent a team_id in its body: %v", posted[0])
 	}
 }

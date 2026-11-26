@@ -111,7 +111,7 @@ func MigrateTeamsToOrgs(ctx context.Context, st identity.Store, logger *iterlog.
 			om := identity.OrgMembership{
 				UserID:   m.UserID,
 				OrgID:    org.ID,
-				Role:     identity.OrgRoleForTeamRole(m.Role),
+				Role:     backfillOrgRole(m.Role),
 				Source:   m.Source,
 				JoinedAt: m.JoinedAt,
 			}
@@ -252,4 +252,20 @@ func migratedOrgsByTeam(ctx context.Context, st identity.Store) (map[string]iden
 		}
 	}
 	return out, nil
+}
+
+// backfillOrgRole is the org role the teams→orgs backfill gives a team member
+// of the org it creates from that one team: the team's admins and owners ran
+// everything the new org now holds (its quotas, members and sign-in), so they
+// become its admins, everyone else on the ladder a member. It is this
+// migration's own mapping, not the mirror a team grant makes in an org that
+// already exists (identity.OrgRoleForTeamRole), which never goes above member.
+func backfillOrgRole(r identity.Role) identity.OrgRole {
+	switch {
+	case r.AtLeast(identity.RoleAdmin):
+		return identity.OrgRoleAdmin
+	case r.AtLeast(identity.RoleViewer):
+		return identity.OrgRoleMember
+	}
+	return ""
 }
