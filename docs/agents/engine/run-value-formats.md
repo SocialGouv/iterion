@@ -108,8 +108,9 @@ inter-format comparison after deletion.
 The run listings (`/api/runs`, `/api/admin/runs`) ask Mongo one indexed
 question per page (`store.RunWindowListingStore`, #3822): status, workflow,
 `updated_at >= since`, a tenant set and the `(created_at, _id)` keyset,
-newest first through `created_id_desc`. Those predicates read the persisted
-document, which is safe because both formats store every listing key as plain BSON outside the exact codec's paths — same
+newest first through `created_id_desc` (`tenant_created_id_desc` for a team),
+in finds of at most 100 documents so the planner's trial cannot crown a scan
+that then walks the collection. Those predicates read the persisted document, which is safe because both formats store every listing key as plain BSON outside the exact codec's paths — same
 type, same bytes (`TestRunListingKeysEncodeIdenticallyInBothValueFormats`).
 Each matched document then crosses the decode `LoadRun` uses; one that does
 not decode is reported per id and never fails the page. Repo, bundle and node

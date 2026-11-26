@@ -78,16 +78,27 @@ func TestTeamAliveRunsMongoProjectionAndIndex(t *testing.T) {
 	if len(projection) != 3 || projection["tenant_id"] != int32(1) || projection["_id"] != int32(1) || projection["status"] != int32(1) {
 		t.Fatalf("query loads payload: %v", projection)
 	}
-	// Explain the actual emitted filter and projection, with no hint: an
-	// existing tenant/status index must support the team's bounded question.
+	// Explain the actual emitted filter and projection, with no hint. The
+	// query's one indexable predicate is tenant_id (status sits in $expr), so
+	// any tenant-prefixed index serves it equally and the planner may pick
+	// any of them: the guarantee is that it reads through one, never the
+	// collection.
 	find := bson.D{{Key: "find", Value: colRuns}, {Key: "filter", Value: command.Lookup("filter").Document()}, {Key: "projection", Value: command.Lookup("projection").Document()}}
 	explained, err := s.db.RunCommand(ctx, bson.D{{Key: "explain", Value: find}, {Key: "verbosity", Value: "executionStats"}}).Raw()
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := explained.Lookup("queryPlanner", "winningPlan").String()
-	if strings.Contains(plan, "COLLSCAN") || !strings.Contains(plan, "tenant_status_created") {
+	winning := explained.Lookup("queryPlanner", "winningPlan")
+	plan := winning.String()
+	scans := ixscanKeyPatterns(winning)
+	if strings.Contains(plan, "COLLSCAN") || len(scans) == 0 {
 		t.Fatalf("unbounded team query: %s", plan)
+	}
+	for _, keys := range scans {
+		elems, err := keys.Elements()
+		if err != nil || len(elems) == 0 || elems[0].Key() != "tenant_id" {
+			t.Fatalf("team query scans an index not led by tenant_id (%s): %s", keys, plan)
+		}
 	}
 	if examined := explained.Lookup("executionStats", "totalDocsExamined").AsInt64(); examined > 2 {
 		t.Fatalf("team query examined %d docs", examined)
@@ -120,4 +131,29 @@ func TestTeamAliveRunsMongoUnknownMetadataRefuses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ixscanKeyPatterns returns the keyPattern of every IXSCAN stage in an explain
+// plan, wherever the server nests it (inputStage, inputStages, queryPlan).
+func ixscanKeyPatterns(v bson.RawValue) []bson.Raw {
+	var out []bson.Raw
+	switch v.Type {
+	case bson.TypeEmbeddedDocument:
+		doc := v.Document()
+		if stage, ok := doc.Lookup("stage").StringValueOK(); ok && stage == "IXSCAN" {
+			if keys, ok := doc.Lookup("keyPattern").DocumentOK(); ok {
+				out = append(out, keys)
+			}
+		}
+		elems, _ := doc.Elements()
+		for _, el := range elems {
+			out = append(out, ixscanKeyPatterns(el.Value())...)
+		}
+	case bson.TypeArray:
+		vals, _ := v.Array().Values()
+		for _, el := range vals {
+			out = append(out, ixscanKeyPatterns(el)...)
+		}
+	}
+	return out
 }

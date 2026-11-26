@@ -43,6 +43,11 @@ func AsRunListingStore(s RunStore) RunListingStore {
 // exact codec's paths; record_format_listing_test.go pins that). A predicate
 // only Go can evaluate stays with the caller, who then must not push Limit
 // down: the store would stop at Limit rows the caller then thins.
+//
+// The window orders and bounds runs by their created_at date: a document with
+// no date in created_at is outside it. Every writer stamps one (Run.CreatedAt
+// is never omitted), and the id-by-id scan could not page past such a run
+// either.
 type RunWindow struct {
 	// Status is an exact match on the run status.
 	Status RunStatus

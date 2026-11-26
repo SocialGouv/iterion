@@ -18,6 +18,15 @@ var _ store.RunWindowListingStore = (*Store)(nil)
 // created_id_desc index (EnsureSchema) hands it back without a sort stage.
 var runWindowSort = bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}
 
+// runWindowBatch caps the limit of each Find a bounded window sends. The
+// planner's trial runs every candidate plan until one returns 101 documents
+// or ends: above that, a newest-first scan that finds the first 101 matches
+// among the newest runs wins the trial, then walks the rest of the collection
+// for matches a narrower index (updated_desc for a recent `since`) holds in a
+// few hundred keys. At 100 the scan wins only by filling its own limit, which
+// is the cheap case; each later batch is planned again from its keyset bound.
+const runWindowBatch = 100
+
 // windowBound is a keyset position in runWindowSort. createdAt and id are
 // either Go values (a caller's RunKey) or the raw BSON values of the last
 // document a previous read returned; inclusive drops the id arm and keeps
@@ -34,9 +43,10 @@ type windowBound struct {
 // LoadRunForListing would refuse comes back as a SkippedRun, never as a record
 // and never as a failure of the page.
 //
-// A skipped document still consumed a slot of the read's limit, so when the
-// read came back full but short of w.Limit records the window continues from
-// the last document it saw, until it is filled or the collection is exhausted.
+// Each Find asks for at most runWindowBatch documents, and the window
+// continues from the last document it saw until it holds w.Limit records or
+// the collection is exhausted — the same continuation that covers the slots
+// skipped documents consumed. A window with no limit is one stream.
 func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.Run, []store.SkippedRun, error) {
 	if w.Limit < 0 {
 		return nil, nil, fmt.Errorf("store/mongo: list run window: negative limit %d", w.Limit)
@@ -47,7 +57,7 @@ func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.
 	for {
 		want := 0
 		if w.Limit > 0 {
-			want = w.Limit - len(out)
+			want = min(w.Limit-len(out), runWindowBatch)
 		}
 		filter, opts := runWindowQuery(ctx, w, bound, want)
 		seen, last, err := s.readRunWindow(ctx, filter, opts, &out, &skipped)

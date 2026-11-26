@@ -73,9 +73,11 @@ func explainRunsFind(t *testing.T, s *Store, ctx context.Context, filter, projec
 // listings ask must each be one indexed read: the cross-tenant newest-first
 // page and its cursored next page walk created_id_desc with no sort stage and
 // read about the page, not the collection; the `since` page reads an index,
-// never the collection; a team's page and a team-set page read an index too.
-// ListRuns, which still lists everything, gets its unscoped order from an
-// index instead of an in-memory sort of the whole collection.
+// never the collection; a team's page walks tenant_created_id_desc the same
+// way; a team-set page reads an index. ListRuns, which still lists
+// everything, gets its unscoped order from an index instead of an in-memory
+// sort of the whole collection. The execution bounds over the shapes that
+// trap the planner are in run_window_traps_test.go.
 func TestListRunWindow_PlanServesThePageFromAnIndex(t *testing.T) {
 	s := watchersTestStore(t)
 	ctx := context.Background()
@@ -130,7 +132,7 @@ func TestListRunWindow_PlanServesThePageFromAnIndex(t *testing.T) {
 	assertIndexedPage("admin cursored page", explainRunWindow(t, s, blind,
 		store.RunWindow{Before: store.RunKey{CreatedAt: base.Add(2000 * time.Minute), ID: "run-02000"}}, page), "created_id_desc", true, slack)
 	assertIndexedPage("admin since page", explainRunWindow(t, s, blind, store.RunWindow{Since: since}, 201), "", false, 0)
-	assertIndexedPage("team page", explainRunWindow(t, s, store.WithIdentity(ctx, "team-3", "owner"), store.RunWindow{}, page), "", false, 0)
+	assertIndexedPage("team page", explainRunWindow(t, s, store.WithIdentity(ctx, "team-3", "owner"), store.RunWindow{}, page), "tenant_created_id_desc", true, slack)
 	assertIndexedPage("admin team-set page", explainRunWindow(t, s, blind, store.RunWindow{TenantIDs: []string{"team-1", "team-4"}}, page), "", false, 0)
 
 	// The pages answer what they were asked, in order.

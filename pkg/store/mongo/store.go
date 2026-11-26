@@ -390,8 +390,12 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("updated_desc")},
 		// The run listings' order (ListRunWindow): newest first, the id
 		// breaking ties. created_id_desc serves the cross-tenant window and
-		// its keyset without a sort stage, and hands ListRuns its order.
+		// its keyset without a sort stage, and hands ListRuns its order;
+		// tenant_created_id_desc does the same for a team's window, which
+		// would otherwise walk created_id_desc through every other team's
+		// runs whenever the team's own are dense among the newest.
 		{Keys: bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("created_id_desc")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("tenant_created_id_desc").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_status_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_owner_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		// (tenant_id, project_path, created_at desc) backs the "filter
