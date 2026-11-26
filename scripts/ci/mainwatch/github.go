@@ -51,11 +51,21 @@ type PullRequest struct {
 	HTMLURL        string     `json:"html_url"`
 	MergedAt       *time.Time `json:"merged_at"`
 	MergeCommitSHA string     `json:"merge_commit_sha"`
-	Head           struct {
-		Ref string `json:"ref"`
-	} `json:"head"`
+	Head           Head       `json:"head"`
 	// AutoMerge is nil while auto-merge is not armed.
 	AutoMerge *struct{} `json:"auto_merge"`
+}
+
+// Head is a pull request's head branch.
+type Head struct {
+	Ref string `json:"ref"`
+	// Repo is the branch's repository, nil when it was deleted.
+	Repo *RepoRef `json:"repo"`
+}
+
+// RepoRef names a repository.
+type RepoRef struct {
+	FullName string `json:"full_name"`
 }
 
 // AutoMergeEvent is one step of a pull request's auto-merge on its timeline:
@@ -132,6 +142,9 @@ type GitHub interface {
 	// PullRequestFrom returns the newest pull request, in any state, whose
 	// head is branch of this repository, or ok=false when there is none.
 	PullRequestFrom(ctx context.Context, branch string) (pr PullRequest, ok bool, err error)
+	// OpenPullRequests lists every open pull request, from any head
+	// repository: callers filter.
+	OpenPullRequests(ctx context.Context) ([]PullRequest, error)
 	// AutoMergeHistory lists every arming of a pull request's auto-merge,
 	// every entry into and removal from the merge queue, and every disable,
 	// oldest first.
@@ -434,6 +447,14 @@ func (c *restClient) PullRequestFrom(ctx context.Context, branch string) (PullRe
 		return PullRequest{}, false, nil
 	}
 	return prs[0], true, nil
+}
+
+func (c *restClient) OpenPullRequests(ctx context.Context) ([]PullRequest, error) {
+	return pages(ctx, c, c.repoPath("/pulls?state=open"), 10, func(raw json.RawMessage) ([]PullRequest, error) {
+		var v []PullRequest
+		err := json.Unmarshal(raw, &v)
+		return v, err
+	})
 }
 
 // graphQL posts a read query under the job's token and fails on any error

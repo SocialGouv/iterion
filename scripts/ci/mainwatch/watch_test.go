@@ -354,12 +354,8 @@ func TestTheRevertWaitsFourHours(t *testing.T) {
 
 func TestARevertIsNeverReverted(t *testing.T) {
 	for name, pr := range map[string]PullRequest{
-		"main-watch branch": {Title: "revert: feat: x", Head: struct {
-			Ref string `json:"ref"`
-		}{Ref: "main-watch/revert-3644"}},
-		"revert title": {Title: `Revert "feat: x"`, Head: struct {
-			Ref string `json:"ref"`
-		}{Ref: "someone/undo"}},
+		"main-watch branch": {Title: "revert: feat: x", Head: Head{Ref: "main-watch/revert-3644"}},
+		"revert title":      {Title: `Revert "feat: x"`, Head: Head{Ref: "someone/undo"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
@@ -1196,29 +1192,363 @@ func TestARevertDisarmedBeforeItsRecordIsHandedToAPerson(t *testing.T) {
 	}
 }
 
-// A revert branch whose pull request is closed or merged, or that has none,
-// still refuses the revert: the earlier attempt is a person's to judge.
+// A revert branch whose pull request a person closed, or that has none,
+// refuses the revert: the earlier attempt is a person's to judge. A closed
+// revert refuses even with its branch deleted: it is never opened again.
 func TestARevertBranchWithoutAnOpenPullRequestRefuses(t *testing.T) {
-	for name, state := range map[string]string{"no pull request": "", "closed": "closed"} {
+	for name, tc := range map[string]struct {
+		state  string
+		branch bool
+		reason string
+	}{
+		"no pull request":       {branch: true, reason: "already exists"},
+		"closed":                {state: "closed", branch: true, reason: "was closed unmerged"},
+		"closed, branch delete": {state: "closed", reason: "was closed unmerged"},
+	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			redEpisode(t, f, []int{3644, 3655, 3688})
 			redMain(t, f)
-			f.branches["main-watch/revert-3688"] = true
-			if state != "" {
-				pr := PullRequest{Number: 8001, State: state, HTMLURL: "https://github.com/SocialGouv/iterion/pull/8001"}
+			f.branches["main-watch/revert-3688"] = tc.branch
+			if tc.state != "" {
+				pr := PullRequest{Number: 8001, State: tc.state, HTMLURL: "https://github.com/SocialGouv/iterion/pull/8001"}
 				pr.Head.Ref = "main-watch/revert-3688"
 				f.pulls[8001], f.byHead[pr.Head.Ref] = pr, 8001
 			}
-			w, _ := newWatcher(t, f, &recordingGit{})
+			git := &recordingGit{}
+			w, _ := newWatcher(t, f, git)
 			w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
 			if err := w.Sweep(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if c := f.write("comment #7000"); !strings.Contains(c, "revert-refused") || !strings.Contains(c, "already exists") {
-				t.Errorf("the ticket does not refuse:\n%s", c)
+			if len(git.reverts) != 0 {
+				t.Fatalf("reverts = %v, want none", git.reverts)
+			}
+			if c := f.write("comment #7000"); !strings.Contains(c, "revert-refused") || !strings.Contains(c, tc.reason) {
+				t.Errorf("the ticket does not refuse with %q:\n%s", tc.reason, c)
 			}
 		})
+	}
+}
+
+// revertRecordFailed runs a revert step whose ticket record fails after the
+// revert #8001 was opened and armed.
+func revertRecordFailed(t *testing.T) (*fixtureGitHub, *Watcher, *recordingGit) {
+	t.Helper()
+	f := newFixture(t)
+	redEpisode(t, f, []int{3644, 3655, 3688})
+	redMain(t, f)
+	f.failOnce["comment #7000"] = errors.New("POST /repos/SocialGouv/iterion/issues/7000/comments: HTTP 502")
+	git := &recordingGit{}
+	w, _ := newWatcher(t, f, git)
+	w.Now = func() time.Time { return time.Date(2026, 11, 25, 12, 39, 0, 0, time.UTC) }
+	if err := w.Sweep(context.Background()); err == nil {
+		t.Fatal("the sweep hides the failed record")
+	}
+	f.writes = nil
+	return f, w, git
+}
+
+// GitHub clears a pull request's auto_merge once the merge queue takes it: a
+// revert the queue holds when the next sweep records it is recorded armed,
+// and its suspect is told.
+func TestARevertTheMergeQueueHoldsIsRecordedArmed(t *testing.T) {
+	f, w, git := revertRecordFailed(t)
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AddedToQueue, Actor: selfLogin})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment", "comment"}) {
+		t.Fatalf("writes = %v, want the ticket and the suspect told", got)
+	}
+	c := f.write("comment #7000")
+	if strings.Contains(c, "not armed") || !strings.Contains(c, revertOpenedMarker(8001)) {
+		t.Errorf("the ticket records the queued revert as not armed:\n%s", c)
+	}
+	if s := f.write("comment #3688"); !strings.Contains(s, "in the merge queue") {
+		t.Errorf("the suspect is not told its revert is in the merge queue:\n%s", s)
+	}
+	if len(git.reverts) != 1 {
+		t.Fatalf("reverts = %v, want the first one only", git.reverts)
+	}
+}
+
+// A revert that merged before the next sweep recorded it is the revert step
+// done, its branch kept or deleted on merge: recorded and told, never
+// refused, never opened again.
+func TestARevertMergedBeforeItsRecordIsRecordedDone(t *testing.T) {
+	for name, deleted := range map[string]bool{"branch kept": false, "branch deleted": true} {
+		t.Run(name, func(t *testing.T) {
+			f, w, git := revertRecordFailed(t)
+			pr := f.pulls[8001]
+			merged := time.Date(2026, 11, 25, 13, 0, 0, 0, time.UTC)
+			pr.State, pr.MergedAt, pr.AutoMerge = "closed", &merged, nil
+			f.pulls[8001] = pr
+			if deleted {
+				delete(f.branches, "main-watch/revert-3688")
+			}
+			if err := w.Sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(git.reverts) != 1 {
+				t.Fatalf("reverts = %v, want the first one only", git.reverts)
+			}
+			if got := f.kinds(); !slices.Equal(got, []string{"comment", "comment"}) {
+				t.Fatalf("writes = %v, want the ticket and the suspect told", got)
+			}
+			c := f.write("comment #7000")
+			if strings.Contains(c, "revert-refused") || !strings.Contains(c, revertOpenedMarker(8001)) || !strings.Contains(c, "is merged") {
+				t.Errorf("the ticket does not record the merged revert:\n%s", c)
+			}
+			if s := f.write("comment #3688"); !strings.Contains(s, "is merged") {
+				t.Errorf("the suspect is not told its revert merged:\n%s", s)
+			}
+		})
+	}
+}
+
+// The merge queue drops a pull request on its own (failed checks, a
+// conflict): a revert it dropped after the ticket recorded it is told on the
+// ticket by the next sweep, once, and never re-armed.
+func TestARevertTheMergeQueueDroppedIsToldOnce(t *testing.T) {
+	f, w := openedRevert(t)
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AddedToQueue, Actor: selfLogin}, AutoMergeEvent{Kind: RemovedFromQueue, Reason: "failed checks"})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment"}) {
+		t.Fatalf("writes = %v, want the ticket told only", got)
+	}
+	if c := f.write("comment #7000"); !strings.Contains(c, "removed from the merge queue by GitHub or a person the timeline does not name (failed checks)") || !strings.Contains(c, unarmedMarker(8001, 3)) {
+		t.Errorf("the ticket is not told the queue dropped the revert:\n%s", c)
+	}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil || len(f.writes) != 0 {
+		t.Fatalf("a second sweep: err %v, writes %v", err, f.kinds())
+	}
+}
+
+// flakeQuarantined runs the flake pass of redRaceRun: quarantine pull request
+// #8001, armed, rows under tickets #7001 and #7002. Main's runs list nothing,
+// so a sweep judges no run and watches the quarantine pull requests only.
+func flakeQuarantined(t *testing.T) (*fixtureGitHub, *Watcher, *bytes.Buffer) {
+	t.Helper()
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	w, out := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	f.write("pr main-watch/quarantine-run-45604352729")
+	f.mainRuns = []Run{}
+	f.writes = nil
+	return f, w, out
+}
+
+// A quarantine pull request the merge queue dropped after the flake pass is
+// told on each of its tickets by the next sweep, once, and never re-armed.
+func TestTheSweepTellsTheTicketsOfAQuarantineTheMergeQueueDropped(t *testing.T) {
+	f, w, _ := flakeQuarantined(t)
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AddedToQueue, Actor: selfLogin}, AutoMergeEvent{Kind: RemovedFromQueue, Reason: "merge conflict"})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment", "comment"}) {
+		t.Fatalf("writes = %v, want both tickets told, nothing re-armed", got)
+	}
+	for _, n := range []int{7001, 7002} {
+		c := f.write(fmt.Sprintf("comment #%d", n))
+		if !strings.Contains(c, "https://github.com/SocialGouv/iterion/pull/8001") || !strings.Contains(c, "removed from the merge queue by GitHub or a person the timeline does not name (merge conflict)") || !strings.Contains(c, unarmedMarker(8001, 3)) {
+			t.Errorf("#%d is not told the queue dropped its quarantine:\n%s", n, c)
+		}
+	}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil || len(f.writes) != 0 {
+		t.Fatalf("a second sweep: err %v, writes %v", err, f.kinds())
+	}
+	// Armed again by a person and dropped again: a new loss, told again.
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AutoMergeEnabled, Actor: "devthejo"}, AutoMergeEvent{Kind: AddedToQueue, Actor: "devthejo"}, AutoMergeEvent{Kind: RemovedFromQueue, Reason: "failed checks"})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment", "comment"}) {
+		t.Fatalf("writes = %v after a second drop, want both tickets told again", got)
+	}
+}
+
+// A row main dropped after the quarantine branch was cut (its ticket fixed
+// and closed) is on the branch but not in the pull request's change: the
+// sweep tells the open tickets of the rows the pull request adds, never the
+// closed ticket of the stale row.
+func TestTheSweepDoesNotTellTheClosedTicketOfARowMainDropped(t *testing.T) {
+	f, w, _ := flakeQuarantined(t)
+	row := "github.com/SocialGouv/iterion/pkg/runtime/recovery\tTestOwnedExtractionAllowanceAndControl/parent-cancel\t#3588\n"
+	branch := "main-watch/quarantine-run-45604352729"
+	if !strings.Contains(f.list, row) || !strings.Contains(f.onBranch[branch], row) {
+		t.Fatalf("the fixture lacks the #3588 row on main or on the branch")
+	}
+	f.list = strings.Replace(f.list, row, "", 1)
+	f.comments[3588] = []Comment{} // closed: GitHub still answers its comments
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AddedToQueue, Actor: selfLogin}, AutoMergeEvent{Kind: RemovedFromQueue, Reason: "merge conflict"})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, wr := range f.writes {
+		if strings.HasPrefix(wr, "comment #3588") {
+			t.Errorf("the closed ticket of a row main dropped is told the quarantine lost its arming:\n%s", wr)
+		}
+	}
+	for _, n := range []int{7001, 7002} {
+		if c := f.write(fmt.Sprintf("comment #%d", n)); !strings.Contains(c, unarmedMarker(8001, 3)) {
+			t.Errorf("#%d is not told the queue dropped its quarantine:\n%s", n, c)
+		}
+	}
+}
+
+// A quarantine pull request that lost its arming while it adds no row under
+// an open ticket is told on itself, once per loss, and on no closed ticket.
+func TestTheSweepTellsAQuarantineThatLostItsArmingUnderNoOpenTicketOnItself(t *testing.T) {
+	f, w, out := flakeQuarantined(t)
+	f.issues = slices.DeleteFunc(f.issues, func(is Issue) bool { return is.Number == 7001 || is.Number == 7002 })
+	f.comments[8001] = []Comment{}
+	pr := f.pulls[8001]
+	pr.AutoMerge = nil
+	f.pulls[8001] = pr
+	f.history[8001] = append(f.history[8001], AutoMergeEvent{Kind: AddedToQueue, Actor: selfLogin}, AutoMergeEvent{Kind: RemovedFromQueue, Reason: "merge conflict"})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"comment"}) {
+		t.Fatalf("writes = %v, want one comment, on the pull request itself", got)
+	}
+	c := f.write("comment #8001\n")
+	if !strings.Contains(c, unarmedMarker(8001, len(f.history[8001]))) || !strings.Contains(c, "adds no row under an open ticket") || !strings.Contains(c, "close it") {
+		t.Errorf("the pull request is not told it lost its arming under no open ticket:\n%s", c)
+	}
+	if !strings.Contains(out.String(), "it adds no row under an open ticket: told the pull request") {
+		t.Errorf("the sweep does not say it told the pull request:\n%s", out.String())
+	}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("a second sweep writes %v, want none: the loss is told", f.kinds())
+	}
+}
+
+// A loss of arming the flake pass already wrote on the tickets is not told
+// again by the sweep.
+func TestTheSweepDoesNotRepeatALossTheFlakePassTold(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	branch := "main-watch/quarantine-run-45604352729"
+	pr := PullRequest{Number: 8001, NodeID: "PR_node", Title: "test(quarantine)", State: "open", HTMLURL: "https://github.com/SocialGouv/iterion/pull/8001", Head: Head{Ref: branch, Repo: &RepoRef{FullName: "SocialGouv/iterion"}}}
+	f.pulls[8001], f.byHead[branch] = pr, 8001
+	f.history[8001] = []AutoMergeEvent{{Kind: AutoMergeEnabled, Actor: selfLogin}, {Kind: AddedToQueue, Actor: selfLogin}, {Kind: RemovedFromQueue, Reason: "failed checks"}}
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.write("comment #7001"); !strings.Contains(c, unarmedMarker(8001, 3)) {
+		t.Fatalf("the flake pass does not mark the loss it tells:\n%s", c)
+	}
+	f.mainRuns = []Run{}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil || len(f.writes) != 0 {
+		t.Fatalf("the sweep: err %v, writes %v", err, f.kinds())
+	}
+}
+
+// A quarantine pull request whose arming failed and that no later flake pass
+// reaches (its run is no longer main's newest) is armed by the sweep: it was
+// never armed, so no one's decision is overruled.
+func TestTheSweepArmsAQuarantineNeverArmed(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	f.failOnce["auto-merge"] = errors.New("enable auto-merge on #8001: HTTP 502")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err == nil {
+		t.Fatal("the flake pass hides the failed arming")
+	}
+	f.mainRuns = []Run{}
+	f.writes = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.kinds(); !slices.Equal(got, []string{"auto-merge"}) {
+		t.Fatalf("writes = %v, want the quarantine armed only", got)
+	}
+}
+
+// A never-armed quarantine pull request whose arming keeps failing fails
+// every sweep, naming the pull request, and writes nothing: the red job is
+// the signal, as a lasting failure is not told on tickets.
+func TestTheSweepFailsWhileItCannotArmAQuarantineNeverArmed(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	f.failAll["auto-merge"] = errors.New("enable auto-merge on #8001: Pull request is in draft state")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	if err := w.HandleRun(context.Background(), redRaceRun); err == nil {
+		t.Fatal("the flake pass hides the failed arming")
+	}
+	f.mainRuns = []Run{}
+	for i := 0; i < 2; i++ {
+		f.writes = nil
+		err := w.Sweep(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "arm the quarantine https://github.com/SocialGouv/iterion/pull/8001") {
+			t.Fatalf("sweep %d: err = %v, want the failed arming of #8001", i, err)
+		}
+		if len(f.writes) != 0 {
+			t.Fatalf("sweep %d: writes = %v, want none", i, f.kinds())
+		}
+	}
+}
+
+// A pull request from another repository whose branch carries main-watch's
+// quarantine prefix is not main-watch's: the sweep neither arms nor tells it.
+func TestTheSweepIgnoresAForeignQuarantineBranch(t *testing.T) {
+	f := newFixture(t)
+	f.mainRuns = []Run{}
+	pr := PullRequest{Number: 8009, State: "open", HTMLURL: "https://github.com/SocialGouv/iterion/pull/8009", Head: Head{Ref: "main-watch/quarantine-run-1", Repo: &RepoRef{FullName: "someone/iterion"}}}
+	f.pulls[8009] = pr
+	w, _ := newWatcher(t, f, &recordingGit{})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("writes = %v for a fork's pull request", f.kinds())
+	}
+}
+
+// A pull request whose head repository GitHub reports as null (a deleted
+// fork) is not main-watch's either: the sweep skips it without failing.
+func TestTheSweepIgnoresAQuarantineBranchOfADeletedFork(t *testing.T) {
+	f := newFixture(t)
+	f.mainRuns = []Run{}
+	f.pulls[8010] = PullRequest{Number: 8010, State: "open", HTMLURL: "https://github.com/SocialGouv/iterion/pull/8010", Head: Head{Ref: quarantinePrefix + "run-2", Repo: nil}}
+	w, _ := newWatcher(t, f, &recordingGit{})
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("writes = %v for a deleted fork's pull request", f.kinds())
 	}
 }
 
@@ -1316,7 +1646,7 @@ func TestTheDryRunReplacesEveryWrite(t *testing.T) {
 	reads := map[string]bool{
 		"Run": true, "Attempt": true, "Jobs": true, "JobLog": true, "MainRuns": true, "Compare": true,
 		"PullRequest": true, "OpenIssues": true, "Comments": true, "MainSHA": true, "File": true,
-		"BranchExists": true, "PullRequestFrom": true, "AutoMergeHistory": true, "SubIssues": true,
+		"BranchExists": true, "PullRequestFrom": true, "OpenPullRequests": true, "AutoMergeHistory": true, "SubIssues": true,
 	}
 	f := newFixture(t)
 	out := &bytes.Buffer{}
