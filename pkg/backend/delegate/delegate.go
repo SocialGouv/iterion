@@ -660,6 +660,13 @@ type Task struct {
 	// carry. Launcher-side only; it is not part of the sandbox IPC task.
 	HomeScope string
 
+	// TodoScope names the delegation whose todo_write checklist this is (run
+	// or fan-out branch, node, loop round). The launcher computes it and it
+	// crosses the sandbox IPC, so the in-container claw keys the list by it
+	// too — keyed by the workspace alone, the parallel branches of a fan-out
+	// shared one checklist and worked each other's items (#3746).
+	TodoScope string
+
 	// ExtraEnv is a list of KEY=value process-environment additions for
 	// every subprocess this task spawns on the HOST — delegate CLI
 	// spawns (claude_code, kimi/grok) and the claw bash builtin. The

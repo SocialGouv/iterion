@@ -293,6 +293,12 @@ const DefaultClawToolMaxSteps = 5
 // no in-container form, Ask-capable permission policies, async interaction,
 // and an MCP server this launcher may not start for a sandboxed run).
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
+	// The todo_write scope is decided HERE, before the placement branch: the
+	// sandboxed runner has neither the run id nor the home scope, so it
+	// keys the in-container list by the scope this launcher sends across
+	// the IPC (delegate.IOTask.TodoScope) — a runner left to compute its
+	// own would fall back to the workspace and share it across branches.
+	task = withClawTodoScope(ctx, task)
 	defer func() {
 		// The one exit both placements return through (in process, and the
 		// sandboxed runner's relayed provider error).
@@ -523,7 +529,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// ends with the node (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
 	// A runner whose launcher ends the session draws none: everything here
 	// already carries the launcher's, whose end stops and reports it.
-	ctx = tool.WithTodoScope(ctx, clawTodoScope(ctx, task))
+	ctx = tool.WithTodoScope(ctx, task.TodoScope)
 	if !launcherEndsNodeSession(ctx) {
 		token, since := proc.NewNodeSessionToken(), delegate.NodeSessionSince()
 		ctx = proc.WithNodeSessionEnv(ctx, token)
@@ -2020,6 +2026,16 @@ func clawRunnerHome(ctx context.Context, task delegate.Task) string {
 	return clawRunnerHomePrefix + hex.EncodeToString(sum[:])
 }
 
+// withClawTodoScope stamps the delegation's todo scope on the task unless it
+// already carries one — the scope a launcher sent across the sandbox IPC is
+// the one the in-container Execute keeps.
+func withClawTodoScope(ctx context.Context, task delegate.Task) delegate.Task {
+	if task.TodoScope == "" {
+		task.TodoScope = clawTodoScope(ctx, task)
+	}
+	return task
+}
+
 // clawTodoScope names the delegation whose todo_write checklist this is: the
 // run or fan-out branch (the runner-home identity), the node and its loop
 // iteration. Keyed by the workspace alone, the parallel branches of one
@@ -2037,7 +2053,11 @@ func clawTodoScope(ctx context.Context, task delegate.Task) string {
 	if identity == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(identity + "\x00" + task.NodeID + "\x00" + strconv.Itoa(LoopIterationFromContext(ctx))))
+	iteration := task.Iteration
+	if iteration == 0 {
+		iteration = LoopIterationFromContext(ctx)
+	}
+	sum := sha256.Sum256([]byte(identity + "\x00" + task.NodeID + "\x00" + strconv.Itoa(iteration)))
 	return hex.EncodeToString(sum[:12])
 }
 
