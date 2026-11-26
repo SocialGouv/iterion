@@ -1521,7 +1521,7 @@ tasks:
       - go run ./cmd/corpus-reading {{.CLI_ARGS}}
 
   ci:train:
-    desc: "Land a lot of ready pull requests on ONE local gate (#3736) — `task ci:train -- plan N…` checks the lot; `run N…` squashes each onto origin/main in a worktree under .iterion/ci-train/<id>/, runs scripts/ci/gate.sh, and on a red lot bisects the red members over the prefixes, ejects the culprit and regates the rest; `land -id <id> [-dry-run]` merges each (admin squash pinned to its head) on an empty queue and checks main's tree is the gated tree after every merge; `clean -id <id>` drops the worktree. Exit 0 green/landed, 1 red, 2 no verdict. Hours long: run it in a unit (systemd-run --user), outside a sandbox that keeps .git/worktrees read-only"
+    desc: "Land a lot of ready pull requests on ONE local gate (#3736) — `task ci:train -- plan N…` checks the lot; `run N…` squashes each onto origin/main in a worktree under $XDG_STATE_HOME/iterion/ci-train/<id>/ (outside the checkout), refusing forks without -allow-fork and any pull request that touches the train's judge (.github/, scripts/ci/, Taskfile.yml, devbox.*), runs scripts/ci/gate.sh, and on a red lot bisects the red members over the prefixes, ejects the culprit and regates the rest; `land -id <id> [-dry-run]` merges each (admin squash pinned to its head) on an empty queue and checks main's tree is the gated tree after every merge; `clean -id <id>` drops the worktree. Exit 0 green/landed, 1 red or a landing refused before touching main, 2 no verdict, 3 a landing stopped after main changed (lot.json says what landed). Hours long: run it in a unit (systemd-run --user), outside a sandbox that keeps .git/worktrees read-only"
     cmds:
       - go run -mod=vendor ./scripts/ci/train {{.CLI_ARGS}}
 

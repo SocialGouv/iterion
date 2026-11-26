@@ -71,6 +71,12 @@ type goldenRegen struct {
 
 func (r *goldenRegen) Regenerate(ctx context.Context, dir string) error {
 	r.calls++
+	// A generator broken by the tree it runs on: break-gen.txt alone, or
+	// gen-a.txt and gen-b.txt together (two pull requests fine apart).
+	exists := func(p string) bool { _, err := os.Stat(filepath.Join(dir, p)); return err == nil }
+	if exists("break-gen.txt") || (exists("gen-a.txt") && exists("gen-b.txt")) {
+		return fmt.Errorf("go run ./cmd/iterion map gen: exit status 1: cmd/iterion: undefined: Foo")
+	}
 	files, err := (&gitRunner{}).lines(ctx, dir, "ls-files", "--cached", "--", "*.md")
 	if err != nil {
 		return err
@@ -128,13 +134,21 @@ func newFixture(t *testing.T, baseFiles map[string]string) *fixture {
 // pr commits files on a branch off the base, re-pins the golden as a real
 // pull request does, pushes it and returns the PR.
 func (f *fixture) pr(n int, files map[string]string) PR {
+	return f.prRepin(n, files, true)
+}
+
+// prRepin is pr, optionally WITHOUT re-pinning the golden: a pull request
+// red on its own CI run.
+func (f *fixture) prRepin(n int, files map[string]string, repin bool) PR {
 	f.t.Helper()
 	branch := fmt.Sprintf("pr-%d", n)
 	mustGit(f.t, f.seed, "checkout", "--quiet", "-B", branch, f.base)
 	writeFiles(f.t, f.seed, files)
 	mustGit(f.t, f.seed, "add", "-A")
-	if err := f.regen.Regenerate(context.Background(), f.seed); err != nil {
-		f.t.Fatal(err)
+	if repin {
+		if err := f.regen.Regenerate(context.Background(), f.seed); err != nil && !strings.Contains(err.Error(), "undefined: Foo") {
+			f.t.Fatal(err)
+		}
 	}
 	mustGit(f.t, f.seed, "add", "-A")
 	mustGit(f.t, f.seed, "commit", "--quiet", "-m", fmt.Sprintf("change %d\n\nCo-Authored-By: Someone <s@example.com>", n))
@@ -167,6 +181,14 @@ type markerGate struct {
 	fulls      int
 	probes     []string // "dir-commit:member" per probe
 	refuseCode int
+	// refused and incomplete ride along an exit 1, as gate.sh reports them
+	// when a red member takes precedence.
+	refused    []string
+	incomplete bool
+	// dirty makes Full leave the tree rewritten, as vendor-check does, and
+	// Probe refuse a dirty tree, as vendor-check refuses its own dirt.
+	dirty   bool
+	fullErr error
 }
 
 func (g *markerGate) redIn(dir string, members []string) []string {
@@ -192,6 +214,14 @@ func (g *markerGate) Full(ctx context.Context, dir, ev string) (GateResult, erro
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.fulls++
+	if g.fullErr != nil {
+		return GateResult{}, g.fullErr
+	}
+	if g.dirty {
+		if err := os.WriteFile(filepath.Join(dir, "vendor-dirt.txt"), []byte("x"), 0o644); err != nil {
+			return GateResult{}, err
+		}
+	}
 	if g.refuseCode != 0 {
 		return GateResult{Code: g.refuseCode, Refused: []string{"ci:mongo-conformance"}}, nil
 	}
@@ -202,12 +232,15 @@ func (g *markerGate) Full(ctx context.Context, dir, ev string) (GateResult, erro
 	if len(red) == 0 {
 		return GateResult{Code: 0}, nil
 	}
-	return GateResult{Code: 1, Red: red}, nil
+	return GateResult{Code: 1, Red: red, Refused: g.refused, Incomplete: g.incomplete}, nil
 }
 
 func (g *markerGate) Probe(ctx context.Context, dir, ev string, members []string) ([]string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if _, err := os.Stat(filepath.Join(dir, "vendor-dirt.txt")); err == nil {
+		return nil, fmt.Errorf("member ci:vendor-check refused to run (exit 2): the tree is dirty")
+	}
 	head, _ := (&gitRunner{}).run(ctx, dir, "rev-parse", "--short", "HEAD")
 	for _, m := range members {
 		g.probes = append(g.probes, strings.TrimSpace(head)+":"+m)
@@ -273,23 +306,34 @@ func TestBisectRefusesAnEmptyLotOrNoMember(t *testing.T) {
 func TestCheckLot(t *testing.T) {
 	ok := PR{Number: 1, State: "open", BaseRef: "main", Files: []string{"pkg/x/x.go"}}
 	ci := PR{Number: 2, State: "open", BaseRef: "main", Files: []string{".github/workflows/tests.yml"}}
+	fork := PR{Number: 9, State: "open", BaseRef: "main", CrossRepo: true, Author: "someone", Files: []string{"pkg/x/x.go"}}
+	judge := func(n int, f string) PR {
+		return PR{Number: n, State: "open", BaseRef: "main", Files: []string{f}}
+	}
 	for _, tc := range []struct {
-		name string
-		prs  []PR
-		want string
+		name      string
+		prs       []PR
+		allowFork bool
+		want      string
 	}{
-		{"a clean lot", []PR{ok, {Number: 3, State: "open", BaseRef: "main"}}, ""},
-		{"a CI pull request alone", []PR{ci}, ""},
-		{"a CI pull request in a lot", []PR{ok, ci}, "#2 touches the CI"},
-		{"a quarantine row rides a lot", []PR{ok, {Number: 7, State: "open", BaseRef: "main", Files: []string{"scripts/ci/test-quarantine.tsv"}}}, ""},
-		{"a quarantine row with a CI script does not", []PR{ok, {Number: 8, State: "open", BaseRef: "main", Files: []string{"scripts/ci/test-quarantine.tsv", "scripts/ci/gate.sh"}}}, "#8 touches the CI (scripts/ci/gate.sh)"},
-		{"a draft", []PR{{Number: 4, State: "open", BaseRef: "main", Draft: true}}, "#4 is a draft"},
-		{"closed", []PR{{Number: 5, State: "closed", BaseRef: "main"}}, "#5 is closed"},
-		{"another base", []PR{{Number: 6, State: "open", BaseRef: "release/v7"}}, "#6 targets"},
-		{"listed twice", []PR{ok, ok}, "#1 is listed twice"},
-		{"empty", nil, "no pull request"},
+		{"a clean lot", []PR{ok, {Number: 3, State: "open", BaseRef: "main"}}, false, ""},
+		{"a CI pull request, even alone", []PR{ci}, false, "#2 touches the train's judge (.github/workflows/tests.yml)"},
+		{"a CI pull request in a lot", []PR{ok, ci}, false, "#2 touches the train's judge"},
+		{"the Taskfile", []PR{judge(4, "Taskfile.yml")}, false, "#4 touches the train's judge (Taskfile.yml)"},
+		{"devbox.json", []PR{judge(5, "devbox.json")}, false, "#5 touches the train's judge (devbox.json)"},
+		{"devbox.lock", []PR{judge(6, "devbox.lock")}, false, "#6 touches the train's judge (devbox.lock)"},
+		{"the gate script", []PR{judge(10, "scripts/ci/gate.sh")}, false, "#10 touches the train's judge (scripts/ci/gate.sh)"},
+		{"a quarantine row rides a lot", []PR{ok, {Number: 7, State: "open", BaseRef: "main", Files: []string{"scripts/ci/test-quarantine.tsv"}}}, false, ""},
+		{"a quarantine row with a CI script does not", []PR{ok, {Number: 8, State: "open", BaseRef: "main", Files: []string{"scripts/ci/test-quarantine.tsv", "scripts/ci/gate.sh"}}}, false, "#8 touches the train's judge (scripts/ci/gate.sh)"},
+		{"a fork", []PR{ok, fork}, false, "#9 comes from a fork (by someone)"},
+		{"a fork the operator allows", []PR{ok, fork}, true, ""},
+		{"a draft", []PR{{Number: 4, State: "open", BaseRef: "main", Draft: true}}, false, "#4 is a draft"},
+		{"closed", []PR{{Number: 5, State: "closed", BaseRef: "main"}}, false, "#5 is closed"},
+		{"another base", []PR{{Number: 6, State: "open", BaseRef: "release/v7"}}, false, "#6 targets"},
+		{"listed twice", []PR{ok, ok}, false, "#1 is listed twice"},
+		{"empty", nil, false, "no pull request"},
 	} {
-		err := checkLot(tc.prs)
+		err := checkLot(tc.prs, tc.allowFork)
 		switch {
 		case tc.want == "" && err != nil:
 			t.Errorf("%s: %v, want no error", tc.name, err)
@@ -530,6 +574,107 @@ func TestRunRefusesAMainWhoseDerivedFilesAreStale(t *testing.T) {
 	_, err := tr.Run(context.Background(), stale, []PR{pr})
 	if err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("err %v, want main's stale derived files named", err)
+	}
+}
+
+// Forgiving every red member gives back what the gate would have said
+// without them — gate.sh's exit 1 outranks a refusal (2) and an incomplete
+// gate (3), so neither may come back green.
+func TestRunForgivenRedIsNotGreenWhenTheGateWasRefusedOrIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		gate   *markerGate
+		base   map[string]string
+		accept []string
+		want   string
+	}{
+		{"flake over a refusal", &markerGate{flakeOnce: []string{"race"}, refused: []string{"ci:mongo-conformance"}}, nil, nil, verdictRefused},
+		{"flake over an incomplete gate", &markerGate{flakeOnce: []string{"race"}, incomplete: true}, nil, nil, verdictIncomplete},
+		{"accepted base red over a refusal", &markerGate{refused: []string{"ci:mongo-conformance"}}, map[string]string{"bad-docs.txt": "x\n"}, []string{"docs"}, verdictRefused},
+		{"accepted base red over an incomplete gate", &markerGate{incomplete: true}, map[string]string{"bad-docs.txt": "x\n"}, []string{"docs"}, verdictIncomplete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := map[string]string{"a.txt": "a\n"}
+			for k, v := range tc.base {
+				base[k] = v
+			}
+			f := newFixture(t, base)
+			prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+			tr := f.train(tc.gate)
+			tr.AcceptBaseRed = tc.accept
+			rep, err := tr.Run(context.Background(), f.base, prs)
+			if err == nil || rep.Verdict != tc.want {
+				t.Fatalf("verdict %q, err %v — want %q and an error", rep.Verdict, err, tc.want)
+			}
+			r := rep.Rounds[len(rep.Rounds)-1]
+			if !slices.Equal(r.Refused, tc.gate.refused) || r.Incomplete != tc.gate.incomplete {
+				t.Fatalf("round %+v: the record lost what the gate reported beside its red", r)
+			}
+		})
+	}
+}
+
+func TestRunEjectsAPullRequestWhoseDerivedFilesAreStaleOnItsOwnHead(t *testing.T) {
+	f := newFixture(t, map[string]string{"docs/a.md": "a\n"})
+	p1 := f.pr(1, map[string]string{"docs/b.md": "b\n"})
+	p2 := f.prRepin(2, map[string]string{"docs/c.md": "c\n"}, false) // forgot to re-pin
+	rep, err := f.train(&markerGate{}).Run(context.Background(), f.base, []PR{p1, p2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stepNumbers(rep.Steps), []int{1}) || len(rep.Ejected) != 1 || rep.Ejected[0].PR != 2 || !strings.Contains(rep.Ejected[0].Reason, "stale on its own head") {
+		t.Fatalf("steps %v, ejected %+v — want #2 ejected for its own stale golden, not re-pinned by the train", stepNumbers(rep.Steps), rep.Ejected)
+	}
+}
+
+func TestRunRerunsOnACleanCheckoutOfTheHead(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"}), f.pr(2, map[string]string{"bad-test.txt": "x\n"})}
+	rep, err := f.train(&markerGate{dirty: true}).Run(context.Background(), f.base, prs)
+	if err != nil {
+		t.Fatalf("the rerun ran on the tree the full gate left dirty: %v", err)
+	}
+	if rep.Verdict != verdictGreen || !slices.Equal(ejectedNumbers(rep.Ejected), []int{2}) {
+		t.Fatalf("verdict %s, ejected %v — want #2 bisected out", rep.Verdict, rep.Ejected)
+	}
+}
+
+func TestRunEjectsAPullRequestThatBreaksTheGeneratorsInCombination(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"gen-a.txt": "x\n"}), f.pr(2, map[string]string{"gen-b.txt": "x\n"}), f.pr(3, map[string]string{"c.txt": "x\n"})}
+	rep, err := f.train(&markerGate{}).Run(context.Background(), f.base, prs)
+	if err != nil {
+		t.Fatalf("a generator broken by the combination aborted the train: %v", err)
+	}
+	if !slices.Equal(stepNumbers(rep.Steps), []int{1, 3}) || !slices.Equal(ejectedNumbers(rep.Ejected), []int{2}) || !strings.Contains(rep.Ejected[0].Reason, "generators fail") {
+		t.Fatalf("steps %v, ejected %+v — want #2 ejected, #1 and #3 kept", stepNumbers(rep.Steps), rep.Ejected)
+	}
+}
+
+func TestComposeResolvesADerivedFileTheLotDeleted(t *testing.T) {
+	const m = "docs/references/map-x.md"
+	f := newFixture(t, map[string]string{m: "one\n"})
+	p1 := f.pr(1, map[string]string{m: "<delete>"})
+	p2 := f.pr(2, map[string]string{m: "two\n", "src.txt": "the extractor's input\n"})
+	tr := f.train(&markerGate{})
+	steps, ej, err := tr.compose(context.Background(), f.base, []PR{p1, p2})
+	if err != nil {
+		t.Fatalf("a modify/delete conflict on a derived file aborted the train: %v", err)
+	}
+	if len(ej) != 0 || !slices.Equal(stepNumbers(steps), []int{1, 2}) {
+		t.Fatalf("steps %v ejected %+v, want both squashed", stepNumbers(steps), ej)
+	}
+	if _, code, _ := (&gitRunner{}).runCode(context.Background(), f.dir, "cat-file", "-e", steps[1].Commit+":"+m); code == 0 {
+		t.Fatal("the derived file the lot deleted came back: a side was picked")
+	}
+}
+
+func TestRunReturnsItsReportWhenItStops(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep, err := f.train(&markerGate{fullErr: fmt.Errorf("gate.sh: signal: killed")}).Run(context.Background(), f.base, prs)
+	if err == nil || rep == nil || len(rep.Steps) != 1 || rep.Verdict != "" {
+		t.Fatalf("rep %+v, err %v — want the composed report back, no verdict, with the error", rep, err)
 	}
 }
 
