@@ -1,25 +1,25 @@
 name: 🍺 Brew Tap Update
 
-# The tap update runs ONCE A NIGHT, right after version.yml's nightly run
-# completes, not once per release. Measured on #2241 (2026-10): one tap PR
-# per release meant one main commit per release, and the release train's
-# cadence kept evicting the head of the merge queue — a PR sat CLEAN for
-# three days without merging, each tap commit re-running the group behind it.
+# The tap update follows version.yml's AUTOMATIC runs — the run that follows
+# each green Tests run of main, which releases at most once a day (#3741) —
+# not a dispatched release. Measured on #2241 (2026-10): one tap PR per
+# release, with a release after every merge, meant one main commit per merge,
+# and the release train's cadence kept evicting the head of the merge queue —
+# a PR sat CLEAN for three days without merging, each tap commit re-running
+# the group behind it. With one release a day, a tap PR lands at most once a
+# day too.
 #
-# Chained to the nightly rather than on a cron of its own, because that is
-# what lands it at night. GitHub fires this repository's schedules 1.5 to 8
-# hours late: a 04:37 UTC cron here fired between 10:46 and 12:21 UTC, inside
-# the queue's working hours, while the nightly (22:27 UTC) fired between 00:03
-# and 02:21 UTC on each of its 27 runs since 2026-09-11. Over 2026-09-12..10-12
-# each hour from 00:00 to 05:59 UTC saw 2-7 merges in all — about one a week —
-# against 19-37 for each hour from 06:00 to 21:59, about one a day. A nightly
-# GitHub drops (four in a row, 2026-10-02..05) delays the tap just as long.
+# Chained to version.yml rather than on a cron of its own: GitHub fires this
+# repository's schedules 1.5 to 8 hours late, or drops them (four nightlies in
+# a row, 2026-10-02..05), while a Tests run of main completes on every push.
+# Most of those version runs release nothing: the tap run then finds the
+# formula and the cask already current and stops after the resolve.
 #
 # A run resolves the NEWEST v* tag, at or above what the tap formula carries,
 # whose release holds the four CLI binaries (intermediate releases never need
-# tap entries — the formula points at the latest). The nightly's own tag is
-# usually still building when this runs: it is passed over and tapped the
-# next night, instead of stalling every night it builds. The skip only fires
+# tap entries — the formula points at the latest). The tag the triggering run
+# just cut is usually still building when this runs: it is passed over and
+# tapped by a later version run, instead of stalling every run it builds. The skip only fires
 # when BOTH the formula and the cask already carry the tag: a cask left
 # behind catches up with that release's desktop ZIP once it exists, and
 # update-brew-tap.sh's all-or-nothing guard keeps a partial download from
@@ -61,10 +61,10 @@ permissions:
 
 jobs:
   update:
-    # version.yml also completes once per merged pull request; only its
-    # nightly run taps. Any conclusion: a nightly that failed to release
-    # leaves the earlier releases to tap all the same.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    # version.yml's automatic runs tap; a dispatched release does not (a
+    # dispatch of this workflow backfills instead). Any conclusion: a run
+    # that failed to release leaves the earlier releases to tap all the same.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'workflow_run'
     runs-on: ubuntu-latest
     steps:
       - name: Get GitHub App Token

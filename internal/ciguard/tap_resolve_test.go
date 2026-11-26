@@ -11,7 +11,7 @@ import (
 )
 
 // The behaviour of scripts/brew-tap-resolve.sh: which tag brew-update.yml
-// taps. It runs right after the nightly release run, whose own tag is still
+// taps. It runs right after a version.yml run, whose own tag is still
 // building at that moment — the cases below are the ways that timing could
 // stall the tap, or walk it backwards.
 

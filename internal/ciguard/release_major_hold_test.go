@@ -64,8 +64,8 @@ func majorHoldVerdict(t *testing.T, facts map[string]string) (verdict, log strin
 //     under a pending 10.0.0 on 9.4.0" releases;
 //   - the exact-version door removed (`input` never matching N+1.0.0):
 //     "the exact 8.0.0 dispatch" is refused;
-//   - the skip verdict folded into release: "a merged PR with 8.0.0
-//     recommended" releases instead of skipping with its notice.
+//   - the skip verdict folded into release: "an automatic release
+//     over a pending major" releases instead of skipping with its notice.
 func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 	const pending = "8.0.0" // the recommended bump over 7.33.0: a major
 	for _, tc := range []struct {
@@ -78,33 +78,33 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		// Automatic runs release everything below the next major, and skip
 		// green with a notice on a pending major.
 		{
-			name: "a merged pull request with a minor recommended releases",
+			name: "an automatic release with a minor recommended releases",
 			facts: map[string]string{
-				"EVENT": "pull_request", "REF": "main", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
 				"CURRENT": "7.33.0", "RECOMMENDED": "7.34.0",
 			},
 			wantVerdict: "release",
 		},
 		{
-			name: "a merged pull request over a chore-only range releases",
+			name: "an automatic release over a chore-only range releases",
 			facts: map[string]string{
-				"EVENT": "pull_request", "REF": "main", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
 				"CURRENT": "7.33.0", "RECOMMENDED": "",
 			},
 			wantVerdict: "release",
 		},
 		{
-			name: "the nightly with nothing pending releases",
+			name: "an automatic release with a patch recommended releases",
 			facts: map[string]string{
-				"EVENT": "schedule", "REF": "main", "INPUT": "",
-				"CURRENT": "7.33.0", "RECOMMENDED": "7.34.0",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
+				"CURRENT": "7.33.0", "RECOMMENDED": "7.33.1",
 			},
 			wantVerdict: "release",
 		},
 		{
-			name: "a merged pull request over a pending major skips green with a notice",
+			name: "an automatic release over a pending major skips green with a notice",
 			facts: map[string]string{
-				"EVENT": "pull_request", "REF": "main", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
 				"CURRENT": "7.33.0", "RECOMMENDED": pending,
 			},
 			wantVerdict: "skip",
@@ -113,7 +113,7 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		{
 			name: "the notice names the held version and the dispatch that cuts it",
 			facts: map[string]string{
-				"EVENT": "schedule", "REF": "main", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
 				"CURRENT": "7.33.0", "RECOMMENDED": pending,
 			},
 			wantVerdict: "skip",
@@ -122,7 +122,7 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		{
 			name: "a pending major above ten is still held — the compare is numeric",
 			facts: map[string]string{
-				"EVENT": "schedule", "REF": "main", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
 				"CURRENT": "9.4.0", "RECOMMENDED": "10.0.0",
 			},
 			wantVerdict: "skip",
@@ -266,7 +266,7 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		{
 			name: "an automatic run on another ref is not held either",
 			facts: map[string]string{
-				"EVENT": "pull_request", "REF": "release/v7", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "release/v7", "INPUT": "",
 				"CURRENT": "7.33.0", "RECOMMENDED": pending,
 			},
 			wantVerdict: "release",
@@ -288,7 +288,7 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		},
 		{
 			name:        "a CURRENT that is not a bare X.Y.Z is refused",
-			facts:       map[string]string{"EVENT": "schedule", "REF": "main", "CURRENT": "v7.33.0"},
+			facts:       map[string]string{"EVENT": "workflow_run", "REF": "main", "CURRENT": "v7.33.0"},
 			wantCode:    2,
 			wantLog:     "CURRENT is 'v7.33.0'",
 			wantVerdict: "",
@@ -296,7 +296,7 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		{
 			name: "a RECOMMENDED that is not a bare X.Y.Z is refused",
 			facts: map[string]string{
-				"EVENT": "pull_request", "REF": "main", "INPUT": "",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "",
 				"CURRENT": "7.33.0", "RECOMMENDED": "8.0.0-rc.1",
 			},
 			wantCode:    2,
@@ -306,7 +306,7 @@ func TestTheMajorHoldCutsAMajorOnlyOnItsExactVersion(t *testing.T) {
 		{
 			name: "an automatic event carrying a version input is refused",
 			facts: map[string]string{
-				"EVENT": "pull_request", "REF": "main", "INPUT": "minor",
+				"EVENT": "workflow_run", "REF": "main", "INPUT": "minor",
 				"CURRENT": "7.33.0", "RECOMMENDED": "",
 			},
 			wantCode:    2,

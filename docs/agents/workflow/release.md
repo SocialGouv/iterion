@@ -97,10 +97,9 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`.
-  A merged PR releases only while no merge group is in flight — the release
-  commit is a direct push to `main`, which rebuilds every group the queue is
-  building — so the merge that drains the queue releases the whole burst; the
-  nightly and a `workflow_dispatch` release regardless
+  It releases after a green heavy run of `🧪 Tests` on `main`, at most once a
+  day, and only the commit that run proved; a `workflow_dispatch` releases
+  `main`'s tip now, for a fix that cannot wait
   ([releases and the queue](../../merge-policy.md#releases-and-the-queue)).
   While main carries a breaking change, the major hold skips automatic runs
   green with a notice and refuses a non-major dispatch — only the exact

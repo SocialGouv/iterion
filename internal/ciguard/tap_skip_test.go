@@ -31,7 +31,7 @@ const tapVerifierJob = "brand"
 const (
 	tapVerifierRun      = "./scripts/ci/tap-entry-check.sh"
 	brewUpdateWorkflow  = "../../.github/workflows/brew-update.yml"
-	brewUpdateJobIf     = "github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'"
+	brewUpdateJobIf     = "github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'workflow_run'"
 	brewUpdateJobName   = "update"
 	checkoutActionsName = "actions/checkout@"
 )
@@ -207,13 +207,14 @@ func TestTheTapPullRequestCarriesTheSkipTitle(t *testing.T) {
 	}
 }
 
-// TestTheTapUpdateFollowsTheNightlyRelease holds brew-update.yml's trigger: the
-// completion of version.yml's nightly run. A `workflow_run` naming a workflow
-// that does not exist never fires and reports nothing — and the name carries an
-// emoji with a variation selector, so one retyped byte is enough. Without the
-// schedule filter it would fire once per merged pull request instead of once a
-// night.
-func TestTheTapUpdateFollowsTheNightlyRelease(t *testing.T) {
+// TestTheTapUpdateFollowsTheAutomaticRelease holds brew-update.yml's trigger:
+// the completion of version.yml's automatic run, the one that follows a Tests
+// run of main. A `workflow_run` naming a workflow that does not exist never
+// fires and reports nothing — and the name carries an emoji with a variation
+// selector, so one retyped byte is enough. The event filter must name the
+// event version.yml's automatic run actually carries (`workflow_run`): a filter
+// on an event version.yml no longer has never taps at all, in silence.
+func TestTheTapUpdateFollowsTheAutomaticRelease(t *testing.T) {
 	var version struct {
 		Name string `yaml:"name"`
 	}
@@ -255,6 +256,6 @@ func TestTheTapUpdateFollowsTheNightlyRelease(t *testing.T) {
 		t.Fatalf("brew-update.yml defines no %q job", brewUpdateJobName)
 	}
 	if !sameExpression(job.If, brewUpdateJobIf) {
-		t.Errorf("brew-update.yml's %q job runs on `if: %s`, want `if: %s` — a dispatch, or version.yml's nightly and nothing else", brewUpdateJobName, job.If, brewUpdateJobIf)
+		t.Errorf("brew-update.yml's %q job runs on `if: %s`, want `if: %s` — a dispatch, or version.yml's automatic run and nothing else", brewUpdateJobName, job.If, brewUpdateJobIf)
 	}
 }
