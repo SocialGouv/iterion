@@ -3,13 +3,13 @@ name: gitops-repo-standard
 description: The gitops repo standard: branch/merge policy, the validate job, OPS-vs-MR modes, the three-repo chart boundary — what an MR on a gitops repo must respect
 ---
 
-> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated.
+> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated. Paths shown in backticks without a link (`15-build-ci/…`, `20-cd-pattern/…`, `scripts/…`, `.repos/…`, sibling pages) name files of that source, which this bundle does not ship.
 
 # Norme des dépôts gitops PIC (convention `*-gitops`)
 
 Configuration **standard** appliquée à tout dépôt suivant la convention **`*-gitops`** (repo CD : wrapper Helm par env + branche `rendered` lue par ArgoCD). But : uniformiser la politique de merge et la protection des branches sur tous les repos gitops, présents et **futurs**.
 
-> Outil : **[`scripts/gitlab/gitops-standard.sh`](../../scripts/gitlab/gitops-standard.sh)** — idempotent, **dry-run par défaut**. À lancer **à chaque création** d'un nouveau `*-gitops` (et pour aligner l'existant).
+> Outil : **`scripts/gitlab/gitops-standard.sh`** — idempotent, **dry-run par défaut**. À lancer **à chaque création** d'un nouveau `*-gitops` (et pour aligner l'existant).
 
 ## Réglages appliqués
 
@@ -34,7 +34,7 @@ Configuration **standard** appliquée à tout dépôt suivant la convention **`*
 
 ## ⚠ CI-safe : pourquoi push = Maintainer (et pas « No one »)
 
-Le job **`apply`** commite sur `main` (`push_retry main -o ci.skip`) et le job **`render`** pousse `rendered` — **tous deux via un token de projet Maintainer** (`RENDER_TOKEN`/`cd-gitops`/…). Cf. `.gitlab-ci.yml` des gitops (réf. [`da-manager-gitops`](../../.repos/da-manager-gitops)).
+Le job **`apply`** commite sur `main` (`push_retry main -o ci.skip`) et le job **`render`** pousse `rendered` — **tous deux via un token de projet Maintainer** (`RENDER_TOKEN`/`cd-gitops`/…). Cf. `.gitlab-ci.yml` des gitops (réf. `.repos/da-manager-gitops`).
 
 Sur **GitLab CE**, une branche protégée **ne distingue pas** un bot CI d'un humain au niveau *push* (l'`allowed_to_push` par utilisateur est Premium). Donc :
 - **push doit rester ≥ Maintainer** sur `main`/`rendered`, sinon **les pipelines cassent** (`apply`/`render` ne peuvent plus pousser).
@@ -73,21 +73,21 @@ Le script compare l'état courant à la cible et n'agit que sur les écarts (re-
 - ⚠ `merge_method: ff` ⇒ chaque MR doit de toute façon être rebasée (`PUT …/merge_requests/:iid/rebase`) dès qu'une autre a mergé.
 - **État au 2026-08-27** : `validate` posé sur **les 9** `*-gitops` (588, 446, puis 549 · 537 · 533 · 527 · 447 · 434 · 293 en une passe). Chaque job est **dérivé du `render` du repo** (mêmes injections `host`/`s3Path` depuis `atlas-env.yaml`, mêmes skips, même login OCI) — pas un job générique : le rendu validé est bien celui que `render` produira. Commits poussés avec **`[skip ci]`** (un push sur `main` déclencherait `render`, donc un déploiement non demandé). Vérifié de bout en bout par une MR jetable sur `da-manager` (pipeline vert, chart OCI tiré, `da-manager-preprod` rendu), puis fermée.
 
-Voir aussi : [pic-gitlab.md](pic-gitlab.md) · [20-cd-pattern/overview.md](../20-cd-pattern/overview.md).
+Voir aussi : `pic-gitlab.md` · `20-cd-pattern/overview.md`.
 
 # gitops-cd-component — composant CI/CD réutilisable (pattern app / chart / gitops)
 
 > Source de vérité : le repo du composant lui-même —
 > `$CI_SERVER_FQDN/socialgouv/produits-dnum/studio-tech/devops/components/gitops-cd-component`
-> (PIC, cloné dans [`.repos/gitops-cd-component`](../../.repos/gitops-cd-component/) — brique CI
-> partagée, cf. [`scripts/setup/repos.tsv`](../../scripts/setup/repos.tsv)). Son `README.md`
+> (PIC, cloné dans `.repos/gitops-cd-component` — brique CI
+> partagée, cf. `scripts/setup/repos.tsv`). Son `README.md`
 > documente exhaustivement les 6 templates, leurs inputs et le versionnement ; cette fiche n'en
 > est qu'une distillation orientée décision. Première implémentation de référence : **poss**
 > (extraction du chart en repo dédié le 2026-08-27).
 
 ## Pourquoi un composant (vs le mécanisme main-rolled de `overview.md`)
 
-Le [pattern CD cible](overview.md) (app ⇄ gitops, trigger multi-projet, `apply`/`render`, branche
+Le pattern CD cible (`overview.md`) (app ⇄ gitops, trigger multi-projet, `apply`/`render`, branche
 `rendered`) a d'abord été implémenté **à la main** par produit (da-manager, graal, egapro…).
 `overview.md` anticipait déjà cette suite : *« au 2ᵉ-3ᵉ produit, envisager un composant CI PIC
 partagé »*. **gitops-cd-component** est cette généralisation : les mêmes jobs (`validate`/
@@ -155,6 +155,6 @@ ajout rétrocompatible (ex. l'extraction historique de `apply`/`trigger` uniques
 
 ## À rétro-analyser au besoin
 
-Retourner lire son code dans [`.repos/gitops-cd-component`](../../.repos/gitops-cd-component/) en
+Retourner lire son code dans `.repos/gitops-cd-component` en
 cas de doute sur un comportement précis (résolution des inputs `$[[ inputs.x ]]`, scripts bash des
 jobs `apply_*`, tests dans `tests/`).

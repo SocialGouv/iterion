@@ -3,7 +3,7 @@ name: platform-conformance
 description: Atlas v2 platform facts for a merge verdict: managed resources (OvhValkey, OvhPostgresqlCluster, OvhBucket), LimitRange bounds and ratio, ingress/Kyverno domain rules, cert-manager, naming norms
 ---
 
-> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated.
+> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated. Paths shown in backticks without a link (`15-build-ci/…`, `20-cd-pattern/…`, `scripts/…`, `.repos/…`, sibling pages) name files of that source, which this bundle does not ship.
 
 # Plateforme Atlas v2
 
@@ -31,7 +31,7 @@ Atlas est découpé en quatre parties (`atlas-monorepo/README.md`) :
 - **Réseau/DNS/TLS** : external-dns + cert-manager + webhook OVH · **Policy** : Kyverno · **Reload** : reloader (stakater)
 - **Cluster** : provisionné via CAPI + provider OpenStack ; autoscaler + metrics-server + goldilocks
 
-> **Pas de sealed secrets** sur Atlas v2 : les secrets vivent dans **Vault** et sont matérialisés dans les namespaces par **ESO**. Voir [secrets-externalsecrets](../20-cd-pattern/secrets-externalsecrets.md).
+> **Pas de sealed secrets** sur Atlas v2 : les secrets vivent dans **Vault** et sont matérialisés dans les namespaces par **ESO**. Voir secrets-externalsecrets (`20-cd-pattern/secrets-externalsecrets.md`).
 
 ## Modèle de ressources (XRD Crossplane)
 
@@ -62,7 +62,7 @@ Hiérarchie : **Organization → Workspace → Environment** ; une **Zone** = un
 - **`<type>`** — le genre de ressource, **vocabulaire fermé** (une CRD = un token, cf. table).
 - **`<usage>`** — présent **uniquement** quand un même environnement peut contenir **plusieurs** ressources de ce `<type>` (buckets : toujours ; databases : dès qu'il y en a plus d'une). Décrit **le rôle / le consommateur** de la ressource, pas ce qu'elle contient. **Cadré** (cf. ci-dessous), pas un mot libre. Omis sinon.
 - **`<environnement>`** — **vocabulaire fermé**.
-- Chaque segment dans `^[a-z0-9]+$`, nom total `≤ 63` caractères (contrainte `valid_name()` de [`scripts/atlas/atlas-env.sh`](../../scripts/atlas/atlas-env.sh) — la marge est plus courte pour un nom à 4 segments).
+- Chaque segment dans `^[a-z0-9]+$`, nom total `≤ 63` caractères (contrainte `valid_name()` de `scripts/atlas/atlas-env.sh` — la marge est plus courte pour un nom à 4 segments).
 
 **`<type>` — genre de ressource (fermé, une CRD = un token) :**
 
@@ -137,8 +137,8 @@ Architecture **CQRS + Event Sourcing** (`services/api/README.md`) : **POST = com
 ### Auth & endpoints (prod — vérifié via l'OpenAPI servi)
 - **Base API** : `https://<atlas-host>/api/v1` (préfixe `/api/v1`).
 - **Keycloak** : `https://<atlas-host>`, **realm `atlas-prod`**.
-- **Flow** : OAuth2 **authorization code + PKCE** (login interactif), client public `control-plane-atlas-portal`. Deuxième medium livré : **PAT Atlas** (`atlas-pat-…`, `Authorization: Bearer`) = **identité machine headless** pour la CI — cf. [atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md).
-- **Deux media d'auth** ([`authenticate.ts`](../../.repos/atlas-monorepo/services/api/src/http/middlewares/authenticate.ts), `detectAuthMedium`) : un bearer préfixé **`atlas-pat`** → branche PAT (résout le hash → principal `user`, hérite des rôles FGA) ; sinon **JWT** → l'API **ne valide que la signature** (JWKS realm `atlas-prod`, RS256, **sans contrôler l'audience ni le client** — `FIXME: allow audience for downstream services`) ⇒ **tout token signé par ce realm est accepté**, y compris l'`id_token` kubelogin `dev-kubernetes` (claims `groups`/`email`). C'est ce qui permet de **dériver `ATLAS_TOKEN` automatiquement** (cf. ci-dessous).
+- **Flow** : OAuth2 **authorization code + PKCE** (login interactif), client public `control-plane-atlas-portal`. Deuxième medium livré : **PAT Atlas** (`atlas-pat-…`, `Authorization: Bearer`) = **identité machine headless** pour la CI — cf. atlas-pat-machine-identity (`20-cd-pattern/atlas-pat-machine-identity.md`).
+- **Deux media d'auth** (`.repos/atlas-monorepo/services/api/src/http/middlewares/authenticate.ts`, `detectAuthMedium`) : un bearer préfixé **`atlas-pat`** → branche PAT (résout le hash → principal `user`, hérite des rôles FGA) ; sinon **JWT** → l'API **ne valide que la signature** (JWKS realm `atlas-prod`, RS256, **sans contrôler l'audience ni le client** — `FIXME: allow audience for downstream services`) ⇒ **tout token signé par ce realm est accepté**, y compris l'`id_token` kubelogin `dev-kubernetes` (claims `groups`/`email`). C'est ce qui permet de **dériver `ATLAS_TOKEN` automatiquement** (cf. ci-dessous).
 - **Quick links** : ArgoCD/Grafana `https://{argocd,grafana}<atlas-host>`, Vault par zone `https://vault.<zone><atlas-host>`.
 
 ```bash
@@ -158,13 +158,13 @@ ATLAS_TOKEN="$(scripts/atlas/atlas-token.sh)" \
 > `atlas-token.sh` rouvre un **login navigateur** (échoue en `context deadline exceeded` si personne ne
 > le complète — c'est un login manquant, pas une panne d'API).
 
-> ⚠ Pas de flow `client_credentials` exposé en prod (≠ realm `atlas-sandbox` de basavi). Pour le poste de travail, le **client public `dev-kubernetes` + refresh token** (via `atlas-token.sh`) suffit et évite tout copier-coller. Pour une **CI 100 % headless**, la plateforme a livré les **PAT Atlas** (`atlas-pat-…`) : identité machine bearer, `atlas-env.sh`/`atlas-members.sh` l'acceptent tel quel — cf. [atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md). ⚠ le PAT couvre l'**API** (create/configure-gitops/delete) mais **pas le seed Vault** des secrets applicatifs (pas d'endpoint API secrets ; accès **Vault** zone toujours requis pour ce seed + le credential de lecture du repo gitops).
+> ⚠ Pas de flow `client_credentials` exposé en prod (≠ realm `atlas-sandbox` de basavi). Pour le poste de travail, le **client public `dev-kubernetes` + refresh token** (via `atlas-token.sh`) suffit et évite tout copier-coller. Pour une **CI 100 % headless**, la plateforme a livré les **PAT Atlas** (`atlas-pat-…`) : identité machine bearer, `atlas-env.sh`/`atlas-members.sh` l'acceptent tel quel — cf. atlas-pat-machine-identity (`20-cd-pattern/atlas-pat-machine-identity.md`). ⚠ le PAT couvre l'**API** (create/configure-gitops/delete) mais **pas le seed Vault** des secrets applicatifs (pas d'endpoint API secrets ; accès **Vault** zone toujours requis pour ce seed + le credential de lecture du repo gitops).
 
 ### Découvertes prod (session)
 - **Zones** (`GET /api/v1/zones`) : `dev` → `<atlas-host>` ; `prod` → `<atlas-host>`. Un host produit = `<app>-<slug>.dev.atlas-prod…` (review en zone dev).
 - **Création d'Organization = admin-only** : `POST /admin/organizations` → `403 User must be admin` pour un user non-admin. Un **admin Atlas** doit créer l'Org + Workspace et rattacher l'utilisateur (sinon `/organizations` et `/workspaces` renvoient `[]`).
 - **Schémas de création** : org `{name, domains[], initialAdmin{userEmail|userId}}` ; workspace `{name, domains[] (⊆ org), initialAdmin}` ; environment `{name, zone(ZoneRef), gitops?}` ; `configure-gitops {gitops}`.
-- **CI ⇒ PAT Atlas** : l'auth prod étant PKCE interactif, automatiser les appels Atlas en CI (créer/supprimer env par branche) exigeait une identité machine. Livrée sous forme de **PAT** (`atlas-pat-…`, medium bearer géré par `authenticate.ts`) — cf. [atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md). Le PAT hérite des rôles FGA de l'utilisateur qui l'a minté ⇒ identité **dédiée** grantée **workspace `admin`** par workspace migré.
+- **CI ⇒ PAT Atlas** : l'auth prod étant PKCE interactif, automatiser les appels Atlas en CI (créer/supprimer env par branche) exigeait une identité machine. Livrée sous forme de **PAT** (`atlas-pat-…`, medium bearer géré par `authenticate.ts`) — cf. atlas-pat-machine-identity (`20-cd-pattern/atlas-pat-machine-identity.md`). Le PAT hérite des rôles FGA de l'utilisateur qui l'a minté ⇒ identité **dédiée** grantée **workspace `admin`** par workspace migré.
 
 ## Flux de déploiement d'un produit (cible)
 
@@ -184,7 +184,7 @@ ATLAS_TOKEN="$(scripts/atlas/atlas-token.sh)" \
 > **Confirmé par le code** (`services/api`, `compositions/functions/environments.atlas.social.gouv.fr`) et exercé en réel (da-manager). Référence pour migrer le prochain produit. Source de vérité = le code dans `.repos/atlas-monorepo` ; y retourner au besoin.
 
 ## Autorisation & rôles (qui peut créer quoi)
-- **Admin Atlas = membre du groupe Keycloak `/admin`** (realm `atlas-prod`), exposé via le claim JWT `groups` ([`authenticate.ts`](../../.repos/atlas-monorepo/services/api/src/http/middlewares/authenticate.ts) : `isAdmin = payload.groups?.includes("/admin")`). Le scope `groups` est demandé par défaut ; si le claim est absent → pas membre.
+- **Admin Atlas = membre du groupe Keycloak `/admin`** (realm `atlas-prod`), exposé via le claim JWT `groups` (`.repos/atlas-monorepo/services/api/src/http/middlewares/authenticate.ts` : `isAdmin = payload.groups?.includes("/admin")`). Le scope `groups` est demandé par défaut ; si le claim est absent → pas membre.
 - **Création d'Organization = admin-only** (`POST /admin/organizations`, middleware `requireAdmin`, aucun contournement OpenFGA). Seul acte super-admin de toute une migration.
 - **Modèle OpenFGA** (`services/api/atlas.fga`) : `organization.admin` → `can_create_workspaces` ; `workspace.admin` (`= [user] or admin from organization`) → `can_create_environments / _buckets / _ovh_postgresql_databases / _ovh_valkeys`. L'**`initialAdmin`** fourni à la création d'une org/workspace **devient `admin`** (tuple émis par le domaine).
 - ⇒ **Pattern d'onboarding** : un admin Atlas crée **une fois** l'Org avec `initialAdmin: {userEmail: <toi>}`. Ensuite **tu** crées Workspace → Environment → ressources → `configure-gitops` **avec ton propre token PKCE** (pas besoin d'être `/admin`).
@@ -211,7 +211,7 @@ ATLAS_TOKEN="$(scripts/atlas/atlas-token.sh)" \
 > `POST /workspaces/{wsId}/members` → **403 `can_manage_members`**, et `GET /workspaces/{wsId}` →
 > **403 `can_view`** (le workspace n'apparaît même pas dans `GET /workspaces`).
 
-Le modèle FGA ([`services/api/src/gen/atlas.fga.ts`](../../.repos/atlas-monorepo/services/api/src/gen/atlas.fga.ts), type `workspace`) l'explique :
+Le modèle FGA (`.repos/atlas-monorepo/services/api/src/gen/atlas.fga.ts`, type `workspace`) l'explique :
 
 | Relation | Définition | Cascade depuis l'org ? |
 |---|---|---|
@@ -236,11 +236,11 @@ l'API Atlas a pris le nouveau rôle immédiatement — le contrôle est serveur,
 tandis que `kubectl` a suivi sans re-login, le RBAC se résolvant aussi côté serveur.)*
 
 ### Recette — ajouter / gérer un membre (exercé en réel)
-Acte d'**admin du workspace** (pas besoin du groupe `/admin`). Token chargé sans l'afficher ; **`curl` pur, pas de `jq` dans la même commande** (cf. [credentials-and-access § hook secrets](../00-context/credentials-and-access.md)).
+Acte d'**admin du workspace** (pas besoin du groupe `/admin`). Token chargé sans l'afficher ; **`curl` pur, pas de `jq` dans la même commande** (cf. credentials-and-access § hook secrets (`00-context/credentials-and-access.md`)).
 
-> **Outil dédié (recommandé)** : [`scripts/atlas/atlas-members.sh`](../../scripts/atlas/atlas-members.sh) provisionne les membres **par équipe**, depuis deux listes locales (gitignorées, jamais commitées, **transmises hors-bande**, jamais lues par l'agent — sortie *redacted*) :
-> - `.secrets/atlas-teams.tsv` — `team  email  roles[,…]  [userId]` : une **équipe** = des membres+rôles, définie une fois et réutilisée (template [`atlas-teams.tsv.example`](../../scripts/setup/atlas-teams.tsv.example)).
-> - `.secrets/atlas-bindings.tsv` — `workspace_id|*  team[,team…]` : quelles équipes sur quel workspace. **`*` = tous les workspaces de l'org SDPC** (`org-01ks7sjgcxkez4ebz81x6t7frc`, anciens+nouveaux, énumérés via `GET /organizations/{orgId}/workspaces`) → l'équipe devops transverse ; chaque produit reçoit en plus sa propre équipe (template [`atlas-bindings.tsv.example`](../../scripts/setup/atlas-bindings.tsv.example)). Les workspaces **prod** (ex. basavi-prod) vivent dans une **autre org** dont on n'est pas admin ⇒ **jamais énumérés par `*`**, protection par construction. Un id de workspace explicite dans le fichier reste possible hors `*` (non filtré par org — l'API refuse de toute façon si non-admin).
+> **Outil dédié (recommandé)** : `scripts/atlas/atlas-members.sh` provisionne les membres **par équipe**, depuis deux listes locales (gitignorées, jamais commitées, **transmises hors-bande**, jamais lues par l'agent — sortie *redacted*) :
+> - `.secrets/atlas-teams.tsv` — `team  email  roles[,…]  [userId]` : une **équipe** = des membres+rôles, définie une fois et réutilisée (template `scripts/setup/atlas-teams.tsv.example`).
+> - `.secrets/atlas-bindings.tsv` — `workspace_id|*  team[,team…]` : quelles équipes sur quel workspace. **`*` = tous les workspaces de l'org SDPC** (`org-01ks7sjgcxkez4ebz81x6t7frc`, anciens+nouveaux, énumérés via `GET /organizations/{orgId}/workspaces`) → l'équipe devops transverse ; chaque produit reçoit en plus sa propre équipe (template `scripts/setup/atlas-bindings.tsv.example`). Les workspaces **prod** (ex. basavi-prod) vivent dans une **autre org** dont on n'est pas admin ⇒ **jamais énumérés par `*`**, protection par construction. Un id de workspace explicite dans le fichier reste possible hors `*` (non filtré par org — l'API refuse de toute façon si non-admin).
 >
 > Commandes : `teams` / `ls` (sans API), `sync [--prune]` (idempotent — rejouer n'ajoute que les manquants, `*` couvre tout nouveau ws), `diff`, `set-roles`/`remove` (bas niveau, par user-id).
 > ⚠️ **Gap email→user-id** : la liste membres renvoie `{"id":"user-…","roles":[…]}` (**clé `id`, pas d'email**) et l'API ne résout pas email→id hors `/admin`. Donc `sync` se fait **par email** (additif), mais `--prune` est **id-keyed** (4e col `userId` du fichier teams ; id réels via `diff`) — un ws dont un membre désiré n'a pas d'id est **sauté au prune** (garde-fou), sauf `--force`.
@@ -328,7 +328,7 @@ Source : `compositions/functions/environments.atlas.social.gouv.fr/composition.f
 - 🪤 **Le reshape via ESO est IMPOSSIBLE (RBAC) — utiliser `secretKeyRef` clé-par-clé.** Si l'app attend d'autres noms que `PG*` (ex. `DB_USERNAME`, `FLYWAY_DB_USERNAME`), on est tenté de renommer avec un `ExternalSecret` provider `kubernetes` qui **lit** le Secret natif → il faut le droit `get` sur `secrets`, **que le RBAC env-admin d'Atlas v2 n'accorde pas**, et K8s **interdit de créer un `Role` qui l'accorde** (anti-escalade : « attempting to grant RBAC permissions not currently held »). ⇒ **remap uniquement par `env[].valueFrom.secretKeyRef`** dans la spec du pod (c'est le **kubelet** qui lit le Secret, avec ses droits — jamais bloqué). Corollaire : **`envFrom` en bloc du Secret natif est inadapté** dès qu'on veut 2 rôles (editor **et** schema-editor) dans le même conteneur — leurs 8 clés `PG*` **entrent en collision** (une seule `PGUSER` survivrait) ; il **faut** le mappage par-clé pour distinguer `DB_*` (editor) de `FLYWAY_DB_*` (schema-editor).
 - Références vécues :
   - **srdt** (`cpgc-01kvqqppb9qhmfcjx987mb3gjb`/`cpg-01kvqtdy4yjj3x2hzc3b16cae2`, `srdt-gitops` `values.deploy.yaml`) — le `web` (migrations DDL au boot) consomme `schema-editor-<cpgId>`. *(Vérifié live 2026-08-06 via `openapi.yaml` v2.4.4 + lecture directe de `srdt-gitops`.)*
-  - **ptt-chantier/lsp** (2026-08-12, `cpgc-01kzp25bmjqh6d2a5fty6eekep`) — **migration OVH managé → CNPG-via-API PG 18** : chart maison + remap `secretKeyRef` par-clé (`editor→DB_*`, `schema-editor→FLYWAY_DB_*`), `application.yml` inchangé. Flyway 65 migrations + HikariPool OK, séparation des rôles conservée, **connexion JDBC sans `sslmode` OK**. *(cf. [runbook chantier §5](../30-migrations/chantier.md#5-db--cnpg-via-api-pg-18-remap-par-extraenvsecretkeyref).)*
+  - **ptt-chantier/lsp** (2026-08-12, `cpgc-01kzp25bmjqh6d2a5fty6eekep`) — **migration OVH managé → CNPG-via-API PG 18** : chart maison + remap `secretKeyRef` par-clé (`editor→DB_*`, `schema-editor→FLYWAY_DB_*`), `application.yml` inchangé. Flyway 65 migrations + HikariPool OK, séparation des rôles conservée, **connexion JDBC sans `sslmode` OK**. *(cf. runbook chantier §5 (`30-migrations/chantier.md#5-db--cnpg-via-api-pg-18-remap-par-extraenvsecretkeyref`).)*
 - 🔬 **Mécanisme vérifié live (2026-08-14)** — sondes `psql` via Jobs in-cluster (`pods/exec` interdit) sur **ptt-chantier/lsp + domifa**, connexion avec les Secrets natifs `editor-`/`schema-editor-<cpgId>` :
   - **Creds = Vault dynamiques, PAS statiques** : `PGUSER` = user éphémère `v-k8s-dev--<rôle>-c-<rand>-<expUnix>`, **rotation ~12 h** (jusqu'à 4 users vivants par rôle, expirations à 08:21/20:21). La plateforme **réécrit le Secret natif** → invalide l'ancienne mention « statique / pas de rotation ».
   - **Rôles parents STABLES** `editor-<hash>`/`schema-editor-<hash>`/`reader-<hash>` : les users éphémères en sont **membres** ; les **objets sont owned par le parent `schema-editor`** (persiste à travers la rotation).
@@ -368,17 +368,17 @@ Source : `compositions/functions/environments.atlas.social.gouv.fr/composition.f
 - **API** : `POST /workspaces/{wsId}/ovhbuckets` body `{name, zone:{name}, versioned, linkedEnvironments:[envId]}` → `201 {id}` (lien possible dès la création) ; sinon `POST /ovhbuckets/{id}/link-environment {envId}`. Suppression : `POST /ovhbuckets/{id}/delete`. Composition `compositions/functions/ovhbuckets.atlas.social.gouv.fr` : user OVH `objectstore_operator` + bucket (SSE-AES256) + `S3Policy` RW.
 - **Creds livrés AUTOMATIQUEMENT dans le Vault de l'env** (au `link-environment`) sous la clé **`buckets/<obckt-id>`** — ⚠️ **l'ID du bucket (`obckt-…`), PAS le nom affiché (`spec.name`)** : la composition prend `metadata.name` du XR (= l'id) à la fois comme clé KV **et** comme nom réel du bucket OVH (donc `AWS_BUCKET_NAME` = l'id). Mount `<wsId>/<envId>/kv` ; propriétés `AWS_BUCKET_NAME`, `AWS_ENDPOINT_URL_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (⚠ la **région** n'est PAS poussée par-env → la figer côté app). ⇒ l'`ExternalSecret` doit lire **`remoteRef.key: buckets/<obckt-id>`** (récupérer l'id au `POST …/ovhbuckets` → `201 {id}`) — **pas de seed Vault manuel**. Vérif : `vault kv list <ws>/<env>/kv/buckets`.
   - 🪤 **Piège vécu (2026-06-03, graal)** : un `ExternalSecret` lisant `buckets/<nom-affiché>` → **404** → ESO `SecretSyncError` → pod bloqué, alors que les creds étaient bien présents sous `buckets/<obckt-id>`. **Ce n'était PAS un bug de la composition** (confirmé par l'équipe Atlas sur sandbox) — juste la mauvaise clé côté produit.
-- Outillage : [`scripts/atlas/atlas-env.sh`](../../scripts/atlas/atlas-env.sh) avec **`BUCKET_PER_ENV=1`** = 1 bucket/env (créé+lié+supprimé avec l'env — utilisé par [graal](../30-migrations/graal.md)).
+- Outillage : `scripts/atlas/atlas-env.sh` avec **`BUCKET_PER_ENV=1`** = 1 bucket/env (créé+lié+supprimé avec l'env — utilisé par graal (`30-migrations/graal.md`)).
 
 ## Accès cluster (kubectl) pour debug
 - `GET /api/v1/kubeconfig` → kubeconfig **OIDC** (pas de token embarqué). **Structure** (à reconstruire sans relire le fichier) :
   - `clusters`: `dev` (`server: https://<ip>:6443`, `certificate-authority-data`) et `prod`.
   - `users`: `oidc@<zone>` avec `exec` (`apiVersion: client.authentication.k8s.io/v1beta1`, `command: kubectl`, `args: [oidc-login, get-token, --oidc-issuer-url=https://<atlas-oidc>/realms/atlas, --oidc-client-id=<zone>-kubernetes, --oidc-extra-scope=profile|email|groups]`).
   - `contexts`: `dev`→(cluster dev,user oidc@dev), `prod`→idem.
-- Nécessite **kubelogin** (`devbox add kubelogin-oidc`). Login interactif **`authcode` par défaut** : le client `<zone>-kubernetes` enregistre `http://localhost:8000` / `:18000` (`tf-modules/services/kubernetes-oidc.tf`). ⚠ **Ne PAS** ajouter `--grant-type=authcode-keyboard` : ce mode utilise un redirect OOB non autorisé → `invalid redirect_uri`. Le token + un **refresh_token** sont cachés (`~/.kube/cache/oidc-login`) → appels suivants non interactifs. **RBAC** dérivé des groupes `<envId>:<role>` (admin workspace → admin du ns env). Helpers : **[`scripts/atlas/build-kubeconfig.sh`](../../scripts/atlas/build-kubeconfig.sh)** (kubeconfig TLS-vérifié via token rafraîchi).
+- Nécessite **kubelogin** (`devbox add kubelogin-oidc`). Login interactif **`authcode` par défaut** : le client `<zone>-kubernetes` enregistre `http://localhost:8000` / `:18000` (`tf-modules/services/kubernetes-oidc.tf`). ⚠ **Ne PAS** ajouter `--grant-type=authcode-keyboard` : ce mode utilise un redirect OOB non autorisé → `invalid redirect_uri`. Le token + un **refresh_token** sont cachés (`~/.kube/cache/oidc-login`) → appels suivants non interactifs. **RBAC** dérivé des groupes `<envId>:<role>` (admin workspace → admin du ns env). Helpers : **`scripts/atlas/build-kubeconfig.sh`** (kubeconfig TLS-vérifié via token rafraîchi).
 - **kubectl zone dev — `email_verified` obligatoire** : l'apiserver utilise `username-claim = email` → il **rejette tout token dont l'email n'est pas vérifié** (401 « propre » malgré aud/iss/kid/signature corrects). L'email du user doit être **vérifié dans Keycloak** (realm atlas-prod) ; avec un token frais, `kubectl --kubeconfig <kubeconfig API> --context dev get ns` fonctionne. `build-kubeconfig.sh` pour le non-interactif. *(Diag d'un 401 apiserver : si `iss`==well-known, `kid`∈JWKS, `/version`→200, alors c'est le token/claims, pas la connexion.)*
 - Quick links : ArgoCD `https://argocd.<domain>`, Grafana `https://grafana.<domain>`, Vault `https://vault.<zone>.<domain>`.
-- Outils & méthodes d'autonomie réutilisables : **[`scripts/atlas/`](../../scripts/atlas/README.md)** (vault-put, build-kubeconfig, + récap API GitLab/Atlas/Vault/Fabrique, publish chart OCI manuel, récup secrets Fabrique).
+- Outils & méthodes d'autonomie réutilisables : **`scripts/atlas/` (`scripts/atlas/README.md`)** (vault-put, build-kubeconfig, + récap API GitLab/Atlas/Vault/Fabrique, publish chart OCI manuel, récup secrets Fabrique).
 
 ## Ordre d'onboarding récapitulatif (produit → Atlas v2)
 1. (admin, 1×) Org + `initialAdmin=toi`.
