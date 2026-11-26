@@ -100,5 +100,12 @@ func (s *SMTPMailer) Send(ctx context.Context, m Message) error {
 	if err := wc.Close(); err != nil {
 		return fmt.Errorf("mail: finalize: %w", err)
 	}
-	return c.Quit()
+	// The relay answered 250 to the end of DATA: it has taken the
+	// message. A QUIT that fails now (dropped connection, EOF) changes
+	// nothing for the recipient, so the send stands and the deferred
+	// Close releases the connection.
+	if err := c.Quit(); err != nil {
+		s.cfg.Logger.Warn("mail: %s took the message, then QUIT failed: %v", addr, err)
+	}
+	return nil
 }

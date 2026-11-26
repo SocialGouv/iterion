@@ -1506,6 +1506,7 @@ func buildMailer(logger *iterlog.Logger) (mail.Mailer, error) {
 		Password: os.Getenv("ITERION_SMTP_PASSWORD"),
 		From:     os.Getenv("ITERION_SMTP_FROM"),
 		StartTLS: startTLS,
+		Logger:   logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("server: smtp config: %w", err)
