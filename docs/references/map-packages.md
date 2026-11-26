@@ -338,6 +338,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `scripts/ci/testcaps` | Command testcaps publishes a deterministic source census of test skips and sleeps, plus optional observations of the runner's literal prerequisites. | — |
 | `scripts/ci/testquarantine` | Command testquarantine reads the checked-in flake quarantine (scripts/ci/test-quarantine.tsv) and prints what the CI jobs consume: 	testquarantine… | — |
 | `scripts/ci/testshards` | Command testshards prints the Go test packages of one deterministic shard, the mechanism the CI matrix legs use to split `./...` across runners (the… | — |
+| `scripts/ci/train` | Command train lands a lot of ready pull requests on ONE local gate instead of one CI cycle each (#3736), and isolates the culprit when the lot is red. | `Gate`, `GitHub`, `Regenerator` |
 | `scripts/clawfold` | Command clawfold plans, applies and proves the fold of claw-code-go into pkg/claw (see internal/clawfold). | — |
 | `scripts/docslinks` | Command docslinks checks every relative link and `#anchor` in the repository's tracked markdown against the real tree, the way GitHub resolves them… | — |
 | `scripts/modelsnapshot` | Command modelsnapshot regenerates the embedded models.dev snapshot (pkg/backend/modelspecs/snapshot/models-dev.json): fetch, parse, render… | — |
