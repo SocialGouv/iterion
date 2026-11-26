@@ -53,7 +53,7 @@ by `kind`:
 - `kind: "malware"` — written/read by supply-shield (Shieldy) and
   sec-audit-deps (Depsy). Durable: a published artifact's malware verdict
   does not change unless the artifact does (the checksum guards that).
-- `kind: "cve"` — written/read by supply-shield-cve (Vulny). These carry
+- `kind: "cve"` — written/read by supply-shield-cve (Code Red). These carry
   an extra `advisory_db_date` and a SHORT ttl, because a clean-today
   version can gain a CVE tomorrow as advisories land — see that bot's
   package-cache skill.

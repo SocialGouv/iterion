@@ -1,6 +1,6 @@
 name: devbox-setup
-display_name: Devy
-icon: 🧰
+display_name: Devboxing
+icon: 🥊
 version: 0.1.4
 ## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside four prompts (6 in all) now reach the models
@@ -36,7 +36,7 @@ schema_version: 1
 invocations:
   - kind: command
     mode: board
-    command: { name: devy, aliases: [devbox-setup], scope: any, min_replier_role: maintainer }
+    command: { name: devboxing, aliases: [devy, devbox-setup], scope: any, min_replier_role: maintainer }
   - kind: board
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the

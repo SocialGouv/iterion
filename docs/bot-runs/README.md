@@ -54,9 +54,9 @@ first bilan for a bot lands.
 | Persona | Bot | Kind | Bilan |
 |---|---|---|---|
 | Nexie | `whats-next` | orchestrator / board triage | [whats-next.md](whats-next.md) |
-| Triagy | `issue-triage` | auto-triage of fresh board cards (stamps the handler bot) | [issue-triage.md](issue-triage.md) |
+| Right Direction | `issue-triage` | auto-triage of fresh board cards (stamps the handler bot) | [issue-triage.md](issue-triage.md) |
 | Appy | `app-dev` | greenfield app-from-prompt (interview / free first draft) | [app-dev.md](app-dev.md) |
-| Evoly | `evolve` | strategic vision + evolution proposals (per-bot memory) | [evolve.md](evolve.md) |
+| Deep Blue | `evolve` | strategic vision + evolution proposals (per-bot memory) | [evolve.md](evolve.md) |
 | Willy | `whole-improve-loop` | whole-repo review-fix loop | [whole-improve-loop.md](whole-improve-loop.md) |
 | Billy | `branch-improve-loop` | branch-scoped review-fix loop (commits) | [branch-improve-loop.md](branch-improve-loop.md) |
 | Featurly | `feature-dev` | one-shot feature dev + review loop | [feature-dev.md](feature-dev.md) |
@@ -70,10 +70,10 @@ first bilan for a bot lands.
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |
 | Depsy | `sec-audit-deps` | supply-chain SCA audit (real Trivy CVE floor; other malware/ecosystem signals remain partial) | [sec-audit-deps.md](sec-audit-deps.md) |
 | Shieldy | `supply-shield` | global supply-chain MALWARE shield (diff-scoped, PR/push-driven) | [supply-shield.md](supply-shield.md) |
-| Vulny | `supply-shield-cve` | global supply-chain CVE shield (diff-scoped, PR/push-driven) | [supply-shield-cve.md](supply-shield-cve.md) |
+| Code Red | `supply-shield-cve` | global supply-chain CVE shield (diff-scoped, PR/push-driven) | [supply-shield-cve.md](supply-shield-cve.md) |
 | Renovacy | `secured-renovacy` | dependency upgrade pipeline | [secured-renovacy.md](secured-renovacy.md) |
 | Bmady | `bmady` | BMAD multi-persona human-gated delivery | [bmady.md](bmady.md) |
-| Devy | `devbox-setup` | devbox.json bootstrap | [devbox-setup.md](devbox-setup.md) |
+| Devboxing | `devbox-setup` | devbox.json bootstrap | [devbox-setup.md](devbox-setup.md) |
 | Obsy | `instrument` | observability instrumentation (Sentry/GlitchTip errors + JSON logs; opt-in tracing) | [instrument.md](instrument.md) |
 | Adry | `adr-cartograph` | ADR cartographer + completeness audit (idempotent) | [adr-cartograph.md](adr-cartograph.md) |
 | Vetty | `dep-update-guard` | Dependabot/Renovate PR guard (audit + align + deterministic verify) | [dep-update-guard.md](dep-update-guard.md) |
@@ -81,11 +81,11 @@ first bilan for a bot lands.
 | Acci | `rgaa-audit` | RGAA / WCAG audit on the pinned ultra11y engine (read-only: the engine finds and gates, agents only adjudicate) | [rgaa-audit.md](rgaa-audit.md) |
 | Vigie | `feed-watch` | feed watch + LLM digest to chat (Huginn-style veille) | [feed-watch.md](feed-watch.md) |
 | Senti | `vuln-watch` | inventory-scoped vulnerability sentinel (KEV/EPSS-driven, zero LLM) | [vuln-watch.md](vuln-watch.md) |
-| ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
+| White Elephant | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
 | Goldy | `golden-master` | behavioural non-regression net, falsifiable both ways | [golden-master.md](golden-master.md) |
 | Morphy | `modernize` | gate-to-gate modernisation lots, oracle-protected | [modernize.md](modernize.md) |
 | Campy | `campaign` | modernisation-programme supervisor (runs `modernize` as a subbot; progress judged by git, not self-report) | [campaign.md](campaign.md) |
-| Themis | `arbitrate` | doctrine-bound judge for the divergence cases a programme leaves blocked | [arbitrate.md](arbitrate.md) |
-| Envy | `review-env` | live review environment — deploys the current commit, hands back a real https URL | [review-env.md](review-env.md) |
+| Grey Area | `arbitrate` | doctrine-bound judge for the divergence cases a programme leaves blocked | [arbitrate.md](arbitrate.md) |
+| Green Room | `review-env` | live review environment — deploys the current commit, hands back a real https URL | [review-env.md](review-env.md) |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |

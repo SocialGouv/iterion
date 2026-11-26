@@ -139,8 +139,14 @@ type Store interface {
 	// DeleteInvitationsByInviter removes every invitation userID created
 	// (Invitation.InvitedBy), in every team, and answers how many it
 	// removed: an erased account's pending invitations would still seat
-	// their invitees, since accepting one reads nothing of its creator.
+	// their invitees, since accepting one a session minted reads nothing of
+	// its creator (one a personal access token emailed reads that token's
+	// standing — Invitation.MintedWith).
 	DeleteInvitationsByInviter(ctx context.Context, userID string) (int64, error)
+	// ListPendingInvitationsMintedWith answers every not-yet-accepted
+	// invitation the personal access token credentialID minted
+	// (Invitation.MintedWith), in every team: what revoking that token ends.
+	ListPendingInvitationsMintedWith(ctx context.Context, credentialID string) ([]Invitation, error)
 
 	// OIDC links
 	UpsertOIDCLink(ctx context.Context, link OIDCLink) error

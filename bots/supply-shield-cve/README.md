@@ -1,4 +1,4 @@
-# supply-shield-cve (Vulny) — global supply-chain CVE shield
+# supply-shield-cve (Code Red, formerly Vulny) — global supply-chain CVE shield
 
 A PR / push-driven, **diff-scoped** CVE gate for dependency changes — the
 CVE-focused sibling of `supply-shield` (Shieldy). Same pipeline, but the

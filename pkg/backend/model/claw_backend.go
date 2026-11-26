@@ -965,9 +965,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if err != nil || pending.Name != approval.toolName || len(opts.Messages) == 0 {
 			return delegate.Result{}, fmt.Errorf("claw: exact approval has no matching pending conversation")
 		}
-		dispatcher, dispatchCtx := newToolDispatcher(WithoutExactClawApproval(ctx), buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		// The approved call's result joins the conversation the route
+		// receives: its images are shaped under the route's policy, like
+		// every call GenerateTextDirect dispatches.
+		imagesCtx, err := withRouteImagePolicy(WithoutExactClawApproval(ctx), &opts)
+		if err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
+		dispatcher, dispatchCtx := newToolDispatcher(imagesCtx, buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
 		call := toolUseBlock{ID: task.ResumePendingToolUseID, Name: pending.Name, PartialJSON: string(pending.Input)}
-		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval)
+		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval, dispatcher.images)
 		if err != nil {
 			return delegate.Result{}, err
 		}
@@ -1070,6 +1077,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 func clawUsageWindow(err error, now time.Time) error {
 	if err == nil || delegate.IsUsageWindow(err) {
 		return err
+	}
+	// A budget refusal, under whatever status or channel the gateway served
+	// it (LiteLLM: 400, 422, 429, 500, a stream frame), is the spend ceiling
+	// every backend parks on as an account refusal.
+	if spend, ok := delegate.SpendCeilingRefusal(delegate.BackendClaw, err); ok {
+		return spend
 	}
 	var detail string
 	var httpErr *api.APIError
@@ -1832,7 +1845,14 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if !ran {
 			finalTurn = fmt.Sprintf("none on this attempt, the conversation it replays already holding the %d tool turns of its tool_max_steps", toolStepBudgetFrom(ctx).limit)
 		}
-		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
+		// The recovery's error is WRAPPED: its type is the cause of record
+		// (a provider refusal, a context overflow, a transient fault), and
+		// every layer above — the in-node retry, node recovery, the run's
+		// redelivery — decides from it rather than from this text.
+		if recErr == nil {
+			recErr = errors.New("no structured object returned")
+		}
+		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %w",
 			finalTurn, recErr)
 	}
 	output := map[string]any{"text": text}
@@ -3312,6 +3332,13 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// after the host refused it. Empty reads as the fallback on both sides;
 	// the operator's own export crosses intact.
 	for _, name := range clawStreamTimeoutEnvVars {
+		env[name] = envtrust.Inherited(name)
+	}
+	// The route image bounds' escape hatches cross the same way: the
+	// generation that shapes tool images and builds requests runs in the
+	// container for a sandboxed node, which must bound them as the host
+	// reads them — planted-as-unset, an explicit empty included.
+	for _, name := range clawImageBoundEnvVars {
 		env[name] = envtrust.Inherited(name)
 	}
 	// The workspace-agent ceiling crosses ALWAYS, the routing pattern pushed

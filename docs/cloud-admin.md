@@ -723,8 +723,10 @@ The audit log is a persistent, queryable collection
 every control-plane mutation (orgs, teams, members, invitations, secrets,
 bindings, webhooks, tokens, DLQ) and every **sign-in** — accepted or
 refused, every provider — as one row with actor, action, target, IP (the
-immediate peer's address and port: no deployment setting trusts a
-forwarded header yet, #2673 — behind an ingress, the ingress pod's),
+client's address without its port — a forwarded header is read only from a
+peer inside `ITERION_AUTH_TRUSTED_PROXY_CIDRS`, otherwise the immediate
+peer's, which behind an ingress is the ingress pod's; see
+[trusted proxies](environment-variables.md#trusted-proxies-server)),
 user-agent and a small `meta`. Two scopes: tenant rows
 (`GET /api/teams/{id}/audit` the team-keyed ones, team admins;
 `GET /api/orgs/{id}/audit` the org-keyed ones, sign-ins included, org

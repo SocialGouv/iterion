@@ -100,10 +100,12 @@ Code:
   behind the compile-time warning (C159) sits beside the catalog
   ([refused.go](../../../pkg/backend/toolcatalog/refused.go)) and holds
   the `cron_*`, `team_*` and `lsp` names: registered, every call
-  typed-refused, since nothing reads their registries back. C159 fires
-  on a node whose source names claw — its `backend:`, the workflow
-  `default_backend`, or a claw `fallbacks:` route; a node with no
-  backend anywhere stays silent, the run-time refusal still holds. The
+  typed-refused, since nothing reads their registries back. On a
+  `tools:` or `agent_tools:` list C159 fires where the source names
+  claw — its `backend:`, the workflow `default_backend`, or a claw
+  `fallbacks:` route; such a node with no backend anywhere stays
+  silent, the run-time refusal still holds. A tool node's registry
+  `command:` is warned whatever the backend: claw's registry runs it. The
   `worker_*` family reads like the same case and is not: the MODEL drives
   that state machine — the node spawns the terminal through `bash` and
   feeds back what it shows via `worker_observe`, which advances

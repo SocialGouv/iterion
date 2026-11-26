@@ -102,6 +102,10 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	if err := guardNonEmptyConversation(opts.Messages); err != nil {
 		return nil, err
 	}
+	ctx, err := withRouteImagePolicy(ctx, &opts)
+	if err != nil {
+		return nil, err
+	}
 	// UserPromptSubmit BEFORE the Stop defer: a prompt the hook blocks
 	// never became a session, so it must not fire the session-end event
 	// (Stop observers would see an end for a start that never happened).
@@ -322,10 +326,10 @@ func withToolUseInstruction(messages []api.Message) []api.Message {
 }
 
 // isGrammarRefusal reports whether err is a gateway refusing to compile the
-// request's schemas into a decoding grammar (api.APIError.IsGrammarRefusal).
+// request's schemas into a decoding grammar, on an HTTP response or in a
+// stream error frame alike (api.RefusalOf).
 func isGrammarRefusal(err error) bool {
-	var apiErr *api.APIError
-	return errors.As(err, &apiErr) && apiErr.IsGrammarRefusal()
+	return api.RefusalOf(err) == api.RefusalGrammar
 }
 
 // requiresAdaptiveThinking reads the vendor's adaptive-thinking profile on
@@ -664,6 +668,10 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		return nil, fmt.Errorf("GenerateObjectDirect requires ExplicitSchema to be set")
 	}
 	if err := guardNonEmptyConversation(opts.Messages); err != nil {
+		return nil, err
+	}
+	ctx, err := withRouteImagePolicy(ctx, &opts)
+	if err != nil {
 		return nil, err
 	}
 	// UserPromptSubmit BEFORE the Stop defer, like GenerateTextDirect: a

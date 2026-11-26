@@ -1,8 +1,22 @@
 # ADR-155: reserved capacity is a durable allocation — one ledger, one atomic acquire, a settle and a sweep
 
-Status: accepted — the decisions are taken: the operator decided on 2026-11-03 that the shape stands as written and that a reservation's identity is tier-qualified (decision 11). Design only — nothing below is built; the units are tracked under #950.
+Status: accepted — the decisions are taken: the operator decided on 2026-11-03 that the shape stands as written and that a reservation's identity is tier-qualified (decision 11); amended on 2026-11-24 (status note below). Nothing of the decision is built; #950 is closed, and the open units are tracked as #2971, #2973, #2974, #2975 and #2980.
 Date: 2026-11-03
 Issue: SocialGouv/iterion#950
+
+> **Status note — 2026-11-26.** On 2026-11-24 the operator amended this record
+> ([decision on #2968](https://github.com/SocialGouv/iterion/issues/2968#issuecomment-7130591147)):
+> there is no `pkg/capacityledger`. The slot axes — the team cap, the per-bot
+> reserve and a future pool pledge — become subjects of `store.CredSlotStore`,
+> the run-admission ledger the per-key cap ships on (#2643) and
+> [ADR-167](167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md)
+> extends. The ledger package, its adapters and its sweep are not built, and
+> nothing is built without a trigger: no reservation or cap is live in prod.
+> Units 1, 2, 3, 5 and 9 (#2968, #2969, #2970, #2972, #2976) are closed as not
+> planned; units 4, 6, 7, 8 and 11 (#2971, #2973, #2974, #2975, #2980) stay
+> open and proceed without a ledger. The ledger returns to the table only if a
+> live reservation appears.
+> The decision and units below keep the original design.
 
 ## Context
 

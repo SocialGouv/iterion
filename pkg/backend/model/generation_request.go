@@ -139,6 +139,12 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
+	// Every request crosses here, so the route's per-request image budget
+	// is held here; the history keeps its images.
+	messages, err := boundRequestImages(messages, opts.images)
+	if err != nil {
+		return api.CreateMessageRequest{}, err
+	}
 
 	req := api.CreateMessageRequest{
 		Model:       wireModelID(opts.Model),

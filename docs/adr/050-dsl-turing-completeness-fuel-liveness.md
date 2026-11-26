@@ -9,6 +9,18 @@ mutable-state tier (Layer C) is a documented **non-goal** for now. The
 cloud-side forced budget ceiling is wired (`ir.Budget.ClampToCeiling` +
 `applyCloudBudgetCeiling`).
 
+> **Status note — 2026-11-26.** The ceiling is opt-in, so the "multitenant
+> safety is unconditional" claim under *Multitenant safeguard* does not hold
+> as written: `applyCloudBudgetCeiling` is a no-op while every
+> [`ITERION_CLOUD_MAX_*`](../environment-variables.md#platform-budget-ceiling-cloud)
+> variable is unset ([loop.go](../../pkg/runner/loop.go)), and the Helm chart
+> sets none of them. Until a deployment sets at least one, a run's budget is
+> what its bot declares (plus launch overrides). The launch gate's caps — team
+> concurrency and launch rate, org monthly run quota and cost cap — are
+> opt-in too: each is unlimited until an override or an `ITERION_ORG_DEFAULT_*`
+> sets it, and the chart ships them at 0, so with the stock chart nothing
+> bounds a run's budget.
+
 ## Context
 
 The iterion `.bot` DSL was deliberately **total** (guaranteed-terminating),

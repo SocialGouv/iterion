@@ -261,6 +261,10 @@ generally don't work. Each target must be built on a matching host:
 
 ## CI flow (`.github/workflows/desktop-release.yml`)
 
+The workflow runs on `workflow_dispatch` only until its builds publish again
+([#3740](https://github.com/SocialGouv/iterion/issues/3740)): dispatch it on
+the release tag with `gh workflow run desktop-release.yml --ref v<X.Y.Z>`.
+
 1. `actions/setup-go` + `actions/setup-node`.
 2. `go install wails@latest` and `go install task@latest`; both end up in
    `$GOPATH/bin`, which is appended to `GITHUB_PATH`.
@@ -282,6 +286,6 @@ generally don't work. Each target must be built on a matching host:
   editor, can run a `.bot` workflow end-to-end.
 - The AppImage produced by `task desktop:package:linux:amd64` runs on a
   freshly-installed Debian or Ubuntu without devbox installed.
-- Drop a `v*` tag → `desktop-release.yml` job is green for all five matrix
+- Dispatch `desktop-release.yml` on the `v*` tag → the job is green for all five matrix
   entries (darwin/universal, windows/amd64, windows/arm64, linux/amd64,
   linux/arm64 — the two macOS jobs are collapsed into one universal build).

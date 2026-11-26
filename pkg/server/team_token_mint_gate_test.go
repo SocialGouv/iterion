@@ -157,8 +157,10 @@ func TestTeamTokenMints_ARevokedSessionsAccessTokenMintsNone(t *testing.T) {
 
 // TestTeamTokenMints_APersonalAccessTokenMintsNone: a personal access token
 // is pinned to its team and its own expiry, so it mints no team token that
-// would outlive it — each of the six answers 403 with the chokepoint's own
-// wording before its handler runs.
+// would outlive it — each webhook and share-link mint answers 403 with the
+// chokepoint's own wording before its handler runs. The invitations are the
+// one exception, minted for delivery by email only
+// (TestInvitations_APersonalAccessTokenInvitesByEmailOnly).
 func TestTeamTokenMints_APersonalAccessTokenMintsNone(t *testing.T) {
 	f := teamTokenMintFixture(t)
 	code, patToken := f.mintPAT(t, f.user.AccessToken, "ci")
@@ -167,6 +169,9 @@ func TestTeamTokenMints_APersonalAccessTokenMintsNone(t *testing.T) {
 	}
 	hooks, shares, invitations := mintedCounts(t, f)
 	for _, c := range teamTokenMints("no-such-webhook", "no-such-share") {
+		if strings.HasSuffix(c.path, "/invitations") {
+			continue
+		}
 		code, _, body := f.call(t, c.method, c.path, patToken, c.body)
 		if code != http.StatusForbidden {
 			t.Fatalf("%s %s with a personal access token: %d %s, want 403", c.method, c.path, code, body)

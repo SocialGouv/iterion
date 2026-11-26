@@ -110,15 +110,15 @@ func (r OrgRole) AtLeast(want OrgRole) bool {
 // Valid reports whether r is one of the three known org roles.
 func (r OrgRole) Valid() bool { return r.rank() > 0 }
 
-// OrgRoleForTeamRole maps a team Role to the org role it implies when
-// a team membership is mirrored up to the org (used on signup, invite,
-// and the teams→orgs backfill): team owners/admins become org admins,
-// everyone else an org member.
+// OrgRoleForTeamRole maps a team Role to the org membership a team grant
+// mirrors up to (an SSO grant, an accepted invitation that names no org role):
+// every ladder role, owner included, is an org MEMBER. A team rank is a rank
+// in that team and nowhere else: an org admin manages every team of the org,
+// its roster and its sign-in, which is a separate decision an org-role write
+// or an invitation naming the org role makes on purpose (ADR-048, as amended
+// 2026-11-26).
 func OrgRoleForTeamRole(r Role) OrgRole {
-	switch {
-	case r.AtLeast(RoleAdmin):
-		return OrgRoleAdmin
-	case r.AtLeast(RoleViewer):
+	if r.AtLeast(RoleViewer) {
 		return OrgRoleMember
 	}
 	// A capability OUTSIDE the ladder (config_editor, rank 0) confers no org
@@ -126,6 +126,23 @@ func OrgRoleForTeamRole(r Role) OrgRole {
 	// would pass canViewOrg. Login still resolves the org context with an empty
 	// OrgRole, which the org gates reject.
 	return ""
+}
+
+// InvitationOrgRole is the org membership accepting an invitation at team
+// role `role` writes, given the org role the invitation names: none for a
+// capability off the ladder (config_editor, ADR-078), whatever it names;
+// the named role when it is a valid one; an org member otherwise. An
+// invitation minted before invitations named their org role reads as naming
+// none.
+func InvitationOrgRole(role Role, named OrgRole) OrgRole {
+	mirror := OrgRoleForTeamRole(role)
+	if mirror == "" {
+		return ""
+	}
+	if named.Valid() {
+		return named
+	}
+	return mirror
 }
 
 // UserStatus tracks whether the user can log in. Disabled users
@@ -577,10 +594,20 @@ const (
 // Invitation is a pending offer to join a team. The token surfaced
 // in the email is hashed in TokenHash; we never store the plaintext.
 type Invitation struct {
-	ID         string     `bson:"_id" json:"id"`
-	TeamID     string     `bson:"team_id" json:"team_id"`
-	Email      string     `bson:"email" json:"email"`
-	Role       Role       `bson:"role" json:"role"`
+	ID     string `bson:"_id" json:"id"`
+	TeamID string `bson:"team_id" json:"team_id"`
+	Email  string `bson:"email" json:"email"`
+	Role   Role   `bson:"role" json:"role"`
+	// OrgRole is the org membership accepting the invitation writes in the
+	// team's parent org, decided apart from Role: a team invitation names
+	// member, an org invitation the role its minter chose. Read it through
+	// OrgRoleOnAccept, which also answers the rows minted before it existed.
+	OrgRole OrgRole `bson:"org_role,omitempty" json:"org_role,omitempty"`
+	// MintedWith is the id of the personal access token that minted the
+	// invitation (delivered by email only — ADR-174), empty for one a session
+	// minted. Accepting it requires that token to still stand: a revoked or
+	// expired token, or a disabled account, ends what it sent.
+	MintedWith string     `bson:"minted_with,omitempty" json:"minted_with,omitempty"`
 	TokenHash  string     `bson:"token_hash" json:"-"`
 	InvitedBy  string     `bson:"invited_by" json:"invited_by"`
 	CreatedAt  time.Time  `bson:"created_at" json:"created_at"`
@@ -600,6 +627,13 @@ type Invitation struct {
 // same way.
 func (i Invitation) AddressedTo(addr string) bool {
 	return NormalizeEmail(i.Email) == addr
+}
+
+// OrgRoleOnAccept is the org membership accepting this invitation writes
+// (InvitationOrgRole): what the accept paths mirror up, and what every cap,
+// confirmation and sweep measures an invitation's org reach by.
+func (i Invitation) OrgRoleOnAccept() OrgRole {
+	return InvitationOrgRole(i.Role, i.OrgRole)
 }
 
 // OIDCLink binds a User to an external IdP identity. Composite key

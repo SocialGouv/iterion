@@ -244,12 +244,12 @@ func botVisionRef(repo, botID string) knowledge.SpaceRef {
 }
 
 // TestInstallWorkspaceMemory_VisibilityBot_HonoursBotPath is the end-to-end
-// proof of the per-bot cross-session memory feature Evoly relies on: a
+// proof of the per-bot cross-session memory feature Deep Blue relies on: a
 // visibility:bot write lands at the per-bot path (NOT the legacy
 // project-shared path), and a fresh session autoloads it back into the
 // system prompt. This is the single test that exercises the real
 // installWorkspaceMemory + FSStore + ResolveSpaceRef chain for the
-// bot-visibility axis, which had no shipped consumer before Evoly.
+// bot-visibility axis, which had no shipped consumer before Deep Blue.
 func TestInstallWorkspaceMemory_VisibilityBot_HonoursBotPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ITERION_HOME", home)

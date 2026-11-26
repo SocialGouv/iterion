@@ -44,8 +44,9 @@ self-authenticating inbound webhook endpoints that launch a bot per
 external event — GitLab MR open/reopen **and** `/revi` note re-review,
 GitHub PR, Forgejo/Gitea PR, and a generic JSON trigger. Per-org
 `iwh_` tokens (token or HMAC mode), rate limits, monthly quotas,
-idempotent delivery audit, and the per-org launch gate (run quota /
-cost cap / concurrency — `pkg/orgusage` + `pkg/server/launch_gate.go`)
+idempotent delivery audit, and the launch gate (org run quota / cost
+cap, team concurrency / launch rate — `pkg/orgusage` +
+`pkg/server/launch_gate.go`)
 all sit in front of the launch. Key files:
 [pkg/webhooks/](../../../pkg/webhooks) (spine + per-provider parsers),
 [pkg/server/webhooks_common.go](../../../pkg/server/webhooks_common.go) (shared
@@ -80,10 +81,10 @@ ship on the spine**:
   **`consume_labels: true`** the matcher's `all_labels` set is stripped
   atomically pre-launch, making the label a one-shot re-armable trigger.
   This powers **issue auto-triage** (`bots/issue-triage`, persona
-  Triagy): forge issues synced to the board are author-classified at
+  Right Direction): forge issues synced to the board are author-classified at
   ingest (fail-closed trust gate — `authorTrust` over
   `forge.PermissionClient`, threshold `MinAuthorRole`); trusted authors'
-  cards land in inbox with `triage:auto` (fires Triagy, who stamps the
+  cards land in inbox with `triage:auto` (fires Right Direction, who stamps the
   handler bot + labels via `set_bot`), untrusted ones park with
   `needs:approval` + zero LLM until the operator's studio "Approve &
   triage" swaps the labels. The same author gate protects the webhook

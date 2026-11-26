@@ -254,7 +254,7 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		errMsg := fmt.Sprintf("API error %d: %s", resp.StatusCode, string(errBody))
-		retryable := isRetryableStatus(resp.StatusCode)
+		retryable := isRetryableStatus(resp.StatusCode) && ClassifyRefusal(resp.StatusCode, "", string(errBody)) == RefusalNone
 
 		if c.Tracer != nil {
 			c.Tracer.RecordHTTPRequestFailed(attempt, "POST", "/v1/messages", errMsg, retryable, nil)

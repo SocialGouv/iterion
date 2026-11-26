@@ -1,6 +1,6 @@
 name: evolve
-display_name: Evoly
-icon: 🧬
+display_name: Deep Blue
+icon: ♟️
 version: 0.2.0
 ## 0.2.0 — the reviewer nodes name ROLES, not vendors (ADR-169): `reviewer`
 ## (claude_code + a claude model, with tools — the one every round runs) and
@@ -31,20 +31,20 @@ version: 0.2.0
 ## No instruction changed.
 description: |
   Strategic / architectural / visionary partner. On a mature, stable
-  repository, Evoly surveys the codebase, accumulates a long-horizon
+  repository, Deep Blue surveys the codebase, accumulates a long-horizon
   architectural VISION in PER-BOT persistent memory across sessions,
   interrogates the operator MID-INVESTIGATION (ask_user) to collect the
   context the code alone cannot give, and proposes natural evolutions as
   dispatch-ready backlog tickets.
 
-  Evoly sits ABOVE Nexie in the workflow stack: Evoly names where the
+  Deep Blue sits ABOVE Nexie in the workflow stack: Deep Blue names where the
   project should be in a year; Nexie names what to do this week. Each
   proposed evolution lands as a kanban ticket pre-filled with bot +
   bot_args (so a human can launch it by dragging it to ready, or Nexie
   can action it) plus the full plan / technical decisions in the
   project-shared findings/ memory scope.
 
-  Evoly PROPOSES and ARCHITECTS — it does not implement features.
+  Deep Blue PROPOSES and ARCHITECTS — it does not implement features.
   Implementation is handed to feature-dev / bmady via Nexie's
   roadmap-and-dispatch pipeline.
 

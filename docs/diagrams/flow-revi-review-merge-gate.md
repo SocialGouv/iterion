@@ -130,7 +130,7 @@ Run-side marks are a **different** vocabulary: `settleGateRun` writes one `gateS
 | `webhook_configs` | the tenant selector and the policy: token hash, `Enabled`, rate limit, bot rules, author and project allowlists, hold labels, `ReviewOnSync` and its operator pin |
 | `webhook_deliveries` | the idempotency and retry ledger of every lane — launch, deferred launch, relaunch, auto-fix, approve — with the terminal status it ended on |
 | `webhook_deferred_launches` | a synchronize launch parked for the debounce window |
-| `webhook_quotas` | the per-org monthly and per-webhook call counters |
+| `webhook_quotas` | the per-team monthly and per-webhook call counters |
 | `repo_integrations` | the repo's pinned launch vars (`gate_context`, `gate_enabled`, review tier) and `AutoFixOnGateFailure` |
 | `forge_connections` | the team connection the status and the review are written through, re-checked for tenant and host at every writer |
 | `runs` | the run inputs the repair reads back — `pr_url`, `head_sha`, `gate_context`, the grant token — and `FailureCode` / `FinishedAt` |

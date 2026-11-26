@@ -5,6 +5,16 @@
 - **Authors**: Adry
 - **Code**: [pkg/server/launch_gate.go](../../pkg/server/launch_gate.go)
 
+> **Status note — 2026-11-26.** The launch rate is in-memory only where no
+> Valkey is wired: `gateLaunchRate` consumes from the server's rate limiter,
+> which is a Valkey Lua token bucket shared by every replica when a Valkey
+> backend is wired, and a per-pod in-memory bucket without one
+> ([server.go](../../pkg/server/server.go), [valkey_stores.go](../../pkg/server/valkey_stores.go)).
+> The bucket is per team (`LaunchRatePerMin` is a team field), and a Valkey
+> error admits the launch, in line with this record's fail-open rule.
+> ADR-162's U6 is built, so the 2026-11-05 amendment below is enforced:
+> an untrusted launch's degraded arms answer `forkClosedDenial`.
+
 ## Context
 
 Run admission combines several gates: org suspend/read-only status, active-run concurrency, in-memory launch rate, monthly run quota, monthly cost cap, and the Mongo-backed metering increment. Some gates are cheap and local; others depend on Mongo and can transiently fail.

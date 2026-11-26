@@ -2,6 +2,7 @@ package cloudsched
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -137,16 +138,120 @@ func TestTickerHeldSlotWritesNoLaunchVerdict(t *testing.T) {
 	}
 }
 
-// Every other maintenance hold — an unreadable fence record, a launch whose
-// run could not be persisted — repeats on every tick while nothing launches:
-// the ticker records it as the schedule's launch verdict, so the watch sees
-// the refusal.
-func TestTickerPersistenceHoldWritesLaunchVerdict(t *testing.T) {
-	held := fmt.Errorf("cloudpublisher: save run: %w", fmt.Errorf("%w: schedule persistence: lease lost", schedgate.ErrMaintenanceHold))
-	sb := tickOnce(t, "", held)
-	if sb.LastError != held.Error() {
-		t.Fatalf("last_error after a persistence hold = %q, want %q", sb.LastError, held.Error())
+// A launch refused because its holder lost the schedule's lease is no verdict
+// either: the successor that took the lease over owns the slot and records
+// its own verdict, which the loser must not overwrite from its stale read.
+func TestTickerLostLeaseWritesNoLaunchVerdict(t *testing.T) {
+	for _, prior := range []string{"", "launch gate: concurrency_cap_exceeded"} {
+		t.Run("prior="+prior, func(t *testing.T) {
+			lost := fmt.Errorf("cloudpublisher: save run: %w", fmt.Errorf("schedule persistence: %w", schedgate.ErrScheduleLeaseLost))
+			sb := tickOnce(t, prior, lost)
+			if sb.LastError != prior {
+				t.Fatalf("last_error after a lost lease = %q, want it unchanged (%q)", sb.LastError, prior)
+			}
+		})
 	}
+}
+
+// A run that could not be persisted while the lease was held repeats on
+// every tick while nothing launches: the ticker records it as the schedule's
+// launch verdict, so the watch sees the refusal. The verdict is the hold's
+// stable text, not the driver's error, so a driver message that varies from
+// tick to tick (a connection id) keeps one verdict and one episode.
+func TestTickerPersistenceHoldWritesStableLaunchVerdict(t *testing.T) {
+	st, tick, launchErr := tickRig(t)
+	for i, driver := range []string{"connection(10.0.0.7:27017[-41]) incomplete read", "connection(10.0.0.7:27017[-42]) incomplete read"} {
+		*launchErr = fmt.Errorf("cloudpublisher: save run: %w", fmt.Errorf("%w: schedule persistence: %s", schedgate.ErrLaunchNotPersisted, driver))
+		tick(i)
+	}
+	sb := getRow(t, st)
+	if want := schedgate.ErrLaunchNotPersisted.Error(); sb.LastError != want {
+		t.Fatalf("last_error after a persistence hold = %q, want %q", sb.LastError, want)
+	}
+	if sb.LastErrorAt == nil || !sb.LastErrorAt.Equal(tickRigNow) {
+		t.Fatalf("last_error_at = %v, want the first hold's tick %v: a varying driver text re-opened the episode", sb.LastErrorAt, tickRigNow)
+	}
+}
+
+// An unreadable fence record is a verdict, but the armed fence that follows
+// it, once the record reads again, supersedes it: the ticks the operator's
+// fence holds clear the "could not be read" verdict instead of leaving it on
+// the row for the whole maintenance window.
+func TestTickerArmedFenceClearsUnreadableFenceVerdict(t *testing.T) {
+	st, tick, launchErr := tickRig(t)
+	*launchErr = fmt.Errorf("launch gate: maintenance_fence: read failed: %w", schedgate.ErrMaintenanceFenceUnreadable)
+	tick(0)
+	if sb := getRow(t, st); sb.LastError != schedgate.ErrMaintenanceFenceUnreadable.Error() {
+		t.Fatalf("last_error after an unreadable fence = %q, want %q", sb.LastError, schedgate.ErrMaintenanceFenceUnreadable.Error())
+	}
+	*launchErr = fmt.Errorf("launch gate: maintenance_fence: armed: %w", schedgate.ErrMaintenanceFenceArmed)
+	tick(1)
+	if sb := getRow(t, st); sb.LastError != "" {
+		t.Fatalf("last_error after an armed-fence tick = %q, want the unreadable-fence verdict cleared", sb.LastError)
+	}
+}
+
+// A tick whose context ends during the launch records nothing: the replica
+// is stopping, and the slot is held for whoever ticks next.
+func TestTickerCancelledLaunchWritesNoLaunchVerdict(t *testing.T) {
+	const prior = "launch gate: concurrency_cap_exceeded"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewMemoryStore()
+	if err := st.Create(ctx, ScheduledBot{ID: "sb-1", BotID: "b", Cron: "* * * * *", NextFireAt: tickRigNow.Add(-30 * time.Second)}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := st.MarkLaunchError(ctx, "sb-1", prior, tickRigNow.Add(-time.Hour)); err != nil {
+		t.Fatalf("MarkLaunchError: %v", err)
+	}
+	launched := 0
+	tk := &Ticker{Store: st, Now: func() time.Time { return tickRigNow },
+		Launch: func(context.Context, ScheduledBot) error {
+			launched++
+			cancel()
+			return errors.New("launch: context canceled")
+		}}
+	_, _ = tk.Tick(ctx) // the cancelled tick's own error is not under test
+	if launched != 1 {
+		t.Fatalf("launched %d time(s), want 1", launched)
+	}
+	if sb := getRow(t, st); sb.LastError != prior {
+		t.Fatalf("last_error after a cancelled launch = %q, want it unchanged (%q)", sb.LastError, prior)
+	}
+}
+
+var tickRigNow = time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+
+// tickRig creates one schedule due every minute and returns its store, a
+// tick(i) that ticks i minutes after tickRigNow, and the error every launch
+// returns, which the test sets before each tick.
+func tickRig(t *testing.T) (*MemoryStore, func(int), *error) {
+	t.Helper()
+	ctx := context.Background()
+	st := NewMemoryStore()
+	if err := st.Create(ctx, ScheduledBot{ID: "sb-1", BotID: "b", Cron: "* * * * *", NextFireAt: tickRigNow.Add(-30 * time.Second)}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var launchErr error
+	tick := func(i int) {
+		t.Helper()
+		now := tickRigNow.Add(time.Duration(i) * time.Minute)
+		tk := &Ticker{Store: st, Now: func() time.Time { return now },
+			Launch: func(context.Context, ScheduledBot) error { return launchErr }}
+		if _, err := tk.Tick(ctx); err != nil {
+			t.Fatalf("Tick %d: %v", i, err)
+		}
+	}
+	return st, tick, &launchErr
+}
+
+func getRow(t *testing.T, st Store) ScheduledBot {
+	t.Helper()
+	sb, err := st.Get(context.Background(), "sb-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	return sb
 }
 
 // tickOnce runs one Tick over a single due schedule whose launch returns

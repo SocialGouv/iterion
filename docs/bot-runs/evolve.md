@@ -1,4 +1,4 @@
-# Evoly (`evolve`) — bot run bilan
+# Deep Blue (`evolve`, formerly Evoly) — bot run bilan
 
 Strategic / architectural evolution partner. Surveys a mature repo,
 accumulates a long-horizon vision in **per-bot** memory across sessions,

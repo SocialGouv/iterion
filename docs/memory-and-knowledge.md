@@ -80,8 +80,15 @@ Two levels, both enforced at write:
 ([pkg/knowledge/quota.go](../pkg/knowledge/quota.go)).
 
 `GET /api/orgs/{id}/usage` surfaces the org's `memory_used_bytes`
-against `effective_memory_quota_bytes` for the org member; the per-space
-write CAS is what actually blocks an over-budget write.
+next to `effective_memory_quota_bytes` for the org member. The two are not
+comparable: `memory_used_bytes` sums the counters of every team in the org,
+while `effective_memory_quota_bytes` is the ceiling each team's counter
+meets on its own (the per-team aggregate above), so an org of several teams
+can read above the quota with no team over budget. The override reaches the
+counters of the teams that exist when it is written; a team added later
+meets the 1 GiB default until the override is written again
+([#3754](https://github.com/SocialGouv/iterion/issues/3754)). The per-space write CAS
+is what actually blocks an over-budget write.
 
 ## REST surface
 

@@ -10,38 +10,38 @@ The bundles under `bots/`, then the skills they carry.
 | Bot | Persona | What it does | Version |
 |---|---|---|---|
 | `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.3 |
-| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.4 |
+| `adr-rechallenge` | 🐘 White Elephant | Human-in-the-loop ADR re-challenge. | 0.1.4 |
 | `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 0.5.0 |
-| `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
+| `arbitrate` | ⚖️ Grey Area | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
 | `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.4 |
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.5 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.10.0 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.4 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.12.3 |
-| `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
+| `devbox-setup` | 🥊 Devboxing | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.0 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.6.0 |
-| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.2.0 |
+| `evolve` | ♟️ Deep Blue | Strategic / architectural / visionary partner. | 0.2.0 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.8.0 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 2.5.0 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.8.0 |
 | `gitops-warden` | 🛡 Warden | GitOps merge gate. | 0.3.1 |
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 0.2.0 |
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.3.0 |
-| `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
+| `issue-triage` | 🏷️ Right Direction | Lightweight single-shot card triage. | 0.2.3 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.8.0 |
 | `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (scheduled ticks, zero LLM in this slice — the compiled workflow contains no agent or… | 0.4.0 |
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.6.0 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.2.1 |
-| `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
+| `review-env` | 🌐 Green Room | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.11.1 |
 | `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.3.0 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.11 |
 | `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.6 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 0.1.6 |
-| `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.6 |
+| `supply-shield-cve` | 🚨 Code Red | Global supply-chain CVE shield. | 0.1.6 |
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.5.0 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 0.1.2 |
 | `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.12 |
@@ -61,8 +61,8 @@ The pair a model sees before it decides to open the file.
 | `adr-cartograph` | `completeness-taxonomy` | The 8 enum-locked kinds of feature gap Adry recognises in the completeness audit. |
 | `adr-cartograph` | `decision-vs-mechanic` | The dam against ADR-spam. |
 | `adr-cartograph` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
-| `adr-rechallenge` | `argument-framing` | ReArchi's contract for honest re-challenge arguments. |
-| `adr-rechallenge` | `rearchi` | Operating playbook for ReArchi — the human-in-the-loop ADR re-challenger. |
+| `adr-rechallenge` | `argument-framing` | White Elephant's contract for honest re-challenge arguments. |
+| `adr-rechallenge` | `rearchi` | Operating playbook for White Elephant — the human-in-the-loop ADR re-challenger. |
 | `app-dev` | `code-review-invariants` | The cross-cutting invariants an adversarial self-review must check on a code diff before it ships — the defect classes that… |
 | `app-dev` | `forge-mr-create` | How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or… |
 | `app-dev` | `greenfield-bootstrap` | Stack-agnostic scaffold and walking-skeleton discipline for creating a NEW application in a bare workspace — stack detection,… |
@@ -95,7 +95,7 @@ The pair a model sees before it decides to open the file.
 | `dep-update-guard` | `dependency-pr-guard` | Operating playbook for Vetty — guarding an automated dependency-update PR (Dependabot/Renovate). |
 | `dep-update-guard` | `package-managers` | Reference for package-manager operations across common ecosystems — discovery (what's outdated), upgrade (bump one or many),… |
 | `dep-update-guard` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
-| `devbox-setup` | `devbox-setup` | Playbook for authoring a pinned devbox.json that reproduces a repo's build/test/e2e toolchain, for use by Devy (devbox-setup) and… |
+| `devbox-setup` | `devbox-setup` | Playbook for authoring a pinned devbox.json that reproduces a repo's build/test/e2e toolchain, for use by Devboxing… |
 | `docs-refresh` | `anti-facade-fix-rules` | Evidence and editing discipline for Doki's single documentation-alignment campaign. |
 | `docs-refresh` | `context-sources` | Reading the run's optional product-context material (reference repos, tracker snapshot) — what it grounds, how to read it per… |
 | `docs-refresh` | `doc-enrichment` | Discipline for the code→docs half of a Doki campaign — what deserves documentation, where to put it, how to write it, when to… |
@@ -109,11 +109,11 @@ The pair a model sees before it decides to open the file.
 | `e2e-coverage` | `feature-inventory` | How to enumerate an application's FEATURES from the outside (docs, CLI surface, API routes, configuration, grammar/DSL, UI… |
 | `e2e-coverage` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
 | `e2e-coverage` | `verify-tests` | Detect and run a repository's OWN test suite so a deterministic gate can confirm the new tests actually pass before the campaign… |
-| `evolve` | `architectural-axes` | A vocabulary of evolution axes Evoly draws from when synthesising a vision — reliability, performance, DX, modularity, and more. |
-| `evolve` | `backlog-handoff` | How Evoly hands proposed evolutions to Nexie and the operator — one deep artifact per evolution in the shared findings/ memory… |
-| `evolve` | `elicitation-discipline` | How Evoly interrogates the operator mid-investigation with ask_user — when to ask, when not to, one-shot question shape, and… |
-| `evolve` | `evolve-memory-layout` | The contract for Evoly's two memory scopes — the PER-BOT vision tree (private across sessions) and the SHARED findings inbox… |
-| `evolve` | `evolve-playbook` | Operating playbook for Evoly — survey a mature repo, investigate with ask_user, accumulate a long-horizon vision in per-bot… |
+| `evolve` | `architectural-axes` | A vocabulary of evolution axes Deep Blue draws from when synthesising a vision — reliability, performance, DX, modularity, and… |
+| `evolve` | `backlog-handoff` | How Deep Blue hands proposed evolutions to Nexie and the operator — one deep artifact per evolution in the shared findings/… |
+| `evolve` | `elicitation-discipline` | How Deep Blue interrogates the operator mid-investigation with ask_user — when to ask, when not to, one-shot question shape,… |
+| `evolve` | `evolve-memory-layout` | The contract for Deep Blue's two memory scopes — the PER-BOT vision tree (private across sessions) and the SHARED findings… |
+| `evolve` | `evolve-playbook` | Operating playbook for Deep Blue — survey a mature repo, investigate with ask_user, accumulate a long-horizon vision in per-bot… |
 | `evolve` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |
 | `evolve` | `repo-maturity-assessment` | Heuristic for deciding whether a repository is mature/stable enough to warrant a long-horizon vision. |
 | `evolve` | `session-continuity` | How to use the iterion workspace memory tools (memory_read, memory_write, memory_list) to keep a compact, frontmatter-tagged… |
@@ -149,7 +149,7 @@ The pair a model sees before it decides to open the file.
 | `instrument` | `metrics` | The metrics family — what "done" means for a /metrics surface (HTTP request count and latency by route and status, process… |
 | `instrument` | `tracing` | Opt-in tracing family for the instrument campaign — Sentry-first transactions/spans, env-tunable sampling with a conservative… |
 | `instrument` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
-| `issue-triage` | `issue-triage` | Triagy's single-shot routing procedure — read one board card, stamp the handler bot + labels, comment the rationale, never move… |
+| `issue-triage` | `issue-triage` | Right Direction's single-shot routing procedure — read one board card, stamp the handler bot + labels, comment the rationale,… |
 | `issue-triage` | `iterion-bot-catalog` | Catalog of iterion bots — walk the decision tree to pick which bot handles a board card, then stamp it with set_bot. |
 | `issue-triage` | `iterion-label-vocabulary` | Canonical label namespaces for the iterion native kanban board. |
 | `modernize` | `modernize-lots` | What a modernisation lot is, why the unit is the lot and not the package, the ordering constraints that make or break a… |
@@ -226,7 +226,7 @@ The pair a model sees before it decides to open the file.
 | `supply-shield-cve` | `lang-py` | pip / poetry / uv heuristic reference for sec-audit-deps. |
 | `supply-shield-cve` | `malware-signals` | Canonical catalogue of supply-chain malware signal ids emitted by the heuristic_scan tool nodes. |
 | `supply-shield-cve` | `package-cache` | Cross-run host-wide package analysis cache, located at ~/.iterion/security-cache/packages.jsonl. |
-| `supply-shield-cve` | `supply-shield-cve` | Operating playbook for the supply-shield-cve bot (Vulny). |
+| `supply-shield-cve` | `supply-shield-cve` | Operating playbook for the supply-shield-cve bot (Code Red). |
 | `test-coverage` | `test-coverage` | Testy's operating playbook for adding/augmenting test coverage in ANY repo. |
 | `test-coverage` | `test-types` | What each test type means (unit / integration / e2e / property / contract / snapshot / smoke / performance) and how to write +… |
 | `test-coverage` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |

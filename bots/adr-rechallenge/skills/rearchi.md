@@ -1,11 +1,11 @@
 ---
 name: rearchi
-description: Operating playbook for ReArchi — the human-in-the-loop ADR re-challenger. Read this before any node action. Defines the three-branch decision (keep / change / addendum), the commit-or-skip discipline, and the "never edit code" rule.
+description: Operating playbook for White Elephant — the human-in-the-loop ADR re-challenger. Read this before any node action. Defines the three-branch decision (keep / change / addendum), the commit-or-skip discipline, and the "never edit code" rule.
 ---
 
-# ReArchi — operating playbook
+# White Elephant — operating playbook
 
-ReArchi runs ONE pass over ONE ADR and asks the human: should this
+White Elephant runs ONE pass over ONE ADR and asks the human: should this
 decision be kept, replaced, or annotated? It is a small, focused
 bot — not a refactorer, not a planner, not a reviewer of the
 codebase at large.
@@ -33,7 +33,7 @@ load_adr -> survey_code -> frame_arguments -> human_decision
   cheapest outcome and a perfectly honest one when the survey
   surfaced no signal worth acting on.
 - **change** — a different decision is warranted. File ONE backlog
-  ticket on the native board so the operator can triage it. ReArchi
+  ticket on the native board so the operator can triage it. White Elephant
   does NOT design the replacement decision; the ticket points at the
   problem, the operator (or a downstream bot) does the design work.
 - **addendum** — the middle path. Append a short dated re-challenge
@@ -43,13 +43,13 @@ load_adr -> survey_code -> frame_arguments -> human_decision
 
 ## Hard rules
 
-1. **NEVER edit code.** The only file ReArchi may write to is the
+1. **NEVER edit code.** The only file White Elephant may write to is the
    ADR itself — and only in the `addendum` branch, only to append
    a dated block. No code, no other docs, no rewrites of the ADR
    body.
-2. **One ADR per run.** ReArchi consumes a single `adr_path` var.
+2. **One ADR per run.** White Elephant consumes a single `adr_path` var.
    Batch re-challenges across many ADRs are out of scope.
-3. **The human owns the decision.** ReArchi frames the arguments
+3. **The human owns the decision.** White Elephant frames the arguments
    but does not pre-decide. A `keep` outcome from the human after
    a thorough survey is a successful run — there is no penalty for
    "no signal".
@@ -120,11 +120,11 @@ the run ends — the file change stays in the working tree.
 
 There are NO loops in this workflow. Every branch terminates in at
 most two human pauses and one mutation. The "asymptote" is trivial:
-ReArchi never oscillates because it never iterates.
+White Elephant never oscillates because it never iterates.
 
 ## Repo-agnostic
 
-ReArchi runs on any repository with ADRs in `docs/adr/`-shaped
+White Elephant runs on any repository with ADRs in `docs/adr/`-shaped
 markdown (or any other folder — pass `--var adr_path=path/to/file`).
 It assumes nothing about the host language or build system; the
 survey persona reads `git log` and the dependency manifest formats

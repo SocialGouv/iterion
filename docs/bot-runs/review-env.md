@@ -1,4 +1,4 @@
-# Envy — `review-env` run bilans
+# Green Room (formerly Envy) — `review-env` run bilans
 
 Deploys the current commit's already-published image to the attached platform
 and hands back a live https URL. See [bots/review-env/](../../bots/review-env/).

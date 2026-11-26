@@ -1,7 +1,7 @@
-## Evoly — strategic / architectural evolution partner.
+## Deep Blue — strategic / architectural evolution partner.
 ##
-## Evoly sits ABOVE Nexie (whats-next): Nexie answers "what to ship this
-## week?", Evoly answers "where should this project go next quarter/year?".
+## Deep Blue sits ABOVE Nexie (whats-next): Nexie answers "what to ship this
+## week?", Deep Blue answers "where should this project go next quarter/year?".
 ## It surveys a mature repo, accumulates a long-horizon architectural
 ## VISION in PER-BOT memory across sessions, interrogates the operator
 ## mid-investigation (ask_user) to collect context the code can't give,
@@ -13,7 +13,7 @@
 ## Design notes:
 ##   - ALL memory-bearing nodes are `backend: "claw"`. claude_code/codex
 ##     silently ignore the memory: block (validator C047). The per-bot
-##     memory (visibility: "bot") is Evoly's headline feature.
+##     memory (visibility: "bot") is Deep Blue's headline feature.
 ##   - Default models are forfait-friendly: claw nodes use openai/gpt-6-astra
 ##     (ChatGPT forfait), the single cross-family "claude" reviewer uses
 ##     claude_code (Claude Code OAuth forfait). claw DOES serve a Claude
@@ -25,7 +25,7 @@
 ##     (bundle name) launches — otherwise the per-bot memory tree would
 ##     split between launch modes. Guarded by
 ##     bots/catalog_universality_test.go:TestPerBotMemoryConsumersHaveStableBotID.
-##   - No worktree:/sandbox: — Evoly is read-only (writes only to memory +
+##   - No worktree:/sandbox: — Deep Blue is read-only (writes only to memory +
 ##     board), runs in the operator's tree like Nexie, and keeps the
 ##     native ask_user MCP tool (sandboxing degrades it to a JSON fallback).
 
@@ -48,12 +48,12 @@ vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## Optional steering hints (objective / horizon / focus). The dispatcher
   ## fills this from the issue title + body; on an interactive
-  ## `iterion run` it is empty and Evoly elicits the objective via ask_user.
+  ## `iterion run` it is empty and Deep Blue elicits the objective via ask_user.
   scope_notes: string = ""
 
 ## ─── Prompts ──────────────────────────────────────────────────────
 prompt survey_system:
-  You are Evoly's survey phase — the read-only reconnaissance that
+  You are Deep Blue's survey phase — the read-only reconnaissance that
   precedes a long-horizon architectural vision. Your job is to
   understand WHERE this project is today and surface the axes along
   which it could naturally evolve, so the next phase can interrogate
@@ -120,7 +120,7 @@ prompt survey_user:
   questions only the operator can answer.
 
 prompt investigate_system:
-  You are Evoly's investigation phase — THE headline of this bot. You
+  You are Deep Blue's investigation phase — THE headline of this bot. You
   refine the survey into a confirmed brief by ASKING THE OPERATOR targeted
   questions MID-INVESTIGATION (the `ask_user` tool) and PERSISTING every
   answer to per-bot memory, so the vision rests on real intent and
@@ -211,7 +211,7 @@ prompt investigate_user:
   framing.
 
 prompt synthesize_system:
-  You are Evoly's synthesis phase. Compose a long-horizon architectural
+  You are Deep Blue's synthesis phase. Compose a long-horizon architectural
   VISION from the confirmed brief (CONTEXT_BRIEF.md, autoloaded) and the
   survey. Read `.claude/skills/architectural-axes.md` and
   `.claude/skills/evolve-playbook.md` first.
@@ -324,7 +324,7 @@ prompt review_user_gpt:
   Workspace (for evidence spot-checks): {{input.workspace_dir}}
 
 prompt human_review_instructions:
-  Evoly has synthesised a long-horizon architectural vision and had it
+  Deep Blue has synthesised a long-horizon architectural vision and had it
   cross-checked by two independent reviewers. Review it and decide.
 
   Proposed vision:
@@ -341,7 +341,7 @@ prompt human_review_instructions:
     to keep all. Anything you omit is dropped from the proposals.
 
 prompt revise_system:
-  You are Evoly revising the architectural vision after feedback. The
+  You are Deep Blue revising the architectural vision after feedback. The
   feedback — from the operator and/or the reviewers — is a hard
   constraint. Read `.claude/skills/evolve-playbook.md` and
   `.claude/skills/architectural-axes.md`.
@@ -386,7 +386,7 @@ prompt revise_user:
   Revise the vision. Write VISION.md and emit the updated vision.
 
 prompt propose_system:
-  You are Evoly's proposal phase. Turn the APPROVED vision into 3-10
+  You are Deep Blue's proposal phase. Turn the APPROVED vision into 3-10
   natural evolutions, each as a dispatch-ready backlog ticket AND a deep
   artifact in the shared findings/ inbox. Read
   `.claude/skills/backlog-handoff.md` and
@@ -443,7 +443,7 @@ prompt propose_user:
   structured backlog items.
 
 prompt emit_system:
-  You are Evoly's emit phase. Create one kanban BACKLOG ticket per
+  You are Deep Blue's emit phase. Create one kanban BACKLOG ticket per
   evolution so Nexie can action them AND the operator can launch any by
   dragging it to `ready`. Read `.claude/skills/iterion-board.md` and
   `.claude/skills/backlog-handoff.md`.
@@ -510,7 +510,7 @@ prompt ask_continue_instructions:
   - close — archive this session.
 
 prompt load_handoff_system:
-  You are Evoly handing off to Nexie. The evolutions are already on the
+  You are Deep Blue handing off to Nexie. The evolutions are already on the
   board (backlog) and in the findings/ inbox, so Nexie's next survey
   finds them automatically. Your job is a concise handoff record. Read
   `.claude/skills/iterion-board.md`.
@@ -531,7 +531,7 @@ prompt load_handoff_system:
   call-to-action telling the operator to run Nexie next
   (`iterion run bots/whats-next/main.bot`, or the studio Launch modal)
   to triage and dispatch them. Optionally drop a single `inbox` board
-  card titled "Evoly vision ready — N evolutions for triage" with label
+  card titled "Deep Blue vision ready — N evolutions for triage" with label
   source:evolve so it surfaces in Nexie's explore. Return summary + cta.
 
 prompt load_handoff_user:
@@ -803,10 +803,10 @@ agent propose_evolutions:
   ## findings/ is the SHARED cross-bot inbox. `visibility: "project"`
   ## resolves it to projects/<RepoRoot-key>/memory/findings/ — keyed off
   ## the STABLE repo root (like the vision scope and the board), so the
-  ## findings land where Nexie's emit_action hygiene scans even when Evoly
+  ## findings land where Nexie's emit_action hygiene scans even when Deep Blue
   ## runs from a git worktree (a bare `scope:` would key off the ephemeral
   ## WorkDir and strand findings under the worktree key — see
-  ## docs/bot-runs/evolve.md). Evoly writes the deep evolution artifacts here.
+  ## docs/bot-runs/evolve.md). Deep Blue writes the deep evolution artifacts here.
   memory:
     enabled: true
     scope: "findings"

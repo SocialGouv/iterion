@@ -1,6 +1,6 @@
-# devbox-setup (Devy) — status: v1, dogfood-validated end-to-end (detect → generate → verify → commit → deliver)
+# devbox-setup (Devboxing, formerly Devy) — status: v1, dogfood-validated end-to-end (detect → generate → verify → commit → deliver)
 
-Devy authors a pinned `devbox.json` for a repo so its build/test/e2e run in a
+Devboxing authors a pinned `devbox.json` for a repo so its build/test/e2e run in a
 reproducible toolchain (ADR-017 Tier-3). This bundle ships the **manifest**,
 the **playbook skill** (`skills/devbox-setup.md` — the substance: detect →
 map to Nix → shape → validate → scope), and the **`main.bot`** (linear

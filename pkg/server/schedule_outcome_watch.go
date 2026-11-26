@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 const (
@@ -53,11 +54,20 @@ func (s *Server) runScheduleOutcomeWatch(ctx context.Context) {
 // scheduleOutcomeSweep assesses every enabled schedule once and offers each
 // stalled one to the ops dispatcher under a per-episode claim key. A failed
 // delivery is released by NotifyOperator, so the next sweep offers it again.
+//
+// A sweep that reads the maintenance fence armed skips the unreadable-fence
+// verdict: the operator's fence holds that slot whatever the failed read
+// said. A sweep that cannot read the fence either keeps the alert, since the
+// store may really be down.
 func (s *Server) scheduleOutcomeSweep(ctx context.Context, now time.Time, grace time.Duration) {
 	rows, err := s.cfg.ScheduledBots.ListEnabled(ctx)
 	if err != nil {
 		s.warnf("server: schedule-outcome watch: list schedules: %v", err)
 		return
+	}
+	fenceArmed := false
+	if rec, merr := s.maintenance(ctx); merr == nil {
+		fenceArmed = rec.FenceLaunches
 	}
 	for _, sb := range rows {
 		if ctx.Err() != nil {
@@ -65,6 +75,9 @@ func (s *Server) scheduleOutcomeSweep(ctx context.Context, now time.Time, grace 
 		}
 		stall := cloudsched.AssessScheduleStall(sb, now, grace)
 		if stall == nil {
+			continue
+		}
+		if fenceArmed && stall.Cause == cloudsched.StallLaunchRefused && sb.LastError == schedgate.ErrMaintenanceFenceUnreadable.Error() {
 			continue
 		}
 		a := alert.Alert{

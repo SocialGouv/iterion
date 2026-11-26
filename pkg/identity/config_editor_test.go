@@ -38,14 +38,46 @@ func TestOrgRoleForTeamRole_ConfigEditorConfersNoOrgRole(t *testing.T) {
 	if got := OrgRoleForTeamRole(RoleConfigEditor); got != "" {
 		t.Errorf("config_editor org role = %q, want \"\" (no org mirror)", got)
 	}
+	// A team rank is a rank in that team: every ladder role, owner included,
+	// mirrors up to an org MEMBER and never to an org admin.
 	for role, want := range map[Role]OrgRole{
 		RoleViewer: OrgRoleMember,
 		RoleMember: OrgRoleMember,
-		RoleAdmin:  OrgRoleAdmin,
-		RoleOwner:  OrgRoleAdmin,
+		RoleAdmin:  OrgRoleMember,
+		RoleOwner:  OrgRoleMember,
 	} {
 		if got := OrgRoleForTeamRole(role); got != want {
 			t.Errorf("OrgRoleForTeamRole(%s) = %q, want %q", role, got, want)
+		}
+	}
+}
+
+func TestInvitationOrgRole_NamesTheOrgRoleApartFromTheTeamRole(t *testing.T) {
+	for _, tc := range []struct {
+		role  Role
+		named OrgRole
+		want  OrgRole
+	}{
+		// A team invitation names no org role: member, whatever the team rank.
+		{RoleAdmin, "", OrgRoleMember},
+		{RoleOwner, "", OrgRoleMember},
+		{RoleViewer, "", OrgRoleMember},
+		// An org invitation names the org role apart from the team role.
+		{RoleMember, OrgRoleAdmin, OrgRoleAdmin},
+		{RoleViewer, OrgRoleOwner, OrgRoleOwner},
+		{RoleAdmin, OrgRoleMember, OrgRoleMember},
+		// Off the ladder, no org membership at all, whatever is named.
+		{RoleConfigEditor, "", ""},
+		{RoleConfigEditor, OrgRoleAdmin, ""},
+		// A name that is no org role reads as none.
+		{RoleMember, OrgRole("superadmin"), OrgRoleMember},
+	} {
+		if got := InvitationOrgRole(tc.role, tc.named); got != tc.want {
+			t.Errorf("InvitationOrgRole(%s, %q) = %q, want %q", tc.role, tc.named, got, tc.want)
+		}
+		inv := Invitation{Role: tc.role, OrgRole: tc.named}
+		if got := inv.OrgRoleOnAccept(); got != tc.want {
+			t.Errorf("Invitation{Role: %s, OrgRole: %q}.OrgRoleOnAccept() = %q, want %q", tc.role, tc.named, got, tc.want)
 		}
 	}
 }

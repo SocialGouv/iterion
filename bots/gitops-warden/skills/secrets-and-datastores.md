@@ -3,7 +3,7 @@ name: secrets-and-datastores
 description: Secrets and datastore rules: no Secret material in charts, ExternalSecret via the local store, reloader conventions, and the managed-datastore escalation rule
 ---
 
-> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated.
+> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated. Paths shown in backticks without a link (`15-build-ci/…`, `20-cd-pattern/…`, `scripts/…`, `.repos/…`, sibling pages) name files of that source, which this bundle does not ship.
 
 # Secrets : Vault + External Secrets (ESO) — remplace les Sealed Secrets
 
@@ -38,12 +38,12 @@ Chaîne complète : **Vault → ESO (au `refreshInterval`) → `Secret` K8s → 
 ## Deux familles de secrets
 
 1. **Secrets de ressources Atlas** (DB, S3, cache) : créés par l'**API Atlas** lors du `link-environment` ; la connexion est écrite dans **Vault** par la plateforme.
-   - ⚠ **Nommage par ID** : en v2 le secret Vault porte l'**ID** de la ressource (pas son nom). Cf. [history](../00-context/history.md) → soit la CD récupère l'ID par env, soit on l'inscrit à la main dans le manifeste `ExternalSecret`.
+   - ⚠ **Nommage par ID** : en v2 le secret Vault porte l'**ID** de la ressource (pas son nom). Cf. history (`00-context/history.md`) → soit la CD récupère l'ID par env, soit on l'inscrit à la main dans le manifeste `ExternalSecret`.
 2. **Secrets applicatifs** (ex. da-manager : `PROCONNECT_CLIENT_ID/SECRET`, `AUTH_SECRET`) : **écrits à la main dans Vault** (accès Vault à demander), puis exposés via `ExternalSecret`.
 
 ## Le store ExternalSecrets est auto-créé par l'Environment
 
-> ⚠️ Plus besoin de deviner : la **composition `Environment`** crée automatiquement, **dans le namespace de l'env (`envId`)**, un `SecretStore` nommé **`local-secret-store`** (kind `SecretStore`, **pas** ClusterSecretStore), provider **Vault**, `path: <wsId>/<envId>/kv` (KV v2), auth jwt. Détails complets + accès Vault dans [atlas-v2 § Onboarding/Secrets](../10-platforms/atlas-v2.md). API CRD = **`external-secrets.io/v1`**.
+> ⚠️ Plus besoin de deviner : la **composition `Environment`** crée automatiquement, **dans le namespace de l'env (`envId`)**, un `SecretStore` nommé **`local-secret-store`** (kind `SecretStore`, **pas** ClusterSecretStore), provider **Vault**, `path: <wsId>/<envId>/kv` (KV v2), auth jwt. Détails complets + accès Vault dans atlas-v2 § Onboarding/Secrets (`10-platforms/atlas-v2.md`). API CRD = **`external-secrets.io/v1`**.
 
 ```yaml
 apiVersion: external-secrets.io/v1
@@ -66,8 +66,8 @@ spec:
 ```
 
 - **Écrire les secrets** : `vault login -method=oidc` sur `https://vault.<zone>.<domain>` (l'admin du workspace a la policy d'écriture sur `<wsId>/<envId>/kv/data/*`), puis KV v2 `<wsId>/<envId>/kv/<name>`. Récupérables depuis le cluster Fabrique (`.secrets/plateform-fabrique/kubeconfig`) sans jamais afficher les valeurs.
-- **DB** : avec **CNPG in-cluster**, la connexion vient du secret généré `<cluster>-app` (clé `uri`) — **pas** d'ExternalSecret/Vault pour la DB. Vault ne sert qu'aux secrets app (ProConnect, AUTH_SECRET) + dockerconfigjson registre. (Pour OVH managé, le secret de connexion serait écrit par la plateforme, nommé par ID — cf. [history](../00-context/history.md).)
-- **credentials git du `configure-gitops`** : on fournit `{username, password}` **en clair** (deploy token GitLab read_repository) ; **l'API les range elle-même dans Vault** (ce n'est pas un `vaultPath` côté appelant). Cf. [atlas-v2 § configure-gitops](../10-platforms/atlas-v2.md).
+- **DB** : avec **CNPG in-cluster**, la connexion vient du secret généré `<cluster>-app` (clé `uri`) — **pas** d'ExternalSecret/Vault pour la DB. Vault ne sert qu'aux secrets app (ProConnect, AUTH_SECRET) + dockerconfigjson registre. (Pour OVH managé, le secret de connexion serait écrit par la plateforme, nommé par ID — cf. history (`00-context/history.md`).)
+- **credentials git du `configure-gitops`** : on fournit `{username, password}` **en clair** (deploy token GitLab read_repository) ; **l'API les range elle-même dans Vault** (ce n'est pas un `vaultPath` côté appelant). Cf. atlas-v2 § configure-gitops (`10-platforms/atlas-v2.md`).
 
 ## ⚠ Dérive « OutOfSync » ArgoCD sur les ExternalSecrets (réutilisable)
 ESO **défaute** des champs absents du manifeste rendu → ArgoCD voit un diff permanent (l'ExternalSecret reste `Healthy`/synced mais l'app affiche `OutOfSync`). Pour l'éviter, **expliciter ces défauts** dans le manifeste (vérifié ESO en zone dev, 2026-05-28 ; **re-vérifié PTT 2026-06-10**, fix appliqué aux 4 ES db des wrappers chantier/lsp) :

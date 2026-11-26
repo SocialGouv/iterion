@@ -2146,6 +2146,46 @@ context wordings such as `prompt is too long` retain the parent's fresh-sample
 `EXECUTION_FAILED` retry. Tool stderr and model prose never establish this new
 terminal verdict. HTTP 408/5xx, 429 and model-access refusals keep their handling.
 
+**Provider refusals** (#3048) are read before any status, by one classifier on
+the typed error (`api.ClassifyRefusal`, carried by `api.APIError` and the claw
+stream error, read through `api.RefusalOf`, which reads every error of a chain
+in a fixed precedence — budget, capability, grammar, request): a gateway
+serves them under any status, so the status alone would retry them. The
+words are the provider's own — the extracted message, a JSON envelope's
+`error.message` and `error.type`, or a plain-text body — never request content
+it echoes.
+
+| Refusal | Provider words (or status) | Code |
+|---|---|---|
+| budget | `Budget has been exceeded!`, `ExceededBudget:`, `ExceededTokenBudget:`, `exceeded budget for model=`, `credit balance is too low`, `error.type: budget_exceeded`, HTTP 402 | `USAGE_LIMIT_BLOCKED` |
+| capability | `is not a multimodal model`, `image_url is only supported by certain models` | `CAPABILITY_UNSUPPORTED` |
+| grammar | `xgrammar`, `Grammar error` | `SCHEMA_UNUSABLE` |
+| request | HTTP 405, 410, 411, 414, 415, 422, 431 | `PROVIDER_REQUEST_INVALID` |
+
+A **budget** refusal is a spend ceiling, read like claude_code's spend limit:
+claw and pi type it as an account refusal (`delegate.SpendCeilingRefusal`, a
+usage window naming no reset). A declared fallback route (`on:
+[usage_window]`) is taken within the run; then the run parks and the hourly
+probe of the run's credential window relaunches it — a LiteLLM budget often
+reopens by itself (a windowed budget, a released reservation). The usage
+meter keeps no reading for a gateway key (it meters the anthropic wire), so
+the relaunch reuses the same key until the budget clears; the remedy names
+the budget to raise. claude_code reports text, not a typed refusal: its
+spend-limit wording keeps its own reading, and a %v-flattened budget is read
+as a spend ceiling too.
+
+The **other three** are deterministic, and every layer stops on them: the claw
+client's retry (`APIError.IsRetryable`), the executor's in-node retries, node
+recovery (a terminal recipe whose reason quotes the provider), the runner's
+redelivery (acked as a deterministic failure), automatic resume and the forge
+gate's relaunch (its status names the remedy instead). The run stays
+`failed_resumable`: an operator changes the model or the schema, then resumes.
+A grammar refusal of a forced tool choice, HTTP or stream frame alike, is
+first re-asked once without the grammar. In a fallback chain a refusal
+condemns its route alone; the chain keeps a refusal code only when every
+route was refused, and its remedy quotes the routes refused that way. A
+sandboxed node's refusal crosses the runner typed.
+
 Claw preserves typed provider errors through sandbox IPC; pi uses its structured
 provider diagnostics. Claude Code's current result protocol exposes no typed
 HTTP status, so its rendered 400 remains unclassified as a parameter refusal.

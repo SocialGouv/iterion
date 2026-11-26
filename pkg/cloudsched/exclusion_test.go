@@ -35,8 +35,8 @@ func assertScheduleExclusion(t *testing.T, st Store) {
 	}
 	wrote := false
 	err = store.PersistLaunch(old, func(context.Context) error { wrote = true; return nil })
-	if !errors.Is(err, schedgate.ErrMaintenanceHold) || wrote {
-		t.Fatalf("released owner persisted: err=%v wrote=%v", err, wrote)
+	if !errors.Is(err, schedgate.ErrScheduleLeaseLost) || wrote {
+		t.Fatalf("released owner persisted: err=%v wrote=%v, want ErrScheduleLeaseLost and no write", err, wrote)
 	}
 }
 
@@ -87,8 +87,8 @@ func TestScheduleMongoExpiredOwnerCannotPersist(t *testing.T) {
 			_, err := db.Collection("runs").InsertOne(tx, bson.M{"_id": "stale"})
 			return err
 		})
-		if !errors.Is(err, schedgate.ErrMaintenanceHold) {
-			t.Fatalf("stale owner: %v", err)
+		if !errors.Is(err, schedgate.ErrScheduleLeaseLost) {
+			t.Fatalf("stale owner: %v, want ErrScheduleLeaseLost", err)
 		}
 	})
 	if err != nil {
@@ -115,8 +115,8 @@ func TestScheduleMongoReceiptAndRunCommitTogether(t *testing.T) {
 			}
 			return failure
 		})
-		if !errors.Is(err, schedgate.ErrMaintenanceHold) {
-			t.Fatalf("failed transaction: %v", err)
+		if !errors.Is(err, schedgate.ErrLaunchNotPersisted) || errors.Is(err, schedgate.ErrScheduleLeaseLost) || !errors.Is(err, failure) {
+			t.Fatalf("failed transaction: %v, want ErrLaunchNotPersisted carrying the write's error, not a lost lease", err)
 		}
 		var row bson.M
 		if err := db.Collection(lease.Collection).FindOne(ctx, bson.M{"_id": "schedule-launch:atomic"}).Decode(&row); err != nil {

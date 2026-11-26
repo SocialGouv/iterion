@@ -1,6 +1,6 @@
 # ADR-162 — The fork review lane: a maintainer's gesture admits one commit, on untrusted-workspace floors that land first
 
-- **Status**: Accepted — the operator decided it on 2026-11-05: re-implement from main with the dormant branch as the spec (debt-leap #113, option B), then #115 (Q1), #116 (Q3), #117 (Q4), #118 (the provider-side fetch residual) and #119 (Q2), each option A. Design only: nothing below is built.
+- **Status**: Accepted — the operator decided it on 2026-11-05: re-implement from main with the dormant branch as the spec (debt-leap #113, option B), then #115 (Q1), #116 (Q3), #117 (Q4), #118 (the provider-side fetch residual) and #119 (Q2), each option A. Built through U6 and U7's first part: the floors (U1–U5), the gesture and its per-author bound (U6) and the fork-lane pool are on main; the pool's own boundary (#2965), the CNI verification and the live proof are not yet ([what ships](../webhooks.md#fork-review-lane)).
 - **Date**: 2026-11-05
 - **Deciders**: jo (#113, #115–#119); analysis and design by Claude
 - **Serves**: [#874](https://github.com/SocialGouv/iterion/issues/874) (the admission half), [#1730](https://github.com/SocialGouv/iterion/issues/1730) (the guarantee's remainder), [#1639](https://github.com/SocialGouv/iterion/issues/1639) (U1 closes it). Spec, read-only: `fleet/c3-fork-lane-2@201d6ed4e` (62 commits on `849d78703`, v3.190, 24/09) and `leap/kimi82@31d80e119` (2 commits on it: #1730 R2's reads, R4's unit row, R6–R8)

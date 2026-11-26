@@ -42,8 +42,15 @@ import (
 // to the server's Config on top of personal access tokens and WS tickets.
 func newDerivationFixtureWith(t *testing.T, configure func(*Config)) *derivationFixture {
 	t.Helper()
+	return newDerivationFixtureWithAuth(t, nil, configure)
+}
+
+// newDerivationFixtureWithAuth is newDerivationFixtureWith with authConfigure
+// applied to the auth service's Config too (a mailer, a public URL).
+func newDerivationFixtureWithAuth(t *testing.T, authConfigure func(*auth.Config), configure func(*Config)) *derivationFixture {
+	t.Helper()
 	pats := &hookedPATs{MemoryStore: pat.NewMemoryStore()}
-	f := &derivationFixture{authRouteFixture: newAuthRouteFixtureWith(t, func(c *Config) {
+	f := &derivationFixture{authRouteFixture: newAuthRouteFixtureWithAuth(t, authConfigure, func(c *Config) {
 		c.PATs = pats
 		c.WSTickets = wsticket.NewMemoryStore(time.Minute)
 		configure(c)

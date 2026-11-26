@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
@@ -715,6 +716,40 @@ func TestGateRelaunch(t *testing.T) {
 			t.Fatalf("relaunched a run that declined its task — the recovery run re-derives the same refusal (%d launches)", *w.launched)
 		}
 	})
+
+	// #3048: a review the provider refused deterministically — a model that
+	// takes no image, a schema the gateway cannot compile, a request it
+	// refuses — meets the same refusal on the same head. Same shape as the
+	// case above that DOES relaunch; only the typed code differs.
+	for _, code := range []store.FailureCode{store.FailureCapabilityUnsupported, store.FailureSchemaUnusable, store.FailureProviderRequestInvalid} {
+		t.Run("a provider refusal is not relaunched: "+string(code), func(t *testing.T) {
+			w := build(t, nil)
+			runID := seedDeadRun(t, w.s)
+			run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.FailureCode = code
+			run.Error = "litellm.BadRequestError: OpenAIException - glm-5.3 is not a multimodal model"
+			if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+				run:   run,
+				grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+				conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+				repo:  repo, number: 7,
+				pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main", HeadRepoFullName: repo},
+				gateCtx: gateNm, prURL: prURL,
+			})
+			if *w.launched != 0 {
+				t.Fatalf("relaunched a review the provider refused deterministically (%d launches) — the relaunch meets the same refusal", *w.launched)
+			}
+			if desc := gateInterruptedDescriptionFor(run); !strings.HasSuffix(desc, gateProviderRefusalRemedy) && !strings.HasSuffix(desc, gateDeterministicRefusalRemedy) || utf8.RuneCountInString(desc) > 140 {
+				t.Errorf("status description %q does not name the remedy of a provider refusal within 140 runes", desc)
+			}
+		})
+	}
 
 	// #788: a review that dies at its own cost cap, is relaunched, and dies at
 	// the same cap has proven the cap short for THIS diff. A third launch

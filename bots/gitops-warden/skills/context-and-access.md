@@ -3,7 +3,7 @@ name: context-and-access
 description: Platform context: what product teams are given self-service, the vocabulary (PIC, ESO, CNPG, XRD), and a known-good gitops shape to diff against
 ---
 
-> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated.
+> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated. Paths shown in backticks without a link (`15-build-ci/…`, `20-cd-pattern/…`, `scripts/…`, `.repos/…`, sibling pages) name files of that source, which this bundle does not ship.
 
 # Programme de migration — vue d'ensemble
 
@@ -14,7 +14,7 @@ Migrer des produits (provenant de sources diverses) vers deux plateformes mutual
 - **CI sur la PIC** (GitLab) — tests, build d'images, qualité/sécurité, via des composants CI partagés.
 - **CD sur Atlas v2** — déploiement Kubernetes piloté par API (Crossplane + ArgoCD), avec secrets via Vault + External Secrets.
 
-La migration remplace l'ancienne plateforme **Fabrique** (kontinuous + sealed secrets) et **Atlas v1** (gitops sur CRDs Fabrique + Vault/ExternalSecrets). Voir [history.md](history.md) et la fiche [atlas-v1.md](../10-platforms/atlas-v1.md).
+La migration remplace l'ancienne plateforme **Fabrique** (kontinuous + sealed secrets) et **Atlas v1** (gitops sur CRDs Fabrique + Vault/ExternalSecrets). Voir `history.md` et la fiche `10-platforms/atlas-v1.md`.
 
 ## Principe de découplage (architecture cible)
 
@@ -39,12 +39,12 @@ Bénéfices : le chart suit le cycle de vie du code ; les déploiements sont aud
 
 ## Produit pilote
 
-- **da-manager** — outillage (form builder « Document d'Architecture », Next.js + Postgres). Premier produit migré, en mode « dev d'abord ». Runbook : [30-migrations/da-manager.md](../30-migrations/da-manager.md).
+- **da-manager** — outillage (form builder « Document d'Architecture », Next.js + Postgres). Premier produit migré, en mode « dev d'abord ». Runbook : `30-migrations/da-manager.md`.
 - **basavi** — déjà sur l'approche build PIC (composant docker-image + flows Kestra). Référence pour la CI PIC.
 
 ## Règle secrets (transversale)
 
-Les secrets locaux sont dans `.secrets/` et **ne doivent jamais être lus en clair**. On les **charge** uniquement (`set -a; source .secrets/.env; set +a`). Détails dans le `CLAUDE.md` racine et [10-platforms/pic-gitlab.md](../10-platforms/pic-gitlab.md).
+Les secrets locaux sont dans `.secrets/` et **ne doivent jamais être lus en clair**. On les **charge** uniquement (`set -a; source .secrets/.env; set +a`). Détails dans le `CLAUDE.md` racine et `10-platforms/pic-gitlab.md`.
 
 # Glossaire
 
@@ -52,13 +52,13 @@ Les secrets locaux sont dans `.secrets/` et **ne doivent jamais être lus en cla
 |---|---|
 | **PIC** | Plateforme d'Intégration Continue — instance GitLab partagée (`<forge>`) : composants CI réutilisables + registre d'images. |
 | **Atlas v2** | Plateforme de déploiement Kubernetes pilotée par API (Crossplane + ArgoCD + Vault + ESO). Cible de la CD. |
-| **Atlas v1** | Génération précédente d'Atlas : provisionnement des ressources via **CRDs Fabrique** (groupes `org/workspace.fabrique.social.gouv.fr`) en gitops, secrets via **Vault + ExternalSecrets** (pas Sealed Secrets — c'est en *Fabrique legacy* qu'on en trouvait). Remplacée par v2 (provisionnement par **API**, clés Vault par ID au lieu de nom). Voir [atlas-v1.md](../10-platforms/atlas-v1.md). |
+| **Atlas v1** | Génération précédente d'Atlas : provisionnement des ressources via **CRDs Fabrique** (groupes `org/workspace.fabrique.social.gouv.fr`) en gitops, secrets via **Vault + ExternalSecrets** (pas Sealed Secrets — c'est en *Fabrique legacy* qu'on en trouvait). Remplacée par v2 (provisionnement par **API**, clés Vault par ID au lieu de nom). Voir `10-platforms/atlas-v1.md`. |
 | **Fabrique** | Ancienne plateforme (« plateforme Fabrique »), déploiements via **kontinuous** + **sealed secrets**. Kubeconfig legacy : `.secrets/plateform-fabrique/kubeconfig` (contexts `ovh-dev`, `ovh-prod`). |
 | **kontinuous** | Outil de déploiement Helm de l'ère Fabrique (dossier `.kontinuous/` dans les repos). Remplacé par le pattern gitops + ArgoCD. |
 | **Crossplane** | Operator Kubernetes qui expose des ressources d'infra comme des objets K8s (XRD/Compositions). Cœur d'Atlas v2 (control-plane). |
 | **XRD** | *Composite Resource Definition* Crossplane — définit le schéma d'une ressource composite (ex. `Environment`, `Workspace`, `Zone`). |
 | **Composition** | Implémentation d'une XRD : ce qui est réellement créé quand on instancie la ressource. Sur Atlas, générées par des fonctions TypeScript. |
-| **Workspace / Environment / Zone** | Modèle de ressources Atlas v2 : `Organization → Workspace → Environment` ; `Zone` = cluster Kubernetes de charge. Voir [atlas-v2.md](../10-platforms/atlas-v2.md). |
+| **Workspace / Environment / Zone** | Modèle de ressources Atlas v2 : `Organization → Workspace → Environment` ; `Zone` = cluster Kubernetes de charge. Voir `10-platforms/atlas-v2.md`. |
 | **ArgoCD** | GitOps continuous delivery — synchronise les manifests d'un repo gitops vers le cluster. Utilisé pour les **apps produit** sur Atlas v2. |
 | **Flux** | GitOps controller utilisé pour les **composants plateforme** (control-plane / workload-zone) d'Atlas v2. |
 | **Vault** | Coffre-fort de secrets (HashiCorp Vault ; OpenBao présent comme alternative). Backend des secrets sur Atlas v2 ; accessible par zone (`vault.<zone>.<domain>`). |
@@ -76,13 +76,13 @@ Les secrets locaux sont dans `.secrets/` et **ne doivent jamais être lus en cla
 
 Fiche **destinée aux équipes produit** (pas seulement aux devops) : accéder en lecture/debug au cluster de son environnement, et lire/écrire ses secrets Vault — **sans manipuler de token**, sans ce repo.
 
-> Tout repose sur l'**OIDC** : `kubelogin` et `vault` obtiennent eux-mêmes le jeton (login navigateur, puis refresh silencieux). On ne copie/colle jamais de secret. Cloisonnement : chaque membre ne voit que **les environnements de son workspace** (cf. [atlas-v2 § membres](../10-platforms/atlas-v2.md)).
+> Tout repose sur l'**OIDC** : `kubelogin` et `vault` obtiennent eux-mêmes le jeton (login navigateur, puis refresh silencieux). On ne copie/colle jamais de secret. Cloisonnement : chaque membre ne voit que **les environnements de son workspace** (cf. atlas-v2 § membres (`10-platforms/atlas-v2.md`)).
 
 ## Prérequis (une fois)
 - Outils : **`kubelogin`** (plugin `kubectl-oidc_login`), **`jq`**, **`curl`**, et **`vault`** (CLI) pour les secrets.
   - macOS : `brew install int128/kubelogin/kubelogin jq vault` · krew : `kubectl krew install oidc-login`.
 - **Compte Keycloak `atlas-prod`** : s'être connecté ≥ 1× et avoir l'**email vérifié** (sinon l'apiserver renvoie `401` — il utilise `username-claim = email`).
-- **Rôles sur le workspace** (à demander au devops) : `editor` (agir + écrire les secrets) **+** `secrets_viewer` (lire les valeurs de secrets). ⚠ `secrets_viewer` **seul** ne donne **ni** kubectl/ArgoCD/Grafana **ni** l'écriture — il se cumule. Détail du modèle : [atlas-v2 § membres](../10-platforms/atlas-v2.md).
+- **Rôles sur le workspace** (à demander au devops) : `editor` (agir + écrire les secrets) **+** `secrets_viewer` (lire les valeurs de secrets). ⚠ `secrets_viewer` **seul** ne donne **ni** kubectl/ArgoCD/Grafana **ni** l'écriture — il se cumule. Détail du modèle : atlas-v2 § membres (`10-platforms/atlas-v2.md`).
 - ⚠ **Après toute attribution/changement de rôle, se reconnecter** (ArgoCD/Grafana/Vault/kubectl) : les droits viennent de **groupes OIDC figés au login** — un jeton émis avant le changement ne les porte pas.
 
 Les exemples ci-dessous ciblent la **zone `dev`**. Pour la prod : remplacer `dev` par `prod` (client **du kubeconfig** `prod-kubernetes`, `vault.prod.…`). La commande de récupération du kubeconfig, elle, garde **`control-plane-atlas-portal`** dans les deux cas (client control-plane, commun aux zones).
@@ -140,7 +140,7 @@ vault kv patch $M/<nom-du-secret> CLE=nouvelle           # maj partielle  (rôle
 
 ## Changer un secret → reboot automatique du pod
 
-Chaîne : **Vault → ESO (au `refreshInterval`, ~1 min) → `Secret` k8s → Stakater Reloader → rollout**. Avec `reloader.stakater.com/auto: "true"` sur le Deployment (convention du repo), un secret modifié dans Vault **reboote le pod qui le référence en ≤ ~1 min**, sans action manuelle. Détail : [secrets via ESO § Propagation & auto-reboot](../20-cd-pattern/secrets-externalsecrets.md).
+Chaîne : **Vault → ESO (au `refreshInterval`, ~1 min) → `Secret` k8s → Stakater Reloader → rollout**. Avec `reloader.stakater.com/auto: "true"` sur le Deployment (convention du repo), un secret modifié dans Vault **reboote le pod qui le référence en ≤ ~1 min**, sans action manuelle. Détail : secrets via ESO § Propagation & auto-reboot (`20-cd-pattern/secrets-externalsecrets.md`).
 
 Pour forcer sans attendre :
 ```bash
@@ -152,7 +152,7 @@ Vérifier que Reloader a déclenché : `kubectl --context dev -n <envId> get eve
 
 # Runbook — migration da-manager
 
-> 1er produit migré (outillage « Document d'Architecture »), **tout-GitLab PIC**, **déployé et validé sur Atlas v2 (zone dev)**. Runbook actionnable de l'état cible. Chronologie / itérations : [historique](../90-historique/da-manager-journal.md). Source : [`.repos/da-manager`](../../.repos/da-manager/) + [`.repos/da-manager-gitops`](../../.repos/da-manager-gitops/).
+> 1er produit migré (outillage « Document d'Architecture »), **tout-GitLab PIC**, **déployé et validé sur Atlas v2 (zone dev)**. Runbook actionnable de l'état cible. Chronologie / itérations : historique (`90-historique/da-manager-journal.md`). Source : `.repos/da-manager` + `.repos/da-manager-gitops`.
 
 ## Produit
 - **App** : Next.js 16 / React 19, **pnpm**, **Node 22**, Dockerfile multi-stage `output: standalone` (port 3000), probe `/api/healthz`.
@@ -161,7 +161,7 @@ Vérifier que Reloader a déclenché : `kubectl --context dev -n <envId> get eve
 - **Config** : `ALLOWED_EMAIL_DOMAINS`, `PROCONNECT_ISSUER`, `AUTH_URL` + `NEXT_PUBLIC_ENABLE_DEV_LOGIN` (passés en **runtime**/ConfigMap → **une seule image** pour tous les env).
 
 ## Architecture cible (validée)
-**Chart Helm agnostique** dans le repo app (publié **OCI**) ⇄ **repo gitops** (wrapper par env + rendered manifests + ressources) ⇄ **ArgoCD** sur Atlas v2. Pattern générique : [20-cd-pattern/overview.md](../20-cd-pattern/overview.md). Build : [BuildKit mutualisé](../15-build-ci/buildkit-mutualise.md). Secrets : [Vault + ESO](../20-cd-pattern/secrets-externalsecrets.md).
+**Chart Helm agnostique** dans le repo app (publié **OCI**) ⇄ **repo gitops** (wrapper par env + rendered manifests + ressources) ⇄ **ArgoCD** sur Atlas v2. Pattern générique : `20-cd-pattern/overview.md`. Build : BuildKit mutualisé (`15-build-ci/buildkit-mutualise.md`). Secrets : Vault + ESO (`20-cd-pattern/secrets-externalsecrets.md`).
 
 ## Chart Helm — `charts/da-manager` (repo app)
 Mono-service (simplifié du chart du PoC vao) :
@@ -170,11 +170,11 @@ Mono-service (simplifié du chart du PoC vao) :
 - **Pas de Postgres dans le chart** : DB = CNPG porté par le gitops. Secrets référencés par nom : `proconnect`, `auth`, `pg-app`.
 
 ## CI build + publication (repo app, GitLab PIC primaire)
-- `.gitlab-ci.yml` : `check` (lint/format + **tests** vitest+Postgres ; en CI `PGHOST=postgres`) → `build` + `publish-chart` (briques partagées [`ci-common`](../15-build-ci/buildkit-mutualise.md)) → `deploy-*` (trigger gitops) → `release` (semantic-release).
+- `.gitlab-ci.yml` : `check` (lint/format + **tests** vitest+Postgres ; en CI `PGHOST=postgres`) → `build` + `publish-chart` (briques partagées `ci-common` (`15-build-ci/buildkit-mutualise.md`)) → `deploy-*` (trigger gitops) → `release` (semantic-release).
 - **Build** : `extends: .build-buildkit-service` (include `…/studio-tech-commun/sdpsn-devops-ci-utils, file: ci-common/image-build.yml`). da-manager = outil interne ⇒ backend **service BuildKit mutualisé** (vars `BUILD_*` + `BUILDKIT_*` du service). L'autre backend `.build-dind` est le défaut produit (les runners PIC refusent le buildkit *rootless* ; cf. doc).
 - **Publish chart** : `extends: .publish-chart` (`file: ci-common/publish-chart.yml`), `CHART_DIR=charts/da-manager`. Pousse `oci://$CI_REGISTRY/$CI_PROJECT_PATH/charts` (nom du chart dérivé de Chart.yaml).
-- **Purge cache** : job manuel `buildkit-prune` (`file: ci-common/buildkit-prune.yml`) — utilisé une fois post-transfert pour casser le lineage `tooling/` sur le réplica buildkit (cf. [piège lineage](../15-build-ci/buildkit-mutualise.md#pièges-rencontrés)).
-- Variables CI (mode **service**) : `BUILDKIT_DAEMON_ADDRESS` (`:443`), `BUILDKIT_SVC_COUNT`, `BUILDKIT_CERT_*`, `BUILDKIT_HTTP_PROXY`, `BUILDKIT_TUNNEL=1`. Toujours requis : `OCI_PULL_*`, `RENDER_TOKEN`, `SEMANTIC_RELEASE_TOKEN`. ⚠ `RENDER_TOKEN`/`SEMANTIC_RELEASE_TOKEN` ont dû être **recréés** (le transfert révoque les project access tokens). Convention secrets = **`masked_and_hidden`** (`BUILDKIT_CERT_*` en **base64** décodés au job) — cf. [credentials-and-access § variables CI](../00-context/credentials-and-access.md).
+- **Purge cache** : job manuel `buildkit-prune` (`file: ci-common/buildkit-prune.yml`) — utilisé une fois post-transfert pour casser le lineage `tooling/` sur le réplica buildkit (cf. piège lineage (`15-build-ci/buildkit-mutualise.md#pièges-rencontrés`)).
+- Variables CI (mode **service**) : `BUILDKIT_DAEMON_ADDRESS` (`:443`), `BUILDKIT_SVC_COUNT`, `BUILDKIT_CERT_*`, `BUILDKIT_HTTP_PROXY`, `BUILDKIT_TUNNEL=1`. Toujours requis : `OCI_PULL_*`, `RENDER_TOKEN`, `SEMANTIC_RELEASE_TOKEN`. ⚠ `RENDER_TOKEN`/`SEMANTIC_RELEASE_TOKEN` ont dû être **recréés** (le transfert révoque les project access tokens). Convention secrets = **`masked_and_hidden`** (`BUILDKIT_CERT_*` en **base64** décodés au job) — cf. credentials-and-access § variables CI (`00-context/credentials-and-access.md`).
 
 ## CD — par **trigger** (app → gitops)
 Aucun token gitops stocké dans l'app : les jobs `deploy-preprod` / `deploy-review` / `stop-review` (factorisés via `.deploy-trigger`, `extends`) **déclenchent** (`trigger`, `strategy: depend`) le pipeline du repo gitops via `CI_JOB_TOKEN` (+ **allowlist inbound** 434←433), en passant `DEPLOY_ACTION`(**preprod**|review|stop-review) / `SLUG` / `CHART_VERSION`.
@@ -190,10 +190,10 @@ Script générique (`create`/`seed`/`delete`/`ls`, prefix `da-manager-review-`, 
 - `deploy-review` copie le template + bump (descripteur préservé, `cp -a`) ; le **render calcule le host** (`<dossier>.<envId>.<zone-domain>`) ⇒ pas besoin de débloquer Kyverno. DB = **CNPG par branche**.
 - **Purge** : schedule gitops `cleanup-review` (quotidien, `REVIEW_TTL_DAYS=7`) — supprime les dossiers dont la branche a disparu OU inactifs >7j (prune workload + **liste** les `atlas-env.sh delete` restants).
 
-> ⚠ **Seed d'un env neuf** : il faut un **login Vault POSTÉRIEUR à la création** de l'env (la policy `<envId>_admin` est ajoutée **au login** depuis les groupes OIDC). Après `create` : re-login Vault puis `atlas-env.sh seed <slug>`. Cf. [atlas-v2 § Vault](../10-platforms/atlas-v2.md).
+> ⚠ **Seed d'un env neuf** : il faut un **login Vault POSTÉRIEUR à la création** de l'env (la policy `<envId>_admin` est ajoutée **au login** depuis les groupes OIDC). Après `create` : re-login Vault puis `atlas-env.sh seed <slug>`. Cf. atlas-v2 § Vault (`10-platforms/atlas-v2.md`).
 
 ## Secrets (Vault + ESO)
-Par env, mount `<wsId>/<envId>/kv` : `proconnect` (`PROCONNECT_CLIENT_ID/SECRET` + `AUTH_SECRET`) ; `registry` (`.dockerconfigjson`, deploy token `read_registry` projet 433). DB CNPG ⇒ secret `da-manager-db-app` in-cluster (pas Vault). Le gitops porte les `ExternalSecret` (défauts ESO explicités, cf. [secrets-externalsecrets.md](../20-cd-pattern/secrets-externalsecrets.md)).
+Par env, mount `<wsId>/<envId>/kv` : `proconnect` (`PROCONNECT_CLIENT_ID/SECRET` + `AUTH_SECRET`) ; `registry` (`.dockerconfigjson`, deploy token `read_registry` projet 433). DB CNPG ⇒ secret `da-manager-db-app` in-cluster (pas Vault). Le gitops porte les `ExternalSecret` (défauts ESO explicités, cf. `20-cd-pattern/secrets-externalsecrets.md`).
 
 ## Vérification
 - `helm template charts/da-manager -f <values>` valide (`kubeconform`).
@@ -209,13 +209,13 @@ Par env, mount `<wsId>/<envId>/kv` : `proconnect` (`PROCONNECT_CLIENT_ID/SECRET`
 - **kubectl dev** : l'email du user Keycloak doit être **vérifié** (`username-claim=email` ⇒ 401 si `email_verified:false`).
 
 ## Coordonnées
-- **PIC** : `socialgouv/produits-dnum/studio-tech/architecture/da-manager/da-manager` (433, primaire, défaut `main`) + `…/architecture/da-manager/da-manager-gitops` (434). *(Réorganisés 2026-06-02 sous le sous-groupe `architecture/da-manager` ; anciens chemins `…/tooling/…` redirigés 301. Build CI = brique partagée [`studio-tech-commun/sdpsn-devops-ci-utils`](../15-build-ci/buildkit-mutualise.md), projet 439.)*
+- **PIC** : `socialgouv/produits-dnum/studio-tech/architecture/da-manager/da-manager` (433, primaire, défaut `main`) + `…/architecture/da-manager/da-manager-gitops` (434). *(Réorganisés 2026-06-02 sous le sous-groupe `architecture/da-manager` ; anciens chemins `…/tooling/…` redirigés 301. Build CI = brique partagée `studio-tech-commun/sdpsn-devops-ci-utils` (`15-build-ci/buildkit-mutualise.md`), projet 439.)*
 - **Atlas** : Org SDPC `org-01ks7sjgcxkez4ebz81x6t7frc` · Workspace `ws-01ksq7185sfavebnnc8637mg43` · Env preprod `env-01kssbv4csvqg6xcvg63nhm9wy`.
 - **Host preprod** : `https://<atlas-host>` *(suffixe `-preprod` ajouté 2026-06-02 ; même envId)*.
 
 ## Reste à faire
-- ✅ **create/delete env 100 % CI — EN PLACE (2026-07-07)** via PAT Atlas + brique ci-common `atlas-env-lifecycle` ([atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md)) : `apply` crée l'env à la 1re review (`atlas_env_ensure`), `cleanup-review` supprime aussi l'Environment Atlas (`atlas_env_delete`) — validé e2e pipelines 52688/52690. CI vars 434 : `ATLAS_TOKEN` (PAT), `ATLAS_GITOPS_DEPLOY_USER/_TOKEN`. Le seed Vault (`registry`,`proconnect`) reste opérateur post-create (`atlas-env.sh seed`).
-- **Identité durable** : PAT interim (compte opérateur, exp. 2026-07-14) à remplacer — compte bot + PAT, ou SA `client_credentials` (MR draftée, branche `feat/ci-service-account` du clone atlas-monorepo, ressort SRE). La **fédération OIDC GitLab** (RFC [atlas-review-envs-synthese.md](../../.plans/review-env/atlas-review-envs-synthese.md)) reste l'évolution qui supprimerait *aussi* les tokens gitops à rotation manuelle.
+- ✅ **create/delete env 100 % CI — EN PLACE (2026-07-07)** via PAT Atlas + brique ci-common `atlas-env-lifecycle` (atlas-pat-machine-identity (`20-cd-pattern/atlas-pat-machine-identity.md`)) : `apply` crée l'env à la 1re review (`atlas_env_ensure`), `cleanup-review` supprime aussi l'Environment Atlas (`atlas_env_delete`) — validé e2e pipelines 52688/52690. CI vars 434 : `ATLAS_TOKEN` (PAT), `ATLAS_GITOPS_DEPLOY_USER/_TOKEN`. Le seed Vault (`registry`,`proconnect`) reste opérateur post-create (`atlas-env.sh seed`).
+- **Identité durable** : PAT interim (compte opérateur, exp. 2026-07-14) à remplacer — compte bot + PAT, ou SA `client_credentials` (MR draftée, branche `feat/ci-service-account` du clone atlas-monorepo, ressort SRE). La **fédération OIDC GitLab** (RFC `.plans/review-env/atlas-review-envs-synthese.md`) reste l'évolution qui supprimerait *aussi* les tokens gitops à rotation manuelle.
 - **Parkés** : ProConnect réel (whitelister le callback côté AgentConnect) ; host « joli » (domaine ajouté à l'org/workspace par un super-admin).
 
-> ℹ️ **Comportement attendu (pas un reste-à-faire)** : l'**App ArgoCD orpheline** après un `delete` d'env **se nettoie seule** avec latence — ne pas la supprimer à la main (cf. [historique](../90-historique/da-manager-journal.md)).
+> ℹ️ **Comportement attendu (pas un reste-à-faire)** : l'**App ArgoCD orpheline** après un `delete` d'env **se nettoie seule** avec latence — ne pas la supprimer à la main (cf. historique (`90-historique/da-manager-journal.md`)).

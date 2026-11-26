@@ -171,6 +171,12 @@ export default function AcceptInvitation() {
               <span className="text-fg-muted">Role:</span>{" "}
               <span className="font-medium">{info.role}</span>
             </div>
+            {info.org_role && (
+              <div>
+                <span className="text-fg-muted">Organization role:</span>{" "}
+                <span className="font-medium">{info.org_role}</span>
+              </div>
+            )}
             <div>
               <span className="text-fg-muted">Invited email:</span>{" "}
               <span className="font-mono text-xs">{info.email}</span>

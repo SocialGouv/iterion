@@ -2,7 +2,7 @@
 name: repo-maturity-assessment
 description: >
   Heuristic for deciding whether a repository is mature/stable enough to
-  warrant a long-horizon vision. Consulted by Evoly's survey and (before
+  warrant a long-horizon vision. Consulted by Deep Blue's survey and (before
   routing) by Nexie. Stack-agnostic — the agent picks the right commands
   for whatever repo it is pointed at.
 disable-model-invocation: true

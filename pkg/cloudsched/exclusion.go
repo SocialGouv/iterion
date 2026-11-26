@@ -2,6 +2,7 @@ package cloudsched
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -31,7 +32,7 @@ func (s *MongoStore) WithSchedule(ctx context.Context, id string, fn func(contex
 		ctx = store.WithLaunchPersistenceGuard(ctx, func(ctx context.Context, write func(context.Context) error) error {
 			session, err := db.Client().StartSession()
 			if err != nil {
-				return fmt.Errorf("%w: schedule transaction: %v", schedgate.ErrMaintenanceHold, err)
+				return fmt.Errorf("%w: schedule transaction: %w", schedgate.ErrLaunchNotPersisted, err)
 			}
 			defer session.EndSession(context.WithoutCancel(ctx))
 			_, err = session.WithTransaction(ctx, func(ctx context.Context) (any, error) {
@@ -44,12 +45,18 @@ func (s *MongoStore) WithSchedule(ctx context.Context, id string, fn func(contex
 					return nil, err
 				}
 				if res.MatchedCount != 1 {
-					return nil, schedgate.ErrMaintenanceHold
+					return nil, schedgate.ErrScheduleLeaseLost
 				}
 				return nil, write(ctx)
 			})
+			// A lost lease keeps its own hold: the successor owns the slot,
+			// so the scheduler records no verdict for this launch. Any other
+			// failure is a run that could not be persisted.
+			if errors.Is(err, schedgate.ErrScheduleLeaseLost) {
+				return fmt.Errorf("schedule persistence: %w", err)
+			}
 			if err != nil {
-				return fmt.Errorf("%w: schedule persistence: %v", schedgate.ErrMaintenanceHold, err)
+				return fmt.Errorf("%w: schedule persistence: %w", schedgate.ErrLaunchNotPersisted, err)
 			}
 			return nil
 		})
@@ -77,7 +84,7 @@ func (s *MemoryStore) WithSchedule(ctx context.Context, id string, fn func(conte
 		s.scopeMu.Lock()
 		defer s.scopeMu.Unlock()
 		if s.scopes[id] != token {
-			return schedgate.ErrMaintenanceHold
+			return schedgate.ErrScheduleLeaseLost
 		}
 		return write(ctx)
 	})

@@ -106,7 +106,7 @@ func (s *Server) registerAuthRoutes() {
 	// with — goes through the derivation chokepoint (auth.MintTeamToken):
 	// the access token of a revoked session mints none (401), and a
 	// personal access token never does (403).
-	s.mux.Handle("POST /api/teams/{id}/invitations", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateInvitation))))
+	s.mux.Handle("POST /api/teams/{id}/invitations", s.requireAuth(s.gateInvitationMint(http.HandlerFunc(s.handleCreateInvitation))))
 	s.mux.Handle("GET /api/teams/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleListInvitations)))
 	s.mux.Handle("DELETE /api/teams/{id}/invitations/{invite_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteInvitation)))
 	s.mux.Handle("PATCH /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateMember)))

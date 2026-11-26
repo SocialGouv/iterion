@@ -181,7 +181,7 @@ type Manifest struct {
 	// machine-read routing contract consumed by the command router
 	// (pkg/webhooks), the auto-provisioner (pkg/forge), and the cloud
 	// scheduler (pkg/cloudsched). Empty = the bot is not directly
-	// triggerable on a repo (orchestrators like Nexie/Evoly). A bundle that
+	// triggerable on a repo (orchestrators like Nexie/Deep Blue). A bundle that
 	// declares only a legacy forge: block is treated as having the
 	// synthetic set from SyntheticInvocations.
 	Invocations []Invocation `yaml:"invocations,omitempty"`

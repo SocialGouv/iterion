@@ -5,7 +5,7 @@ Where `sec-audit-deps` (Depsy) runs a full-tree weekly audit emitting
 only to the board, Shieldy inspects **only the dependency versions a
 change adds or upgrades**, reuses a **shared cache** so a version is
 analysed once, and **reports back onto the PR** (merge request on
-GitLab) via the native forge API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
+GitLab) via the native forge API. The CVE-focused sibling is `supply-shield-cve` (Code Red).
 
 ## What it does
 

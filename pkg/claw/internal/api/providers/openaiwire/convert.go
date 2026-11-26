@@ -24,7 +24,8 @@ import (
 //     announces the images, which travel in the user message that follows
 //     the run of tool messages.
 //   - A user message right after a tool message is preceded by a bridging
-//     assistant message (see toolResultsBridge).
+//     assistant message (see toolResultsBridge); one right after another
+//     user message joins it.
 //
 // When system is non-empty it is emitted as the first message; passing ""
 // is the supported way to skip it. An image block with neither base64 data
@@ -45,13 +46,24 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 	// end of the conversation.
 	var toolImages []ContentPart
 	emitUser := func(parts []ContentPart) {
-		parts = append(toolImages, parts...)
+		parts = CarryToolImages(toolImages, parts, ContentPart{Type: "text", Text: UserContentCaption})
 		toolImages = nil
 		if len(parts) == 0 {
 			return
 		}
 		if n := len(result); n > 0 && result[n-1].Role == "tool" {
 			result = append(result, Message{Role: "assistant", Content: StrPtr(toolResultsBridge)})
+		}
+		// A user message right after another joins it: the Mistral family's
+		// templates refuse user after user, as they refuse user after tool.
+		if n := len(result); n > 0 && result[n-1].Role == "user" {
+			prev := result[n-1]
+			result = result[:n-1]
+			if prev.Parts != nil {
+				parts = append(append([]ContentPart(nil), prev.Parts...), parts...)
+			} else if prev.Content != nil {
+				parts = append([]ContentPart{{Type: "text", Text: *prev.Content}}, parts...)
+			}
 		}
 		texts := make([]string, 0, len(parts))
 		for _, p := range parts {
@@ -149,13 +161,32 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 // role 'tool'"), text-only or not, so an assistant message bridges the two.
 // tool → assistant → user is the one sequence every model measured on a vLLM
 // gateway accepted (pixtral, mistral-small/-medium, gemma, qwen, deepseek).
-// ToolImageNotice and ToolImageCaption are shared with the Responses API
-// converter, whose function_call_output is text only as well.
+// ToolImageNotice, ToolImageCaption and UserContentCaption are shared with
+// the Responses API converter, whose function_call_output is text only as
+// well.
 const (
-	ToolImageNotice   = "[%d image(s) returned by this tool are attached in the next user message]"
-	ToolImageCaption  = "Image(s) returned by tool call %s:"
-	toolResultsBridge = "Tool results received."
+	ToolImageNotice    = "[%d image(s) returned by this tool are attached in the next user message]"
+	ToolImageCaption   = "Image(s) returned by tool call %s:"
+	UserContentCaption = "The user message's own content follows (not returned by a tool):"
+	toolResultsBridge  = "Tool results received."
 )
+
+// CarryToolImages is the content of the user message that carries the held
+// tool images: the captioned tool images first, then the message's own
+// parts under their own caption, so an image the user attached is not read
+// as the last tool's. Without tool images the parts are returned as they
+// are; without parts, the tool images alone.
+func CarryToolImages[P any](toolImages, parts []P, caption P) []P {
+	if len(toolImages) == 0 {
+		return parts
+	}
+	out := append([]P(nil), toolImages...)
+	if len(parts) == 0 {
+		return out
+	}
+	out = append(out, caption)
+	return append(out, parts...)
+}
 
 // toolResultImages returns the image parts of a tool_result's content.
 func toolResultImages(block api.ContentBlock) ([]ContentPart, error) {

@@ -1,22 +1,22 @@
 name: 🖥️ Desktop Release
 
-# Triggers on the same v* tags as release.yml. The two workflows run in
-# parallel and attach distinct (iterion-* vs iterion-desktop-*) artefacts
-# to the same GitHub Release.
+# Dispatch-only until a run publishes again (#3740): both Linux legs fail
+# appimagetool's AppDir permission check and the macOS leg does not
+# complete, so `publish` never runs and a tag trigger would spend ~32 hosted
+# runner-minutes per release for no artefact. The tag trigger — `push: tags:
+# v*`, the same tags as release.yml, attaching iterion-desktop-* artefacts to
+# the same GitHub Release — returns once a dispatch publishes.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Tag pushes serialise (we never want a v1.2.0 build to clobber a still
-  # running v1.1.0 release), but manual workflow_dispatch invocations
-  # cancel the previous one — typical iteration flow during desktop
-  # packaging troubleshooting.
-  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+  # A run on a tag is a release and is never cancelled — a second run on
+  # the same tag waits rather than cutting a publish in half. A dispatch on
+  # a branch cancels the previous one on that branch — the iteration flow
+  # of desktop packaging troubleshooting.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: write
@@ -471,10 +471,12 @@ jobs:
 
   publish:
     needs: build
-    # Tag pushes attach artefacts to the matching GitHub Release; manual
-    # workflow_dispatch runs are validation-only — the build artefacts
-    # are still available under the run's "Artifacts" UI for download.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # A run on a v* tag attaches the artefacts to the matching GitHub
+    # Release — the tag trigger, or a dispatch with `--ref v<X.Y.Z>`, the
+    # only way a release runs while the tag trigger is off (#3740). A
+    # dispatch on a branch is validation-only: its build artefacts stay
+    # under the run's "Artifacts" UI for download.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Get GitHub App Token

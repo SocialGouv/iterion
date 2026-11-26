@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mongo-conformance — the local member of CI's `mongo-conformance` job.
 #
-# The second of the two required contexts that had no local member: one `mongo`
+# The second of the two gate contexts that had no local member: one `mongo`
 # in the whole Taskfile, and it belonged to `cloud:up:deps`. So the lane's
 # first proof could not be true.
 #
@@ -87,7 +87,7 @@ mapfile -t INVOCATIONS < <(
 # mapfile's own success: the process substitution hides the reader's exit from
 # `set -e` and from `pipefail` alike, so a refusal computed inside it would be
 # thrown away, the loop below would run zero invocations, and `exit "$failed"`
-# would answer 0 — a REQUIRED context reporting green over nothing tested.
+# would answer 0 — a gated context reporting green over nothing tested.
 # Measured on this file before the guard existed. It is the same shape
 # scripts/desktop/nix-pkgconfig-env.sh already uses after its own `mapfile`.
 [ "${#INVOCATIONS[@]}" -gt 0 ] || {

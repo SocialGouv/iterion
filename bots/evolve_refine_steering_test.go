@@ -11,7 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
-// Evoly's investigation is re-entered: the operator answers `ask_continue`
+// Deep Blue's investigation is re-entered: the operator answers `ask_continue`
 // with `refine` plus a detail, and the refine edge carries that detail as the
 // turn's new steering. The node's prompt therefore renders TWO references for
 // one name, because from turn 2 on they are two different values:

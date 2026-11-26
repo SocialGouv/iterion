@@ -12,7 +12,7 @@ description: |
 A PR/push-driven, diff-scoped MALWARE gate. The static-signals →
 LLM-with-schema pattern from SocialGouv/no-package-malware, scoped to
 what a change adds, fed back onto the forge, and deduped through a
-shared cache. The CVE-focused sibling is `supply-shield-cve` (Vulny).
+shared cache. The CVE-focused sibling is `supply-shield-cve` (Code Red).
 
 ## Pipeline
 

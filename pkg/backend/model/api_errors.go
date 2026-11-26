@@ -33,6 +33,16 @@ func (e *APIError) Error() string {
 	return e.Message
 }
 
+// Refusal reports the deterministic provider refusal the stream error names
+// (api.ClassifyRefusal over its status and message), so a refusal relayed
+// mid-stream is read by every layer exactly as its HTTP form is.
+func (e *APIError) Refusal() api.RefusalKind {
+	if e == nil {
+		return api.RefusalNone
+	}
+	return api.ClassifyRefusal(e.StatusCode, e.Message, "")
+}
+
 // ClassifyStreamError parses a stream error event and returns the appropriate
 // typed error (*ContextOverflowError or *APIError), or nil if the data is not
 // a recognized error event.

@@ -55,7 +55,7 @@ store dir (or announces its port), so the runs stay observable.
 The dev backend runs under `watchexec -r -e go -w cmd -w pkg -w vendor`. Because
 of the `-e go` filter, only a **`.go` edit under `cmd/`/`pkg/`/`vendor/`** trips it
 (a docs bot writing `.md`, or a studio bot writing `.ts`, is unaffected). So the
-moment a code-mutating bot (Willy/Featurly/Billy/Renovacy/Devy) edits a watched
+moment a code-mutating bot (Willy/Featurly/Billy/Renovacy/Devboxing) edits a watched
 `.go` file on the live tree, watchexec restarts the backend and **drains the
 in-flight run** (`"server drained: studio process
 shutting down"` → `failed_resumable`). Bots with `worktree: auto` are mostly

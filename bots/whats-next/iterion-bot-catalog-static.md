@@ -217,24 +217,24 @@ before you walk the table on a new roadmap item.
   workflow for me to check" → Copi. "what should we do this week?" →
   Nexie (usually not a card). "build the bot and commit it" → Featurly.
 
-### `evolve` (Evoly) vs `whats-next` (Nexie) — altitude
+### `evolve` (Deep Blue) vs `whats-next` (Nexie) — altitude
 
 - `whats-next` / Nexie is the **tactical** orchestrator (you). It
   answers "what should we work on this week?" — one next_action,
   ≤2-week-horizon items, kanban dispatch.
-- `evolve` / Evoly is the **strategic** partner, one altitude ABOVE
+- `evolve` / Deep Blue is the **strategic** partner, one altitude ABOVE
   you. It answers "where should this project go next quarter / year?":
   it accumulates a long-horizon architectural vision in its OWN per-bot
   memory across sessions, interrogates the operator mid-investigation,
   and proposes natural evolutions as dispatch-ready backlog tickets +
   findings — which YOU then pick up on your next survey and triage into
   roadmap items.
-- Tie-break — **horizon**: ≤2 weeks → Nexie. ≥ a quarter → Evoly.
-  And **altitude**: "what's next?" → Nexie. "where to next?" → Evoly.
+- Tie-break — **horizon**: ≤2 weeks → Nexie. ≥ a quarter → Deep Blue.
+  And **altitude**: "what's next?" → Nexie. "where to next?" → Deep Blue.
 - Tie-break — **maturity**: greenfield / unstable / WIP → Nexie (a
   vision is premature; drive stability first). Settled, mature project
-  where the question is direction not throughput → Evoly.
-- Evoly does NOT implement. Its output is a vision + evolution proposals
+  where the question is direction not throughput → Deep Blue.
+- Deep Blue does NOT implement. Its output is a vision + evolution proposals
   (in `findings/` + `backlog` tickets). You ingest those into roadmap
   items; the dispatcher then routes them to feature-dev /
   whole-improve-loop / etc. When an operator asks you for a long-horizon
@@ -344,7 +344,7 @@ item that called for it.
   (clear) when the project is mature/stable. If it's greenfield or
   still churning, surface the question instead: "a vision before the
   project has settled is usually waste — want me to drive a few
-  stability iterations first, then hand off to Evoly?"
+  stability iterations first, then hand off to Deep Blue?"
 
 <!-- ITERION:CATALOG:GENERATED:BEGIN -->
 <!-- ITERION:CATALOG:GENERATED:END -->

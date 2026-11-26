@@ -10,8 +10,15 @@ import (
 // Tool-list diagnostics.
 const (
 	DiagUnknownTool       DiagCode = "C135" // a `tools:` entry cannot resolve on a backend the list actually constrains (error)
-	DiagToolRefusedOnClaw DiagCode = "C159" // a `tools:` entry claw registers but iterion cannot serve, so every call is refused (warning)
+	DiagToolRefusedOnClaw DiagCode = "C159" // an author-written tool name claw registers but iterion cannot serve — a `tools:` or `agent_tools:` entry, or a tool node's registry `command:` — so every call is refused (warning)
 )
+
+// toolNodeRefusedFix is C159's fix on a tool node. The catalog's fix offers
+// rerouting to a backend, which a tool node cannot use: ClawExecutor runs its
+// registry recipe on claw's registry whatever the backend.
+const toolNodeRefusedFix = "A tool node's registry `command:` runs on claw's registry whatever the backend, and no backend serves this tool: " +
+	"do the work as a shell `command:` or a `script:` (the message names the replacement); " +
+	"for a cron entry, arm a platform schedule instead."
 
 // validateNodeTools checks that every declared tool name can actually resolve
 // — but only where the list is a real constraint. Two lists carry such names:
@@ -109,9 +116,9 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 // still runs — the refusal arrives as a tool error the model can act on, not
 // as a dead node — and on a tool node it is the author's explicit recipe.
 // Philosophy #1: warn rather than reject, and never silently replace an
-// author's explicit choice. The
-// refusal itself is certain: registerClawTool refuses a listed name whatever
-// the host wires, so no message hedges on a host that serves it.
+// author's explicit choice. The refusal itself is certain: registerClawTool
+// refuses a listed name whatever the host wires, so no message hedges on a
+// host that serves it.
 //
 // Scope is every name the AUTHOR writes that reaches claw's registry — an
 // agent/judge node's `tools:`, its claw `fallbacks:` routes, a Verified
@@ -119,8 +126,17 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 // reach), and a tool node's registry recipe, its bare `command:`. That fourth
 // site is read whatever the backend: ClawExecutor runs every tool node
 // through the registry RegisterClawAll builds, and with no model to read the
-// refusal the node fails, so the warning there names a failure, not a tool
-// error. The tools the ENGINE appends are out of it: ultracode grants `agent`
+// refusal the recipe is refused on every run that reaches it (a met
+// Verified Action postcondition skips the recipe; `policy: best_effort`
+// waives its failure — except `lsp` on a sandboxed run, whose recipe the
+// sandbox's placement refuses first, a setup failure best_effort does not
+// waive), so the warning there names a recipe failure, not a tool error,
+// carries its own fix (rerouting cannot serve a tool node) and points at the
+// `command:` line. It reads the command as dispatch does — exactly as
+// written: a command padded with whitespace the recipe-kind split does not
+// read as shell (U+00A0, a vertical tab, …) resolves to no registered tool
+// and fails at dispatch before any refusal, so it is not this warning's to
+// predict. The tools the ENGINE appends are out of it: ultracode grants `agent`
 // to every claw node that restricts its list
 // (executor_build_task.clawOrchestrationTool), and a warning on a line
 // the author never wrote would report an engine choice as an authoring
@@ -129,12 +145,11 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 func (c *compiler) validateRefusedClawTools(w *Workflow) {
 	for _, n := range w.Nodes {
 		if tn, ok := n.(*ToolNode); ok {
-			if ToolRecipeKindOf(tn) == ToolRecipeRegistry {
-				name := strings.TrimSpace(tn.Command)
-				if r, refused := toolcatalog.ClawRefusesBuiltin(name); refused {
-					c.warnfAt(DiagToolRefusedOnClaw, tn.ID, "",
-						"tool %q: command: names %q, which the tool-node registry holds but cannot serve — %s, so the recipe FAILS at run time on every host (a tool node has no model to read the refusal). %s",
-						tn.ID, name, r.Reason, r.Remedy)
+			if ToolRecipeKindOf(tn) == ToolRecipeRegistry && strings.TrimSpace(tn.Command) == tn.Command {
+				if r, refused := toolcatalog.ClawRefusesBuiltin(tn.Command); refused {
+					c.warnfAtPropertyWithHint(DiagToolRefusedOnClaw, "tool", tn.ID, "command", toolNodeRefusedFix,
+						"tool %q: command: names %q, which the tool-node registry holds but cannot serve — %s, so the recipe is refused on every run that reaches it, on every host (a tool node has no model to read the refusal). %s",
+						tn.ID, tn.Command, r.Reason, r.Remedy)
 				}
 			}
 			c.validateRefusedRecoveryAgentTools(w, tn)

@@ -193,8 +193,39 @@ func TestConvertMessages_InjectedUserMessageJoinsTheToolImageCarrier(t *testing.
 		t.Fatalf("roles = %s, want assistant,tool,assistant,user", r)
 	}
 	parts := got[3]["content"].([]any)
-	if len(parts) != 3 || parts[1].(map[string]any)["type"] != "image_url" || parts[2].(map[string]any)["text"] != "operator note" {
-		t.Errorf("carrier = %v, want caption, image, then the injected text", parts)
+	if len(parts) != 4 || parts[1].(map[string]any)["type"] != "image_url" ||
+		parts[2].(map[string]any)["text"] != UserContentCaption || parts[3].(map[string]any)["text"] != "operator note" {
+		t.Errorf("carrier = %v, want caption, image, the user caption, then the injected text", parts)
+	}
+}
+
+// A user image that follows a tool image in a separate message is captioned
+// as the user's own: the carrier does not let it read as the tool's.
+func TestConvertMessages_AUserImageAfterAToolImageHasItsOwnCaption(t *testing.T) {
+	msgs, err := ConvertMessages("", []api.Message{
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "c1", Name: "read_image", Input: map[string]any{}}}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: []api.ContentBlock{pngBlock("QUJD")}}}},
+		{Role: "user", Content: []api.ContentBlock{pngBlock("VVNS")}},
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got := wireJSON(t, msgs)
+	parts := got[len(got)-1]["content"].([]any)
+	want := []string{"text", "image_url", "text", "image_url"}
+	if len(parts) != len(want) {
+		t.Fatalf("carrier = %v, want tool caption, tool image, user caption, user image", parts)
+	}
+	for i, w := range want {
+		if parts[i].(map[string]any)["type"] != w {
+			t.Fatalf("carrier part %d = %v, want %s", i, parts[i], w)
+		}
+	}
+	if parts[2].(map[string]any)["text"] != UserContentCaption {
+		t.Errorf("separator = %v, want %q", parts[2], UserContentCaption)
+	}
+	if parts[3].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/png;base64,VVNS" {
+		t.Errorf("user image = %v", parts[3])
 	}
 }
 
@@ -231,5 +262,43 @@ func TestConvertMessages_AnUnencodableImageIsARequestValidationError(t *testing.
 	}
 	if invalid.IsRetryable() {
 		t.Error("a request that cannot be encoded must not be retried")
+	}
+}
+
+// Two user messages in a row after a tool run — the image carrier with a
+// reseed, then an operator message — reach the wire as ONE user message:
+// the Mistral family's templates refuse user after user.
+func TestConvertMessages_ConsecutiveUserMessagesAfterAToolRunMerge(t *testing.T) {
+	msgs, err := ConvertMessages("", []api.Message{
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "c1", Name: "read_image", Input: map[string]any{}}}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: []api.ContentBlock{pngBlock("QUJD")}}, {Type: "text", Text: "reseed"}}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "operator note"}}},
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got := wireJSON(t, msgs)
+	if r := roles(got); r != "assistant,tool,assistant,user" {
+		t.Fatalf("roles = %s, want assistant,tool,assistant,user", r)
+	}
+	parts := got[3]["content"].([]any)
+	last := parts[len(parts)-1].(map[string]any)
+	if last["text"] != "operator note" || parts[1].(map[string]any)["type"] != "image_url" {
+		t.Errorf("merged user message = %v, want the carrier then the operator note", parts)
+	}
+}
+
+// Text-only consecutive user messages merge into one text content.
+func TestConvertMessages_ConsecutiveTextUserMessagesMerge(t *testing.T) {
+	msgs, err := ConvertMessages("", []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "one"}}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "two"}}},
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got := wireJSON(t, msgs)
+	if r := roles(got); r != "user" || got[0]["content"] != "one\ntwo" {
+		t.Fatalf("wire = %v, want one user message \"one\\ntwo\"", got)
 	}
 }

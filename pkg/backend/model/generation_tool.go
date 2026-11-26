@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
 // GenerationTool describes a tool available during direct generation.
@@ -56,6 +57,10 @@ type GenerationTool struct {
 // GenerationOptions configures a direct generation call.
 type GenerationOptions struct {
 	codemodeState CodemodeState
+	// images is the route's image policy, resolved from Model at the entry
+	// of a generation (withRouteImagePolicy); buildRequest bounds each
+	// request's images by it.
+	images tool.ImagePolicy
 	// Model is the routing spec the client was resolved from
 	// ("anthropic/claude-sonnet-4-6"). buildRequest strips its routing prefix
 	// exactly once: pass the spec, never an id already stripped — a model id

@@ -1,7 +1,7 @@
-# ReArchi (`adr-rechallenge`)
+# White Elephant (`adr-rechallenge`, formerly ReArchi)
 
 Human-in-the-loop **re-challenger** for a single Architectural Decision
-Record. ReArchi loads ONE ADR + the current code state, surveys what
+Record. White Elephant loads ONE ADR + the current code state, surveys what
 drifted since the decision was made, frames the case for revisiting it,
 and asks you one question with three options.
 
@@ -28,7 +28,7 @@ load_adr -> survey_code -> frame_arguments -> human_decision
 | **change** | File ONE backlog ticket on the native board with the proposed change + the rationale + a pointer back to the ADR. You triage it. |
 | **addendum** | Append a short dated re-challenge note to the ADR, then ask you a second question: commit the note, or skip? On `skip`, the addition stays in your working tree for you to inspect by hand. |
 
-ReArchi **never edits code**. The only file it may write to is the ADR
+White Elephant **never edits code**. The only file it may write to is the ADR
 itself, only in the `addendum` branch, only to append a dated block.
 
 ## Run it
@@ -61,12 +61,12 @@ iterion resume --run-id <id> --file bots/adr-rechallenge/main.bot \
 
 ## Dispatched usage
 
-The dispatcher picks up ReArchi via the manifest's `dispatch_vars`. Two
+The dispatcher picks up White Elephant via the manifest's `dispatch_vars`. Two
 ways:
 
 1. **Triaged ticket** — the `adr-cartograph` (Adry) bot files a
    `type:adr-rechallenge` issue with `bot_args.adr_path` set; the
-   dispatcher routes it to ReArchi.
+   dispatcher routes it to White Elephant.
 2. **Hand-filed ticket** — open an issue titled `Re-challenge ADR-NNN`,
    set `bot: adr-rechallenge` and `bot_args.adr_path` in the issue's
    custom fields, drop it in the dispatcher's eligible state.
@@ -94,7 +94,7 @@ is no penalty for "no signal worth raising". See
 `skills/argument-framing.md` for the full contract and
 `skills/rearchi.md` for the operating playbook.
 
-## What ReArchi is NOT
+## What White Elephant is NOT
 
 - Not an ADR designer — the `change` branch only files a ticket; the
   replacement decision is designed elsewhere.

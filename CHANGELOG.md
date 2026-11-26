@@ -3,6 +3,117 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.40.0](https://github.com/SocialGouv/iterion/compare/v7.39.0...v7.40.0) (2026-11-26)
+
+### Features
+
+* **bots:** name personas with a colour or an -ion ending, and rename seven ([#3776](https://github.com/SocialGouv/iterion/issues/3776)) ([#3793](https://github.com/SocialGouv/iterion/issues/3793)) ([0d096c1](https://github.com/SocialGouv/iterion/commit/0d096c19160e8864ea1b4b9b3370263df4e91dee)), references [#3784](https://github.com/SocialGouv/iterion/issues/3784)
+
+    <details><summary>why</summary>
+
+    Catalog personas followed an unwritten -y/-i habit. It no longer kept names apart (14 pairs within edit distance 2) and did not mark a name as iterion's. docs/agents/bots/naming.md states the doctrine: - a persona carries one colour from a closed English lexicon, or its last word ends in -ion; - review judges humour first, then explicitness; - jokers are named one by one, each with its reason; - the 32 existing names are grandfathered.
+
+    </details>
+
+### Bug Fixes
+
+* **ci:** train — a landed lot exits 0 even when its worktree cannot be removed ([#3736](https://github.com/SocialGouv/iterion/issues/3736)) ([#3792](https://github.com/SocialGouv/iterion/issues/3792)) ([d0b3c9d](https://github.com/SocialGouv/iterion/commit/d0b3c9df7d826603cb65f000abb23f7a3eb9c273)), references [#3759](https://github.com/SocialGouv/iterion/issues/3759)
+
+    <details><summary>why</summary>
+
+    Revi Rf9cffc: once Land had merged every pull request, a failure in removeWorktree reached main() as a plain error and exited 2. The contract defines 2 as "a precondition refused — no verdict", so a script trusting the code would conclude nothing landed while main carried the whole lot. Two ways to hit it: a read-only .git/worktrees, or a symlinked state directory (#3759).
+
+    </details>
+
+## [7.39.0](https://github.com/SocialGouv/iterion/compare/v7.38.4...v7.39.0) (2026-11-26)
+
+### Features
+
+* **auth,server,cli,studio:** an invitation names its org role; a personal access token invites by email ([#3781](https://github.com/SocialGouv/iterion/issues/3781)) ([70d1aa0](https://github.com/SocialGouv/iterion/commit/70d1aa05449440358ee18cd26c238ae803b72cfd)), references [#3773](https://github.com/SocialGouv/iterion/issues/3773) [#3763](https://github.com/SocialGouv/iterion/issues/3763) [#3764](https://github.com/SocialGouv/iterion/issues/3764)
+
+    <details><summary>why</summary>
+
+    Accepting a team invitation at admin or owner wrote an org ADMIN membership (identity.OrgRoleForTeamRole), so inviting someone as admin of one team made them admin of its whole org. SSO grants went through the same mirror. The CLI could not invite at all: its stored personal access token was refused the team-token mint.
+
+    </details>
+* **ci:** train — land a lot of ready pull requests on one local gate, bisect a red lot ([#3736](https://github.com/SocialGouv/iterion/issues/3736)) ([#3766](https://github.com/SocialGouv/iterion/issues/3766)) ([b809377](https://github.com/SocialGouv/iterion/commit/b80937722a2eff044fe20d245deb7ec84c86b46b)), references [#3686](https://github.com/SocialGouv/iterion/issues/3686) [#2](https://github.com/SocialGouv/iterion/issues/2) [#2](https://github.com/SocialGouv/iterion/issues/2) [#2](https://github.com/SocialGouv/iterion/issues/2)
+
+    <details><summary>why</summary>
+
+    Measured over the last seven days, the merge queue built 293 groups for 106 pull requests (2.8 builds each, 29 % of the merge_group runner-hours lost to cancellations) and a pull request waited 550 min at p90. The extended train lane (#3686) lands bursts on a local gate instead; this is its tool.
+
+    </details>
+
+### Bug Fixes
+
+* **ir:** give C159 on a tool node its own hint and the command: position ([#3722](https://github.com/SocialGouv/iterion/issues/3722)) ([1931573](https://github.com/SocialGouv/iterion/commit/193157385276b1d2cc7eeeb33a3e38b9e30bf470)), closes [#3667](https://github.com/SocialGouv/iterion/issues/3667), references [#3667](https://github.com/SocialGouv/iterion/issues/3667)
+
+    <details><summary>why</summary>
+
+    The C159 tool-node arm printed the catalog fix "route the node to a backend", which cannot help: ClawExecutor runs a registry recipe on claw's registry whatever the backend. The arm now emits its own fix at the `command:` line (warnfAtPropertyWithHint). It also warns only when the command is written without surrounding whitespace, because dispatch resolves it exactly as written and a command padded with U+00A0, \v, \f or U+0085 fails as an unregistered tool before any refusal. The message,…
+
+    </details>
+* **mainwatch:** respect a disabled auto-merge, arm the revert before recording it, resumable epic filing ([#3720](https://github.com/SocialGouv/iterion/issues/3720)) ([6ba0af1](https://github.com/SocialGouv/iterion/commit/6ba0af1e6ce3b9c30d14d7b4daec2b1fed65bdc6)), closes [#3696](https://github.com/SocialGouv/iterion/issues/3696), references [#1410](https://github.com/SocialGouv/iterion/issues/1410) [#3702](https://github.com/SocialGouv/iterion/issues/3702)
+
+    <details><summary>why</summary>
+
+    Follow-ups of #3696. The flake pass reads the quarantine pull request before pushing: a merged or closed one gets nothing. Its auto-merge is never re-armed once its timeline shows a disable. The revert is armed before the ticket records it; an arming failure is recorded on the ticket, marker included, for a person. On main's green run every open revert of the episode closes, including one only its suspect's branch names. main-watch's own flake tickets are filed under epic #1410 on every pass…
+
+    </details>
+
+## [7.38.4](https://github.com/SocialGouv/iterion/compare/v7.38.3...v7.38.4) (2026-11-26)
+
+### Features
+
+* **rgaa-audit:** pin ultra11y 9.6.6 and read its exit-1 partial outcomes as data ([#3708](https://github.com/SocialGouv/iterion/issues/3708)) ([d1fbcce](https://github.com/SocialGouv/iterion/commit/d1fbcce992a2715b5c2b14a2258835f0e48ae6ab)), closes [#3705](https://github.com/SocialGouv/iterion/issues/3705), references [SocialGouv/ultra11y#223](https://github.com/SocialGouv/ultra11y/issues/223) [#3705](https://github.com/SocialGouv/iterion/issues/3705)
+
+    <details><summary>why</summary>
+
+    Bump the engine pin from 7.2.0 to 9.6.1 (pin file, engine lockfile, both Dockerfiles, the engine_* defaults of main.bot) and migrate the bot to the contracts that moved:
+
+    </details>
+
+### Bug Fixes
+
+* **claw,runtime:** stop every retry layer on a deterministic gateway refusal ([#3048](https://github.com/SocialGouv/iterion/issues/3048)) ([#3765](https://github.com/SocialGouv/iterion/issues/3765)) ([4621a8e](https://github.com/SocialGouv/iterion/commit/4621a8e894157afd8f0352660dbb0568f83141c2))
+
+    <details><summary>why</summary>
+
+    A gateway (LiteLLM in front of vLLM) serves deterministic refusals under any status, and each status bought its own retries. Measured on iterion.cloud on 2026-11-25: a 422 "Budget has been exceeded" redelivered four times then parked on the DLQ; a 400 "glm-5.3 is not a multimodal model" failed EXECUTION_FAILED and resumed automatically; a 500 "Grammar error: Unable to determine if regex is empty" classified NETWORK_TRANSIENT, 3 claw retries x 7 node recoveries x 3 run resumes.
+
+    </details>
+* **claw:** bound tool images per model route, per request and per receiver ([#3726](https://github.com/SocialGouv/iterion/issues/3726)) ([1b30cb7](https://github.com/SocialGouv/iterion/commit/1b30cb75fef9d52a2d98978efa9ce039d09a8eda)), closes [#3649](https://github.com/SocialGouv/iterion/issues/3649), references [#3651](https://github.com/SocialGouv/iterion/issues/3651) [#3649](https://github.com/SocialGouv/iterion/issues/3649) [#3707](https://github.com/SocialGouv/iterion/issues/3707) [#3649](https://github.com/SocialGouv/iterion/issues/3649) [#3649](https://github.com/SocialGouv/iterion/issues/3649) [#3649](https://github.com/SocialGouv/iterion/issues/3649) [#3649](https://github.com/SocialGouv/iterion/issues/3649) [#3649](https://github.com/SocialGouv/iterion/issues/3649)
+
+    <details><summary>why</summary>
+
+    Follow-ups of the vision change (#3651), all five items of #3649.
+
+    </details>
+* **cloudsched:** no false or stale launch_refused after a lost lease or a fence-read blip ([#3666](https://github.com/SocialGouv/iterion/issues/3666)) ([#3721](https://github.com/SocialGouv/iterion/issues/3721)) ([64e1fa7](https://github.com/SocialGouv/iterion/commit/64e1fa75f11ab3edb795a022cffd224635108932))
+
+    <details><summary>why</summary>
+
+    Types the maintenance holds that reach the cloud ticker: ErrMaintenanceFenceUnreadable, ErrScheduleLeaseLost and ErrLaunchNotPersisted, each wrapping ErrMaintenanceHold. A replica that lost its lease writes no launch verdict, so its successor's verdict stands. An armed-fence tick clears the unreadable-fence verdict that a read blip left. Typed holds record their stable sentinel text, so a driver error that varies from tick to tick keeps one episode. A cancelled-tick test witnesses the ctx…
+
+    </details>
+* **security:** lift the vulnerable transitive npm packages behind 46 Dependabot alerts ([#3734](https://github.com/SocialGouv/iterion/issues/3734)) ([7e1d252](https://github.com/SocialGouv/iterion/commit/7e1d25249ce51b2282c9a4ba2d9b5db274759601))
+
+    <details><summary>why</summary>
+
+    Dependabot listed 52 open npm alerts on pnpm-lock.yaml (2026-11-26), all on transitive packages. For each, pnpm why gave the parent. Where a fix exists inside the version line the parent accepts, it is forced through the root pnpm.overrides block, which already held vitepress>vite: - undici: 7.29.0 (release-it) -> 7.30.2, 8.10.0 (jsdom) and 8.9.0 (pi-coding-agent) -> 8.13.1. One override per major (undici@7, undici@8); 30 alerts. - vite 6.4.3 under vitepress -> 6.4.6 (vitepress>vite ^6.4.3 ->…
+
+    </details>
+
+### Performance Improvements
+
+* **server:** page the assistant-watch sweep tests by 5 instead of building 501 file-store watches ([#3725](https://github.com/SocialGouv/iterion/issues/3725)) ([5d902f9](https://github.com/SocialGouv/iterion/commit/5d902f9f307f5ada21c60ca12722b59e99b28a71)), closes [#3684](https://github.com/SocialGouv/iterion/issues/3684), references [#3684](https://github.com/SocialGouv/iterion/issues/3684)
+
+    <details><summary>why</summary>
+
+    The assistant-watch sweep reads active watches 500 at a time. That number was two separate literals: the page request and the last-page check. It is now one constant, assistantWatchSweepPageSize, plus an unexported coordinator seam (sweepPage, 0 = the constant) that snapshot() carries. Production behaviour is unchanged.
+
+    </details>
+
 ## [7.38.3](https://github.com/SocialGouv/iterion/compare/v7.38.2...v7.38.3) (2026-11-25)
 
 ### Bug Fixes

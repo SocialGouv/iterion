@@ -179,6 +179,8 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/adr/171-a-tool-nodes-declared-output-is-a-contract.md`](../adr/171-a-tool-nodes-declared-output-is-a-contract.md) | ADR-171 — A tool node's declared output is a contract: text where its JSON object… | A tool node's stdout is its output: the engine parses it as a JSON object, and that object is what `{{outputs.<node>.<field>}}`, an edge… | Accepted — the operator decided it on 2026-11-20… |
 | [`docs/adr/172-a-forge-delivery-is-routed-by-the-subscriptions-its-integration-projects.md`](../adr/172-a-forge-delivery-is-routed-by-the-subscriptions-its-integration-projects.md) | ADR-172 — A forge delivery is matched against the subscriptions its integration… | One repo integration (unique per tenant × connection × repository) owns one webhook, and its `webhooks.Config` lists every bot enabled on… | Proposed — the operator decided the direction on… |
 | [`docs/adr/173-experimental-delivery-mode.md`](../adr/173-experimental-delivery-mode.md) | ADR-173 — Experimental delivery mode: the merge queue gates on the light layer, the… | Until #3683 every pull request paid the whole suite twice: on its own run, then on its `merge_group` run, about 25 ARC jobs each on a scale… | Accepted — the operator decided it on 2026-11-25 (#3691);… |
+| [`docs/adr/174-a-personal-access-token-invites-by-email-only.md`](../adr/174-a-personal-access-token-invites-by-email-only.md) | ADR-174 — A personal access token invites by email only | An invitation token is a team token (`auth.MintTeamToken`). | Accepted — the operator decided it on 2026-11-26… |
+| [`docs/adr/175-the-org-is-the-envelope-of-budget-and-capacity.md`](../adr/175-the-org-is-the-envelope-of-budget-and-capacity.md) | ADR-175 — The org is the envelope of budget and capacity; a team carries an optional… | See [Operator decisions](../adr/175-the-org-is-the-envelope-of-budget-and-capacity.md#operator-decisions-2026-11-26). | Accepted — the operator decided it on 2026-11-26. |
 | [`docs/adr/README.md`](../adr/README.md) | Architecture decision records | One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next | — |
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
@@ -205,6 +207,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/bots/engine-bot-agnostic.md`](../agents/bots/engine-bot-agnostic.md) | The ENGINE stays bot-agnostic | Read it when engine code is about to name a bot or bake one in. | — |
 | [`docs/agents/bots/input-drop-traps.md`](../agents/bots/input-drop-traps.md) | The two traps a dropped input leaves behind | Dropping a dead field from an LLM node's input ([input-reaches-the-model.md](../agents/bots/input-reaches-the-model.md) holds the remedy table) leaves two… | — |
 | [`docs/agents/bots/input-reaches-the-model.md`](../agents/bots/input-reaches-the-model.md) | A value on an input reaches the model only if a channel of THAT node renders it | Read it when adding, dropping or re-referencing a field on an LLM node's input schema or on an edge's `with`. | — |
+| [`docs/agents/bots/naming.md`](../agents/bots/naming.md) | Naming a catalog bot — a colour, or ends like iterion | Read it when you name a new catalog bot, rename one, or touch a manifest's | — |
 | [`docs/agents/bots/rgaa-audit-run.md`](../agents/bots/rgaa-audit-run.md) | Run the RGAA audit yourself — the demo path | `rgaa-audit` (Acci) audits a product against the RGAA 4.1.2 standard and | — |
 | [`docs/agents/bots/run-link.md`](../agents/bots/run-link.md) | A forge-facing bot links its run | Anything a bot posts outside the deployment — a pull-request body, a review, a | — |
 | [`docs/agents/bots/shipped-workflow-corpus.md`](../agents/bots/shipped-workflow-corpus.md) | The shipped-workflow corpus | Every guard that holds this repository's `.bot` files to something — they | — |
@@ -284,35 +287,35 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/bot-runs/2026-06-24-fleet-dogfood-campaign.md`](../bot-runs/2026-06-24-fleet-dogfood-campaign.md) | Fleet dogfood campaign — every catalog bot, one night (2026-06-24) | Goal: run **all** catalog bots on iterion itself; each must run to a terminal | — |
 | [`docs/bot-runs/README.md`](../bot-runs/README.md) | Bot runs — validation & knowledge base | This directory is the **committed knowledge base** for iterion's catalog bots. | — |
 | [`docs/bot-runs/adr-cartograph.md`](../bot-runs/adr-cartograph.md) | adr-cartograph (Adry) — bilans | ADR cartographer + completeness auditor. | — |
-| [`docs/bot-runs/adr-rechallenge.md`](../bot-runs/adr-rechallenge.md) | adr-rechallenge (ReArchi) — bilans | Human-in-the-loop ADR re-challenger. | — |
+| [`docs/bot-runs/adr-rechallenge.md`](../bot-runs/adr-rechallenge.md) | adr-rechallenge (White Elephant, formerly ReArchi) — bilans | Human-in-the-loop ADR re-challenger. | — |
 | [`docs/bot-runs/app-dev.md`](../bot-runs/app-dev.md) | app-dev (Appy) — dogfood runs | Newest first. | — |
-| [`docs/bot-runs/arbitrate.md`](../bot-runs/arbitrate.md) | Themis — `arbitrate` run bilans | Doctrine-bound judge for the divergence cases a modernisation programme | — |
+| [`docs/bot-runs/arbitrate.md`](../bot-runs/arbitrate.md) | Grey Area (formerly Themis) — `arbitrate` run bilans | Doctrine-bound judge for the divergence cases a modernisation programme | — |
 | [`docs/bot-runs/bmady.md`](../bot-runs/bmady.md) | bmady (Bmady) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/branch-improve-loop.md`](../bot-runs/branch-improve-loop.md) | Billy — branch-improvement validation | a scratch repository, the in-loop review clean. | — |
 | [`docs/bot-runs/campaign.md`](../bot-runs/campaign.md) | Campy 🧭 — `campaign` run bilans | Supervises a whole modernisation programme by running `modernize` as a subbot | — |
 | [`docs/bot-runs/copilot.md`](../bot-runs/copilot.md) | Copi — `bots/copilot` | Conversational iterion assistant: the DSL, the Cxxx diagnostics, run/resume | — |
 | [`docs/bot-runs/dep-update-guard.md`](../bot-runs/dep-update-guard.md) | Vetty — `dep-update-guard` run bilans | Reactive security + alignment guard for automated dependency-update PRs | — |
-| [`docs/bot-runs/devbox-setup.md`](../bot-runs/devbox-setup.md) | devbox-setup (Devy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
+| [`docs/bot-runs/devbox-setup.md`](../bot-runs/devbox-setup.md) | devbox-setup (Devboxing, formerly Devy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/docs-refresh.md`](../bot-runs/docs-refresh.md) | docs-refresh (Doki) — bilans | Documentation refresh bot (v3: adaptive paradigm). | — |
 | [`docs/bot-runs/e2e-coverage.md`](../bot-runs/e2e-coverage.md) | e2e-coverage (Endy) — run bilans | Matrix-anchored e2e coverage completion bot (ADR-058 v2, sibling of Testy). | — |
-| [`docs/bot-runs/evolve.md`](../bot-runs/evolve.md) | Evoly (`evolve`) — bot run bilan | Strategic / architectural evolution partner. | — |
+| [`docs/bot-runs/evolve.md`](../bot-runs/evolve.md) | Deep Blue (`evolve`, formerly Evoly) — bot run bilan | Strategic / architectural evolution partner. | — |
 | [`docs/bot-runs/feature-dev.md`](../bot-runs/feature-dev.md) | Featurly — `feature-dev` run bilans | every LLM node of the graph exercised but the peer review (off by var). | — |
 | [`docs/bot-runs/feature-gap-fill.md`](../bot-runs/feature-gap-fill.md) | feature-gap-fill (Fini) — bilans | Gap-driven feature completer. | — |
 | [`docs/bot-runs/feed-watch.md`](../bot-runs/feed-watch.md) | feed-watch (Vigie) — run log | Newest first. | — |
 | [`docs/bot-runs/golden-master.md`](../bot-runs/golden-master.md) | golden-master (Goldy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/instrument.md`](../bot-runs/instrument.md) | instrument (Obsy) — run bilans | Newest first. | — |
-| [`docs/bot-runs/issue-triage.md`](../bot-runs/issue-triage.md) | issue-triage — Triagy | Single-shot card router: fired by the trigger spine on `triage:auto` | — |
+| [`docs/bot-runs/issue-triage.md`](../bot-runs/issue-triage.md) | issue-triage — Right Direction (formerly Triagy) | Single-shot card router: fired by the trigger spine on `triage:auto` | — |
 | [`docs/bot-runs/keepalive.md`](../bot-runs/keepalive.md) | Bilans — always-on (`overlap: keepalive`) + `examples/keepalive` | The keepalive/always-on scheduling feature and its demo bot | — |
 | [`docs/bot-runs/modernize.md`](../bot-runs/modernize.md) | Morphy 🧱 — `modernize` run bilans | Carries a repository through a programme of modernisation lots — steps whose | — |
 | [`docs/bot-runs/product-docs.md`](../bot-runs/product-docs.md) | product-docs (Prody) — run bilans | Functional, business-audience product documentation generated and maintained | — |
 | [`docs/bot-runs/revi-converse.md`](../bot-runs/revi-converse.md) | revi-converse — run bilans | Newest first. | — |
-| [`docs/bot-runs/review-env.md`](../bot-runs/review-env.md) | Envy — `review-env` run bilans | Deploys the current commit's already-published image to the attached platform | — |
+| [`docs/bot-runs/review-env.md`](../bot-runs/review-env.md) | Green Room (formerly Envy) — `review-env` run bilans | Deploys the current commit's already-published image to the attached platform | — |
 | [`docs/bot-runs/review-pr.md`](../bot-runs/review-pr.md) | Revi — `review-pr` run bilans | Read-only code reviewer. | — |
 | [`docs/bot-runs/rgaa-audit.md`](../bot-runs/rgaa-audit.md) | Acci — `rgaa-audit` run bilans | Accessibility auditor (read-only) on the pinned ultra11y engine since v3 | — |
 | [`docs/bot-runs/sec-audit-deps.md`](../bot-runs/sec-audit-deps.md) | Depsy — `sec-audit-deps` run bilans | Universal supply-chain / SCA auditor: enumerates installed deps per ecosystem, | — |
 | [`docs/bot-runs/sec-audit-source.md`](../bot-runs/sec-audit-source.md) | Seki + deepsec — validation | repository: three candidates triaged, a full pool of three voters, a clean | — |
 | [`docs/bot-runs/secured-renovacy.md`](../bot-runs/secured-renovacy.md) | secured-renovacy (Renovacy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
-| [`docs/bot-runs/supply-shield-cve.md`](../bot-runs/supply-shield-cve.md) | supply-shield-cve (Vulny) — run bilans | Newest first. | — |
+| [`docs/bot-runs/supply-shield-cve.md`](../bot-runs/supply-shield-cve.md) | supply-shield-cve (Code Red, formerly Vulny) — run bilans | Newest first. | — |
 | [`docs/bot-runs/supply-shield.md`](../bot-runs/supply-shield.md) | supply-shield (Shieldy) — run bilans | Newest first. | — |
 | [`docs/bot-runs/test-coverage.md`](../bot-runs/test-coverage.md) | test-coverage (Testy) — run bilans | Universal test-coverage augmentation bot (ADR-058 v2). | — |
 | [`docs/bot-runs/vuln-watch.md`](../bot-runs/vuln-watch.md) | vuln-watch (Senti) — run log | a model receives; the run on a bare scratch refused at `plan`. | — |
@@ -448,7 +451,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/privacy_filter.md`](../privacy_filter.md) | Privacy Filter | Iterion ships two complementary built-in tools that detect and redact | — |
 | [`docs/probes-and-graceful-shutdown.md`](../probes-and-graceful-shutdown.md) | Probes and graceful shutdown | How a k8s deployment of iterion answers *is this pod alive*, *should it | — |
 | [`docs/quickstart.md`](../quickstart.md) | 🚀 Quickstart | For developers who already live in AI coding tools. | — |
-| [`docs/quotas-and-limits.md`](../quotas-and-limits.md) | Quotas and limits | set on a paying org, or debugging "why did this run get denied". | — |
+| [`docs/quotas-and-limits.md`](../quotas-and-limits.md) | Quotas and limits | override on one org or team, or debugging "why did this run get denied". | — |
 | [`docs/recipes.md`](../recipes.md) | Recipes | A recipe pins one `.bot` to a named configuration — preset vars, prompt overrides, a budget, and a success metric — so you can… | — |
 | [`docs/references-bootstrap.md`](../references-bootstrap.md) | References bootstrap — deepsec + harness clones | Seki's `external-security-tools` skill uses a local references directory | — |
 | [`docs/references/author-schema.md`](author-schema.md) | The author document — keys and values | An author document (`x.bot.yaml`) is the YAML twin a `.bot` can be written as: the same declarations under the same names, with YAML's own… | — |

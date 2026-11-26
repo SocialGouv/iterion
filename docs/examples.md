@@ -35,19 +35,19 @@ These bots are shipped in the repository and are discoverable by the CLI and stu
 | Persona | Bot | Purpose |
 |---|---|---|
 | 🗺️ Adry | [`adr-cartograph`](../bots/adr-cartograph/) | Reconcile implemented architectural decisions with `docs/adr/` and surface decision gaps. |
-| ⚖️ ReArchi | [`adr-rechallenge`](../bots/adr-rechallenge/) | Human-guided re-evaluation of an existing ADR: keep, change, or append an addendum. |
+| 🐘 White Elephant | [`adr-rechallenge`](../bots/adr-rechallenge/) | Human-guided re-evaluation of an existing ADR: keep, change, or append an addendum. |
 | 🏗️ Appy | [`app-dev`](../bots/app-dev/) | Build a new application end to end, optionally beginning with a conversational specification. |
 | 🎭 Bmady | [`bmady`](../bots/bmady/) | Human-steered analyst → PM → architect → developer → QA delivery pipeline. |
 | 💂 Vetty | [`dep-update-guard`](../bots/dep-update-guard/) | Audit and align automated dependency-update PRs without merging them. |
-| 🧰 Devy | [`devbox-setup`](../bots/devbox-setup/) | Create and validate a pinned `devbox.json`/lock for a reproducible project toolchain. |
-| 🧬 Evoly | [`evolve`](../bots/evolve/) | Long-horizon product and architecture partner backed by persistent per-bot memory. |
+| 🥊 Devboxing | [`devbox-setup`](../bots/devbox-setup/) | Create and validate a pinned `devbox.json`/lock for a reproducible project toolchain. |
+| ♟️ Deep Blue | [`evolve`](../bots/evolve/) | Long-horizon product and architecture partner backed by persistent per-bot memory. |
 | 🧩 Fini | [`feature-gap-fill`](../bots/feature-gap-fill/) | Finish a structured partial-implementation gap while preserving what already works. |
 | 🔭 Vigie | [`feed-watch`](../bots/feed-watch/) | Collect RSS/Atom feeds at zero LLM cost, then produce and deliver grounded digests. |
-| 🏷️ Triagy | [`issue-triage`](../bots/issue-triage/) | Single-shot card triage: read a fresh board card, classify it, stamp the handler bot + labels, and leave a routing comment. Routes work to other bots; never dispatched to. |
+| 🏷️ Right Direction | [`issue-triage`](../bots/issue-triage/) | Single-shot card triage: read a fresh board card, classify it, stamp the handler bot + labels, and leave a routing comment. Routes work to other bots; never dispatched to. |
 | 💬 Revi (converse) | [`revi-converse`](../bots/revi-converse/) | Answer a focused `/revi` follow-up in the same forge discussion; never edits code. |
 | ♿ Acci | [`rgaa-audit`](../bots/rgaa-audit/) | Read-only RGAA / WCAG audit on the pinned ultra11y engine: the engine finds and gates, read-only agents adjudicate the rest in parallel batches, a second reader puts the report on trial. |
 | ⛓️ Shieldy | [`supply-shield`](../bots/supply-shield/) | Diff-scoped dependency-malware gate for forge events. |
-| 🚨 Vulny | [`supply-shield-cve`](../bots/supply-shield-cve/) | Diff-scoped known-CVE gate for changed dependency versions. |
+| 🚨 Code Red | [`supply-shield-cve`](../bots/supply-shield-cve/) | Diff-scoped known-CVE gate for changed dependency versions. |
 | 🧪 Testy | [`test-coverage`](../bots/test-coverage/) | Add meaningful regression-catching tests and verify both the suite and the new test diff. |
 | 📖 Wikky | [`wiki-gen`](../bots/wiki-gen/) | Generate and incrementally maintain a validated Open Knowledge Format wiki. |
 | 🪞 Goldy | [`golden-master`](../bots/golden-master/) | Build a behavioural non-regression net (golden master) for an existing app and prove it is neither blind nor hysterical with a deterministic mutation counter-test; the safety net under a migration or refactor. |

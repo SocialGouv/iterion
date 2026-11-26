@@ -102,6 +102,9 @@ type toolDispatcher struct {
 	materialize   func(string) string
 	policy        *permission.Policy
 	parallel      bool
+	// images is the generation's image policy, snapshotted from the context
+	// the door is built from (withRouteImagePolicy pinned it there).
+	images tool.ImagePolicy
 }
 
 // newToolDispatcher builds the node's door and returns the context that door
@@ -155,6 +158,7 @@ func newToolDispatcher(
 		materialize:   materialize,
 		policy:        policy,
 		parallel:      parallel,
+		images:        imagePolicyFrom(ctx),
 	}
 	return d, context.WithValue(ctx, dispatcherNodeKey{}, d)
 }
@@ -213,10 +217,22 @@ func newToolDispatcher(
 // "not pinned" rather than guessing. The table is frozen at construction;
 // each call derives its pin by applying the caller's narrowing to that table.
 func (d *toolDispatcher) dispatch(ctx context.Context, tu toolUseBlock) (api.ContentBlock, error) {
-	return d.dispatchWithApproval(ctx, tu, nil)
+	return d.dispatchWithApproval(ctx, tu, nil, d.images)
 }
 
-func (d *toolDispatcher) dispatchWithApproval(ctx context.Context, tu toolUseBlock, approval *exactDispatchApproval) (api.ContentBlock, error) {
+// dispatchTextOnly is dispatch for a call whose result a text-only receiver
+// reads — a codemode program: the same door, the image policy alone made
+// text-only, so an image the tool returns becomes the text-only marker, with
+// no image bound and no image bytes kept.
+func (d *toolDispatcher) dispatchTextOnly(ctx context.Context, tu toolUseBlock) (api.ContentBlock, error) {
+	images := d.images
+	images.TextOnly = true
+	return d.dispatchWithApproval(ctx, tu, nil, images)
+}
+
+// dispatchWithApproval is the door's one body; images is the policy the
+// call's result is shaped under (tool.ImageResultContent).
+func (d *toolDispatcher) dispatchWithApproval(ctx context.Context, tu toolUseBlock, approval *exactDispatchApproval, images tool.ImagePolicy) (api.ContentBlock, error) {
 	if owner, _ := ctx.Value(dispatcherNodeKey{}).(*toolDispatcher); owner != d {
 		return *refusalOutcome(fmt.Sprintf(
 			"tool %q: refused before dispatch — this context did not come from this node's dispatcher. "+
@@ -263,7 +279,7 @@ func (d *toolDispatcher) dispatchWithApproval(ctx context.Context, tu toolUseBlo
 	if len(catalogue) > 0 {
 		ctx = tool.WithCatalogueOnlyTools(ctx, catalogue)
 	}
-	return executeOneToolWithApproval(ctx, tu, d.toolMap, d.onToolStarted, d.onToolCall, d.runner, d.materialize, d.policy, approval)
+	return executeOneToolWithApproval(ctx, tu, d.toolMap, d.onToolStarted, d.onToolCall, d.runner, d.materialize, d.policy, approval, images)
 }
 
 // executeToolsDirect runs each tool_use block and builds tool_result content blocks.
@@ -321,7 +337,7 @@ func executeOneTool(
 	materialize func(string) string,
 	policy *permission.Policy,
 ) (api.ContentBlock, error) {
-	return executeOneToolWithApproval(ctx, tu, toolMap, onToolStarted, onToolCall, runner, materialize, policy, nil)
+	return executeOneToolWithApproval(ctx, tu, toolMap, onToolStarted, onToolCall, runner, materialize, policy, nil, imagePolicyFrom(ctx))
 }
 
 func executeOneToolWithApproval(
@@ -334,6 +350,7 @@ func executeOneToolWithApproval(
 	materialize func(string) string,
 	policy *permission.Policy,
 	approval *exactDispatchApproval,
+	images tool.ImagePolicy,
 ) (api.ContentBlock, error) {
 	gt, ok := lookupGenerationTool(toolMap, tu.Name)
 	if !ok {
@@ -403,7 +420,7 @@ func executeOneToolWithApproval(
 			return api.ContentBlock{}, &approvedDispatchInterrupted{cause: err}
 		}
 	}
-	return shapeToolOutcome(ctx, runner, tu, hookInput, output, err, gt.imageResult)
+	return shapeToolOutcome(ctx, runner, tu, hookInput, output, err, gt.imageResult, images)
 }
 
 // lookupGenerationTool resolves a tool_use name against the tool map. A
@@ -619,9 +636,10 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 //
 // imageResult (the tool's GenerationTool.imageResult) has a successful
 // output decoded into the description and image blocks it encodes, so the
-// model receives the image itself; an output that does not decode, or an
-// image too large to send, shapes into an is_error result naming it.
-func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, output string, err error, imageResult bool) (api.ContentBlock, error) {
+// model receives the image itself, under images — the receiver's policy
+// (tool.ImageResultContent); an output that does not decode, or an image
+// the policy refuses, shapes into an is_error result naming it.
+func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, output string, err error, imageResult bool, images tool.ImagePolicy) (api.ContentBlock, error) {
 	if err != nil {
 		var askErr *delegate.ErrAskUser
 		if errors.As(err, &askErr) {
@@ -662,7 +680,7 @@ func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock
 		ToolResult: output,
 	})
 	if imageResult {
-		content, decodeErr := tool.ImageResultContent(output)
+		content, decodeErr := tool.ImageResultContent(tu.Name, output, images)
 		if decodeErr != nil {
 			return api.ToolResult{
 				ToolUseID: tu.ID,

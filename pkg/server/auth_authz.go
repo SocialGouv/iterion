@@ -234,19 +234,20 @@ func (s *Server) canManageOrgOrFail(ctx context.Context, id auth.Identity, orgID
 	return om.Role.AtLeast(identity.OrgRoleAdmin), nil
 }
 
-// requireRankToInvite applies the two caps a mint owes on the role it hands
+// requireRankToInvite applies the two caps a mint owes on the roles it hands
 // out, on ONE read of the minter's own org standing, which both measure.
 // Accepting an invitation writes the team GRANT it names and, for a role on
-// the org ladder, an org membership at identity.OrgRoleForTeamRole (pkg/auth
-// grantOrgMembershipForTeam), so minting one hands out both ranks: capped by
-// the team-management check alone, a team admin who is a plain org member
-// mints an admin/owner invitation for their own address and comes back an org
-// admin, the off-boarded holder of an orphan admin grant re-enters the org on
-// that grant alone, and on a team with NO parent org — where no org rank is
-// mirrored at all — a team admin mints `owner` for their own address and
-// reaches every grant of the team on the next request.
+// the org ladder, the org membership it names — want, the
+// identity.InvitationOrgRole the route resolved: member for a team
+// invitation, the chosen role for an org one — so minting one hands out both
+// ranks: capped by the team-management check alone, an org member who
+// manages a team mints an org-admin invitation for their own address and
+// comes back an org admin, the off-boarded holder of an orphan admin grant
+// re-enters the org on that grant alone, and on a team with NO parent org —
+// where no org rank is written at all — a team admin mints `owner` for their
+// own address and reaches every grant of the team on the next request.
 //
-//   - the ORG cap measures the role's org mirror against the minter's own
+//   - the ORG cap measures the org role the invitation writes against the minter's own
 //     standing in the team's org, and is the whole rule for a minter who
 //     holds that org through an admin/owner standing: they manage every team
 //     in it (canManageTeam, orgAdminOfTeam), so no grant of theirs bounds
@@ -281,8 +282,7 @@ func (s *Server) canManageOrgOrFail(ctx context.Context, id auth.Identity, orgID
 // they call: POST /api/teams/{id}/invitations from the team it names, POST
 // /api/orgs/{id}/invitations from the team its body names, once that team is
 // confirmed to be in the org of the path.
-func (s *Server) requireRankToInvite(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, role identity.Role) (ok bool, grantCapped bool) {
-	want := identity.OrgRoleForTeamRole(role)
+func (s *Server) requireRankToInvite(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, role identity.Role, want identity.OrgRole) (ok bool, grantCapped bool) {
 	if want == "" || id.IsSuperAdmin {
 		return true, false
 	}
@@ -293,8 +293,8 @@ func (s *Server) requireRankToInvite(w http.ResponseWriter, r *http.Request, id 
 		}
 		if !have.AtLeast(want) {
 			httpError(w, http.StatusForbidden,
-				"a team invitation cannot carry an org role above its creator's: an invitation at role %s is mirrored up to an org %s membership when it is accepted, and your own org role in this team's organization is %s",
-				role, want, orgStandingName(have))
+				"an invitation cannot carry an org role above its creator's: this one writes an org %s membership when it is accepted, and your own org role in this team's organization is %s",
+				want, orgStandingName(have))
 			return false, false
 		}
 		if have.AtLeast(identity.OrgRoleAdmin) {
@@ -339,18 +339,18 @@ func (s *Server) requireRankToInvite(w http.ResponseWriter, r *http.Request, id 
 // reconciliation, the logged-in accept that writes a lower team role over an
 // existing grant — run the team sweep (reconcileTeamRankInvitations, and the
 // seam the service's own writes call: SetTeamRankReconcile). What the two
-// pairs together close is the boundary this guard once stated, short of one
-// stated straddle: no team invitation stands at a rank the authority that
-// minted it no longer covers, whichever write lowered that authority —
-// except a mint that rested on an org standing of admin or above
-// (capped=false) whose INSERT lands after a lowering write's listing: the
-// sweep's listing missed the row, and this confirmation, told no grant was
-// measured, returns early, so the row stands at a rank that authority no
-// longer covers until the next lowering of it re-lists the team. The
-// standing half has no such gap — its confirmation re-reads the standing
-// unconditionally. The one state the writes still hand OVER is the role
-// mirrored up to NOTHING (config_editor, ADR-078), which no cap has ever
-// measured.
+// pairs together close is the boundary this guard states: no team invitation
+// stands at a rank the authority that minted it no longer covers, whichever
+// write lowered that authority. A mint that rested on an org standing of
+// admin or above (capped=false) is confirmed by the sweep's own rule
+// (teamRankTakesInvitation, K.2): the standing is re-read, and only where it
+// fell below admin — a demotion whose listing missed this row — is the grant
+// measured, since the standing no longer carries the team by itself. The
+// invitation writes an org member at most from the team route, so the
+// standing's own confirmation does not take such a row: this one is the
+// guard that does. The one state the writes still hand OVER is the role
+// that writes NO org membership (config_editor, ADR-078), which no cap has
+// ever measured.
 //
 // The re-read runs on a context DETACHED from the request and on its own
 // budget, as the standing's does: a client that goes away is the most
@@ -362,12 +362,32 @@ func (s *Server) requireRankToInvite(w http.ResponseWriter, r *http.Request, id 
 //
 // It answers the request and returns false when the invitation did not
 // survive.
-func (s *Server) confirmTeamGrantAfterMint(w http.ResponseWriter, r *http.Request, id auth.Identity, capped bool, inv identity.Invitation) bool {
-	if !capped {
-		return true
-	}
+func (s *Server) confirmTeamGrantAfterMint(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID string, capped bool, inv identity.Invitation) bool {
 	rctx, rcancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
 	defer rcancel()
+	if !capped {
+		// The mint measured no grant: a role no cap measures (config_editor),
+		// a platform admin, or an org standing of admin that carried the team
+		// by itself — the one premise a lowering write can take away.
+		if inv.OrgRoleOnAccept() == "" || id.IsSuperAdmin || orgID == "" {
+			return true
+		}
+		have, _, err := s.readOwnOrgStanding(rctx, id.UserID, orgID)
+		if err != nil {
+			fate := s.revokeUnconfirmedInvitation(r, inv, mintStandingRead.reason)
+			if s.logger != nil {
+				s.logger.Error("team %s: confirming %s of %s in org %s after invitation %s was minted failed: %v — %s",
+					inv.TeamID, mintStandingRead.subject, id.UserID, orgID, inv.ID, err, fate)
+			}
+			httpError(w, http.StatusInternalServerError,
+				"confirming %s after the invitation was minted failed: %v — a cap that cannot be confirmed is not one, so %s",
+				mintStandingRead.what, err, fate)
+			return false
+		}
+		if have.AtLeast(identity.OrgRoleAdmin) {
+			return true
+		}
+	}
 	mine, _, err := s.readTeamGrantRole(rctx, id.UserID, inv.TeamID)
 	if err == nil && mine.AtLeast(inv.Role) {
 		return true
@@ -484,10 +504,10 @@ func (s *Server) confirmOrgStandingAfterMint(w http.ResponseWriter, r *http.Requ
 	// half fires at a standing that is gone, which covers no mirror at all,
 	// so a standing still covering the role leaves both halves false
 	// (standingTakesInvitation).
-	if want := identity.OrgRoleForTeamRole(inv.Role); want != "" {
+	if want := inv.OrgRoleOnAccept(); want != "" {
 		httpError(w, http.StatusForbidden,
-			"a team invitation cannot carry an org role above its creator's: an invitation at role %s is mirrored up to an org %s membership when it is accepted, and your own org role in this team's organization is %s by the time it was minted — %s",
-			inv.Role, want, orgStandingName(have), fate)
+			"an invitation cannot carry an org role above its creator's: this one writes an org %s membership when it is accepted, and your own org role in this team's organization is %s by the time it was minted — %s",
+			want, orgStandingName(have), fate)
 		return false
 	}
 	httpError(w, http.StatusForbidden,
@@ -662,7 +682,7 @@ func (s *Server) revokeUnconfirmedInvitation(r *http.Request, inv identity.Invit
 //
 // The refusal names who can write the rank it refused, since the cap leaves
 // an org whose roster holds no such rank — what the teams→orgs backfill
-// creates, where identity.OrgRoleForTeamRole tops out at org admin — with no
+// creates, where its own mapping (backfillOrgRole) tops out at org admin — with no
 // member able to appoint one.
 //
 // It answers the request and returns false when the role must not be written.

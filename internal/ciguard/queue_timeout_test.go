@@ -18,13 +18,13 @@ import (
 // ejected the pull request — `checks_timed_out`, and every entry behind it
 // with it. The pool had capacity; the Actions service was holding the job on a
 // phantom runner. Nothing in this tree can read the ruleset, so the number the
-// queue actually enforces lives here as prose in four places, and prose does
+// queue actually enforces lives here as prose in five places, and prose does
 // not type-check: the guards below hold those places to one value, and hold
 // the canary's own detection arithmetic to the ceiling its file claims.
 const (
 	mergePolicyPath    = "../../docs/merge-policy.md"
 	workflowDir        = "../../.github/workflows"
-	minTimeoutDeclared = 4 // tests.yml twice, merge-queue-gate.yml, docs/merge-policy.md
+	minTimeoutDeclared = 5 // tests.yml three times, merge-queue-gate.yml, docs/merge-policy.md
 )
 
 var (
@@ -94,7 +94,7 @@ func harvestQueueTimeoutDecls(t *testing.T) []timeoutDecl {
 	return decls
 }
 
-// TestEveryDeclarationOfTheQueuesCheckTimeoutAgrees keeps the four places that
+// TestEveryDeclarationOfTheQueuesCheckTimeoutAgrees keeps the five places that
 // write the queue's patience on one number.
 //
 // The ruleset is the authority and lives outside the repository, so each of
@@ -129,7 +129,7 @@ func TestTheCanaryStallThresholdFiresBeforeTheQueueGivesUp(t *testing.T) {
 	stall := canaryStallThresholdSeconds(t)
 	timeout := queueCheckTimeoutMinutes(t) * 60
 	if stall >= timeout {
-		t.Errorf("the canary pages after %d s and the queue gives up after %d s: the alert must fire strictly before the dequeue, or the operator learns of the outage from the ejected pull requests (#2377). Lower STALL_SECONDS in %s, or raise check_response_timeout_minutes on ruleset 18857412 and the four places that write it", stall, timeout, canaryVerdictScript)
+		t.Errorf("the canary pages after %d s and the queue gives up after %d s: the alert must fire strictly before the dequeue, or the operator learns of the outage from the ejected pull requests (#2377). Lower STALL_SECONDS in %s, or raise check_response_timeout_minutes on ruleset 18857412 and the five places that write it", stall, timeout, canaryVerdictScript)
 	}
 }
 

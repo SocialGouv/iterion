@@ -152,15 +152,24 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 	return &cobra.Command{
 		Use:   "invitations [create <email>|delete <invite-id>]",
 		Short: "List or manage " + scopeWord(prefix) + " invitations",
-		Args:  cobra.MaximumNArgs(2),
+		Long: `List, create or delete ` + scopeWord(prefix) + ` invitations.
+
+` + "`create <email>`" + ` invites an address at the team role --role (default
+member). From the personal access token the CLI stores, the instance emails
+the invitation to that address and answers "delivery": "email" with no token:
+the token reaches the mailbox alone, and the invitation lives no longer than
+the stored token: it expires no later, and revoking that token ends it —
+` + "`teams switch`" + ` revokes the token it replaces and lists the invitations
+that ended with it, to send again. An instance with no mailer refuses it —
+invite from the studio then. From a session token the response carries the token to hand
+over ("delivery": "link").
+
+Accepting makes the invitee a member of the team's organization. A team
+invitation never makes an org admin; an org invitation names the org role
+with --org-role (member, admin or owner — default member), capped at your
+own.`,
+		Args: cobra.MaximumNArgs(2),
 		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-			// Before the scope resolution, which reads /api/auth/me: a
-			// credential that mints nothing sends nothing at all.
-			if len(args) == 2 && args[0] == "create" {
-				if err := c.RefuseTeamTokenMintFromPAT(scopeWord(prefix) + " → Members → Invite"); err != nil {
-					return err
-				}
-			}
 			id, err := resolve(cmd, c)
 			if err != nil {
 				return err
@@ -170,13 +179,20 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 			case len(args) == 0:
 				return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 			case args[0] == "create" && len(args) == 2:
-				// The invitation IS a team token — whoever holds it joins
-				// the team with it — so a stored token was refused above.
+				// A stored personal access token mints an invitation the
+				// instance emails, never hands back (MintEmailedInvitation).
 				role := remoteInviteRole
 				if role == "" {
 					role = "member"
 				}
-				body, err := json.Marshal(map[string]string{"email": args[1], "role": role})
+				req := map[string]string{"email": args[1], "role": role}
+				if remoteInviteOrgRole != "" {
+					req["org_role"] = remoteInviteOrgRole
+				}
+				if remoteInviteTeam != "" {
+					req["team_id"] = remoteInviteTeam
+				}
+				body, err := json.Marshal(req)
 				if err != nil {
 					return fmt.Errorf("encode invitation: %w", err)
 				}
@@ -243,6 +259,14 @@ var remoteTeamsSwitchCmd = &cobra.Command{
 var remoteTeamsMembersCmd = membersCmd(resolveRemoteTeam, "/api/teams")
 
 var remoteInviteRole string
+
+// remoteInviteOrgRole is `orgs invitations create --org-role`: the org
+// membership the invitation writes, apart from its team role.
+var remoteInviteOrgRole string
+
+// remoteInviteTeam is `orgs invitations create --team`: the team of the org
+// the invitation joins (default: the org's primary team).
+var remoteInviteTeam string
 
 var remoteTeamsInvitationsCmd = invitationsCmd(resolveRemoteTeam, "/api/teams")
 
@@ -376,13 +400,15 @@ func init() {
 	remoteTeamsCreateCmd.Flags().StringVar(&remoteTeamsCreateOrg, "org", "", "Org to create the team in")
 	remoteTeamsMembersCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 	remoteTeamsInvitationsCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
-	remoteTeamsInvitationsCmd.Flags().StringVar(&remoteInviteRole, "role", "", "Invitation role (default member)")
+	remoteTeamsInvitationsCmd.Flags().StringVar(&remoteInviteRole, "role", "", "Invitation team role (default member); the invitee joins the org as a member")
 	remoteTeamsCmd.AddCommand(remoteTeamsListCmd, remoteTeamsCreateCmd, remoteTeamsSwitchCmd, remoteTeamsMembersCmd, remoteTeamsInvitationsCmd)
 
 	for _, c := range []*cobra.Command{remoteOrgsMembersCmd, remoteOrgsInvitationsCmd, remoteOrgsUsageCmd, remoteOrgsTeamsCmd} {
 		c.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id (default: switched/active org)")
 	}
-	remoteOrgsInvitationsCmd.Flags().StringVar(&remoteInviteRole, "role", "", "Invitation role (default member)")
+	remoteOrgsInvitationsCmd.Flags().StringVar(&remoteInviteRole, "role", "", "Invitation team role (default member)")
+	remoteOrgsInvitationsCmd.Flags().StringVar(&remoteInviteOrgRole, "org-role", "", "Org role the invitation writes: member, admin or owner (default member)")
+	remoteOrgsInvitationsCmd.Flags().StringVar(&remoteInviteTeam, "team", "", "Team of the org the invitation joins (default: the org's primary team; a token pinned to a team invites into that team only)")
 	remoteOrgsCmd.AddCommand(remoteOrgsListCmd, remoteOrgsSwitchCmd, remoteOrgsMembersCmd, remoteOrgsInvitationsCmd, remoteOrgsUsageCmd, remoteOrgsTeamsCmd)
 
 	remoteMeCmd.AddCommand(remoteMePasswordCmd, remoteMeSessionsRevokeCmd, remoteMeSSOLinksCmd)

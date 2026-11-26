@@ -879,6 +879,22 @@ func (m *MemoryStore) DeleteInvitationsByInviter(_ context.Context, userID strin
 	return n, nil
 }
 
+func (m *MemoryStore) ListPendingInvitationsMintedWith(_ context.Context, credentialID string) ([]Invitation, error) {
+	if credentialID == "" {
+		return nil, errors.New("identity: list invitations by minting credential: no credential id")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []Invitation
+	for _, inv := range m.invitations {
+		if inv.MintedWith == credentialID && inv.AcceptedAt == nil {
+			out = append(out, inv)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (m *MemoryStore) ListInvitationsByTeam(_ context.Context, teamID string) ([]Invitation, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

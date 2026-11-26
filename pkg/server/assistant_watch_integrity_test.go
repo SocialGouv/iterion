@@ -126,12 +126,13 @@ func TestAssistantWatchReceiverAuthorizationPrecedesMutation(t *testing.T) {
 
 func TestAssistantWatchSweepReconcilesBeyondFirstPage(t *testing.T) {
 	f := newArmFixture(t, true)
+	paging := f.pageWatchesBy(sweepWatchPage)
 	a := f.assistant(t, "assistant", "card")
 	target := f.target(t, "last-target", "card", a.CreatedAt.Add(time.Minute))
 	now := time.Now().UTC()
-	for i := 0; i <= 500; i++ {
+	for i := 0; i <= sweepWatchPage; i++ {
 		targetID := fmt.Sprintf("missing-%03d", i)
-		if i == 500 {
+		if i == sweepWatchPage {
 			targetID = target.ID
 		}
 		if err := f.ws.CreateWatch(t.Context(), runwatch.Watch{
@@ -151,7 +152,10 @@ func TestAssistantWatchSweepReconcilesBeyondFirstPage(t *testing.T) {
 		return &runview.LaunchResult{}, nil
 	}
 	f.coord.sweep(t.Context())
-	w, err := f.ws.GetWatch(t.Context(), "w500")
+	if paging.pages != 2 {
+		t.Fatalf("the sweep read %d non-empty pages of %d watches, want 2", paging.pages, sweepWatchPage)
+	}
+	w, err := f.ws.GetWatch(t.Context(), fmt.Sprintf("w%03d", sweepWatchPage))
 	if err != nil || w.DeliveredEpisodes != 1 || resumes != 1 {
 		t.Fatalf("watch beyond first page not recovered: %+v resumes=%d err=%v", w, resumes, err)
 	}
@@ -167,15 +171,17 @@ type cancellingWatchPage struct {
 	runwatch.Store
 	cancel context.CancelFunc
 	calls  int
+	limits []int
 }
 
 func (s *cancellingWatchPage) ListActivePage(ctx context.Context, after *runwatch.WatchCursor, through runwatch.WatchCursor, limit int) ([]runwatch.Watch, error) {
 	s.calls++
+	s.limits = append(s.limits, limit)
 	if after != nil {
 		s.cancel()
 		return []runwatch.Watch{{ID: "never-process"}}, nil
 	}
-	rows := make([]runwatch.Watch, 500)
+	rows := make([]runwatch.Watch, assistantWatchSweepPageSize)
 	for i := range rows {
 		rows[i] = runwatch.Watch{ID: fmt.Sprint(i), TenantID: "", CreatedAt: through.CreatedAt}
 	}
@@ -191,11 +197,18 @@ func TestAssistantWatchCancelledPageDoesNotCompleteSweep(t *testing.T) {
 	paging := &cancellingWatchPage{Store: f.ws, cancel: cancel}
 	f.coord.setRuntime(f.srv.runs, paging, f.srv.cfg.Bots.Paths)
 	// These rows have no cloud tenant, so processing the first page does not
-	// need 500 run fixtures. The second page cancels the captured context.
+	// need a full page of run fixtures. The second page cancels the captured context.
 	f.srv.cfg.Mode = "cloud"
 	f.coord.sweep(ctx)
 	if paging.calls != 2 || !f.coord.lastSweepCompletedAt.IsZero() || f.coord.lastSweepStartedAt.IsZero() {
 		t.Fatalf("cancelled pass published completion: calls=%d started=%v completed=%v", paging.calls, f.coord.lastSweepStartedAt, f.coord.lastSweepCompletedAt)
+	}
+	// A zero limit means an unbounded page to every store, so the production
+	// sweep must request a positive assistantWatchSweepPageSize rows per page.
+	for _, limit := range paging.limits {
+		if limit <= 0 || limit != assistantWatchSweepPageSize {
+			t.Fatalf("production sweep requested %d rows per page, want %d", limit, assistantWatchSweepPageSize)
+		}
 	}
 }
 

@@ -139,11 +139,16 @@ the cap:
   is persisted or published, the publisher reserves one slot per capped key
   the run's stamp names on the **credential-slot ledger**
   (`store.CredSlotStore`: Mongo collection `cred_slots`, one row per
-  fingerprint — or per shared capacity subject, a gateway's `gw:<host>`
-  (ADR-167) — listing the runs that hold a slot; an in-memory twin on the
-  filesystem store). The reservation is one conditional write — add the run
-  while the row has room — so of N concurrent admissions on a key with K
-  free slots exactly K succeed, whatever replica each ran on. A pinned key,
+  fingerprint, listing the runs that hold a slot; an in-memory twin on the
+  filesystem store). The ledger also accepts rows for a shared capacity
+  subject — a gateway's `gw:<host>`, designed in
+  [ADR-167](adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md)
+  — but no resolution stamps one on a run
+  ([#3254](https://github.com/SocialGouv/iterion/issues/3254)), so today
+  every row is a key's fingerprint. The reservation is one conditional
+  write — add the run while the row has room — so of N concurrent
+  admissions on a key with K free slots exactly K succeed, whatever replica
+  each ran on. A pinned key,
   a restored key and a resumed run all pass through it; a resumed run's own
   slot is admitted again in place, without taking a second one, while the
   row is within the cap — **lower `max_concurrent_runs`** below the runs

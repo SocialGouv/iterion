@@ -2,7 +2,7 @@
 name: devbox-setup
 description: |
   Playbook for authoring a pinned devbox.json that reproduces a repo's
-  build/test/e2e toolchain, for use by Devy (devbox-setup) and by any bot
+  build/test/e2e toolchain, for use by Devboxing (devbox-setup) and by any bot
   bootstrapping a project's dev environment (ADR-017 Tier-2/Tier-3).
 ---
 

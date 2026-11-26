@@ -1,16 +1,16 @@
 ---
 name: evolve-memory-layout
 description: >
-  The contract for Evoly's two memory scopes — the PER-BOT vision tree
+  The contract for Deep Blue's two memory scopes — the PER-BOT vision tree
   (private across sessions) and the SHARED findings inbox (cross-bot
   handoff to Nexie). What file goes where, and why they must not be
   confused.
 disable-model-invocation: true
 ---
 
-# Evoly memory layout
+# Deep Blue memory layout
 
-Evoly uses **two distinct memory scopes**. Keeping them straight is the
+Deep Blue uses **two distinct memory scopes**. Keeping them straight is the
 difference between a private vision that survives across sessions and a
 handoff Nexie can actually read.
 
@@ -18,7 +18,7 @@ handoff Nexie can actually read.
 
 - Declared as `memory: { visibility: "bot", scope: "vision" }`.
 - On disk: `~/.iterion/projects/<repo-key>/bots/evolve/memory/vision/`.
-- **Private to Evoly.** Nexie, feature-dev, and every other bot CANNOT
+- **Private to Deep Blue.** Nexie, feature-dev, and every other bot CANNOT
   read it. This is where the long-horizon vision accumulates across
   sessions without leaking.
 - Autoloaded into your system prompt each run: `VISION.md` +
@@ -49,12 +49,12 @@ it would leak to every bot.
 
 ## Why per-bot, not project
 
-The vision is Evoly's accumulated judgement, refined with the operator
+The vision is Deep Blue's accumulated judgement, refined with the operator
 over many sessions. Scoping it per-bot means:
 
 - it survives across sessions (cross-run continuity), and
 - it stays out of every other bot's context, so Nexie's "what's next"
-  survey isn't polluted by Evoly's half-formed long-horizon drafts —
+  survey isn't polluted by Deep Blue's half-formed long-horizon drafts —
   only the finished, ratified evolutions reach Nexie, through `findings/`
   and the board.
 

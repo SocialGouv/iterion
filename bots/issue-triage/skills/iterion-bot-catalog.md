@@ -16,7 +16,7 @@ description: Catalog of iterion bots — walk the decision tree to pick which bo
      manifest.yaml instead. Everything OUTSIDE the markers is editorial
      routing reasoning maintained by hand. This template lives at the
      bundle ROOT (not skills/) so it is never mirrored as a skill; the
-     generated copy Triagy actually reads is skills/iterion-bot-catalog.md.
+     generated copy Right Direction actually reads is skills/iterion-bot-catalog.md.
 
      TODO: the decision tree + distinguishers below are duplicated with
      bots/whats-next/iterion-bot-catalog-static.md (iterion has no
@@ -106,19 +106,19 @@ dispatcher routes on it), never the persona.
 | Persona | `assignee` (technical name) | Category |
 |---|---|---|
 | Adry | `adr-cartograph` | document |
-| ReArchi | `adr-rechallenge` | steer |
+| White Elephant | `adr-rechallenge` | steer |
 | Appy | `app-dev` | build |
-| Themis | `arbitrate` | steer |
+| Grey Area | `arbitrate` | steer |
 | Assessy | `assessment` | verify |
 | Bmady | `bmady` | build |
 | Billy | `branch-improve-loop` | harden |
 | Campy | `campaign` | steer |
 | Copi | `copilot` | steer |
 | Vetty | `dep-update-guard` | harden |
-| Devy | `devbox-setup` | build |
+| Devboxing | `devbox-setup` | build |
 | Doki | `docs-refresh` | document |
 | Endy | `e2e-coverage` | harden |
-| Evoly | `evolve` | steer |
+| Deep Blue | `evolve` | steer |
 | Featurly | `feature-dev` | build |
 | Fini | `feature-gap-fill` | build |
 | Vigie | `feed-watch` | operate |
@@ -126,21 +126,21 @@ dispatcher routes on it), never the persona.
 | Goldy | `golden-master` | harden |
 | Heartbeat (always-on demo) | `heartbeat` | — |
 | Obsy | `instrument` | harden |
-| Triagy | `issue-triage` (this bot) | operate |
+| Right Direction | `issue-triage` (this bot) | operate |
 | Morphy | `modernize` | harden |
 | Nested Subbots Demo | `nested-subbots-demo` | — |
 | Pipeline Board Demo | `pipeline-board-demo` | — |
 | Argus | `prod-watch` | operate |
 | Prody | `product-docs` | document |
 | Revi (converse) | `revi-converse` | verify |
-| Envy | `review-env` | operate |
+| Green Room | `review-env` | operate |
 | Revi | `review-pr` | verify |
 | Acci | `rgaa-audit` | verify |
 | Depsy | `sec-audit-deps` | verify |
 | Seki | `sec-audit-source` | verify |
 | Renovacy | `secured-renovacy` | harden |
 | Shieldy | `supply-shield` | verify |
-| Vulny | `supply-shield-cve` | verify |
+| Code Red | `supply-shield-cve` | verify |
 | Testy | `test-coverage` | harden |
 | Senti | `vuln-watch` | operate |
 | Nexie | `whats-next` | steer |
@@ -209,7 +209,7 @@ multi-select, numeric, approve/reject).
 - **Vars**: `brief` (string, required), `workspace_dir` (string)
 - **Path**: `bots/bmady/main.bot`
 
-### `devbox-setup` — Devy
+### `devbox-setup` — Devboxing
 
 Bootstraps a reproducible dev environment for a repository. Detects the
 project's languages, runtimes, build + test tools and e2e stack (e.g.
@@ -544,12 +544,12 @@ packages.jsonl` for host-wide cross-repo dedup.
   typosquat / homoglyph names, supply-chain re-publish). Diff-scoped by
   default; pass scope_mode=full for a whole-tree audit. Reports back on
   the forge and the board; does not fix. For a CVE-focused gate use the
-  companion bot supply-shield-cve (Vulny).
+  companion bot supply-shield-cve (Code Red).
 - **Tags**: security, supply-chain, read-only
 - **Vars**: `base_ref` (string), `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield/main.bot`
 
-### `supply-shield-cve` — Vulny
+### `supply-shield-cve` — Code Red
 
 Global supply-chain CVE shield. PR / push-driven, diff-scoped CVE
 sibling of supply-shield (Shieldy): same pipeline, but the analysis
@@ -1141,7 +1141,7 @@ schemes by default (opt into internal feeds with
 - **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `max_message_chars` (int), `max_messages` (int), `mode` (string), `scratch_dir` (string), `silence_alert_days` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
 
-### `issue-triage` — Triagy
+### `issue-triage` — Right Direction
 
 Lightweight single-shot card triage. ONE cheap read-classify-stamp
 agent: reads a fresh board card, classifies it against the generated
@@ -1154,7 +1154,7 @@ Auto-fires via the trigger spine on cards carrying triage:auto
 (consumed one-shot); re-add the label to re-triage.
 
 - **Use when**:
-  Never dispatch work TO it — Triagy routes work to OTHER bots. It
+  Never dispatch work TO it — Right Direction routes work to OTHER bots. It
   fires automatically on trusted-author forge issues synced to the
   board (triage:auto), on an operator's "Approve & triage" of an
   external issue (needs:approval → triage:auto swap), or on any card
@@ -1232,7 +1232,7 @@ Requires python3 (stdlib only) on the execution host.
 - **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_analyses_per_session` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `session_heartbeat_minutes` (int), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/prod-watch/main.bot`
 
-### `review-env` — Envy
+### `review-env` — Green Room
 
 Deploys the CURRENT workspace's already-CI-published image to the
 operator-attached platform and hands back a LIVE https URL — a real
@@ -1345,7 +1345,7 @@ and a second dispatch on the same grant.
 
 ### Steer — judge the direction, converse
 
-### `adr-rechallenge` — ReArchi
+### `adr-rechallenge` — White Elephant
 
 Human-in-the-loop ADR re-challenge. Loads an ADR + the current code,
 presents fresh arguments (changed assumptions, alternatives that
@@ -1366,7 +1366,7 @@ keep / change / addendum.
 - **Vars**: `adr_dir` (string), `adr_path` (string, required), `issue_id` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/adr-rechallenge/main.bot`
 
-### `arbitrate` — Themis
+### `arbitrate` — Grey Area
 
 Judges the divergence cases a modernisation programme leaves blocked, by
 applying the target repository's own written arbitration doctrine — and
@@ -1486,23 +1486,23 @@ cannot silently spin forever.
 - **Vars**: `initial_message` (string), `mode` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/copilot/main.bot`
 
-### `evolve` — Evoly
+### `evolve` — Deep Blue
 
 Strategic / architectural / visionary partner. On a mature, stable
-repository, Evoly surveys the codebase, accumulates a long-horizon
+repository, Deep Blue surveys the codebase, accumulates a long-horizon
 architectural VISION in PER-BOT persistent memory across sessions,
 interrogates the operator MID-INVESTIGATION (ask_user) to collect the
 context the code alone cannot give, and proposes natural evolutions as
 dispatch-ready backlog tickets.
 
-Evoly sits ABOVE Nexie in the workflow stack: Evoly names where the
+Deep Blue sits ABOVE Nexie in the workflow stack: Deep Blue names where the
 project should be in a year; Nexie names what to do this week. Each
 proposed evolution lands as a kanban ticket pre-filled with bot +
 bot_args (so a human can launch it by dragging it to ready, or Nexie
 can action it) plus the full plan / technical decisions in the
 project-shared findings/ memory scope.
 
-Evoly PROPOSES and ARCHITECTS — it does not implement features.
+Deep Blue PROPOSES and ARCHITECTS — it does not implement features.
 Implementation is handed to feature-dev / bmady via Nexie's
 roadmap-and-dispatch pipeline.
 

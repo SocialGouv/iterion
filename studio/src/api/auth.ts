@@ -295,6 +295,8 @@ export function ssoLinkStartURL(provider: string): string {
 export interface InvitationLookup {
   email: string;
   role: Role;
+  /** The org membership accepting writes; none for a config editor. */
+  org_role?: OrgRole;
   team_id: string;
   team_name: string;
 }

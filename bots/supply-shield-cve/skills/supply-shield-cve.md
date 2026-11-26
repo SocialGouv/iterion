@@ -1,7 +1,7 @@
 ---
 name: supply-shield-cve
 description: |
-  Operating playbook for the supply-shield-cve bot (Vulny). Read this
+  Operating playbook for the supply-shield-cve bot (Code Red). Read this
   first when authoring or modifying nodes in main.bot, when running a
   CVE gate on a PR, or when adding an ecosystem/scanner. Covers the
   pipeline phases and the contract between them.

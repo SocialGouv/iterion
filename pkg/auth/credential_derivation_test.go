@@ -13,12 +13,14 @@ import (
 // CheckDerivation first: what the presented kind may mint at all, then
 // whether its account and its session still stand.
 
-var everyMint = []Mint{MintAccessToken, MintPAT, MintWSTicket, MintSSOLink, MintPassword, ChangeCredential, ChangeSignIn, ExercisePlatformAuthority}
+var everyMint = []Mint{MintAccessToken, MintPAT, MintWSTicket, MintSSOLink, MintPassword, MintTeamToken, MintEmailedInvitation, ChangeCredential, ChangeSignIn, ExercisePlatformAuthority}
 
-// patMayDo is what a personal access token may do: mint a WS ticket, change
-// or remove a credential of its account, change how an org signs in, and
-// exercise platform authority — never mint a credential of its own account.
-var patMayDo = map[Mint]bool{MintWSTicket: true, ChangeCredential: true, ChangeSignIn: true, ExercisePlatformAuthority: true}
+// patMayDo is what a personal access token may do: mint a WS ticket, mint an
+// invitation delivered by email only, change or remove a credential of its
+// account, change how an org signs in, and exercise platform authority —
+// never mint a credential of its own account, nor a team token handed back
+// to it.
+var patMayDo = map[Mint]bool{MintWSTicket: true, MintEmailedInvitation: true, ChangeCredential: true, ChangeSignIn: true, ExercisePlatformAuthority: true}
 
 // usablePATs registers on svc a PAT reader that answers the ids given as
 // usable and every other id as revoked.

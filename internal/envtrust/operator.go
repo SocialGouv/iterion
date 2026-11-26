@@ -268,6 +268,18 @@ var operatorInfraNames = map[string]bool{
 	// a read that becomes a billed system prompt — "0" unbounds it, so no
 	// bot var may speak for it.
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": true,
+	// The image bounds of a claw node's requests (#3649): bytes per image
+	// and per request, images per request, the longer side, the many-image
+	// side rule and the decode bound of a reduced capture. "0" unbounds each,
+	// and the decode bound guards the runner's memory, so no bot var may
+	// speak for them.
+	"ITERION_IMAGE_MAX_BASE64_BYTES":        true,
+	"ITERION_IMAGE_MAX_DECODE_PIXELS":       true,
+	"ITERION_IMAGE_MAX_SIDE":                true,
+	"ITERION_REQUEST_IMAGE_MAX_BYTES":       true,
+	"ITERION_REQUEST_IMAGE_MAX_COUNT":       true,
+	"ITERION_REQUEST_MANY_IMAGES_MAX_SIDE":  true,
+	"ITERION_REQUEST_MANY_IMAGES_THRESHOLD": true,
 	// The bound on a shell script node's data written into its script
 	// (#3291): what data may cost the script file, "0" unbounding it, so
 	// no bot var may speak for it.

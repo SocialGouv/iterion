@@ -549,7 +549,7 @@ func TestParsePiOutput(t *testing.T) {
 	t.Run("http status classification", func(t *testing.T) {
 		cases := []struct {
 			status int
-			// wantKind: "ratelimit" | "transient" | "plain"
+			// wantKind: "ratelimit" | "transient" | "spend" | "plain"
 			wantKind string
 		}{
 			{429, "ratelimit"},
@@ -558,7 +558,9 @@ func TestParsePiOutput(t *testing.T) {
 			{408, "transient"},
 			{401, "plain"},
 			{403, "plain"},
-			{402, "plain"},
+			// Payment required is a spend ceiling (api.ClassifyRefusal): the
+			// account refusal every backend parks on, never retried in place.
+			{402, "spend"},
 			{400, "plain"},
 		}
 		for _, tc := range cases {
@@ -586,6 +588,10 @@ func TestParsePiOutput(t *testing.T) {
 				case "transient":
 					if !errors.As(err, &tr) {
 						t.Fatalf("status %d → %v (%T), want *ErrTransient", tc.status, err, err)
+					}
+				case "spend":
+					if !IsUsageWindow(err) || !IsAccountRefusal(err) {
+						t.Fatalf("status %d → %v (%T), want the spend-ceiling account refusal", tc.status, err, err)
 					}
 				default:
 					if errors.As(err, &rl) || errors.As(err, &tr) {

@@ -231,6 +231,9 @@ func RemedyOf(err error) Remedy {
 		return Remedy{}
 	}
 	if rt.Hint == "" {
+		if hint := ProviderRefusalRemedy(err, rt.Code); hint != "" {
+			return Remedy{Hint: hint}
+		}
 		if rt.Code == ErrCodeProviderRequestInvalid {
 			return Remedy{Hint: ProviderRequestRemedy(err)}
 		}
