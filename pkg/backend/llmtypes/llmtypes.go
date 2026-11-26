@@ -50,6 +50,12 @@ type ModelCapabilities struct {
 	ToolCall    *bool
 	Temperature *bool
 
+	// ImageInput says whether the model takes images as input, as the image
+	// policy resolves it for the route (the catalog's provider-qualified
+	// row, never a cross-provider bare consensus): nil is unknown, under
+	// which images are sent; false is a route that refuses them.
+	ImageInput *bool
+
 	// Source is the table that had an ENTRY for the model
 	// (CapabilitySource): what tells a reader a published fact from a
 	// curated heuristic, and an unknown from a false. It is record-level,

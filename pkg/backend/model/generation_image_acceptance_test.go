@@ -99,7 +99,7 @@ func TestReadImage_OnATextOnlyGatewayRoute_IsARecoverableRefusal(t *testing.T) {
 	if !result.IsError || len(text) == 0 {
 		t.Fatalf("tool result = %+v, want an is_error result", result)
 	}
-	for _, want := range []string{`"openai_compatible/scaleway/glm-5.3" does not accept images`, "again will not help", "another way"} {
+	for _, want := range []string{`"openai_compatible/scaleway/glm-5.3" does not accept images`, "again will not help", "another way", "The tool described the image: diagram.png"} {
 		if !strings.Contains(text[0].Text, want) {
 			t.Errorf("the refusal %q does not say %q", text[0].Text, want)
 		}
@@ -204,9 +204,16 @@ func TestRouteImageInput_NativeRoutes(t *testing.T) {
 	pliageGateway(t, "")
 	text, vision := false, true
 	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(map[string]modelspecs.Spec{
-		"openai/text-only-model": {ImageInput: &text},
-		"openai/vision-model":    {ImageInput: &vision},
-		"other/text-only-model":  {ImageInput: &vision},
+		"openai/text-only-model":   {ImageInput: &text},
+		"openai/vision-model":      {ImageInput: &vision},
+		"other/text-only-model":    {ImageInput: &vision},
+		"zai-coding-plan/glm-5.3":  {ImageInput: &text},
+		"zai-coding-plan/glm-5.4":  {ImageInput: &vision},
+		"zai/glm-test-zai-only":    {ImageInput: &text},
+		"anthropic/glm-5.3":        {ImageInput: &vision},
+		"moonshotai/kimi-test":     {ImageInput: &text},
+		"google-vertex/gem-test":   {ImageInput: &text},
+		"amazon-bedrock/nova-test": {ImageInput: &text},
 	})))
 	for spec, want := range map[string]tool.ImageAcceptance{
 		"anthropic/claude-sonnet-4-6": tool.ImagesAccepted,
@@ -214,6 +221,65 @@ func TestRouteImageInput_NativeRoutes(t *testing.T) {
 		"openai/vision-model":         tool.ImagesAccepted,
 		"openai/unlisted":             tool.ImagesUnknown,
 		"text-only-model":             tool.ImagesUnknown,
+		// z.ai GLM on the anthropic wire (bare or anthropic/) reads z.ai's
+		// rows, zai-coding-plan first, never a foreign anthropic/ row.
+		"anthropic/glm-5.3":           tool.ImagesRefused,
+		"glm-5.3":                     tool.ImagesRefused,
+		"anthropic/glm-5.4":           tool.ImagesAccepted,
+		"anthropic/glm-test-zai-only": tool.ImagesRefused,
+		"anthropic/claude-opus-4-8":   tool.ImagesAccepted,
+		"moonshot/kimi-test":          tool.ImagesRefused,
+		"vertex/gem-test":             tool.ImagesRefused,
+		"bedrock/nova-test":           tool.ImagesRefused,
+		"foundry/text-only-model":     tool.ImagesUnknown,
+	} {
+		opts := GenerationOptions{Model: spec}
+		if _, err := withRouteImagePolicy(context.Background(), &opts); err != nil {
+			t.Fatalf("%s: %v", spec, err)
+		}
+		if opts.images.Acceptance != want {
+			t.Errorf("%s: acceptance %v, want %v", spec, opts.images.Acceptance, want)
+		}
+	}
+}
+
+// The capability views show the image flag the policy decides: the
+// gateway's catalog row, z.ai's row for a GLM on the anthropic wire, and a
+// Claude model as accepted.
+func TestResolveCapabilities_ShowsThePolicysImageInput(t *testing.T) {
+	pliageGateway(t, "")
+	text := false
+	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(map[string]modelspecs.Spec{
+		"zai-coding-plan/glm-5.3": {ImageInput: &text},
+	})))
+	for _, tc := range []struct {
+		provider, model, want string
+	}{
+		{"openai_compatible", "scaleway/glm-5.3", "false"},
+		{"openai_compatible", "scaleway/mistral-small-3.2-24b-instruct-2506", "true"},
+		{"anthropic", "glm-5.3", "false"},
+		{"anthropic", "claude-sonnet-4-6", "true"},
+		{"openai", "unlisted", "unstated"},
+	} {
+		got := "unstated"
+		if b := ResolveCapabilities(tc.provider, tc.model).ImageInput; b != nil {
+			got = map[bool]string{true: "true", false: "false"}[*b]
+		}
+		if got != tc.want {
+			t.Errorf("%s/%s: image_input %s, want %s", tc.provider, tc.model, got, tc.want)
+		}
+	}
+}
+
+// A native route whose live registry has not loaded (an empty table) reads
+// the embedded snapshot: z.ai's glm-5.3 row there is text-only, its glm-5.4
+// row takes images.
+func TestRouteImageInput_NativeFallsBackToTheSnapshot(t *testing.T) {
+	pliageGateway(t, "")
+	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(nil)))
+	for spec, want := range map[string]tool.ImageAcceptance{
+		"anthropic/glm-5.3": tool.ImagesRefused,
+		"anthropic/glm-5.4": tool.ImagesAccepted,
 	} {
 		opts := GenerationOptions{Model: spec}
 		if _, err := withRouteImagePolicy(context.Background(), &opts); err != nil {

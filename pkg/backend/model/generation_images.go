@@ -65,25 +65,63 @@ var anthropicVisionProviders = map[string]bool{"anthropic": true, "bedrock": tru
 //     text-only at some, takes images at others), and a disagreement must
 //     not refuse a working vision route.
 //   - A Claude model on an Anthropic route takes images.
-//   - Any other routed spec answers from the models.dev registry's exact
-//     "<provider>/<model>" key, never its cross-provider bare index.
-//   - A bare spec, whose provider the registry picks, states nothing.
+//   - Any other native spec answers from the models.dev row of the provider
+//     that serves it (modelsDevProviders), the live registry's exact key
+//     first, then the embedded snapshot's — never a cross-provider bare
+//     index. A spec no models.dev provider is known for states nothing.
 //
 // Quiet: the dispatch seam already said an unknown gateway id out loud.
 func routeImageInput(ctx context.Context, spec string) *bool {
-	route := modelroute.Parse(spec)
-	switch {
-	case route.Gateway():
+	if route := modelroute.Parse(spec); route.Gateway() {
 		getenv := func(name string) string { return envGetenv(ctx, name) }
 		return compatgw.ResolveCatalogQuiet(route.Wire, modelspecs.Default(), getenv).Spec.ImageInput
-	case anthropicVisionProviders[route.Provider] && strings.Contains(strings.ToLower(route.Wire), "claude"):
+	}
+	return nativeImageInput(spec)
+}
+
+// nativeImageInput is routeImageInput for a spec that is not a gateway
+// route; the capability views (capabilitiesForModel) read it too, so what
+// they show is what the policy decides.
+func nativeImageInput(spec string) *bool {
+	route := modelroute.Parse(spec)
+	if anthropicVisionProviders[route.Provider] && strings.Contains(strings.ToLower(route.Wire), "claude") {
 		accepted := true
 		return &accepted
-	case route.Provider == "":
-		return nil
 	}
-	if s, ok := modelspecs.Default().LookupExact(route.Provider, route.Wire); ok {
-		return s.ImageInput
+	providers := modelsDevProviders(spec, route)
+	for _, p := range providers {
+		if s, ok := modelspecs.Default().LookupExact(p, route.Wire); ok {
+			return s.ImageInput
+		}
+	}
+	for _, p := range providers {
+		if s, ok := modelspecs.SnapshotLookupExact(p, route.Wire); ok {
+			return s.ImageInput
+		}
+	}
+	return nil
+}
+
+// modelsDevProviders lists, in order, the models.dev provider ids whose rows
+// describe the model a native spec reaches. A GLM id on the anthropic wire
+// (bare or anthropic/, GLMOnAnthropicWire) is z.ai's: its rows live under
+// zai-coding-plan, then zai. The other routing prefixes map to the
+// provider id models.dev files them under. foundry is absent: its ids are
+// the operator's deployment names, which name no models.dev row. A bare
+// spec that is not a GLM id names no provider.
+func modelsDevProviders(spec string, route modelroute.Route) []string {
+	if GLMOnAnthropicWire(spec) {
+		return []string{"zai-coding-plan", "zai"}
+	}
+	switch route.Provider {
+	case "anthropic", "openai", "xai":
+		return []string{route.Provider}
+	case "moonshot":
+		return []string{"moonshotai"}
+	case "vertex":
+		return []string{"google-vertex"}
+	case "bedrock":
+		return []string{"amazon-bedrock"}
 	}
 	return nil
 }

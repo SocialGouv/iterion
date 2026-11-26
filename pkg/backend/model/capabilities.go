@@ -45,10 +45,24 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 	}
 	curated := curatedCapabilities(provider, modelID)
 	spec, ok := modelspecs.Default().Lookup(provider, modelID)
-	if !ok {
-		return curated
+	caps := curated
+	if ok {
+		caps = mergeSpec(spec, curated)
 	}
-	return mergeSpec(spec, curated)
+	// The image flag is the one the image policy resolves for the route
+	// (nativeImageInput), not the merge's: the merge falls back to the bare
+	// consensus index, which the policy never reads.
+	caps.ImageInput = nativeImageInput(nativeSpec(provider, modelID))
+	return caps
+}
+
+// nativeSpec spells a (provider, model) pair the way a route names it: a
+// bare id when the provider is empty.
+func nativeSpec(provider, modelID string) string {
+	if provider == "" {
+		return modelID
+	}
+	return provider + "/" + modelID
 }
 
 // taskContextWindow resolves the catalog context window for a delegate
@@ -95,6 +109,7 @@ func gatewayCapabilities(r compatgw.Resolved) ModelCapabilities {
 		Reasoning:       r.Spec.Reasoning,
 		ToolCall:        r.Spec.ToolCall,
 		Temperature:     r.Spec.Temperature,
+		ImageInput:      r.Spec.ImageInput,
 		Source:          CapabilitySource(r.Source),
 		ContextWindow:   r.Spec.ContextWindow,
 		MaxOutputTokens: r.Spec.MaxOutputTokens,

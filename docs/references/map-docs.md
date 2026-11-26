@@ -195,6 +195,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/backends/facade-substitution.md`](../agents/backends/facade-substitution.md) | Facade substitution — the served model is not the label | Read it when a `zai`/`moonshot` route answers with GLM/Kimi under a | — |
 | [`docs/agents/backends/fallbacks-and-parity.md`](../agents/backends/fallbacks-and-parity.md) | Fallbacks, schema re-ask and system-prompt parity | Read it when you write `fallbacks:`, hit C173/C176, a node acts "dumber" | — |
 | [`docs/agents/backends/gateway.md`](../agents/backends/gateway.md) | The OpenAI-compatible gateway | Serving `openai_compatible/<gateway model id>` from the deployment's | — |
+| [`docs/agents/backends/image-acceptance.md`](../agents/backends/image-acceptance.md) | Image acceptance — a route that takes no image refuses it | Read it when a node fails with "not a multimodal model", an image tool | — |
 | [`docs/agents/backends/key-pools.md`](../agents/backends/key-pools.md) | Key pools — named, attachable per scope, forfait-first fallback | Who a run borrows credentials from when its own do not fill every slot: | — |
 | [`docs/agents/backends/metering.md`](../agents/backends/metering.md) | Trusted metering | `delegate.Result` carries harness accounting independently of model JSON: | — |
 | [`docs/agents/backends/plugins-compression.md`](../agents/backends/plugins-compression.md) | Plugins — rewriters, MCP, skills, lifecycle; and `compress:` | Read it when command output is compressed (rtk) or a plugin changes what a | — |

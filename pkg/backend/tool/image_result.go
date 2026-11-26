@@ -74,7 +74,7 @@ func ImageResultContent(toolName, output string, policy ImagePolicy) ([]api.Cont
 				continue
 			}
 			if policy.Acceptance == ImagesRefused {
-				return nil, &ImagesRefusedError{Tool: toolName, Route: policy.Route}
+				return nil, &ImagesRefusedError{Tool: toolName, Route: policy.Route, Description: res.Description}
 			}
 			src, note := b.Source, ""
 			w, h, format, headerOK := ImageHeader(src)

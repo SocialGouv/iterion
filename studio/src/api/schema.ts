@@ -7791,6 +7791,7 @@ export interface components {
             context_window: number;
             credential_provider: string;
             credential_source?: string;
+            image_input?: boolean;
             input_cost_per_m?: number;
             max_output_tokens?: number;
             model: string;
@@ -8643,6 +8644,7 @@ export interface components {
         Spec: {
             cache_read_cost_per_m?: number;
             context_window?: number;
+            image_input?: boolean;
             input_cost_per_m?: number;
             max_output_tokens?: number;
             output_cost_per_m?: number;
@@ -9376,6 +9378,7 @@ export interface components {
         };
         modelCapabilitiesResponse: {
             context_window: number;
+            image_input?: boolean;
             input_cost_per_m: number;
             max_output_tokens: number;
             model: string;

@@ -141,31 +141,6 @@ Prompt images are never dropped — breaking a rule alone, the request is
 refused. Consecutive user messages join on the chat wire. A codemode
 program gets the description and the image-omitted marker, no bytes.
 
-Whether a route takes images at all is the policy's `Acceptance`, resolved
-per generation (`routeImageInput`, then `tool.ImageAcceptanceFor`). The
-answer is the catalog's `image_input` flag (`modelspecs.Spec.ImageInput`).
-A gateway route reads it from its catalog in the usual order: the host's
-forwarded record in the sandbox, the run's feed (a LiteLLM listing's
-`supports_vision`), the operator table (`"image_input": false`), then the
-models.dev provider row (`modalities.input`), live then snapshot. A native
-route reads the registry's exact `<provider>/<model>` row, and a Claude
-model on an Anthropic route always takes images. The key is always
-provider-qualified: a bare id's publishers disagree (glm-5.3 is text-only
-at some providers and takes images at others), and that disagreement stays
-unknown, which sends images. Only a stated `false` refuses. Deployments of
-one LiteLLM `model_name` fold to false if any says false, and to true only
-if all say true. PLIAGE's `/model/info` states `supports_vision` for no
-model, so there the scaleway row answers: `scaleway/glm-5.3` is text-only,
-and the vision models above take images.
-
-On a refusing route, an image tool returns a recoverable tool error
-(`tool.ImagesRefusedError`). It names the route and says calling again will
-not help, so get the content another way. A tool image replayed from
-another route's history (a fallback) goes out as a marker. A prompt image
-refuses the request before it is sent (`RequestImagesRefusedError`).
-`ITERION_IMAGE_ACCEPTANCE` is operator-only and crosses into the sandbox
-with the bounds. `auto` (the default) follows the catalog, `send`
-overrides a stated refusal, and `refuse` refuses images on every route. Any
-other value fails the generation. `claude_code` serves Anthropic models
-(all of them take images) through its own CLI, which bounds its own images:
-none of this applies there.
+Whether a route takes images at all (`image_input`), what it does to an
+image tool and a prompt image, `ITERION_IMAGE_ACCEPTANCE`, and the rollout
+limits of stating it: [image-acceptance.md](image-acceptance.md).

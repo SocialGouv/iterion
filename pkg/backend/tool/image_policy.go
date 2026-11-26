@@ -231,6 +231,9 @@ func (p ImagePolicy) EffectiveMaxImageBytes() (max int, knobs string) {
 type ImagesRefusedError struct {
 	Tool  string
 	Route string
+	// Description is the tool's own text about the image (read_image's file
+	// name and dimensions), kept so the model still reads what it asked for.
+	Description string
 }
 
 func (e *ImagesRefusedError) Error() string {
@@ -243,8 +246,12 @@ func (e *ImagesRefusedError) Error() string {
 	default:
 		advice = "get what you need another way, as text"
 	}
-	return fmt.Sprintf("%s returned an image, and model route %q does not accept images: calling %s again will not help — %s (operators: %s=send overrides the route's catalog)",
-		e.Tool, e.Route, e.Tool, advice, EnvImageAcceptance)
+	described := ""
+	if e.Description != "" {
+		described = fmt.Sprintf(" The tool described the image: %s", e.Description)
+	}
+	return fmt.Sprintf("%s returned an image, and model route %q does not accept images: calling %s again will not help — %s (operators: %s=send overrides the route's catalog).%s",
+		e.Tool, e.Route, e.Tool, advice, EnvImageAcceptance, described)
 }
 
 // ImageTooLargeError is a tool image over one of the route's per-image

@@ -61,6 +61,9 @@ type Entry struct {
 	// it is broken rather than degraded; an unknown one is a warning.
 	ToolCall    *bool `json:"tool_call,omitempty"`
 	Temperature *bool `json:"temperature,omitempty"`
+	// ImageInput is nil when nothing states it (images are sent), false
+	// when the route refuses images.
+	ImageInput *bool `json:"image_input,omitempty"`
 	// UltracodeCapable reports whether `reasoning_effort: ultracode` holds on
 	// this model. Ultracode's workflow-orchestration prerogative rides
 	// Anthropic mid-conversation system messages and is reliable only on
@@ -267,6 +270,7 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 			Reasoning:          rc.Reasoning,
 			ToolCall:           rc.ToolCall,
 			Temperature:        rc.Temperature,
+			ImageInput:         rc.ImageInput,
 			UltracodeCapable:   UltracodeCapable(rc.Spec),
 			Recommended:        rc.Spec == recommended,
 		}
