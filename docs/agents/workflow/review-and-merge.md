@@ -16,9 +16,7 @@ The loop is:
    [adversarial-review-loop.md](adversarial-review-loop.md). Measured on this
    repo: five consecutive gate verdicts at ≥ 1 medium on a fresh line (~6 h of
    queue) against one 15-minute local round followed by a first verdict at
-   0 findings. That page also carries the **round budget** — a ceiling on cost
-   by change size (≤ 8 files → 5 local rounds, 10 if the diff blocks · 9–25 →
-   20 · > 25 → 50), never a
+   0 findings. That page carries the **round budget** — a ceiling, never a
    target: what decides another round is whether the last one still returned
    verified high or critical findings.
 2. **The gate closes the loop; the local round never does.** A sterile local
@@ -34,19 +32,8 @@ The loop is:
    the squash, and rationale in
    [adversarial-review-loop.md](adversarial-review-loop.md#say-what-the-review-cost-in-the-commit).
 
-**Before every push: `task check`, then the label (#3738).** A session's pull
-request runs no CI unless it asks
-([CI on demand](../../merge-policy.md#pull-request-ci-on-demand)), so the local
-gate is its first witness. To get CI's, add the `ci:run` label (`ci:full` for
-the heavy layer too) BEFORE pushing, so the push's run carries it — a label
-added after the push races the push's run, and the later one wins; on a new
-pull request, open it first and label it once its `opened` run exists.
-Labelling alone also starts a run. Or land it
-through the train (`task ci:train`) — except a pull request touching
-`.github/`, `scripts/ci/`, `Taskfile.yml` or `devbox.*`, which the train
-refuses: those need the label. Without either, `test` and `race` are red by
-policy, never skipped. A bot's or a fork's pull request runs automatically;
-any label reruns the pull request as a synchronize would.
+**Before pushing:** `task check`; CI needs the `ci:run` label
+([on demand](../../merge-policy.md#pull-request-ci-on-demand)).
 
 ## The operator direct-landing lane (decided 2026-10-22)
 
