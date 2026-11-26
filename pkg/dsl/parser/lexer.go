@@ -157,6 +157,19 @@ type Lexer struct {
 	ti     int // current read index into the stream; tokens[:ti] is consumed
 	ahead  tokenQueue
 
+	// steps counts the stream work done since lexing: one per token a read
+	// (Next, Peek, PeekAt) hands out and one per token a splice behind the
+	// cursor recopies; the queue counts its own walk (tokenQueue.walked).
+	// work sums them — the clock-free measure the linearity witnesses read,
+	// so CPU contention can never pass for a complexity regression. Reads
+	// that index tokens directly (the parser's lookbacks, the close-point
+	// memo walk, the open-block replay's readThrough) are outside it.
+	steps int
+	// spliced counts the tokens splice inserted: a witness holds it equal to
+	// what the stream gained, so an insertion that bypasses splice, and
+	// with it the counted recopy, fails the witness instead of escaping it.
+	spliced int
+
 	indentStack []int // stack of indentation levels (in spaces); starts with [0]
 	atLineStart bool  // true when we are at the beginning of a (possibly indented) line
 
@@ -403,12 +416,19 @@ func (l *Lexer) All() []Token {
 	}
 }
 
+// work is the stream work done since lexing: the reads and recopies steps
+// counts plus the positions the splice queue walked. It is a count of
+// operations, so a reading that stays linear in its stream reads a work
+// linear in it on any machine, loaded or not.
+func (l *Lexer) work() int { return l.steps + l.ahead.walked }
+
 // streamLen is the length of the whole stream: the materialized prefix plus
 // what the splice queue still holds.
 func (l *Lexer) streamLen() int { return len(l.tokens) + l.ahead.queued }
 
 // Next returns the next token.
 func (l *Lexer) Next() Token {
+	l.steps++
 	if l.ti < len(l.tokens) {
 		t := l.tokens[l.ti]
 		l.ti++
@@ -427,6 +447,7 @@ func (l *Lexer) Next() Token {
 
 // Peek returns the next token without consuming it.
 func (l *Lexer) Peek() Token {
+	l.steps++
 	if l.ti < len(l.tokens) {
 		return l.tokens[l.ti]
 	}
@@ -446,6 +467,7 @@ func (l *Lexer) Backup() {
 // PeekAt returns the token n positions ahead without consuming anything
 // (PeekAt(0) is Peek).
 func (l *Lexer) PeekAt(n int) Token {
+	l.steps++
 	if i := l.ti + n; i < len(l.tokens) {
 		return l.tokens[i]
 	} else if t, ok := l.ahead.peekAt(i - len(l.tokens)); ok {
@@ -459,8 +481,10 @@ func (l *Lexer) PeekAt(n int) Token {
 // cursor, where the parser's resyncs always stand. Behind the cursor (a
 // test's doing, never a rescue's) the insert is the plain recopy.
 func (l *Lexer) splice(at int, toks []Token) {
+	l.spliced += len(toks)
 	switch {
 	case at < l.ti:
+		l.steps += len(l.tokens) - at
 		l.tokens = slices.Insert(l.tokens, at, toks...)
 	case at < len(l.tokens):
 		// The splice point is materialized but unread: the tail moves to the
@@ -495,6 +519,7 @@ type tokenQueue struct {
 	head   *qseg // first segment holding unread tokens
 	off    int   // how far into head.toks the reading stands
 	queued int   // the unread tokens the queue holds, over all segments
+	walked int   // the positions peekAt and insertAt stepped over (Lexer.work)
 
 	// cacheK, cacheNode and cacheOff are where the last peekAt answer
 	// stands: cacheK its offset from the frontier (the materialized
@@ -543,6 +568,7 @@ func (q *tokenQueue) peekAt(k int) (Token, bool) {
 	if q.cacheNode != nil && q.cacheK <= k {
 		node, off, at = q.cacheNode, q.cacheOff, q.cacheK
 	}
+	q.walked += k - at
 	for at < k {
 		off++
 		if off == len(node.toks) {
@@ -619,6 +645,7 @@ func (q *tokenQueue) insertAt(k int, toks []Token) {
 		node, off, at, prev = q.cacheNode, q.cacheOff, q.cacheK, q.cacheNode.prev
 	}
 	for at < k && node != nil {
+		q.walked++
 		off++
 		if off == len(node.toks) {
 			prev, node, off = node, node.next, 0

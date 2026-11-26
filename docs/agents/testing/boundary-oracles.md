@@ -126,11 +126,11 @@ extra work; resetting and rereading counts the work again. Clearing the counter
 on reset fails this calibration, including when combined with the rescan.
 The claim concerns this lookup, not the complexity of every parser operation.
 
-The separate `TestBrokenListSplicesStayLinear` ratio remains unchanged. Its
-historical timings were 3.42 s in [41233597165](https://github.com/SocialGouv/iterion/actions/runs/41233597165)
-and 24.14 s in [41236299236](https://github.com/SocialGouv/iterion/actions/runs/41236299236),
-with a local ratio around 1.9. These are separate observations, not proof that
-every timing-based test is stable or that the CI slowdown's cause is known.
+`TestBrokenListSplicesStayLinear` counts too since #3731: its median
+wall-clock ratio read 8.1x on a linear splice. Its work ratio reads 4.0x; a
+recopy through `Lexer.splice` or a stack-reset mutant reads 15.9x against the
+6x bound. A splice that bypasses `Lexer.splice` fails a chokepoint assertion;
+the test's comment names what the count does not cover.
 
 
 ## React title publication
