@@ -195,3 +195,12 @@ role are two decisions:
 
 Org admins that the old mirror already wrote are left as they are. Reviewing
 them is an operator's call, not a migration's.
+
+## Status note (2026-11-26)
+
+The P3 per-team sub-caps were never built, and capacity (`MaxConcurrentRuns`,
+`LaunchRatePerMin`) has no org-level counterpart, so the team-keyed ceilings
+(capacity, webhook calls, memory) multiply with the org's team count.
+[ADR-174](174-the-org-is-the-envelope-of-budget-and-capacity.md) (Proposed)
+takes both up: the org as the envelope of budget and capacity, the team as an
+optional share of it, and a plan supplying the defaults.
