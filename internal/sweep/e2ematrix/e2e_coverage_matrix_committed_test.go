@@ -1,4 +1,4 @@
-package bots
+package e2ematrix
 
 import (
 	"encoding/json"
@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // The e2e-coverage bot's verify_run gate owns the matrix contract (marker,
@@ -57,7 +60,7 @@ type matrixVerdict struct {
 // of silently shrinking what is enforced.
 func matrixContractProgram(t *testing.T) string {
 	t.Helper()
-	command := toolCommand(t, "e2e-coverage/main.bot", "verify_run")
+	command := toolCommand(t, filepath.Join(sweepwalk.ModuleRoot(t), "bots", "e2e-coverage", "main.bot"), "verify_run")
 
 	cut := func(from, to string) string {
 		if n := strings.Count(command, from); n != 1 {
@@ -108,7 +111,9 @@ func runMatrixContract(t *testing.T, program, ws, matrixRel string) matrixVerdic
 		t.Fatal(err)
 	}
 	cmd := exec.Command("python3", "-I", prog)
-	cmd.Env = append(os.Environ(), "WS="+ws, "MATRIX="+matrixRel)
+	// The slice runs read-only git in the workspace: a GIT_DIR or GIT_WORK_TREE
+	// inherited from a hook would point it at another repository.
+	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "WS="+ws, "MATRIX="+matrixRel)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("the matrix contract slice failed to run: %v (out %q)", err, out)
@@ -278,12 +283,9 @@ func (s *surfaceCount) add(status string) {
 
 func repoRootForMatrix(t *testing.T) string {
 	t.Helper()
-	root, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := sweepwalk.ModuleRoot(t)
 	if _, err := os.Stat(filepath.Join(root, committedMatrixRel)); err != nil {
-		t.Fatalf("no %s under %s: this test must run from the bots package of the repository", committedMatrixRel, root)
+		t.Fatalf("no %s under %s: this test must run inside the repository", committedMatrixRel, root)
 	}
 	return root
 }
