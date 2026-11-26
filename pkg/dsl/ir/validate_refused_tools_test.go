@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -9,6 +10,10 @@ import (
 
 // refusedCode is the code under test.
 const refusedCode = DiagToolRefusedOnClaw
+
+// rerouteShape matches any wording that sends the author to another backend
+// or node kind, which cannot serve a tool node's registry recipe.
+var rerouteShape = regexp.MustCompile("(?i)route|agent node|move it|claude_code|backend that|another backend|switch")
 
 // refusedProbe is the name the scenarios below declare. C159's three arms are
 // driven through an injected entry over a name the catalog really holds and
@@ -331,43 +336,108 @@ func TestRefusedToolNameIsReportedTrimmed(t *testing.T) {
 // TestARefusedRegistryCommandOnAToolNodeWarnsOnEveryBackend: a tool node's
 // bare `command:` names a tool in the registry RegisterClawAll builds, and
 // ClawExecutor runs every tool node whatever the workflow's backend, so
-// `command: cron_create` is refused on every run. A tool node has no model to
-// read the refusal: the node fails. Only the registry recipe is read — a
-// shell command that merely mentions the name runs through sh, and a served
-// name says nothing.
+// `command: cron_create` is refused on every run that reaches it — with no
+// backend declared too. A tool node has no model to read the refusal, and
+// rerouting cannot serve it, so the hint is the tool node's own and offers no
+// backend that serves the tool, and the warning points at the
+// `command:` line. Only the registry recipe is read: `cron_create ` carries a
+// space, so it is a shell command that sh runs, and a served name says nothing.
 func TestARefusedRegistryCommandOnAToolNodeWarnsOnEveryBackend(t *testing.T) {
-	for _, backend := range []string{"claw", "claude_code"} {
-		t.Run(backend, func(t *testing.T) {
+	for _, backend := range []string{"claw", "claude_code", ""} {
+		t.Run("backend="+backend, func(t *testing.T) {
+			defaultBackend := ""
+			if backend != "" {
+				defaultBackend = "  default_backend: \"" + backend + "\"\n"
+			}
 			src := `tool arm:
   command: cron_create
 
 tool shell:
-  command: "echo cron_create"
+  command: "cron_create "
 
 tool reader:
   command: read_file
 
 workflow w:
-  default_backend: "` + backend + `"
-  entry: arm
+` + defaultBackend + `  entry: arm
   arm -> shell
   shell -> reader
   reader -> done
 `
 			cr := compileToolsSrc(t, src)
-			got := diagsFor(cr, refusedCode)
+			var got []Diagnostic
+			for _, d := range cr.Diagnostics {
+				if d.Code == refusedCode {
+					got = append(got, d)
+				}
+			}
 			if len(got) != 1 {
 				t.Fatalf("want exactly one C159, for the registry command cron_create, got %v", got)
 			}
+			d := got[0]
 			r, _ := toolcatalog.ClawRefusesBuiltin("cron_create")
 			for _, want := range []string{`"arm"`, "command:", `"cron_create"`, r.Reason, r.Remedy} {
-				if !strings.Contains(got[0], want) {
-					t.Errorf("the C159 message does not carry %q: %s", want, got[0])
+				if !strings.Contains(d.Message, want) {
+					t.Errorf("the C159 message does not carry %q: %s", want, d.Message)
 				}
+			}
+			if rerouteShape.MatchString(d.Hint) || d.Hint == HintFor(refusedCode) {
+				t.Errorf("a tool node's C159 hint tells the author to reroute, which cannot serve a registry recipe: %q", d.Hint)
+			}
+			if !strings.Contains(d.Hint, "whatever the backend") {
+				t.Errorf("a tool node's C159 hint does not say the recipe runs on claw's registry whatever the backend: %q", d.Hint)
+			}
+			if d.Property != "command" || d.Line != 2 {
+				t.Errorf("C159 on a tool node points at property %q line %d, want the `command:` line (command, 2)", d.Property, d.Line)
 			}
 			if cr.HasErrors() {
 				t.Errorf("C159 stays a warning on a tool node: %v", cr.Diagnostics)
 			}
 		})
+	}
+}
+
+// TestARegistryCommandPaddedWithWhitespaceIsNotWarned: dispatch
+// resolves a registry `command:` exactly as written (executeToolNodeRecipe
+// passes node.Command untrimmed), and the recipe-kind split reads only space
+// and tab as shell. A command padded with any other whitespace — U+00A0,
+// U+0085, a vertical tab, a form feed — stays a registry recipe and fails at
+// dispatch as an unregistered tool, never reaching the cron refusal, so C159
+// predicting that refusal would name the wrong failure.
+func TestARegistryCommandPaddedWithWhitespaceIsNotWarned(t *testing.T) {
+	for name, pad := range map[string]string{
+		"no-break space": "\u00a0",
+		"next line":      "\u0085",
+		"vertical tab":   "\v",
+		"form feed":      "\f",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := "tool arm:\n  command: \"cron_create" + pad + "\"\n\n" +
+				"workflow w:\n  default_backend: \"claw\"\n  entry: arm\n  arm -> done\n"
+			cr := compileToolsSrc(t, src)
+			if got := diagsFor(cr, refusedCode); len(got) != 0 {
+				t.Errorf("C159 predicts a cron refusal for a padded command dispatch never resolves: %v", got)
+			}
+		})
+	}
+}
+
+// TestARefusedNameBesideAScriptIsNotAToolNodeRecipe: only a registry recipe
+// dispatches its `command:` as a tool name. A node that also writes `script:`
+// is a script recipe for the recipe-kind split (and a compile error for the
+// two recipes it declares), so its `command:` never reaches the registry and
+// C159 has no refusal to predict.
+func TestARefusedNameBesideAScriptIsNotAToolNodeRecipe(t *testing.T) {
+	cr := compileToolsSrc(t, `tool both:
+  command: cron_create
+  script: "echo hi"
+
+workflow w:
+  default_backend: "claw"
+  entry: both
+  both -> done
+`)
+	if got := diagsFor(cr, refusedCode); len(got) != 0 {
+		t.Errorf("C159 reads the command of a node whose recipe is not a registry one: %v", got)
 	}
 }
