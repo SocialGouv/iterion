@@ -196,3 +196,34 @@ func TestSweepRetriesWhenKubectlsServerRefusedTheConnection(t *testing.T) {
 		t.Fatalf("a refused API server: attempts=%d stopped=%v (%v), want a second, settling attempt", refused.attempts, o.Stopped(), o.Err)
 	}
 }
+
+// containerd refuses an exec before its process starts — the task cannot be
+// loaded, the exec cannot be created — and kubectl relays it wrapped as
+// "failed to exec in container": nothing ran, so the sweep is tried again.
+// The same wrapping of a failure after the process started (its IO drain, its
+// timeout) may have run part of the sweep, and stays final. One scenario per
+// pre-start failure: a list that loses one entry turns that one red.
+func TestSweepRetriesAnExecContainerdRefusedBeforeItStarted(t *testing.T) {
+	const relay = "error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: "
+	for _, cause := range []string{
+		"failed to load task: context deadline exceeded",
+		"failed to get container spec: context deadline exceeded",
+		`failed to create exec "0f3c": context deadline exceeded`,
+		`failed to wait for process "0f3c": context deadline exceeded`,
+	} {
+		refused := &scriptedRun{steps: []string{"echo '" + relay + cause + "' >&2; exit 1"}}
+		if o := NewCompletion("t").Sweep(refused, 10*time.Second); !o.Stopped() || refused.attempts != 2 {
+			t.Errorf("containerd refused before the start (%s): attempts=%d stopped=%v (%v), want a second, settling attempt", cause, refused.attempts, o.Stopped(), o.Err)
+		}
+	}
+	for _, cause := range []string{
+		`failed to drain exec process "0f3c" io in 1s because io is still held by other processes`,
+		`failed while waiting for exec "0f3c": context deadline exceeded`,
+		`failed to start exec "0f3c": context deadline exceeded`,
+	} {
+		cut := &scriptedRun{steps: []string{"echo '" + relay + cause + "' >&2; exit 1"}}
+		if o := NewCompletion("t").Sweep(cut, 10*time.Second); o.Stopped() || cut.attempts != 1 {
+			t.Errorf("containerd failed once the exec may have run (%s): attempts=%d stopped=%v, want one attempt and an unsettled end", cause, cut.attempts, o.Stopped())
+		}
+	}
+}

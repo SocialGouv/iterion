@@ -243,7 +243,10 @@ client, and nothing in the pod.
      client and the line both say 0. A proven end sweeps nothing.
    - **The line missing:** the end is unknown. The command's session is swept
      in the container (decision 2's sweep). A sweep whose exec never reached
-     the container — its client could not connect or open the stream — is
+     the container — its client could not connect or open the stream, or the
+     container runtime refused the exec before its process started (containerd's
+     `failed to exec in container: failed to load task`, `… failed to create
+     exec`, and the other steps before its start) — is
      tried again, backing off: the exec path a stream was lost on is often
      down a little longer than the stream. Any other unfinished attempt is
      final: it may have signalled processes no later scan can find again. The
